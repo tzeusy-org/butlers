@@ -9,9 +9,7 @@ from __future__ import annotations
 import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, field_validator, model_validator
-
-from butlers.connectors.registry_roles import UNKNOWN as UNKNOWN_ROLE
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class RoutingEntry(BaseModel):
@@ -99,145 +97,8 @@ class SetEligibilityResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Connector ingestion models
+# Connector ingestion aggregate models
 # ---------------------------------------------------------------------------
-
-
-class ConnectorScopeRow(BaseModel):
-    """One entry in the scopes[] block of a connector-detail response.
-
-    Spec: openspec/changes/add-connector-oauth-scope-surface/
-          specs/connector-oauth-scope-surface/spec.md §Scopes block shape
-    """
-
-    name: str
-    """Provider scope string, e.g. 'user-read-recently-played'."""
-
-    category: str
-    """'required' | 'optional' | 'sensitive' | 'extra'."""
-
-    status: str
-    """'ok' | 'missing' | 'extra'."""
-
-    sensitive_granted: bool = False
-    """True when this scope is sensitive AND currently granted."""
-
-    granted_at: str | None = None
-    """ISO8601 timestamp when the scope was first granted; NULL in v1."""
-
-    required_since: str | None = None
-    """ISO8601 timestamp when this scope became required; NULL in v1."""
-
-    serif_note: str = ""
-    """Single sentence explaining the scope's purpose (no trailing period)."""
-
-
-ConnectorAuthStatus = Literal[
-    "ok",
-    "degraded",
-    "expired",
-    "rotation-needed",
-    "needs_reauth",
-    "unsupported",
-    "unconfigured",
-]
-
-
-class ConnectorAuthBlock(BaseModel):
-    """The 'auth' block in a connector-detail response.
-
-    Spec: openspec/changes/add-connector-oauth-scope-surface/
-          specs/connector-oauth-scope-surface/spec.md §Auth block
-    """
-
-    status: ConnectorAuthStatus
-    """Canonical typed auth status, including Spotify-only needs_reauth."""
-
-    type: str
-    """'oauth' for OAuth connectors; credential model string for non-OAuth."""
-
-    note: str | None = None
-    """Provider-specific summary copy."""
-
-    expires_at: str | None = None
-    """Access token expiry (ISO8601) or null."""
-
-    required_scopes_version: int | None = None
-    """Manifest version captured at last reauth; OAuth connectors only."""
-
-    manifest_version: int | None = None
-    """Current manifest version; OAuth connectors only."""
-
-    alt_surface: dict | None = None
-    """For non-OAuth connectors: alternative credential surface block."""
-
-    recovery_reason: Literal["expired", "rotation-needed"] | None = None
-    """Original Spotify recovery cause when status is normalized to needs_reauth."""
-
-
-class ConnectorEntry(BaseModel):
-    """A connector entry from the connector_registry table.
-
-    Fields align with what is needed for Overview/Connectors tab cards and
-    health badge rows in the ingestion dashboard.
-    """
-
-    connector_type: str
-    endpoint_identity: str
-    instance_id: str | None = None
-    version: str | None = None
-    state: str = "unknown"
-    error_message: str | None = None
-    uptime_s: int | None = None
-    last_heartbeat_at: str | None = None
-    first_seen_at: str
-    registered_via: str = "self"
-    # Cumulative counters
-    counter_messages_ingested: int = 0
-    counter_messages_failed: int = 0
-    counter_source_api_calls: int = 0
-    counter_checkpoint_saves: int = 0
-    counter_dedupe_accepted: int = 0
-    # Today's aggregated stats (from connector_heartbeat_log via Prometheus)
-    today_messages_ingested: int = 0
-    today_messages_failed: int = 0
-    # Checkpoint info
-    checkpoint_cursor: str | None = None
-    checkpoint_updated_at: str | None = None
-    # Persisted operational role (bu-6jv4m.11, sw_031): `runtime_instance` for
-    # an executable connector process, `checkpoint` for a stored cursor with no
-    # process behind it, `unknown` when no producer has claimed the row. Only
-    # `runtime_instance` carries runtime-health authority; see
-    # butlers.connectors.registry_roles. `parent_endpoint_identity` names the
-    # runtime instance a checkpoint belongs to (None on runtime instances).
-    operational_role: str = UNKNOWN_ROLE
-    parent_endpoint_identity: str | None = None
-    # Runtime-configurable settings (e.g. discretion thresholds)
-    settings: dict | None = None
-    # OAuth scope surface (connector-oauth-scope-surface capability)
-    # Both fields are None when the capability data is not yet available.
-    auth: ConnectorAuthBlock | None = None
-    scopes: list[ConnectorScopeRow] | None = None
-
-
-class ConnectorSummary(BaseModel):
-    """Aggregate summary across all connectors.
-
-    Drives the summary row at the top of the Connectors tab.
-    """
-
-    # Runtime instances only (bu-6jv4m.11): stored checkpoints have no process
-    # and therefore no liveness to roll up. `unknown_count` carries the rows
-    # whose operational role is unestablished — counted apart from the
-    # online/stale/offline split rather than being guessed into either side.
-    total_connectors: int = 0
-    online_count: int = 0
-    stale_count: int = 0
-    offline_count: int = 0
-    unknown_count: int = 0
-    total_messages_ingested: int = 0
-    total_messages_failed: int = 0
-    error_rate_pct: float = 0.0
 
 
 class ConnectorStatsHourly(BaseModel):
@@ -980,42 +841,6 @@ class RoutingInstructionUpdate(BaseModel):
         return v
 
 
-class CursorUpdateRequest(BaseModel):
-    """Request body for PATCH /connectors/{type}/{identity}/cursor."""
-
-    cursor: str
-
-    @field_validator("cursor")
-    @classmethod
-    def cursor_non_empty(cls, v: str) -> str:
-        v = v.strip()
-        if not v:
-            raise ValueError("cursor must be non-empty")
-        return v
-
-
-class ConnectorSettingsUpdateRequest(BaseModel):
-    """Request body for PATCH /connectors/{type}/{identity}/settings.
-
-    Accepts a partial JSON object that is merged into the existing settings.
-    When ``flush_interval_s`` is present it must be in [60, 7200] — consistent
-    with the frontend validation bounds.
-    """
-
-    settings: dict
-
-    @field_validator("settings")
-    @classmethod
-    def validate_flush_interval(cls, v: dict) -> dict:
-        flush = v.get("flush_interval_s")
-        if flush is not None:
-            if not isinstance(flush, int) or isinstance(flush, bool):
-                raise ValueError("flush_interval_s must be an integer")
-            if flush < 60 or flush > 7200:
-                raise ValueError("flush_interval_s must be between 60 and 7200 seconds")
-        return v
-
-
 class InsightCandidate(BaseModel):
     """A single proactive-insight candidate row from ``public.insight_candidates``.
 
@@ -1040,6 +865,66 @@ class InsightCandidate(BaseModel):
     status: str
     delivered_at: str | None = None
     delivery_attempt_count: int = 0
+    prepared_action_id: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Fleet case file — read API (bu-8cdl1.7 Slice 2, RFC 0032)
+# ---------------------------------------------------------------------------
+
+
+class FleetCaseSummary(BaseModel):
+    """A single fleet case row from ``public.fleet_cases`` (RFC 0032).
+
+    Read-only projection used by ``GET /api/switchboard/cases``. Every butler
+    role has SELECT on this table (migration ``core_217``); only
+    ``butler_switchboard_rw`` may INSERT/UPDATE it, which is why this reader
+    is hosted on the switchboard API surface, mirroring ``InsightCandidate``.
+    """
+
+    id: str
+    correlation_key: str
+    state: str
+    posture: str
+    outcome: str | None = None
+    opened_at: str | None = None
+    updated_at: str | None = None
+    closed_at: str | None = None
+
+
+class FleetCaseEvidenceEntry(BaseModel):
+    """A single contribution row from ``public.fleet_case_evidence``."""
+
+    id: str
+    case_id: str
+    contributor: str
+    kind: str
+    ref: str
+    payload: dict | None = None
+    contributed_at: str | None = None
+
+
+class FleetCaseLinkEntry(BaseModel):
+    """A single ledger-binding row from ``public.fleet_case_links``."""
+
+    id: str
+    case_id: str
+    link_kind: str
+    ref: str
+    metadata: dict | None = None
+    linked_at: str | None = None
+
+
+class FleetCaseDetail(FleetCaseSummary):
+    """A fleet case plus its accreted evidence and ledger links.
+
+    Used by ``GET /api/switchboard/cases/{case_id}``. Evidence is ordered
+    oldest-first (contributed_at ASC) so it reads as the situation's
+    narrative history; links are ordered by linked_at ASC.
+    """
+
+    evidence: list[FleetCaseEvidenceEntry] = Field(default_factory=list)
+    links: list[FleetCaseLinkEntry] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

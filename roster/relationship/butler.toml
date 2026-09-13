@@ -17,6 +17,7 @@ core_groups = [
     "media",          # get_attachment
     "temporal",       # deadlines, event_chains, seasonal_periods
     "delegation",     # delegate_ask/receive/answer/wake — cross-butler questions
+    "fleet_cases",    # find_open_case/open_case/contribute_case_evidence/propose_case_posture/close_case/read_case
 ]
 
 [butler.db]
@@ -115,6 +116,12 @@ name = "fact-retraction-curation"
 cron = "0 5 * * 1"
 dispatch_mode = "job"
 job_name = "fact_retraction_curation"
+
+[[butler.schedule]]
+name = "prepared-action-orphan-sweep"
+cron = "30 3 * * *"
+dispatch_mode = "job"
+job_name = "prepared_action_orphan_sweep"
 
 [[butler.schedule]]
 name = "entity-dedup-curation"

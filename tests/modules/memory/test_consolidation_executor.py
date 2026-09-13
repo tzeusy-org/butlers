@@ -342,6 +342,7 @@ async def test_updated_fact_uses_persisted_target_identity(monkeypatch) -> None:
     pool.fetchval.return_value = False
     stored_kwargs: list[dict] = []
     stored_args: list[tuple] = []
+    stored_rule_kwargs: list[dict] = []
 
     async def _store_fact(*args, **kwargs):
         stored_args.append(args)
@@ -355,14 +356,30 @@ async def test_updated_fact_uses_persisted_target_identity(monkeypatch) -> None:
         AsyncMock(return_value=7),
     )
 
+    async def _store_rule(*args, **kwargs):
+        stored_rule_kwargs.append(kwargs)
+        return uuid.uuid4()
+
+    monkeypatch.setattr(consolidation_executor, "store_rule", _store_rule)
+
     parsed = ConsolidationResult(
+        new_facts=[
+            NewFact(
+                subject="new subject",
+                predicate="new_predicate",
+                content="new content",
+            )
+        ],
         updated_facts=[
             UpdatedFact(
                 target_id=str(target_id),
                 content="new value",
             )
-        ]
+        ],
+        new_rules=[NewRule(content="new rule")],
     )
+    tenant_id = "tenant-context"
+    request_id = str(uuid.uuid4())
 
     result = await consolidation_executor.execute_consolidation(
         pool=pool,
@@ -370,21 +387,31 @@ async def test_updated_fact_uses_persisted_target_identity(monkeypatch) -> None:
         parsed=parsed,
         source_episode_ids=[],
         butler_name="travel",
-        tenant_id="shared",
+        tenant_id=tenant_id,
+        request_id=request_id,
     )
 
     assert result["errors"] == []
+    assert result["facts_created"] == 1
     assert result["facts_updated"] == 1
+    assert result["rules_created"] == 1
     pool.fetchrow.assert_awaited_once()
-    assert pool.fetchrow.await_args.args[1:] == (target_id, "shared", "travel")
-    assert stored_args[0][1:4] == (
+    assert pool.fetchrow.await_args.args[1:] == (target_id, tenant_id, "travel")
+    assert stored_args[0][1:4] == ("new subject", "new_predicate", "new content")
+    assert stored_args[1][1:4] == (
         "persisted subject",
         "persisted_predicate",
         "new value",
     )
-    assert stored_kwargs[0]["entity_id"] == persisted_entity_id
-    assert stored_kwargs[0]["scope"] == "persisted_scope"
-    assert stored_kwargs[0]["expected_supersedes_id"] == target_id
+    assert stored_kwargs[1]["entity_id"] == persisted_entity_id
+    assert stored_kwargs[1]["scope"] == "persisted_scope"
+    assert stored_kwargs[1]["expected_supersedes_id"] == target_id
+    assert len(stored_kwargs) == 2
+    assert all(kwargs["tenant_id"] == tenant_id for kwargs in stored_kwargs)
+    assert all(kwargs["request_id"] == request_id for kwargs in stored_kwargs)
+    assert len(stored_rule_kwargs) == 1
+    assert stored_rule_kwargs[0]["tenant_id"] == tenant_id
+    assert stored_rule_kwargs[0]["request_id"] == request_id
 
     target_query = " ".join(pool.fetchrow.await_args.args[0].split())
     assert "tenant_id = $2" in target_query

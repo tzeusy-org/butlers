@@ -72,6 +72,13 @@ class ApprovalAction(BaseModel):
     evidence: list[ApprovalEvidence] = Field(default_factory=list)
     blast_radius: Literal["none", "self", "contact", "external"] | None = None
     reversibility: Literal["reversible", "compensable", "irreversible"] | None = None
+    origin: Literal["prepared"] | None = Field(
+        default=None,
+        description=(
+            "'prepared' for a proactive draft parked by an insight-scan producer "
+            "and never pushed to the owner; null for every other approval action."
+        ),
+    )
     dispatched: bool = Field(
         default=False,
         description=(

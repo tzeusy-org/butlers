@@ -39,6 +39,12 @@ Deliver the digest via notify(channel="telegram", intent="send", message=<digest
 If there are no notable highlights this week, exit silently without sending.
 """
 
+[[butler.schedule]]
+name = "taste-ledger-project"
+cron = "*/5 * * * *"
+dispatch_mode = "job"
+job_name = "taste_ledger_project"
+
 # Maintenance schedules (memory_decay_sweep, memory_consolidation,
 # memory_episode_cleanup, memory_purge_superseded, memory_consolidation_backfill)
 # are module defaults self-registered by MemoryModule.on_startup — no
@@ -66,6 +72,8 @@ full_sync_interval_days = 6
 [modules.spotify]
 
 [modules.steam]
+
+[modules.lifestyle]
 
 # Google Drive module (optional — requires 'drive' scope on connected Google account).
 # Enable by uncommenting and re-authorizing via /api/oauth/google/start?force_consent=true

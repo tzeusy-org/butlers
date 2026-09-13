@@ -22,14 +22,17 @@ from zoneinfo import ZoneInfo
 import asyncpg
 import pytest
 
+from butlers.chronicler.adapters.owntracks_place_cluster import PlaceReference, haversine_meters
 from butlers.context_bus import ContextSignal
 from butlers.core.state import state_set
 from butlers.db import register_jsonb_codec
 from butlers.jobs.context_producers import (
     classify_calendar_signal,
+    resolve_commuting_eta,
     resolve_owner_presence,
     resolve_owner_room,
     run_calendar_context_producer,
+    run_commuting_eta_context_producer,
     run_home_presence_context_producer,
     run_sleep_window_context_producer,
     run_travel_context_producer,
@@ -256,6 +259,72 @@ def test_resolve_owner_room():
     assert resolve_owner_room([], owner_entity_ids=owner_ids, now=now) is None
 
 
+_HOME_REFERENCE = PlaceReference(label="home", lat=1.3, lon=103.8, radius_m=150.0)
+
+
+def test_resolve_commuting_eta_no_fresh_points_is_ambiguous():
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    assert resolve_commuting_eta([], home=_HOME_REFERENCE, now=now) is None
+
+
+def test_resolve_commuting_eta_ignores_stale_points():
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    stale = now - timedelta(minutes=45)
+    points = [{"ts": stale, "lat": 1.32, "lon": 103.82}]
+    assert resolve_commuting_eta(points, home=_HOME_REFERENCE, now=now) is None
+
+
+def test_resolve_commuting_eta_arrived_within_home_radius():
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    points = [{"ts": now, "lat": 1.3, "lon": 103.8}]
+
+    result = resolve_commuting_eta(points, home=_HOME_REFERENCE, now=now)
+
+    assert result is not None
+    assert result.arrived is True
+    assert result.eta_seconds is None
+    assert result.eta_at is None
+
+
+def test_resolve_commuting_eta_single_fresh_point_is_ambiguous():
+    """One fresh point far from home can't derive a closing speed -- leave untouched."""
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    points = [{"ts": now, "lat": 1.5, "lon": 104.0}]
+    assert resolve_commuting_eta(points, home=_HOME_REFERENCE, now=now) is None
+
+
+def test_resolve_commuting_eta_not_closing_returns_none():
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    earliest = now - timedelta(minutes=10)
+    points = [
+        {"ts": earliest, "lat": 1.32, "lon": 103.82},
+        {"ts": now, "lat": 1.35, "lon": 103.85},  # farther from home than before
+    ]
+    assert resolve_commuting_eta(points, home=_HOME_REFERENCE, now=now) is None
+
+
+def test_resolve_commuting_eta_computes_eta_when_closing():
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    earliest = now - timedelta(minutes=10)
+    points = [
+        {"ts": earliest, "lat": 1.35, "lon": 103.85},
+        {"ts": now, "lat": 1.32, "lon": 103.82},
+    ]
+
+    distance_earliest = haversine_meters(1.35, 103.85, _HOME_REFERENCE.lat, _HOME_REFERENCE.lon)
+    distance_latest = haversine_meters(1.32, 103.82, _HOME_REFERENCE.lat, _HOME_REFERENCE.lon)
+    expected_speed_mps = (distance_earliest - distance_latest) / 600
+    expected_eta_seconds = distance_latest / expected_speed_mps
+
+    result = resolve_commuting_eta(points, home=_HOME_REFERENCE, now=now)
+
+    assert result is not None
+    assert result.arrived is False
+    assert result.distance_meters == pytest.approx(distance_latest)
+    assert result.eta_seconds == pytest.approx(expected_eta_seconds)
+    assert result.eta_at == now + timedelta(seconds=expected_eta_seconds)
+
+
 def _active_calendar_row(
     *,
     title: str,
@@ -454,6 +523,134 @@ async def test_travel_producer_no_active_trip_does_not_publish():
 
     assert result == {"signal": None, "cleared": ["traveling"]}
     publish_once_mock.assert_not_awaited()
+
+
+async def test_commuting_eta_producer_clears_when_at_home():
+    pool = MagicMock()
+    is_user_in_context_mock = AsyncMock(return_value=True)
+    clear_context_mock = AsyncMock()
+
+    with (
+        patch("butlers.jobs.context_producers.is_user_in_context", new=is_user_in_context_mock),
+        patch("butlers.jobs.context_producers.clear_context", new=clear_context_mock),
+    ):
+        result = await run_commuting_eta_context_producer(pool)
+
+    assert result == {"signal": None, "reason": "at_home", "cleared": ["commuting"]}
+    clear_context_mock.assert_awaited_once_with(pool, "travel", ContextSignal.commuting.value)
+    pool.fetch.assert_not_called()
+
+
+async def test_commuting_eta_producer_reports_unconfigured_without_home_reference(monkeypatch):
+    monkeypatch.delenv("OWNTRACKS_PLACE_REFERENCES", raising=False)
+    pool = MagicMock()
+    is_user_in_context_mock = AsyncMock(return_value=False)
+
+    with patch("butlers.jobs.context_producers.is_user_in_context", new=is_user_in_context_mock):
+        result = await run_commuting_eta_context_producer(pool)
+
+    assert result == {"signal": None, "reason": "unconfigured"}
+    pool.fetch.assert_not_called()
+
+
+async def test_commuting_eta_producer_treats_malformed_env_as_unconfigured(monkeypatch):
+    monkeypatch.setenv("OWNTRACKS_PLACE_REFERENCES", "{not valid json")
+    pool = MagicMock()
+    is_user_in_context_mock = AsyncMock(return_value=False)
+
+    with patch("butlers.jobs.context_producers.is_user_in_context", new=is_user_in_context_mock):
+        result = await run_commuting_eta_context_producer(pool)
+
+    assert result == {"signal": None, "reason": "unconfigured"}
+
+
+async def test_commuting_eta_producer_reports_unmeasurable_without_fresh_points(monkeypatch):
+    monkeypatch.setenv(
+        "OWNTRACKS_PLACE_REFERENCES", json.dumps([{"label": "home", "lat": 1.3, "lon": 103.8}])
+    )
+    pool = MagicMock()
+    pool.fetch = AsyncMock(return_value=[])
+    is_user_in_context_mock = AsyncMock(return_value=False)
+    set_context_mock = AsyncMock()
+    clear_context_mock = AsyncMock()
+
+    with (
+        patch("butlers.jobs.context_producers.is_user_in_context", new=is_user_in_context_mock),
+        patch("butlers.jobs.context_producers.set_context", new=set_context_mock),
+        patch("butlers.jobs.context_producers.clear_context", new=clear_context_mock),
+    ):
+        result = await run_commuting_eta_context_producer(pool)
+
+    assert result == {"signal": None, "reason": "unmeasurable"}
+    set_context_mock.assert_not_awaited()
+    clear_context_mock.assert_not_awaited()
+
+
+async def test_commuting_eta_producer_clears_on_arrival(monkeypatch):
+    monkeypatch.setenv(
+        "OWNTRACKS_PLACE_REFERENCES",
+        json.dumps([{"label": "home", "lat": 1.3, "lon": 103.8, "radius_m": 150.0}]),
+    )
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    pool = MagicMock()
+    pool.fetch = AsyncMock(return_value=[{"ts": now, "lat": 1.3, "lon": 103.8}])
+    is_user_in_context_mock = AsyncMock(return_value=False)
+    clear_context_mock = AsyncMock()
+
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now
+
+    with (
+        patch("butlers.jobs.context_producers.is_user_in_context", new=is_user_in_context_mock),
+        patch("butlers.jobs.context_producers.clear_context", new=clear_context_mock),
+        patch("butlers.jobs.context_producers.datetime", FrozenDatetime),
+    ):
+        result = await run_commuting_eta_context_producer(pool)
+
+    assert result == {"signal": None, "reason": "arrived", "cleared": ["commuting"]}
+    clear_context_mock.assert_awaited_once_with(pool, "travel", ContextSignal.commuting.value)
+
+
+async def test_commuting_eta_producer_sets_signal_with_eta(monkeypatch):
+    """Label matching is case-insensitive against the configured home reference."""
+    monkeypatch.setenv(
+        "OWNTRACKS_PLACE_REFERENCES",
+        json.dumps([{"label": "Home", "lat": 1.3, "lon": 103.8, "radius_m": 150.0}]),
+    )
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    earliest = now - timedelta(minutes=10)
+    pool = MagicMock()
+    pool.fetch = AsyncMock(
+        return_value=[
+            {"ts": earliest, "lat": 1.35, "lon": 103.85},
+            {"ts": now, "lat": 1.32, "lon": 103.82},
+        ]
+    )
+    is_user_in_context_mock = AsyncMock(return_value=False)
+    set_context_mock = AsyncMock()
+
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now
+
+    with (
+        patch("butlers.jobs.context_producers.is_user_in_context", new=is_user_in_context_mock),
+        patch("butlers.jobs.context_producers.set_context", new=set_context_mock),
+        patch("butlers.jobs.context_producers.datetime", FrozenDatetime),
+    ):
+        result = await run_commuting_eta_context_producer(pool)
+
+    assert result["signal"] == "commuting"
+    kwargs = set_context_mock.await_args.kwargs
+    assert kwargs["butler_name"] == "travel"
+    assert kwargs["signal_type"] == ContextSignal.commuting.value
+    assert kwargs["confidence"] == 0.6
+    assert kwargs["expires_at"] > now
+    assert kwargs["metadata"]["source"] == "owntracks"
+    assert kwargs["metadata"]["distance_meters"] == result["distance_meters"]
 
 
 async def test_sleep_producer_uses_shared_exact_policy_anchor():

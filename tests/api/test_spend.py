@@ -487,6 +487,103 @@ async def test_spend_aggregate_surfaces_use_executed_ledger_models_and_keep_unpr
     mgr.get_client.assert_not_called()
 
 
+async def test_summary_and_daily_report_all_four_token_buckets(app):
+    """The cache-read and cache-write buckets must reach the API, not be
+    discarded after being computed -- the Spend page previously showed only
+    the uncached fraction of tokens actually bought (bu-2jtfw.4)."""
+    rows = [
+        _ledger_row(
+            model_id="claude-sonnet-4-20250514",
+            calls=1,
+            input_tokens=1_000,
+            output_tokens=500,
+            cached_input_tokens=9_000,
+            cache_creation_tokens=200,
+        )
+    ]
+    db = _mock_db({"switchboard": _mock_ledger_pool(rows)})
+    _wire(app, MagicMock(spec=MCPClientManager), [], _flat_pricing())
+    _wire_db(app, db)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        summary_response = await client.get(
+            f"/api/spend?from={date.today().isoformat()}&to={date.today().isoformat()}"
+        )
+        daily_response = await client.get(
+            f"/api/spend/daily?from={date.today().isoformat()}&to={date.today().isoformat()}"
+        )
+
+    summary = summary_response.json()["data"]
+    assert summary["total_input_tokens"] == 1_000
+    assert summary["total_cached_input_tokens"] == 9_000
+    assert summary["total_cache_creation_tokens"] == 200
+    assert summary["total_output_tokens"] == 500
+    # 9000 cached out of (9000 cached + 1000 uncached) input tokens.
+    assert summary["cache_hit_rate"] == pytest.approx(0.9)
+    assert summary["cache_read_cost_usd"] > 0
+
+    daily = daily_response.json()["data"][0]
+    assert daily["cached_input_tokens"] == 9_000
+    assert daily["cache_creation_tokens"] == 200
+    assert daily["cache_hit_rate"] == pytest.approx(0.9)
+
+
+async def test_summary_cache_hit_rate_is_none_not_zero_with_no_input_tokens(app):
+    """A zero denominator means no data was measured, never a measured zero
+    (bu-2jtfw.4) -- distinct from ``0.0``, which means "we measured some input
+    tokens and none were cache hits"."""
+    rows = [
+        _ledger_row(
+            model_id="claude-sonnet-4-20250514",
+            calls=1,
+            input_tokens=0,
+            output_tokens=500,
+            cached_input_tokens=0,
+        )
+    ]
+    db = _mock_db({"switchboard": _mock_ledger_pool(rows)})
+    _wire(app, MagicMock(spec=MCPClientManager), [], _flat_pricing())
+    _wire_db(app, db)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            f"/api/spend?from={date.today().isoformat()}&to={date.today().isoformat()}"
+        )
+
+    assert resp.json()["data"]["cache_hit_rate"] is None
+
+
+async def test_summary_names_models_falling_back_to_full_cache_price(app):
+    """A model whose cache reads billed at the full input rate (no confirmed
+    cache-read price configured) is named explicitly rather than folded
+    silently into ``by_model`` (bu-2jtfw.4)."""
+    rows = [
+        _ledger_row(
+            model_id="claude-sonnet-4-20250514",
+            input_tokens=100,
+            output_tokens=50,
+            cached_input_tokens=500,
+        )
+    ]
+    db = _mock_db({"switchboard": _mock_ledger_pool(rows)})
+    # _flat_pricing()'s claude-sonnet-4-20250514 declares no cached rate.
+    _wire(app, MagicMock(spec=MCPClientManager), [], _flat_pricing())
+    _wire_db(app, db)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            f"/api/spend?from={date.today().isoformat()}&to={date.today().isoformat()}"
+        )
+
+    assert resp.json()["data"]["no_cache_price_models"] == ["claude-sonnet-4-20250514"]
+
+
 async def test_ledger_session_divergence_deadman_reports_material_day_butler_drift():
     """Session tokens are diagnostic evidence and surface >5% drift loudly."""
     day = date(2026, 7, 11)
@@ -1038,6 +1135,58 @@ async def test_by_schedule_forecast_absent_when_cadence_unknown(app):
     assert row["total_cost_usd"] > 0
 
 
+async def test_by_schedule_retired_schedule_never_outranks_a_live_one(app):
+    """A disabled (retired) schedule keeps its measured history but never gets
+    a forecast and never occupies the ranking's head -- the live regression
+    this guards was a deleted schedule ranked #1 at $496/month because the
+    ranking query never filtered on ``enabled`` (bu-2jtfw.4)."""
+    configs = [ButlerConnectionInfo(name="sw", port=41100)]
+    # A large one-off historical burn on a schedule that has since been
+    # retired -- projecting its cadence forward would rank it #1 forever.
+    retired = {
+        "name": "deleted-schedule",
+        "cron": "0 8 * * *",
+        "enabled": False,
+        "model": "claude-sonnet-4-20250514",
+        "total_runs": 1,
+        "total_input_tokens": 50_000_000,
+        "total_output_tokens": 50_000_000,
+        "projected_monthly_runs": _estimate_monthly_runs("0 8 * * *"),
+    }
+    live = {
+        "name": "daily-report",
+        "cron": "0 8 * * *",
+        "enabled": True,
+        "model": "claude-sonnet-4-20250514",
+        "total_runs": 30,
+        "total_input_tokens": 30_000,
+        "total_output_tokens": 15_000,
+        "projected_monthly_runs": _estimate_monthly_runs("0 8 * * *"),
+    }
+    mgr = _mock_mgr({"sw": _make_tool_result({"schedules": [retired, live]})})
+    _wire(app, mgr, configs, _flat_pricing())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/spend/by-schedule")
+    assert resp.status_code == 200
+    items = resp.json()["data"]
+
+    retired_row = next(i for i in items if i["schedule_name"] == "deleted-schedule")
+    assert retired_row["retired"] is True
+    assert retired_row["total_runs"] == 1
+    assert retired_row["projected_monthly_usd"] is None
+    assert retired_row["projected_monthly_runs"] == 0.0
+
+    live_row = next(i for i in items if i["schedule_name"] == "daily-report")
+    assert live_row["retired"] is False
+    assert live_row["projected_monthly_usd"] is not None
+
+    # The retired schedule's real historical burn dwarfs the live one's, but
+    # it must never be presented as a live forecast head.
+    assert items[0]["schedule_name"] == "daily-report"
+
+
 async def test_by_schedule_merges_multi_model_fragments(app):
     """A schedule that ran under 2+ models in the window must collapse into
     ONE ScheduleCost entry per (butler, schedule_name) -- the underlying DB
@@ -1328,6 +1477,10 @@ async def test_daily_includes_staffer_ledger_rows_without_session_tool(app):
             "sessions": 2,
             "input_tokens": 10000,
             "output_tokens": 5000,
+            "cached_input_tokens": 0,
+            "cache_creation_tokens": 0,
+            "cache_read_cost_usd": 0.0,
+            "cache_hit_rate": 0.0,
             "by_butler": {"switchboard": pytest.approx(0.105, abs=1e-4)},
             "unpriced_models": [],
         }

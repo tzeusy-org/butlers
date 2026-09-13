@@ -397,6 +397,7 @@ def _pending_action_to_api(
         evidence=action.evidence,
         blast_radius=action.blast_radius,
         reversibility=action.reversibility,
+        origin=action.origin,
         push_outcome=action.push_outcome,
         push_failed=_push_failed(action),
     )
@@ -668,6 +669,7 @@ async def list_actions(
     since: str | None = Query(default=None),
     until: str | None = Query(default=None),
     butler: str | None = Query(default=None),
+    origin: str | None = Query(default=None),
     db_mgr: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[ApprovalAction]:
     """List pending actions with filtering and pagination.
@@ -715,6 +717,11 @@ async def list_actions(
     if tool_name is not None:
         conditions.append(f"tool_name = ${idx}")
         args.append(tool_name)
+        idx += 1
+
+    if origin is not None:
+        conditions.append(f"origin = ${idx}")
+        args.append(origin)
         idx += 1
 
     if since is not None:
@@ -1181,6 +1188,7 @@ async def _dispatch_approved_action_outcome(
             tool_args=tool_args,
             tool_fn=_deliver_notify,
             decision_memory_writer=decision_memory_writer,
+            origin_butler=action_butler,
         )
         if not execution.success:
             if dispatch_failure is not None:

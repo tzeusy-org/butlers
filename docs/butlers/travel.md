@@ -25,6 +25,8 @@ The butler proactively monitors upcoming departures, check-in windows, connectio
 |------|------|-------------|
 | `upcoming-travel-check` | `0 0 * * *` | Daily pre-trip scan (08:00 SGT). Check for departures and check-ins within 48 hours. Surface missing boarding passes, pending online check-in windows, and tight layover warnings. Delivered via Telegram. |
 | `trip-document-expiry` | `0 9 * * 1` | Weekly Monday scan. Check all stored travel documents (passports, visas, insurance) for expiry within 90 days. Create calendar reminders for documents expiring within 30 days. |
+| `context_producer_travel` | `*/15 * * * *` | Deterministic, zero-LLM situational context-bus producer (RFC 0009). Publishes `traveling` from a currently-underway `travel.trips` row. |
+| `context_producer_commuting_eta` | `*/5 * * * *` | Deterministic, zero-LLM situational context-bus producer (RFC 0009). While `at_home` is not asserted, derives a `commuting` signal with a genuine arrival ETA from OwnTracks GPS data closing on the owner's `home` reference point (bu-8cdl1.11 slice 3, `src/butlers/jobs/context_producers.py::run_commuting_eta_context_producer`). |
 
 ## Tools
 

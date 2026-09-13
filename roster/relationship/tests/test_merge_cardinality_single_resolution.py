@@ -24,7 +24,11 @@ from unittest.mock import MagicMock
 import asyncpg
 import pytest
 
-from butlers.testing.schema_standins import CONTACT_ENTITY_MAP, ENTITY_PREDICATE_REGISTRY
+from butlers.testing.schema_standins import (
+    CONTACT_ENTITY_MAP,
+    ENTITY_GRAPH_EDGES,
+    ENTITY_PREDICATE_REGISTRY,
+)
 from roster.relationship.tests.evidence_schema import apply_evidence_schema
 
 pytestmark = [
@@ -137,6 +141,9 @@ async def pool(provisioned_postgres_pool):
         # contact_entity_map (rel_029) — merge_entities now updates this instead of
         # public.contacts.entity_id directly (bu-j77a5).
         await p.execute(CONTACT_ENTITY_MAP.ddl())
+        # bu-8478w: merge_entity_pair repoints entity_graph_edges rows for
+        # rewired entity_facts on the same connection.
+        await p.execute(ENTITY_GRAPH_EDGES.ddl())
         # rel_034: the central writer persists evidence and a coverage receipt in
         # the same transaction as the fact, so this schema is not optional.
         await apply_evidence_schema(p)

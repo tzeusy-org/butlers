@@ -16,6 +16,7 @@ from butlers.cli_auth.sandbox_platform import (
     _read_bubblewrap_info,
     build_bubblewrap_launch_plan,
     resolve_readonly_runtime_inputs,
+    resolve_shim_runtime_inputs,
 )
 
 
@@ -24,6 +25,7 @@ async def _run() -> None:
     invocation = resolve_readonly_runtime_inputs(provider, (provider.binary(), "--version"))
     sandbox = BubblewrapDashboardCLIAuthSandbox()
     sandbox._exact_image_preflight()
+    shim_readonly_inputs = resolve_shim_runtime_inputs(sandbox._shim_path)
     identity = await sandbox._identity_pool.acquire()
     stage: SandboxStage | None = None
     process = None
@@ -42,6 +44,7 @@ async def _run() -> None:
             stage_home=stage.path,
             command=invocation.command,
             readonly_inputs=invocation.readonly_inputs,
+            shim_readonly_inputs=shim_readonly_inputs,
             info_fd=info_write,
             block_fd=block_read,
             shim_gate_fd=shim_gate_read,

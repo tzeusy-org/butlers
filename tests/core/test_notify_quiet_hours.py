@@ -100,6 +100,40 @@ class TestOwnerDefaultNotifyDeferralTime:
         )
 
 
+class TestQuietHoursWindowStart:
+    """bu-8cdl1.7 Slice 4: the other boundary of the same window, used to key
+    a per-quiet-hours-window dedup (fleet_cases.evaluate_case_attention)."""
+
+    def test_returns_the_start_of_an_overnight_window_already_past_midnight(self):
+        from butlers.core.approvals_policy import policy_quiet_hours_window_start
+
+        # 02:00 UTC is inside the [22, 07) window that began the previous day.
+        now = datetime(2026, 7, 19, 2, 0, tzinfo=UTC)
+        policy = {"quiet_start_hour": 22, "quiet_end_hour": 7, "timezone": "UTC"}
+
+        assert policy_quiet_hours_window_start(policy, now=now) == datetime(
+            2026, 7, 18, 22, 0, tzinfo=UTC
+        )
+
+    def test_returns_the_start_of_an_overnight_window_before_midnight(self):
+        from butlers.core.approvals_policy import policy_quiet_hours_window_start
+
+        now = datetime(2026, 7, 18, 23, 30, tzinfo=UTC)
+        policy = {"quiet_start_hour": 22, "quiet_end_hour": 7, "timezone": "UTC"}
+
+        assert policy_quiet_hours_window_start(policy, now=now) == datetime(
+            2026, 7, 18, 22, 0, tzinfo=UTC
+        )
+
+    def test_returns_none_when_the_policy_is_not_quiet(self):
+        from butlers.core.approvals_policy import policy_quiet_hours_window_start
+
+        now = datetime(2026, 7, 18, 3, 30, tzinfo=UTC)  # 11:30 in Singapore, not quiet
+        policy = {"quiet_start_hour": 22, "quiet_end_hour": 7, "timezone": "Asia/Singapore"}
+
+        assert policy_quiet_hours_window_start(policy, now=now) is None
+
+
 # ---------------------------------------------------------------------------
 # §8.6.2 — should_suppress_by_policy
 # ---------------------------------------------------------------------------

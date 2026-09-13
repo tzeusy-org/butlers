@@ -55,18 +55,17 @@ Before constructing the notification envelope, the `notify()` tool SHALL check t
 ### Requirement: Owner-Default-Page Deferred Delivery
 After the earlier `delivery_preferences` gate, `notify()` SHALL durably defer
 an eligible routine owner-default notification when the global Owner Attention
-Policy (`public.approvals_policy`) quiet-hours window or an active suppressing
-context applies. Eligibility is
-exactly: no `entity_id`, no explicit `recipient`, intent `send` or `insight`,
-priority other than `high`, and an available notification pool. The originating
-butler's `deferred_notifications` table SHALL store the full resolved
-`notify.v1` envelope; message content SHALL NOT be copied into
-`public.attention_ledger`.
+Policy (`public.approvals_policy`) quiet window or an active suppressing context
+applies. Eligibility is exactly: no `entity_id`, no explicit `recipient`,
+intent `send` or `insight`, priority other than `high`, and an available
+notification pool. The originating butler's `deferred_notifications` table
+SHALL store the full resolved `notify.v1` envelope; message content SHALL NOT
+be copied into `public.attention_ledger`.
 
-The Owner Attention Policy check SHALL run before the context check. The policy
-is evaluated in its stored IANA timezone as the end-exclusive interval
-`[quiet_start_hour, quiet_end_hour)`. A policy hold uses the exact configured
-local end as its UTC `deliver_at`. A context-only hold uses the latest expiry among all
+The Owner Attention Policy SHALL be evaluated in its stored IANA timezone as
+the end-exclusive interval `[quiet_start_hour, quiet_end_hour)`. A policy hold
+uses the exact configured local end as its UTC `deliver_at`; a local instant at
+the end is not quiet. A context-only hold uses the latest expiry among all
 active `dnd`/`sleeping` suppressors as its UTC `deliver_at`. When both holds
 apply, the later anchor SHALL win so the envelope cannot flush while either
 hold remains active. A queued result SHALL return `status="deferred"` with its
@@ -80,16 +79,23 @@ Attention Policy data SHALL retain the existing fail-open immediate path.
 #### Scenario: Owner Attention Policy quiet hours parks the full envelope
 - **WHEN** `notify(message="Heads up", priority="medium")` is called with no
   `entity_id` and no `recipient`
-- **AND** the current time falls inside the Owner Attention Policy quiet-hours
-  window
+- **AND** the current local time falls inside the Owner Attention Policy
+  quiet-hours window
 - **THEN** the fully resolved `notify.v1` envelope is inserted into the
   originating butler's `deferred_notifications` table with `status="pending"`
-  and a policy-derived UTC `deliver_at`
+  and the exact local policy end converted to UTC as `deliver_at`
 - **AND** the tool returns `{"status": "deferred", "notification_id": "<uuid>",
   "deliver_at": "<ISO timestamp>", ...}` without calling Switchboard
 
+#### Scenario: Exact policy end resumes immediate delivery
+- **WHEN** an eligible routine owner-default `notify()` call occurs at exactly
+  `quiet_end_hour` in the policy timezone
+- **THEN** the call is outside the end-exclusive policy interval
+- **AND** no policy-derived durable hold is created
+
 #### Scenario: Context hold parks until every active suppressor expires
-- **WHEN** an eligible `notify()` call is outside Owner Attention Policy quiet hours
+- **WHEN** an eligible `notify()` call is outside Owner Attention Policy quiet
+  hours
 - **AND** both a DND signal and a sleeping signal are active with different
   expiry times
 - **THEN** the tool stores the full envelope with `deliver_at` equal to the
@@ -97,8 +103,8 @@ Attention Policy data SHALL retain the existing fail-open immediate path.
 - **AND** the tool returns `status="deferred"` without immediate delivery
 
 #### Scenario: Concurrent policy and context holds use the later anchor
-- **WHEN** Owner Attention Policy quiet hours and an active DND/sleeping signal both
-  select a durable hold
+- **WHEN** Owner Attention Policy quiet hours and an active DND/sleeping signal
+  both select a durable hold
 - **THEN** the context bus is consulted after the policy check
 - **AND** the row's `deliver_at` is the later of the policy and context anchors
 - **AND** the ledger reason records both active hold reasons
@@ -307,13 +313,29 @@ Four delivery intents are supported: `send`, `reply`, `react`, and `insight`. Ea
 The implementation SHALL provide the behavior described by this requirement.
 Only `telegram` and `email` channels are currently supported. Unsupported channels produce an immediate error response.
 
+The public `notify()` envelope-construction surface MUST accept only `telegram` and
+`email`. Messenger `route.execute` termination MUST accept routed `notify.v1`
+delivery through `telegram`, `email`, and `whatsapp`. Each surface MUST reject
+channels outside its supported set immediately.
+
+#### Scenario: Supported notify channel
+
+- **WHEN** `channel="telegram"` or `channel="email"` is passed to `notify()`
+- **THEN** the notify tool proceeds with envelope construction
+
+#### Scenario: Supported routed-delivery channel
+
+- **WHEN** Messenger `route.execute` receives a valid routed `notify.v1` envelope with `channel="telegram"`, `channel="email"`, or `channel="whatsapp"`
+- **THEN** it proceeds with channel-specific delivery validation
+
+#### Scenario: Unsupported channel
+
+- **WHEN** `channel="sms"` is passed to `notify()`
+- **THEN** the tool returns `{"status": "error", "error": "Unsupported channel 'sms'..."}`
+
 #### Scenario: Supported channel
 - **WHEN** `channel="telegram"` or `channel="email"` is passed
 - **THEN** the notify tool proceeds with envelope construction
-
-#### Scenario: Unsupported channel
-- **WHEN** `channel="sms"` is passed
-- **THEN** the tool returns `{"status": "error", "error": "Unsupported channel 'sms'..."}`
 
 ### Requirement: Preferred-Channel Resolution on Omitted Channel
 When the caller omits `channel`, the notify tool SHALL resolve it before any
@@ -569,3 +591,88 @@ The `notify` tool SHALL accept a list of channels in a single call so one messag
 #### Scenario: Single approval covers all channels
 - **WHEN** a multi-channel notify to a non-owner requires approval
 - **THEN** one pending action is created that names all target channels, and approving it permits delivery to all of them
+
+### Requirement: Notification Delivery Metadata Object Persistence
+
+The Switchboard production notification-delivery writer SHALL normalize optional
+metadata to a JSON-safe mapping and bind that mapping directly through the
+registered asyncpg JSONB codec. It SHALL NOT pre-serialize the mapping to JSON
+text before binding it. Every newly written `switchboard.notifications.metadata`
+value SHALL therefore be a JSONB object. This requirement does not repair or
+reinterpret pre-existing string-shaped metadata rows.
+
+#### Scenario: Structured metadata is written as an object
+
+- **WHEN** a normal notification delivery write includes representative
+  structured metadata
+- **THEN** `jsonb_typeof(notifications.metadata)` is `object`
+- **AND** the stored metadata preserves the mapping's JSON-safe content
+
+### Requirement: Routed Delivery Uses a Canonical Native Command
+
+Messenger `route.execute` MUST materialize a canonical native delivery command before
+standing-rule evaluation, inline approval parking, or immediate delivery. Email,
+Telegram, and WhatsApp commands MUST name a registered Messenger tool and carry the
+exact arguments accepted by that tool's handler.
+
+#### Scenario: Routed email send
+
+- **WHEN** Messenger processes an email `send`
+- **THEN** its native command is `email_send_message` with `to`, `subject`, and `body`
+
+#### Scenario: Routed email reply with authoritative thread identity
+
+- **WHEN** Messenger processes an email `reply` whose request context contains `source_thread_identity`
+- **THEN** its native command is `email_reply_to_thread` with `to`, `thread_id`, `body`, and optional `subject`
+
+#### Scenario: Routed email reply lacks authoritative thread identity
+
+- **WHEN** Messenger processes an email `reply` without `request_context.source_thread_identity`
+- **THEN** it MUST fail before parking or delivery
+- **AND** it MUST NOT substitute `request_id` or another internal identifier as `thread_id`
+
+#### Scenario: Routed Telegram delivery
+
+- **WHEN** Messenger processes a Telegram `send` or `reply`
+- **THEN** its native command is respectively `telegram_send_message` or `telegram_reply_to_message`
+- **AND** its arguments exactly match the registered handler signature
+
+#### Scenario: Routed WhatsApp delivery
+
+- **WHEN** Messenger processes a WhatsApp `send` or the currently supported routed-reply behavior
+- **THEN** its native command is `whatsapp_send_message` with `recipient` and `text`
+
+### Requirement: Runtime Session Correlation for notify() Ledger Rows
+
+Every `public.attention_ledger` row written at the `notify()` boundary with `source="notify"` SHALL carry the runtime session id of the session that made the call, under the `session_id` key of the row's `metadata`, when a runtime session id is bound.
+
+The session id SHALL be read once at the top of the `notify()` call, so every terminal outcome the same call can reach names the same session. Recording it SHALL remain best-effort and fail-open like the rest of the ledger write: an unbound session id SHALL leave the metadata otherwise unchanged rather than failing the notification.
+
+This exists so that a caller holding a session id (for example, the id returned by a `trigger` result) can ask the notification path what became of that session's notification, instead of guessing from the originating butler and a time window and risking crediting an unrelated notification.
+
+A reader SHALL be provided that returns the terminal notify dispatch recorded for one `(origin_butler, session_id)` pair, preferring a `delivered` row over any other outcome and the most recent row within an outcome, and returning nothing when the ledger holds no such row.
+
+That reader SHALL NOT fail open. A ledger that cannot be read SHALL surface as an error to its caller rather than as an empty result, because "no row" and "could not look" are different answers and a caller may only claim absence of evidence for the former.
+
+#### Scenario: A notify ledger row names its runtime session
+
+- **WHEN** `notify()` is called inside a runtime session and reaches any terminal outcome
+- **THEN** the `public.attention_ledger` row it writes SHALL carry that runtime session id under `metadata.session_id`
+- **AND** any metadata the call site already supplied SHALL be preserved alongside it
+
+#### Scenario: An unbound session leaves the row unchanged
+
+- **WHEN** `notify()` is called with no runtime session id bound
+- **THEN** the ledger row SHALL be written exactly as it would be without this requirement, with no `session_id` key
+
+#### Scenario: The reader returns the dispatch recorded for a session
+
+- **WHEN** the ledger holds a `source="notify"` row for a given origin butler and session id
+- **THEN** the reader SHALL return that row's `outcome`, `occurred_at`, `channel`, `reason` and `notification_ref`
+
+#### Scenario: The reader distinguishes no row from no answer
+
+- **WHEN** the ledger holds no `source="notify"` row for that origin butler and session id
+- **THEN** the reader SHALL return nothing
+- **AND WHEN** the ledger cannot be read at all
+- **THEN** the reader SHALL raise rather than return nothing, so a caller cannot mistake an unreadable ledger for a confirmed absence

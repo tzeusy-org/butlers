@@ -467,6 +467,53 @@ async def test_friction_events_idempotent_on_session_kind_ordinal(pool):
     assert rows[0]["kind"] == "degenerate_tool_loop"
 
 
+@pytest.mark.pg_clock
+@_asyncio_session
+async def test_friction_summary_zero_fills_and_counts_by_kind(pool):
+    """friction_summary zero-fills every kind and counts derived episodes (bu-8cdl1.9 S3)."""
+    from butlers.core.sessions import friction_summary, session_complete, session_create
+
+    loop_sid = await session_create(
+        pool, prompt="loop", trigger_source="tick", request_id=str(uuid.uuid4())
+    )
+    await session_complete(
+        pool,
+        loop_sid,
+        output=None,
+        tool_calls=[],
+        duration_ms=10,
+        success=False,
+        error="RuntimeError: degenerate_tool_loop: repeat",
+    )
+
+    budget_sid = await session_create(
+        pool, prompt="budget", trigger_source="tick", request_id=str(uuid.uuid4())
+    )
+    await session_complete(
+        pool,
+        budget_sid,
+        output=None,
+        tool_calls=[],
+        duration_ms=10,
+        success=False,
+        error="GuardrailError: tool_call_budget_exceeded after 40 calls",
+    )
+
+    summary = await friction_summary(pool, period="7d")
+    assert summary["period"] == "7d"
+    assert summary["by_kind"]["degenerate_tool_loop"] == 1
+    assert summary["by_kind"]["guardrail_termination"] == 1
+    # Zero-filled, not omitted, for kinds with no episodes in the window.
+    assert summary["by_kind"]["classification_timeout"] == 0
+    assert summary["by_kind"]["recovered_error"] == 0
+    assert summary["by_kind"]["dead_end"] == 0
+    assert summary["total"] == 2
+
+    # Invalid period raises, same contract as sessions_summary.
+    with pytest.raises(ValueError):
+        await friction_summary(pool, period="invalid_period")
+
+
 # ---------------------------------------------------------------------------
 # Orphan recovery
 # ---------------------------------------------------------------------------
@@ -725,6 +772,49 @@ async def test_schedule_costs_date_range_filters_runs(pool):
 
     with pytest.raises(ValueError):
         await schedule_costs(pool, from_date="2026-05-01")
+
+
+@_asyncio_session
+async def test_schedule_costs_disabled_schedule_reports_history_without_forecast(pool):
+    """A disabled (retired) schedule keeps its measured history but is never
+    forecast -- scheduler.py disables a removed TOML schedule rather than
+    deleting it, so its historical sessions must not silently disappear, but
+    it also must never rank as if it will keep running (bu-2jtfw.4)."""
+    from butlers.core.scheduler import schedule_create
+    from butlers.core.sessions import schedule_costs, session_complete, session_create
+
+    await schedule_create(pool, name="retired-report", cron="0 8 * * *", prompt="run report")
+    await pool.execute(
+        "UPDATE scheduled_tasks SET enabled = false WHERE name = $1", "retired-report"
+    )
+
+    run = await session_create(
+        pool,
+        prompt="historical run",
+        trigger_source="schedule:retired-report",
+        request_id=str(uuid.uuid4()),
+        model="claude-3",
+    )
+    await session_complete(
+        pool,
+        run,
+        output="ok",
+        tool_calls=[],
+        duration_ms=10,
+        success=True,
+        input_tokens=1000,
+        output_tokens=500,
+    )
+
+    result = await schedule_costs(pool)
+    entries = [e for e in result["schedules"] if e["name"] == "retired-report"]
+    assert entries, "a disabled schedule's history must still appear"
+    assert entries[0]["enabled"] is False
+    assert entries[0]["total_runs"] == 1
+    assert entries[0]["total_input_tokens"] == 1000
+    # A daily cron would normally project ~30 runs/month -- disabled means
+    # never, regardless of what the cron expression implies.
+    assert entries[0]["projected_monthly_runs"] == 0.0
 
 
 # ---------------------------------------------------------------------------

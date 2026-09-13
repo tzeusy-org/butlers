@@ -192,6 +192,16 @@ class ProcessFacts(BaseModel):
     config_path: str
 
 
+class BlindSpotSignal(BaseModel):
+    """One declared expected signal not confirmed PRESENT as of evaluation time."""
+
+    signal_key: str
+    producer: str
+    last_observed_at: datetime | None = None
+    state: str
+    unmeasurable_reason: str | None = None
+
+
 class ButlerDetail(ButlerSummary):
     """Full butler detail with config, modules, skills, and schedule."""
 
@@ -202,6 +212,13 @@ class ButlerDetail(ButlerSummary):
     schedules: list[ScheduleEntry] = Field(default_factory=list)
     skills: list[str] = Field(default_factory=list)
     process_facts: ProcessFacts | None = None
+    # Blind-spot projection — derived from the same
+    # butlers.core.expected_signals.evaluate_declared_signals() call the
+    # spawner's preamble injection uses, so this endpoint and the injected
+    # prompt can never disagree (bu-2jtfw.13).
+    blind_spots: list[BlindSpotSignal] = Field(default_factory=list)
+    blind_spots_evaluated_at: datetime | None = None
+    blind_spots_query_failed: bool = False
 
 
 class SessionSummary(BaseModel):
@@ -466,16 +483,35 @@ class SpendDivergence(BaseModel):
 
 
 class SpendSummary(BaseModel):
-    """Aggregate spend summary across all butlers."""
+    """Aggregate spend summary across all butlers.
+
+    ``total_input_tokens`` is the UNCACHED input bucket only -- it always was,
+    and stays so for back-compat. ``total_cached_input_tokens`` (cache reads)
+    and ``total_cache_creation_tokens`` (cache writes) are the other two
+    ledger buckets, previously computed and then discarded (bu-2jtfw.4): a
+    model that reads mostly from cache showed as a small fraction of its true
+    token volume. ``cache_hit_rate`` is ``None`` -- never ``0.0`` -- when
+    ``total_cached_input_tokens + total_input_tokens`` is zero, since a zero
+    denominator is "no data", not "no cache hits". ``no_cache_price_models``
+    names priced models that had cached-token traffic this window but whose
+    cache reads billed at the full input rate because no confirmed cache rate
+    is configured (``pricing.core.NO_CACHE_DISCOUNT_MODELS`` or a genuine gap)
+    -- their dollar figures above are real but not cache-discounted.
+    """
 
     period: str = "today"
     total_cost_usd: float
     total_sessions: int
     total_input_tokens: int
     total_output_tokens: int
+    total_cached_input_tokens: int = 0
+    total_cache_creation_tokens: int = 0
+    cache_read_cost_usd: float = 0.0
+    cache_hit_rate: float | None = None
     by_butler: dict[str, float] = Field(default_factory=dict)
     by_model: dict[str, float] = Field(default_factory=dict)
     unpriced_models: list[UnpricedModelUsage] = Field(default_factory=list)
+    no_cache_price_models: list[str] = Field(default_factory=list)
     divergences: list[SpendDivergence] = Field(default_factory=list)
     divergence_source_error: bool = False
     historical_attribution_note: str | None = None
@@ -491,13 +527,21 @@ class SpendSummary(BaseModel):
 
 
 class DailySpend(BaseModel):
-    """Spend data for a single day."""
+    """Spend data for a single day.
+
+    See :class:`SpendSummary` for the four-bucket / ``cache_hit_rate`` contract
+    -- identical semantics, scoped to one day (bu-2jtfw.4).
+    """
 
     date: str
     cost_usd: float
     sessions: int
     input_tokens: int
     output_tokens: int
+    cached_input_tokens: int = 0
+    cache_creation_tokens: int = 0
+    cache_read_cost_usd: float = 0.0
+    cache_hit_rate: float | None = None
     by_butler: dict[str, float] = Field(default_factory=dict)
     unpriced_models: list[UnpricedModelUsage] = Field(default_factory=list)
 
@@ -526,18 +570,27 @@ class ScheduleCost(BaseModel):
 
     ``projected_monthly_runs == 0`` means the cadence could not be established,
     not that the schedule never runs.
+
+    ``retired`` is true when the underlying ``scheduled_tasks`` row is
+    disabled -- scheduler.py disables a removed TOML schedule rather than
+    deleting it, so its measured history above remains real, but it cannot
+    recur. A retired schedule always has ``projected_monthly_runs == 0`` and
+    ``projected_monthly_usd is None`` regardless of its cron cadence, so it
+    can never occupy the head of a projected-cost ranking (bu-2jtfw.4).
     """
 
     schedule_name: str
     butler: str
     cron: str
+    retired: bool = False
     # Measured over the queried range.
     total_runs: int
     total_cost_usd: float
     avg_cost_per_run: float
     # Forecast, from the cron cadence. See butlers.core.sessions for the basis.
+    # None (never a computed number) for a retired schedule.
     projected_monthly_runs: float
-    projected_monthly_usd: float
+    projected_monthly_usd: float | None
 
 
 # ---------------------------------------------------------------------------
@@ -560,17 +613,6 @@ from butlers.api.models.approval import (  # noqa: E402
 )
 from butlers.api.models.audit import AuditEntry, AuditLogEntry  # noqa: E402
 from butlers.api.models.butler import ModuleStatus  # noqa: E402
-from butlers.api.models.connector import (  # noqa: E402
-    ConnectorCheckpoint,
-    ConnectorCounters,
-    ConnectorDaySummary,
-    ConnectorDetail,
-    ConnectorFanoutEntry,
-    ConnectorStats,
-    ConnectorStatsBucket,
-    ConnectorStatsSummary,
-    ConnectorSummary,
-)
 from butlers.api.models.conversation import (  # noqa: E402
     ConversationCreateRequest,
     ConversationMessage,
@@ -613,7 +655,13 @@ from butlers.api.models.session import (  # noqa: E402
     SessionKindItem,
 )
 from butlers.api.models.state import StateEntry, StateSetRequest  # noqa: E402
-from butlers.api.models.timeline import TimelineEvent, TimelineResponse  # noqa: E402
+from butlers.api.models.timeline import (  # noqa: E402
+    TimelineAttentionItem,
+    TimelineAttentionMeta,
+    TimelineAttentionResponse,
+    TimelineEvent,
+    TimelineResponse,
+)
 
 __all__ = [
     "ApprovalAction",
@@ -641,15 +689,6 @@ __all__ = [
     "ConversationStats",
     "ConversationSummary",
     "ConversationUpdateRequest",
-    "ConnectorCheckpoint",
-    "ConnectorCounters",
-    "ConnectorDaySummary",
-    "ConnectorDetail",
-    "ConnectorFanoutEntry",
-    "ConnectorStats",
-    "ConnectorStatsBucket",
-    "ConnectorStatsSummary",
-    "ConnectorSummary",
     "CursorPaginatedResponse",
     "CursorPaginationMeta",
     "DailyActivity",
@@ -705,6 +744,9 @@ __all__ = [
     "TickResponse",
     "TimelineEvent",
     "TimelineResponse",
+    "TimelineAttentionItem",
+    "TimelineAttentionMeta",
+    "TimelineAttentionResponse",
     "TopSession",
     "TriggerRequest",
     "TriggerResponse",

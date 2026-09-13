@@ -1172,15 +1172,32 @@ async def test_ingestion_window_rollup_event_ids_filter() -> None:
     sql3 = fetchval_calls3[0][1]
     assert "id = ANY(" not in sql3
 
-    # The filter also reaches the session-fan-out id query (shared where_clause).
+    # The filter also reaches the relational session aggregate, without an ID cap.
     db = _FakeDatabaseManager(results={"butler1": []})
     pool4 = _FakePoolForRollup(event_count=2)
     await ingestion_window_rollup(pool4, event_ids=ids, db=db)
-    fetch_calls4 = [c for c in pool4.calls if c[0] == "fetch"]
-    assert len(fetch_calls4) == 1
-    id_sql, id_args = fetch_calls4[0][1], fetch_calls4[0][2]
+    assert not [c for c in pool4.calls if c[0] == "fetch"]
+    id_sql, id_args, _ = db.fan_out_calls[0]
     assert "id = ANY(" in id_sql
     assert [uuid.UUID(i) for i in ids] in id_args
+    assert "LIMIT 10000" not in id_sql
+
+
+async def test_window_rollup_source_failure_is_unavailable_not_zero() -> None:
+    from unittest.mock import AsyncMock
+
+    from butlers.core.ingestion_events import ingestion_window_rollup
+
+    pool = _FakePoolForRollup(event_count=2)
+    pool.fetchval = AsyncMock(side_effect=RuntimeError("synthetic failure"))
+    with pytest.raises(RuntimeError):
+        await ingestion_window_rollup(pool)
+
+    pool = _FakePoolForRollup(event_count=2)
+    db = _FakeDatabaseManager(results={"butler1": []})
+    db.fan_out_with_status = AsyncMock(return_value=({"butler1": []}, ["butler1"]))
+    with pytest.raises(RuntimeError):
+        await ingestion_window_rollup(pool, db=db)
 
 
 # ---------------------------------------------------------------------------

@@ -20,6 +20,8 @@ from uuid import UUID
 
 import asyncpg
 
+from butlers.api.chat_stream import publish_chat_stream_event
+
 logger = logging.getLogger(__name__)
 
 # ts_headline start/stop markers — control characters unlikely to appear in
@@ -1090,6 +1092,12 @@ async def conversation_reply_create(
     ``session_id``/``tool_calls`` are the ambient runtime session id and the
     executed tool calls captured for this turn (best-effort — ``None`` when
     the runtime context is unavailable, e.g. a session that never bound one).
+
+    Publishes a best-effort ``reply_ready`` NOTIFY on the request's
+    chat-stream channel (see ``butlers.api.chat_stream``) so an SSE generator
+    watching this turn wakes immediately instead of waiting for its next
+    safety-net poll (bu-0ynlk.7). A dropped/failed NOTIFY never affects this
+    write — the poll remains the source of truth either way.
     """
     exists = await pool.fetchval(
         "SELECT 1 FROM public.dashboard_conversations WHERE id = $1", conversation_id
@@ -1115,6 +1123,8 @@ async def conversation_reply_create(
         """,
         conversation_id,
     )
+    if request_id is not None:
+        await publish_chat_stream_event(pool, request_id, "reply_ready")
     return msg
 
 

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import importlib.util
 import shutil
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -346,6 +347,74 @@ class TestRunConsolidationWritesAuditRow:
         assert stats["facts_created"] == 3
         assert stats["groups_consolidated"] == 1
         assert spawner.trigger_sources == ["schedule:consolidation"]
+
+    async def test_same_butler_in_two_tenants_gets_disjoint_groups_and_request_ids(
+        self, monkeypatch
+    ) -> None:
+        tenant_a_ids = [uuid.uuid4(), uuid.uuid4()]
+        tenant_b_ids = [uuid.uuid4()]
+        claim_rows = [
+            {
+                "id": episode_id,
+                "butler": "general",
+                "content": f"episode-{episode_id}",
+                "importance": 5.0,
+                "metadata": {},
+                "created_at": None,
+                "tenant_id": tenant_id,
+                "consolidation_attempts": 0,
+            }
+            for tenant_id, episode_ids in (
+                ("tenant-a", tenant_a_ids),
+                ("tenant-b", tenant_b_ids),
+            )
+            for episode_id in episode_ids
+        ]
+        pool = _FakePool(claim_rows=claim_rows)
+        execute_calls: list[dict[str, Any]] = []
+
+        async def _fake_execute_consolidation(**kwargs: Any) -> dict[str, Any]:
+            execute_calls.append(kwargs)
+            return {
+                "facts_created": 0,
+                "facts_updated": 0,
+                "rules_created": 0,
+                "confirmations_made": 0,
+                "episodes_consolidated": len(kwargs["source_episode_ids"]),
+                "episode_ttl_days": None,
+                "errors": [],
+            }
+
+        monkeypatch.setattr(
+            consolidation_module, "execute_consolidation", _fake_execute_consolidation
+        )
+        monkeypatch.setattr(
+            consolidation_module,
+            "parse_consolidation_output",
+            lambda output: type("P", (), {"parse_errors": []})(),
+        )
+        monkeypatch.setattr(
+            consolidation_module, "build_consolidation_prompt", lambda **kwargs: "prompt"
+        )
+
+        stats = await consolidation_module.run_consolidation(
+            pool,
+            embedding_engine=None,
+            cc_spawner=_FakeSpawner(),
+        )
+
+        assert stats["groups"] == {"tenant-a/general": 2, "tenant-b/general": 1}
+        assert stats["groups_consolidated"] == 2
+        assert len(execute_calls) == 2
+
+        calls_by_tenant = {call["tenant_id"]: call for call in execute_calls}
+        assert set(calls_by_tenant) == {"tenant-a", "tenant-b"}
+        assert calls_by_tenant["tenant-a"]["source_episode_ids"] == tenant_a_ids
+        assert calls_by_tenant["tenant-b"]["source_episode_ids"] == tenant_b_ids
+
+        request_ids = [call["request_id"] for call in execute_calls]
+        assert all(uuid.UUID(request_id).version == 4 for request_id in request_ids)
+        assert len(set(request_ids)) == 2
 
     async def test_no_audit_row_when_no_spawner(self, monkeypatch):
         # Without a spawner, no group is consolidated → no audit row written.

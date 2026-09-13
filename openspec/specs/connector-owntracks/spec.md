@@ -412,6 +412,12 @@ OwnTracks events feed the situational context bus (RFC 0009). Context signal der
 - **WHEN** the general butler processes OwnTracks location events with `vel > 80` km/h sustained over multiple consecutive updates
 - **THEN** it calls `set_context("commuting", confidence=0.6, ttl=45min)`
 
+#### Scenario: Travel butler derives commuting with an arrival ETA
+- **WHEN** `at_home` is not currently asserted and the freshest `connectors.owntracks_points` rows show the owner's distance to the `home` entry in `OWNTRACKS_PLACE_REFERENCES` closing over the last 20 minutes
+- **THEN** the travel butler calls `set_context("commuting", confidence=0.6, value="home in ~<n> min")` with `expires_at` set to the estimated arrival instant and `metadata` carrying the derived distance and ETA
+- **AND** when the freshest point already sits inside the home reference's radius, it calls `clear_context("commuting")` instead (arrived)
+- **AND** when there are no fresh points, no configured `home` reference, or the distance is not clearly closing, no signal is set or cleared -- any existing `commuting` signal self-heals via its own TTL
+
 #### Scenario: Confidence levels for OwnTracks-derived signals
 - **WHEN** a context signal is derived from an explicit geofence transition (enter/leave event)
 - **THEN** the confidence level is 0.95 (high, but not 1.0 since it is device-inferred, not user-stated)
@@ -434,3 +440,35 @@ The connector is deployed as a standalone service in the docker-compose stack.
 - **THEN** it is on the `db` and `backend` networks
 - **AND** the health port (40086) is exposed for monitoring (bound to 127.0.0.1 via `OWNTRACKS_HOST_PORT`)
 - **AND** the webhook port MUST be reachable by the OwnTracks mobile app (tailnet routing or reverse proxy)
+
+### Requirement: Retention Purge Degradation Visibility
+The OwnTracks connector SHALL maintain a process-local consecutive failure streak for its
+retention purge task. A caught purge failure SHALL remain non-fatal and retryable, increment the
+streak, and make the existing connector health and heartbeat state `degraded` with a sanitized,
+count-based diagnostic. A successful purge SHALL reset the streak and clear retention-derived
+degradation. The exposed diagnostic SHALL NOT include raw exception details.
+
+#### Scenario: First and repeated purge failures degrade the connector
+- **WHEN** one or more retention purge attempts raise an exception
+- **THEN** each failure is logged and the purge loop remains running for its next scheduled retry
+- **AND** the process-local failure streak increases once per failed attempt
+- **AND** existing health and heartbeat state report `degraded` with only the consecutive-failure count
+
+#### Scenario: Successful purge clears retention degradation
+- **WHEN** a retention purge succeeds after one or more failed attempts
+- **THEN** the process-local failure streak resets to zero
+- **AND** retention-derived health degradation and its diagnostic are cleared
+
+#### Scenario: Existing connector error retains priority
+- **WHEN** the connector already has an `error` health condition and the retention failure streak is nonzero
+- **THEN** health and heartbeat state continue to report the existing `error` condition rather than retention degradation
+
+#### Scenario: Retention diagnostic is sanitized
+- **WHEN** a retention purge raises an exception containing sensitive or implementation-specific text
+- **THEN** the exposed health and heartbeat diagnostic contains neither the exception message nor traceback
+- **AND** the diagnostic is derived only from the process-local consecutive-failure count
+
+#### Scenario: The streak is not durable
+- **WHEN** the OwnTracks connector process restarts
+- **THEN** retention failure tracking begins with a zero streak
+- **AND** no database migration, durable counter, alert, notification, or new API surface is introduced

@@ -74,7 +74,7 @@ export const EVENT_CACHE_COVERAGE_MANIFEST: CoverageEntry[] = [
   { eventType: "issue", queryKey: ["issues"], source: "use-issues.ts (useIssues, both active and dismissed views)" },
 
   // ingestion
-  { eventType: "ingestion", queryKey: ["ingestion", "events"], source: "use-ingestion-events.ts (ingestionEventKeys.list)" },
+  { eventType: "ingestion", queryKey: ["ingestion", "events", "list"], source: "use-ingestion-events.ts (ingestionEventKeys.list)" },
   { eventType: "ingestion", queryKey: ["ingestion", "window-rollup"], source: "use-ingestion-events.ts (window rollup)" },
   { eventType: "ingestion", queryKey: ["ingestion", "events-histogram"], source: "use-ingestion-events.ts (histogram)" },
 

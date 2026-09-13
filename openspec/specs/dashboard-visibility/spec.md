@@ -281,6 +281,20 @@ The Notifications page (`/notifications`) SHALL provide a complete audit trail o
 - **WHEN** status is "pending"
 - **THEN** an amber outlined "Pending" badge is rendered
 
+#### Scenario: Inline retry and escalate verbs on a failed row
+- **WHEN** a notification row's `effective_status` is `failed`
+- **THEN** the row's triage column SHALL offer inline "Retry" and "Escalate" verbs alongside "Mark read"/"Dismiss", calling `POST /api/notifications/{id}/retry` and `POST /api/notifications/{id}/escalate` respectively
+- **AND** a row whose `effective_status` is `sent`, `read`, `retried`, or `escalated` SHALL NOT offer either verb -- there is nothing left to re-deliver
+- **AND** both verbs are honest-pending: the clicked row reads "Retrying..."/"Escalating..." and both verbs stay disabled until the real round trip settles, with no optimistic status flip
+
+#### Scenario: Retry and escalate outcomes are reported to the operator
+- **WHEN** a retry or escalate call returns 200 and the new attempt's `status` is `sent`
+- **THEN** a success toast names the channel the attempt landed on
+- **WHEN** the call returns 200 but the new attempt's own `status` is `failed`
+- **THEN** an error toast is shown carrying that attempt's `error` as its description -- a re-send that did not deliver SHALL NOT be reported as a success
+- **WHEN** the call is rejected (409 for a row that is no longer `failed`, 422 for a channel with no alternate or a missing owner contact, 404, 503, or a transport error)
+- **THEN** an error toast is shown carrying the endpoint's `detail` as its description, so a stale list still offering "Retry" on a row another tab already actioned explains itself instead of clearing silently
+
 #### Scenario: Empty state with filter hint
 - **WHEN** no notifications match the current filters
 - **THEN** the empty state message reads "No notifications match the current filters. Try clearing the filters to see all notifications."
@@ -529,34 +543,51 @@ All visibility surfaces SHALL handle loading and error states consistently to pr
 - **THEN** a destructive-styled message reads "Failed to load notifications. Please try refreshing the page."
 
 ### Requirement: Data Model Contracts for Visibility Surfaces
+
 The frontend TypeScript interfaces SHALL define the data contracts that all visibility surfaces depend on. These contracts MUST be satisfied by the backend API.
 
 #### Scenario: SessionSummary contract (list views)
+
 - **WHEN** the sessions list API responds
-- **THEN** each item conforms to: `id` (string), `butler` (optional string), `prompt` (string), `trigger_source` (string), `request_id` (optional string | null), `success` (boolean | null), `started_at` (ISO 8601 string), `completed_at` (string | null), `duration_ms` (number | null), `input_tokens` (number | null), `output_tokens` (number | null)
+- **THEN** each item conforms to: `id` (string), `butler` (optional string), `prompt` (string), `trigger_source` (string), `request_id` (optional string | null), `success` (boolean | null), `cancelled_by_owner` (boolean), `started_at` (ISO 8601 string), `completed_at` (string | null), `duration_ms` (number | null), `input_tokens` (number | null), `output_tokens` (number | null)
+
+#### Scenario: Owner-cancelled list status is distinct from a failure
+
+- **WHEN** `SessionTable` or `SessionsPinnedStrip` renders a session summary
+  with `success = false` and `cancelled_by_owner = true`
+- **THEN** the status badge renders `Cancelled`, not `Failed`
+- **AND** a failed summary with `cancelled_by_owner = false` renders `Failed`
+- **AND** success and non-terminal rows retain their existing labels
 
 #### Scenario: SessionDetail contract (drill-down views)
+
 - **WHEN** the session detail API responds
-- **THEN** the item conforms to: all `SessionSummary` fields plus `result` (string | null), `tool_calls` (array of unknown), `trace_id` (string | null), `cost` (object | null), `error` (string | null), `model` (string | null), `parent_session_id` (string | null)
+- **THEN** the item retains its existing detail contract: `result` (string | null), `tool_calls` (array of unknown), `trace_id` (string | null), `cost` (object | null), `error` (string | null), `model` (string | null), and `parent_session_id` (string | null)
+- **AND** it does not require the list-only `cancelled_by_owner` discriminator
 
 #### Scenario: TimelineEvent contract
+
 - **WHEN** the timeline API responds
 - **THEN** each event conforms to: `id` (string), `type` (string), `butler` (string), `timestamp` (ISO 8601 string), `summary` (string), `data` (object)
 - **AND** the response meta includes `cursor` (string | null) and `has_more` (boolean) for pagination
 
 #### Scenario: NotificationSummary contract
+
 - **WHEN** the notifications API responds
 - **THEN** each item conforms to: `id` (string), `source_butler` (string), `channel` (string), `recipient` (string | null), `message` (string), `metadata` (object | null), `status` (string), `error` (string | null), `session_id` (string | null), `trace_id` (string | null), `created_at` (ISO 8601 string)
 
 #### Scenario: NotificationStats contract
+
 - **WHEN** the notification stats API responds
 - **THEN** the data conforms to: `total` (number), `sent` (number), `failed` (number), `by_channel` (object mapping channel name to count), `by_butler` (object mapping butler name to count)
 
 #### Scenario: AuditEntry contract
+
 - **WHEN** the audit log API responds
 - **THEN** each entry conforms to: `id` (string), `butler` (string), `operation` (string), `request_summary` (object), `result` (string: "success" | "error"), `error` (string | null), `user_context` (object), `created_at` (ISO 8601 string)
 
 #### Scenario: Issue contract
+
 - **WHEN** the issues API responds
 - **THEN** each issue conforms to: `severity` (string), `type` (string), `butler` (string), `description` (string), `link` (string | null), `error_message` (optional string | null), `occurrences` (optional number), `first_seen_at` (optional string | null), `last_seen_at` (optional string | null), `butlers` (optional string array for multi-butler issues)
 
@@ -578,21 +609,31 @@ The ingestion timeline ledger at `/ingestion` SHALL display a Status column indi
 - **AND** for `error` status, the tooltip SHALL also include the `error_detail` if available
 
 ### Requirement: Ingestion Timeline Action Column
-The ingestion timeline table SHALL display an Action column with a Replay button for replayable events.
+The ingestion timeline table SHALL display an Action column with a Replay
+button only for events that are both status-replayable and server-confirmed
+replay-safe.
 
 #### Scenario: Action column rendering
 - **WHEN** the timeline table renders
 - **THEN** an "Action" column SHALL appear as the last column
 
-#### Scenario: Replay button for filtered events
-- **WHEN** a row has status `filtered` or `error`
+#### Scenario: Replay button for safe filtered events
+- **WHEN** a row has status `filtered` or `error` and server-derived
+  replay-policy evidence is safe
 - **THEN** the Action column SHALL display a "Replay" button
 - **AND** clicking the button SHALL call `POST /api/ingestion/events/{id}/replay`
 
-#### Scenario: Replay button for replay_failed events
-- **WHEN** a row has status `replay_failed`
+#### Scenario: Replay button for safe replay_failed events
+- **WHEN** a row has status `replay_failed` and server-derived replay-policy
+  evidence is safe
 - **THEN** the Action column SHALL display a "Retry" button
 - **AND** clicking the button SHALL call `POST /api/ingestion/events/{id}/replay`
+
+#### Scenario: Unsafe event action is non-actionable
+- **WHEN** a row has a status that could otherwise be replayed but its
+  server-derived replay policy is unsafe or unresolved
+- **THEN** the Action column SHALL not expose a clickable replay control
+- **AND** the UI SHALL provide a concise non-sensitive explanation
 
 #### Scenario: Replay button disabled during pending
 - **WHEN** a row has status `replay_pending`
@@ -607,6 +648,16 @@ The ingestion timeline table SHALL display an Action column with a Replay button
 - **WHEN** the operator clicks the Replay button and the API returns 200
 - **THEN** the row's status badge SHALL immediately update to `replay_pending` (optimistic update)
 - **AND** the Replay button SHALL be replaced with a spinner
+
+#### Scenario: Replay button for filtered events
+- **WHEN** a row has status `filtered` or `error`
+- **THEN** the Action column SHALL display a "Replay" button
+- **AND** clicking the button SHALL call `POST /api/ingestion/events/{id}/replay`
+
+#### Scenario: Replay button for replay_failed events
+- **WHEN** a row has status `replay_failed`
+- **THEN** the Action column SHALL display a "Retry" button
+- **AND** clicking the button SHALL call `POST /api/ingestion/events/{id}/replay`
 
 #### Scenario: Error handling on replay
 - **WHEN** the replay API returns 409 or another error
@@ -637,3 +688,313 @@ The timeline table SHALL display events from both `public.ingestion_events` and 
 - **AND** the Tier column SHALL be empty or show "—" (filtered events have no ingestion tier)
 - **AND** the Tokens and Cost columns SHALL be empty or show "—" (no sessions spawned)
 - **AND** the row SHALL NOT be expandable (no session flamegraph for filtered events)
+
+### Requirement: Timeline minute density and historical interval selection
+The dashboard SHALL display server-aggregated per-minute event density and SHALL load the complete selected minute through interval-filtered pagination, independently of which rows were previously loaded.
+
+ID: REQ-dashboard-visibility-001
+Source: bu-ddo0n; proposed complete-timeline-followups/design.md Density and interval contract; dashboard-visibility Unified Timeline
+Scope: v1-mandatory
+
+#### Scenario: Density includes events beyond the loaded page
+- **WHEN** more than one list page of matching events exists in a selected interval
+- **THEN** GET /api/timeline/histogram returns counts for every matching event in each UTC minute, using the same source/type/butler/trace predicates as the list
+- **AND** each count represents raw events before display grouping, labelled All matching events
+
+#### Scenario: Bounded and stable interval semantics
+- **WHEN** an interval is supplied to the histogram or timeline list
+- **THEN** both since and until must be timezone-aware whole-minute bounds, strictly ordered and no more than 24 hours apart, otherwise the API returns 422
+- **AND** results include events at since and exclude events at until
+- **AND** list cursor pagination preserves the interval without losing events sharing a timestamp
+- **AND** a list request without either bound retains its existing behavior
+
+#### Scenario: Select and restore an unloaded minute
+- **WHEN** the owner selects a histogram minute containing events not in the currently loaded page
+- **THEN** one atomic URL update records the resolved chart interval and selected minute, including when the chart hour was previously implicit and the list fetches that minute from the server with a reset cursor
+- **AND** back, forward and reload after an hour rollover restore the same explicit interval and filters
+- **AND** clearing the selection or invoking Jump to latest restores live stream behavior
+
+#### Scenario: Invalid URL scope is visible
+- **WHEN** chart bounds are malformed or a selected minute is unpaired, unaligned, longer than one minute or outside its chart interval
+- **THEN** the page shows an invalid-interval message and Clear interval action
+- **AND** it does not silently replace the requested interval with an unfiltered request
+
+#### Scenario: Partial density is not a quiet fleet
+- **WHEN** a selected event source fails
+- **THEN** healthy-source counts remain available with named degraded sources and butlers, explicit expected_sources and healthy_sources counts, and availability complete, partial or unavailable
+- **AND** complete zero counts are shown only when all selected sources are healthy
+- **AND** all-source failure or an absent sole selected notifications pool renders unavailable with Retry rather than an empty histogram
+
+#### Scenario: Availability distinguishes partial fan-out and absent configuration
+- **WHEN** the selected session scope contains two butlers and only one answers
+- **THEN** expected_sources is 2, healthy_sources is 1 and availability is partial
+
+#### Scenario: Selected sources are unavailable
+- **WHEN** neither selected session butler answers, or notifications alone are selected with no configured Switchboard pool
+- **THEN** availability is unavailable with zero healthy sources and a positive expected source count
+
+#### Scenario: Healthy selected sources have no events
+- **WHEN** every selected source answers with zero events
+- **THEN** availability is complete and zero counts are trustworthy for that selection
+
+#### Scenario: Filters select no recognized sources
+- **WHEN** the event-type selection names no recognized source family
+- **THEN** expected_sources and healthy_sources are zero and the UI says No matching event sources rather than fleet all-clear
+
+#### Scenario: Accessible and stable density interaction
+- **WHEN** the owner operates the density control by keyboard or changes filters rapidly
+- **THEN** arrow keys and Enter or Space select a minute with accessible time/count labels and without requiring one Tab per bucket
+- **AND** stale requests cannot replace the current selection
+- **AND** live arrivals do not reset historical selection or steal focus
+
+### Requirement: Timeline bounded recent failures strip
+The dashboard SHALL show a collapsible strip above the timeline listing recent records created in the last 24 hours that are currently marked failed, with server-derived counts independent of loaded timeline rows and no claim of unresolved work.
+
+ID: REQ-dashboard-visibility-002
+Source: bu-ddo0n; proposed complete-timeline-followups/design.md Recent-failure strip
+Scope: v1-mandatory
+
+#### Scenario: Counts and rows reflect canonical failures
+- **WHEN** the strip loads for selected butlers and trace
+- **THEN** it counts sessions whose success is false and notification attempts whose current status is failed in one server-chosen last-24h interval
+- **AND** it lists at most five newest matching identifiers in stable order, displays separate source counts and total, and states truncation
+- **AND** chart time/type filters do not change this explicitly labelled 24h scope
+- **AND** its response exposes only identifiers, kind, butler, timestamps, aggregate counts and degradation metadata
+
+#### Scenario: Acknowledgement and retry claim are not recovery evidence
+- **WHEN** acknowledgement or retry claiming changes a notification status from failed to read before any successful delivery
+- **THEN** the next strip read excludes that record and updates its count
+- **AND** neither the strip nor its empty state claims historical failure absence or successful recovery
+- **AND** labels describe records currently marked failed that were created in the last 24 hours
+
+#### Scenario: Failure inspection preserves the target
+- **WHEN** the owner activates a failed-run or failed-delivery-attempt row
+- **THEN** a real link opens its session detail or timeline event drawer by persisted identifier
+- **AND** notification navigation carries butler/trace scope and clears historical interval selection so an off-page event remains reachable
+- **AND** inspection does not acknowledge, resolve or retry anything
+
+#### Scenario: Collapse and unavailable state remain honest
+- **WHEN** the owner collapses the strip
+- **THEN** counts and source degradation remain visible and the disclosure exposes its expanded state accessibly
+- **AND** remounting defaults to expanded without storing a new preference
+
+#### Scenario: Failure strip sources are unavailable
+- **WHEN** any source is unavailable
+- **THEN** the strip marks partial or unavailable data using explicit expected/healthy source counts and availability, offers Retry and never claims all-clear
+
+#### Scenario: Healthy failure sources have no matching records
+- **WHEN** healthy sources return no failures
+- **THEN** it states that no matching records are currently marked failed within the creation window
+
+### Requirement: Timeline keyboard row traversal and existing-view actions
+The dashboard SHALL support j/k traversal of rendered timeline disclosure controls and expose existing view presets through the page action registry while preserving shell search and current timeline shortcuts.
+
+ID: REQ-dashboard-visibility-003
+Source: bu-ddo0n; proposed complete-timeline-followups/design.md Keyboard flow; dashboard-shell Keyboard Shortcuts
+Scope: v1-mandatory
+
+#### Scenario: Real focus and one activation
+- **WHEN** the owner presses j or k outside editable fields and modal contexts
+- **THEN** actual DOM focus moves forward or backward through rendered primary row disclosures, entering at the first or last row and clamping at the ends
+- **AND** Enter activates the focused disclosure exactly once through its native button behavior
+- **AND** traversal does not implicitly fetch another page
+
+#### Scenario: Refetch preserves focus and input ownership
+- **WHEN** rows refresh while a disclosure is focused
+- **THEN** the same row retains focus if present, otherwise the nearest surviving row at the prior index receives focus
+- **AND** typing, IME composition and modal keyboard handling are not intercepted by page traversal
+
+#### Scenario: Existing shortcuts and preset semantics remain intact
+- **WHEN** the owner uses slash, Cmd or Ctrl plus K, r, or n
+- **THEN** global command search, refresh and conditional Jump to latest retain their existing owners and behavior
+- **AND** Escape from global search returns focus under the existing shell modal contract
+
+#### Scenario: Palette-only presets preserve built-in view selection
+- **WHEN** the owner selects All, Errors only or Notifications from page actions
+- **THEN** the existing built-in view selection path updates the URL and data, with presets available as palette-only commands and actual keybindings discoverable in shortcut help
+
+### Requirement: Machine-class Timeline presentation
+
+The Timeline API SHALL attach a presentation-only `machine_class` of `owner`,
+`heartbeat`, or `maintenance` to every event. Session classification SHALL use
+only exact structured `trigger_source` values from the reviewed presentation
+taxonomy; it SHALL NOT inspect prompt text or classify all `schedule:*` values
+as maintenance. The API SHALL retain `is_heartbeat`, set to true exactly when
+`machine_class` is `heartbeat`, for compatibility.
+
+#### Scenario: Exact maintenance taxonomy classifies a maintenance session
+
+- **WHEN** a session has an exact reviewed maintenance trigger source such as
+  `schedule:consolidation` or `schedule:memory_decay_sweep`
+- **THEN** its Timeline event has `machine_class` equal to `maintenance`
+- **AND** its safe summary remains derived by the structured summary boundary
+- **AND** its legacy `is_heartbeat` value is false
+
+#### Scenario: Unknown or owner-value schedule remains owner activity
+
+- **WHEN** a session has an unknown, malformed, or ordinary scheduled trigger
+  source, including a suffix of a known maintenance source
+- **THEN** its Timeline event has `machine_class` equal to `owner`
+- **AND** the session remains visible in the default Timeline lens
+
+#### Scenario: Existing heartbeat compatibility remains intact
+
+- **WHEN** a session has a recognised heartbeat trigger source
+- **THEN** its Timeline event has `machine_class` equal to `heartbeat`
+- **AND** `is_heartbeat` remains true
+
+### Requirement: Internal maintenance Timeline lens
+
+The Timeline SHALL default to an owner-focused lens that suppresses only
+maintenance events whose `data.success` is exactly `true`. A `data.success`
+value of `false` SHALL be a failed run; `null` SHALL be a running run; and a
+missing or nonboolean value SHALL be unknown. Running and unknown maintenance
+events SHALL remain visible in the default lens. The Timeline SHALL offer a
+keyboard-operable Internal control with a visible pressed state and accessible
+name; `internal=1` SHALL enable the lens. When enabled, the Timeline SHALL
+render maintenance events as expandable, per-butler rollups within their hour
+group, using only loaded event data for the displayed count. Each expanded run
+SHALL present its strict outcome state and SHALL NOT label a running or unknown
+run as completed. Failed maintenance sessions SHALL remain visible as errors
+when the Internal lens is disabled.
+
+#### Scenario: Default Timeline hides successful maintenance activity
+
+- **WHEN** the Timeline is loaded without `internal=1`
+- **THEN** successful maintenance events do not render as ordinary Timeline
+  rows
+- **AND** owner and heartbeat behavior remains unchanged
+- **AND** a failed maintenance event remains visible as an error
+
+#### Scenario: Internal Timeline lens exposes an expandable maintenance rollup
+
+- **WHEN** the operator enables the Internal lens
+- **THEN** maintenance events for the same butler and hour render as one
+  rollup with their exact loaded-event count and failed-run count
+- **AND** the rollup can be expanded by keyboard to inspect its safe event
+  summaries
+
+#### Scenario: Running and unknown maintenance remains truthful in both lenses
+
+- **WHEN** a maintenance event has `data.success` equal to `null`, absent, or
+  nonboolean
+- **THEN** the default Timeline renders it as ordinary activity rather than
+  suppressing it
+- **AND** an expanded Internal rollup labels `null` as running and absent or
+  nonboolean values as unknown, never completed
+
+### Requirement: Timeline partial-source evidence
+
+The Timeline SHALL preserve every event returned by reachable sources while
+making any unavailable Timeline subread explicit. Its response metadata SHALL
+retain the existing `degraded_sources: string[]` contract and SHALL
+additively expose `degraded_butlers: string[]` for named failed session
+fan-out pools. A non-empty degraded list means the displayed evidence is
+partial and SHALL NOT be described as a complete fleet history, a genuine
+empty state, or an exhausted historical boundary.
+
+#### Scenario: Partial session fan-out names failed butlers
+
+- **WHEN** the Timeline session fan-out succeeds for at least one requested
+  butler and fails for one or more other requested butlers
+- **THEN** the response preserves events from reachable butlers
+- **AND** `meta.degraded_sources` retains `sessions`
+- **AND** `meta.degraded_butlers` names the failed session pools
+- **AND** the Timeline renders the generic partial-source state plus the named
+  unavailable butlers without claiming a complete fleet history
+
+#### Scenario: Failed butler facets remain unavailable rather than empty
+
+- **WHEN** the Timeline's butler-facet reader fails
+- **THEN** the Timeline renders a named butler-facet-unavailable state with a
+  retry control
+- **AND** it SHALL NOT render "No butlers available" as though the failed
+  reader completed successfully
+- **AND** Timeline rows, source facets, and other reachable controls remain
+  usable
+
+#### Scenario: Failed saved-view reader remains unavailable rather than empty
+
+- **WHEN** the Timeline's custom saved-view reader fails
+- **THEN** the built-in views and current Timeline filters remain usable
+- **AND** the page renders a named saved-views-unavailable state with a retry
+  control
+- **AND** it SHALL NOT describe the failed reader as having no custom saved
+  views
+
+#### Scenario: Failed Load older retries the same historical boundary
+
+- **WHEN** the operator requests an older Timeline page and that request fails
+- **THEN** the already rendered events remain visible
+- **AND** the Timeline renders a named older-page-unavailable state with a
+  retry control
+- **AND** the retry sends the same cursor as the failed request
+- **AND** the Timeline SHALL NOT advance or erase the cursor, claim the end of
+  history, or replace the committed snapshot with a live-head refresh
+
+### Requirement: Pinned session error excerpt states
+
+The Sessions pinned strip SHALL distinguish the bounded session-detail query
+state for each recent failed session. A detail read that is loading, fails, or
+succeeds with a null error field SHALL be visibly distinct; an unavailable
+detail is not evidence that the session has no error detail.
+
+#### Scenario: Loading error excerpt is not presented as null detail
+
+- **WHEN** a pinned recent-failure detail query is pending
+- **THEN** that row identifies its error detail as loading
+- **AND** it SHALL NOT render "no error detail" before a successful response
+
+#### Scenario: Failed error excerpt offers row-local retry
+
+- **WHEN** one pinned recent-failure detail query fails
+- **THEN** its row remains visible with a named unavailable-detail state
+- **AND** that row offers a keyboard-operable retry control for its own detail
+  query
+- **AND** other pinned rows retain their independent loaded or loading states
+
+#### Scenario: Loaded null error detail remains an honest known-null value
+
+- **WHEN** a pinned recent-failure detail query succeeds and its `error` field
+  is null
+- **THEN** that row renders the known-null "no error detail" state
+- **AND** it does not render a loading or unavailable state
+
+### Requirement: Pending-approvals visibility follows pending-actions availability
+
+The dashboard's Pending approvals KPI SHALL use its numeric value and
+`/approvals` door only when the approval metrics query succeeds and
+`meta.pending_actions_sources_degraded` is absent or empty. A query failure or
+pending-actions degradation SHALL render the unavailable value with no
+interactive door, name the unavailable sources, and offer a safe metrics-read
+retry. `approval_rules` degradation alone SHALL not make a complete pending
+approvals KPI unavailable.
+
+The Sidebar's existing `/approvals` navigation link SHALL render a visible,
+accessible amber unavailable marker instead of a numeric zero when the metrics
+query fails or `meta.pending_actions_sources_degraded` is non-empty. A
+truthful complete zero remains quiet.
+
+#### Scenario: Pending-actions source is partial
+
+- **WHEN** the metrics response names one or more
+  `pending_actions_sources_degraded`
+- **THEN** the Pending approvals KPI renders `—` with unavailable semantics
+- **AND** it is not a link, button, or other interactive door
+- **AND** the page names the unavailable source(s) and offers a retry of the
+  metrics query.
+
+#### Scenario: Rule source alone is partial
+
+- **WHEN** the metrics response names only
+  `approval_rules_sources_degraded` and contains a complete pending count
+- **THEN** the Pending approvals KPI renders that count, including a genuine
+  zero
+- **AND** its `/approvals` door remains available.
+
+#### Scenario: Sidebar pending badge is unavailable
+
+- **WHEN** the metrics query fails or names one or more
+  `pending_actions_sources_degraded`
+- **THEN** the Sidebar keeps its existing `/approvals` link
+- **AND** renders an accessible amber unavailable marker instead of `0`.

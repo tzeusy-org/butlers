@@ -16,7 +16,7 @@ Dashboard Now list that consumes it. (bu-orefs)
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -461,6 +461,44 @@ async def test_timeline_trace_scope_filters_sessions_and_notifications_by_trace(
     assert tuple(notification_args) == (trace_id,)
 
 
+async def test_timeline_event_lookup_forwards_exact_id_and_scope(app):
+    """A deep-link lookup is independent of the ordinary Timeline head limit."""
+    event_id = uuid4()
+    notification_row = {
+        "id": event_id,
+        "source_butler": "atlas",
+        "channel": "telegram",
+        "recipient": "owner",
+        "message": "Persisted notification",
+        "status": "failed",
+        "created_at": _NOW - timedelta(hours=3),
+    }
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["atlas"]
+    mock_db.fan_out_with_status = AsyncMock(return_value=({"atlas": []}, []))
+    mock_pool = AsyncMock()
+    mock_pool.fetch = AsyncMock(return_value=[notification_row])
+    mock_db.pool = MagicMock(return_value=mock_pool)
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            "/api/timeline",
+            params={"event": str(event_id), "butler": "atlas", "trace": "trace-lookup"},
+        )
+
+    assert response.status_code == 200
+    assert [row["id"] for row in response.json()["data"]] == [str(event_id)]
+    session_sql, session_args = mock_db.fan_out_with_status.call_args.args
+    assert "id = $1" in session_sql
+    assert session_args == (event_id, "trace-lookup")
+    notification_sql, *notification_args = mock_pool.fetch.call_args.args
+    assert "id = $1" in notification_sql
+    assert tuple(notification_args) == (event_id, ["atlas"], "trace-lookup")
+
+
 # ---------------------------------------------------------------------------
 # Fix 1 + 2 + 5 (read-model layer): SQL-level event_type/composite-cursor
 # pushdown and per-source failure reporting.
@@ -559,6 +597,8 @@ async def test_query_timeline_sessions_fan_out_pushes_event_type_filter_into_sql
 async def test_query_timeline_sessions_fan_out_filters_and_projects_trace_id():
     """The fan-out read model keeps the selected trace predicate and projection together."""
     trace_id = "trace-001"
+    since = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    until = datetime(2026, 1, 1, 12, 1, tzinfo=UTC)
     db = _FakeTimelineDB(
         results={"atlas": [_make_session_row(prompt="Trace this session", trace_id=trace_id)]}
     )
@@ -567,11 +607,17 @@ async def test_query_timeline_sessions_fan_out_filters_and_projects_trace_id():
         db,
         limit=10,
         trace_id=trace_id,
+        since=since,
+        until=until,
+        only_errors=True,
     )
 
     sql, args, _ = db.calls[0]
-    assert "trace_id = $1" in sql
-    assert args == (trace_id,)
+    assert "started_at >= $1" in sql
+    assert "started_at < $2" in sql
+    assert "success = false" in sql
+    assert "trace_id = $3" in sql
+    assert args == (since, until, trace_id)
     assert rows[0].trace_id == trace_id
 
 
@@ -800,6 +846,16 @@ async def test_timeline_endpoint_reports_degraded_notifications_source(app):
     assert resp.status_code == 200
     assert resp.json()["meta"]["degraded_sources"] == ["notifications"]
 
+    mock_db.pool = MagicMock(side_effect=KeyError("switchboard"))
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        exact = await client.get("/api/timeline", params={"event": str(uuid4())})
+
+    assert exact.status_code == 200
+    assert exact.json()["data"] == []
+    assert exact.json()["meta"]["degraded_sources"] == ["notifications"]
+
 
 async def test_timeline_endpoint_no_degraded_sources_on_success(app):
     """The happy path reports an empty degraded_sources list, not an absent field."""
@@ -931,3 +987,184 @@ async def test_timeline_notification_lens_unaffected_by_error_widening(app):
     assert "status = 'failed'" not in notif_sql
     # And sessions are not queried at all for a notification-only lens.
     mock_db.fan_out_with_status.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("params", "expected_status"),
+    [
+        ({"since": "2026-01-01T12:00:00Z"}, 422),
+        ({"since": "2026-01-01T12:00:01Z", "until": "2026-01-01T13:00:00Z"}, 422),
+        ({"since": "2026-01-01T12:00:00", "until": "2026-01-01T13:00:00"}, 422),
+        ({"since": "2026-01-02T12:00:00Z", "until": "2026-01-01T13:00:00Z"}, 422),
+        ({"since": "2026-01-01T12:00:00Z", "until": "2026-01-02T12:01:00Z"}, 422),
+    ],
+)
+async def test_timeline_intervals_reject_invalid_bounds(app, params, expected_status):
+    _app_with_mock_db(app, fan_out_results=[])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        list_response = await client.get("/api/timeline", params=params)
+        histogram_response = await client.get("/api/timeline/histogram", params=params)
+
+    assert list_response.status_code == expected_status
+    assert histogram_response.status_code == expected_status
+
+
+@pytest.mark.parametrize(
+    ("event_types", "butlers", "failed_butlers", "pool_error", "expected"),
+    [
+        pytest.param(
+            ["session"],
+            ["atlas"],
+            [],
+            None,
+            (1, 1, "complete"),
+            id="selected-session-source-healthy-zero",
+        ),
+        (["session"], ["atlas", "home"], ["home"], None, (2, 1, "partial")),
+        (["session"], ["atlas", "home"], ["atlas", "home"], None, (2, 0, "unavailable")),
+        (["notification"], None, [], KeyError("missing"), (1, 0, "unavailable")),
+        (["unknown"], None, [], None, (0, 0, "complete")),
+    ],
+)
+async def test_histogram_reports_exact_source_availability(
+    app, event_types, butlers, failed_butlers, pool_error, expected
+):
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["atlas", "home"]
+    target_names = butlers or mock_db.butler_names
+    mock_db.fan_out_with_status = AsyncMock(
+        return_value=({name: [] for name in target_names}, failed_butlers)
+    )
+    mock_pool = AsyncMock()
+    mock_pool.fetch = AsyncMock(return_value=[])
+    mock_db.pool = (
+        MagicMock(side_effect=pool_error) if pool_error else MagicMock(return_value=mock_pool)
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    params = [
+        ("since", "2026-01-01T12:00:00Z"),
+        ("until", "2026-01-01T13:00:00Z"),
+        *[("event_type", value) for value in event_types],
+        *[("butler", value) for value in (butlers or [])],
+    ]
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/timeline/histogram", params=params)
+
+    assert response.status_code == 200
+    meta = response.json()["meta"]
+    assert (meta["expected_sources"], meta["healthy_sources"], meta["availability"]) == expected
+    assert len(response.json()["data"]) == 60
+    assert all(bucket["count"] == 0 for bucket in response.json()["data"])
+    assert not (
+        {"summary", "data", "prompt", "message", "recipient"} & response.json()["data"][0].keys()
+    )
+
+
+def _attention_session_row(*, started_at: datetime, total_count: int):
+    return {"id": uuid4(), "started_at": started_at, "total_count": total_count}
+
+
+def _attention_notification_row(
+    *, created_at: datetime, total_count: int, source_butler: str = "atlas"
+):
+    return {
+        "id": uuid4(),
+        "source_butler": source_butler,
+        "created_at": created_at,
+        "total_count": total_count,
+    }
+
+
+async def test_timeline_attention_is_capped_content_blind_and_current_status_scoped(app):
+    """Attention counts remain exact while rows expose only navigable identifiers."""
+    session_rows = [
+        _attention_session_row(started_at=_NOW - timedelta(minutes=10 + index), total_count=7)
+        for index in range(5)
+    ]
+    notification_rows = [
+        _attention_notification_row(created_at=_NOW - timedelta(minutes=index), total_count=3)
+        for index in range(3)
+    ]
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["atlas"]
+    mock_db.fan_out_with_status = AsyncMock(return_value=({"atlas": session_rows}, []))
+    mock_pool = AsyncMock()
+    mock_pool.fetch = AsyncMock(return_value=notification_rows)
+    mock_db.pool = MagicMock(return_value=mock_pool)
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            "/api/timeline/attention", params=[("butler", "atlas"), ("trace", "trace-1")]
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["data"]) == 5
+    assert body["meta"]["failed_sessions"] == 7
+    assert body["meta"]["failed_notifications"] == 3
+    assert body["meta"]["total"] == 10
+    assert body["meta"]["has_more"] is True
+    assert body["meta"]["availability"] == "complete"
+    assert {"summary", "data", "prompt", "message", "recipient", "error"}.isdisjoint(
+        body["data"][0]
+    )
+    assert set(body["data"][0]) == {"id", "kind", "butler", "timestamp"}
+    assert [item["timestamp"] for item in body["data"]] == sorted(
+        (item["timestamp"] for item in body["data"]), reverse=True
+    )
+    session_sql, session_args = mock_db.fan_out_with_status.call_args.args
+    assert "success = false" in session_sql
+    assert "trace_id = $3" in session_sql
+    assert session_args[2] == "trace-1"
+    notification_sql, *notification_args = mock_pool.fetch.call_args.args
+    assert "status = 'failed'" in notification_sql
+    assert "trace_id = $4" in notification_sql
+    assert tuple(notification_args[2:]) == (["atlas"], "trace-1")
+
+
+@pytest.mark.parametrize(
+    ("failed_butlers", "pool_error", "expected"),
+    [
+        pytest.param([], None, (3, 3, "complete"), id="all-sources-healthy"),
+        pytest.param(["home"], None, (3, 2, "partial"), id="partial-session-fanout"),
+        pytest.param(
+            ["atlas", "home"],
+            KeyError("switchboard"),
+            (3, 0, "unavailable"),
+            id="all-sources-failed",
+        ),
+    ],
+)
+async def test_timeline_attention_reports_explicit_source_availability(
+    app, failed_butlers, pool_error, expected
+):
+    """Missing and failed source units never become a calm empty result."""
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["atlas", "home"]
+    mock_db.fan_out_with_status = AsyncMock(
+        return_value=({name: [] for name in mock_db.butler_names}, failed_butlers)
+    )
+    mock_pool = AsyncMock()
+    mock_pool.fetch = AsyncMock(return_value=[])
+    mock_db.pool = (
+        MagicMock(side_effect=pool_error) if pool_error else MagicMock(return_value=mock_pool)
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/timeline/attention")
+
+    assert response.status_code == 200
+    meta = response.json()["meta"]
+    assert (meta["expected_sources"], meta["healthy_sources"], meta["availability"]) == expected
+    assert response.json()["data"] == []

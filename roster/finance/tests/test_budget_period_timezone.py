@@ -326,13 +326,16 @@ async def _setup_scan(pool, *, timezone: str = OWNER_TZ) -> None:
     await pool.execute(
         """
         CREATE TABLE IF NOT EXISTS finance.subscriptions (
-            id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            service       TEXT NOT NULL,
-            amount        NUMERIC(14, 2) NOT NULL,
-            currency      CHAR(3) NOT NULL,
-            frequency     TEXT NOT NULL,
-            next_renewal  DATE,
-            status        TEXT NOT NULL DEFAULT 'active'
+            id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            service             TEXT NOT NULL,
+            amount              NUMERIC(14, 2) NOT NULL,
+            currency            CHAR(3) NOT NULL,
+            frequency           TEXT NOT NULL,
+            next_renewal        DATE,
+            status              TEXT NOT NULL DEFAULT 'active',
+            cancellation_url    TEXT,
+            notice_period_days  INTEGER,
+            cancel_by           DATE
         )
         """
     )

@@ -45,6 +45,7 @@ from butlers.api.models import (
 from butlers.api.models.session import (
     DailyActivity,
     DailyActivityBucket,
+    FrictionSummary,
     HourlyActivity,
     HourlyActivityBucket,
     LatencyStats,
@@ -70,6 +71,8 @@ from butlers.api.read_models.sessions_v1 import (
     row_to_summary,
 )
 from butlers.core.pricing import PricingConfig, estimate_session_cost
+from butlers.core.sessions import friction_summary as _friction_summary
+from butlers.core.sessions import sessions_summary as _sessions_summary
 
 logger = logging.getLogger(__name__)
 
@@ -215,19 +218,45 @@ def _cost_usd_for_dto(dto: SessionSummaryRow, pricing: PricingConfig | None) -> 
     """Best-effort per-session USD cost, estimated from model + token counts.
 
     Reuses the same PricingConfig/estimate_session_cost primitives as the
-    spend and ingestion-events surfaces, computed from fields the summary
-    read-model (sessions_v1) already selects — no new SQL column, no
-    migration. Returns None (never a misleading 0.0) when pricing is
-    unavailable, the model is unknown, or the session has no token data yet
-    (e.g. a running session that hasn't recorded usage).
+    spend and ingestion-events surfaces, computed from the four disjoint
+    token buckets the summary read-model (sessions_v1) selects. Returns None
+    (never a misleading 0.0) when pricing is unavailable, the model is
+    unknown, or the session's usage evidence is incomplete.
     """
     if pricing is None or not dto.model:
         return None
+
+    # Cache evidence is nullable because legacy rows and adapters that do not
+    # report a bucket cannot distinguish an unknown count from a known zero.
+    # Do not price a partial four-bucket row by silently coalescing NULL.
+    if dto.cached_input_tokens is None or dto.cache_creation_tokens is None:
+        return None
+
+    # Cache evidence cannot prove that unknown base counters were zero. A
+    # cache-only estimate is valid only when both base counters are explicitly
+    # zero, preserving the existing one-sided input/output compatibility.
+    if dto.input_tokens is None and dto.output_tokens is None:
+        return None
+
     in_tok = dto.input_tokens or 0
     out_tok = dto.output_tokens or 0
+    cache_read_tok = dto.cached_input_tokens
+    cache_write_tok = dto.cache_creation_tokens
+
     if not in_tok and not out_tok:
-        return None
-    cost = estimate_session_cost(pricing, dto.model, in_tok, out_tok)
+        if dto.input_tokens != 0 or dto.output_tokens != 0:
+            return None
+        if not cache_read_tok and not cache_write_tok:
+            return None
+
+    cost = estimate_session_cost(
+        pricing,
+        dto.model,
+        in_tok,
+        out_tok,
+        cached_input_tokens=cache_read_tok,
+        cache_creation_tokens=cache_write_tok,
+    )
     return cost
 
 
@@ -975,5 +1004,53 @@ async def get_butler_latency_stats(
             mean_ms=float(mean) if mean is not None else None,
             count=int(row["count"]),
             model=row["model"],
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+# Butler-scoped analytics: GET /api/butlers/{name}/analytics/friction
+# ---------------------------------------------------------------------------
+
+
+@butler_sessions_router.get(
+    "/{name}/analytics/friction",
+    response_model=ApiResponse[FrictionSummary],
+)
+async def get_butler_friction_summary(
+    name: str,
+    period: Literal["today", "7d", "30d"] = Query(
+        "today", description="Summary period: 'today', '7d', or '30d'"
+    ),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[FrictionSummary]:
+    """Return typed friction-episode counts and session outcomes for a butler.
+
+    Combines the ``sessions_friction`` ledger (bu-8cdl1.9 S2 --
+    ``degenerate_tool_loop``, ``guardrail_termination``,
+    ``classification_timeout``, ``recovered_error``, ``dead_end``) with
+    ``sessions_summary``'s ``succeeded``/``failed``/``by_error_marker``
+    outcome fields, both windowed identically by ``period``. Powers the
+    butler console's friction/outcome panel (bu-8cdl1.9 S3).
+    """
+    try:
+        pool = db.pool(name)
+    except KeyError:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Butler '{name}' database is not available",
+        )
+
+    friction = await _friction_summary(pool, period)
+    outcomes = await _sessions_summary(pool, period)
+
+    return ApiResponse[FrictionSummary](
+        data=FrictionSummary(
+            period=period,
+            total=friction["total"],
+            by_kind=friction["by_kind"],
+            succeeded=outcomes["succeeded"],
+            failed=outcomes["failed"],
+            by_error_marker=outcomes["by_error_marker"],
         )
     )

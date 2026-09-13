@@ -26,6 +26,7 @@ from butlers.api.deps import (
     get_butler_configs,
     get_mcp_manager,
 )
+from butlers.api.routers import oauth as oauth_router
 from butlers.api.routers.butlers import _get_roster_dir
 from butlers.api.routers.notifications import _get_db_manager
 
@@ -185,6 +186,33 @@ def build_app_missing_switchboard(app: FastAPI | None = None) -> object:
     return app
 
 
+@pytest.fixture
+def synthetic_oauth_provider(monkeypatch: pytest.MonkeyPatch) -> str:
+    """Register a synthetic generic OAuth provider for one test only.
+
+    Production generic OAuth remains Google-only.  Tests that exercise the
+    generalized provider contract use this fixture so a real connector name
+    cannot accidentally become a second production authority.
+    """
+    provider = "test-provider"
+    config = oauth_router._ProviderConfig(
+        auth_url="https://oauth.test.invalid/authorize",
+        token_url="https://oauth.test.invalid/token",
+        scope_sets={
+            "base": ["identity.read"],
+            "activity": ["activity.read"],
+        },
+        default_scope_sets=("base", "activity"),
+        default_redirect_uri="http://localhost:41200/api/oauth/test-provider/callback",
+        redirect_uri_env_var="TEST_PROVIDER_OAUTH_REDIRECT_URI",
+        client_id_key="TEST_PROVIDER_OAUTH_CLIENT_ID",
+        client_secret_key="TEST_PROVIDER_OAUTH_CLIENT_SECRET",
+        profile_url=None,
+    )
+    monkeypatch.setitem(oauth_router._PROVIDER_REGISTRY, provider, config)
+    return provider
+
+
 # ---------------------------------------------------------------------------
 # TOML templates (module-level for reuse within conftest)
 # ---------------------------------------------------------------------------
@@ -198,9 +226,6 @@ description = "{description}"
 [butler.db]
 name = "butlers"
 schema = "{name}"
-
-[runtime]
-type = "claude"
 """
 
 _BUTLER_TOML_WITH_MODULES = """\
@@ -212,9 +237,6 @@ description = "{description}"
 [butler.db]
 name = "butlers"
 schema = "{name}"
-
-[runtime]
-type = "claude"
 
 {modules_section}
 """
@@ -228,9 +250,6 @@ description = "{description}"
 [butler.db]
 name = "butlers"
 schema = "{name}"
-
-[runtime]
-type = "claude"
 
 [[butler.schedule]]
 name = "morning-check"

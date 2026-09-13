@@ -137,6 +137,26 @@ async def _run_switchboard_domain_event_reconciliation_sweep_job(
     return await run_domain_event_reconciliation_sweep(pool)
 
 
+async def _run_switchboard_fleet_case_lapse_sweep_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run the fleet-case lapse sweep (bu-8cdl1.7 Slice 5, RFC 0032).
+
+    Closes silent/routine ``public.fleet_cases`` rows that have gone stale
+    (no fresh evidence contribution, no posture/state update) with
+    ``outcome='lapsed'``. See ``butlers.core.fleet_cases.run_lapse_sweep``
+    for the full eligibility policy -- it never touches ``active``/
+    ``urgent`` cases and never resurrects an already-closed one. Runs on the
+    Switchboard daemon because only ``butler_switchboard_rw`` may write
+    ``public.fleet_cases`` (RFC 0032's write-authority section).
+    """
+    del job_args
+    from butlers.core.fleet_cases import run_lapse_sweep
+
+    return await run_lapse_sweep(pool)
+
+
 async def _run_switchboard_decision_review_digest_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -1098,6 +1118,23 @@ async def _run_relationship_insight_scan_job(
     return await mod.run_insight_scan(pool)
 
 
+async def _run_prepared_action_orphan_sweep_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Expire stale origin='prepared' pending actions (bu-2jtfw.11).
+
+    Deterministic, zero-LLM. See
+    ``butlers.modules.approvals.operations.sweep_orphaned_prepared_actions``
+    for why this exists as a dedicated sweep rather than relying on the
+    existing on-touch expiry path.
+    """
+    del job_args
+    from butlers.modules.approvals.operations import sweep_orphaned_prepared_actions
+
+    return await sweep_orphaned_prepared_actions(pool)
+
+
 async def _run_relationship_interaction_sync_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -1250,6 +1287,28 @@ async def _run_lifestyle_briefing_contribution_job(
     return await run_lifestyle_briefing_contribution(pool=pool, job_args=job_args)
 
 
+async def _run_lifestyle_taste_projection_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Project connector evidence into Lifestyle's taste ledger without an LLM."""
+    del job_args
+    from butlers.tools.lifestyle import taste_ledger
+
+    sessions = await taste_ledger.backfill_from_listening_sessions(pool)
+    plays = await taste_ledger.backfill_from_track_plays(pool)
+    return {
+        "sessions": {
+            "works_created": sessions.works_created,
+            "signals_created": sessions.signals_created,
+        },
+        "track_plays": {
+            "works_created": plays.works_created,
+            "signals_created": plays.signals_created,
+        },
+    }
+
+
 async def _run_collect_briefing_contributions_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -1312,6 +1371,16 @@ async def _run_context_producer_sleep_window_job(
     from butlers.jobs.context_producers import run_sleep_window_context_producer
 
     return await run_sleep_window_context_producer(pool, job_args)
+
+
+async def _run_context_producer_commuting_eta_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Publish commuting context with an arrival ETA from OwnTracks GPS data."""
+    from butlers.jobs.context_producers import run_commuting_eta_context_producer
+
+    return await run_commuting_eta_context_producer(pool, job_args)
 
 
 # ---------------------------------------------------------------------------
@@ -1900,6 +1969,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "email_identity_enrichment": _run_relationship_email_identity_enrichment_job,
             # contact_info_reconciler retired (bu-e2ja9 / core_115): table dropped.
             "session_process_logs_prune": _run_session_process_logs_prune_job,
+            "prepared_action_orphan_sweep": _run_prepared_action_orphan_sweep_job,
         },
         "travel": {
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
@@ -1910,6 +1980,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "flight_status_check": _run_travel_flight_status_check_job,
             "destination_outlook": _run_travel_destination_outlook_job,
             "context_producer_travel": _run_context_producer_travel_job,
+            "context_producer_commuting_eta": _run_context_producer_commuting_eta_job,
             "session_process_logs_prune": _run_session_process_logs_prune_job,
         },
         "messenger": {
@@ -1979,6 +2050,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
         "lifestyle": {
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             "daily_briefing_contribution": _run_lifestyle_briefing_contribution_job,
+            "taste_ledger_project": _run_lifestyle_taste_projection_job,
             "session_process_logs_prune": _run_session_process_logs_prune_job,
         },
         "switchboard": {
@@ -1993,6 +2065,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "domain_event_reconciliation_sweep": (
                 _run_switchboard_domain_event_reconciliation_sweep_job
             ),
+            "fleet_case_lapse_sweep": _run_switchboard_fleet_case_lapse_sweep_job,
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             "session_process_logs_prune": _run_session_process_logs_prune_job,
         },

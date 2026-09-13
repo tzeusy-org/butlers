@@ -73,7 +73,20 @@ The `get_error_type(exc)` helper maps exception class names to semantic error la
 
 ## Dashboard API Endpoints
 
-Core API routes in `src/butlers/api/routers/connectors.py` expose: connector listing with liveness (`GET /api/connectors`), single-connector detail (`GET /api/connectors/{type}/{identity}`), time-series stats from Prometheus (`/stats?period=24h|7d|30d`), cross-connector summary (`/summary`), and fanout distribution matrix (`/fanout`). All endpoints degrade gracefully when `PROMETHEUS_URL` is unset. Response models live in `src/butlers/api/models/connector.py`.
+Dashboard connector routes live in
+`src/butlers/api/routers/ingestion_connectors.py` under
+`/api/ingestion/connectors`. The role-aware roster is
+`GET /summaries`; connector detail, statistics, and runtime-settings updates
+live at `/{type}/{identity}`, `/{type}/{identity}/stats`, and
+`/{type}/{identity}/settings`. `GET /cross-summary` is the fleet aggregate.
+
+The roster, detail, and statistics routes are database-sourced. The aggregate
+route reports `aggregates_available: false` when its Prometheus-backed metrics
+cannot be read; callers must render that as unavailable rather than zero. The
+retired Switchboard connector namespace and its per-connector fanout endpoint
+are not dashboard API surfaces. The separate cross-connector
+`GET /api/switchboard/ingestion/fanout` overview matrix remains outside this
+connector-namespace migration.
 
 ## Verification
 
@@ -90,10 +103,10 @@ curl -s "http://localhost:9090/api/v1/query?query=connector_ingest_latency_secon
   | python3 -m json.tool | grep "le" | head -10
 # Expected: histogram buckets from 5ms to 10s with non-zero counts
 
-# 3. Dashboard API connector listing derives liveness correctly
-curl -s "http://localhost:41200/api/connectors" | python3 -m json.tool | grep -E "state|last_heartbeat"
-# Expected: state=online for all connectors with recent heartbeats;
-#           state=stale or offline for connectors that have not heartbeated recently
+# 3. Dashboard API roster exposes only runtime-authoritative connectors
+curl -s "http://localhost:41200/api/ingestion/connectors/summaries" | python3 -m json.tool | grep -E "liveness|operational_role"
+# Expected: runtime instances have liveness; checkpoint rows are nested under
+#           their parent rather than appearing as offline connectors
 
 # 4. Heartbeat log accumulates entries (source 1) separate from Prometheus (source 2)
 psql -h localhost -U butlers -d butlers -c \
@@ -103,8 +116,8 @@ psql -h localhost -U butlers -d butlers -c \
    GROUP BY connector_type;"
 # Expected: one row per active connector; count should be ~30 per hour (one every 2 minutes)
 
-# 5. Degraded mode: Dashboard endpoints return aggregates_available=false when Prometheus is down
-PROMETHEUS_URL=http://localhost:1 curl -s http://localhost:41200/api/connectors/summaries \
+# 5. Degraded mode: fleet aggregate returns aggregates_available=false when Prometheus is down
+PROMETHEUS_URL=http://localhost:1 curl -s http://localhost:41200/api/ingestion/connectors/cross-summary \
   | python3 -m json.tool | grep aggregates_available
 # Expected: {"aggregates_available": false} rather than a 500 error
 ```

@@ -99,3 +99,26 @@ Scope: v1-mandatory
 - **THEN** the call is rejected with `422` unless `1 ≤ hours ≤ 168`
 - **AND** on success, the action's `expires_at` is extended by `hours` and the notification re-presentation timer is reset to `now + hours`
 - **AND** `audit.append("approval.defer", target=action_id, note=str(hours))` is invoked.
+
+#### Scenario: Dashboard abandons an eligible stalled action
+
+- **WHEN** `POST /api/approvals/{id}/abandon {reason: string}` is called by an
+  authenticated dashboard actor for an action whose status is `approved` and
+  execution result is null
+- **THEN** the action transitions to `abandoned` with an immutable
+  `action_abandoned` event carrying the actor and non-blank reason
+- **AND** the response reports the terminal status
+- **AND** the action is absent from stalled results and has no Retry affordance.
+
+#### Scenario: Dashboard rejects invalid abandonment without mutation
+
+- **WHEN** the abandon endpoint receives a blank reason or an action outside
+  the exact approved/null-execution predicate
+- **THEN** it returns a validation or transition error without writing an event
+  or changing the action.
+
+#### Scenario: Abandonment has no alternate invocation path
+
+- **WHEN** an approval is surfaced through an MCP tool, Telegram callback,
+  automatic workflow, scheduled cleanup, or bulk operation
+- **THEN** that path does not expose or invoke abandonment.

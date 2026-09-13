@@ -1,6 +1,8 @@
 # RFC 0032: Fleet Case File
 
-**Status:** Draft (Slice 1 landed — schema only)
+**Status:** Implemented (Slices 1-7 landed — schema, read API, contribution
+tools, situation-scoped attention, lapse sweep, historical backfill,
+three-ledger binding)
 **Date:** 2026-09-05
 
 ## Context
@@ -37,9 +39,14 @@ A case has:
   `health:owner:respiratory-illness`). Not free-form UUID noise: readable so
   an operator can recognize a case from the key alone.
 - `state` — `open | watching | closing | closed`. Only `closed` is terminal.
-- `posture` — `silent | routine | active | urgent`. Contributors will
-  eventually propose a posture; the Switchboard arbitrates the case's actual
-  posture (posture arbitration ships in a later slice — see Slice plan).
+- `posture` — `silent | routine | active | urgent`. Contributors propose a
+  posture via `propose_case_posture` (Slice 3); the Switchboard is the only
+  role that can actually write it (RLS), so a proposal from any other butler
+  is forwarded through Switchboard's `route()` primitive and takes effect as
+  a plain last-write-wins update. A richer arbitration model (quorum, decay,
+  per-butler cooldown) is not part of this design; "the Switchboard
+  arbitrates" currently means "the Switchboard is the sole write authority,"
+  not majority voting.
 - `outcome` — required exactly when `state = 'closed'`, forbidden otherwise
   (`chk_fleet_cases_closed_needs_outcome`). A lapse sweep (later slice) closes
   a case by writing `outcome = 'lapsed'`; it is a value of `outcome`, not a
@@ -82,22 +89,81 @@ binding logic ships in this slice.
 
 ## Slice plan
 
-This RFC is written for the whole feature; only Slice 1 has landed.
+This RFC is written for the whole feature; all seven slices have landed.
 
-- **S1 (this change):** `public.fleet_cases`, `public.fleet_case_evidence`,
+- **S1 (landed):** `public.fleet_cases`, `public.fleet_case_evidence`,
   `public.fleet_case_links` — schema, constraints, grants/RLS only. No
   broker wiring, no MCP tools, no dashboard surface.
-- **S2:** read API + dashboard routes.
-- **S3:** contribution tools — `find_open_case`, `open_case`,
+- **S2 (landed):** read API — `GET /api/switchboard/cases` (cursor-
+  paginated list) and `GET /api/switchboard/cases/{case_id}` (one case with
+  its evidence and links), hosted on the Switchboard API surface. No
+  dashboard frontend page ships in this slice — read-only API only.
+- **S3 (this change):** contribution tools — `find_open_case`, `open_case`,
   `contribute_case_evidence`, `propose_case_posture`, `close_case`,
-  `read_case`. Adds `case` to `EVIDENCE_KINDS`.
-- **S4:** situation-scoped attention — one urgent bypass per case per
-  quiet-hours window, keyed by case rather than by candidate.
-- **S5:** lapse sweep — may only transition a case to `closed` with
-  `outcome = 'lapsed'`; never resurrects.
-- **S6:** backfill — creates only `closed`/`lapsed` historical cases from
-  existing data, never resurrects an inferred case as open.
-- **S7:** three-ledger binding through `fleet_case_links`.
+  `read_case` (`src/butlers/core_tools/_fleet_cases.py`, gated behind the new
+  `fleet_cases` core group). Adds `case` to `EVIDENCE_KINDS`. Still no broker
+  wiring — the insight broker does not call these tools yet — and no
+  dashboard write surface.
+- **S4 (landed):** situation-scoped attention — one urgent bypass per case
+  per quiet-hours window, keyed by case rather than by candidate
+  (`fleet_cases.evaluate_case_attention`). Any number of
+  `propose_case_posture`/`contribute_case_evidence` calls against the same
+  `correlation_key` while a case is `posture='urgent'` collapse to at most one
+  recorded bypass (a `public.attention_ledger` row, `dedup_key=` the case's
+  correlation key) per quiet-hours window; outside quiet hours, or once the
+  case steps down from urgent or closes, there is nothing to bypass. Still no
+  broker wiring — the insight broker's own per-candidate bypass is untouched;
+  this is the case-scoped primitive a later slice's three-ledger binding
+  (S7) can connect it to.
+- **S5 (landed):** lapse sweep (`fleet_cases.run_lapse_sweep`, registered as
+  the Switchboard-owned scheduled job `fleet_case_lapse_sweep`, daily at
+  04:10 UTC). Closes a case with `outcome = 'lapsed'` only when it is
+  `posture` in `{silent, routine}`, `state <> 'closed'`, and has gone 7 days
+  (`DEFAULT_LAPSE_STALENESS_WINDOW`) without a fresh `contribute_evidence`
+  row or a `propose_case_posture`/`close_case` update. `active`/`urgent`
+  cases are never auto-lapsed regardless of age, and the eligibility check
+  and the write are one atomic `UPDATE`, so a case can never be resurrected
+  and an already-closed case is never touched again.
+- **S6 (landed):** backfill (`fleet_cases.backfill_historical_case`/
+  `backfill_from_owner_conditions`, `scripts/backfill_fleet_cases.py` — a
+  one-time/idempotent-rerun script, not a scheduled job). Source: resolved
+  `public.owner_conditions` episodes (`butlers.core.owner_conditions`,
+  pre-dates this RFC) — not the insight broker's clustering, which the
+  Context section above already notes is discarded every delivery cycle and
+  so has no durable history to backfill from. Each resolved episode becomes
+  one `state='closed'` case keyed by
+  `backfill:owner_condition:{source}:{fingerprint}:{episode}`, with
+  `outcome` taken from the episode's `metadata.resolution_reason` (falling
+  back to `"resolved"`). `backfill_historical_case` hard-codes
+  `state = 'closed'` in its INSERT text — no caller can make it write an
+  open case — and a `WHERE NOT EXISTS` guard on `correlation_key` makes
+  reruns idempotent. No `fleet_case_links` row is written; that binding is
+  S7's job.
+- **S7 (landed):** three-ledger binding through `fleet_case_links`
+  (`fleet_cases.write_case_link`, `core_tools._fleet_cases.record_case_link`).
+  `link_kind` is one of `insight_candidate`, `owner_condition`,
+  `attention_record` — `ref` is that ledger's own id
+  (`public.insight_candidates.id`, `public.owner_conditions.id`,
+  `public.attention_ledger.id` respectively). No new scheduled job: the write
+  is triggered from the three existing call sites that can observe a genuine
+  cross-ledger reference rather than a speculative correlation —
+  `contribute_case_evidence` writes a link when called with one of the three
+  reserved `kind` values (the insight-candidate and owner-condition paths;
+  the insight broker itself still does not call any fleet-case tool, so an
+  insight-candidate link requires some caller to cite the candidate id
+  explicitly via evidence — no broker wiring ships in this slice either);
+  `evaluate_case_attention`'s urgent-bypass path (Slice 4) writes an
+  `attention_record` link for the `public.attention_ledger` row it just
+  created, from both `contribute_case_evidence` and `propose_case_posture`;
+  and `backfill_from_owner_conditions` (Slice 6) writes an `owner_condition`
+  link back to the source episode for every case it touches, including a
+  case an earlier (pre-Slice-7) run already created — a rerun repairs the
+  missing links onto old rows, not just new ones. Write authority matches
+  `fleet_cases` exactly (`butler_switchboard_rw` only, RLS): a caller on a
+  non-Switchboard pool forwards through Switchboard's `route()`, mirroring
+  Slice 3's `open_case`/`propose_case_posture`/`close_case`. Idempotent via
+  `uq_fleet_case_links_ref`'s `(case_id, link_kind, ref)` uniqueness —
+  `ON CONFLICT DO NOTHING` — the same shape as `contribute_evidence`.
 
 ## Non-goals
 

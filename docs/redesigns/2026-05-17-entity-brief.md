@@ -1,5 +1,13 @@
 # entity redesign — integration brief
 
+> **Status: Active.** §0 (design intent) and §6b Amendment 1.1 (10-step contacts→triples
+> migration protocol) remain binding — cited by `openspec/specs/dashboard-relationship/spec.md`
+> (binding §0) and `openspec/specs/relationship-facts/spec.md` (§6b migration-safety
+> requirement). The v1/v2 baseline routes and visual layer this brief designed have shipped
+> (closed epics `bu-lh4ol`, `bu-ao6uh`, `bu-uhjxr`, `bu-m8gb6`) and later-scope depth work is
+> layered on top by [2026-06-12-entity-brief-v3.md](2026-06-12-entity-brief-v3.md) — not a
+> supersession of this brief's still-binding clauses.
+
 **Date:** 2026-05-17
 **Version:** v1
 **Bundle path:** `pr/overview/entity-redesign/`

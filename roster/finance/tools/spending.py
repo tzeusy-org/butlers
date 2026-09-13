@@ -59,7 +59,9 @@ async def spending_summary(
         ``merchant``, ``week``, ``month``.  When *None* the results are not
         bucketed (single overall group).
     category_filter:
-        If supplied, only transactions with this exact category are included.
+        If supplied, only transactions whose effective category (the
+        ``inferred_category`` overlay when present, else the raw ``category``
+        column) matches exactly are included.
     account_id:
         If supplied, only transactions linked to this account UUID are included.
 
@@ -130,7 +132,7 @@ async def spending_summary(
     idx = 3
 
     if category_filter is not None:
-        conditions.append(f"category = ${idx}")
+        conditions.append(f"COALESCE(metadata->>'inferred_category', category) = ${idx}")
         params.append(category_filter)
         idx += 1
 

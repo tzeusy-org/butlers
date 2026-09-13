@@ -5,7 +5,7 @@
 
 ## Summary
 
-Every butler is a long-running FastMCP SSE server whose tool surface is assembled from two layers: core tools (always present) and module tools (opt-in per butler). Modules implement the `Module` abstract base class and are resolved in topological dependency order. All tool registrations pass through a logging proxy that instruments each call with OpenTelemetry spans and session-attributed tool call capture. Ephemeral LLM sessions connect exclusively to their own butler's MCP endpoint via a generated config.
+Every butler is a long-running FastMCP HTTP server whose tool surface is assembled from two layers: daemon-owned core tools selected by group/type/name gates plus direct infrastructure registrations, and module tools opted into per butler. The canonical MCP transport is streamable HTTP at `/mcp`; legacy clients retain SSE compatibility at `/sse` plus `/messages`. Modules implement the `Module` abstract base class and are resolved in topological dependency order. Core and module registrations use different wrappers with explicit ownership of spans, module-state gating, logging, and session-attributed tool-call capture. Ephemeral LLM sessions connect exclusively to their own butler's canonical MCP endpoint via generated runtime configuration.
 
 ## Motivation
 
@@ -13,43 +13,27 @@ The tool surface defines the contract between a butler and the LLM instances it 
 
 ## Design
 
-### FastMCP SSE Server
+### FastMCP HTTP Server
 
-At startup, the daemon creates the `FastMCP` instance and registers core tools in RFC 0001 phase 13, registers module tools and gates in phase 14, then starts the SSE HTTP server on the butler's configured port in phase 15. The server remains running for the daemon's lifetime. All tool registrations complete before the server begins accepting connections.
+At startup, the daemon creates one `FastMCP` instance, registers core tools in RFC 0001 phase 13, registers module tools and gates in phase 14, and starts a unified HTTP server on the butler's configured port in phase 15. `ButlerDaemon._build_mcp_http_app()` exposes canonical streamable HTTP at `/mcp` and mounts the same registry's legacy SSE routes at `/sse` plus `/messages`. The server remains running for the daemon's lifetime, and all tool registrations complete before either transport accepts calls.
 
 ### Core Tools
 
-Every butler registers these tools regardless of module configuration:
+The daemon owns one core registration dispatcher independent of module
+configuration. The merged-tree inventory contains 79 unique core tool
+registrations: 71 are assigned to one of 14 `core_groups`, two are universal
+direct infrastructure registrations, and six are Messenger-only direct
+registrations. The exhaustive names and their registration gates are recorded
+under [Core Tool Gating via `core_groups`](#core-tool-gating-via-core_groups).
+No single butler necessarily receives all 79: `core_groups`, type gates, and
+name gates reduce the registered set before the server starts.
 
-| Tool | Signature | Purpose |
-|------|-----------|---------|
-| `status()` | `-> ButlerStatus` | Identity, loaded modules, health, uptime. Primary health-check endpoint. |
-| `trigger(prompt, context?)` | `-> TriggerResult` | Spawn a new LLM session with the given prompt. |
-| `route.execute(envelope)` | `-> {"status": "accepted"}` | Accept a routed request from the Switchboard (see RFC 0003). |
-| `tick()` | `-> TickResult` | Internal scheduler tick (not exposed to LLM sessions). |
-| `state_get(key)` | `-> value` | Read from KV state store. |
-| `state_set(key, value)` | `-> void` | Write to KV state store. |
-| `state_delete(key)` | `-> void` | Delete from KV state store. |
-| `state_list(prefix?)` | `-> [key, ...]` | List state store keys. |
-| `schedule_list()` | `-> [Schedule, ...]` | List scheduled tasks. |
-| `schedule_create(...)` | `-> Schedule` | Create a scheduled task. |
-| `schedule_update(...)` | `-> Schedule` | Update a scheduled task. |
-| `schedule_delete(id)` | `-> void` | Delete a scheduled task. |
-| `schedule_trigger(id)` | `-> TriggerResult` | Manually trigger a scheduled task. |
-| `sessions_list(...)` | `-> [Session, ...]` | Query session history. |
-| `sessions_get(id)` | `-> Session` | Get a single session. |
-| `sessions_summary()` | `-> Summary` | Aggregate session statistics. |
-| `sessions_daily()` | `-> [DaySummary, ...]` | Per-day session counts. |
-| `top_sessions(...)` | `-> [Session, ...]` | Highest-cost sessions. |
-| `schedule_costs()` | `-> CostBreakdown` | Cost attribution per schedule. |
-| `notify(...)` | `-> DeliveryResult` | Send outbound notification via Switchboard. |
-| `remind(...)` | `-> void` | Schedule a future reminder. |
-| `get_attachment(id)` | `-> AttachmentData` | Retrieve an ingested attachment from blob storage. |
-| `memory_catalog_fetch(source_schema, source_table, source_id)` | `-> CatalogFetchResult` | Follow a catalog pointer under server-held authority through Switchboard. |
-| `module.states()` | `-> ModuleStates` | List module enabled/disabled states. |
-| `module.set_enabled(name, enabled)` | `-> void` | Toggle a module at runtime. |
-
-Core tools are wrapped with OpenTelemetry spans (`butler.tool.<name>`) and tool-call logging for session attribution.
+Core registrations pass through `_ToolCallLoggingMCP`, which owns structured
+call logging and session-attributed capture. Core handlers retain ownership of
+their explicit `tool_span` decorators or manually constructed spans; the core
+wrapper does not synthesize a second span. Direct infrastructure registrations
+retain the same canonical logging/capture path even though they bypass the
+group decorator.
 
 ### Module ABC
 
@@ -82,13 +66,20 @@ Key constraints:
 
 The `ModuleRegistry` (`src/butlers/modules/registry.py`) maps module names to their implementing classes. A `default_registry()` function returns the built-in registry. Butler TOML config references modules by name; the registry resolves names to instances during phase 3.
 
-### Tool Call Logging Proxy
+### Registration Wrappers
 
-Module tool registrations pass through `_ToolCallLoggingMCP` rather than the raw `FastMCP` instance. This proxy intercepts every `mcp.tool()` call and wraps the handler with:
+Core tool registrations pass through `_ToolCallLoggingMCP`. It logs calls,
+records bounded session-attributed inputs and fingerprints, captures outcomes,
+and emits structured failure logs. Span ownership stays with the core handler;
+the wrapper does not add an automatic span.
 
-1. **OpenTelemetry span creation** -- A `butler.tool.<name>` span with `butler.name` attribute. The span parent is resolved from the active session context (see RFC 0005).
-2. **Tool call capture** -- Records tool name, module name, input payload, outcome (success/error), and result in the session's tool call buffer. This provides ground-truth tool execution data for session logs.
-3. **Error handling** -- Catches and logs exceptions from tool handlers without crashing the MCP server. Errors are recorded on the OTel span with full stack traces.
+Module tool registrations pass through `_SpanWrappingMCP`. In addition to the
+same logging, capture, and failure reporting, it creates the
+`butler.tool.<name>` span, enforces live module enabled/disabled state at call
+time, records the tool-to-module map, and fails closed if a non-Messenger module
+attempts to register channel-egress ownership. Both wrappers decorate the
+handler registered on the one canonical FastMCP registry; neither creates a
+second invocation path.
 
 ### Tool Sensitivity Metadata
 
@@ -115,10 +106,14 @@ The skills subsystem (`src/butlers/core/skills.py`) provides:
 
 ### Ephemeral MCP Config Generation
 
-When the Spawner (RFC 0001) invokes an LLM session, it generates a temporary MCP configuration containing:
+When the Spawner (RFC 0001) invokes an LLM session, it generates temporary runtime MCP configuration containing:
 
-- The butler's MCP URL (SSE endpoint) with a `runtime_session_id` query parameter for tool call attribution.
+- The butler's canonical streamable-HTTP `/mcp` URL with a `runtime_session_id` query parameter for tool-call attribution.
 - No other MCP servers.
+
+The `/sse` and `/messages` routes remain available only for legacy/internal
+clients that have not migrated to streamable HTTP; they are not the generated
+runtime-session default.
 
 The `runtime_session_id` query parameter allows the tool call logging proxy to attribute tool invocations to the correct session record, even when multiple sessions run concurrently (if `max_concurrent_sessions > 1`).
 
@@ -136,10 +131,12 @@ Tool sensitivity metadata from `tool_metadata()` informs which arguments are saf
 
 ### Tool Budget Discipline
 
-Every registered tool costs tokens at discovery time. At high tool counts
-(90-157), this token overhead degrades model performance --- especially on
-smaller or cheaper models --- by consuming context window and reducing tool
-selection accuracy. The target is **30-50 tools per butler**.
+Under eager presentation, every LLM-presentable registered definition costs
+tokens at discovery time. At high tool counts (90-157), this overhead degrades
+model performance --- especially on smaller or cheaper models --- by consuming
+context window and reducing tool-selection accuracy. RFC 0027 therefore sets a
+target of **30-50 full definitions initially loaded per session** while keeping
+registration-time group and manifesto boundaries authoritative.
 
 #### Core Tool Gating via `core_groups`
 
@@ -148,42 +145,57 @@ by the `core_groups` allowlist from the per-schema `runtime_config` table. When
 `core_groups` is NULL, all groups are registered (backward compatibility). When
 set, only tools belonging to the listed groups are registered on the MCP server.
 
-The known core groups are:
+The complete merged-tree group inventory is:
 
-| Group | Tools |
-|-------|-------|
-| `infra` | `status`, `trigger`, `tick`, `correct`, `memory_access`, `memory_catalog_fetch` |
-| `state` | `state_get`, `state_set`, `state_delete`, `state_list` |
-| `scheduling` | `schedule_list`, `schedule_create`, `schedule_update`, `schedule_delete`, `schedule_trigger`, `schedule_costs` |
-| `sessions` | `sessions_list`, `sessions_get`, `sessions_summary`, `sessions_daily`, `top_sessions` |
-| `notifications` | `notify`, `remind` |
-| `media` | `get_attachment` |
-| `temporal` | `deadline_*`, `event_chain_*`, `seasonal_period_*` |
-| `module_mgmt` | `module.states`, `module.set_enabled` |
-| `switchboard_routing` | `ingest`, `route_to_butler`, `connector.heartbeat` (name-gated: switchboard only) |
-| `switchboard_backfill` | `backfill.poll`, `backfill.progress` (name-gated: switchboard only) |
+| Group | Count | Tools | Additional registration gate |
+|-------|------:|-------|------------------------------|
+| `infra` | 11 | `status`, `trigger`, `tick`, `correct`, `memory_access`, `memory_catalog_fetch`, `conversation_reply`, `conversation_recall`, `conversation_thread_read`, `shutdown`, `chronicler_day_close_refresh` | `chronicler_day_close_refresh` requires `butler_name == "chronicler"`; the other ten have no type/name gate. |
+| `state` | 4 | `state_get`, `state_set`, `state_delete`, `state_list` | None. |
+| `scheduling` | 6 | `schedule_list`, `schedule_create`, `schedule_update`, `schedule_delete`, `schedule_trigger`, `schedule_costs` | `schedule_trigger` and `schedule_costs` require a non-staffer; the other four do not. |
+| `sessions` | 5 | `sessions_list`, `sessions_get`, `sessions_summary`, `sessions_daily`, `top_sessions` | All five require a non-staffer. |
+| `notifications` | 2 | `remind`, `notify` | `notify` requires a non-staffer; `remind` does not. |
+| `media` | 1 | `get_attachment` | None. |
+| `graph` | 2 | `entity_graph_walk`, `entity_graph_path` | None; both are group-gated but available to every butler type. |
+| `temporal` | 13 | `deadline_create`, `deadline_update`, `deadline_list`, `deadline_delete`, `event_chain_create`, `event_chain_update`, `event_chain_list`, `event_chain_delete`, `seasonal_period_create`, `seasonal_period_update`, `seasonal_period_list`, `seasonal_period_delete`, `seasonal_period_create_preset` | All thirteen require a non-staffer. |
+| `module_mgmt` | 2 | `module.states`, `module.set_enabled` | None. |
+| `switchboard_routing` | 6 | `ingest`, `route_to_butler`, `answer_question`, `cannot_answer`, `file_bug_report`, `connector.heartbeat` | All six require `butler_name == "switchboard"`. |
+| `switchboard_backfill` | 2 | `backfill.poll`, `backfill.progress` | Both require `butler_name == "switchboard"`. |
+| `delegation` | 4 | `delegate_ask`, `delegate_receive`, `delegate_answer`, `delegate_wake` | All four require a non-staffer. |
+| `domain_events` | 6 | `publish_event`, `subscribe_to_event`, `unsubscribe_from_event`, `list_my_subscriptions`, `receive_domain_event`, `report_event_reaction` | All six require a non-staffer. |
+| `fleet_cases` | 7 | `find_open_case`, `open_case`, `contribute_case_evidence`, `propose_case_posture`, `close_case`, `record_case_link`, `read_case` | None; all seven are group-gated but registered for every butler type, including Switchboard. Call-time forwarding and write authority remain separate handler concerns. |
 
-**Name-gated groups.** Some groups are additionally gated by butler name:
-`switchboard_routing` and `switchboard_backfill` tools are ONLY registered when
-`butler_name == "switchboard"`, regardless of `core_groups`. Similarly,
-`delivery_preferences_*` and `deferred_notification_*` tools are ONLY registered
-when `butler_name == "messenger"`. This prevents a domain butler from
-accidentally gaining switchboard routing powers.
+The eight direct registrations are outside `KNOWN_CORE_GROUPS` and therefore
+do not become selectable merely by adding a group name:
 
-**`route.execute` is ALWAYS registered** regardless of `core_groups`. All
-butlers need it because the Switchboard calls it server-to-server via MCP to
-deliver routed requests. `route.execute` is an infrastructure endpoint, not an
-LLM-facing tool. LLM-visibility filtering (hiding `route.execute` from the
-LLM's tool list while keeping the MCP handler callable) is deferred to a
-future change.
+| Direct registration | Count | Tools | Gate |
+|---------------------|------:|-------|------|
+| Universal infrastructure | 2 | `route.execute`, `cancel_session` | Always registered, regardless of `core_groups`, type, or name. |
+| Messenger infrastructure | 6 | `delivery_preferences_set`, `delivery_preferences_get`, `deferred_notifications_list`, `deferred_notification_cancel`, `scheduling_preferences_set`, `scheduling_preferences_get` | Registered only when `butler_name == "messenger"`, independently of `core_groups`. |
+
+**Name gates.** `switchboard_routing` and `switchboard_backfill` remain inert on
+every non-Switchboard daemon even when configured. The one group-local name
+gate is `infra`'s `chronicler_day_close_refresh`. Messenger's six tools are
+direct name-gated registrations rather than a fifteenth group.
+
+**Type gates.** The complete non-staffer-only set is the five `sessions` tools,
+all thirteen `temporal` tools, all four `delegation` tools, all six
+`domain_events` tools, `notify`, `schedule_trigger`, and `schedule_costs`.
+The remaining group tools have no type gate. `fleet_cases` deliberately remains
+available on staffers because Switchboard owns its write path.
+
+**Universal direct registrations.** Every daemon needs `route.execute` for
+Switchboard-routed delivery and `cancel_session` for dashboard cancellation.
+Both remain on canonical FastMCP `tools/list` but are infrastructure-only in the
+RFC 0027 LLM-presentation inventory.
 
 **Implementation.** The daemon reads `core_groups` from the effective
 `RuntimeConfig` (resolved from the `runtime_config` DB table via
 `RuntimeConfigAccessor`) and passes it to `_register_core_tools()`. A
 group-aware decorator `_core_tool(group)` replaces the prior post-registration
-prune pass. The tier constants (`UNIVERSAL_CORE_TOOL_NAMES`,
-`DOMAIN_CORE_TOOL_NAMES`, `MESSENGER_CORE_TOOL_NAMES`) and the
-`_tools_to_remove` pruning section are removed.
+prune pass. The former tier catalog and the `_tools_to_remove` pruning section
+are removed. Registration correctness is derived from the dispatcher,
+decorators, effective gates, and behavior tests rather than from a second
+hand-maintained catalog alias.
 
 #### Module Tool Groups
 
@@ -253,24 +265,35 @@ it will never use.
 Daemon startup logging (RFC 0005) SHOULD emit the total registered tool count
 per butler. A warning SHOULD fire when the count exceeds 50.
 
-**Codex adapter retry mechanism.** The Codex runtime adapter
-(`src/butlers/core/runtimes/codex.py`) detects MCP connection failures
-post-invocation: when a session returns 0 MCP tool calls despite configured MCP
-servers, the adapter retries the invocation once after a 1.5-second delay
-(`_MCP_RETRY_DELAY_SECONDS`). This guards against transient SSE connection
-races where the Codex CLI exits before discovering the butler's tool surface.
+**Codex adapter retry mechanism.** The current Codex adapter enters its MCP
+discovery retry path only when MCP servers were configured, no non-command MCP
+tool call was parsed, and stderr contains an explicit closed transport,
+connection, startup, or protocol-failure marker. Zero MCP calls alone is not a
+failure signal. Plain-text and command-only completions without such a marker
+are accepted, and an invocation with no MCP servers is never retried for MCP
+discovery.
+
+The retry delays are exactly 2 seconds and 5 seconds
+(`_MCP_RETRY_DELAYS = (2.0, 5.0)`), for at most three subprocess attempts
+including the initial call. The loop stops as soon as an MCP call appears or a
+later result no longer matches the closed failure predicate. If all three
+attempts retain the predicate, the adapter raises `MCPToolDiscoveryError` with
+the retained partial result/call/usage evidence.
 
 The adapter records the following diagnostics in the session `process_log`:
 
 | Key | Type | Meaning |
 |-----|------|---------|
-| `mcp_connection_failed` | `bool` | `True` when MCP servers were configured but no MCP tool calls were observed (or when no servers were configured). |
-| `retry_attempted` | `bool` | `True` when the adapter performed the 1.5s retry. |
-| `retry_succeeded` | `bool` | `True` when the retry invocation produced MCP tool calls. |
+| `mcp_connection_failed` | `bool` | `True` after persistent closed-signal discovery failure; the existing no-MCP configuration path also records `True` without retrying. |
+| `retry_attempted` | `bool` | `True` when at least one 2/5-second discovery retry ran. |
+| `retry_succeeded` | `bool | None` | `True` when a retry produced an MCP call, `False` when all retries retained the failure, and `None` when a retry produced an accepted no-tool result. |
+| `attempt_count` | `int` | Total subprocess attempts, including the initial call. |
+| `result_source` | `first | retry` | Which attempt supplies the retained result evidence. |
 
-These fields are present only when `mcp_connection_failed` is `True`. Session
-monitoring dashboards and alerting rules SHOULD key on `retry_attempted = True
-AND retry_succeeded = False` to surface persistent MCP connectivity issues.
+Session monitoring dashboards and alerting rules SHOULD key on
+`retry_attempted = True AND retry_succeeded = False` to surface persistent MCP
+connectivity issues; `mcp_connection_failed` alone also covers the intentional
+no-MCP configuration case and is not proof that a retry ran.
 
 #### Streamable-HTTP Disconnect Log Filter
 
@@ -296,7 +319,7 @@ applied once per process from `ButlerDaemon._build_mcp_http_app`.
 
 - **RFC 0001:** Tool registration occurs during daemon startup phases 13-14.
 - **RFC 0003:** `route.execute` is a core tool that accepts Switchboard-routed envelopes.
-- **RFC 0005:** All tools are instrumented via the logging proxy with OTel spans.
+- **RFC 0005:** Core and module wrappers preserve bounded call logging/capture; module spans are wrapper-owned while core span ownership remains with each handler.
 - **RFC 0006:** Module migrations are discovered and executed based on `migration_revisions()`.
 - **RFC 0011:** The insight broker module on the Switchboard registers `propose_insight_candidate` as a module tool. The `notify` core tool is extended with `intent='insight'` for insight delivery.
 
@@ -306,7 +329,7 @@ applied once per process from `ButlerDaemon._build_mcp_http_app`.
 
 **Peer-to-peer MCP between butlers.** Rejected in favor of Switchboard-mediated routing. Direct connections would create O(n^2) configuration complexity and eliminate the central audit/routing/identity resolution point.
 
-**Dynamic tool registration after server start.** Rejected because FastMCP does not support hot-adding tools to a running SSE server. All tools MUST be registered before the server begins accepting connections.
+**Dynamic tool registration after server start.** Rejected because the canonical FastMCP HTTP server finalizes its tool surface before accepting streamable-HTTP or legacy-SSE calls. All tools MUST be registered before the server begins accepting connections.
 
 ## Accepted Amendment 1 (2026-08-30) — LLM Presentation and Native Deferred Discovery
 
@@ -324,17 +347,44 @@ runtimes:
 - The 30-50 target becomes an initially loaded working-set target rather than
   a hard ceiling on registered handlers. Manifesto and group pruning remain
   mandatory because they encode ownership, not just token cost.
-- Verified runtime tuples may use native deferred search; all others receive
-  the eager LLM-presentable projection with unchanged typed MCP calls.
+- Verified runtime tuples may use native deferred search. An unadmitted native
+  tuple uses a separately verified eager-capable profile/candidate when one is
+  available; otherwise it is ineligible for tool-bearing work. Every permitted
+  mode preserves unchanged typed MCP calls.
 - Tool descriptors are finalized only after approval wrapping, and invocation
   always returns to the final wrapped FastMCP registry.
 - Skills remain guidance-only and cannot register or present tools.
 
-The earlier Codex retry description is also stale relative to observed code.
-Zero MCP calls alone no longer proves discovery failure: the adapter retries
-only when an explicit closed MCP transport/connection or native discovery
-protocol failure is present and complete merged evidence proves zero MCP and
-zero non-MCP effect-capable actions. Plain-text and successful shell-only
-completions without such failure evidence are valid; a failed attempt that ran
-shell/command execution is not replayable. RFC 0027 defines the shared trigger
-vocabulary and effect predicate for every presentation mode.
+## Accepted Amendment 2 (2026-08-31) — Adapter-Owned Search Corpus and Complete MCP Listing
+
+**Status:** Owner-selected Option B in `bu-g5fha`; effective in the canonical
+contract when the paired RFC/OpenSpec amendment merges.
+
+Amendment 2 supersedes Amendment 1 only on where the searchable LLM corpus is
+bounded, how runtime-native search is rendered, and how
+opaque runtime-host MCP pagination is treated:
+
+- FastMCP `tools/list` remains the complete registered protocol surface over
+  streamable HTTP and SSE for every client.
+- The post-approval catalog retains immutable definitions, names, and digests,
+  never handler callables.
+- Each runtime attempt receives a plan-digest-bound canonical-name search
+  corpus; the adapter renders it through supported public host configuration
+  and, for a verified native tuple, exposes a small initial summary while the
+  host searches and loads full typed definitions on demand.
+- The allowlist bounds search eligibility. It is not the source of material
+  token savings; eager-only hosts still serialize every allowed definition.
+- Runtime-host MCP enumeration and pagination remain internal to that
+  invocation and are not represented as Butlers-owned cursors. Conformance must
+  prove hidden definitions, schemas, and counts never reach model-visible
+  input.
+- Model-visible omission is not call-time authorization. Direct calls continue
+  through the complete canonical MCP endpoint and final wrapped handler.
+- A tuple that cannot prevent its host from independently serializing the
+  complete list is ineligible for tool-bearing work. The complete list is not a
+  presentation fallback.
+- Private FastMCP hooks, monkeypatches, duplicate filtered servers, proxies,
+  and JSON-RPC/SSE frame rewriting remain prohibited.
+
+Registration, module groups, approval wrapping, skills, schemas, logging,
+attribution, and MCP-only communication are unchanged.

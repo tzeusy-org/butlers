@@ -2431,6 +2431,47 @@ describe("SpendPage — degraded states (bu-mkd5r)", () => {
     });
     expect(screen.queryByText(/No routing rules are configured/)).toBeNull();
   });
+
+  it("deep-links ?rule=<id> to the matching row and flashes it (bu-lygbct)", async () => {
+    // Real timers throughout (matches every other test in this file):
+    // the highlight's own removal timeout aside, `findByTestId` below polls
+    // via a real setTimeout while the rules query resolves, which would
+    // deadlock under fake timers -- nothing left to advance them.
+    const store = makeRulesStore([
+      {
+        id: "rule-a",
+        position: 1,
+        condition: {},
+        action: { model: "claude-haiku" },
+        saved_7d: null,
+        created_at: "",
+        updated_at: "",
+      },
+      {
+        id: "rule-b",
+        position: 2,
+        condition: {},
+        action: { model: "claude-sonnet" },
+        saved_7d: null,
+        created_at: "",
+        updated_at: "",
+      },
+    ]);
+    mockRulesApi(store);
+
+    await act(async () => {
+      renderPage(["/?rule=rule-b"]);
+    });
+
+    const row = await screen.findByTestId("spend-rule-row-rule-b");
+    expect(row.classList.contains("spend-rule-highlight")).toBe(true);
+    // The rule the audit row did NOT reference stays unflashed.
+    expect(
+      screen
+        .getByTestId("spend-rule-row-rule-a")
+        .classList.contains("spend-rule-highlight"),
+    ).toBe(false);
+  });
 });
 
 /** REQ-dashboard-spend-dashboard-001. */
@@ -2739,6 +2780,51 @@ describe("SpendPage — By Schedule forecast honesty (bu-6jv4m.2)", () => {
     // The measured history is still reported.
     expect(screen.getByTestId("by-schedule-section").textContent).toContain(
       "$0.50",
+    );
+  });
+
+  it("marks a retired schedule and never renders it as a live forecast (bu-2jtfw.4)", async () => {
+    mockUseCostsBySchedule.mockReturnValue({
+      data: {
+        data: [
+          {
+            schedule_name: "deleted-schedule",
+            butler: "general",
+            cron: "0 8 * * *",
+            retired: true,
+            total_runs: 1,
+            total_cost_usd: 500.0,
+            avg_cost_per_run: 500.0,
+            projected_monthly_runs: 0,
+            projected_monthly_usd: null,
+          },
+        ],
+        meta: { forecast_basis: FORECAST_BASIS },
+      },
+      isLoading: false,
+      isError: false,
+    });
+    await act(async () => {
+      renderPage();
+    });
+
+    const badge = await screen.findByTestId(
+      "schedule-retired-general-deleted-schedule",
+    );
+    expect(badge.textContent).toContain("retired");
+
+    const runs = screen.getByTestId(
+      "schedule-projected-runs-general-deleted-schedule",
+    );
+    const cost = screen.getByTestId(
+      "schedule-projected-cost-general-deleted-schedule",
+    );
+    expect(runs.textContent).toContain("—");
+    expect(cost.textContent).toContain("—");
+    // The real measured burn stays visible -- retired hides the forecast,
+    // not the history.
+    expect(screen.getByTestId("by-schedule-section").textContent).toContain(
+      "$500.00",
     );
   });
 });

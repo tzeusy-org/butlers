@@ -112,6 +112,18 @@ def _is_valid_trigger_source(trigger_source: str) -> bool:
 _FRICTION_GUARDRAIL_MARKERS = ("tool_call_budget_exceeded", "token_budget_exceeded")
 _FRICTION_CLASSIFICATION_TIMEOUT_SECONDS_RE = re.compile(r"Session timed out after (\d+)s")
 
+#: Every kind ``sessions_friction.kind`` accepts (mirrors the CHECK constraint
+#: in ``alembic/versions/core/core_220_sessions_friction.py``). Used to
+#: zero-fill ``friction_summary``'s ``by_kind`` breakdown so a console panel
+#: can render a stable set of counters instead of a sparse dict.
+_FRICTION_KINDS = (
+    "degenerate_tool_loop",
+    "guardrail_termination",
+    "classification_timeout",
+    "recovered_error",
+    "dead_end",
+)
+
 
 def _is_friction_classification_timeout(error: str | None, model: str | None) -> bool:
     """Mirror the ``classification_timeout`` branch of ``_ERROR_MARKER_CASE_SQL``."""
@@ -917,6 +929,42 @@ async def sessions_summary(pool: asyncpg.Pool, period: str = "today") -> dict[st
     }
 
 
+async def friction_summary(pool: asyncpg.Pool, period: str = "today") -> dict[str, Any]:
+    """Return typed friction-episode counts for a period, zero-filled per kind.
+
+    Joins ``sessions_friction`` to ``sessions`` on ``session_id`` and filters
+    on the parent session's ``started_at`` -- the same window boundary
+    ``sessions_summary`` uses -- rather than the friction row's own
+    ``created_at``, so a friction breakdown and an outcome summary for the
+    same ``period`` always describe the same set of sessions.
+    """
+    if period not in _SUMMARY_PERIODS:
+        raise ValueError(f"Invalid period {period!r}; must be one of {sorted(_SUMMARY_PERIODS)}")
+
+    since = _period_start(period)
+    rows = await pool.fetch(
+        """
+        SELECT f.kind, COUNT(*)::bigint AS count
+        FROM sessions_friction f
+        JOIN sessions s ON s.id = f.session_id
+        WHERE s.started_at >= $1
+        GROUP BY f.kind
+        """,
+        since,
+    )
+
+    by_kind: dict[str, int] = dict.fromkeys(_FRICTION_KINDS, 0)
+    for row in rows:
+        kind = str(row["kind"])
+        by_kind[kind] = by_kind.get(kind, 0) + int(row["count"])
+
+    return {
+        "period": period,
+        "total": sum(by_kind.values()),
+        "by_kind": by_kind,
+    }
+
+
 async def sessions_daily(
     pool: asyncpg.Pool,
     from_date: str | date,
@@ -1068,6 +1116,12 @@ async def schedule_costs(
     own cadence over an average calendar month (``_estimate_monthly_runs``).
     ``forecast_basis`` states that basis once at the envelope level, since it is
     a constant and does not vary by schedule.
+
+    A row also carries ``enabled``, the live ``scheduled_tasks.enabled`` flag.
+    ``scheduler.py`` sets this ``false`` rather than deleting a removed TOML
+    schedule, so its historical sessions remain queryable -- but a disabled
+    schedule cannot recur, and ``projected_monthly_runs`` is forced to ``0.0``
+    for it regardless of what the cron expression implies (bu-2jtfw.4).
     """
     start_at, end_exclusive = _resolve_optional_range(from_date, to_date)
     rows = await pool.fetch(
@@ -1075,6 +1129,7 @@ async def schedule_costs(
         SELECT
             st.name,
             st.cron,
+            st.enabled,
             s.model,
             COUNT(s.id)::bigint AS total_runs,
             COALESCE(SUM(s.input_tokens), 0)::bigint AS total_input_tokens,
@@ -1086,7 +1141,7 @@ async def schedule_costs(
             ON s.trigger_source = ('schedule:' || st.name)
             AND ($1::timestamptz IS NULL OR s.started_at >= $1)
             AND ($2::timestamptz IS NULL OR s.started_at < $2)
-        GROUP BY st.name, st.cron, s.model
+        GROUP BY st.name, st.cron, st.enabled, s.model
         ORDER BY st.name, s.model
         """,
         start_at,
@@ -1096,10 +1151,12 @@ async def schedule_costs(
     schedules: list[dict[str, Any]] = []
     for row in rows:
         cron = str(row["cron"])
+        enabled = bool(row["enabled"])
         schedules.append(
             {
                 "name": str(row["name"]),
                 "cron": cron,
+                "enabled": enabled,
                 "model": "" if row["model"] is None else str(row["model"]),
                 "total_runs": int(row["total_runs"]),
                 "total_input_tokens": int(row["total_input_tokens"]),
@@ -1109,8 +1166,10 @@ async def schedule_costs(
                 # Forecast input, not measured history: the cadence the cron
                 # expression itself implies over an average calendar month
                 # (bu-6jv4m.2). Consumers must keep it separate from the
-                # measured totals above.
-                "projected_monthly_runs": _estimate_monthly_runs(cron),
+                # measured totals above. A retired (disabled) schedule cannot
+                # recur, so it never gets a forecast regardless of cadence
+                # (bu-2jtfw.4) -- the caller decides how to represent that.
+                "projected_monthly_runs": _estimate_monthly_runs(cron) if enabled else 0.0,
             }
         )
 

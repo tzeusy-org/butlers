@@ -397,6 +397,16 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Primary calendar updated
 - Failed to set primary: {}
 
+## `frontend/src/pages/ChatPage.tsx`
+
+- Start a new conversation
+- Recent
+- Conversation not found
+- This conversation may have been deleted, or the link is incorrect.
+- New conversation
+- Recent conversations
+- conversation history
+
 ## `frontend/src/pages/ChroniclesPage.tsx`
 
 - Regeneration produced no usable summary.
@@ -476,8 +486,6 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Couldn&rsquo;t load activity. Retry.
 - Retry
 - Gifts
-- Drafts
-- not sent
 - Loans
 - Message threads
 - Facts
@@ -741,6 +749,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 ## `frontend/src/pages/RuleDetailPage.tsx`
 
 - derived from episode {}
+- Failed to retire rule
 
 ## `frontend/src/pages/SecretsPage.tsx`
 
@@ -1090,6 +1099,12 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/pages/TimelinePage.tsx`
 
+- The Timeline interval in this URL is invalid.
+- Clear interval
+- Previous hour
+- Next hour
+- Latest hour
+- Clear selection
 - Scoped to trace
 - Clear trace filter
 - + Save view
@@ -1106,6 +1121,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Cancel
 - Save
 - Sessions, notifications, and errors across every butler: the fleet's single chronicle.
+- Timeline hour density
 - Trace scope
 - Timeline
 - Delete saved view {}
@@ -1344,6 +1360,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 ## `frontend/src/components/butler-detail/ButlerDomainEventsPanel.tsx`
 
 - no reaction recorded
+- contract unavailable
 - no standing subscriptions
 - no recent deliveries
 - recent deliveries
@@ -1404,6 +1421,14 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - This overlays the selected transactions' facts. It does not modify the original transaction records.
 - Updated {} transaction fact{}.
 - Bulk update failed.
+
+## `frontend/src/components/butler-detail/ButlerFrictionPanel.tsx`
+
+- no friction episodes this period
+- no failures this period
+- typed episodes + session outcomes
+- Friction summary period
+- Friction summary
 
 ## `frontend/src/components/butler-detail/ButlerGeneralCollectionsTab.tsx`
 
@@ -1503,24 +1528,17 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/components/butler-detail/ButlerLifestyleTasteTab.tsx`
 
-- Taste overview
 - Could not load taste overview.
-- Could not load taste preferences.
-- No taste preferences recorded yet.
-- Could not load consumption state.
-- No active consumption tracked.
-- Could not load recent additions.
-- No facts logged yet.
-- No weekly digests yet.
-- Lifestyle data failed to load. All panels are unavailable until the next successful fetch.
-- Taste summary
-- Consumption state
-- Recent additions
-- Weekly digest archive
-- Active preferences
-- Currently consuming
-- Recently logged
-- Weekly digest
+- Could not load taste verdicts.
+- No taste verdicts recorded yet.
+- Could not load recent works.
+- No works recorded yet.
+- Some lifestyle taste data failed to load. Unavailable panels will retry automatically.
+- Taste verdicts
+- Recently added
+- Works tracked
+- All signals
+- Signals (7d)
 
 ## `frontend/src/components/butler-detail/ButlerLogsTab.tsx`
 
@@ -1781,15 +1799,21 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - No trips found.
 - Previous
 - Next
-- Trip detail, including timeline, alerts, and accommodations.
+- Trip detail, including traveller party, connection integrity, timeline, alerts, and accommodations.
 - Close
 - Trip data unavailable.
 - Destination
 - Dates
+- Traveller party
+- No travellers recorded.
+- Connections
+- Connection data unavailable.
+- No connection on this journey.
 - Alerts
 - Timeline
 - No timeline entries yet.
 - Accommodations
+- Upcoming travel
 - Next departure
 - Active trips
 - Planned trips
@@ -1798,6 +1822,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Week ahead schedule
 - Upcoming checklist
 - Trips roster
+- Trip detail
 
 ## `frontend/src/components/butler-detail/GoogleHealthStatusCard.tsx`
 
@@ -1825,6 +1850,9 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Updated:
 - Max Concurrent
 - Max Queued
+- Tool Exposure Policy
+- Applies to newly planned sessions, no daemon restart needed.
+- Automatic verified discovery uses native tool search only when verified for the resolved runtime and model, falling back to a separately verified eager profile when one is available; otherwise the session is unavailable rather than guaranteed native discovery.
 - Core Groups
 - All groups enabled (no filter set)
 
@@ -1984,6 +2012,17 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Dunbar tier {}
 - No relationship tier
 
+## `frontend/src/components/chat/ChatDock.tsx`
+
+- Talk to Butlers
+- Resize chat dock
+- New conversation
+- Open in full page
+- Collapse chat dock
+- Collapse
+- Recent conversations
+- conversation history
+
 ## `frontend/src/components/chat/ChatPanel.tsx`
 
 - conversation history
@@ -2046,6 +2085,8 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - View lineage
 - No messages yet. Start the conversation below.
 - View session
+- Copied
+- Copy link ({})
 
 ## `frontend/src/components/chat/ToolCallDetails.tsx`
 
@@ -2964,6 +3005,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 - Navigation
 - Open navigation menu
+- Chat
 
 ## `frontend/src/components/layout/Sidebar.tsx`
 
@@ -2990,6 +3032,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 ## `frontend/src/components/memory/EpisodesRegister.tsx`
 
 - open ↗
+- Retry failed. Still dead-lettered.
 - the daybook
 
 ## `frontend/src/components/memory/FactsRegister.tsx`
@@ -3369,8 +3412,6 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Saving...
 - Save interaction
 - Save gift idea
-- Save draft
-- Saved as a draft only. Nothing is sent.
 - Save note
 - Record something
 - Log an interaction
@@ -3380,10 +3421,6 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Capture a gift idea
 - Gift idea
 - Occasion
-- Draft a reach-out
-- Draft message
-- What do you want to say?
-- Channel
 - Add a note
 - Note
 - Something worth remembering
@@ -3992,6 +4029,15 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Owner conditions
 - QA dispatch suppression counts
 
+## `frontend/src/components/system/StoredFunctionsTile.tsx`
+
+- Stored Functions
+- Deployed bodies vs. init-db.sql
+- Could not load stored-function drift status.
+- if (isError) return
+- Stored-function check unavailable.
+- The comparison itself failed. This is not a clean bill of health.
+
 ## `frontend/src/components/system/UptimeTile.tsx`
 
 - Uptime
@@ -4010,6 +4056,30 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Package version
 - Last deploy
 
+## `frontend/src/components/timeline/TimelineAttentionStrip.tsx`
+
+- Recent failure records could not be refreshed. Showing the last successful read.
+- Recent records marked failed (created in last 24h)
+- Retry
+- Loading recent failed records...
+- Recent failure records are unavailable.
+- Recent failed records are unavailable. Retry to inspect this 24-hour window.
+- The last successful read had no matching records; refresh to confirm the current status.
+- No matching records currently marked failed
+- No complete failure count is available while a source is unavailable.
+- Recent failure records are not available yet.
+- Recent failed records
+- Inspect failed {} {}
+
+## `frontend/src/components/timeline/TimelineDensity.tsx`
+
+- Could not load timeline density.
+- Retry
+- All matching events
+- Counts are not shown because every selected event source is unavailable.
+- Loading timeline density
+- Timeline event density by minute
+
 ## `frontend/src/components/timeline/TimelineEventDrawer.tsx`
 
 - View session transcript
@@ -4021,6 +4091,9 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 - Event
 - Clear link
+- Loading selected event...
+- The selected event could not be loaded.
+- Retry selected event
 - Retry
 - Older timeline events are temporarily unavailable.
 - Retry older events
@@ -4184,4 +4257,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3280*
+*Total strings: 3335*

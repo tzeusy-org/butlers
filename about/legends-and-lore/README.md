@@ -8,7 +8,7 @@ For a new reader, the recommended order follows data flow from startup through r
 
 1. **RFC 0001** -- Daemon startup, trigger dispatch, and session lifecycle
 2. **RFC 0002** -- MCP tool surface, module system, and skills infrastructure
-3. **RFC 0027** -- LLM tool presentation, portable eager filtering, and verified native deferred discovery
+3. **RFC 0027** -- Runtime-native Tool Search and deferred schema loading over a bounded MCP corpus
 4. **RFC 0003** -- Switchboard ingestion, triage, classification, and routing
 5. **RFC 0004** -- Identity resolution and contact model
 6. **RFC 0005** -- Observability, tracing, and metrics
@@ -45,7 +45,7 @@ For a new reader, the recommended order follows data flow from startup through r
 | [0024](rfcs/0024-messenger-private-email-correspondence-ledger.md) | Messenger-Private Email Correspondence Ledger | **Proposed — planning only.** Defines a privacy-minimized Messenger-owned outbound evidence ledger and bounded, aggregate-only Relationship enrichment path; exact provider-Sent proof, same-account/peer inbound correlation, and 180-day coverage are required before a bidirectional result. |
 | [0025](rfcs/0025-tracker-host-beads-projection-exporter.md) | Tracker-Host Beads Projection Exporter | **Draft.** A deterministic tracker-host exporter publishes a minimal active Beads projection to PostgreSQL; bounded runtime readers receive atomic snapshots, fixed freshness/retention, and explicit JSONL rollback without tracker access. |
 | [0026](rfcs/0026-commitment-lifecycle.md) | Evidence-Backed Commitment Lifecycle | **Draft.** Extends the owner-condition ledger with explicit resolution, commitment metadata, closure receipts, escalation, and owner-confirmed lifecycle evidence. |
-| [0027](rfcs/0027-runtime-tool-surface-discovery.md) | Runtime Tool Surface Discovery and Exposure | **Accepted.** Adds a runtime-neutral LLM tool-list projection, verified native deferred discovery, eager cross-CLI fallback, content-blind receipts, and measured rollout gates without changing MCP handler authority. |
+| [0027](rfcs/0027-runtime-tool-surface-discovery.md) | Runtime Tool Surface Discovery and Exposure | **Accepted, amended.** Makes verified runtime-native Tool Search and deferred schema loading the context-efficiency mechanism over an adapter-bounded search corpus; keeps canonical MCP listing complete, typed handler authority unchanged, and eager filtering as compatibility. |
 | [0028](rfcs/0028-home-physical-actuation-contract.md) | Home Physical Actuation Contract | **Accepted.** Defines the fail-closed HA risk map, approval boundary, per-attempt receipt, live post-condition proof, rollback hints, and minimized domain event for LLM-to-physical-world actions. |
 | [0029](rfcs/0029-expected-signals-and-honest-absence.md) | Expected Signals and Honest Absence | **Accepted.** Defines the shared present/absent/unmeasurable ledger, producer-liveness join, producer-owned upserts, and degraded rendering contract. |
 | [0030](rfcs/0030-system-plane-read-exception.md) | System-Plane Read Exception | **Accepted.** Extends RFC 0010's cross-butler briefing exception to fleet operational telemetry: the Concierge staffer answers dashboard-chat system-plane questions via two column-allowlisted, read-only UNION views instead of Switchboard fan-out, adding a sixth guardrail (a view-enforced column allowlist) that keeps free-text session content from crossing the schema boundary. |

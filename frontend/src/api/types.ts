@@ -688,10 +688,78 @@ export interface TimelineResponse {
 /** Query parameters for the timeline endpoint. */
 export interface TimelineParams {
   limit?: number;
+  /** Resolve this persisted identifier independently of head-page pagination. */
+  event?: string;
   butler?: string[];
   event_type?: string[];
   before?: string;
   /** Filter sessions and trace-attributed notifications by OpenTelemetry trace ID. */
+  trace?: string;
+  /** Inclusive UTC minute bound; must be paired with until. */
+  since?: string;
+  /** Exclusive UTC minute bound; must be paired with since. */
+  until?: string;
+}
+
+export interface TimelineHistogramBucket {
+  start: string;
+  end: string;
+  count: number;
+}
+
+export interface TimelineHistogramMeta {
+  since: string;
+  until: string;
+  bucket_seconds: 60;
+  availability: "complete" | "partial" | "unavailable";
+  expected_sources: number;
+  healthy_sources: number;
+  degraded_sources: string[];
+  degraded_butlers: string[];
+}
+
+export interface TimelineHistogramResponse {
+  data: TimelineHistogramBucket[];
+  meta: TimelineHistogramMeta;
+}
+
+export interface TimelineHistogramParams {
+  since: string;
+  until: string;
+  butler?: string[];
+  event_type?: string[];
+  trace?: string;
+}
+
+/** A content-blind recent record currently marked failed. */
+export interface TimelineAttentionItem {
+  id: string;
+  kind: "session" | "notification";
+  butler: string;
+  timestamp: string;
+}
+
+export interface TimelineAttentionMeta {
+  since: string;
+  until: string;
+  failed_sessions: number;
+  failed_notifications: number;
+  total: number;
+  has_more: boolean;
+  availability: "complete" | "partial" | "unavailable";
+  expected_sources: number;
+  healthy_sources: number;
+  degraded_sources: string[];
+  degraded_butlers: string[];
+}
+
+export interface TimelineAttentionResponse {
+  data: TimelineAttentionItem[];
+  meta: TimelineAttentionMeta;
+}
+
+export interface TimelineAttentionParams {
+  butler?: string[];
   trace?: string;
 }
 
@@ -722,12 +790,35 @@ export interface SpendDivergence {
 export interface SpendSummary {
   total_cost_usd: number;
   total_sessions: number;
+  /** Uncached input tokens only -- see `total_cached_input_tokens`. */
   total_input_tokens: number;
   total_output_tokens: number;
+  /**
+   * Prompt-cache reads. Previously computed and discarded (bu-2jtfw.4): a
+   * heavily-cached model showed as a small fraction of its true token
+   * volume. Add to `total_input_tokens` for the true total tokens bought.
+   */
+  total_cached_input_tokens?: number;
+  /** Prompt-cache writes. */
+  total_cache_creation_tokens?: number;
+  /** Dollar cost of just the cache-read bucket, isolated from `total_cost_usd`. */
+  cache_read_cost_usd?: number;
+  /**
+   * Fraction of input tokens served from cache. `null` (never `0`) when
+   * `total_cached_input_tokens + total_input_tokens` is zero -- a zero
+   * denominator is "no data", not "no cache hits".
+   */
+  cache_hit_rate?: number | null;
   by_butler: Record<string, number>;
   by_model: Record<string, number>;
   /** Models excluded from dollar subtotals; never silently folded into $0. */
   unpriced_models?: UnpricedModelUsage[];
+  /**
+   * Priced models whose cache reads this window billed at the full input
+   * rate because no confirmed cache-read price is configured -- their
+   * dollar figures are real but not cache-discounted.
+   */
+  no_cache_price_models?: string[];
   divergences?: SpendDivergence[];
   divergence_source_error?: boolean;
   historical_attribution_note?: string | null;
@@ -743,6 +834,11 @@ export interface DailySpend {
   sessions: number;
   input_tokens: number;
   output_tokens: number;
+  /** See `SpendSummary.total_cached_input_tokens` -- same semantics, scoped to one day. */
+  cached_input_tokens?: number;
+  cache_creation_tokens?: number;
+  cache_read_cost_usd?: number;
+  cache_hit_rate?: number | null;
   /**
    * Real per-butler cost contributions for this day (bu-86c4c.11 — extends
    * GET /api/spend/daily to preserve the butler identity it previously
@@ -810,16 +906,23 @@ export interface TopSessionsResponse {
  * `meta.forecast_basis` (it is a constant, so it is not repeated on each row).
  * `projected_monthly_runs === 0` means the cadence could not be established --
  * there is no forecast, which is not the same claim as "this costs nothing".
+ *
+ * `retired` is true when the underlying schedule has been disabled (removed
+ * from TOML config rather than deleted). Its measured history above stays
+ * real, but it cannot recur -- `projected_monthly_runs` is always `0` and
+ * `projected_monthly_usd` is always `null` for a retired schedule, so it can
+ * never occupy the head of a projected-cost ranking (bu-2jtfw.4).
  */
 export interface ScheduleCost {
   schedule_name: string;
   butler: string;
   cron: string;
+  retired?: boolean;
   total_runs: number;
   total_cost_usd: number;
   avg_cost_per_run: number;
   projected_monthly_runs: number;
-  projected_monthly_usd: number;
+  projected_monthly_usd: number | null;
 }
 
 /** GET /api/spend/by-schedule response: per-schedule ranking + degraded-butler meta. */
@@ -2877,6 +2980,8 @@ export interface MemoryRule {
   last_evaluated_at: string | null;
   tags: string[];
   metadata: Record<string, unknown>;
+  /** Set when the rule has been retired (stops firing, kept for reference). */
+  retired_at: string | null;
 }
 
 /** Aggregated statistics across all memory tiers. */
@@ -2891,6 +2996,8 @@ export interface MemoryStats {
   established_rules: number;
   proven_rules: number;
   anti_pattern_rules: number;
+  /** Retired rules (bu-6t8ix.3), excluded from the maturity buckets above. */
+  retired_rules: number;
   /**
    * Consolidation lifecycle (memory redesign, additive — null/0 when unknown).
    * Mirrors src/butlers/api/models/memory.py::MemoryStats.
@@ -3693,32 +3800,6 @@ export interface SecretTemplate {
 }
 
 // ---------------------------------------------------------------------------
-// Backfill job types (switchboard ingestion history)
-// ---------------------------------------------------------------------------
-
-/** A connector entry from the connector_registry table. */
-/** @public knip mis-traces this type's import (used by a live consumer); remove when bu-9jvhm fixes the tracing gap. */
-export interface ConnectorEntry {
-  connector_type: string;
-  endpoint_identity: string;
-  instance_id: string | null;
-  version: string | null;
-  state: string;
-  error_message: string | null;
-  uptime_s: number | null;
-  last_heartbeat_at: string | null;
-  first_seen_at: string;
-  registered_via: string;
-  counter_messages_ingested: number;
-  counter_messages_failed: number;
-  counter_source_api_calls: number;
-  counter_checkpoint_saves: number;
-  counter_dedupe_accepted: number;
-  checkpoint_cursor: string | null;
-  checkpoint_updated_at: string | null;
-}
-
-// ---------------------------------------------------------------------------
 // Thread affinity types
 // ---------------------------------------------------------------------------
 
@@ -3776,7 +3857,7 @@ export interface ConnectorCheckpointRecord {
   archived: boolean;
 }
 
-/** A connector with current liveness and today's stats (GET /api/connectors). */
+/** A connector with current liveness and today's stats (GET /api/ingestion/connectors/summaries). */
 export interface ConnectorSummary {
   connector_type: string;
   endpoint_identity: string;
@@ -3866,18 +3947,6 @@ export interface ConnectorSummary {
   checkpoints?: ConnectorCheckpointRecord[];
 }
 
-/** Metadata for the legacy GET /api/switchboard/connectors roster endpoint. */
-export interface ConnectorSummariesMeta extends ApiMeta {
-  /** False only when the connector registry query failed; absent means available. */
-  connector_registry_available?: boolean;
-}
-
-/** Legacy connector roster response with explicit registry availability. */
-export interface ConnectorSummariesListResponse {
-  data: ConnectorSummary[];
-  meta: ConnectorSummariesMeta;
-}
-
 /** One OAuth scope entry from connector-oauth-scope-surface backend. */
 export interface ConnectorScopeEntry {
   name: string;
@@ -3913,7 +3982,7 @@ export interface ConnectorAuthBlock {
   recovery_reason?: "expired" | "rotation-needed" | null;
 }
 
-/** Full connector detail (GET /api/connectors/:type/:identity). */
+/** Client view model projected from the canonical flat connector-detail response. */
 export interface ConnectorDetail extends ConnectorSummary {
   instance_id: string | null;
   registered_via: string;
@@ -3964,7 +4033,7 @@ export interface ConnectorStatsSummary {
   avg_messages_per_hour: number;
 }
 
-/** Full stats response for a single connector (GET /api/connectors/:type/:identity/stats). */
+/** Client view model projected from canonical connector stats rows. */
 export interface ConnectorStats {
   connector_type: string;
   endpoint_identity: string;
@@ -4227,34 +4296,6 @@ export interface IngestionEventSession {
   cost_evidence?: "priced" | "unpriced" | "no_usage";
   trace_id: string | null;
   model: string | null;
-}
-
-/** Per-butler breakdown within an IngestionEventRollup. */
-export interface ButlerRollupEntry {
-  sessions: number;
-  input_tokens: number;
-  output_tokens: number;
-  /** Known-priced subtotal for this butler, if any. */
-  cost: number | null;
-  /** Token-using sessions omitted from cost because their price is unavailable. */
-  unpriced_session_count?: number;
-  /** Sessions with no token or stored-cost evidence. */
-  no_usage_session_count?: number;
-}
-
-/** Aggregate cost/token totals for all sessions linked to one ingestion event. */
-export interface IngestionEventRollup {
-  request_id: string;
-  total_sessions: number;
-  total_input_tokens: number;
-  total_output_tokens: number;
-  /** Known-priced subtotal across all sessions, if any. */
-  total_cost: number | null;
-  /** Token-using sessions omitted from total_cost because their price is unavailable. */
-  unpriced_session_count?: number;
-  /** Sessions with no token or stored-cost evidence. */
-  no_usage_session_count?: number;
-  by_butler: Record<string, ButlerRollupEntry>;
 }
 
 /** Cursor pagination metadata returned by keyset-paginated endpoints. */
@@ -5638,6 +5679,7 @@ export interface ConversationCancelResponse {
 export type ConversationSseEventType =
   | "conversation_created"
   | "dispatch_accepted"
+  | "phase"
   | "token"
   | "message_complete"
   | "error"
@@ -5647,6 +5689,20 @@ export type ConversationSseEventType =
 export interface ConversationSseEvent {
   event: ConversationSseEventType;
   data: unknown;
+}
+
+/**
+ * Shape of the `data` payload on a `phase` SSE event (bu-0ynlk.7) — real-time
+ * processing status, never fabricated: a phase is only emitted when the
+ * backend can truthfully observe it (see
+ * `src/butlers/api/routers/conversations.py` module docstring).
+ */
+export interface ConversationSsePhaseData {
+  phase: "classifying" | "routed" | "starting_session" | "thinking" | "writing" | string;
+  /** The butler handling this turn (`routed`/`starting_session`). */
+  target?: string | null;
+  /** The tool call in progress (`thinking` only). */
+  tool?: string | null;
 }
 
 /**
@@ -6196,12 +6252,16 @@ export interface QaAllowedRepoPatch {
 // Runtime Config
 // ---------------------------------------------------------------------------
 
+/** Accepted tool_exposure_policy values — closed to eager_filtered|auto. */
+export type ToolExposurePolicy = "eager_filtered" | "auto";
+
 /** Response from GET /api/butlers/{name}/runtime-config. */
 export interface RuntimeConfigResponse {
   butler_name: string;
   core_groups: string[] | null;
   max_concurrent: number;
   max_queued: number;
+  tool_exposure_policy: ToolExposurePolicy;
   seeded_at: string | null;
   updated_at: string | null;
   field_tiers: Record<string, "hot" | "cold">;
@@ -6212,6 +6272,7 @@ export interface RuntimeConfigPatch {
   core_groups?: string[] | null;
   max_concurrent?: number;
   max_queued?: number;
+  tool_exposure_policy?: ToolExposurePolicy;
 }
 
 /** Response from PATCH /api/butlers/{name}/runtime-config. */
@@ -7001,21 +7062,6 @@ export interface EntityInteraction {
   direction: string | null;
 }
 
-/**
- * A drafted reach-out for a relationship entity (predicate='reach_out_draft').
- *
- * A draft is drafted, never sent: there is no send endpoint behind this
- * surface, and `channel` records the channel the owner had in mind rather
- * than a delivery attempt. `status` is always "draft" today.
- */
-export interface EntityReachOutDraft {
-  id: string;
-  message: string | null;
-  channel: string | null;
-  status: string;
-  created_at: string | null;
-}
-
 /** Request body for POST /api/relationship/entities/{id}/notes. */
 export interface CreateEntityNoteRequest {
   content: string;
@@ -7041,12 +7087,6 @@ export interface CreateEntityInteractionRequest {
 export interface CreateEntityGiftRequest {
   description: string;
   occasion?: string | null;
-}
-
-/** Request body for POST /api/relationship/entities/{id}/reach-out-drafts. */
-export interface CreateEntityReachOutDraftRequest {
-  message: string;
-  channel?: string | null;
 }
 
 /** A gift fact for a relationship entity (predicate='gift'). */
@@ -7502,6 +7542,39 @@ export interface DriftFacts {
 }
 
 /**
+ * One deployed stored function whose body left the committed definition
+ * (bu-bi5an). Digests only -- never a body -- since a stored body can hold
+ * operator-supplied literals.
+ */
+export interface StoredFunctionEntry {
+  function: string;
+  /** init-db.sql line(s) of the committed variant(s), for locating the source. */
+  committed_lines: number[];
+  committed_digests: string[];
+  deployed_digests: string[];
+}
+
+/**
+ * Deployed stored-function bodies vs the configured bootstrap source
+ * (bu-bi5an, bu-uoctv).
+ *
+ * `not_deployed` is a legitimate state, not drift: a function only exists
+ * once its migration chain has run the bootstrap installer. `is_drifted`
+ * reflects `drifted` only -- never treat `not_deployed` as an alarm.
+ * `stored_function_check_available: false` means the comparison itself
+ * failed -- per the fleet-wide degraded-envelope convention, never render
+ * this as a truthful all-clear.
+ */
+export interface StoredFunctionFacts {
+  checked_at: string;
+  is_drifted: boolean;
+  drifted: StoredFunctionEntry[];
+  not_deployed: string[];
+  matched_count: number;
+  stored_function_check_available: boolean;
+}
+
+/**
  * One episode row from public.infra_conditions or public.owner_conditions
  * (bu-27dxl.6.2 / bu-ep4ks.3 / bu-ep4ks.6).
  *
@@ -7769,9 +7842,39 @@ export interface FinanceSubscription {
   payment_method: string | null;
   account_id: string | null;
   source_message_id: string | null;
+  cancellation_url: string | null;
+  notice_period_days: number | null;
+  cancel_by: string | null;
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
+}
+
+/** One forward obligation ledger row (bu-8cdl1.10), denormalized with its
+ * subscription's service/amount and cancellation-door status. */
+export interface FinanceObligation {
+  subscription_id: string;
+  service: string;
+  /** Numeric amount as string. */
+  amount: string;
+  currency: string;
+  period: string;
+  cancellation_url: string | null;
+  notice_period_days: number | null;
+  cancel_by: string | null;
+  warn_by: string | null;
+  unknown_door: boolean;
+  /** Numeric amount as string. */
+  price_change_amount: string | null;
+  price_change_direction: "increase" | "decrease" | null;
+  days_remaining_to_act: number | null;
+}
+
+export interface FinanceObligationsResponse {
+  items: FinanceObligation[];
+  count: number;
+  available: boolean;
+  degraded_reason: "obligation_ledger_unavailable" | null;
 }
 
 export interface FinanceExpectedSignal {
@@ -8036,6 +8139,23 @@ export interface TravelAlert {
   severity: "high" | "medium" | "low";
 }
 
+/** A traveller in the trip party, linked to the shared person identity spine. */
+export interface TravelTraveller {
+  id: string;
+  entity_id: string | null;
+  display_name: string | null;
+}
+
+/** Derived integrity verdict for one adjacent-leg connection. */
+export interface TravelConnection {
+  inbound_leg_id: string;
+  outbound_leg_id: string;
+  verdict: "holds" | "tight" | "broken" | "unknown";
+  available_minutes: number | null;
+  evidence: Record<string, unknown>;
+  computed_at: string;
+}
+
 /** Full trip summary with all linked entities and timeline. */
 export interface TravelTripSummary {
   trip: TravelTrip;
@@ -8045,6 +8165,21 @@ export interface TravelTripSummary {
   documents: TravelDocument[];
   timeline: TravelTimelineEntry[];
   alerts: TravelAlert[];
+  party: TravelTraveller[];
+  connections: TravelConnection[];
+  connection_reason: "no_connection_on_journey" | null;
+  /** Leg ids excluded from `legs` because their row could not be normalized. */
+  unreadable_leg_ids: string[];
+  /** Accommodation ids excluded from `accommodations` because their row could not be normalized. */
+  unreadable_accommodation_ids: string[];
+  /** Reservation ids excluded from `reservations` because their row could not be normalized. */
+  unreadable_reservation_ids: string[];
+  /** Document ids excluded from `documents` because their row could not be normalized. */
+  unreadable_document_ids: string[];
+  /** Traveller ids excluded from `party` because their row could not be normalized. */
+  unreadable_party_ids: string[];
+  /** Connection ids excluded because their derived row could not be normalized. */
+  unreadable_connection_ids: string[];
 }
 
 /** An upcoming trip with legs, accommodations, and days until departure. */
@@ -8071,6 +8206,8 @@ export interface TravelUpcomingModel {
   actions: TravelPreTripAction[];
   window_start: string;
   window_end: string;
+  /** Trip ids excluded from `upcoming_trips` because their row could not be normalized. */
+  unreadable_trip_ids: string[];
 }
 
 /** Params for listing trips. */
@@ -8080,6 +8217,17 @@ export interface TravelTripsParams {
   to_date?: string;
   offset?: number;
   limit?: number;
+}
+
+/** Pagination metadata for GET /api/travel/trips, plus per-row degraded-mode disclosure. */
+export interface TravelTripsMeta extends PaginationMeta {
+  /** Trip ids excluded from `data` because their row could not be normalized. */
+  unreadable_trip_ids: string[];
+}
+
+/** Paginated trips list response, with per-row degraded-mode disclosure. */
+export interface TravelTripsResponse extends PaginatedResponse<TravelTrip> {
+  meta: TravelTripsMeta;
 }
 
 /** A document expiring within the requested look-ahead window. */
@@ -8304,6 +8452,29 @@ export interface LatencyStats {
 /** Query params for GET /api/butlers/{name}/analytics/latency-stats. */
 export interface LatencyStatsParams {
   window_days?: number;
+}
+
+/**
+ * Response from GET /api/butlers/{name}/analytics/friction (bu-8cdl1.9 S3).
+ *
+ * `by_kind` is zero-filled across every `sessions_friction.kind` value
+ * (degenerate_tool_loop, guardrail_termination, classification_timeout,
+ * recovered_error, dead_end) so a console panel can render a stable counter
+ * set. `succeeded` / `failed` / `by_error_marker` mirror the outcome fields
+ * `sessions_summary` computes for the same period and window.
+ */
+export interface FrictionSummary {
+  period: "today" | "7d" | "30d";
+  total: number;
+  by_kind: Record<string, number>;
+  succeeded: number;
+  failed: number;
+  by_error_marker: Record<string, number>;
+}
+
+/** Query params for GET /api/butlers/{name}/analytics/friction. */
+export interface FrictionSummaryParams {
+  period?: "today" | "7d" | "30d";
 }
 
 // ---------------------------------------------------------------------------
@@ -9916,6 +10087,28 @@ export interface ReactionEntry {
 }
 
 /**
+ * One materialized publisher-owned event contract from
+ * public.domain_event_contracts (bu-6jv4m.8) -- each butler's published copy
+ * of its own `roster/<butler>/domain_events.toml` declaration, refreshed at
+ * startup. Read surface only: the TOML is the source of truth.
+ */
+export interface ContractEntry {
+  event_type: string;
+  publisher: string;
+  schema_version: number;
+  summary: string;
+  /** "standard" | "minimized-derived" */
+  retention_policy: string;
+  /** "expected" | "optional" */
+  reaction_expectation: string;
+  reaction_contract: string;
+  permitted_subscribers: string[];
+  required_fields: string[];
+  optional_fields: string[];
+  materialized_at: string;
+}
+
+/**
  * One public.domain_event_deliveries row joined with its event -- a fan-out
  * delivery attempt to (or from) a butler on the domain-event bus (bu-317s5).
  */
@@ -9942,4 +10135,50 @@ export interface DeliveryEntry {
    * "delivered" means the wake was scheduled, never that anyone acted.
    */
   reaction: ReactionSummary | null;
+}
+
+// ---------------------------------------------------------------------------
+// Lifestyle taste ledger (bu-2jtfw.10)
+// ---------------------------------------------------------------------------
+
+/** Ledger-wide taste counts. GET /api/lifestyle/taste/summary. */
+export interface TasteSummary {
+  total_works: number;
+  total_signals: number;
+  total_verdicts: number;
+  recent_signals_7d: number;
+  works_by_kind: Record<string, number>;
+  signals_by_kind: Record<string, number>;
+  /** False only for a genuine ledger-read failure, never a pre-migration empty ledger. */
+  ledger_available: boolean;
+}
+
+/** One work (track, artist, ...) in the taste ledger. */
+export interface TasteWork {
+  id: string;
+  kind: string;
+  title: string | null;
+  external_ids: Record<string, unknown>;
+  created_at: string;
+}
+
+/** One owner-asserted taste verdict, optionally tied to a work. */
+export interface TasteVerdict {
+  id: string;
+  work_id: string | null;
+  predicate: string;
+  verdict_text: string;
+  source: string;
+  created_at: string;
+}
+
+export interface TasteWorksParams {
+  kind?: string;
+  offset?: number;
+  limit?: number;
+}
+
+export interface TasteVerdictsParams {
+  offset?: number;
+  limit?: number;
 }

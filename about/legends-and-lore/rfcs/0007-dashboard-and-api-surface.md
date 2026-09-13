@@ -156,7 +156,9 @@ refetch, and never displays optimistic messages from another conversation.
 
 | Endpoint | Response | Description |
 |----------|----------|-------------|
-| `GET /api/timeline` | `TimelineResponse` | Cross-butler event stream (filters: limit, butler, event_type, before cursor) |
+| `GET /api/timeline` | `TimelineResponse` | Cross-butler event stream (filters: limit, event persisted-ID lookup, butler, event_type, trace, before cursor, paired since/until) |
+| `GET /api/timeline/histogram` | `TimelineHistogramResponse` | Content-blind server-counted minute density (required paired since/until; butler, event_type, trace) |
+| `GET /api/timeline/attention` | `TimelineAttentionResponse` | Content-blind recent records currently marked failed (captured last 24h; butler, trace) |
 | `GET /api/notifications` | `PaginatedResponse<NotificationSummary>` | Notification feed |
 | `GET /api/notifications/stats` | `ApiResponse<NotificationStats>` | Delivery statistics |
 | `GET /api/issues` | `ApiResponse<Issue[]>` | Grouped error issues |
@@ -225,16 +227,18 @@ control as Owner Attention Policy.
 | `/audit-log` | Operation history |
 | `/approvals` | Approval queue with decision workflows |
 | `/approvals/rules` | Standing approval rules |
-| `/contacts` | Contact list |
-| `/contacts/:contactId` | Contact detail with tabs |
+| `/contacts` | Compatibility redirect to `/entities/index?has=contact` |
+| `/contacts/:contactId` | Compatibility redirect to `/entities/index?has=contact` |
 | `/groups` | Relationship groups |
 | `/health/*` | Health domain (measurements, medications, conditions, symptoms, meals, research) |
 | `/collections` | General collections |
-| `/entities` | Entity browser |
+| `/entities` | Entity plex |
+| `/entities/index` | Canonical searchable entity and contact index |
 | `/entities/:entityId` | Entity detail |
 | `/connectors` | Connector overview with volume chart and fanout matrix |
 | `/connectors/:type/:identity` | Connector detail with timeseries |
-| `/costs` | Cost and usage analysis |
+| `/spend` | Canonical cost and usage analysis |
+| `/costs`, `/settings/spend` | Compatibility redirects to `/spend` |
 | `/memory` | Memory system (tier cards, browser, activity timeline) |
 | `/qa` | QA overview (status, patrols, known issues, investigations, circuit breaker) |
 | `/qa/patrols/:patrolId` | QA patrol detail |

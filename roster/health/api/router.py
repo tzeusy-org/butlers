@@ -550,6 +550,8 @@ async def list_medications(
                 schedule=list(meta.get("schedule") or []),
                 active=bool(meta.get("active", True)),
                 notes=meta.get("notes"),
+                quantity=meta.get("quantity"),
+                quantity_updated_at=meta.get("quantity_updated_at"),
                 created_at=r["created_at"].isoformat(),
                 updated_at=r["created_at"].isoformat(),
             )
@@ -759,13 +761,17 @@ async def get_medication_adherence(
     to 30 days) via the ``medication_history`` tool.
 
     ``expected_doses`` is computed from the medication's prescribed frequency
-    over the window using the shared ``frequency_to_doses_per_day`` helper —
-    the same denominator the insight-scan job uses.  ``adherence_rate`` is the
-    percentage of non-skipped doses out of ``expected_doses`` (``null`` when
-    ``expected_doses`` is zero).  Returns 404 if the medication does not exist.
+    over the window (capped at the medication's own age) using the shared
+    ``expected_dose_count`` helper — the same denominator ``trend_report`` and
+    the insight-scan job use.  ``adherence_rate`` is the percentage of
+    non-skipped doses out of ``expected_doses`` (``null`` when ``expected_doses``
+    is zero).  Returns 404 if the medication does not exist.
     """
     from butlers.tools.health import medication_history
-    from butlers.tools.health._medication_utils import frequency_to_doses_per_day
+    from butlers.tools.health._medication_utils import (
+        expected_dose_count,
+        frequency_to_doses_per_day,
+    )
 
     pool = _pool(db)
 
@@ -784,10 +790,8 @@ async def get_medication_adherence(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="start cannot be after end",
             )
-        window = max((effective_end - effective_start).total_seconds() / 86400, 1.0)
     else:
         days = window_days if window_days is not None else _DEFAULT_ADHERENCE_WINDOW_DAYS
-        window = float(days)
         effective_start = effective_end - timedelta(days=days)
 
     try:
@@ -805,11 +809,20 @@ async def get_medication_adherence(
     skipped = sum(1 for d in doses if d.get("skipped"))
     taken = total - skipped
 
-    # Compute expected doses from the prescribed frequency over the window.
+    # Compute expected doses from the prescribed frequency over the window,
+    # capped at the medication's own age via the shared expected_dose_count
+    # helper (also used by trend_report and the insight-scan job) so a
+    # medication created partway through the window is never scored against
+    # doses expected before it existed.
     medication = result.get("medication") or {}
     frequency = medication.get("frequency") or "daily"
     doses_per_day = frequency_to_doses_per_day(frequency)
-    expected = round(doses_per_day * window)
+    expected = expected_dose_count(
+        doses_per_day=doses_per_day,
+        window_start=effective_start,
+        window_end=effective_end,
+        medication_created_at=medication.get("created_at"),
+    )
 
     adherence_rate: float | None = None
     if expected > 0:
@@ -856,6 +869,8 @@ def _medication_response(result: dict) -> Medication:
         schedule=list(result.get("schedule") or []),
         active=bool(result.get("active", True)),
         notes=result.get("notes"),
+        quantity=result.get("quantity"),
+        quantity_updated_at=result.get("quantity_updated_at"),
         created_at=_isoformat(result.get("created_at")),
         updated_at=_isoformat(result.get("updated_at") or result.get("created_at")),
     )
@@ -882,6 +897,7 @@ async def create_medication(
         frequency=body.frequency,
         schedule=body.schedule,
         notes=body.notes,
+        quantity=body.quantity,
     )
     return _medication_response(result)
 

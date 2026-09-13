@@ -132,6 +132,15 @@ const sessionPatch: CachePatch = (qc, event) => {
   qc.invalidateQueries({ queryKey: ["timeline"] });
   qc.invalidateQueries({ queryKey: ["session-detail-global"] });
   qc.invalidateQueries({ queryKey: ["session-stripe"] });
+  // Session events do not carry an ingestion request ID. Refresh lifecycle
+  // projections, but never repeat audited payload reads or replay history.
+  qc.invalidateQueries(
+    {
+      queryKey: ["ingestion", "events"],
+      predicate: ({ queryKey }) => ["detail", "sessions", "rollup"].includes(String(queryKey[3])),
+    },
+    { cancelRefetch: false },
+  );
   const butler = asString(event.data.butler);
   const sessionId = asString(event.data.session_id);
   if (butler && sessionId) {
@@ -169,18 +178,17 @@ const issuePatch: CachePatch = (qc) => {
 
 /**
  * ingestion — a new ingestion_events row landed (emitted from ingest_v1's
- * insert transaction, bu-h8ioq). Invalidates the timeline list/detail keys
- * (ingestionEventKeys.all == ["ingestion", "events"], which prefixes list,
- * sessions, rollup, replays, sender-contact, detail, and payload) plus the
- * window-rollup and histogram keys, which live under separate prefixes
- * (["ingestion", "window-rollup", ...] / ["ingestion", "events-histogram",
- * ...]) and would otherwise miss this invalidation — see
- * use-ingestion-events.ts's ingestionEventKeys.
+ * insert transaction, bu-h8ioq). Filtered batches have no event ID;
+ * a newly inserted row changes lists and aggregates, not historical event
+ * detail or audited payload reads. Lifecycle freshness comes from session
+ * events and the drawer's reconciliation reads.
  */
 const ingestionPatch: CachePatch = (qc) => {
-  qc.invalidateQueries({ queryKey: ["ingestion", "events"] });
-  qc.invalidateQueries({ queryKey: ["ingestion", "window-rollup"] });
-  qc.invalidateQueries({ queryKey: ["ingestion", "events-histogram"] });
+  // Let an existing read complete even when events arrive faster than it can
+  // resolve. A later event or the reconciliation poll refreshes it again.
+  qc.invalidateQueries({ queryKey: ["ingestion", "events", "list"] }, { cancelRefetch: false });
+  qc.invalidateQueries({ queryKey: ["ingestion", "window-rollup"] }, { cancelRefetch: false });
+  qc.invalidateQueries({ queryKey: ["ingestion", "events-histogram"] }, { cancelRefetch: false });
 };
 
 /**

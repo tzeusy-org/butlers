@@ -135,6 +135,12 @@ export function DirectiveRow({ rule, index }: { rule: MemoryRule; index: number 
   // a 2px --red left sliver spanning the row. No background, no icon.
   const isAntiPattern = rule.maturity === "anti_pattern";
 
+  // Retired (bu-6t8ix.3, bu-rjdihn): a retired rule stays in this register
+  // (unlike forgotten, which the list excludes by default) but must read as
+  // decommissioned, not live — dim the row and label it, mirroring the
+  // SpendPage retired-schedule treatment rather than adding a new chip/icon.
+  const isRetired = rule.retired_at != null;
+
   // The whole row is the hit target → /memory/rules/:id. Kept on RowLink's
   // hasNestedInteractive (`<div role="link">`) branch — matching its sibling
   // FactsRegister row, which MUST use it (nested entity anchor) — so both
@@ -160,6 +166,7 @@ export function DirectiveRow({ rule, index }: { rule: MemoryRule; index: number 
         "border-l-2",
         isAntiPattern ? "border-l-[var(--red)]" : "border-l-transparent",
         "text-fg",
+        isRetired && "opacity-60",
       )}
     >
       {/* §NN gutter — mono 11px muted, zero-padded */}
@@ -171,6 +178,14 @@ export function DirectiveRow({ rule, index }: { rule: MemoryRule; index: number 
       <div className="flex min-w-0 flex-col gap-1.5">
         <span className="line-clamp-2 text-[14px] leading-snug">
           {rule.content}
+          {isRetired && (
+            <span
+              className="ml-1.5 font-serif italic text-[11px] text-[var(--mfg)]"
+              data-testid={`rule-retired-${rule.id}`}
+            >
+              retired
+            </span>
+          )}
         </span>
         <TallyLine rule={rule} />
       </div>

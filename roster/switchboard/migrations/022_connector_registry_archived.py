@@ -111,7 +111,7 @@ def upgrade() -> None:
     )
 
     # Partial index for the "live" set (not deleted AND not archived) — the set
-    # the fleet-health rollups (cross-summary, /connectors/summary) scan.
+    # the fleet-health /api/ingestion/connectors/cross-summary scans.
     op.execute(
         """
         CREATE INDEX IF NOT EXISTS ix_connector_registry_live

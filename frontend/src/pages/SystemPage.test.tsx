@@ -23,6 +23,7 @@ import {
   useHealthPosture,
   useInsightDeliveryState,
   useInstanceFacts,
+  useStoredFunctionFacts,
 } from "@/hooks/use-system";
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board";
 import { useConnectorSummaries } from "@/hooks/use-ingestion";
@@ -37,13 +38,23 @@ import { ApiError } from "@/api/index";
 vi.mock("@/components/topology/TopologyGraph", () => ({
   default: ({
     butlers,
+    connectors = [],
     connectorsError,
   }: {
     butlers: { name: string }[];
+    connectors?: { connector_type: string; endpoint_identity: string }[];
     connectorsError?: boolean;
   }) => (
     <div data-testid="topology-graph">
       {butlers.map((b) => <span key={b.name}>{b.name}</span>)}
+      {connectors.map((connector) => (
+        <span
+          key={`${connector.connector_type}:${connector.endpoint_identity}`}
+          data-testid={`topology-connector-${connector.connector_type}-${connector.endpoint_identity}`}
+        >
+          {connector.connector_type} · {connector.endpoint_identity}
+        </span>
+      ))}
       {connectorsError && <span data-testid="topology-connectors-error" />}
     </div>
   ),
@@ -66,6 +77,7 @@ vi.mock("@/hooks/use-system", () => ({
   useHealthPosture: vi.fn(),
   useInsightDeliveryState: vi.fn(),
   useDriftFacts: vi.fn(),
+  useStoredFunctionFacts: vi.fn(),
   useDeploymentFacts: vi.fn(),
   useSystemConditions: vi.fn(() => ({
     data: { data: { conditions: [], total: 0, conditions_available: true } },
@@ -227,6 +239,13 @@ function setAllLoading() {
     error: null,
   } as AnyMock);
 
+  vi.mocked(useStoredFunctionFacts).mockReturnValue({
+    data: undefined,
+    isPending: true,
+    isError: false,
+    error: null,
+  } as AnyMock);
+
   vi.mocked(useDeploymentFacts).mockReturnValue({
     data: undefined,
     isPending: true,
@@ -239,7 +258,7 @@ function setAllSuccess(boardOverrides: Partial<typeof BOARD_AGGREGATES_DEFAULTS>
   setBoardSuccess(boardOverrides);
 
   vi.mocked(useConnectorSummaries).mockReturnValue({
-    data: { data: [], meta: {} },
+    data: { data: { connectors: [] } },
     isLoading: false,
     isError: false,
     error: null,
@@ -307,6 +326,23 @@ function setAllSuccess(boardOverrides: Partial<typeof BOARD_AGGREGATES_DEFAULTS>
         first_detected_at: null,
         escalated: false,
         drift_check_available: true,
+      },
+      meta: {},
+    },
+    isPending: false,
+    isError: false,
+    error: null,
+  } as AnyMock);
+
+  vi.mocked(useStoredFunctionFacts).mockReturnValue({
+    data: {
+      data: {
+        checked_at: "2026-06-17T10:00:00Z",
+        is_drifted: false,
+        drifted: [],
+        not_deployed: [],
+        matched_count: 3,
+        stored_function_check_available: true,
       },
       meta: {},
     },
@@ -565,7 +601,7 @@ describe("SystemPage -- topology tile (bu-2okpr.5)", () => {
     // Connectors resolved, board still loading -- topology should still pass isLoading=true
     setBoardLoading();
     vi.mocked(useConnectorSummaries).mockReturnValue({
-      data: { data: [], meta: {} },
+      data: { data: { connectors: [] } },
       isLoading: false,
       isError: false,
       error: null,
@@ -593,6 +629,29 @@ describe("SystemPage -- topology tile (bu-2okpr.5)", () => {
     const html = renderPage();
     expect(html).toContain('data-testid="topology-graph"');
     expect(html).toContain('data-testid="topology-connectors-error"');
+  });
+
+  it("passes only active role-aware connector summaries to topology", () => {
+    setAllSuccess();
+    vi.mocked(useConnectorSummaries).mockReturnValue({
+      data: {
+        data: {
+          connectors: [
+            { connector_type: "gmail", endpoint_identity: "active", archived: false },
+            { connector_type: "google_health", endpoint_identity: "retired", archived: true },
+          ],
+        },
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as AnyMock);
+
+    const html = renderPage();
+
+    expect(html).toContain('data-testid="topology-connector-gmail-active"');
+    expect(html).not.toContain('topology-connector-google_health-retired');
   });
 });
 
@@ -1136,7 +1195,7 @@ describe("SystemPage -- keyboard shortcuts (bu-ep4ks.12)", () => {
     } as AnyMock);
     const connectorsRefetch = vi.fn();
     vi.mocked(useConnectorSummaries).mockReturnValue({
-      data: { data: [], meta: {} },
+      data: { data: { connectors: [] } },
       isLoading: false,
       isError: false,
       error: null,

@@ -33,6 +33,8 @@ function shellPage(path: string) {
 }
 
 const DashboardPage = shellPage('/')
+const ChatPage = shellPage('/chat')
+const ChatConversationPage = shellPage('/chat/:conversationId')
 const ButlersPage = shellPage('/butlers')
 const ButlerDetailPage = shellPage('/butlers/:name')
 const SessionsPage = shellPage('/sessions')
@@ -88,6 +90,8 @@ export const router = createBrowserRouter(
       element: <RootLayout />,
       children: [
         { path: '/', element: routeElement(<DashboardPage />) },
+        { path: '/chat', element: routeElement(<ChatPage />) },
+        { path: '/chat/:conversationId', element: routeElement(<ChatConversationPage />) },
         { path: '/butlers', element: routeElement(<ButlersPage />) },
         { path: '/butlers/:name', element: routeElement(<ButlerDetailPage />) },
         { path: '/sessions', element: routeElement(<SessionsPage />) },
