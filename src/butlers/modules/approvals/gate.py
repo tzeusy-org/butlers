@@ -6,12 +6,10 @@ Wraps gated tools at MCP registration time so that:
    resolve via ``resolve_contact_by_channel()``.  Any owner-looking channel
    result is corroborated by the ambiguity-safe owner-only definer before the
    action is auto-approved with no standing rule required.
-   Owner self-notification is low-risk, so non-email channels may use any active,
-   verified owner association (bu-nd5me). Email retains RFC 0017's stricter
-   primary-address requirement because a wrong-address send has a materially
-   different disclosure risk.
-3. For targets without an owner bypass, including secondary owner email,
-   standing approval rules are checked. A match permits immediate execution.
+   Owner self-notification is low-risk, so every channel may use any active,
+   uniquely verified owner association (bu-nd5me).
+3. For targets without an owner bypass, standing approval rules are checked. A
+   match permits immediate execution.
 4. If no rule matches, or the target is unresolvable, the PendingAction is
    persisted with status='pending' and a structured ``pending_approval``
    response is returned to CC.
@@ -444,21 +442,10 @@ async def resolve_action_target_contact(
     writeback reuses this helper so a previously resolved owner remains
     entity-linked in the tally fact.
     """
-    resolved_contact, _owner_channel_is_primary = await _resolve_action_target_authorization(
-        pool, tool_args
-    )
-    return resolved_contact
-
-
-async def _resolve_action_target_authorization(
-    pool: Any,
-    tool_args: dict[str, Any],
-) -> tuple[ResolvedContact | None, bool | None]:
-    """Resolve a target and retain primacy for channel-based owner authorization."""
     resolved_contact = await _resolve_target_contact(pool, tool_args)
     identity = _extract_channel_identity(tool_args)
     if identity is None or identity[0] == "entity_id":
-        return resolved_contact, None
+        return resolved_contact
 
     # A normal non-owner resolution is authoritative and must never trigger an
     # owner-only fallback.  An owner-looking result still needs corroboration:
@@ -466,12 +453,13 @@ async def _resolve_action_target_authorization(
     # while the definer evaluates the full candidate set and rejects a variant
     # collision spanning owner and external entities.
     if resolved_contact is not None and "owner" not in resolved_contact.roles:
-        return resolved_contact, None
+        return resolved_contact
 
     fallback = await resolve_owner_channel_via_definer(pool, identity[0], identity[1])
     if fallback is not None:
-        return fallback
-    return None, None
+        resolved_contact, _is_primary = fallback
+        return resolved_contact
+    return None
 
 
 async def apply_approval_gates(
@@ -586,12 +574,10 @@ def _make_gate_wrapper(
     1. Resolves the target contact from tool_args using channel identity
        extraction and ``resolve_contact_by_channel()``.
     2. If the target has the ``'owner'`` role: auto-approve immediately (no
-       standing rule required) for an entity-id target, a primary owner email,
-       or any active verified non-email owner channel. Email preserves RFC 0017's
-       primary-address safeguard; secondary owner email falls through to the
-       standing-rule or parking path.
-    3. If the target has no owner bypass, including secondary owner email:
-       check standing rules; auto-approve if a rule matches, otherwise pend.
+       standing rule required) for an entity-id target or any active, uniquely
+       verified owner channel association.
+    3. If the target has no owner bypass: check standing rules; auto-approve if
+       a rule matches, otherwise pend.
     4. If the target is unresolvable: require approval (conservative default).
 
     Safety-critical arguments declared by the owning module via
@@ -664,25 +650,11 @@ def _make_gate_wrapper(
         agent_summary = f"Tool '{tool_name}' called with args: {json.dumps(safe_tool_args)}"
 
         # --- Role-based target resolution ---
-        resolved_contact, owner_channel_is_primary = await _resolve_action_target_authorization(
-            pool, tool_args
-        )
-        target_identity = _extract_channel_identity(tool_args)
-        owner_email_is_allowed = (
-            target_identity is None
-            or target_identity[0] != "email"
-            or owner_channel_is_primary is True
-        )
+        resolved_contact = await resolve_action_target_contact(pool, tool_args)
 
-        if (
-            resolved_contact is not None
-            and "owner" in resolved_contact.roles
-            and owner_email_is_allowed
-        ):
+        if resolved_contact is not None and "owner" in resolved_contact.roles:
             # Owner-directed outbound: auto-approve without any standing rule.
-            # Email retains its primary-address safeguard; entity-id dispatch
-            # and active verified non-email owner channels land here regardless
-            # of channel primacy.
+            # Every channel uses the same unique active owner-association rule.
             dossier_or_error = approval_hooks.validate_owner_dossier(
                 raw_why=raw_why,
                 raw_evidence=raw_evidence,
@@ -764,11 +736,10 @@ def _make_gate_wrapper(
                 return exec_result.result or {}
             return {"error": exec_result.error}
 
-        # A target not eligible for owner auto-approval (including a secondary
-        # owner email), a non-owner, or an unresolvable call needs an honest
-        # decision dossier before rule matching or parking. Returning here is
-        # intentionally before every database write, so a session can repair the
-        # request and retry rather than leave an unreviewable action pending.
+        # A non-owner or unresolvable call needs an honest decision dossier
+        # before rule matching or parking. Returning here is intentionally
+        # before every database write, so a session can repair the request and
+        # retry rather than leave an unreviewable action pending.
         dossier_or_error = approval_hooks.validate_non_owner_dossier(
             raw_why=raw_why,
             raw_evidence=raw_evidence,

@@ -2,6 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-04-29
+**Owner-channel amendment:** 2026-09-13
 **Epic:** bu-7qfrg — "Owner-routing safety and audit hardening for outbound notify()"
 **Reconciliation bead:** bu-7qfrg.1
 
@@ -39,7 +40,7 @@ working credentials, the email would have shipped silently to a work address.
 
 Four independent changes closed the incident loop end-to-end.
 
-### 2.1 bu-jwby9 — Gate non-primary owner-email sends (PR #1237, merged)
+### 2.1 bu-jwby9 — Gate non-primary owner-email sends (historical, superseded)
 
 **Root cause patched:** `email_guard.py` auto-approved any owner-role email.
 
@@ -137,11 +138,15 @@ without per-butler configuration.
 - Commit `b673503b` — `feat(api): dashboard mutation audit middleware + explicit emits`
 - Test: `tests/api/test_dashboard_audit_middleware.py`
 
-### 2.5 bu-0kien — Consolidate is_primary helpers (PR #1252, merged)
+### 2.5 bu-0kien — Consolidate is_primary helpers (historical, helper retired)
 
 Deduplication refactor: both `email_guard.py` and `gate.py` previously
-maintained separate `is_primary` query logic.  Now both import
+maintained separate `is_primary` query logic. At that point, both imported
 `is_primary_contact` from `src/butlers/modules/approvals/_shared.py`.
+
+The §2.7 amendment made primacy irrelevant to outbound authorization, so that
+helper and its approval-specific tests were removed on 2026-09-13 rather than
+retained as dead policy machinery.
 
 ### 2.6 Cross-schema owner lookup must preserve ambiguity (bu-rp2ie7)
 
@@ -156,9 +161,24 @@ Filtering to owner facts before checking uniqueness is unsafe. If the same
 email address or Telegram identifier is attached to both the owner and an
 external entity, owner-first filtering erases the collision and can create an
 external-party bypass. The lookup therefore checks cross-entity ambiguity
-first and returns no authorization on a collision. The ordinary outbound email
-guard additionally retains this RFC's primary-address requirement; lookup
-failure or ambiguity falls through to standing rules and owner review.
+first and returns no authorization on a collision. Every outbound channel uses
+the same ambiguity-safe owner predicate. Primacy is retained as routing
+metadata, but is not an outbound authorization condition. Lookup failure or
+ambiguity falls through to standing rules and owner review.
+
+### 2.7 Uniform owner-channel authorization amendment (2026-09-13)
+
+An outbound communication receives the owner bypass exactly when the normalized
+candidate identifier set resolves through active literal facts to one distinct
+live, non-merged, non-deleted entity and that entity has the `owner` role.
+Channel primacy is not an authorization condition. This applies uniformly to
+email, Telegram, WhatsApp, and future communication integrations.
+
+Unknown, external, ambiguous, inactive, merged, deleted, malformed, or
+lookup-error identifiers receive no owner bypass and continue through
+standing-rule or pending-approval handling. Context metadata may guide recipient
+selection, but does not revoke the owner bypass from an exact qualifying owner
+identifier.
 
 ---
 
@@ -170,8 +190,8 @@ Each acceptance criterion mapped to the incident scenario:
 |---|---|---|
 | Butler calls `contact_info_add(contact_id=<owner>, value="TzeHow.Lee@qube-rt.com")` | Returns `{"status":"pending_approval"}`, no row in `contact_info` | bu-v6ttx |
 | `notify(channel="email", msg_context="personal")` with owner having personal+work email | Resolver picks personal-tagged address | bu-uv4b4 |
-| `notify()` resolves to a work-tagged address but caller declared `msg_context="personal"` | Email guard parks delivery | bu-uv4b4 + bu-jwby9 |
-| `notify()` resolves to non-primary owner address (any context) | Email guard parks delivery | bu-jwby9 |
+| `notify()` resolves to a non-owner work-tagged address but caller declared `msg_context="personal"` | Email guard parks delivery | bu-uv4b4 + bu-jwby9 |
+| `notify()` resolves uniquely to any active owner address (primary or secondary) | Email guard auto-approves delivery | bu-rp2ie7 owner-channel amendment |
 | Dashboard `DELETE /contacts/{id}/contact-info/{info_id}` removes poisoned row | Audit row written to `switchboard.dashboard_audit_log` | bu-m24ua |
 
 Replay integration tests live in
@@ -204,7 +224,9 @@ In practice, relationship butler email sends must either supply `recipient` (an
 explicit address string) or `contact_id`.  The `contact_id` path is
 context-aware via `_resolve_contact_channel_identifier`.  The explicit
 `recipient` string path is NOT context-filtered — but the email guard's
-context-mismatch check still fires when `msg_context` is set.
+context-mismatch check still fires for targets without the owner bypass when
+`msg_context` is set. An exact uniquely verified owner address bypasses approval
+regardless of context metadata under §2.7.
 
 This is a documentation gap rather than a code gap: the spec in RFC 0004
 correctly describes `contact_id` as the recommended path for context-aware
@@ -221,13 +243,13 @@ accepted limitation; no gap bead filed.
 
 ---
 
-## 5. Verdict
+## 5. Original 2026-04-29 verdict (historical)
 
 **Clean — no gen-2 reconciliation bead needed.**
 
 All four epic acceptance criteria are implemented and verified:
 
-1. AC #1 (approval-gate non-primary owner-email): delivered by bu-jwby9 (PR #1237) ✓
+1. AC #1 (approval-gate non-primary owner-email): delivered by bu-jwby9 (PR #1237), then superseded for outbound authorization by §2.7 ✓
 2. AC #2 (context-aware routing): delivered by bu-uv4b4 (PR #1241) + bu-vwp11 (PR #1247) ✓
 3. AC #3 (owner-contact mutation gate): delivered by bu-v6ttx (PR #1248) ✓
 4. AC #4 (dashboard mutation audit): delivered by bu-m24ua (PR #1250) ✓
@@ -242,9 +264,8 @@ a gap in the incident fix coverage.
 
 | File | Change |
 |---|---|
-| `src/butlers/modules/approvals/email_guard.py` | AC #1 + AC #2: is_primary gate + context mismatch |
-| `src/butlers/modules/approvals/_shared.py` | Shared is_primary_contact helper (bu-0kien) |
-| `src/butlers/modules/approvals/gate.py` | AC #1 extension: is_primary in Telegram gate (bu-axdie) |
+| `src/butlers/modules/approvals/email_guard.py` | Uniform ambiguity-safe owner-channel authorization + context mismatch for non-owner targets |
+| `src/butlers/modules/approvals/gate.py` | Uniform ambiguity-safe owner-channel authorization at the MCP boundary |
 | `roster/relationship/tools/contact_info.py` | AC #3: owner-contact mutation gate |
 | `src/butlers/daemon.py::_resolve_contact_channel_identifier` | AC #2: context-aware SQL |
 | `src/butlers/core_tools/_notifications.py` | AC #2: msg_context propagation |

@@ -6,13 +6,10 @@ ensures both gates enforce identical policy:
 
 1. Resolve contact by email address.  When schema isolation prevents the
    direct relationship read, use the narrow owner-only SECURITY DEFINER
-   fallback and preserve its reported primacy.
-2. Owner contact AND address is primary → auto-approve (no rule needed).
-   Non-primary owner addresses fall through to the rules/parking flow.
-3. Context mismatch: if *msg_context* is provided and the entity_facts triple
-   carrying the resolved address is tagged with a conflicting context, park
-   for approval regardless of owner status.  (Owner primary addresses skip
-   this check — see step 2.)
+   fallback.
+2. Any uniquely resolved active owner address auto-approves without a rule.
+3. For a target without the owner bypass, if *msg_context* is provided and the
+   entity_facts triple is tagged with a conflicting context, park for approval.
 4. Non-owner or unknown → check standing approval rules.
 5. Rule matches → approve, bump ``use_count``.
 6. No rule → park as ``pending_action`` for human review.
@@ -34,7 +31,6 @@ from butlers.core.approvals_hooks import (
     validate_non_owner_dossier,
     validate_owner_dossier,
 )
-from butlers.modules.approvals._shared import is_primary_contact
 from butlers.modules.approvals.notifications import ApprovalPushRuntime
 from butlers.modules.approvals.park import park_pending_action
 
@@ -208,7 +204,6 @@ async def check_email_recipient(
     )
 
     contact = await resolve_contact_by_channel(pool, "email", email_target)
-    fallback_is_primary: bool | None = None
     if contact is None:
         try:
             fallback = await resolve_owner_channel_via_definer(pool, "email", email_target)
@@ -216,43 +211,29 @@ async def check_email_recipient(
             logger.debug("email guard: owner-channel fallback failed", exc_info=True)
             fallback = None
         if fallback is not None:
-            contact, fallback_is_primary = fallback
+            contact, _is_primary = fallback
     dossier = DecisionDossier(None, [], None, None)
 
-    # Owner primary address → always allowed (no further checks needed)
+    # A unique, active owner association is sufficient on every channel.
     if contact is not None and "owner" in contact.roles:
-        if fallback_is_primary is not None:
-            is_primary = fallback_is_primary
-        elif contact.entity_id is None:
-            # Owner contact has no entity_id — cannot check primacy; treat as non-primary
-            # so the address falls through to the rules/parking flow.
-            is_primary = False
-        else:
-            is_primary = await is_primary_contact(
-                pool,
-                contact.entity_id,
-                "email",
-                email_target,
+        if enforce_dossier:
+            dossier_or_error = validate_owner_dossier(
+                raw_why=why,
+                raw_evidence=evidence,
+                raw_blast_radius=blast_radius,
+                raw_reversibility=reversibility,
             )
-        if is_primary:
-            if enforce_dossier:
-                dossier_or_error = validate_owner_dossier(
-                    raw_why=why,
-                    raw_evidence=evidence,
-                    raw_blast_radius=blast_radius,
-                    raw_reversibility=reversibility,
+            if isinstance(dossier_or_error, dict):
+                return EmailGuardDecision(
+                    allowed=False,
+                    reason="dossier_error",
+                    dossier_error=dossier_or_error,
                 )
-                if isinstance(dossier_or_error, dict):
-                    return EmailGuardDecision(
-                        allowed=False,
-                        reason="dossier_error",
-                        dossier_error=dossier_or_error,
-                    )
-            return EmailGuardDecision(allowed=True, reason="owner")
+        return EmailGuardDecision(allowed=True, reason="owner")
 
-    # A non-owner (including a non-primary owner email) must supply its dossier
-    # before any rule lookup or pending-action persistence, including the
-    # email-context mismatch park path below.
+    # A non-owner or unresolved target must supply its dossier before any rule
+    # lookup or pending-action persistence, including the email-context
+    # mismatch park path below.
     if enforce_dossier:
         dossier_or_error = validate_non_owner_dossier(
             raw_why=why,
@@ -268,10 +249,8 @@ async def check_email_recipient(
             )
         dossier = dossier_or_error
 
-    # Context mismatch check: park if the declared message context conflicts
-    # with the address's tagged context.  This applies to non-primary owner
-    # addresses and all non-owner contacts.  Unclassified (NULL) address context
-    # is always compatible — it never forces a park.
+    # Context mismatch check for targets without the owner bypass. Unclassified
+    # (NULL) address context is always compatible; it never forces a park.
     if msg_context is not None:
         address_context = await _get_email_context(pool, email_target)
         if _context_conflicts(msg_context, address_context):

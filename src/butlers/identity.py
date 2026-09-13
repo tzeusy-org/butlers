@@ -235,6 +235,7 @@ _CHANNEL_TYPE_TO_PREDICATE: dict[str, str] = {
 }
 
 _IDENTITY_CHANNEL_ALIASES: dict[str, str] = {
+    "whatsapp": "whatsapp_jid",
     "whatsapp_user_client": "whatsapp_jid",
 }
 
@@ -272,9 +273,8 @@ def _telegram_username_candidates(value: str) -> list[str]:
     case-insensitive on the platform.
 
     This function generates the candidate set that covers all practical
-    permutations so that ``resolve_contact_by_channel`` and
-    ``approvals._shared.is_primary_contact`` can normalise on the fly without
-    requiring the caller to know the canonical storage form.
+    permutations so that ``resolve_contact_by_channel`` can normalise on the
+    fly without requiring the caller to know the canonical storage form.
 
     The first entry is always the original value (exact-match wins) so that
     numeric chat IDs (``"206570151"``) succeed on the first attempt and never
@@ -848,11 +848,11 @@ async def resolve_owner_channel_via_definer(
 ) -> tuple[ResolvedContact, bool] | None:
     """Resolve an OWNER channel through the ``public.resolve_owner_triple`` function.
 
-    :func:`resolve_contact_by_channel` and :func:`is_primary_contact` read
-    ``relationship.entity_facts`` directly. A non-relationship butler runs under a
-    schema-isolated role (``SET ROLE butler_<schema>_rw``) that cannot read that
-    table, so those helpers return ``None`` even for owner-directed sends, and the
-    approval gate parks the message as "unresolvable target".
+    :func:`resolve_contact_by_channel` reads ``relationship.entity_facts``
+    directly. A non-relationship butler runs under a schema-isolated role
+    (``SET ROLE butler_<schema>_rw``) that cannot read that table, so direct
+    resolution returns ``None`` even for owner-directed sends, and the approval
+    gate parks the message as "unresolvable target".
 
     This helper instead calls the ``SECURITY DEFINER`` lookup added in migration
     ``core_145``, which runs as its owner (a role with relationship-schema read
@@ -1399,8 +1399,8 @@ __all__ = [
     "resolve_contact_by_channel",
     "resolve_contacts_by_channel_bulk",
     "resolve_outbound_channel",
-    # Telegram normalization helpers — consumed by approvals._shared to keep
-    # is_primary_contact consistent with resolve_contact_by_channel.
+    # Telegram normalization helpers are exported for migration/write-side
+    # normalization callers that share this canonical representation.
     "_telegram_username_candidates",
     "_TELEGRAM_USERNAME_CHANNEL_TYPES",
     "_telegram_prefixed_value",

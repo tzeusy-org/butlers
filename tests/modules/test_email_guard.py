@@ -81,14 +81,8 @@ class TestCheckEmailRecipient:
         assert decision.reason == "owner"
         pool.execute.assert_not_awaited()
 
-    async def test_owner_non_primary_email_parks(self) -> None:
-        """Owner send to a non-primary email address is parked for approval.
-
-        This is the regression test for bu-jwby9: an owner with both a personal
-        (primary) and a work (non-primary) email must NOT auto-approve sends to
-        the work address.  The non-primary address must go through the normal
-        standing-rules / parking flow.
-        """
+    async def test_owner_secondary_email_auto_approves(self) -> None:
+        """Any uniquely resolved active owner email address auto-approves."""
         owner = _owner_contact()
         pool = AsyncMock()
         owner_fallback = AsyncMock(return_value=(owner, False))
@@ -108,18 +102,10 @@ class TestCheckEmailRecipient:
         ):
             decision = await check_email_recipient(pool, **_COMMON_KWARGS)
 
-        assert decision.allowed is False
-        assert decision.reason == "parked"
-        assert decision.action_id is not None
-        # contact_desc reflects owner is still recognised as a known contact
-        assert decision.contact_desc == "known non-owner contact"
+        assert decision.allowed is True
+        assert decision.reason == "owner"
         owner_fallback.assert_awaited_once_with(pool, "email", _COMMON_KWARGS["email_target"])
-        # pending_action INSERT must have been called (alongside the
-        # additive publish_fleet_event() NOTIFY bu-01r64.1 added to the same
-        # pool for the "created" approval bus event).
-        insert_calls = [c for c in pool.execute.call_args_list if "pending_actions" in c.args[0]]
-        assert len(insert_calls) == 1
-        assert "pending_actions" in insert_calls[0].args[0]
+        pool.execute.assert_not_awaited()
 
     async def test_non_owner_with_rule_approves(self) -> None:
         pool = AsyncMock()
@@ -514,9 +500,15 @@ class TestCheckRecipient:
         assert decision.allowed is True
         assert decision.reason == "rule"
 
-    async def test_unresolvable_target_parks(self) -> None:
-        """An unresolvable target (no contact, no owner fallback, no rule) is parked."""
+    @pytest.mark.parametrize("fallback_errors", [False, True])
+    async def test_unresolvable_target_parks(self, fallback_errors: bool) -> None:
+        """Missing or failed owner corroboration remains approval-gated."""
         pool = AsyncMock()
+        owner_fallback = (
+            AsyncMock(side_effect=RuntimeError("owner lookup unavailable"))
+            if fallback_errors
+            else AsyncMock(return_value=None)
+        )
         with (
             patch(
                 "butlers.identity.resolve_contact_by_channel",
@@ -524,7 +516,7 @@ class TestCheckRecipient:
             ),
             patch(
                 "butlers.identity.resolve_owner_channel_via_definer",
-                new=AsyncMock(return_value=None),
+                new=owner_fallback,
             ),
             patch(
                 "butlers.modules.approvals.rules.match_rules",
