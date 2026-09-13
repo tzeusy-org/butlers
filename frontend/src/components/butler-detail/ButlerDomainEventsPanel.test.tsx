@@ -253,6 +253,26 @@ describe("ButlerDomainEventsPanel", () => {
     expect(replay).toHaveProperty("disabled", true)
   })
 
+  it("keeps the failed terminal row retryable after a replay error", () => {
+    const entry = makeDelivery({ status: "failed_permanent", error_message: "Still failed" })
+    stubQueries({ deliveries: { data: { data: [entry] }, isLoading: false, isError: false } })
+    mockUseReplay.mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+      isError: true,
+      error: new Error("Replay transport unavailable"),
+      variables: entry.id,
+    })
+
+    renderPanel()
+
+    expect(screen.getByTestId("delivery-row")).toBeDefined()
+    expect(screen.getByTestId("delivery-status-badge").textContent).toContain("failed_permanent")
+    expect(
+      screen.getByRole("button", { name: "Replay travel.trip_booked delivery" }),
+    ).toHaveProperty("disabled", false)
+  })
+
   it("renders inactive subscriptions with a distinct label", () => {
     const entry = makeSubscription({ active: false })
     stubQueries({
