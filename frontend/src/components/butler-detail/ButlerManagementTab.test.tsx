@@ -39,6 +39,7 @@ vi.mock("@/hooks/use-butlers", () => ({
 }));
 
 vi.mock("@/hooks/use-butler-management", () => ({
+  useButlerEffectivePrompt: vi.fn(),
   useButlerPrompt: vi.fn(),
   useUpdateButlerPrompt: vi.fn(),
   useButlerPromptHistory: vi.fn(),
@@ -52,6 +53,7 @@ vi.mock("@/hooks/use-model-catalog", () => ({
 }));
 
 import {
+  useButlerEffectivePrompt,
   useButlerPrompt,
   useUpdateButlerPrompt,
   useButlerPromptHistory,
@@ -88,6 +90,25 @@ function renderTab(butlerName = "general") {
 const PROMPT_TEXT = "You are a helpful butler.";
 
 function setupDefaultHooks(mutateFn = vi.fn()) {
+  vi.mocked(useButlerEffectivePrompt).mockReturnValue({
+    data: {
+      data: {
+        butler_name: "general",
+        status: "captured",
+        effective_prompt: "Composed synthetic roster identity",
+        prompt_digest: "a".repeat(64),
+        prompt_provenance: [],
+        total_bytes: 34,
+        roster_digest: "b".repeat(64),
+        drift_status: "matches_git",
+        drifted_since: null,
+        changed_sources: [],
+      },
+    },
+    isLoading: false,
+    isError: false,
+    error: null,
+  } as unknown as ReturnType<typeof useButlerEffectivePrompt>);
   vi.mocked(useButlerPrompt).mockReturnValue({
     data: { data: { version: 1, prompt: PROMPT_TEXT, updated_by: "owner" } },
     isLoading: false,
@@ -144,6 +165,27 @@ function openEditModal() {
   const editButton = screen.getByText("edit prompt →");
   fireEvent.click(editButton);
 }
+
+describe("Effective prompt preview", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupDefaultHooks();
+  });
+  afterEach(() => cleanup());
+
+  it("shows composed roster identity and an honest git-match receipt", () => {
+    vi.mocked(useButlerPrompt).mockReturnValue({
+      data: { data: { version: 0, prompt: "", updated_by: null } },
+      isLoading: false,
+    } as ReturnType<typeof useButlerPrompt>);
+
+    renderTab();
+
+    expect(screen.getByText("Composed synthetic roster identity")).toBeTruthy();
+    expect(screen.getByText(/Prompt: matches git @/)).toBeTruthy();
+    expect(screen.queryByText("No system prompt configured.")).toBeNull();
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Tests: PromptEditModal mutation wiring

@@ -6,6 +6,7 @@ import type { SessionSummary } from "@/api/types";
 import { ButlerMark } from "@/components/ui/ButlerMark";
 import { ComplexityBadge } from "@/components/general/ComplexityBadge";
 import { StatusBadge } from "@/components/sessions/StatusBadge";
+import { PurposeLaneBadge } from "@/components/sessions/PurposeLaneBadge";
 import { EmptyState as EmptyStateUI } from "@/components/ui/empty-state";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { usePrefetchOnIntent } from "@/hooks/use-prefetch-on-intent";
@@ -136,6 +137,7 @@ function SkeletonRows({
             <TableCell><Skeleton className="h-4 w-16" /></TableCell>
           )}
           <TableCell><Skeleton className="h-4 w-14" /></TableCell>
+          <TableCell><Skeleton className="h-4 w-20" /></TableCell>
           <TableCell><Skeleton className="h-4 w-16" /></TableCell>
           <TableCell><Skeleton className="h-4 w-48" /></TableCell>
           <TableCell><Skeleton className="h-4 w-20" /></TableCell>
@@ -202,6 +204,7 @@ export function SessionTable({
           <TableHead>Time</TableHead>
           {showButlerColumn && <TableHead>Butler</TableHead>}
           <TableHead>Trigger</TableHead>
+          <TableHead>Purpose</TableHead>
           <TableHead>Request ID</TableHead>
           <TableHead>Prompt</TableHead>
           <TableHead>Model</TableHead>
@@ -258,6 +261,9 @@ export function SessionTable({
                 )}
                 <TableCell className="text-xs text-muted-foreground">
                   {session.trigger_source}
+                </TableCell>
+                <TableCell>
+                  <PurposeLaneBadge lane={session.purpose_lane} />
                 </TableCell>
                 <TableCell
                   className="font-mono text-xs text-muted-foreground"

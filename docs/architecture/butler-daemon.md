@@ -94,11 +94,11 @@ Cron-driven task dispatch. The scheduler maintains a `scheduled_tasks` table wit
 
 ### Session Log
 
-An append-only record of LLM CLI invocations. Each session row is created before the runtime is invoked and completed when it returns. Fields include prompt, trigger source, model, duration, token counts, tool calls, and outcome. The only mutation after creation is `session_complete`. See [Session Lifecycle](../runtime/session-lifecycle.md).
+An append-only record of LLM CLI invocations. Each session row is created before the runtime is invoked and completed when it returns. Fields include prompt, trigger source, purpose lane, model, duration, token counts, tool calls, and outcome. New rows also carry an immutable effective-system-prompt receipt: the exact bytes sent to the runtime, their SHA-256 digest, and an ordered content-free provenance list. The effective prompt is available only through its dedicated session-detail door and is not added to list, metric, audit, or telemetry payloads. The only mutation after creation is `session_complete`. See [Session Lifecycle](../runtime/session-lifecycle.md).
 
 ### Spawner
 
-The component that invokes ephemeral AI runtime instances. Controlled by an `asyncio.Semaphore` for per-butler concurrency limiting (default 1 = serial dispatch) and a process-wide global semaphore (default 3 max concurrent sessions across all butlers). See [Spawner](../runtime/spawner.md).
+The component that invokes ephemeral AI runtime instances. Controlled by an `asyncio.Semaphore` for per-butler concurrency limiting (default 1 = serial dispatch) and a process-wide global semaphore (default 3 max concurrent sessions across all butlers). Before invoking an adapter it composes and receipts the effective system prompt, and it enforces the content-blind private-content model lane before provider setup. See [Spawner](../runtime/spawner.md).
 
 ## Module Loading
 

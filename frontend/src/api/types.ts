@@ -230,6 +230,7 @@ export interface SessionSummary {
   cancelled_by_owner: boolean;
   model?: string | null;
   complexity?: string | null;
+  purpose_lane?: "standard" | "private_content" | null;
   /**
    * Best-effort per-session USD cost, estimated server-side from model +
    * token counts (bu-ptaub — sessions pinning + dollar column). Optional so
@@ -261,6 +262,7 @@ export interface SessionDetail {
   parent_session_id: string | null;
   complexity?: string | null;
   resolution_source?: string | null;
+  purpose_lane?: "standard" | "private_content" | null;
   /** The dashboard chat message this session was invoked from, if any. */
   linked_message?: {
     conversation_id: string;
@@ -275,6 +277,23 @@ export interface SessionDetail {
     created_at?: string | null;
     expires_at?: string | null;
   } | null;
+}
+
+export interface PromptProvenanceEntry {
+  source: string;
+  status: "present" | "shadowed" | "unavailable";
+  bytes: number;
+  sha: string | null;
+}
+
+export interface SessionPromptReceipt {
+  id: string;
+  butler: string;
+  status: "captured" | "legacy_unavailable" | "corrupt";
+  effective_prompt: string | null;
+  prompt_digest: string | null;
+  prompt_provenance: PromptProvenanceEntry[];
+  total_bytes: number | null;
 }
 
 /** One per-butler count bucket in a session aggregate, sorted by count desc. */
@@ -8619,6 +8638,19 @@ export interface PromptVersion {
   version: number;
   updated_at: string;
   updated_by: string | null;
+}
+
+export interface ButlerEffectivePrompt {
+  butler_name: string;
+  status: "captured" | "preview" | "legacy_unavailable" | "corrupt";
+  effective_prompt: string | null;
+  prompt_digest: string | null;
+  prompt_provenance: PromptProvenanceEntry[];
+  total_bytes: number | null;
+  roster_digest: string | null;
+  drift_status: "matches_git" | "drifted" | "unknown";
+  drifted_since: string | null;
+  changed_sources: string[];
 }
 
 /**

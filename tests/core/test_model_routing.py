@@ -32,6 +32,7 @@ from butlers.core.model_routing import (
     TIER_FALLTHROUGH_ORDER,
     Complexity,
     RoutingEvidence,
+    SpendRoutingResult,
     TierQuotaExhausted,
     _check_deprecated_tier,
     _parse_max_cost_per_call,
@@ -44,6 +45,7 @@ from butlers.core.model_routing import (
     get_breaker_states,
     get_routing_evidence,
     get_routing_scores,
+    is_current_spend_rule_audited,
     next_same_tier_candidate,
     resolve_model,
     resolve_model_with_effective_tier,
@@ -1206,6 +1208,39 @@ async def test_next_same_tier_returns_matching_entry(pool: asyncpg.Pool) -> None
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
+async def test_next_same_tier_local_only_skips_higher_priority_remote(pool: asyncpg.Pool) -> None:
+    """The private-content selector treats only ollama model ids as local."""
+    await _insert_catalog_entry(
+        pool,
+        alias="nst-private-remote",
+        model_id="remote-frontier",
+        complexity_tier="specialty",
+        priority=100,
+    )
+    local_id = await _insert_catalog_entry(
+        pool,
+        alias="nst-private-local",
+        model_id="ollama/qwen-synthetic:9b",
+        complexity_tier="specialty",
+        priority=1,
+    )
+
+    result = await next_same_tier_candidate(
+        pool,
+        "general",
+        "specialty",
+        [],
+        local_only=True,
+    )
+
+    assert result is not None
+    assert result[1] == "ollama/qwen-synthetic:9b"
+    assert str(result[3]) == local_id
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
 async def test_next_same_tier_excludes_attempted_id(pool: asyncpg.Pool) -> None:
     """Excludes already-attempted catalog entry IDs."""
     entry_id = await _insert_catalog_entry(
@@ -1825,6 +1860,60 @@ async def test_spend_rule_purpose_condition_at_dispatch(pool: asyncpg.Pool) -> N
     )
     assert routed_discretion.resolved[1] == "cheap-model"
     assert str(routed_discretion.resolved[3]) == cheap_id
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_private_content_remote_rule_requires_current_audit(pool: asyncpg.Pool) -> None:
+    """Only an audit at least as new as the explicit rule revision authorizes remote use."""
+    await pool.execute("TRUNCATE public.spend_rules")
+    await _insert_catalog_entry(
+        pool,
+        alias="private-base",
+        model_id="ollama/private-local",
+        complexity_tier="specialty",
+        priority=100,
+    )
+    remote_id = await _insert_catalog_entry(
+        pool,
+        alias="private-remote",
+        model_id="remote-private-override",
+        complexity_tier="specialty",
+        priority=1,
+    )
+    resolved = await _resolved_tuple(pool, "general", Complexity.SPECIALTY)
+    rule = await pool.fetchrow(
+        """
+        INSERT INTO public.spend_rules (position, condition, action)
+        VALUES (0, '{"purpose":"private_content"}'::jsonb,
+                '{"model":"remote-private-override"}'::jsonb)
+        RETURNING id, updated_at
+        """
+    )
+
+    result = await apply_spend_routing_rules(
+        pool,
+        "general",
+        Complexity.SPECIALTY,
+        resolved,
+        trigger_source="private_content",
+    )
+
+    assert result.resolved[1] == "remote-private-override"
+    assert str(result.resolved[3]) == remote_id
+    assert result.explicit_private_content is True
+    assert await is_current_spend_rule_audited(pool, result) is False
+
+    await pool.execute(
+        """
+        INSERT INTO public.audit_log (actor, action, target, ts)
+        VALUES ('owner', 'spend.rule.create', $1, $2)
+        """,
+        f"rule:{rule['id']}",
+        rule["updated_at"],
+    )
+    assert await is_current_spend_rule_audited(pool, result) is True
 
 
 # ---------------------------------------------------------------------------

@@ -8,6 +8,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   getButlerMemoryAccess,
+  getButlerEffectivePrompt,
   getButlerPrompt,
   getButlerPromptHistory,
   getButlerTools,
@@ -25,6 +26,15 @@ export function useButlerPrompt(name: string) {
   return useQuery({
     queryKey: ["butlers", name, "prompt"],
     queryFn: () => getButlerPrompt(name),
+    enabled: !!name,
+  });
+}
+
+/** Fetch the protected prompt bytes and roster-drift receipt that actually ran. */
+export function useButlerEffectivePrompt(name: string) {
+  return useQuery({
+    queryKey: ["butlers", name, "prompt-effective"],
+    queryFn: () => getButlerEffectivePrompt(name),
     enabled: !!name,
   });
 }

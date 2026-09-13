@@ -69,15 +69,23 @@ import asyncpg
 from prometheus_client import Counter
 
 from butlers.cli_auth.registry import providers_for_runtime
+from butlers.core.audit import write_audit_entry
 from butlers.core.failover_classifier import FailoverContext, classify_failover_eligibility
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import (
     Complexity,
+    PrivateContentModelUnavailable,
+    SpendRoutingResult,
     apply_spend_routing_rules,
     check_token_quota,
+    enforce_private_content_selection,
     next_same_tier_candidate,
     record_token_usage,
     resolve_model_with_effective_tier,
+)
+from butlers.core.purpose_lane import (
+    PURPOSE_LANE_PRIVATE_CONTENT,
+    PURPOSE_LANE_STANDARD,
 )
 from butlers.core.runtimes.base import (
     RuntimeAdapter,
@@ -90,6 +98,12 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_CONCURRENT: int = 4
 _DEFAULT_TIMEOUT_S: float = 30.0
+
+_PURPOSE_LANES = frozenset({PURPOSE_LANE_STANDARD, PURPOSE_LANE_PRIVATE_CONTENT})
+
+
+PrivateContentRoutingRefused = PrivateContentModelUnavailable
+
 
 # bu-ur7go: discretion calls that fail with a provider/auth error (e.g. a
 # never-provisioned or revoked ~/.codex/auth.json — see bu-ofo3i) previously
@@ -182,9 +196,12 @@ class DiscretionDispatcher:
         max_concurrent: int = _DEFAULT_MAX_CONCURRENT,
         timeout_s: float = _DEFAULT_TIMEOUT_S,
         complexity_tier: Complexity = Complexity.SPECIALTY,
+        purpose_lane: str = PURPOSE_LANE_STANDARD,
         credential_store: CredentialStore | None = None,
         codex_auth_authority: CredentialStore | None = None,
     ) -> None:
+        if purpose_lane not in _PURPOSE_LANES:
+            raise ValueError(f"Unsupported purpose_lane: {purpose_lane!r}")
         self._pool = pool
         self._credential_store = credential_store
         self._codex_auth_authority = codex_auth_authority
@@ -192,6 +209,7 @@ class DiscretionDispatcher:
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._timeout_s = timeout_s
         self._complexity_tier = complexity_tier
+        self._purpose_lane = purpose_lane
         self._adapter_cache: dict[str, RuntimeAdapter] = {}
         self._adapter_cache_key: dict[str, str] = {}
         # Reuses the same OTel instruments Spawner._run() records same-tier
@@ -377,14 +395,27 @@ class DiscretionDispatcher:
         # here (unlike the spawner path) because discretion calls have no
         # analogous max_token_budget to bound a worst-case cost estimate
         # against; it is logged for operator visibility instead.
+        routing_result = SpendRoutingResult(
+            resolved=(
+                runtime_type,
+                model_id,
+                extra_args,
+                catalog_entry_id,
+                session_timeout_s,
+            )
+        )
         if catalog_entry_id is not None:
             try:
-                _routing_result = await apply_spend_routing_rules(
+                routing_result = await apply_spend_routing_rules(
                     self._pool,
                     self._butler_name,
                     effective_tier,
                     (runtime_type, model_id, extra_args, catalog_entry_id, session_timeout_s),
-                    trigger_source="discretion",
+                    trigger_source=(
+                        self._purpose_lane
+                        if self._purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
+                        else "discretion"
+                    ),
                 )
                 (
                     runtime_type,
@@ -392,13 +423,13 @@ class DiscretionDispatcher:
                     extra_args,
                     catalog_entry_id,
                     session_timeout_s,
-                ) = _routing_result.resolved
-                if _routing_result.max_cost_per_call is not None:
+                ) = routing_result.resolved
+                if routing_result.max_cost_per_call is not None:
                     logger.info(
                         "DiscretionDispatcher: spend rule set per-call cap $%.4f for "
                         "model=%s (not enforced pre-call: no fixed token budget to "
                         "estimate worst-case cost against)",
-                        _routing_result.max_cost_per_call,
+                        routing_result.max_cost_per_call,
                         model_id,
                     )
             except Exception:
@@ -408,6 +439,49 @@ class DiscretionDispatcher:
                     self._butler_name,
                     model_id,
                     exc_info=True,
+                )
+
+        if self._purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT and not model_id.startswith(
+            "ollama/"
+        ):
+            try:
+                selected, audited_override = await enforce_private_content_selection(
+                    self._pool,
+                    butler_name=self._butler_name,
+                    effective_tier=effective_tier,
+                    routing_result=routing_result,
+                )
+            except PrivateContentModelUnavailable:
+                await write_audit_entry(
+                    self._pool,
+                    "system:model_router",
+                    "model.private_content_remote_refused",
+                    {
+                        "purpose_lane": PURPOSE_LANE_PRIVATE_CONTENT,
+                        "effective_tier": effective_tier,
+                        "reason": "local_model_unavailable",
+                    },
+                    result="error",
+                    error="private_content_remote_refused",
+                )
+                raise
+            (
+                runtime_type,
+                model_id,
+                extra_args,
+                catalog_entry_id,
+                session_timeout_s,
+            ) = selected
+            if audited_override:
+                await write_audit_entry(
+                    self._pool,
+                    "system:model_router",
+                    "model.private_content_remote_override",
+                    {
+                        "purpose_lane": PURPOSE_LANE_PRIVATE_CONTENT,
+                        "rule_id": str(routing_result.matched_rule_id),
+                        "model_id": model_id[:_QUOTA_SKIP_PROVENANCE_FIELD_MAX_CHARS],
+                    },
                 )
 
         attempted_ids: list[uuid.UUID] = []
@@ -469,7 +543,15 @@ class DiscretionDispatcher:
                     )
 
                 next_candidate = await next_same_tier_candidate(
-                    self._pool, self._butler_name, effective_tier, attempted_ids
+                    self._pool,
+                    self._butler_name,
+                    effective_tier,
+                    attempted_ids,
+                    **(
+                        {"local_only": True}
+                        if self._purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
+                        else {}
+                    ),
                 )
                 if next_candidate is None:
                     logger.warning(
@@ -559,11 +641,19 @@ class DiscretionDispatcher:
                             await record_token_usage(
                                 self._pool,
                                 catalog_entry_id=catalog_entry_id,
-                                butler_name=identity or self._butler_name,
+                                butler_name=(
+                                    self._butler_name
+                                    if self._purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
+                                    else identity or self._butler_name
+                                ),
                                 session_id=None,
                                 input_tokens=input_tokens,
                                 output_tokens=output_tokens or 0,
-                                purpose="discretion",
+                                purpose=(
+                                    PURPOSE_LANE_PRIVATE_CONTENT
+                                    if self._purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
+                                    else "discretion"
+                                ),
                             )
                             logger.debug(
                                 "Discretion token usage recorded: in=%d out=%d model=%s",
@@ -637,7 +727,15 @@ class DiscretionDispatcher:
                 ) from attempt_exc
 
             next_candidate = await next_same_tier_candidate(
-                self._pool, self._butler_name, effective_tier, attempted_ids
+                self._pool,
+                self._butler_name,
+                effective_tier,
+                attempted_ids,
+                **(
+                    {"local_only": True}
+                    if self._purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
+                    else {}
+                ),
             )
             if next_candidate is None:
                 logger.warning(

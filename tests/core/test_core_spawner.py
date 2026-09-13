@@ -2008,6 +2008,103 @@ class TestCatalogModelResolution:
         assert captured["model"] == _FALLBACK_MODEL_ID
         assert result2.model == _FALLBACK_MODEL_ID
 
+    async def test_private_routing_context_replaces_remote_before_adapter_setup(
+        self, tmp_path: Path
+    ) -> None:
+        """A trusted WhatsApp source applies the private-content model gate."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config()
+        remote_id = uuid.uuid4()
+        local_id = uuid.uuid4()
+        remote = (
+            DEFAULT_RUNTIME_TYPE,
+            "remote-model",
+            [],
+            remote_id,
+            120,
+            "specialty",
+        )
+        local = (DEFAULT_RUNTIME_TYPE, "ollama/local-fixture", [], local_id, 120)
+        adapter = MockAdapter(result_text="ok", capture=True)
+        spawner = Spawner(config=config, config_dir=config_dir, pool=AsyncMock(), runtime=adapter)
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner._capture_pipeline_routing_context",
+                return_value={"request_context": {"source_channel": "whatsapp_user_client"}},
+            ),
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=remote,
+            ),
+            patch(
+                "butlers.core.spawner.enforce_private_content_selection",
+                new_callable=AsyncMock,
+                return_value=(local, False),
+            ) as enforce_lane,
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=SimpleNamespace(
+                    allowed=True,
+                    usage_24h=0,
+                    usage_30d=0,
+                    limit_24h=None,
+                    limit_30d=None,
+                ),
+            ),
+            patch.object(spawner, "_get_or_create_adapter", return_value=adapter),
+            patch.object(spawner, "_fire_speculative_prewarm"),
+        ):
+            create.return_value = uuid.uuid4()
+            result = await spawner.trigger("synthetic prompt", "route")
+
+        assert result.success is True
+        assert result.model == "ollama/local-fixture"
+        enforce_lane.assert_awaited_once()
+        assert enforce_lane.await_args.kwargs["effective_tier"] == "specialty"
+
+    async def test_private_routing_context_refuses_remote_static_fallback(
+        self, tmp_path: Path
+    ) -> None:
+        """A catalog miss cannot silently send private content to the fallback."""
+        from butlers.core.model_routing import PrivateContentModelUnavailable
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        spawner = Spawner(
+            config=_make_config(),
+            config_dir=config_dir,
+            pool=AsyncMock(),
+            runtime=MockAdapter(result_text="must not run", capture=True),
+        )
+
+        with (
+            patch(
+                "butlers.core.spawner._capture_pipeline_routing_context",
+                return_value={"request_context": {"source_channel": "telegram_bot"}},
+            ),
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch("butlers.core.spawner.write_audit_entry", new_callable=AsyncMock) as audit,
+            patch.object(spawner, "_get_or_create_adapter") as get_adapter,
+            patch.object(spawner, "_fire_speculative_prewarm") as prewarm,
+        ):
+            with pytest.raises(PrivateContentModelUnavailable):
+                await spawner.trigger("synthetic prompt", "route")
+
+        get_adapter.assert_not_called()
+        prewarm.assert_not_called()
+        audit.assert_awaited_once()
+        assert audit.await_args.args[2] == "model.private_content_remote_refused"
+
     async def test_complexity_routing(self, tmp_path: Path):
         """Without pool: resolve_model not called. With pool: complexity forwarded."""
         from butlers.core.model_routing import Complexity

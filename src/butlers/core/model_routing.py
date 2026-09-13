@@ -312,6 +312,10 @@ class SpendRoutingResult:
     resolved: tuple[str, str, list[str], uuid.UUID, int]
     max_cost_per_call: float | None = None
     breaker_open: BreakerState | None = None
+    matched_rule_id: uuid.UUID | None = None
+    matched_rule_updated_at: datetime | None = None
+    explicit_private_content: bool = False
+    target_model: str | None = None
 
 
 # Shared with the ceiling-deny message the spawner builds below and the
@@ -1171,6 +1175,7 @@ all_candidates AS (
       AND mc.last_verified_ok IS DISTINCT FROM false
       AND COALESCE(bmo.complexity_tier, mc.complexity_tier) = $2
       AND mc.id != ALL($3::uuid[])
+      AND (NOT $4::boolean OR mc.model_id LIKE 'ollama/%')
       AND mc.id NOT IN (SELECT catalog_entry_id FROM breaker_open)
 )
 SELECT
@@ -1262,7 +1267,7 @@ GROUP BY mc.model_id
 # Load all spend routing rules in evaluation order (top-to-bottom = position ASC).
 # Each rule is a (condition JSONB, action JSONB) pair; evaluation is first-match-wins.
 _SPEND_RULES_SELECT_SQL = """
-SELECT id, condition, action
+SELECT id, condition, action, updated_at
 FROM public.spend_rules
 ORDER BY position ASC
 """
@@ -2203,6 +2208,8 @@ async def next_same_tier_candidate(
     butler_name: str,
     effective_tier: str,
     attempted_ids: list[uuid.UUID],
+    *,
+    local_only: bool = False,
 ) -> tuple[str, str, list[str], uuid.UUID, int] | None:
     """Return the next eligible model in the exact effective tier, excluding attempted IDs.
 
@@ -2231,6 +2238,10 @@ async def next_same_tier_candidate(
     attempted_ids:
         Catalog entry IDs that have already been attempted or explicitly skipped
         for this logical session.  All of these are excluded from the result.
+    local_only:
+        When true, require the canonical model id to start with ``ollama/``.
+        This is the private-content lane's proof of local execution; runtime type
+        and price are not equivalent locality signals.
 
     Returns
     -------
@@ -2239,7 +2250,13 @@ async def next_same_tier_candidate(
         for the next eligible candidate, or ``None`` when all same-tier candidates
         are exhausted.
     """
-    row = await pool.fetchrow(_NEXT_SAME_TIER_SQL, butler_name, effective_tier, attempted_ids)
+    row = await pool.fetchrow(
+        _NEXT_SAME_TIER_SQL,
+        butler_name,
+        effective_tier,
+        attempted_ids,
+        local_only,
+    )
     if row is None:
         return None
     return (
@@ -2281,6 +2298,96 @@ def _parse_max_cost_per_call(action: dict, rule_id: object) -> float | None:
         )
         return None
     return cap
+
+
+def _explicit_private_content_condition(condition: dict) -> bool:
+    """Return whether a rule explicitly names the private-content purpose.
+
+    Catch-all, butler-only, tier-only, and the legacy ``trigger`` alias are not
+    sufficient authority to move private content off a local model. The owner
+    must target this lane by its durable purpose name.
+    """
+    raw = condition.get("purpose")
+    values = raw if isinstance(raw, list) else [raw]
+    return any(isinstance(value, str) and value.casefold() == "private_content" for value in values)
+
+
+async def is_current_spend_rule_audited(
+    pool: asyncpg.Pool,
+    result: SpendRoutingResult,
+) -> bool:
+    """Verify that a private-content override's current rule revision was audited.
+
+    Audit lookup failure denies the exception. A historic create event is not
+    enough after a rule update: its timestamp must be at least the rule's
+    current ``updated_at``.
+    """
+    if (
+        result.matched_rule_id is None
+        or result.matched_rule_updated_at is None
+        or not result.explicit_private_content
+        or result.target_model != result.resolved[1]
+    ):
+        return False
+    try:
+        return bool(
+            await pool.fetchval(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                      FROM public.audit_log
+                     WHERE target = $1
+                       AND action IN ('spend.rule.create', 'spend.rule.update')
+                       AND ts >= $2
+                )
+                """,
+                f"rule:{result.matched_rule_id}",
+                result.matched_rule_updated_at,
+            )
+        )
+    except Exception:
+        logger.warning(
+            "Private-content override audit lookup failed for rule=%s; refusing remote model",
+            result.matched_rule_id,
+            exc_info=True,
+        )
+        return False
+
+
+class PrivateContentModelUnavailable(RuntimeError):
+    """No local candidate or current audited remote exception exists."""
+
+
+async def enforce_private_content_selection(
+    pool: asyncpg.Pool,
+    *,
+    butler_name: str,
+    effective_tier: str,
+    routing_result: SpendRoutingResult,
+) -> tuple[tuple[str, str, list[str], uuid.UUID, int], bool]:
+    """Return a local selection, or a current explicitly audited remote one.
+
+    The boolean is true only for the audited remote exception. Provider setup
+    belongs to the caller and must happen after this function returns.
+    """
+    selected = routing_result.resolved
+    if selected[1].startswith("ollama/"):
+        return selected, False
+    if await is_current_spend_rule_audited(pool, routing_result):
+        return selected, True
+
+    local_candidate = await next_same_tier_candidate(
+        pool,
+        butler_name,
+        effective_tier,
+        [selected[3]],
+        local_only=True,
+    )
+    if local_candidate is None:
+        raise PrivateContentModelUnavailable(
+            "private_content_remote_refused: local model unavailable"
+        )
+    return local_candidate, False
 
 
 async def apply_spend_routing_rules(
@@ -2391,9 +2498,18 @@ async def apply_spend_routing_rules(
 
         # First match wins — stop evaluating further rules regardless of outcome.
         rule_id = rule_row["id"]
+        matched_rule_id = rule_id if isinstance(rule_id, uuid.UUID) else uuid.UUID(str(rule_id))
+        raw_updated_at = rule_row.get("updated_at")
+        matched_rule_updated_at = raw_updated_at if isinstance(raw_updated_at, datetime) else None
         action = _coerce_rule_dict(rule_row["action"])
         max_cost_per_call = _parse_max_cost_per_call(action, rule_id)
         target_model = action.get("model")
+        match_metadata = {
+            "matched_rule_id": matched_rule_id,
+            "matched_rule_updated_at": matched_rule_updated_at,
+            "explicit_private_content": _explicit_private_content_condition(condition),
+            "target_model": target_model if isinstance(target_model, str) else None,
+        }
 
         if not target_model or not isinstance(target_model, str):
             if max_cost_per_call is None:
@@ -2415,7 +2531,11 @@ async def apply_spend_routing_rules(
                     max_cost_per_call,
                     resolved[1],
                 )
-            return SpendRoutingResult(resolved=resolved, max_cost_per_call=max_cost_per_call)
+            return SpendRoutingResult(
+                resolved=resolved,
+                max_cost_per_call=max_cost_per_call,
+                **match_metadata,
+            )
 
         try:
             row = await pool.fetchrow(_RESOLVE_BY_MODEL_ID_SQL, butler_name, target_model)
@@ -2429,7 +2549,11 @@ async def apply_spend_routing_rules(
                 resolved[1],
                 exc_info=True,
             )
-            return SpendRoutingResult(resolved=resolved, max_cost_per_call=max_cost_per_call)
+            return SpendRoutingResult(
+                resolved=resolved,
+                max_cost_per_call=max_cost_per_call,
+                **match_metadata,
+            )
 
         if row is None:
             logger.warning(
@@ -2442,7 +2566,11 @@ async def apply_spend_routing_rules(
                 target_model,
                 resolved[1],
             )
-            return SpendRoutingResult(resolved=resolved, max_cost_per_call=max_cost_per_call)
+            return SpendRoutingResult(
+                resolved=resolved,
+                max_cost_per_call=max_cost_per_call,
+                **match_metadata,
+            )
 
         logger.info(
             "apply_spend_routing_rules: rule %s matched (butler=%s tier=%s); routed model %s -> %s"
@@ -2501,6 +2629,7 @@ async def apply_spend_routing_rules(
             ),
             max_cost_per_call=max_cost_per_call,
             breaker_open=breaker_open_state,
+            **match_metadata,
         )
 
     # No rule matched — tier-based resolution stands.

@@ -74,15 +74,22 @@ from butlers.core.model_routing import (
     BREAKER_OPEN_RULE_OVERRIDE_REASON_PREFIX,
     CEILING_DENIAL_REASON_PREFIX,
     Complexity,
+    PrivateContentModelUnavailable,
+    SpendRoutingResult,
     TierQuotaExhausted,
     apply_spend_routing_rules,
     check_monthly_ceiling,
     check_token_quota,
+    enforce_private_content_selection,
     next_same_tier_candidate,
     record_token_usage,
     resolve_model_with_effective_tier,
 )
 from butlers.core.permissions import SPAWN_PERMISSION, check_permission
+from butlers.core.purpose_lane import (
+    PURPOSE_LANE_PRIVATE_CONTENT,
+    purpose_lane_from_routing_context,
+)
 from butlers.core.route_inbox import RouteInboxLeaseLost
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter, validated_session_timeout_overhead_s
@@ -1286,6 +1293,7 @@ class Spawner:
         # block skips classification for exceptions that are already classified.
         _failover_already_classified: bool = False
         routing_context = _capture_pipeline_routing_context()
+        purpose_lane = purpose_lane_from_routing_context(routing_context)
         # Ledger token tracking: set as soon as the adapter reports usage so that
         # ledger recording in the finally block captures tokens even when post-invoke
         # processing fails (e.g. session_complete raises). Tokens are consumed by the
@@ -1355,6 +1363,7 @@ class Spawner:
             complexity,
             deadline_s=timeout_override,
             extra_required_features=_vision_required,
+            purpose_lane=purpose_lane,
         )
         if self._pool is not None:
             try:
@@ -1474,6 +1483,7 @@ class Spawner:
         # -- exactly the pre-fold behavior, since the old code always quota-checked
         # whatever apply_spend_routing_rules produced.
         _pre_rule_catalog_entry_id = catalog_entry_id
+        _routing_result: SpendRoutingResult | None = None
         if catalog_entry_id is not None and self._pool is not None:
             try:
                 _routing_result = await apply_spend_routing_rules(
@@ -1487,7 +1497,11 @@ class Spawner:
                         catalog_entry_id,
                         catalog_timeout_s,
                     ),
-                    trigger_source=trigger_source,
+                    trigger_source=(
+                        purpose_lane
+                        if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
+                        else trigger_source
+                    ),
                 )
                 (
                     resolved_runtime_type,
@@ -1507,6 +1521,98 @@ class Spawner:
                     exc_info=True,
                 )
         _spend_rule_fired = catalog_entry_id != _pre_rule_catalog_entry_id
+
+        # Private message content is local by default. This gate is deliberately
+        # after operator-rule evaluation but before prewarm/provider setup: only
+        # a rule explicitly scoped to this lane with current audit evidence may
+        # authorize the selected remote model.
+        if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT and not model.startswith("ollama/"):
+            if catalog_entry_id is None or self._pool is None:
+                exc = PrivateContentModelUnavailable(
+                    "private_content_remote_refused: local model unavailable"
+                )
+                await write_audit_entry(
+                    self._pool,
+                    "system:model_router",
+                    "model.private_content_remote_refused",
+                    {
+                        "purpose_lane": purpose_lane,
+                        "effective_tier": _failover_effective_tier or str(complexity),
+                        "reason": "no_catalog_local_selection",
+                    },
+                    result="error",
+                    error="private_content_remote_refused",
+                )
+                if dashboard_turn_id is not None:
+                    return await self._dashboard_preflight_failure(
+                        dashboard_turn_id=dashboard_turn_id,
+                        error=str(exc),
+                        model=model,
+                    )
+                raise exc
+
+            assert self._pool is not None
+            assert catalog_entry_id is not None
+            lane_result = _routing_result or SpendRoutingResult(
+                resolved=(
+                    resolved_runtime_type,
+                    model,
+                    catalog_extra_args,
+                    catalog_entry_id,
+                    catalog_timeout_s or 1800,
+                )
+            )
+            try:
+                lane_selection, audited_remote_override = await enforce_private_content_selection(
+                    self._pool,
+                    butler_name=self._config.name,
+                    effective_tier=_failover_effective_tier or str(complexity),
+                    routing_result=lane_result,
+                )
+            except PrivateContentModelUnavailable as exc:
+                await write_audit_entry(
+                    self._pool,
+                    "system:model_router",
+                    "model.private_content_remote_refused",
+                    {
+                        "purpose_lane": purpose_lane,
+                        "effective_tier": _failover_effective_tier or str(complexity),
+                        "reason": "local_model_unavailable",
+                    },
+                    result="error",
+                    error="private_content_remote_refused",
+                )
+                if dashboard_turn_id is not None:
+                    return await self._dashboard_preflight_failure(
+                        dashboard_turn_id=dashboard_turn_id,
+                        error=str(exc),
+                        model=model,
+                    )
+                raise
+            (
+                resolved_runtime_type,
+                model,
+                catalog_extra_args,
+                catalog_entry_id,
+                catalog_timeout_s,
+            ) = lane_selection
+            if audited_remote_override:
+                await write_audit_entry(
+                    self._pool,
+                    "system:model_router",
+                    "model.private_content_remote_override",
+                    {
+                        "purpose_lane": purpose_lane,
+                        "rule_id": str(lane_result.matched_rule_id),
+                        "model_id": model[:256],
+                    },
+                )
+            else:
+                # The initial quota-aware receipt belongs to the displaced
+                # remote entry, so the local candidate must run the ordinary
+                # quota check below.
+                _spend_rule_fired = True
+                _spend_rule_breaker_open = None
 
         # Speculative prewarm (bu-ep4ks.13 follow-up / bu-k9te9, slice 4): the runtime_type
         # this dispatch will use is now fully settled (post spend-rule override), regardless
@@ -1666,6 +1772,9 @@ class Spawner:
                     self._config.name,
                     _failover_effective_tier,
                     _attempted_ids,
+                    **(
+                        {"local_only": True} if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT else {}
+                    ),
                 )
                 if next_candidate is None:
                     # No candidates remain: hard block.
@@ -2425,7 +2534,11 @@ class Spawner:
                         cache_creation_tokens=(
                             _empty_response_usage.get("cache_creation_input_tokens") or 0
                         ),
-                        purpose=trigger_source,
+                        purpose=(
+                            purpose_lane
+                            if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
+                            else trigger_source
+                        ),
                         resume_outcome=_resume_outcome,
                         **_composed_prompt_ledger_kwargs(_composed_prompt_digest),
                     )
@@ -2535,6 +2648,9 @@ class Spawner:
                     self._config.name,
                     _failover_effective_tier,
                     _attempted_ids,
+                    **(
+                        {"local_only": True} if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT else {}
+                    ),
                 )
                 if next_candidate is None:
                     # All same-tier candidates exhausted — terminal failure.
@@ -3362,7 +3478,11 @@ class Spawner:
                     output_tokens=_ledger_output_tokens or 0,
                     cached_input_tokens=_ledger_cached_input_tokens,
                     cache_creation_tokens=_ledger_cache_creation_tokens,
-                    purpose=trigger_source,
+                    purpose=(
+                        purpose_lane
+                        if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
+                        else trigger_source
+                    ),
                     resume_outcome=_resume_outcome,
                     **_composed_prompt_ledger_kwargs(_composed_prompt_digest),
                 )

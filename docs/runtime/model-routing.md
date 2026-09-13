@@ -122,6 +122,30 @@ The `public.butler_model_overrides` table allows per-butler customization withou
 
 When `resolve_model()` returns `None`, the spawner falls back to the model configured in `[butler.runtime].model` in `butler.toml`.
 
+### Private-content purpose lane
+
+Dispatch purpose is a closed, content-blind dimension. A trusted WhatsApp or Telegram source marks
+the dispatch `private_content`; all other and unknown sources remain `standard`. The classifier
+reads only the established routing/connector channel token. It never inspects prompt, message,
+sender, recipient, or thread content to infer sensitivity.
+
+`private_content` is local-first and fail-closed. A model is proven local only when its canonical
+catalog `model_id` begins `ollama/`; runtime type and zero price are not locality evidence. Initial
+selection and same-tier failover therefore skip remote entries before adapter setup. If no eligible
+local entry exists, the dispatch is refused and a bounded `model.private_content_remote_refused`
+audit record is attempted without private content.
+
+The narrow remote exception reuses the existing operator spend-rule surface rather than adding a
+second routing system. The first matching rule must explicitly set `purpose=private_content`, its
+action must explicitly name the selected remote model, and a successful audit entry for the current
+rule revision must exist. Catch-all, tier-only, stale, or unverifiable rules are not authority. An
+accepted exception records `model.private_content_remote_override`; subsequent failover remains
+local-only rather than authorizing a different remote model.
+
+New private discretion usage is grouped under purpose `private_content` with the stable dispatcher
+identity, never a raw chat or sender identifier. New ordinary sessions persist the same purpose lane
+for session-list and dossier visibility.
+
 ## Capability fit (bu-6jv4m.7)
 
 Everything above decides whether an entry is *allowed*. It does not decide whether the entry can do

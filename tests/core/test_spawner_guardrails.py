@@ -25,6 +25,11 @@ import pytest
 
 from butlers.config import ButlerConfig, RuntimeSeedConfig
 from butlers.core.failover_classifier import FailoverContext, classify_failover_eligibility
+from butlers.core.purpose_lane import (
+    PURPOSE_LANE_PRIVATE_CONTENT,
+    PURPOSE_LANE_STANDARD,
+    purpose_lane_from_routing_context,
+)
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import (
     _DEGENERATE_TOOL_LOOP_CONSECUTIVE_THRESHOLD,
@@ -45,6 +50,23 @@ pytestmark = pytest.mark.unit
 
 _SESSION_ID = uuid.UUID("aaaaaaaa-0000-0000-0000-000000000001")
 _CATALOG_ID = uuid.UUID("bbbbbbbb-0000-0000-0000-000000000002")
+
+
+@pytest.mark.parametrize(
+    ("routing_context", "expected"),
+    [
+        (
+            {"request_context": {"source_channel": "whatsapp_user_client"}},
+            PURPOSE_LANE_PRIVATE_CONTENT,
+        ),
+        ({"source_metadata": {"channel": "telegram_bot"}}, PURPOSE_LANE_PRIVATE_CONTENT),
+        ({"request_context": {"source_channel": "email"}}, PURPOSE_LANE_STANDARD),
+        ({"request_context": {"message": "telegram"}}, PURPOSE_LANE_STANDARD),
+        (None, PURPOSE_LANE_STANDARD),
+    ],
+)
+def test_purpose_lane_uses_trusted_channel_metadata_only(routing_context, expected) -> None:
+    assert purpose_lane_from_routing_context(routing_context) == expected
 
 
 def _make_config(name: str = "test-butler") -> ButlerConfig:
