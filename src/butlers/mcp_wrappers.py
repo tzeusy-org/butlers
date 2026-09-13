@@ -223,8 +223,6 @@ class _SpanWrappingMCP:
                     tool_name=resolved_tool_name,
                     module_name=self._module_name,
                 )
-            self._registered_tool_names.add(resolved_tool_name)
-
             module_name_for_gate = self._module_name
             runtime_states_ref = self._module_runtime_states
 
@@ -304,7 +302,9 @@ class _SpanWrappingMCP:
                 )
                 return result
 
-            return original_decorator(instrumented)
+            registered = original_decorator(instrumented)
+            self._registered_tool_names.add(resolved_tool_name)
+            return registered
 
         return wrapper
 
@@ -342,7 +342,6 @@ class _ToolCallLoggingMCP:
 
         def wrapper(fn):  # noqa: ANN001, ANN202
             resolved_tool_name = declared_name or fn.__name__
-            self._registered_tool_names.add(resolved_tool_name)
 
             @functools.wraps(fn)
             async def instrumented(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
@@ -391,7 +390,9 @@ class _ToolCallLoggingMCP:
                 )
                 return result
 
-            return original_decorator(instrumented)
+            registered = original_decorator(instrumented)
+            self._registered_tool_names.add(resolved_tool_name)
+            return registered
 
         return wrapper
 

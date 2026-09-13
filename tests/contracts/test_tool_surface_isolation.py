@@ -303,6 +303,33 @@ class TestEphemeralMcpConfig:
             "_SpanWrappingMCP must track registered tool names (RFC 0002)"
         )
 
+    @pytest.mark.parametrize("proxy_name", ["span", "logging"])
+    def test_failed_fastmcp_decorator_is_not_recorded_as_registered(self, proxy_name):
+        """A rejected FastMCP registration must not appear in the live snapshot."""
+        from unittest.mock import MagicMock
+
+        from butlers.daemon import _SpanWrappingMCP, _ToolCallLoggingMCP
+
+        mock_mcp = MagicMock()
+
+        def rejecting_tool(*args, **kwargs):  # noqa: ARG001
+            def decorator(fn):  # noqa: ARG001
+                raise RuntimeError("duplicate tool")
+
+            return decorator
+
+        mock_mcp.tool = rejecting_tool
+        proxy_type = _SpanWrappingMCP if proxy_name == "span" else _ToolCallLoggingMCP
+        proxy = proxy_type(mock_mcp, "health", module_name="calendar")
+
+        with pytest.raises(RuntimeError, match="duplicate tool"):
+
+            @proxy.tool(name="get_events")
+            async def get_events() -> list:
+                return []
+
+        assert proxy._registered_tool_names == set()
+
     def test_tool_meta_arg_sensitivities_is_dict(self):
         """RFC 0002: ToolMeta.arg_sensitivities is a dict mapping arg name to bool.
 

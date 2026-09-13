@@ -6280,6 +6280,7 @@ export interface RuntimeConfigResponse {
   declared_tool_names: string[] | null;
   effective_tool_names: string[] | null;
   tool_declaration_complete: boolean | null;
+  tool_snapshot_status: "available" | "unavailable";
   catalog_read_sensitivity: "normal" | "internal" | "confidential";
   max_concurrent: number;
   max_queued: number;

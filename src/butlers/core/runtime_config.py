@@ -267,6 +267,17 @@ class RuntimeConfigAccessor:
                 WHERE butler_name = $1
                   AND core_groups IS DISTINCT FROM $2::text[]
                   AND $3::boolean
+                  AND NOT (
+                      core_groups IS NOT NULL
+                      AND COALESCE(btrim(core_groups_narrowing_reason), '') <> ''
+                      AND (
+                          $2::text[] IS NULL
+                          OR (
+                              core_groups <@ $2::text[]
+                              AND NOT ($2::text[] <@ core_groups)
+                          )
+                      )
+                  )
                 FOR UPDATE
             ), reconciled AS (
                 UPDATE {self._schema}.runtime_config AS runtime_config

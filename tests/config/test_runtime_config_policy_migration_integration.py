@@ -191,6 +191,69 @@ async def test_concurrent_git_reconciliation_writes_one_audit_row(postgres_conta
 
 @_skip_without_docker
 @pytest.mark.asyncio(loop_scope="session")
+async def test_concurrent_operator_narrowing_wins_over_stale_startup_reconciliation(
+    postgres_container,
+) -> None:
+    """Startup rechecks the locked row before replacing a stale narrowing."""
+    from butlers.testing.migration import create_migrated_test_pool
+
+    pool = await create_migrated_test_pool(postgres_container, chains=["core"])
+    initial_read_done = asyncio.Event()
+    allow_reconciliation = asyncio.Event()
+
+    class PausingPool:
+        def __init__(self) -> None:
+            self.initial_read_seen = False
+
+        async def execute(self, query, *args):
+            return await pool.execute(query, *args)
+
+        async def fetchrow(self, query, *args):
+            row = await pool.fetchrow(query, *args)
+            if query.lstrip().startswith("SELECT *") and not self.initial_read_seen:
+                self.initial_read_seen = True
+                initial_read_done.set()
+                await allow_reconciliation.wait()
+            return row
+
+    try:
+        await pool.execute(
+            "INSERT INTO public.runtime_config (butler_name, core_groups) VALUES ($1, $2)",
+            "operator-race-butler",
+            ["infra"],
+        )
+        seed = RuntimeSeedConfig(core_groups=("infra", "delegation", "graph"))
+        accessor = RuntimeConfigAccessor(PausingPool(), "public")
+        startup = asyncio.create_task(accessor.seed_if_empty(seed, "operator-race-butler"))
+
+        await asyncio.wait_for(initial_read_done.wait(), timeout=5)
+        await pool.execute(
+            "UPDATE public.runtime_config "
+            "SET core_groups = $1, core_groups_narrowing_reason = $2 "
+            "WHERE butler_name = $3",
+            ["infra", "delegation"],
+            "Operator disabled graph pending review",
+            "operator-race-butler",
+        )
+        allow_reconciliation.set()
+
+        result = await asyncio.wait_for(startup, timeout=5)
+        assert result.core_groups == ("infra", "delegation")
+        assert result.core_groups_narrowing_reason == "Operator disabled graph pending review"
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM public.audit_log "
+                "WHERE action = 'core_groups_reconciled' AND target = 'operator-race-butler'"
+            )
+            == 0
+        )
+    finally:
+        allow_reconciliation.set()
+        await pool.close()
+
+
+@_skip_without_docker
+@pytest.mark.asyncio(loop_scope="session")
 async def test_committed_patch_reaches_a_separate_process_accessor_without_restart(
     postgres_container,
 ) -> None:

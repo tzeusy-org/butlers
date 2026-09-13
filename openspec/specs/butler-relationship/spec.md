@@ -30,7 +30,7 @@ The relationship butler exposes its complete manifesto-owned personal CRM tool s
 - **THEN** all 66 group-owned relationship tools SHALL be registered, including contact CRUD (`contact_create`, `contact_update`, `contact_get`, `contact_search`, `contact_archive`, `contact_resolve`), relationship management (`relationship_add`, `relationship_list`, `relationship_remove`), date tracking (`date_add`, `date_list`, `upcoming_dates`), notes (`note_create`, `note_list`, `note_search`), interactions (`interaction_log`, `interaction_list`), reminders (`reminder_create`, `reminder_list`, `reminder_dismiss`), gifts (`gift_add`, `gift_update_status`, `gift_list`), loans (`loan_create`, `loan_settle`, `loan_list`), groups (`group_create`, `group_add_member`, `group_list`, `group_members`), labels (`label_create`, `label_assign`, `contact_search_by_label`), facts (`fact_set`, `fact_list`), the registry-relational reader (`relationship_lookup`), feed (`feed_get`), entity resolution (`entity_resolve`, `entity_create`), memory (`memory_store_fact`), and calendar tools
 - **AND** `relationship_assert_fact` SHALL be the additional mandatory unconditional handler, making 67 relationship-module handlers total
 
-> NOTE: `feed_get` is specified but not yet implemented in the relationship module (no `feed_get` tool or library function exists as of this audit). It remains in scope as intent; a remediation issue tracks building it.
+> NOTE: `feed_get` is implemented and registered by the relationship module's `social` group; the grouped inventory count includes it.
 
 ### Requirement: Relationship Butler Tool Surface — Dunbar Tier
 The relationship butler SHALL expose Dunbar tier management and group interaction tools.

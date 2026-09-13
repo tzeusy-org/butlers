@@ -267,11 +267,27 @@ async def test_replay_delivery_conflicts_after_first_requeue(app, monkeypatch):
         # emulate that second observation at the API seam.
         from butlers.api.routers import domain_events as router_module
 
-        router_module.requeue_failed_delivery = AsyncMock(return_value=None)
+        router_module.requeue_failed_delivery = AsyncMock(return_value="conflict")
         second = await client.post(f"/api/domain-events/deliveries/{delivery_id}/replay")
 
     assert first.status_code == 200
     assert second.status_code == 409
+
+
+async def test_replay_unknown_delivery_returns_not_found(app, monkeypatch):
+    delivery_id = uuid.uuid4()
+    _wire_db(app, rows=[])
+    monkeypatch.setattr(
+        "butlers.api.routers.domain_events.requeue_failed_delivery",
+        AsyncMock(return_value="not_found"),
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(f"/api/domain-events/deliveries/{delivery_id}/replay")
+
+    assert response.status_code == 404
 
 
 async def test_replay_delivery_rejects_malformed_id_before_write(app):

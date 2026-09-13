@@ -141,6 +141,7 @@ export default function RuntimeConfigCard({ butlerName }: RuntimeConfigCardProps
     : registeredTools.data?.data.map((tool) => tool.name);
   const declaredToolNames = config.declared_tool_names;
   const effectiveToolNames = config.effective_tool_names;
+  const toolSnapshotUnavailable = config.tool_snapshot_status === "unavailable";
   const declaredNotRegistered =
     declaredToolNames && registeredNames
       ? declaredToolNames.filter((name) => !registeredNames.includes(name))
@@ -223,6 +224,9 @@ export default function RuntimeConfigCard({ butlerName }: RuntimeConfigCardProps
             )}
             {registeredTools.isError && (
               <p className="text-destructive">Registered surface unavailable.</p>
+            )}
+            {toolSnapshotUnavailable && (
+              <p className="text-destructive">Declaration snapshot unavailable.</p>
             )}
             {moduleHealth.isError && (
               <p className="text-destructive">Module health unavailable.</p>
