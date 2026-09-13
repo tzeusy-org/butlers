@@ -1,7 +1,7 @@
 """Add explicit core-groups narrowing authority to runtime config.
 
 Revision ID: core_232
-Revises: core_231
+Revises: core_223
 Create Date: 2026-09-13 00:00:00.000000
 
 bu-h40h2b.1: Git-declared core groups are authoritative. A runtime row may
@@ -17,7 +17,7 @@ import re
 from alembic import op
 
 revision = "core_232"
-down_revision = "core_231"
+down_revision = "core_223"
 branch_labels = None
 depends_on = None
 
