@@ -47,6 +47,7 @@ automatically and must not depend on this hand-maintained list for enforcement.
 | `durable-dashboard-terminal-action-recovery` | `POST /api/dashboard/terminal-actions/{id}/resolve` | immutable resolution |
 | `memory-honesty-last-mile` | `POST /api/memory/episodes/{episode_id}/requeue` | recovery eligibility/idempotency |
 | canonical `dashboard-briefing` | `GET /api/dashboard/briefing` | owner-contact assertion/cache |
+| canonical `butler-health` | `GET /api/health/briefing` | Health owner assertion/per-owner cache |
 | canonical `system-overview-page` | `GET /api/system/egress` | owner-contact assertion |
 
 Canonical `dashboard-relationship` Clause 12 adds this exact set. The central
@@ -97,15 +98,16 @@ distinguishes that response from owner-auth material.
 
 The active deltas listed above, plus
 `generation-fenced-codex-auth-rotation-provenance` and
-`memory-honesty-last-mile`, must be rebuilt after E1/E2 adoption so their
-header-only, unconfigured-503, or implicit-owner language points to the final
-central contract. No such delta may archive afterward from its stale ancestor.
+`memory-honesty-last-mile`, and canonical `butler-health`, must be rebuilt after
+E1/E2 adoption so their header-only, unconfigured-503, or implicit-owner
+language points to the final central contract. No such delta may archive
+afterward from its stale ancestor.
 The domain assertions continue to run after authentication; they cannot create
 a session or convert the presence of an owner row into caller identity.
 
 The rebuild plan is exact and ordered:
 
-| Active change | Requirements/clauses to rebuild against the adopted auth contract |
+| Active/canonical source | Requirements/clauses to rebuild against the adopted auth contract |
 | --- | --- |
 | `harden-runtime-auth-and-breaker-attention` | `dashboard-model-settings` REQ-001/002, `dashboard-spend-dashboard` fleet-halt owner-control scenario, and `runtime-attention-outbox` REQ-003 |
 | `specify-home-presence-owner-entity-configuration` | `home-presence-configuration` owner-authenticated surface and its unconfigured/wrong-credential scenarios |
@@ -113,6 +115,7 @@ The rebuild plan is exact and ordered:
 | `durable-dashboard-terminal-action-recovery` | `dashboard-conversations` REQ-006 and `dashboard-terminal-action-recovery` REQ-005 owner-only operations |
 | `generation-fenced-codex-auth-rotation-provenance` | `dashboard-api` Codex save/rotate, reauthorize/device-auth, probe, and revoke owner boundary |
 | `memory-honesty-last-mile` | `dashboard-api` Owner-Scoped Dead-Letter Episode Requeue API |
+| canonical `butler-health` | `[TARGET-STATE] Health Voice briefing route`, especially Owner-only access and per-owner cache |
 
 After the selected E1/E2 amendment is independently reviewed and adopted,
 each owner copies the then-current whole requirement, changes only its
@@ -414,7 +417,9 @@ evidence, with one gate species per invariant:
 
 1. Mounted full-app API tests for configured-key session establishment,
    `X-API-Key` compatibility, cookie attributes, session fixation resistance,
-   all owner-gated routes, and pre-body/pre-pool denial.
+   all owner-gated routes, and pre-body/pre-pool denial. The Health briefing
+   test must prove the centralized transport boundary denies first, before its
+   owner lookup, per-owner cache read/write, or optional LLM path.
 2. Real-PostgreSQL tests that race equal enrollment authority, prove one
    atomic winner/one consumed receipt, reject replay before and after process
    restart, preserve expiry, and fence recovery by epoch.
@@ -440,8 +445,11 @@ evidence, with one gate species per invariant:
    service-worker caches. Separately prove the existing CLI rotate one-time
    `value`/`fingerprint` response and absence everywhere else.
 7. Route-introspection and frontend contract tests proving every inventoried or
-   newly tagged owner-only browser route uses the centralized boundary and that
-   the shell exposes honest, accessible, repeat-safe states.
+   newly tagged owner-only browser route uses the centralized boundary. The
+   mounted inventory assertion must include `GET /api/health/briefing` and
+   verify its transport dependency precedes the Health owner/cache assertion;
+   frontend coverage must prove the shell exposes honest, accessible,
+   repeat-safe states.
 
 Mock-only, dependency-override-only, source-grep-only, or a polished browser
 page without the mounted API, real database race, and exact HTTPS Compose path

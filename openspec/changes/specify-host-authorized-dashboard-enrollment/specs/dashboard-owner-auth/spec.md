@@ -268,12 +268,18 @@ in `design.md` SHALL be covered at implementation time, including Models and
 Spend attention, model Test/Verify, Home presence settings, prompt overlay and
 mode, conversation ingress recovery, terminal-action inspection/resolution,
 memory dead-letter requeue, dashboard briefing, System egress, relationship
-entity PII/mutations, and owner-operated credential mutations. In particular,
+entity PII/mutations, Health briefing, and owner-operated credential mutations. In particular,
 the mounted `POST /api/secrets/cli/{credential_id:path}/rotate` SHALL pass the
 central boundary before it reads a body, credential row, or generation state;
 its separately sanctioned one-time response remains governed by
 REQ-dashboard-owner-auth-006. A domain assertion that an owner entity exists
 SHALL remain additive and SHALL not authenticate the HTTP caller.
+
+`GET /api/health/briefing` SHALL pass the centralized transport boundary before
+it resolves the Health owner, reads or writes the per-owner five-minute cache,
+constructs a template, or invokes an optional LLM. Its canonical owner/cache
+assertion remains additive after transport authentication. A denied transport
+request SHALL return without revealing whether an owner or cache entry exists.
 
 Mounted route metadata and a route-introspection contract test SHALL make future
 owner-only routes fail when they omit the centralized boundary. Public health,
@@ -281,7 +287,7 @@ connector-scoped callbacks, OAuth state, and private service-control credentials
 SHALL remain narrowly scoped and SHALL not create an owner session.
 
 ID: REQ-dashboard-owner-auth-005
-Source: RFC 0007; dashboard-model-settings REQ-dashboard-model-settings-001/002; runtime-attention-outbox REQ-runtime-attention-outbox-003; dashboard-relationship Clause 12; system-overview-page System Page Privacy Contract; active owner-control capability changes inventoried in design.md
+Source: RFC 0007; dashboard-model-settings REQ-dashboard-model-settings-001/002; runtime-attention-outbox REQ-runtime-attention-outbox-003; dashboard-relationship Clause 12; butler-health Health Voice briefing route; system-overview-page System Page Privacy Contract; active owner-control capability changes inventoried in design.md
 Scope: v1-mandatory
 
 #### Scenario: Every inventoried owner route authenticates before access
@@ -306,6 +312,13 @@ Scope: v1-mandatory
 
 - **WHEN** a new mounted route is tagged or specified as owner-only without the centralized dependency
 - **THEN** the route-introspection contract gate SHALL fail before merge
+
+#### Scenario: Health briefing authenticates before owner and cache access
+
+- **WHEN** any caller requests `GET /api/health/briefing`
+- **THEN** the centralized configured-key-or-session boundary SHALL run before the Health owner assertion, per-owner cache read/write, template construction, or optional LLM invocation
+- **AND** a missing, expired, revoked, corrupt, or unavailable transport authority SHALL expose no owner/cache existence and perform none of those downstream operations
+- **AND** route-introspection plus mounted API tests SHALL prove this dependency order rather than accepting a UI visibility rule or dependency override
 
 ### Requirement: Owner-auth issuance and absence evidence use exact allowlists
 
