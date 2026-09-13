@@ -5,9 +5,12 @@
 Every published recovery artifact SHALL contain all recoverable application
 data required to restart the owner-controlled instance, including authoritative
 credential-bearing rows. Its retained relation set SHALL be closed under
-schema-qualified foreign-key dependencies. An omission SHALL be limited to
-trusted-bootstrap control state that the managed bootstrap reconstructs, and
-the omitted state and recovery cost SHALL be documented.
+schema-qualified foreign-key dependencies in the exact exported PostgreSQL
+snapshot supplied to `pg_dump`. The producer SHALL hold ordered relation locks
+and its exporting transaction until dump and manifest capture complete. An
+omission SHALL be limited to trusted-bootstrap control state that the managed
+bootstrap reconstructs, and the omitted state and recovery cost SHALL be
+documented.
 
 ID: REQ-backup-recovery-truth-001
 Source: Non-Negotiable Rule 1; RFC 0006 Credential Store; deployment-hardening REQ-deployment-hardening-007
@@ -19,6 +22,9 @@ Scope: v1-mandatory
 - **THEN** it contains the authoritative credential-bearing application rows
   needed to recover the instance, including applicable `butler_secrets` and
   secured `entity_info` rows
+- **AND** a bootstrap-owned coverage function has enumerated every applicable
+  Tier-1/Tier-2 store and proved complete non-RLS-filtered dump-role visibility
+  in the exported snapshot
 - **AND** no manifest, receipt, API, UI, audit, attention, log, metric, or trace
   exposes their values, keys, per-store counts, or value-derived digests
 
@@ -28,8 +34,28 @@ Scope: v1-mandatory
   captured PostgreSQL state
 - **THEN** every retained foreign-key child has its schema-qualified referenced
   parent retained in the same artifact
+- **AND** the producer exports one repeatable-read snapshot, locks the ordered
+  relation set, rechecks the graph, and supplies that exact snapshot to
+  `pg_dump` while retaining the transaction and locks through capture
 - **AND** a matching unqualified relation name, an excluded parent with a
   retained child, or an unresolved dependency fails the run before publication
+
+#### Scenario: Concurrent DDL cannot split closure from dump state
+
+- **WHEN** a foreign-key add/drop or relation create/drop races backup capture
+- **THEN** DDL committed before snapshot acquisition appears in both graph and
+  dump, while conflicting DDL after relation locking waits until capture ends
+- **AND** a post-snapshot new relation is absent from both outputs, and any
+  changed identity, failed lock, or inconsistent recheck publishes no pair
+
+#### Scenario: Credential aggregates match after restore
+
+- **WHEN** the exact artifact is restored in the isolated verification target
+- **THEN** the target enumerates the same authoritative store inventory and its
+  one aggregate credential-row count equals the snapshot-bound source aggregate
+- **AND** empty and populated stores may pass, while missing stores, filtered
+  source visibility, inventory drift, or count mismatch fails without
+  persisting or exposing per-store counts
 
 #### Scenario: Trusted-bootstrap omission is explicit and reconstructible
 
@@ -51,22 +77,25 @@ Scope: v1-mandatory
 
 The recovery artifact SHALL retain the ownership and ACL intent required to
 reconstruct its database objects. A restore SHALL be called recovery-ready only
-after the managed trusted bootstrap has established the expected roles and
-interfaces, application data has restored into an isolated target, and the
-target's ownership, SECURITY DEFINER, search-path, role, membership, and ACL
-state has passed the governed verification contract.
+when the same protected attempt creates a disposable target isolated from the
+live database, runs managed trusted bootstrap there, restores the exact
+artifact, verifies the complete ownership/privilege policy, and durably records
+that scoped result beside the artifact binding before destroying the target.
 
 ID: REQ-backup-recovery-truth-002
-Source: Non-Negotiable Rules 1 and 4; RFC 0006 Database Connection Scoping; database-security REQ-database-security-006 and REQ-database-security-009
+Source: Non-Negotiable Rules 1 and 4; RFC 0006 Database Connection Scoping; restore-drill-recovery-truthfulness REQ-database-security-006; artifact-bound-filtered-event-restore-verification REQ-database-security-011
 Scope: v1-mandatory
 
 #### Scenario: Managed bootstrap precedes promotion-ready verification
 
 - **WHEN** an artifact is evaluated as a candidate for recovery
-- **THEN** the target first establishes the exact trusted-bootstrap roles and
+- **THEN** a fresh isolated target uses only its per-attempt ephemeral local
+  cluster-superuser to establish the exact trusted-bootstrap roles and
   interfaces required by the artifact's ownership and ACL intent
 - **AND** no application role may connect to or promote the target until
   ownership, definer, search-path, role, membership, and ACL verification passes
+- **AND** the executor receives no live superuser, migration, credential-store,
+  or fenced-owner authority and target-cleanup failure makes the attempt fail
 
 #### Scenario: Owner-neutral scratch restore is scoped honestly
 
@@ -74,9 +103,20 @@ Scope: v1-mandatory
   application-data restoration without receiving fenced-owner or superuser
   authority
 - **THEN** the original artifact still retains its ownership and ACL intent and
-  that intent is checked by the separate governed recovery verification
-- **AND** the scratch result alone does not claim that a promotion-ready
-  ownership boundary was restored
+  the same protected attempt checks that intent in the isolated target
+- **AND** the data-restore result alone cannot produce `full_recovery` scope or
+  a `proven` status
+
+#### Scenario: Complete ownership and ACL matrix is authoritative
+
+- **WHEN** the isolated target completes bootstrap and artifact restoration
+- **THEN** one normalized checker verifies every expected schema/table/sequence
+  owner, role attribute/membership, function owner/definer/body/search path,
+  explicit and default ACL, RLS enable/force flag, and RLS policy definition
+- **AND** it rejects every missing or extra grant, membership, policy, function,
+  owner, or other catalog drift without reading application row content
+- **AND** only the checker result bound into that attempt's protected row may
+  satisfy ownership/ACL recovery proof; repository tests and prose may not
 
 #### Scenario: Removing ownership evidence is not accepted as recovery
 
@@ -99,12 +139,13 @@ Scope: v1-mandatory
 
 The existing executor-owner restore ledger SHALL remain the sole authority for
 recovery attempts. One immutable attempt row and one database transaction SHALL
-bind the overall result to the exact artifact and every required scoped verdict.
+bind the overall result to the exact artifact, its verified completion time and
+byte size, and every required scoped verdict and policy digest.
 A public audit, attention row, filesystem timestamp, filename, run receipt, or
 manifest alone SHALL NOT authorize or manufacture a recovery pass.
 
 ID: REQ-backup-recovery-truth-003
-Source: Non-Negotiable Rule 4; RFC 0005 Workflow and Recovery Telemetry; database-security REQ-database-security-009
+Source: Non-Negotiable Rule 4; RFC 0005 Workflow and Recovery Telemetry; artifact-bound-filtered-event-restore-verification REQ-database-security-011
 Scope: v1-mandatory
 
 #### Scenario: Scoped manifest binds only the scope it describes
@@ -115,6 +156,24 @@ Scope: v1-mandatory
   `REQ-deployment-hardening-008` and `REQ-deployment-hardening-009`
 - **AND** the manifest cannot substitute for direct artifact integrity,
   application-data restoration, ownership/ACL verification, or cleanup
+
+#### Scenario: Projected artifact facts share the attempt binding
+
+- **WHEN** a protected attempt records artifact completion time or byte size
+- **THEN** those fields are persisted in the same immutable row as the verified
+  artifact digest, manifest digest, scoped results, and overall result
+- **AND** the protected writer accepts them only with the exact verified digest,
+  and `latest_result()` returns them from that row rather than filesystem recency
+- **AND** a digest-verified internal join may resolve the artifact but cannot
+  combine an older pass with a newer artifact's time or size
+
+#### Scenario: Full proof is one atomic attempt
+
+- **WHEN** an attempt reaches a terminal result
+- **THEN** the same protected row contains its FK-closure result,
+  credential-coverage result, filtered-event result, ownership/ACL result and
+  policy digest, cleanup result, fixed scope, and artifact bindings
+- **AND** `proven` is impossible unless every required result in that row passes
 
 #### Scenario: Partial or cross-artifact evidence cannot pass
 
@@ -147,41 +206,125 @@ Scope: v1-mandatory
 ### Requirement: Truthful Owner-Facing Recovery State
 
 `GET /api/system/backups` SHALL expose an additive, content-blind
-`recovery_proof` object whose status is exactly `proven`, `unproven`, `failed`,
-`stale`, or `degraded`. The System-page Backups tile SHALL distinguish artifact
-health, last backup-run outcome, and last proven restore at first glance. Only a
-current protected pass within the governing cadence SHALL render recovery as
-green.
+`recovery_proof` object with exactly `status`, `attempted_at`,
+`artifact_completed_at`, `artifact_size_bytes`, `scope`, and `failure_code`.
+Status SHALL be `proven`, `unproven`, `failed`, `stale`, or `degraded`; scope
+SHALL be null, `application_data`, `application_data_with_filtered_events`, or
+`full_recovery`; and failure code SHALL be null or one value from the closed
+vocabulary below. The newest protected row alone SHALL determine status and all
+non-null fields. The tile SHALL distinguish artifact health, last run, and last
+proven restore at first glance, with recovery green only for a current
+same-attempt full pass.
 
 ID: REQ-backup-recovery-truth-004
 Source: Non-Negotiable Rule 1; RFC 0007 Amendment 1; system-overview-page REQ-system-overview-page-005 and REQ-system-overview-page-006
 Scope: v1-mandatory
 
+#### Scenario: Unavailable authority is degraded
+
+- **WHEN** the protected reader is unavailable
+- **THEN** status is `degraded`, failure code is `authority_unavailable`, and
+  attempted time, artifact completion time, artifact size, and scope are null
+- **AND** no filesystem, audit, attention, manifest, or prior pass fills a field
+
+#### Scenario: No authoritative attempt is unproven
+
+- **WHEN** the protected reader succeeds but returns no attempt
+- **THEN** status is `unproven`, failure code is `no_attempt`, and attempted
+  time, artifact completion time, artifact size, and scope are null
+
+#### Scenario: Legacy or incomplete binding is unproven
+
+- **WHEN** the newest protected row predates complete binding or lacks a
+  required scope result
+- **THEN** status is `unproven`, failure code is `legacy_unbound_artifact`, and
+  attempted time is the row time
+- **AND** artifact completion/size are present only after digest verification,
+  and scope is null or `application_data`, never `full_recovery`
+
+#### Scenario: Newest failed attempt outranks an older pass
+
+- **WHEN** the newest protected row is failed even though an older row passed
+- **THEN** status is `failed`, attempted time comes from the newest row, and
+  failure code is its fixed mapped code
+- **AND** artifact completion/size are present only when bound in that row, scope
+  is its last completed fixed scope or null, and no older field is reused
+
+#### Scenario: Artifact or manifest binding failure exposes no artifact facts
+
+- **WHEN** the newest attempt fails with `artifact_identity_mismatch`,
+  `manifest_missing`, `manifest_malformed`, `manifest_unsupported`,
+  `manifest_incomplete`, or `capture_consistency_invalid`
+- **THEN** status is `failed`, attempted time is non-null, artifact completion
+  time, artifact size, and scope are null, and failure code is that exact value
+- **AND** filesystem metadata or a partially parsed manifest cannot fill a field
+
+#### Scenario: Pre-restore coverage failure is bound but has no completed scope
+
+- **WHEN** exact artifact/manifest binding succeeds but FK closure or source
+  credential visibility fails
+- **THEN** status is `failed`, attempted time and both protected artifact facts
+  are non-null, scope is null, and failure code is respectively
+  `coverage_not_fk_closed` or `credential_visibility_incomplete`
+
+#### Scenario: Restore and scoped checker failures expose only completed scope
+
+- **WHEN** the exact bound attempt fails during restore, credential-count
+  comparison, filtered-event verification, or ownership/ACL verification
+- **THEN** failure code is respectively `restore_failed`,
+  `credential_count_mismatch`, `filtered_event_verification_failed`, or
+  `ownership_acl_mismatch`, with non-null attempted time and artifact facts
+- **AND** scope is null for `restore_failed`, `application_data` for credential
+  or filtered-event failure, and `application_data_with_filtered_events` only
+  when filtered-event verification passed before ownership/ACL failed
+
+#### Scenario: Cleanup failure overrides a prior passing stage
+
+- **WHEN** target cleanup fails after one or more verification stages complete
+- **THEN** status is `failed`, failure code is `cleanup_failed`, attempted time
+  and both artifact facts are non-null, and scope is the highest completed scope
+  below `full_recovery`
+- **AND** scope is null before generic restore completion,
+  `application_data` after generic restore only, or
+  `application_data_with_filtered_events` after that scoped checker passes
+- **AND** no earlier passing stage or older attempt can make the result green
+
+#### Scenario: Expired complete pass is stale
+
+- **WHEN** the newest protected row is a complete full-recovery pass outside the
+  governing cadence
+- **THEN** status is `stale`, failure code is `proof_stale`, both artifact facts
+  and attempted time are non-null, and scope is `full_recovery`
+
 #### Scenario: Current complete proof is green
 
 - **WHEN** the protected authority records a complete passing attempt within
   the governing cadence
-- **THEN** `recovery_proof.status` is `proven` with its UTC verification time,
-  artifact completion time, artifact size, and fixed scope
+- **THEN** status is `proven`, failure code is null, attempted time and both
+  bound artifact facts are non-null, and scope is `full_recovery`
 - **AND** the tile renders `Last proven restore` with that age and does not
   imply that artifact presence or gzip health supplied the proof
 
-#### Scenario: Missing or legacy proof remains unproven
+#### Scenario: Scope progression cannot overstate partial proof
 
-- **WHEN** no authoritative attempt exists, a pre-change backend omits
-  `recovery_proof`, or an otherwise healthy legacy artifact lacks required
-  scoped evidence
-- **THEN** the frontend renders an amber `No proven restore` state
-- **AND** it retains truthful artifact-health and last-run facts without
-  defaulting the recovery state to green or red
+- **WHEN** generic application restore completes without filtered-event,
+  ownership/ACL, credential, or cleanup completion
+- **THEN** scope is at most `application_data` and status is not `proven`
+- **AND** `application_data_with_filtered_events` requires the exact scoped
+  manifest/checker result, while `full_recovery` requires every same-row stage
 
-#### Scenario: Failed, stale, and degraded states stay distinct
+#### Scenario: Failure vocabulary is closed
 
-- **WHEN** the current authoritative attempt failed, the last pass exceeded its
-  cadence, or the protected result source is unavailable
-- **THEN** the API and tile render `failed`, `stale`, or `degraded` respectively
-- **AND** a historical pass does not hide a current failure, stale age is
-  visible, and unavailable evidence is never presented as calm
+- **WHEN** recovery cannot be proven
+- **THEN** failure code is exactly one of `authority_unavailable`, `no_attempt`,
+  `legacy_unbound_artifact`, `artifact_identity_mismatch`, `manifest_missing`,
+  `manifest_malformed`, `manifest_unsupported`, `manifest_incomplete`,
+  `capture_consistency_invalid`, `coverage_not_fk_closed`,
+  `credential_visibility_incomplete`, `credential_count_mismatch`,
+  `restore_failed`, `ownership_acl_mismatch`,
+  `filtered_event_verification_failed`, `cleanup_failed`, or `proof_stale`
+- **AND** no dynamic exception, client diagnostic, path, identifier, digest, or
+  request-derived string is used as or appended to that code
 
 #### Scenario: Artifact health is labeled as narrower evidence
 
@@ -190,6 +333,14 @@ Scope: v1-mandatory
   recovery verdict
 - **AND** a failed or unproven restore remains visible in the same card without
   requiring the owner to infer the difference from color alone
+
+#### Scenario: Missing additive field is backward-compatible uncertainty
+
+- **WHEN** a new frontend receives a pre-change response without
+  `recovery_proof`
+- **THEN** it renders the same amber `No proven restore` state as `unproven`
+- **AND** an old frontend ignores the additive object while retaining existing
+  artifact, run, and drill facts
 
 #### Scenario: Recovery detail is accessible and non-blocking
 
@@ -237,6 +388,8 @@ Scope: v1-mandatory
 - **THEN** none appears in manifests outside an allowed structural name,
   protected/public projections, API response or headers, rendered UI, audit,
   attention, logs, metrics, traces, or test failure diagnostics
+- **AND** manifest evidence contains at most the one aggregate credential-row
+  count and opaque inventory/policy digests, never values or per-store counts
 - **AND** the test positively asserts each permitted field set so an empty
   projection cannot make the absence proof pass
 
