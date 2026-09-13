@@ -54,7 +54,7 @@ function renderSpine() {
 describe("Spine duplicate-key (bu-ffjig)", () => {
   it("renders two same-provider identities without a duplicate-key warning", () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const { entries } = renderSpine();
+    const { entries, container } = renderSpine();
 
     // Sanity: the collision scenario is actually present (two u:google entries).
     const googleEntries = entries.filter((e) => e.key === "u:google");
@@ -71,6 +71,15 @@ describe("Spine duplicate-key (bu-ffjig)", () => {
       ),
     );
     expect(dupeWarning).toBe(false);
+
+    const googleRows = container.querySelectorAll<HTMLButtonElement>(
+      '[data-spine-row="true"][data-key="u:google"]',
+    );
+    expect(googleRows).toHaveLength(2);
+    expect(Array.from(googleRows, (row) => row.getAttribute("aria-label"))).toEqual([
+      "User · Google, healthy",
+      "User · Google, healthy",
+    ]);
   });
 
   it("keeps entry.key provider-level so focus deep-links still resolve", () => {
