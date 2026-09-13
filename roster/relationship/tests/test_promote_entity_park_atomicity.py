@@ -38,7 +38,13 @@ import asyncpg
 import pytest
 from fastapi import HTTPException
 
-from butlers.testing.schema_standins import ENTITY_PREDICATE_REGISTRY, PENDING_ACTIONS
+from butlers.testing.approval_delivery_schema import install_approval_delivery_schema
+from butlers.testing.schema_standins import (
+    APPROVAL_EVENTS,
+    APPROVAL_RULES,
+    ENTITY_PREDICATE_REGISTRY,
+    PENDING_ACTIONS,
+)
 from roster.relationship.tests.evidence_schema import apply_evidence_schema
 
 pytestmark = [
@@ -134,6 +140,9 @@ async def pool(provisioned_postgres_pool):
                 WHERE validity = 'active'
         """)
         await p.execute(PENDING_ACTIONS.ddl())
+        await p.execute(APPROVAL_RULES.ddl())
+        await p.execute(APPROVAL_EVENTS.ddl())
+        await install_approval_delivery_schema(p)
         # rel_034: the central writer persists evidence and a coverage receipt in
         # the same transaction as the fact, so this schema is not optional.
         await apply_evidence_schema(p)

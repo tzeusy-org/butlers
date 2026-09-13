@@ -105,7 +105,7 @@ class EmailGuardDecision:
     """Result of an email recipient guard check."""
 
     allowed: bool
-    reason: str  # "owner", "rule", "parked", "dossier_error"
+    reason: str  # "owner", "rule", "parked", "parking_failed", "dossier_error"
     action_id: uuid.UUID | None = None
     rule_id: uuid.UUID | None = None
     contact_desc: str | None = None  # "known non-owner contact" | "unknown contact"
@@ -275,9 +275,7 @@ async def check_email_recipient(
                 # cast) — asyncpg's registered jsonb codec already serializes
                 # once; pre-serializing double-encodes (bu-cymc4/bu-bstqu).
                 safe_park_tool_args = json.loads(json.dumps(park_tool_args, default=str))
-                # park_pending_action is the single choke point for PENDING
-                # inserts: it writes the row AND attempts the owner-facing
-                # push in one call (bu-mda0r).
+                # Atomic action + delivery-intent admission.
                 await park_pending_action(
                     pool,
                     action_id=action_id,
@@ -309,6 +307,12 @@ async def check_email_recipient(
                     "email guard: failed to park context-mismatch pending_action for %r",
                     email_target,
                     exc_info=True,
+                )
+                return EmailGuardDecision(
+                    allowed=False,
+                    reason="parking_failed",
+                    action_id=None,
+                    contact_desc=contact_desc,
                 )
             return EmailGuardDecision(
                 allowed=False,
@@ -361,9 +365,7 @@ async def check_email_recipient(
 
     try:
         safe_park_tool_args = json.loads(json.dumps(park_tool_args, default=str))
-        # park_pending_action is the single choke point for PENDING inserts:
-        # it writes the row AND attempts the owner-facing push in one call
-        # (bu-mda0r).
+        # Atomic action + delivery-intent admission.
         await park_pending_action(
             pool,
             action_id=action_id,
@@ -392,6 +394,12 @@ async def check_email_recipient(
             "email guard: failed to park pending_action for %r",
             email_target,
             exc_info=True,
+        )
+        return EmailGuardDecision(
+            allowed=False,
+            reason="parking_failed",
+            action_id=None,
+            contact_desc=contact_desc,
         )
 
     return EmailGuardDecision(
@@ -566,9 +574,7 @@ async def check_recipient(
 
     try:
         safe_park_tool_args = json.loads(json.dumps(park_tool_args, default=str))
-        # park_pending_action is the single choke point for PENDING inserts:
-        # it writes the row AND attempts the owner-facing push in one call
-        # (bu-mda0r).
+        # Atomic action + delivery-intent admission.
         await park_pending_action(
             pool,
             action_id=action_id,
@@ -599,6 +605,12 @@ async def check_recipient(
             channel,
             target,
             exc_info=True,
+        )
+        return EmailGuardDecision(
+            allowed=False,
+            reason="parking_failed",
+            action_id=None,
+            contact_desc=contact_desc,
         )
 
     return EmailGuardDecision(

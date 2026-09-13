@@ -272,7 +272,8 @@ CONNECTOR_REGISTRY = TableStandin(
 # creates all five, 003 adds fingerprint versions and their CHECKs/indexes, 005
 # adds pending-action blast_radius/reversibility and their CHECKs, 007 adds the
 # suggestion source-action link, 012 adds the 'abandoned' status and
-# 'action_abandoned' event type, 013 adds deduplication_key, and 014 adds origin.
+# 'action_abandoned' event type, 013 adds deduplication_key, 014 adds origin,
+# and 015 adds the safe approval-delivery terminal event vocabulary.
 PENDING_ACTIONS = TableStandin(
     table="pending_actions",
     chains=("core", "approvals"),
@@ -491,14 +492,14 @@ APPROVAL_EVENTS = TableStandin(
             "'rule_created', 'rule_revoked', "
             "'promotion_suggested', 'promotion_confirmed', 'promotion_dismissed', "
             "'promotion_superseded', 'demotion_suggested', 'demotion_confirmed', "
-            "'demotion_dismissed'))"
+            "'demotion_dismissed', 'approval_delivery_terminal'))"
         ),
         (
             "CONSTRAINT approval_events_link_check CHECK ("
             "action_id IS NOT NULL OR rule_id IS NOT NULL OR event_type IN ("
             "'promotion_suggested', 'promotion_confirmed', 'promotion_dismissed', "
             "'promotion_superseded', 'demotion_suggested', 'demotion_confirmed', "
-            "'demotion_dismissed'))"
+            "'demotion_dismissed', 'approval_delivery_terminal'))"
         ),
     ),
     indexes=(

@@ -32,6 +32,7 @@ from butlers.modules.approvals.gate import apply_approval_gates
 from butlers.modules.email import EmailConfig, EmailModule
 from butlers.modules.telegram import TelegramModule
 from butlers.modules.whatsapp import WhatsAppModule
+from butlers.testing.approval_parking_fake import record_pending_action
 
 pytestmark = pytest.mark.unit
 
@@ -418,12 +419,29 @@ def _mock_switchboard_client() -> Any:
     return client
 
 
+@pytest.fixture(autouse=True)
+def _use_mock_pool_park_recorder(monkeypatch: pytest.MonkeyPatch):
+    """Keep mocked transport tests focused on producer decision semantics."""
+    monkeypatch.setattr(
+        "butlers.modules.approvals.email_guard.park_pending_action",
+        record_pending_action,
+    )
+    monkeypatch.setattr(
+        "butlers.modules.approvals.gate.park_pending_action",
+        record_pending_action,
+    )
+
+
 @pytest.fixture
 def registered_email_approval_hooks(monkeypatch: pytest.MonkeyPatch):
     """Register the real email guard for each daemon pool started by a test."""
     import butlers.core.approvals_hooks as _hooks
     from butlers.modules.approvals.email_guard import check_email_recipient
-    from butlers.modules.approvals.park import park_pending_action
+
+    monkeypatch.setattr(
+        "butlers.modules.approvals.email_guard.park_pending_action",
+        record_pending_action,
+    )
 
     async def _allow_non_email_recipient(*_args, **_kwargs):
         return _hooks.EmailGuardDecision(allowed=True, reason="email_guard_only")
@@ -438,7 +456,7 @@ def registered_email_approval_hooks(monkeypatch: pytest.MonkeyPatch):
             pool,
             email_guard=check_email_recipient,
             recipient_guard=_allow_non_email_recipient,
-            park_pending_action=park_pending_action,
+            park_pending_action=record_pending_action,
         )
         registrations.append((pool, runtime))
         return daemon, notify_fn
@@ -457,7 +475,11 @@ def registered_approval_hooks(monkeypatch: pytest.MonkeyPatch):
         check_email_recipient,
         check_recipient,
     )
-    from butlers.modules.approvals.park import park_pending_action
+
+    monkeypatch.setattr(
+        "butlers.modules.approvals.email_guard.park_pending_action",
+        record_pending_action,
+    )
 
     original_boot = _boot_daemon_with_notify
     registrations = []
@@ -469,7 +491,7 @@ def registered_approval_hooks(monkeypatch: pytest.MonkeyPatch):
             pool,
             email_guard=check_email_recipient,
             recipient_guard=check_recipient,
-            park_pending_action=park_pending_action,
+            park_pending_action=record_pending_action,
         )
         registrations.append((pool, runtime))
         return daemon, notify_fn

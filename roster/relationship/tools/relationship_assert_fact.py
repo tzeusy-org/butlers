@@ -361,12 +361,9 @@ async def validate_fact_fields_or_raise(
     Callers that assert a BATCH of facts inside one outer transaction (e.g.
     ``POST /entities``'s ``initial_facts`` loop) MUST pre-validate every fact
     in the batch with this function *before* starting that transaction.
-    Reason (bu-g27ib): :func:`park_pending_action` (the owner-push choke
-    point every parking fact routes through, bu-mda0r) writes its
-    ``pending_actions`` row -- and fires the owner push -- on its own
-    connection acquired from *pool*, independent of any caller-supplied
-    ``conn``/transaction, because the push path needs real ``pool.acquire()``
-    semantics. If an EARLIER fact in a batch parks (committing that row) and
+    Reason (bu-g27ib): :func:`park_pending_action` writes its action and
+    delivery intent in an independent transaction acquired from *pool*. If an
+    EARLIER fact in a batch parks (committing those rows) and
     a LATER fact in the same batch then raises ``ValueError`` (e.g. an
     unregistered predicate), rolling back the outer transaction does NOT
     undo the earlier park: the result is an orphaned ``pending_actions`` row
@@ -414,9 +411,8 @@ async def _create_pending_action(
 
     Takes *pool* (not a caller-supplied ``conn``) because the actual insert
     routes through :func:`butlers.core.approvals_hooks.park_pending_action`,
-    the single choke point for PENDING inserts (bu-mda0r): it writes the row
-    AND attempts the owner-facing push in one call, and the push path needs
-    to acquire its own connection from a real pool (bu-g27ib). The dedup read
+    the single atomic admission point for PENDING inserts. It acquires its own
+    connection from a real pool (bu-g27ib). The dedup read
     has no transactional dependency on the caller's in-flight entity_facts
     write, so reading it from *pool* instead of the caller's ``conn`` is safe.
 

@@ -6,7 +6,18 @@ import uuid
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from butlers.modules.approvals.email_guard import check_email_recipient, check_recipient
+from butlers.testing.approval_parking_fake import record_pending_action
+
+
+@pytest.fixture(autouse=True)
+def _use_mock_pool_park_recorder(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        "butlers.modules.approvals.email_guard.park_pending_action",
+        record_pending_action,
+    )
 
 
 def _owner_contact():
@@ -50,6 +61,7 @@ _COMMON_KWARGS = {
     "park_tool_name": "notify",
     "park_tool_args": {"recipient": "friend@test.com", "channel": "email"},
     "park_summary": "test park summary",
+    "butler_name": "messenger",
 }
 
 
@@ -263,7 +275,9 @@ class TestEmailGuardEmitsCreatedEvent:
                 new=mock_publish,
             ),
         ):
-            decision = await check_email_recipient(pool, butler_name="home", **_COMMON_KWARGS)
+            decision = await check_email_recipient(
+                pool, **{**_COMMON_KWARGS, "butler_name": "home"}
+            )
 
         assert decision.allowed is False
         assert decision.reason == "parked"
@@ -296,9 +310,8 @@ class TestEmailGuardEmitsCreatedEvent:
         ):
             decision = await check_email_recipient(
                 pool,
-                butler_name="home",
                 msg_context="personal",
-                **_COMMON_KWARGS,
+                **{**_COMMON_KWARGS, "butler_name": "home"},
             )
 
         assert decision.allowed is False
@@ -328,7 +341,9 @@ class TestEmailGuardEmitsCreatedEvent:
                 new=AsyncMock(side_effect=RuntimeError("broker down")),
             ),
         ):
-            decision = await check_email_recipient(pool, butler_name="home", **_COMMON_KWARGS)
+            decision = await check_email_recipient(
+                pool, **{**_COMMON_KWARGS, "butler_name": "home"}
+            )
 
         # Guard must still park the action even when publish raises
         assert decision.allowed is False
@@ -344,6 +359,7 @@ _TELEGRAM_KWARGS = {
     "park_tool_name": "notify",
     "park_tool_args": {"recipient": "900800700", "channel": "telegram"},
     "park_summary": "test park summary",
+    "butler_name": "messenger",
 }
 
 
@@ -401,6 +417,29 @@ class TestCheckRecipient:
         assert decision.reason == "parked"
         assert decision.action_id is not None
         pool.execute.assert_awaited()
+
+    async def test_parking_failure_is_not_reported_as_parked(self) -> None:
+        """A failed transaction keeps delivery blocked without a fake action id."""
+        pool = AsyncMock()
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=_non_owner_contact()),
+            ),
+            patch(
+                "butlers.modules.approvals.rules.match_rules",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "butlers.modules.approvals.email_guard.park_pending_action",
+                new=AsyncMock(side_effect=RuntimeError("intent insert failed")),
+            ),
+        ):
+            decision = await check_recipient(pool, **_TELEGRAM_KWARGS)
+
+        assert decision.allowed is False
+        assert decision.reason == "parking_failed"
+        assert decision.action_id is None
 
     async def test_standing_rule_permits_non_owner(self) -> None:
         """A matching standing rule auto-approves a non-owner telegram send."""
