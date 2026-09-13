@@ -256,6 +256,177 @@ async def test_concurrent_operator_narrowing_wins_over_stale_startup_reconciliat
 
 @_skip_without_docker
 @pytest.mark.asyncio(loop_scope="session")
+async def test_concurrent_authority_patches_never_commit_a_subset_without_a_reason(
+    postgres_container,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Concurrent API patches preserve the paired runtime-authority invariant."""
+    from fastapi import HTTPException
+    from starlette.requests import Request
+
+    from butlers.api.routers import runtime_config
+    from butlers.testing.migration import create_migrated_test_pool
+
+    pool = await create_migrated_test_pool(postgres_container, chains=["core"])
+    clear_read = asyncio.Event()
+    groups_read = asyncio.Event()
+    clear_written = asyncio.Event()
+    clear_row_locked = asyncio.Event()
+    groups_lock_attempted = asyncio.Event()
+
+    class InterleavingPool:
+        """Force the historical pool-level read/write race against real PostgreSQL."""
+
+        def __init__(self) -> None:
+            self.initial_reads: set[str] = set()
+
+        def acquire(self):
+            return AcquiredConnection()
+
+        async def fetchrow(self, query, *args):
+            row = await pool.fetchrow(query, *args)
+            task = asyncio.current_task()
+            task_name = task.get_name() if task is not None else ""
+            if (
+                task_name in {"clear-reason", "change-groups"}
+                and task_name not in self.initial_reads
+            ):
+                self.initial_reads.add(task_name)
+                if task_name == "clear-reason":
+                    clear_read.set()
+                    await asyncio.wait_for(groups_read.wait(), timeout=5)
+                else:
+                    groups_read.set()
+                    await asyncio.wait_for(clear_read.wait(), timeout=5)
+            return row
+
+        async def execute(self, query, *args):
+            task = asyncio.current_task()
+            task_name = task.get_name() if task is not None else ""
+            if task_name == "change-groups":
+                await asyncio.wait_for(clear_written.wait(), timeout=5)
+            result = await pool.execute(query, *args)
+            if task_name == "clear-reason":
+                clear_written.set()
+            return result
+
+    class AcquiredConnection:
+        async def __aenter__(self):
+            self.connection = await pool.acquire()
+            return InterleavingConnection(self.connection)
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            await pool.release(self.connection)
+
+    class InterleavingConnection:
+        """Hold the first row lock until the competing PATCH is waiting on it."""
+
+        def __init__(self, connection) -> None:
+            self.connection = connection
+
+        def transaction(self):
+            return self.connection.transaction()
+
+        async def fetchrow(self, query, *args):
+            if "FOR UPDATE" in query:
+                task = asyncio.current_task()
+                task_name = task.get_name() if task is not None else ""
+                if task_name == "clear-reason":
+                    row = await self.connection.fetchrow(query, *args)
+                    clear_row_locked.set()
+                    await asyncio.wait_for(groups_lock_attempted.wait(), timeout=5)
+                    return row
+                if task_name == "change-groups":
+                    await asyncio.wait_for(clear_row_locked.wait(), timeout=5)
+                    groups_lock_attempted.set()
+            return await self.connection.fetchrow(query, *args)
+
+        async def execute(self, query, *args):
+            return await self.connection.execute(query, *args)
+
+    class DBManager:
+        def pool(self, name):
+            assert name == "test"
+            return interleaving_pool
+
+    roster_dir = tmp_path / "roster"
+    butler_dir = roster_dir / "test"
+    butler_dir.mkdir(parents=True)
+    (butler_dir / "butler.toml").write_text(
+        '[butler]\nname = "test"\nport = 9000\n'
+        '[butler.runtime_seed]\ncore_groups = ["infra", "delegation", "graph"]\n'
+    )
+    request = Request(
+        {
+            "type": "http",
+            "method": "PATCH",
+            "path": "/api/butlers/test/runtime-config",
+            "headers": [],
+        }
+    )
+    interleaving_pool = InterleavingPool()
+    monkeypatch.setattr(
+        runtime_config, "emit_dashboard_audit", lambda *args, **kwargs: asyncio.sleep(0)
+    )
+
+    try:
+        await pool.execute(
+            "INSERT INTO public.runtime_config "
+            "(butler_name, core_groups, core_groups_narrowing_reason) VALUES ($1, $2, $3)",
+            "test",
+            ["infra"],
+            "Temporary incident containment",
+        )
+
+        outcomes = await asyncio.gather(
+            asyncio.create_task(
+                runtime_config.patch_runtime_config(
+                    "test",
+                    request,
+                    runtime_config.RuntimeConfigPatch(core_groups_narrowing_reason=None),
+                    DBManager(),
+                    roster_dir,
+                ),
+                name="clear-reason",
+            ),
+            asyncio.create_task(
+                runtime_config.patch_runtime_config(
+                    "test",
+                    request,
+                    runtime_config.RuntimeConfigPatch(core_groups=["infra", "delegation"]),
+                    DBManager(),
+                    roster_dir,
+                ),
+                name="change-groups",
+            ),
+            return_exceptions=True,
+        )
+
+        assert not isinstance(outcomes[0], Exception)
+        assert isinstance(outcomes[1], HTTPException)
+        assert outcomes[1].status_code == 422
+        row = await pool.fetchrow(
+            "SELECT core_groups, core_groups_narrowing_reason "
+            "FROM public.runtime_config WHERE butler_name = 'test'"
+        )
+        groups = tuple(row["core_groups"])
+        reason = row["core_groups_narrowing_reason"]
+        declared_groups = ("infra", "delegation", "graph")
+        assert groups == declared_groups or (
+            reason is not None and set(groups) < set(declared_groups)
+        )
+    finally:
+        clear_read.set()
+        groups_read.set()
+        clear_written.set()
+        clear_row_locked.set()
+        groups_lock_attempted.set()
+        await pool.close()
+
+
+@_skip_without_docker
+@pytest.mark.asyncio(loop_scope="session")
 async def test_committed_patch_reaches_a_separate_process_accessor_without_restart(
     postgres_container,
 ) -> None:

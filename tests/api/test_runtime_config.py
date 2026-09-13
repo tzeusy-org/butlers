@@ -20,6 +20,25 @@ from fastapi.testclient import TestClient
 pytestmark = pytest.mark.unit
 
 
+class _AsyncContext:
+    def __init__(self, value=None):
+        self.value = value
+
+    async def __aenter__(self):
+        return self.value
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
+
+
+def _add_transactional_connection(pool, row):
+    connection = AsyncMock()
+    connection.fetchrow = AsyncMock(return_value=row)
+    connection.transaction = MagicMock(return_value=_AsyncContext())
+    pool.acquire = MagicMock(return_value=_AsyncContext(connection))
+    return connection
+
+
 def _mock_row(
     butler_name: str = "test",
     core_groups: list[str] | None = None,
@@ -242,6 +261,7 @@ def test_runtime_config_error_paths(
     method, path, body, butler_name, known, expected, tmp_path: Path
 ):
     pool = AsyncMock()
+    _add_transactional_connection(pool, _mock_row())
     app = _make_app(
         _make_db_manager(pool=pool, butler_name=butler_name, known=known),
         _write_roster(tmp_path),
@@ -261,8 +281,10 @@ def test_runtime_config_error_paths(
 
 def test_patch_cold_field_returns_restart_required(tmp_path: Path):
     pool = AsyncMock()
-    pool.execute = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value=_mock_row(core_groups=["infra"], max_concurrent=5))
+    connection = _add_transactional_connection(
+        pool,
+        _mock_row(core_groups=["infra"], max_concurrent=5),
+    )
     app = _make_app(_make_db_manager(pool=pool), _write_roster(tmp_path))
     client = TestClient(app)
 
@@ -305,7 +327,7 @@ def test_patch_cold_field_returns_restart_required(tmp_path: Path):
 
     # Clearing the explicit narrowing reason restores Git authority in the
     # same PATCH instead of leaving a stale subset until a later restart.
-    pool.fetchrow = AsyncMock(
+    connection.fetchrow = AsyncMock(
         side_effect=[
             _mock_row(
                 core_groups=["infra"],
