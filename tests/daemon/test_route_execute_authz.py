@@ -17,7 +17,9 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastmcp.server.dependencies import AccessToken
 
+from butlers.core.approval_delivery_worker import HandoffResult
 from butlers.daemon import ButlerDaemon
 
 pytestmark = pytest.mark.unit
@@ -201,6 +203,43 @@ def _valid_notify_request(*, origin_butler: str = "health") -> dict[str, Any]:
     }
 
 
+def _recovery_notify_request() -> dict[str, Any]:
+    subject = "approval:relationship:00000000-0000-0000-0000-000000000000"
+    return {
+        "schema_version": "notify.v1",
+        "origin_butler": "relationship",
+        "delivery": {
+            "intent": "approval_request",
+            "channel": "telegram",
+            "message": "Synthetic approval.",
+            "recipient": "owner-synthetic",
+        },
+        "actions": [{"verb": "open_dashboard", "dashboard_url": "https://dashboard.example.test"}],
+        "recovery": {
+            "operation": "handoff",
+            "subject_kind": "action",
+            "subject_key": subject,
+            "presentation_key": f"{subject}:p:1",
+            "presentation_generation": 1,
+            "presentation_mode": "single",
+        },
+    }
+
+
+def _trusted_recovery_context() -> dict[str, Any]:
+    recovery = _recovery_notify_request()["recovery"]
+    return {"issuer": "relationship", "owning_schema": "relationship", **recovery}
+
+
+def _switchboard_recovery_token() -> AccessToken:
+    return AccessToken(
+        token="synthetic",
+        client_id="butler:switchboard",
+        scopes=["approval-recovery:switchboard"],
+        claims={"actor_type": "daemon", "butler_name": "switchboard"},
+    )
+
+
 @pytest.fixture(autouse=True)
 def _mock_route_inbox(monkeypatch):
     """Patch route_inbox DB calls so tests don't need a real DB pool."""
@@ -298,6 +337,168 @@ class TestRouteExecuteAuthz:
         )
         tg_mod._send_message.assert_awaited_once()
         assert result_ok["status"] == "ok"
+
+    async def test_recovery_requires_authenticated_switchboard_before_provider(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        patches = _patch_infra()
+        daemon, route_execute = await _start_daemon_with_route_execute(
+            _make_butler_toml(
+                tmp_path,
+                butler_name="messenger",
+                modules={"telegram": {}, "email": {}},
+            ),
+            patches,
+        )
+        assert route_execute is not None
+        telegram = next(module for module in daemon._modules if module.name == "telegram")
+        telegram._send_message = AsyncMock(return_value={"message_id": "provider-ref"})
+
+        async def _process(_context, *, provider_call, **_kwargs):
+            assert provider_call is not None
+            await provider_call()
+            return HandoffResult("confirmed", provider_reference="provider-ref")
+
+        repository = MagicMock()
+        repository.process = AsyncMock(side_effect=_process)
+        route_payload = {
+            "schema_version": "route.v1",
+            "request_context": _route_request_context(
+                source_endpoint_identity="switchboard",
+                source_sender_identity="relationship",
+            ),
+            "input": {
+                "prompt": "Deliver.",
+                "context": {
+                    "notify_request": _recovery_notify_request(),
+                    "_trusted_approval_recovery": _trusted_recovery_context(),
+                },
+            },
+        }
+
+        with (
+            patch(
+                "butlers.core_tools._routing.get_access_token",
+                return_value=_switchboard_recovery_token(),
+            ),
+            patch(
+                "butlers.core_tools._routing.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value={"owner": True}),
+            ),
+            patch(
+                "butlers.core_tools._routing.MessengerApprovalHandoffRepository",
+                return_value=repository,
+            ),
+        ):
+            accepted = await route_execute(**route_payload)
+
+        assert accepted["status"] == "ok"
+        assert accepted["result"]["notify_response"]["handoff"] == {
+            "classification": "confirmed",
+            "provider_reference": "provider-ref",
+        }
+        telegram._send_message.assert_awaited_once()
+
+        wrong_scope = AccessToken(
+            token="synthetic",
+            client_id="butler:switchboard",
+            scopes=["unrelated"],
+            claims={"actor_type": "daemon", "butler_name": "switchboard"},
+        )
+        malformed = {
+            **route_payload,
+            "input": {
+                **route_payload["input"],
+                "context": {
+                    **route_payload["input"]["context"],
+                    "notify_request": {
+                        **_recovery_notify_request(),
+                        "recovery": {"operation": "handoff"},
+                    },
+                },
+            },
+        }
+        origin_mismatch = {
+            **route_payload,
+            "input": {
+                **route_payload["input"],
+                "context": {
+                    **route_payload["input"]["context"],
+                    "notify_request": {
+                        **_recovery_notify_request(),
+                        "origin_butler": "private-origin-sentinel",
+                    },
+                },
+            },
+        }
+        missing_attestation = {
+            **route_payload,
+            "input": {
+                **route_payload["input"],
+                "context": {"notify_request": _recovery_notify_request()},
+            },
+        }
+        mismatched_attestation = _trusted_recovery_context()
+        mismatched_attestation["presentation_mode"] = "burst_digest"
+        mismatch = {
+            **route_payload,
+            "input": {
+                **route_payload["input"],
+                "context": {
+                    **route_payload["input"]["context"],
+                    "_trusted_approval_recovery": mismatched_attestation,
+                },
+            },
+        }
+        cases = [
+            (None, route_payload),
+            (wrong_scope, route_payload),
+            (_switchboard_recovery_token(), malformed),
+            (_switchboard_recovery_token(), origin_mismatch),
+            (_switchboard_recovery_token(), missing_attestation),
+            (_switchboard_recovery_token(), mismatch),
+        ]
+        telegram._send_message.reset_mock()
+        repository.process.reset_mock()
+        patches["mock_pool"].reset_mock()
+        caplog.clear()
+        with (
+            patch("butlers.core_tools._routing.get_access_token") as access_token,
+            patch(
+                "butlers.core_tools._routing.MessengerApprovalHandoffRepository",
+                return_value=repository,
+            ),
+            patch("butlers.core_tools._routing.trace.get_tracer") as get_tracer,
+            patch("butlers.core_tools._routing.extract_trace_context") as extract_context,
+            patch("butlers.core_tools._routing.logger") as route_logger,
+            patch(
+                "butlers.core_tools._routing.resolve_owner_channel_via_definer",
+                new=AsyncMock(),
+            ) as owner_lookup,
+        ):
+            refusals = []
+            for token, payload in cases:
+                access_token.return_value = token
+                refusals.append(await route_execute(**payload))
+
+        assert all(result == refusals[0] for result in refusals)
+        assert refusals[0] == {
+            "schema_version": "route_response.v1",
+            "status": "error",
+            "error": {
+                "class": "validation_error",
+                "message": "Approval recovery authority rejected.",
+                "retryable": False,
+            },
+        }
+        assert "private-origin-sentinel" not in caplog.text
+        get_tracer.assert_not_called()
+        extract_context.assert_not_called()
+        assert route_logger.method_calls == []
+        owner_lookup.assert_not_awaited()
+        repository.process.assert_not_awaited()
+        assert patches["mock_pool"].method_calls == []
+        telegram._send_message.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

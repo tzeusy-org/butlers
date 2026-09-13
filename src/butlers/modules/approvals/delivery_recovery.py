@@ -199,7 +199,8 @@ class ApprovalDeliveryRepository:
               FROM candidate
              WHERE p.id = candidate.id
             RETURNING p.id, p.presentation_generation, p.presentation_key,
-                      p.presentation_mode, p.claim_token, p.claim_fence,
+                      p.presentation_mode, p.subject_kind, p.subject_key,
+                      p.claim_token, p.claim_fence,
                       candidate.previous_state = 'handoff_started' AS reconcile_only
             """,
             token,
@@ -212,6 +213,8 @@ class ApprovalDeliveryRepository:
             presentation_generation=row["presentation_generation"],
             presentation_key=row["presentation_key"],
             presentation_mode=row["presentation_mode"],
+            subject_kind=row["subject_kind"],
+            subject_key=row["subject_key"],
             claim_token=row["claim_token"],
             claim_fence=row["claim_fence"],
             reconcile_only=row["reconcile_only"],

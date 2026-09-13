@@ -56,6 +56,7 @@ from uuid import UUID
 import asyncpg
 
 from butlers.api.db import DatabaseManager
+from butlers.core.approval_recovery_exclusion import notification_recovery_exclusion_sql
 
 logger = logging.getLogger(__name__)
 
@@ -391,7 +392,7 @@ async def query_timeline_notifications_single(
     list[TimelineNotificationRow]
         Typed notification DTOs ordered by ``created_at DESC``.
     """
-    conditions: list[str] = []
+    conditions: list[str] = [notification_recovery_exclusion_sql()]
     args: list[Any] = []
     idx = 1
 
@@ -492,7 +493,11 @@ async def query_timeline_notification_histogram_single(
     trace_id: str | None = None,
 ) -> list[TimelineMinuteCount]:
     """Count matching notifications per UTC minute in the Switchboard pool."""
-    conditions = ["created_at >= $1", "created_at < $2"]
+    conditions = [
+        notification_recovery_exclusion_sql(),
+        "created_at >= $1",
+        "created_at < $2",
+    ]
     args: list[Any] = [since, until]
     idx = 3
     if source_butlers is not None:
@@ -588,7 +593,12 @@ async def query_timeline_attention_notifications_single(
     trace_id: str | None = None,
 ) -> tuple[list[TimelineAttentionRow], int]:
     """Read up to five currently-failed notifications from Switchboard."""
-    conditions = ["created_at >= $1", "created_at < $2", "status = 'failed'"]
+    conditions = [
+        notification_recovery_exclusion_sql(),
+        "created_at >= $1",
+        "created_at < $2",
+        "status = 'failed'",
+    ]
     args: list[Any] = [since, until]
     idx = 3
     if source_butlers is not None:
