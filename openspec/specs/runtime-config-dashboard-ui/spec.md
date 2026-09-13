@@ -1,7 +1,7 @@
 # Runtime Config Dashboard UI
 
 ## Purpose
-Defines the dashboard butler-detail UX for viewing and editing the per-butler runtime config (`core_groups`, `max_concurrent`, `max_queued`) backed by the `runtime-config` API. As built, the editable `RuntimeConfigCard` lives in the butler-detail Management tab (not the Config tab, which renders process/schedule/scopes/integrations and raw config files). Cold fields display a restart-required indicator; the `core_groups` field is edited as a typed multi-select. The resolved model and `session_timeout_s` are shown read-only (they live on `public.model_catalog` after migration `core_073`) with a link to the Models tab for editing.
+Defines the dashboard butler-detail UX for viewing and editing per-butler runtime config backed by the `runtime-config` API. As built, the editable `RuntimeConfigCard` lives in the butler-detail Management tab (not the Config tab, which renders process/schedule/scopes/integrations and raw config files). Cold fields display a restart-required indicator; the `core_groups` field is edited as a typed multi-select and requires an explicit reason when it narrows Git. The same surface shows declared, effective, and registered tool counts plus their bounded diff. The resolved model and `session_timeout_s` are shown read-only (they live on `public.model_catalog` after migration `core_073`) with a link to the Models tab for editing.
 
 ## Requirements
 
@@ -16,6 +16,12 @@ Scope: v1-mandatory
 - **WHEN** the user opens the Management tab for a butler
 - **THEN** the `RuntimeConfigCard` SHALL show current runtime config values (`core_groups`, `max_concurrent`, `max_queued`) from the DB with editable fields
 - **AND** the resolved model and `session_timeout_s` are shown read-only with an "edit in models" link to the Models tab
+
+#### Scenario: Card distinguishes declaration, decision, and registration
+- **WHEN** the user opens the Management tab for a butler
+- **THEN** the card SHALL show Git-declared, runtime-effective, and actually registered counts
+- **AND** any non-empty diff SHALL name the missing or widened tools/groups and the effective source
+- **AND** a bounded module registration error SHALL be shown for declared-but-not-registered tools
 
 #### Scenario: Cold fields show restart badge
 - **WHEN** a cold field (core_groups, max_concurrent, max_queued) is displayed
@@ -50,6 +56,7 @@ Scope: v1-mandatory
 #### Scenario: Remove a core group
 - **WHEN** the user removes a group from core_groups
 - **THEN** the group SHALL be excluded from the PATCH payload on save
+- **AND** the UI SHALL require a non-blank narrowing reason before saving
 
 #### Scenario: Unknown groups cannot be added via UI
 - **WHEN** the user interacts with the core_groups editor

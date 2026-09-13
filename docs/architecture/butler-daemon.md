@@ -48,7 +48,7 @@ Module migration chains run next. The daemon builds a DB-first `CredentialStore`
 
 ### Phase 9: Resolve Runtime Config
 
-The daemon seeds and reads the DB-backed runtime configuration from `[butler.runtime_seed]` when necessary. The resulting operational limits are the source of truth for core-tool registration and the Spawner.
+The daemon seeds DB-owned operational tuning from `[butler.runtime_seed]` when necessary. Git remains authoritative for declared `core_groups`: an existing DB subset is effective only when it carries a non-empty `core_groups_narrowing_reason`; otherwise startup reconciles the row to Git and appends one digest-keyed audit record for a non-empty diff. Concurrency, queue, catalog-read, and other operational values remain DB-owned. The resolved config feeds core-tool registration and the Spawner.
 
 ### Phase 10: Sync TOML Schedules
 
@@ -68,7 +68,7 @@ A `FastMCP` server is created and core MCP tools are registered: `status`, `trig
 
 ### Phase 14: Register Module Tools and Gates
 
-Healthy modules register tools through `register_tools(mcp, config, db)`. Approval gates and module-runtime wiring are then applied; a module-tool failure remains isolated to that module.
+Healthy modules register tools through `register_tools(mcp, config, db)`. Approval gates and module-runtime wiring are then applied; a module-tool failure remains isolated to that module and is retained in the tool-surface diff so the console does not confuse a partial surface with the Git declaration.
 
 ### Phase 15: Start the FastMCP Server
 

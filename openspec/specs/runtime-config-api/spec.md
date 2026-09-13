@@ -13,6 +13,7 @@ Scope: v1-mandatory
 #### Scenario: Successful read
 - **WHEN** a GET request is made for an existing butler
 - **THEN** the response SHALL contain all runtime_config fields with their current values, `updated_at` timestamp, and `field_tiers` map
+- **AND** it SHALL include `core_groups_narrowing_reason`, the Git-declared and effective groups, the effective source, registered-tool counts, and a bounded three-way diff
 
 #### Scenario: Butler not found
 - **WHEN** a GET request is made for a non-existent butler
@@ -20,7 +21,7 @@ Scope: v1-mandatory
 
 #### Scenario: Field tiers included in response
 - **WHEN** a GET response is returned
-- **THEN** it SHALL include `field_tiers` mapping each runtime_config field to `"hot"` or `"cold"`: `catalog_read_sensitivity` is hot because catalog reads load it at call time; `core_groups`, `max_concurrent`, and `max_queued` are cold
+- **THEN** it SHALL include `field_tiers` mapping each runtime_config field to `"hot"` or `"cold"`: `catalog_read_sensitivity` is hot because catalog reads load it at call time; `core_groups`, `core_groups_narrowing_reason`, `max_concurrent`, and `max_queued` are cold
 - **AND** `model` and `session_timeout_s` are NOT part of this map; migration `core_073` moved them onto `public.model_catalog`, edited via the model-settings API
 
 ### Requirement: PATCH runtime config endpoint
@@ -32,7 +33,7 @@ Scope: v1-mandatory
 
 #### Scenario: Accepted fields
 - **WHEN** a PATCH request is processed
-- **THEN** only `core_groups`, `catalog_read_sensitivity`, `max_concurrent`, and `max_queued` are accepted; `model`/`runtime_type`/`args`/`session_timeout_s` are not runtime_config fields (they live on `public.model_catalog`)
+- **THEN** only `core_groups`, `core_groups_narrowing_reason`, `catalog_read_sensitivity`, `max_concurrent`, and `max_queued` are accepted; `model`/`runtime_type`/`args`/`session_timeout_s` are not runtime_config fields (they live on `public.model_catalog`)
 
 #### Scenario: Catalog read sensitivity updates hot
 
@@ -43,6 +44,16 @@ Scope: v1-mandatory
 #### Scenario: Update cold field
 - **WHEN** a PATCH request updates `core_groups`
 - **THEN** the DB row SHALL be updated, `updated_at` SHALL be set to now, and the response SHALL include `restart_required: ["core_groups"]`
+
+#### Scenario: Narrowing requires an explicit reason
+- **WHEN** a PATCH proposes a `core_groups` subset of the Git declaration
+- **THEN** it SHALL require a non-blank `core_groups_narrowing_reason`
+- **AND** both fields SHALL require a daemon restart
+
+#### Scenario: Clearing the reason restores Git authority
+- **WHEN** a PATCH clears `core_groups_narrowing_reason`
+- **THEN** the response SHALL show Git as the effective source and the Git-declared groups as effective
+- **AND** startup reconciliation SHALL persist that Git group set idempotently
 
 #### Scenario: All managed fields are cold
 - **WHEN** a PATCH request updates any of `core_groups`, `max_concurrent`, or `max_queued`
