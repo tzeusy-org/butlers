@@ -139,7 +139,7 @@ Scope: v1-mandatory
 
 ### Requirement: Assistant Citation Normalization and Trust
 
-The server SHALL normalize the existing `conversation_reply(..., sources=...)` input into one canonical `citations` representation before persistence. A canonical citation SHALL contain a non-empty `label`, a nullable `target`, and exactly one `kind` of `internal`, `external`, or `unlinked`. A structurally valid citation establishes only a safe navigation target, never the truth, completeness, availability, or evidentiary quality of the model's claim.
+The server SHALL normalize the existing `conversation_reply(..., sources=...)` input into one canonical `citations` representation before persistence. A canonical citation SHALL contain a non-empty plain-text `label`, a nullable `target`, and exactly one `kind` of `internal`, `external`, or `unlinked`. Citation labels SHALL NOT be parsed as markdown. A structurally valid citation establishes only a safe navigation target, never the truth, completeness, availability, or evidentiary quality of the model's claim.
 
 ID: REQ-dashboard-conversations-010
 Source: heart-and-soul/security.md § Session Sandboxing; dashboard-conversations § Conversation Reply Channel; design.md Decisions 2-3
@@ -166,16 +166,16 @@ Scope: v1-mandatory
 - **AND** the string cannot become a link by resembling a path or URL
 - **AND** the reply success shape remains compatible with the existing tool contract
 
-#### Scenario: Invalid entries are removed content-blindly
+#### Scenario: Invalid structured targets are removed content-blindly
 
-- **WHEN** a non-empty `sources` input contains at least one valid entry and one blank, malformed, unsafe, over-budget, or non-allowlisted entry
+- **WHEN** a non-empty `sources` input contains at least one valid entry and one structured entry with a malformed, unsafe, or non-allowlisted target
 - **THEN** only the valid normalized entries are persisted in `citations`
 - **AND** the server emits a content-blind warning with reason code and rejected count, without labels, targets, answer text, request arguments, session IDs, or sensitive payloads
 - **AND** the tool success response does not echo the rejected entry
 
-#### Scenario: Explicit evidence with no usable entry is rejected
+#### Scenario: Empty blank or over-budget sources are rejected
 
-- **WHEN** `sources` is explicitly empty or every supplied entry is invalid after server normalization
+- **WHEN** `sources` is explicitly empty, contains any blank label, exceeds an item or total payload budget, or leaves no usable entry after structured-target validation
 - **THEN** no assistant message is inserted
 - **AND** the tool returns a structured error directing the caller to supply usable sources or omit `sources` and give an honest decline
 - **AND** no rejected label or target is copied into logs, telemetry, or the error response
