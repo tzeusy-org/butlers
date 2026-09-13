@@ -1019,6 +1019,44 @@
       "excerpt": "Once a week, the system SHALL attempt to actually restore the most recent backup artifact into a scratch database, ve..."
     }
   ],
+  "specify-chat-answer-rendering-provenance/dashboard-chat-ui/Message Thread Display": [
+    {
+      "kind": "clause",
+      "scenario": "Assistant message rendering",
+      "digest": "0f55065b5082",
+      "excerpt": "- **AND** the content is rendered as markdown (via the `SimpleMarkdown` renderer supporting fenced code blocks and ne..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Assistant message rendering",
+      "digest": "4665eb77a670",
+      "excerpt": "- **AND** below the content: model name badge, token count (`{input}+{output} tokens`), and duration (`{N}ms`) render..."
+    }
+  ],
+  "specify-chat-answer-rendering-provenance/dashboard-conversations/Message Data Model": [
+    {
+      "kind": "clause",
+      "scenario": "Message table schema",
+      "digest": "335e0699dfad",
+      "excerpt": "- `sources` (JSONB, nullable) — array of source strings named by an answer-lane `conversation_reply` call (see the Co..."
+    }
+  ],
+  "specify-chat-answer-rendering-provenance/dashboard-conversations/SSE Response Streaming": [
+    {
+      "kind": "clause",
+      "scenario": "SSE stream for new conversation",
+      "digest": "7551af9adad8",
+      "excerpt": "- **AND** a final `event: message_complete` with `data: {\"message_id\": \"...\", \"model_name\": null, \"input_tokens\": nul..."
+    }
+  ],
+  "specify-chat-answer-rendering-provenance/dashboard-design-language/Voice Surface": [
+    {
+      "kind": "prose",
+      "scenario": null,
+      "digest": "18a1f8a78704",
+      "excerpt": "The **Voice** — a headline plus serif paragraph — SHALL be a distinct surface type reserved for places the system is ..."
+    }
+  ],
   "specify-roster-identity-owner-operations-overlay/butler-base-spec/CLAUDE.md as System Prompt Entry Point": [
     {
       "kind": "prose",
