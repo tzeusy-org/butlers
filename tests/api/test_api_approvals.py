@@ -755,6 +755,149 @@ async def test_list_approvals_flat_no_eligible_pools_still_reports_zero_stalled_
     assert response.json() == {"data": [], "meta": {"stalled_count": 0}}
 
 
+async def test_unroutable_attention_lists_owner_visible_replayable_rows(app):
+    dead_letter_id = uuid4()
+    row = {
+        "id": dead_letter_id,
+        "failure_reason": "Dashboard message classification produced no lane decision",
+        "original_payload": '{"message_text":"Which butler owns this?"}',
+        "created_at": _NOW,
+        "replayed_at": None,
+    }
+    malformed = {
+        **row,
+        "id": uuid4(),
+        "original_payload": "{not-json",
+    }
+    missing_content = {
+        **row,
+        "id": uuid4(),
+        "original_payload": {"metadata": "no owner-authored content"},
+    }
+    wired_app, conn = _app_with_mock_db(app, fetch_rows=[row, malformed, missing_content])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=wired_app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/approvals/unroutable")
+
+    assert response.status_code == 200
+    items = response.json()["data"]
+    item = items[0]
+    assert item["id"] == str(dead_letter_id)
+    assert item["question"] == "Which butler owns this?"
+    assert item["failure_reason"] == "Dashboard message classification produced no lane decision"
+    assert datetime.fromisoformat(item["created_at"].replace("Z", "+00:00")) == _NOW
+    assert [item["question"] for item in items[1:]] == [
+        "Message content unavailable",
+        "Message content unavailable",
+    ]
+    query = conn.fetch.await_args.args[0]
+    assert "replay_eligible" in query
+    assert "replayed_at IS NULL" in query
+
+
+async def test_retry_unroutable_is_idempotent_and_second_call_conflicts(app):
+    dead_letter_id = uuid4()
+    wired_app, _ = _app_with_mock_db(app, fetchval_return=True)
+    first_result = {
+        "success": True,
+        "replayed_request_id": str(uuid4()),
+        "original_request_id": str(uuid4()),
+        "dead_letter_id": str(dead_letter_id),
+    }
+
+    with patch(
+        "butlers.tools.switchboard.dead_letter.replay_dead_letter_request",
+        new=AsyncMock(side_effect=[first_result, {"success": False, "error": "already_replayed"}]),
+    ) as replay:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=wired_app), base_url="http://test"
+        ) as client:
+            first = await client.post(f"/api/approvals/unroutable/{dead_letter_id}/retry")
+            second = await client.post(f"/api/approvals/unroutable/{dead_letter_id}/retry")
+
+    assert first.status_code == 200
+    assert first.json()["data"]["status"] == "queued"
+    assert second.status_code == 409
+    assert replay.await_count == 2
+    assert replay.await_args_list[0].kwargs["operator_identity"] == "owner"
+
+
+@pytest.mark.parametrize(
+    ("dead_letter_id", "eligible", "replay_result", "expected_status", "expected_calls"),
+    [
+        ("not-a-uuid", True, {"success": True}, 400, 0),
+        ("11111111-1111-4111-8111-111111111111", False, {"success": True}, 404, 0),
+        (
+            "22222222-2222-4222-8222-222222222222",
+            True,
+            {"success": False, "error": "not_replay_eligible"},
+            409,
+            1,
+        ),
+        (
+            "33333333-3333-4333-8333-333333333333",
+            True,
+            {"success": False, "error": "dead_letter_not_found"},
+            404,
+            1,
+        ),
+        (
+            "44444444-4444-4444-8444-444444444444",
+            True,
+            {"success": False, "error": "storage_failure"},
+            500,
+            1,
+        ),
+    ],
+)
+async def test_retry_unroutable_failures_remain_typed_and_fail_closed(
+    app,
+    dead_letter_id,
+    eligible,
+    replay_result,
+    expected_status,
+    expected_calls,
+):
+    wired_app, conn = _app_with_mock_db(app)
+    conn.fetchval = AsyncMock(return_value=eligible)
+    replay = AsyncMock(return_value=replay_result)
+
+    with patch(
+        "butlers.tools.switchboard.dead_letter.replay_dead_letter_request",
+        new=replay,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=wired_app), base_url="http://test"
+        ) as client:
+            response = await client.post(f"/api/approvals/unroutable/{dead_letter_id}/retry")
+
+    assert response.status_code == expected_status
+    assert replay.await_count == expected_calls
+
+
+async def test_unroutable_endpoints_fail_closed_when_switchboard_pool_is_unavailable(app):
+    dead_letter_id = uuid4()
+    wired_app, _ = _app_with_mock_db(app, has_approvals_tables=False)
+    replay = AsyncMock()
+
+    with patch(
+        "butlers.tools.switchboard.dead_letter.replay_dead_letter_request",
+        new=replay,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=wired_app), base_url="http://test"
+        ) as client:
+            listed = await client.get("/api/approvals/unroutable")
+            retried = await client.post(f"/api/approvals/unroutable/{dead_letter_id}/retry")
+
+    for response in (listed, retried):
+        assert response.status_code == 503
+        assert response.json()["detail"] == "Switchboard database is unavailable"
+    replay.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # butler filter param + butler field (bu-d3fhz)
 # ---------------------------------------------------------------------------

@@ -31,7 +31,7 @@ from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.exc import DBAPIError
 
 from alembic import command
-from butlers.migrations import _build_alembic_config, run_migrations
+from butlers.migrations import _build_alembic_config, get_chain_head, run_migrations
 from butlers.testing.migration import (
     assert_at_chain_head,
     create_migration_db,
@@ -1522,7 +1522,7 @@ def test_core_chain_serializes_global_runtime_attention_downgrade_and_reapply_ac
     }
     assert set(failed_downgrades) == set(target_schemas)
     assert all(
-        "core_198 downgrade requires trusted bootstrap rollback interface" in stderr
+        "protected core_198 rollback preflight failed" in stderr
         for stderr in failed_downgrades.values()
     )
 
@@ -1530,18 +1530,13 @@ def test_core_chain_serializes_global_runtime_attention_downgrade_and_reapply_ac
     try:
         with engine.connect() as conn:
             for target_schema in target_schemas:
-                # core_231 owns an autocommit boundary. Entering its downgrade
-                # commits any newer downgrade and its version stamp before
-                # core_198 later refuses to remove the protected interface.
-                # pinned-revision: core_231 is the durable autocommit boundary under test
-                assert (
-                    conn.execute(
-                        text(
-                            f"SELECT version_num FROM {_quote_ident(target_schema)}.alembic_version"
-                        )
-                    ).scalar_one()
-                    == "core_231"
-                )
+                # The current-head preflight must refuse before core_231's
+                # autocommit downgrade can commit any newer migration or stamp.
+                # Derive the head so a later serial migration does not turn this
+                # rollback-safety assertion into a stale revision literal.
+                assert conn.execute(
+                    text(f"SELECT version_num FROM {_quote_ident(target_schema)}.alembic_version")
+                ).scalar_one() == get_chain_head("core")
             for relation in (
                 "public.runtime_attention_outbox",
                 "public.runtime_attention_delivery_lease",
@@ -2131,14 +2126,24 @@ def test_nonempty_outbox_survives_a_refused_core_197_downgrade(
         engine.dispose()
 
     config = _build_alembic_config(bootstrap_url, chains=["core"])
-    with pytest.raises(DBAPIError, match="trusted bootstrap rollback interface"):
+    with pytest.raises(RuntimeError, match="protected core_198 rollback preflight failed"):
         command.downgrade(config, "core_197")
 
-    _upgrade_to_core_head(db_url)
     engine = create_engine(bootstrap_url)
     try:
         with engine.connect() as conn:
+            assert_at_chain_head(conn)
             assert conn.execute(text(f"SELECT count(*) FROM {_OUTBOX}")).scalar_one() == 1
+            assert conn.execute(
+                text(
+                    "SELECT EXISTS ("
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_schema = current_schema() "
+                    "AND table_name = 'runtime_config' "
+                    "AND column_name = 'core_groups_narrowing_reason'"
+                    ")"
+                )
+            ).scalar_one()
     finally:
         engine.dispose()
 

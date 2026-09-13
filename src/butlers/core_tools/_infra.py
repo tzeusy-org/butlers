@@ -142,6 +142,20 @@ def register_infra_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> No
             "modules": modules_dict,
             "health": health,
             "uptime_seconds": round(uptime_seconds, 1),
+            "tool_surface": {
+                "declared_names": sorted(getattr(daemon, "_declared_tool_names", set())),
+                "effective_names": sorted(getattr(daemon, "_effective_tool_names", set())),
+                "registered_names": sorted(getattr(daemon, "_registered_tool_names", set())),
+                "registration_failures": [
+                    {"tool_name": tool_name, **failure}
+                    for tool_name, failure in sorted(
+                        getattr(daemon, "_tool_registration_failures", {}).items()
+                    )
+                ],
+                "declaration_complete": not any(
+                    status.status != "active" for status in daemon._module_statuses.values()
+                ),
+            },
         }
 
     @_core_tool("infra")

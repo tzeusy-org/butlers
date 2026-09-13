@@ -1,17 +1,55 @@
 ## MODIFIED Requirements
 
-### Requirement: Relationship Butler Tool Surface
+### Requirement: Relationship Butler Registered Tool Surface
 
-The implementation SHALL provide the behavior described by this requirement.
-The relationship butler exposes a comprehensive personal CRM tool set with
-module-owned canonical MCP names.
+The relationship butler SHALL expose its currently approved manifesto-owned
+personal CRM tool set. Its eight configured relationship-module groups
+(`contacts`, `contacts_extended`, `interactions`, `relationships`, `social`,
+`notes`, `tracking`, and `management`) own 58 tools. The mandatory
+`relationship_assert_fact` approval-dispatch handler registers unconditionally,
+for 59 relationship-module handlers in total. The mixed `entity` group SHALL
+remain disabled until the adopted six-read/two-write split is implemented; it
+MUST NOT be activated while it still exposes both reads and writes.
 
-#### Scenario: Tool inventory
+The separately approved implementation SHALL replace that current inventory
+with nine configured groups owning 64 tools, while the mandatory unconditional
+handler makes 65 relationship-module handlers in total. The ninth group SHALL
+be the read-only `entity` group; the two `entity_write` tools SHALL remain
+inactive.
+
+#### Scenario: Exact current registered inventory
+
 - **WHEN** a runtime instance is spawned for the relationship butler
-- **THEN** it has access to 40+ tools including: contact CRUD (`contact_create`, `contact_update`, `contact_get`, `contact_search`, `contact_archive`, `contact_resolve`), relationship management (`relationship_add`, `relationship_list`, `relationship_remove`), date tracking (`date_add`, `date_list`, `upcoming_dates`), notes (`note_create`, `note_list`, `note_search`), interactions (`interaction_log`, `interaction_list`), reminders (`reminder_create`, `reminder_list`, `reminder_dismiss`), gifts (`gift_add`, `gift_update_status`, `gift_list`), loans (`loan_create`, `loan_settle`, `loan_list`), groups (`group_create`, `group_add_member`, `group_list`, `group_members`), labels (`label_create`, `label_assign`, `contact_search_by_label`), facts (`fact_set`, `fact_list`), the ungrouped registry-relational edge writer (`relationship_assert_fact`), Relationship entity reads (`entity_resolve`, `entity_get`, `entity_neighbors`, `relationship_fact_evidence`, `relationship_predicate_coverage`, `relationship_lookup`), feed (`feed_get`), memory-owned entity creation (`memory_entity_create`), memory (`memory_store_fact`), and calendar tools
-- **AND** no bare `entity_create` MCP tool or alias is registered
+- **THEN** all 58 tools owned by the eight configured groups SHALL be registered
+- **AND** the inventory SHALL include `contact_create`, `contact_update`,
+  `contact_get`, `contact_search`, `contact_archive`, `contact_resolve`,
+  `relationship_add`, `relationship_list`, `relationship_remove`, `date_add`,
+  `date_list`, `upcoming_dates`, `note_create`, `note_list`, `note_search`,
+  `interaction_log`, `interaction_list`, `fact_set`, `fact_list`, and `feed_get`
+- **AND** `relationship_assert_fact` SHALL be the additional mandatory unconditional handler, making 59 relationship-module handlers total
+- **AND** `entity_resolve`, `entity_get`, `entity_neighbors`,
+  `relationship_fact_evidence`, `relationship_predicate_coverage`,
+  `relationship_lookup`, `entity_update`, and `relationship_record_coverage`
+  SHALL all be absent
+- **AND** no bare `entity_create` MCP tool or alias SHALL be registered
+- **AND** the separately configured memory module MAY expose
+  `memory_entity_create` under that canonical prefixed name
 
-> NOTE: `feed_get` is specified but not yet implemented in the relationship module (no `feed_get` tool or library function exists as of this audit). It remains in scope as intent; a remediation issue tracks building it.
+#### Scenario: Tool inventory after the read-only split
+
+- **WHEN** the separately approved implementation activates the read-only
+  Relationship `entity` group
+- **THEN** all 64 group-owned relationship tools SHALL be registered, including
+  the six Relationship entity reads (`entity_resolve`, `entity_get`,
+  `entity_neighbors`, `relationship_fact_evidence`,
+  `relationship_predicate_coverage`, and `relationship_lookup`)
+- **AND** `relationship_assert_fact` SHALL be the additional mandatory
+  unconditional handler, making 65 relationship-module handlers total
+- **AND** `entity_update` and `relationship_record_coverage` SHALL remain absent
+  from the active surface
+- **AND** the separately configured memory module MAY expose
+  `memory_entity_create` under that canonical prefixed name
+- **AND** no bare `entity_create` MCP tool or alias SHALL be registered
 
 ## ADDED Requirements
 

@@ -49,6 +49,7 @@ import {
   useDomainEventDeliveries,
   useDomainEventReactions,
   useDomainEventContracts,
+  useReplayDomainEventDelivery,
 } from "@/hooks/use-domain-events"
 import type { SubscriptionEntry, DeliveryEntry, ReactionSummary, ContractEntry } from "@/api/types"
 
@@ -214,6 +215,8 @@ function DeliveryRow({ entry }: { entry: DeliveryEntry }) {
   const [open, setOpen] = useState(false)
   const traceId = useId()
   const reaction = reactionBadge(entry)
+  const replay = useReplayDomainEventDelivery()
+  const replaying = replay.isPending && replay.variables === entry.id
   return (
     <li className="py-1.5 border-b border-border/40 last:border-b-0" data-testid="delivery-row">
       <p className="text-sm truncate" title={entry.event_type}>
@@ -252,6 +255,17 @@ function DeliveryRow({ entry }: { entry: DeliveryEntry }) {
         >
           {open ? "hide trace" : "trace"}
         </button>
+        {entry.status === "failed_permanent" ? (
+          <button
+            type="button"
+            aria-label={`${replaying ? "Replaying" : "Replay"} ${entry.event_type} delivery`}
+            disabled={replaying}
+            onClick={() => replay.mutate(entry.id)}
+            className="font-mono text-[10px] underline underline-offset-2 text-[var(--red-text)] hover:text-foreground disabled:opacity-50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            {replaying ? "replaying…" : "replay"}
+          </button>
+        ) : null}
       </div>
       {open ? <ReactionTrace eventId={entry.event_id} traceId={traceId} /> : null}
     </li>

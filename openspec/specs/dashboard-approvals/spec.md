@@ -955,6 +955,30 @@ invalidate those views when the retry request fails.
 - **AND** it does not optimistically remove the row or invalidate the
   approval read caches.
 
+### Requirement: Unroutable command recovery
+
+The Approvals command surface SHALL expose replay-eligible dashboard dead letters whose routing attempt reached zero targets. This is an owner-visible recovery queue, not a claim that a target accepted the original message.
+
+#### Scenario: Unroutable question appears as a command row
+- **WHEN** `GET /api/approvals/unroutable` finds a replay-eligible dashboard dead letter with typed unroutable routing evidence
+- **THEN** `/approvals` SHALL render a compact `Unroutable: <question>` row
+- **AND** the row SHALL offer a Retry verb without rendering the prior outcome as routed
+
+#### Scenario: First retry queues one replay
+- **WHEN** the owner invokes `POST /api/approvals/unroutable/{id}/retry` for an eligible dead letter
+- **THEN** exactly one replay request SHALL be durably queued with lineage to the original dead letter
+- **AND** the response SHALL identify the queued replay without claiming that routing has already succeeded
+
+#### Scenario: Repeated or concurrent retry is idempotent
+- **WHEN** the retry verb is invoked again for the same dead letter while or after its replay is queued
+- **THEN** it SHALL return HTTP 409 Conflict
+- **AND** it SHALL not enqueue a second replay request
+
+#### Scenario: Unroutable recovery read is unavailable
+- **WHEN** the unroutable-command read fails
+- **THEN** the command surface SHALL show a named unavailable state
+- **AND** it SHALL not substitute an empty all-clear
+
 ## Source References
 
 - PLAN.md §5 `/approvals` API surface and §6 Phase 6 implementation order.

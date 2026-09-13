@@ -48,7 +48,7 @@ Module migration chains run, then the daemon creates a layered `CredentialStore`
 
 ### Step 9: Resolve Runtime Config
 
-The DB-backed runtime config is seeded from `[butler.runtime_seed]` on first boot and then becomes the source of truth for operational limits used by core-tool registration and the Spawner.
+DB-owned operational tuning is seeded from `[butler.runtime_seed]` on first boot. Git-owned `core_groups` is reconciled on every boot: a DB subset remains effective only with an explicit `core_groups_narrowing_reason`; an unreasoned stale row is restored to Git and audited idempotently. The resulting split-authority config is used by core-tool registration and the Spawner.
 
 ### Step 10: Sync Schedules
 
@@ -68,7 +68,7 @@ A FastMCP server is created and core tools are registered: status, trigger, stat
 
 ### Step 14: Register Module Tools and Gates
 
-Each healthy module registers its MCP tools. Approval gates and module runtime wiring are then applied; a module tool failure remains isolated to that module.
+Each healthy module registers its MCP tools. Approval gates and module runtime wiring are then applied; a module tool failure remains isolated to that module and is surfaced as declared-but-not-registered in the console's tool-surface diff.
 
 ### Step 15: Start the FastMCP Server
 
