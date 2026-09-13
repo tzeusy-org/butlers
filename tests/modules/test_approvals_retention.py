@@ -775,12 +775,173 @@ def _create_approvals_010_database(postgres_container) -> str:
     return db_url
 
 
+def _create_approvals_015_database(postgres_container) -> str:
+    """Create the historical delivery schema before cascade-aware retention."""
+    db_url = create_migration_db(postgres_container, migration_db_name())
+    command.upgrade(
+        _build_alembic_config(db_url, chains=["approvals"]),
+        "approvals@approvals_015",
+    )
+    return db_url
+
+
+def _migrate_approvals(db_url: str, target: str) -> None:
+    command.upgrade(
+        _build_alembic_config(db_url, chains=["approvals"]),
+        target,
+    )
+
+
+def _downgrade_approvals(db_url: str, target: str) -> None:
+    command.downgrade(
+        _build_alembic_config(db_url, chains=["approvals"]),
+        target,
+    )
+
+
 def _upgrade_approvals_to_head(db_url: str) -> None:
     """Apply the retention migration as a production upgrade would."""
     command.upgrade(
         _build_alembic_config(db_url, chains=["approvals"]),
         "approvals@head",
     )
+
+
+async def test_approvals_016_upgrades_existing_attempt_retention_and_downgrades_fail_closed(
+    postgres_container,
+) -> None:
+    """An approvals_015 database gains cascade cleanup without weakening immutability."""
+    db_url = await asyncio.to_thread(_create_approvals_015_database, postgres_container)
+    pool = await asyncpg.create_pool(
+        db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+    )
+    try:
+        confirmed_id = await _park_delivery_action(pool)
+        repository = ApprovalDeliveryRepository(pool)
+        confirmed_claim = await repository.claim_next()
+        assert confirmed_claim is not None
+        assert await repository.mark_handoff_started(confirmed_claim) is True
+        assert await repository.complete_handoff(confirmed_claim, HandoffResult("confirmed"))
+        confirmed_transition = await transition_pending_action(
+            pool,
+            action_id=confirmed_id,
+            target_status=ActionStatus.REJECTED,
+            decided_by="owner",
+            event_actor="owner",
+            event_reason="synthetic predecessor retention",
+        )
+        assert confirmed_transition.changed is True
+
+        ambiguous_id = await _park_delivery_action(pool)
+        ambiguous_claim = await repository.claim_next()
+        assert ambiguous_claim is not None
+        assert await repository.mark_handoff_started(ambiguous_claim) is True
+        assert await repository.complete_handoff(
+            ambiguous_claim,
+            HandoffResult("ambiguous", "provider_outcome_unknown"),
+        )
+        ambiguous_transition = await transition_pending_action(
+            pool,
+            action_id=ambiguous_id,
+            target_status=ActionStatus.REJECTED,
+            decided_by="owner",
+            event_actor="owner",
+            event_reason="synthetic ambiguous retention",
+        )
+        assert ambiguous_transition.changed is True
+        pending_id = await _park_delivery_action(pool)
+
+        await pool.execute(
+            "UPDATE pending_actions SET decided_at = clock_timestamp() - interval '365 days' "
+            "WHERE id = ANY($1::uuid[])",
+            [confirmed_id, ambiguous_id],
+        )
+        summary_id = await pool.fetchval(
+            "SELECT event_id FROM approval_events WHERE action_id = $1 "
+            "AND event_type = 'approval_delivery_terminal'",
+            confirmed_id,
+        )
+        with pytest.raises(asyncpg.RaiseError, match="append-only"):
+            await cleanup_old_actions(
+                pool,
+                RetentionPolicy(pending_actions_retention_days=90),
+            )
+        assert await pool.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM pending_actions WHERE id = $1)",
+            confirmed_id,
+        )
+    finally:
+        await pool.close()
+
+    await asyncio.to_thread(_migrate_approvals, db_url, "approvals@head")
+    upgraded_pool = await asyncpg.create_pool(
+        db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+    )
+    try:
+        with pytest.raises(asyncpg.RaiseError, match="append-only"):
+            await upgraded_pool.execute(
+                "DELETE FROM approval_delivery_attempts WHERE presentation_id = $1",
+                confirmed_claim.presentation_id,
+            )
+    finally:
+        await upgraded_pool.close()
+
+    await asyncio.to_thread(_downgrade_approvals, db_url, "approvals@approvals_015")
+    downgraded_pool = await asyncpg.create_pool(
+        db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+    )
+    try:
+        with pytest.raises(asyncpg.RaiseError, match="append-only"):
+            await cleanup_old_actions(
+                downgraded_pool,
+                RetentionPolicy(pending_actions_retention_days=90),
+            )
+        assert await downgraded_pool.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM pending_actions WHERE id = $1)",
+            confirmed_id,
+        )
+    finally:
+        await downgraded_pool.close()
+
+    await asyncio.to_thread(_migrate_approvals, db_url, "approvals@head")
+    final_pool = await asyncpg.create_pool(
+        db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+    )
+    try:
+        assert await cleanup_old_actions(
+            final_pool,
+            RetentionPolicy(pending_actions_retention_days=90),
+        ) == {"rejected": 1}
+        assert not await final_pool.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM pending_actions WHERE id = $1)",
+            confirmed_id,
+        )
+        assert await final_pool.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM pending_actions WHERE id = $1)",
+            ambiguous_id,
+        )
+        assert await final_pool.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM pending_actions WHERE id = $1)",
+            pending_id,
+        )
+        assert await final_pool.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM approval_events WHERE event_id = $1)",
+            summary_id,
+        )
+    finally:
+        await final_pool.close()
 
 
 async def test_approvals_upgrade_keeps_existing_execution_event_for_terminal_retention(
