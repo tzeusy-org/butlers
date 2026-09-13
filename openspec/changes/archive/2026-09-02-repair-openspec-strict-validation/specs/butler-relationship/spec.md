@@ -24,7 +24,7 @@ The relationship butler exposes a comprehensive personal CRM tool set.
 - **WHEN** a runtime instance is spawned for the relationship butler
 - **THEN** it has access to 40+ tools including: contact CRUD (`contact_create`, `contact_update`, `contact_get`, `contact_search`, `contact_archive`, `contact_resolve`), relationship management (`relationship_add`, `relationship_list`, `relationship_remove`), date tracking (`date_add`, `date_list`, `upcoming_dates`), notes (`note_create`, `note_list`, `note_search`), interactions (`interaction_log`, `interaction_list`), reminders (`reminder_create`, `reminder_list`, `reminder_dismiss`), gifts (`gift_add`, `gift_update_status`, `gift_list`), loans (`loan_create`, `loan_settle`, `loan_list`), groups (`group_create`, `group_add_member`, `group_list`, `group_members`), labels (`label_create`, `label_assign`, `contact_search_by_label`), facts (`fact_set`, `fact_list`), the registry-relational edge writer/reader (`relationship_assert_fact`, `relationship_lookup`), feed (`feed_get`), entity resolution (`entity_resolve`, `entity_create`), memory (`memory_store_fact`), and calendar tools
 
-> NOTE: `feed_get` is implemented and registered by the relationship module's `social` group; the grouped inventory count includes it.
+> NOTE: `feed_get` is implemented and registered by the relationship module's `interactions` group; the grouped inventory count includes it.
 
 ### Requirement: Entity Resolution Pipeline
 

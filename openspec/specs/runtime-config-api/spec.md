@@ -14,6 +14,7 @@ Scope: v1-mandatory
 - **WHEN** a GET request is made for an existing butler
 - **THEN** the response SHALL contain all runtime_config fields with their current values, `updated_at` timestamp, and `field_tiers` map
 - **AND** it SHALL include `core_groups_narrowing_reason`, the Git-declared and effective groups, the effective source, registered-tool counts, and a bounded three-way diff
+- **AND** decorator failures SHALL remain named in `tool_registration_failures` by tool, module, and exception type without exposing the exception message
 
 #### Scenario: Butler not found
 - **WHEN** a GET request is made for a non-existent butler

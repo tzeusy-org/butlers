@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -329,6 +330,47 @@ class TestEphemeralMcpConfig:
                 return []
 
         assert proxy._registered_tool_names == set()
+        assert proxy._declared_tool_names == {"get_events"}
+        assert proxy._registration_failures == {"get_events": "RuntimeError"}
+
+    async def test_daemon_preserves_failed_decorator_as_declared_not_registered(self):
+        """A module decorator failure remains named in daemon surface evidence."""
+        from butlers.daemon import ButlerDaemon
+
+        class FailingModule:
+            name = "calendar"
+
+            async def register_tools(self, mcp, config, db, butler_name):  # noqa: ANN001, ARG002
+                @mcp.tool(name="get_events")
+                async def get_events() -> list:
+                    return []
+
+        def rejecting_tool(*args, **kwargs):  # noqa: ARG001
+            def decorator(fn):  # noqa: ARG001
+                raise RuntimeError("duplicate tool")
+
+            return decorator
+
+        daemon = SimpleNamespace(
+            _modules=[FailingModule()],
+            _module_statuses={},
+            _module_configs={},
+            _module_runtime_states={},
+            _tool_module_map={},
+            mcp=SimpleNamespace(tool=rejecting_tool),
+            db=None,
+            config=SimpleNamespace(name="health"),
+        )
+
+        await ButlerDaemon._register_module_tools(daemon)
+
+        assert daemon._declared_tool_names == {"get_events"}
+        assert daemon._effective_tool_names == {"get_events"}
+        assert daemon._registered_tool_names == set()
+        assert daemon._tool_registration_failures == {
+            "get_events": {"module_name": "calendar", "error_type": "RuntimeError"}
+        }
+        assert daemon._module_statuses["calendar"].status == "failed"
 
     def test_tool_meta_arg_sensitivities_is_dict(self):
         """RFC 0002: ToolMeta.arg_sensitivities is a dict mapping arg name to bool.
