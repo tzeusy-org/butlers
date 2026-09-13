@@ -52,6 +52,7 @@ def _make_detail_row(session_id) -> dict:
         "parent_session_id": None,
         "complexity": None,
         "resolution_source": None,
+        "purpose_lane": "private_content",
     }
 
 
@@ -157,6 +158,7 @@ async def test_global_session_detail_resolves_across_schemas() -> None:
     assert data["input_tokens"] == 1234
     assert data["output_tokens"] == 567
     assert data["prompt"] == "test prompt"
+    assert data["purpose_lane"] == "private_content"
     assert "effective_prompt" not in data
     assert "prompt_provenance" not in data
 

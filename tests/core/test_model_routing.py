@@ -16,7 +16,7 @@ from __future__ import annotations
 import shutil
 import time
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import asyncpg
@@ -32,7 +32,6 @@ from butlers.core.model_routing import (
     TIER_FALLTHROUGH_ORDER,
     Complexity,
     RoutingEvidence,
-    SpendRoutingResult,
     TierQuotaExhausted,
     _check_deprecated_tier,
     _parse_max_cost_per_call,
@@ -1903,6 +1902,14 @@ async def test_private_content_remote_rule_requires_current_audit(pool: asyncpg.
     assert result.resolved[1] == "remote-private-override"
     assert str(result.resolved[3]) == remote_id
     assert result.explicit_private_content is True
+    await pool.execute(
+        """
+        INSERT INTO public.audit_log (actor, action, target, ts)
+        VALUES ('owner', 'spend.rule.create', $1, $2)
+        """,
+        f"rule:{rule['id']}",
+        rule["updated_at"] - timedelta(seconds=1),
+    )
     assert await is_current_spend_rule_audited(pool, result) is False
 
     await pool.execute(

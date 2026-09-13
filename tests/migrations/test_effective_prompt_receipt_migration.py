@@ -16,6 +16,9 @@ _MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
     / "alembic/versions/core/core_232_effective_prompt_receipt.py"
 )
+_PURPOSE_MIGRATION_PATH = (
+    Path(__file__).resolve().parents[2] / "alembic/versions/core/core_233_session_purpose_lane.py"
+)
 
 
 def _load_migration():
@@ -92,3 +95,64 @@ async def test_receipt_columns_are_additive_atomic_and_rollback_safe(
         )
         assert {row["column_name"] for row in columns} == {"id"}
         assert await pool.fetchval("SELECT count(*) FROM sessions") == 2
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_purpose_lane_is_closed_additive_and_rollback_safe(
+    provisioned_postgres_pool,
+) -> None:
+    async with provisioned_postgres_pool() as pool:
+        await pool.execute("CREATE TABLE sessions (id UUID PRIMARY KEY)")
+        legacy_id = uuid.uuid4()
+        await pool.execute("INSERT INTO sessions (id) VALUES ($1)", legacy_id)
+
+        statements: list[str] = []
+        spec = importlib.util.spec_from_file_location("core_233", _PURPOSE_MIGRATION_PATH)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        mocked_op = MagicMock()
+        mocked_op.execute.side_effect = statements.append
+        with patch.object(module, "op", mocked_op):
+            module.upgrade()
+        for statement in statements:
+            await pool.execute(statement)
+
+        assert (
+            await pool.fetchval("SELECT purpose_lane FROM sessions WHERE id = $1", legacy_id)
+            is None
+        )
+        private_id = uuid.uuid4()
+        await pool.execute(
+            "INSERT INTO sessions (id, purpose_lane) VALUES ($1, 'private_content')",
+            private_id,
+        )
+        with pytest.raises(asyncpg.CheckViolationError):
+            await pool.execute(
+                "INSERT INTO sessions (id, purpose_lane) VALUES ($1, 'other')",
+                uuid.uuid4(),
+            )
+
+        statements.clear()
+        with patch.object(module, "op", mocked_op):
+            module.downgrade()
+        with pytest.raises(asyncpg.RaiseError, match="session purpose evidence exists"):
+            for statement in statements:
+                await pool.execute(statement)
+
+        await pool.execute(
+            "UPDATE sessions SET purpose_lane = NULL WHERE id = $1",
+            private_id,
+        )
+        for statement in statements:
+            await pool.execute(statement)
+        assert not await pool.fetchval(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                 WHERE table_schema = current_schema()
+                   AND table_name = 'sessions'
+                   AND column_name = 'purpose_lane'
+            )
+            """
+        )

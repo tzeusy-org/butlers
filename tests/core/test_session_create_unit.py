@@ -80,6 +80,7 @@ async def test_session_create_validation_and_return() -> None:
     assert insert_args[8] == effective_prompt
     assert insert_args[9] == hashlib.sha256(effective_prompt.encode("utf-8")).hexdigest()
     assert insert_args[10] == provenance
+    assert insert_args[11] == "standard"
 
 
 async def test_session_create_drops_stale_ingestion_event_link(monkeypatch: pytest.MonkeyPatch):

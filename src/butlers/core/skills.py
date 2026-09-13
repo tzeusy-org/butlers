@@ -68,6 +68,15 @@ def _roster_source(path: Path, roster_root: Path) -> str:
     return f"roster:{relative.as_posix()}"
 
 
+def _read_prompt_source(path: Path) -> str | None:
+    """Read one roster source, classifying unreadable input as unavailable."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        logger.warning("Prompt source is unreadable: %s", path)
+        return None
+
+
 # ---------------------------------------------------------------------------
 # 9.1 — CLAUDE.md and skills directory for LLM CLI spawner
 # ---------------------------------------------------------------------------
@@ -133,7 +142,18 @@ def _resolve_includes(
                     )
                 out.append(line)
                 continue
-            raw_included = target.read_text(encoding="utf-8")
+            raw_included = _read_prompt_source(target)
+            if raw_included is None:
+                if source_records is not None:
+                    source_records.append(
+                        SystemPromptSource(
+                            source=_roster_source(target, roster_root),
+                            status="unavailable",
+                            content=None,
+                        )
+                    )
+                out.append(line)
+                continue
             if source_records is not None:
                 source_records.append(
                     SystemPromptSource(
@@ -189,7 +209,18 @@ def _resolve_includes(
                 )
             out.append(line)
             continue
-        raw_included = target.read_text(encoding="utf-8")
+        raw_included = _read_prompt_source(target)
+        if raw_included is None:
+            if source_records is not None:
+                source_records.append(
+                    SystemPromptSource(
+                        source=_roster_source(target, roster_root),
+                        status="unavailable",
+                        content=None,
+                    )
+                )
+            out.append(line)
+            continue
         if source_records is not None:
             source_records.append(
                 SystemPromptSource(
@@ -232,7 +263,17 @@ def _append_shared_markdown(
             )
         return content
 
-    raw_shared_content = shared_file.read_text(encoding="utf-8")
+    raw_shared_content = _read_prompt_source(shared_file)
+    if raw_shared_content is None:
+        if source_records is not None:
+            source_records.append(
+                SystemPromptSource(
+                    source=_roster_source(shared_file, roster_dir),
+                    status="unavailable",
+                    content=None,
+                )
+            )
+        return content
     if source_records is not None:
         source_records.append(
             SystemPromptSource(
@@ -317,7 +358,16 @@ def _append_shadowed_roster_sources(
             )
         )
         return
-    raw_content = claude_md.read_text(encoding="utf-8")
+    raw_content = _read_prompt_source(claude_md)
+    if raw_content is None:
+        sources.append(
+            SystemPromptSource(
+                source=_roster_source(claude_md, roster_dir),
+                status="unavailable",
+                content=None,
+            )
+        )
+        return
     sources.append(
         SystemPromptSource(
             source=_roster_source(claude_md, roster_dir),
@@ -375,7 +425,9 @@ def read_system_prompt_with_sources(
     roster_dir = config_dir.parent
     claude_md = config_dir / "CLAUDE.md"
     if claude_md.is_file():
-        raw_content = claude_md.read_text(encoding="utf-8")
+        raw_content = _read_prompt_source(claude_md)
+        if raw_content is None:
+            raw_content = ""
         content = raw_content.strip()
         if content:
             sources = [

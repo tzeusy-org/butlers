@@ -223,6 +223,7 @@ async def session_create(
     effective_system_prompt: str | None = None,
     prompt_digest: str | None = None,
     prompt_provenance: list[dict[str, Any]] | None = None,
+    purpose_lane: str = "standard",
 ) -> uuid.UUID:
     """Insert a new session row and return its UUID.
 
@@ -270,6 +271,8 @@ async def session_create(
     """
     if request_id is None:
         raise ValueError("request_id is required and must not be None")
+    if purpose_lane not in {"standard", "private_content"}:
+        raise ValueError("purpose_lane must be 'standard' or 'private_content'")
     if not _is_valid_trigger_source(trigger_source):
         raise ValueError(
             f"Invalid trigger_source {trigger_source!r}; must be 'tick', "
@@ -307,8 +310,8 @@ async def session_create(
             INSERT INTO sessions
                 (prompt, trigger_source, trace_id, model, request_id, ingestion_event_id,
                  complexity, resolution_source, effective_system_prompt, prompt_digest,
-                 prompt_provenance)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                 prompt_provenance, purpose_lane)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             RETURNING id
             """,
             sanitized_prompt,
@@ -322,6 +325,7 @@ async def session_create(
             effective_system_prompt,
             prompt_digest,
             safe_prompt_provenance,
+            purpose_lane,
         )
 
     try:
@@ -573,7 +577,7 @@ async def sessions_list(
                duration_ms, trace_id, model, cost, success, error,
                input_tokens, output_tokens, cached_input_tokens, cache_creation_tokens,
                request_id, ingestion_event_id,
-               complexity, resolution_source, started_at, completed_at
+               complexity, resolution_source, purpose_lane, started_at, completed_at
         FROM sessions
         ORDER BY started_at DESC
         LIMIT $1 OFFSET $2
@@ -604,7 +608,8 @@ async def sessions_active(
         """
         SELECT id, prompt, trigger_source, result, tool_calls,
                duration_ms, trace_id, model, cost, success, error, request_id,
-               ingestion_event_id, complexity, resolution_source, started_at, completed_at
+               ingestion_event_id, complexity, resolution_source, purpose_lane,
+               started_at, completed_at
         FROM sessions
         WHERE completed_at IS NULL
         ORDER BY started_at DESC
@@ -632,7 +637,7 @@ async def sessions_get(
                duration_ms, trace_id, model, cost, success, error,
                input_tokens, output_tokens, cached_input_tokens, cache_creation_tokens,
                request_id, ingestion_event_id,
-               complexity, resolution_source, started_at, completed_at
+               complexity, resolution_source, purpose_lane, started_at, completed_at
         FROM sessions
         WHERE id = $1
         """,
@@ -1106,6 +1111,7 @@ async def top_sessions(
             COALESCE(model, '') AS model,
             COALESCE(input_tokens, 0)::bigint AS input_tokens,
             COALESCE(output_tokens, 0)::bigint AS output_tokens,
+            purpose_lane,
             started_at
         FROM sessions
         WHERE completed_at IS NOT NULL
@@ -1128,6 +1134,7 @@ async def top_sessions(
                 "model": str(row["model"]),
                 "input_tokens": int(row["input_tokens"]),
                 "output_tokens": int(row["output_tokens"]),
+                "purpose_lane": row["purpose_lane"],
                 "started_at": started_at.isoformat() if started_at else "",
             }
         )

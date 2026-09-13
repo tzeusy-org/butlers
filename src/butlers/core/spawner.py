@@ -2076,6 +2076,7 @@ class Spawner:
                     effective_system_prompt=prompt_receipt.prompt,
                     prompt_digest=prompt_receipt.digest,
                     prompt_provenance=[entry.as_dict() for entry in prompt_receipt.provenance],
+                    purpose_lane=purpose_lane,
                 )
                 logger.debug(
                     "Session created with model=%s runtime_type=%s complexity=%s source=%s "

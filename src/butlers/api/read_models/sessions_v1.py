@@ -47,6 +47,15 @@ from butlers.core.spawner import SESSION_CANCELLED_ERROR
 
 logger = logging.getLogger(__name__)
 
+
+def _optional_column(row: asyncpg.Record, name: str) -> Any | None:
+    """Read an additive column while keeping older synthetic row fixtures valid."""
+    try:
+        return row[name]
+    except (KeyError, IndexError):
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Version marker
 # ---------------------------------------------------------------------------
@@ -71,7 +80,8 @@ _CANCELLED_BY_OWNER_SQL = (
 #: summary DTO or list response.
 SUMMARY_COLUMNS: str = (
     "id, prompt, trigger_source, request_id, success, started_at, completed_at, duration_ms, "
-    "model, complexity, input_tokens, output_tokens, cached_input_tokens, cache_creation_tokens, "
+    "model, complexity, purpose_lane, input_tokens, output_tokens, cached_input_tokens, "
+    "cache_creation_tokens, "
     f"{_CANCELLED_BY_OWNER_SQL}"
 )
 
@@ -79,7 +89,7 @@ SUMMARY_COLUMNS: str = (
 DETAIL_COLUMNS: str = (
     "id, prompt, trigger_source, result, tool_calls, duration_ms, trace_id, request_id, cost, "
     "started_at, completed_at, success, error, model, input_tokens, output_tokens, "
-    "parent_session_id, complexity, resolution_source"
+    "parent_session_id, complexity, resolution_source, purpose_lane"
 )
 
 #: Sensitive effective-prompt content is deliberately isolated from both the
@@ -107,6 +117,7 @@ class SessionSummaryRow:
     duration_ms: int | None
     model: str | None
     complexity: str | None
+    purpose_lane: str | None
     input_tokens: int | None
     output_tokens: int | None
     cached_input_tokens: int | None
@@ -138,6 +149,7 @@ class SessionDetailRow:
     parent_session_id: UUID | None
     complexity: str | None
     resolution_source: str | None
+    purpose_lane: str | None
 
 
 @dataclass
@@ -281,6 +293,7 @@ def row_to_summary(row: asyncpg.Record, *, butler: str | None = None) -> Session
         duration_ms=row["duration_ms"],
         model=row["model"],
         complexity=row["complexity"],
+        purpose_lane=_optional_column(row, "purpose_lane"),
         input_tokens=row["input_tokens"],
         output_tokens=row["output_tokens"],
         cached_input_tokens=row["cached_input_tokens"],
@@ -327,6 +340,7 @@ def row_to_detail(row: asyncpg.Record, *, butler: str | None = None) -> SessionD
         parent_session_id=row["parent_session_id"],
         complexity=row["complexity"],
         resolution_source=row["resolution_source"],
+        purpose_lane=_optional_column(row, "purpose_lane"),
     )
 
 

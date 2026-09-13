@@ -159,6 +159,7 @@ function detailSeedFromSummary(summary: SessionSummary): ApiResponse<SessionDeta
       parent_session_id: null,
       complexity: summary.complexity ?? null,
       resolution_source: null,
+      purpose_lane: summary.purpose_lane ?? null,
       process_log: null,
     },
     meta: {},

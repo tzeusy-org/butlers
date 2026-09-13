@@ -196,10 +196,10 @@ function EffectivePromptReceipt({ sessionId }: { sessionId: string }) {
         <table className="w-full text-left text-xs">
           <thead className="border-b text-muted-foreground">
             <tr>
-              <th className="px-2 py-1.5 font-medium">Source</th>
-              <th className="px-2 py-1.5 font-medium">State</th>
-              <th className="px-2 py-1.5 text-right font-medium">Bytes</th>
-              <th className="px-2 py-1.5 font-medium">SHA</th>
+              <th scope="col" className="px-2 py-1.5 font-medium">Source</th>
+              <th scope="col" className="px-2 py-1.5 font-medium">State</th>
+              <th scope="col" className="px-2 py-1.5 text-right font-medium">Bytes</th>
+              <th scope="col" className="px-2 py-1.5 font-medium">SHA</th>
             </tr>
           </thead>
           <tbody>

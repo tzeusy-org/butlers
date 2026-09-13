@@ -1084,6 +1084,7 @@ def _top_sessions_from_data(
                 output_tokens=output_tokens,
                 model=model_id,
                 started_at=s.get("started_at", ""),
+                purpose_lane=s.get("purpose_lane"),
             )
         )
     return sessions

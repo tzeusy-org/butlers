@@ -878,6 +878,7 @@ export interface TopSession {
   output_tokens: number;
   model: string;
   started_at: string;
+  purpose_lane?: "standard" | "private_content" | null;
 }
 
 /**

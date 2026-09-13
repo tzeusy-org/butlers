@@ -49,9 +49,9 @@ database override is unchanged. A changed, added, missing, or unreadable roster-
 produces `drifted`, a bounded changed-source list, and `drifted_since` equal to the newest receipt
 that no longer matches. No prior receipt produces `unknown`, never a green match.
 
-The comparison is deterministic and idempotent. Daemon composition checks at boot/first spawn and
-the read projection rechecks current files, so a file change is visible without deployment or a
-separate prompt-authoring path.
+The comparison is deterministic and idempotent. Every spawn receipts its resolved roster sources,
+and the bus-aware read projection rechecks current files, so a file change becomes visible without
+deployment or a separate prompt-authoring path.
 
 ### D4: Purpose lane is content-blind and source-derived
 

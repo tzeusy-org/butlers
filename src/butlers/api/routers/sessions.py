@@ -289,6 +289,7 @@ def _dto_to_summary(dto: SessionSummaryRow, pricing: PricingConfig | None = None
         duration_ms=dto.duration_ms,
         model=dto.model,
         complexity=dto.complexity,
+        purpose_lane=dto.purpose_lane,
         input_tokens=dto.input_tokens,
         output_tokens=dto.output_tokens,
         cancelled_by_owner=dto.cancelled_by_owner,
@@ -319,6 +320,7 @@ def _dto_to_detail(dto: SessionDetailRow) -> SessionDetail:
         parent_session_id=dto.parent_session_id,
         complexity=dto.complexity,
         resolution_source=dto.resolution_source,
+        purpose_lane=dto.purpose_lane,
     )
 
 
