@@ -1,4 +1,4 @@
-"""Tests for core_222 reclassification of health condition/symptom/medication facts.
+"""Tests for core_234 reclassification of health condition/symptom/medication facts.
 
 Background (bu-2jtfw.3): the health butler's condition_add/symptom_log/
 medication_add/medication_log_dose write paths never passed a
@@ -38,12 +38,12 @@ _MIGRATION_PATH = (
     / "alembic"
     / "versions"
     / "core"
-    / "core_222_reclassify_health_write_sensitivity.py"
+    / "core_234_reclassify_health_write_sensitivity.py"
 )
 
 
 def _load_migration():
-    spec = importlib.util.spec_from_file_location("core_222", _MIGRATION_PATH)
+    spec = importlib.util.spec_from_file_location("core_234", _MIGRATION_PATH)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -60,7 +60,7 @@ class TestMigrationFileAndChain:
         from butlers.migrations import get_chain_head, get_chain_revision_ids
 
         revision_ids = get_chain_revision_ids("core")
-        assert "core_222" in revision_ids
+        assert "core_234" in revision_ids
         assert get_chain_head("core") in revision_ids
 
 
