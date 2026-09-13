@@ -331,10 +331,10 @@ async def run_startup(daemon: Any) -> None:
             exc_info=True,
         )
 
-    # 9. Resolve runtime config from DB (seed from toml on first boot).
+    # 9. Resolve runtime config (seed DB operational fields from toml on first boot).
     # Creates the RuntimeConfigAccessor and seeds the runtime_config table
-    # if this is the first boot. The effective RuntimeConfig from DB is used
-    # for tool registration and spawner construction.
+    # if this is the first boot. Git remains authoritative for core_groups;
+    # runtime_config may preserve only an explicitly reasoned strict subset.
     from butlers.core.runtime_config import RuntimeConfigAccessor
 
     schema = daemon.config.db_schema or daemon.config.name

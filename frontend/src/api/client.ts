@@ -22,6 +22,8 @@ import type {
   ApprovalsFlatListResponse,
   ApprovalsListResponse,
   ApprovalsPolicy,
+  UnroutableAttentionItem,
+  UnroutableRetryResult,
   AutonomySuggestion,
   AutonomySuggestionDismissRequest,
   AutonomySuggestionParams,
@@ -3678,6 +3680,19 @@ export function getApprovalsFlat(
   return apiFetch<ApprovalsFlatListResponse>(s ? `/approvals?${s}` : "/approvals");
 }
 
+export function getUnroutableAttention(): Promise<ApiResponse<UnroutableAttentionItem[]>> {
+  return apiFetch<ApiResponse<UnroutableAttentionItem[]>>("/approvals/unroutable");
+}
+
+export function retryUnroutableAttention(
+  deadLetterId: string,
+): Promise<ApiResponse<UnroutableRetryResult>> {
+  return apiFetch<ApiResponse<UnroutableRetryResult>>(
+    `/approvals/unroutable/${encodeURIComponent(deadLetterId)}/retry`,
+    { method: "POST" },
+  );
+}
+
 export function getApprovalDetail(actionId: string): Promise<ApiResponse<ApprovalDetail>> {
   return apiFetch<ApiResponse<ApprovalDetail>>(
     `/approvals/${encodeURIComponent(actionId)}`,
@@ -6269,6 +6284,16 @@ export function listDomainEventDeliveries(
   const qs = query.toString();
   return apiFetch<PaginatedResponse<DeliveryEntry>>(
     `/domain-events/deliveries${qs ? `?${qs}` : ""}`,
+  );
+}
+
+/** Atomically requeue one failed_permanent domain-event delivery. */
+export function replayDomainEventDelivery(
+  deliveryId: string,
+): Promise<ApiResponse<{ delivery_id: string; status: string }>> {
+  return apiFetch<ApiResponse<{ delivery_id: string; status: string }>>(
+    `/domain-events/deliveries/${encodeURIComponent(deliveryId)}/replay`,
+    { method: "POST" },
   );
 }
 

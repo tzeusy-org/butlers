@@ -114,6 +114,11 @@ still honoring the MCP-only rule.
   `butlers.core.domain_event_reaction_sweep`. The live Travel-to-Finance
   `failed_permanent` shape is pinned as a read-only regression test; no
   replay or runtime recovery is performed here.
+- (bu-h40h2b.1) Explicit owner recovery for a `failed_permanent` delivery is
+  available through the existing domain-events API and butler-detail panel.
+  It atomically returns the same delivery row to `pending`; automatic
+  reconciliation still treats `failed_permanent` as terminal. Acceptance
+  probes remain read-only and do not replay live/personal delivery rows.
 - Deferred (still reported as a follow-up): a shared `domain-event-bus`
   skill. Not added in this change -- the new publish call sites (Travel's
   context producer, Finance's and Health's insight-scan jobs) are

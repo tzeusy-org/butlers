@@ -177,7 +177,19 @@ enabled = true
 risk_tier = "medium"
 
 [modules.relationship]
-groups = ["contacts", "interactions", "management", "tracking"]
+# The enabled Relationship groups are manifesto-owned. The mixed entity group
+# remains disabled until the adopted read-only split is implemented; activating
+# it today would also expose two writes the owner explicitly kept pruned.
+groups = [
+    "contacts",
+    "contacts_extended",
+    "interactions",
+    "relationships",
+    "social",
+    "notes",
+    "tracking",
+    "management",
+]
 
 # Google Drive module (optional — requires 'drive' scope on connected Google account).
 # Enable by uncommenting and re-authorizing via /api/oauth/google/start?force_consent=true

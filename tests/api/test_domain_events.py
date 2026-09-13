@@ -235,6 +235,73 @@ async def test_list_deliveries_surfaces_a_failed_source_as_an_error(app):
     assert resp.status_code == 500
 
 
+async def test_replay_failed_permanent_delivery_requeues_once(app, monkeypatch):
+    delivery_id = uuid.uuid4()
+    mock_db = _wire_db(app, rows=[])
+    replay = AsyncMock(return_value="pending")
+    monkeypatch.setattr("butlers.api.routers.domain_events.requeue_failed_delivery", replay)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/domain-events/deliveries/{delivery_id}/replay")
+
+    assert resp.status_code == 200
+    assert resp.json()["data"] == {"delivery_id": str(delivery_id), "status": "pending"}
+    replay.assert_awaited_once_with(mock_db.pool_mock, delivery_id)
+
+
+async def test_replay_delivery_conflicts_after_first_requeue(app, monkeypatch):
+    delivery_id = uuid.uuid4()
+    _wire_db(app, rows=[])
+    monkeypatch.setattr(
+        "butlers.api.routers.domain_events.requeue_failed_delivery",
+        AsyncMock(return_value="pending"),
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        first = await client.post(f"/api/domain-events/deliveries/{delivery_id}/replay")
+        # The real store changes the row out of failed_permanent atomically;
+        # emulate that second observation at the API seam.
+        from butlers.api.routers import domain_events as router_module
+
+        router_module.requeue_failed_delivery = AsyncMock(return_value="conflict")
+        second = await client.post(f"/api/domain-events/deliveries/{delivery_id}/replay")
+
+    assert first.status_code == 200
+    assert second.status_code == 409
+
+
+async def test_replay_unknown_delivery_returns_not_found(app, monkeypatch):
+    delivery_id = uuid.uuid4()
+    _wire_db(app, rows=[])
+    monkeypatch.setattr(
+        "butlers.api.routers.domain_events.requeue_failed_delivery",
+        AsyncMock(return_value="not_found"),
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(f"/api/domain-events/deliveries/{delivery_id}/replay")
+
+    assert response.status_code == 404
+
+
+async def test_replay_delivery_rejects_malformed_id_before_write(app):
+    mock_db = _wire_db(app, rows=[])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post("/api/domain-events/deliveries/not-a-uuid/replay")
+
+    assert resp.status_code == 400
+    mock_db.pool_mock.fetchval.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # Reaction receipts and contract projection (bu-6jv4m.8)
 # ---------------------------------------------------------------------------
