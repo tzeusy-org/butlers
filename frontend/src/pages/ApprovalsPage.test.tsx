@@ -81,6 +81,8 @@ vi.mock("@/api/index.ts", () => ({
   getApprovalsFlat: vi.fn(),
   getApprovalsHistory: vi.fn(),
   getApprovalsPolicy: vi.fn(),
+  getUnroutableAttention: vi.fn(),
+  retryUnroutableAttention: vi.fn(),
   getApprovalDetail: vi.fn(),
   approveApproval: vi.fn(),
   denyApproval: vi.fn(),
@@ -128,10 +130,12 @@ import {
   getApprovalsFlat,
   getApprovalsHistory,
   getApprovalsPolicy,
+  getUnroutableAttention,
   getAutonomySuggestions,
   getRulePromotionStats,
   getRulePromotionSuggestions,
   retryApproval,
+  retryUnroutableAttention,
   revokeApprovalRule,
   createApprovalRuleFromAction,
   updateApprovalsPolicy,
@@ -249,6 +253,7 @@ function resetPageMocks() {
       promoted_rule_spot_checks: 0,
     }) as AnyMock,
   );
+  vi.mocked(getUnroutableAttention).mockReturnValue(makeApiResponse([]) as AnyMock);
 }
 
 // ---------------------------------------------------------------------------
@@ -400,6 +405,41 @@ describe("ApprovalsPage — load-more", () => {
 
     expect(container.textContent).toContain("No pending approvals");
     expect(findButton(container, "Load more")).toBeUndefined();
+  });
+
+  it("shows unroutable questions on the Command surface and retries once", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
+    vi.mocked(getUnroutableAttention).mockReturnValue(
+      makeApiResponse([
+        {
+          id: "dead-letter-1",
+          question: "Which butler owns this?",
+          failure_reason: "No target acknowledged the route",
+          created_at: "2026-09-13T01:00:00Z",
+        },
+      ]) as AnyMock,
+    );
+    vi.mocked(retryUnroutableAttention).mockReturnValue(
+      makeApiResponse({
+        dead_letter_id: "dead-letter-1",
+        replayed_request_id: "replay-1",
+        status: "queued",
+      }) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(() => findButton(container, "Retry") !== undefined);
+
+    expect(container.textContent).toContain("Unroutable: Which butler owns this?");
+    expect(container.textContent).toContain("No target acknowledged the route");
+    expect(container.querySelector('.attention-row[data-tone="red"]')).not.toBeNull();
+    await act(async () => {
+      findButton(container, "Retry")?.click();
+      await flush();
+    });
+
+    expect(retryUnroutableAttention).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(retryUnroutableAttention).mock.calls[0]?.[0]).toBe("dead-letter-1");
   });
 
   it("labels the shared policy and rejects an incomplete quiet-hour pair locally", async () => {

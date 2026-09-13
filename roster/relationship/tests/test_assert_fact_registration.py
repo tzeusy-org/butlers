@@ -28,9 +28,19 @@ from butlers.modules._roster_relationship import (
     RelationshipModuleConfig,
 )
 
-# Groups the production relationship butler actually enables (roster/
-# relationship/butler.toml) — deliberately excludes "entity".
-_PRODUCTION_GROUPS = ["contacts", "interactions", "management", "tracking"]
+# Groups the production relationship butler enables. The manifesto owns all
+# nine relationship domains, so none of its domain tools should be pruned.
+_PRODUCTION_GROUPS = [
+    "contacts",
+    "contacts_extended",
+    "interactions",
+    "relationships",
+    "social",
+    "notes",
+    "tracking",
+    "management",
+    "entity",
+]
 
 
 async def _register(groups: list[str]) -> set[str]:
@@ -41,12 +51,12 @@ async def _register(groups: list[str]) -> set[str]:
     return {t.name for t in await mcp.list_tools()}
 
 
-async def test_assert_fact_registered_without_entity_group():
-    """The central writer registers even though ``entity`` is not enabled."""
+async def test_assert_fact_registered_on_production_surface():
+    """The central writer registers on the full manifesto-owned surface."""
     names = await _register(_PRODUCTION_GROUPS)
     assert "relationship_assert_fact" in names, (
         "relationship_assert_fact must stay registered for approval dispatch "
-        "even with the pruned production group set"
+        "on the production group set"
     )
 
 
@@ -62,13 +72,19 @@ async def test_assert_fact_resolvable_via_get_tool():
     assert callable(getattr(tool, "fn", None))
 
 
-async def test_pruned_entity_reads_stay_pruned():
-    """The prune still holds: entity-group *read* tools are not re-exposed."""
+async def test_manifesto_owned_groups_register_complete_relationship_surface():
+    """All nine groups expose 66 grouped tools plus the mandatory fact writer."""
     names = await _register(_PRODUCTION_GROUPS)
-    # These share the old ``entity`` group but are superseded by the memory
-    # module's ``memory_entity_*`` tools; the writer is the only exception.
-    assert "entity_resolve" not in names
-    assert "relationship_lookup" not in names
+    assert len(names) == 67
+    assert {
+        "address_add",
+        "upcoming_dates",
+        "note_create",
+        "relationship_add",
+        "entity_resolve",
+        "relationship_lookup",
+        "feed_get",
+    } <= names
 
 
 async def test_assert_fact_closure_invokes_library_writer(monkeypatch):

@@ -755,6 +755,60 @@ async def test_list_approvals_flat_no_eligible_pools_still_reports_zero_stalled_
     assert response.json() == {"data": [], "meta": {"stalled_count": 0}}
 
 
+async def test_unroutable_attention_lists_owner_visible_replayable_rows(app):
+    dead_letter_id = uuid4()
+    row = {
+        "id": dead_letter_id,
+        "failure_reason": "Dashboard message classification produced no lane decision",
+        "original_payload": '{"message_text":"Which butler owns this?"}',
+        "created_at": _NOW,
+        "replayed_at": None,
+    }
+    wired_app, conn = _app_with_mock_db(app, fetch_rows=[row])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=wired_app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/approvals/unroutable")
+
+    assert response.status_code == 200
+    item = response.json()["data"][0]
+    assert item["id"] == str(dead_letter_id)
+    assert item["question"] == "Which butler owns this?"
+    assert item["failure_reason"] == "Dashboard message classification produced no lane decision"
+    assert datetime.fromisoformat(item["created_at"].replace("Z", "+00:00")) == _NOW
+    query = conn.fetch.await_args.args[0]
+    assert "replay_eligible" in query
+    assert "replayed_at IS NULL" in query
+
+
+async def test_retry_unroutable_is_idempotent_and_second_call_conflicts(app):
+    dead_letter_id = uuid4()
+    wired_app, _ = _app_with_mock_db(app, fetchval_return=True)
+    first_result = {
+        "success": True,
+        "replayed_request_id": str(uuid4()),
+        "original_request_id": str(uuid4()),
+        "dead_letter_id": str(dead_letter_id),
+    }
+
+    with patch(
+        "butlers.tools.switchboard.dead_letter.replay.replay_dead_letter_request",
+        new=AsyncMock(side_effect=[first_result, {"success": False, "error": "already_replayed"}]),
+    ) as replay:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=wired_app), base_url="http://test"
+        ) as client:
+            first = await client.post(f"/api/approvals/unroutable/{dead_letter_id}/retry")
+            second = await client.post(f"/api/approvals/unroutable/{dead_letter_id}/retry")
+
+    assert first.status_code == 200
+    assert first.json()["data"]["status"] == "queued"
+    assert second.status_code == 409
+    assert replay.await_count == 2
+    assert replay.await_args_list[0].kwargs["operator_identity"] == "owner"
+
+
 # ---------------------------------------------------------------------------
 # butler filter param + butler field (bu-d3fhz)
 # ---------------------------------------------------------------------------

@@ -3416,6 +3416,20 @@ export interface ApprovalSummary {
   push_failed?: boolean;
 }
 
+/** Replayable dashboard routing failure shown on the Approvals/Command surface. */
+export interface UnroutableAttentionItem {
+  id: string;
+  question: string;
+  failure_reason: string;
+  created_at: string;
+}
+
+export interface UnroutableRetryResult {
+  dead_letter_id: string;
+  replayed_request_id: string;
+  status: "queued";
+}
+
 /**
  * Metadata for the approvals list endpoints (GET /api/approvals and
  * /api/approvals/history). Extends the base bag with the degraded-envelope
@@ -6259,6 +6273,21 @@ export type ToolExposurePolicy = "eager_filtered" | "auto";
 export interface RuntimeConfigResponse {
   butler_name: string;
   core_groups: string[] | null;
+  declared_core_groups: string[] | null;
+  effective_core_groups: string[] | null;
+  core_groups_source: "git" | "runtime_narrowing";
+  core_groups_narrowing_reason: string | null;
+  declared_tool_names: string[] | null;
+  effective_tool_names: string[] | null;
+  registered_tool_names: string[] | null;
+  tool_registration_failures: Array<{
+    tool_name: string;
+    module_name: string;
+    error_type: string;
+  }> | null;
+  tool_declaration_complete: boolean | null;
+  tool_snapshot_status: "available" | "unavailable";
+  catalog_read_sensitivity: "normal" | "internal" | "confidential";
   max_concurrent: number;
   max_queued: number;
   tool_exposure_policy: ToolExposurePolicy;
@@ -6270,6 +6299,8 @@ export interface RuntimeConfigResponse {
 /** Request body for PATCH /api/butlers/{name}/runtime-config. */
 export interface RuntimeConfigPatch {
   core_groups?: string[] | null;
+  core_groups_narrowing_reason?: string | null;
+  catalog_read_sensitivity?: "normal" | "internal" | "confidential";
   max_concurrent?: number;
   max_queued?: number;
   tool_exposure_policy?: ToolExposurePolicy;

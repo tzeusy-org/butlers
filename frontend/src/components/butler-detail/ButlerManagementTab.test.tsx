@@ -35,6 +35,7 @@ vi.mock("@/hooks/use-butler-analytics", () => ({
 vi.mock("@/hooks/use-butlers", () => ({
   useRuntimeConfig: vi.fn(() => ({ data: null, isLoading: false })),
   usePatchRuntimeConfig: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, isError: false })),
+  useButlerModules: vi.fn(() => ({ data: { data: [] }, isLoading: false, isError: false })),
 }));
 
 vi.mock("@/hooks/use-butler-management", () => ({
@@ -59,7 +60,11 @@ import {
   useKillButler,
 } from "@/hooks/use-butler-management";
 import { useResolveModel } from "@/hooks/use-model-catalog";
-import { useRuntimeConfig, usePatchRuntimeConfig } from "@/hooks/use-butlers";
+import {
+  useButlerModules,
+  usePatchRuntimeConfig,
+  useRuntimeConfig,
+} from "@/hooks/use-butlers";
 import { toast } from "sonner";
 
 // ---------------------------------------------------------------------------
@@ -284,6 +289,17 @@ describe("PromptEditModal — mutation wiring", () => {
 const RUNTIME_CONFIG = {
   butler_name: "general",
   core_groups: ["infra"] as string[] | null,
+  declared_core_groups: ["infra", "delegation"],
+  effective_core_groups: ["infra", "delegation"],
+  core_groups_source: "git" as const,
+  core_groups_narrowing_reason: null,
+  declared_tool_names: ["status", "delegate_ask"],
+  effective_tool_names: ["status", "delegate_ask"],
+  registered_tool_names: ["status"],
+  tool_registration_failures: null,
+  tool_declaration_complete: true,
+  tool_snapshot_status: "available" as const,
+  catalog_read_sensitivity: "normal" as const,
   max_concurrent: 3,
   max_queued: 10,
   tool_exposure_policy: "eager_filtered" as "eager_filtered" | "auto",
@@ -307,6 +323,11 @@ describe("RuntimeConfigCard — mounted on Manage tab", () => {
       isError: false,
       error: null,
     } as unknown as ReturnType<typeof useRuntimeConfig>);
+    vi.mocked(useButlerModules).mockReturnValue({
+      data: { data: [] },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useButlerModules>);
   });
   afterEach(() => cleanup());
 
@@ -321,6 +342,10 @@ describe("RuntimeConfigCard — mounted on Manage tab", () => {
 
     // The orphaned read-only ConfigRows are gone; the editable card title is present.
     expect(screen.getByText("Runtime Config")).toBeTruthy();
+    expect(screen.getByText("Tool surface")).toBeTruthy();
+    expect(screen.getByText("Git only: delegation")).toBeTruthy();
+    expect(screen.getByText("Declared, not registered: delegate_ask")).toBeTruthy();
+    expect(screen.getByText("registered tools")).toBeTruthy();
     expect(screen.getByText("Save")).toBeTruthy();
     for (const group of ["graph", "delegation", "domain_events", "fleet_cases"]) {
       expect(screen.getByText(group)).toBeTruthy();
@@ -332,6 +357,97 @@ describe("RuntimeConfigCard — mounted on Manage tab", () => {
     expect(
       screen.getByText("Applies to newly planned sessions, no daemon restart needed."),
     ).toBeTruthy();
+  });
+
+  it("keeps partial module registration failures visible", () => {
+    vi.mocked(usePatchRuntimeConfig).mockReturnValue({
+      mutateAsync: vi.fn(),
+      isPending: false,
+      isError: false,
+    } as unknown as ReturnType<typeof usePatchRuntimeConfig>);
+    vi.mocked(useButlerModules).mockReturnValue({
+      data: {
+        data: [
+          {
+            name: "relationship",
+            enabled: true,
+            status: "error",
+            phase: "tools",
+            error: "optional import unavailable",
+          },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useButlerModules>);
+
+    renderTab("relationship");
+
+    expect(
+      screen.getByText(
+        "Declared, not registered: relationship (tools) — optional import unavailable",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("names the declared tool whose decorator registration failed", () => {
+    vi.mocked(usePatchRuntimeConfig).mockReturnValue({
+      mutateAsync: vi.fn(),
+      isPending: false,
+      isError: false,
+    } as unknown as ReturnType<typeof usePatchRuntimeConfig>);
+    vi.mocked(useRuntimeConfig).mockReturnValue({
+      data: {
+        ...RUNTIME_CONFIG,
+        declared_tool_names: ["status", "calendar_get_events"],
+        effective_tool_names: ["status", "calendar_get_events"],
+        registered_tool_names: ["status"],
+        tool_registration_failures: [
+          {
+            tool_name: "calendar_get_events",
+            module_name: "calendar",
+            error_type: "RuntimeError",
+          },
+        ],
+        tool_declaration_complete: false,
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useRuntimeConfig>);
+
+    renderTab();
+
+    expect(
+      screen.getByText(
+        "Declared, not registered: calendar_get_events (calendar; RuntimeError)",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("names an unavailable declaration snapshot instead of rendering an unknown all-clear", () => {
+    vi.mocked(usePatchRuntimeConfig).mockReturnValue({
+      mutateAsync: vi.fn(),
+      isPending: false,
+      isError: false,
+    } as unknown as ReturnType<typeof usePatchRuntimeConfig>);
+    vi.mocked(useRuntimeConfig).mockReturnValue({
+      data: {
+        ...RUNTIME_CONFIG,
+        declared_tool_names: null,
+        effective_tool_names: null,
+        registered_tool_names: null,
+        tool_declaration_complete: null,
+        tool_snapshot_status: "unavailable",
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useRuntimeConfig>);
+
+    renderTab();
+
+    expect(screen.getByText("Declaration snapshot unavailable.")).toBeTruthy();
   });
 
   it("surfaces the cold (restart required) tier badge for ceiling fields", () => {

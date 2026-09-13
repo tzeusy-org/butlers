@@ -33,6 +33,23 @@ async def replay_dead_letter_request(
     Returns:
         Result dict with replay outcome
     """
+    async with conn.transaction():
+        return await _replay_dead_letter_request_locked(
+            conn,
+            dead_letter_id=dead_letter_id,
+            operator_identity=operator_identity,
+            reason=reason,
+        )
+
+
+async def _replay_dead_letter_request_locked(
+    conn: asyncpg.Connection,
+    *,
+    dead_letter_id: uuid.UUID,
+    operator_identity: str,
+    reason: str,
+) -> dict[str, Any]:
+    """Execute one replay while the caller holds the row lock transaction."""
     # Fetch dead-letter entry
     dead_letter = await conn.fetchrow(
         """
@@ -46,6 +63,7 @@ async def replay_dead_letter_request(
             replayed_at
         FROM dead_letter_queue
         WHERE id = $1
+        FOR UPDATE
         """,
         dead_letter_id,
     )
@@ -114,7 +132,7 @@ async def replay_dead_letter_request(
             new_request_id,
             json.dumps(request_context),
             json.dumps(original_payload),
-            original_payload.get("content", ""),
+            original_payload.get("message_text") or original_payload.get("content", ""),
             json.dumps(
                 {
                     "replayed_from_dead_letter": str(dead_letter_id),
@@ -133,6 +151,7 @@ async def replay_dead_letter_request(
                 replay_outcome = 'success',
                 updated_at = now()
             WHERE id = $2
+              AND replayed_at IS NULL
             """,
             new_request_id,
             dead_letter_id,

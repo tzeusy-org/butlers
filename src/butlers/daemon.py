@@ -217,6 +217,10 @@ class ButlerDaemon:
         self._gated_tool_originals: dict[str, Any] = {}
         # Maps registered tool name → module name for gating and introspection.
         self._tool_module_map: dict[str, str] = {}
+        self._declared_tool_names: set[str] = set()
+        self._effective_tool_names: set[str] = set()
+        self._registered_tool_names: set[str] = set()
+        self._tool_registration_failures: dict[str, dict[str, str]] = {}
         self._started_at: float | None = None
         self._accepting_connections = False
         self._server: uvicorn.Server | None = None
@@ -1242,6 +1246,15 @@ class ButlerDaemon:
         """
         from butlers.core_tools import ToolContext, register_all_core_tools
 
+        # Registration owns this snapshot state. Some focused integration
+        # seams construct a daemon without calling __init__, so initialise it
+        # at the boundary instead of requiring callers to reproduce private
+        # constructor internals.
+        self._declared_tool_names = getattr(self, "_declared_tool_names", set())
+        self._effective_tool_names = getattr(self, "_effective_tool_names", set())
+        self._registered_tool_names = getattr(self, "_registered_tool_names", set())
+        self._tool_registration_failures = getattr(self, "_tool_registration_failures", {})
+
         butler_name = self.config.name
         butler_type = self.config.type
         mcp = _ToolCallLoggingMCP(self.mcp, butler_name, module_name="core")
@@ -1250,7 +1263,7 @@ class ButlerDaemon:
         # Group-aware core tool decorator — mirrors the module _tool(group) pattern.
         # When core_groups is None (default), all groups are enabled (backward compat).
         # When set, only tools in the listed groups are registered on the MCP server.
-        # Read from the RuntimeConfigAccessor (DB-backed, seeded from toml on first boot).
+        # Read the accessor's reconciled Git authority / reasoned runtime narrowing.
         _accessor = getattr(self, "_runtime_config_accessor", None)
         if _accessor is not None and _accessor._cache is not None:
             _core_groups = _accessor._cache.core_groups
@@ -1276,10 +1289,21 @@ class ButlerDaemon:
                         required_name,
                     )
 
+        _declared_groups = self.config.runtime_seed.core_groups
+        _declared_core_names: set[str] = set()
+        _effective_core_names: set[str] = set()
+
         def _core_tool(group: str, **tool_kwargs):
-            if _core_groups is None or group in _core_groups:
-                return mcp.tool(**tool_kwargs)
-            return lambda fn: fn
+            def register(fn):
+                tool_name = tool_kwargs.get("name", fn.__name__)
+                if _declared_groups is None or group in _declared_groups:
+                    _declared_core_names.add(tool_name)
+                if _core_groups is None or group in _core_groups:
+                    _effective_core_names.add(tool_name)
+                    return mcp.tool(**tool_kwargs)(fn)
+                return fn
+
+            return register
 
         ctx = ToolContext(
             daemon=self,
@@ -1292,6 +1316,10 @@ class ButlerDaemon:
             route_metrics=_route_metrics,
         )
         register_all_core_tools(ctx, mcp, _core_tool)
+        direct_names = mcp._registered_tool_names - _effective_core_names
+        self._declared_tool_names.update(_declared_core_names | direct_names)
+        self._effective_tool_names.update(_effective_core_names | direct_names)
+        self._registered_tool_names.update(mcp._registered_tool_names)
 
     def _validate_module_configs(self) -> dict[str, Any]:
         """Validate each module's raw config dict against its config_schema.
@@ -1352,26 +1380,28 @@ class ButlerDaemon:
         automatically wraps each tool handler with a ``butler.tool.<name>``
         span carrying the ``butler.name`` attribute.
         """
+        self._declared_tool_names = getattr(self, "_declared_tool_names", set())
+        self._effective_tool_names = getattr(self, "_effective_tool_names", set())
+        self._registered_tool_names = getattr(self, "_registered_tool_names", set())
+        self._tool_registration_failures = getattr(self, "_tool_registration_failures", {})
+
         for mod in self._modules:
             mod_status = self._module_statuses.get(mod.name)
             if mod_status is not None and mod_status.status != "active":
                 continue
 
+            wrapped_mcp = _SpanWrappingMCP(
+                self.mcp,
+                self.config.name,
+                module_name=mod.name,
+                module_runtime_states=self._module_runtime_states,
+                is_messenger=self.config.name == "messenger",
+            )
             try:
-                wrapped_mcp = _SpanWrappingMCP(
-                    self.mcp,
-                    self.config.name,
-                    module_name=mod.name,
-                    module_runtime_states=self._module_runtime_states,
-                    is_messenger=self.config.name == "messenger",
-                )
                 validated_config = self._module_configs.get(mod.name)
                 await mod.register_tools(
                     wrapped_mcp, validated_config, self.db, butler_name=self.config.name
                 )
-                # Record tool → module mapping for introspection and gating.
-                for tool_name in wrapped_mcp._registered_tool_names:
-                    self._tool_module_map[tool_name] = mod.name
             except ChannelEgressOwnershipError:
                 # Security guard: a non-messenger butler tried to grab channel
                 # egress. Fail loud — do not silently disable and continue.
@@ -1383,6 +1413,20 @@ class ButlerDaemon:
                 )
                 logger.warning(
                     "Module '%s' disabled: tool registration failed: %s", mod.name, error_msg
+                )
+            finally:
+                # Preserve partial registration evidence when a module fails
+                # after installing only some of its handlers.
+                for tool_name in wrapped_mcp._registered_tool_names:
+                    self._tool_module_map[tool_name] = mod.name
+                self._declared_tool_names.update(wrapped_mcp._declared_tool_names)
+                self._effective_tool_names.update(wrapped_mcp._declared_tool_names)
+                self._registered_tool_names.update(wrapped_mcp._registered_tool_names)
+                self._tool_registration_failures.update(
+                    {
+                        tool_name: {"module_name": mod.name, "error_type": error_type}
+                        for tool_name, error_type in wrapped_mcp._registration_failures.items()
+                    }
                 )
 
         # Allow modules to cross-wire after all tools are registered.

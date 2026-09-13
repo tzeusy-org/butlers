@@ -1248,6 +1248,15 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Promoted rules
 - Suggestion counts
 
+## `frontend/src/components/approvals/unroutable-attention-panel.tsx`
+
+- Unroutable messages
+- {} unroutable message
+- Retrying
+- Retry
+- Message queued for routing retry
+- Could not retry routing
+
 ## `frontend/src/components/audit/AuditIssuesDoor.tsx`
 
 - Resolving issue group…
@@ -1366,6 +1375,9 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - recent deliveries
 - wake = the subscriber was woken · reaction = what it reported doing
 - Reaction trace
+- {} {} delivery
+- Replaying
+- Replay
 - Subscriptions
 - Deliveries
 - domain events
@@ -1848,6 +1860,16 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Runtime Config
 - Loading...
 - Updated:
+- Tool surface
+- Git declaration, runtime authority, and live registration
+- intentional narrowing
+- Git tools
+- runtime tools
+- registered tools
+- No core-group drift.
+- Declaration snapshot unavailable.
+- Module health unavailable.
+- Declaration snapshot incomplete; module registration failed partway.
 - Max Concurrent
 - Max Queued
 - Tool Exposure Policy
@@ -1855,6 +1877,9 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Automatic verified discovery uses native tool search only when verified for the resolved runtime and model, falling back to a separately verified eager profile when one is available; otherwise the session is unavailable rather than guaranteed native discovery.
 - Core Groups
 - All groups enabled (no filter set)
+- Narrowing reason
+- Runtime config may narrow Git authority, never add a group Git does not declare.
+- Required when runtime enables fewer groups than Git
 
 ## `frontend/src/components/butler-detail/SiblingButlerNav.tsx`
 
@@ -4257,4 +4282,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3335*
+*Total strings: 3357*
