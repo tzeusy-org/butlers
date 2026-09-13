@@ -8,7 +8,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from fastmcp.server.dependencies import AccessToken
 
+from butlers.core.approval_delivery_transport import (
+    ApprovalRecoveryRuntime,
+    authenticated_daemon_name,
+)
 from butlers.core.approval_delivery_worker import (
     ApprovalDeliveryWorker,
     DeliveryClaim,
@@ -30,17 +35,88 @@ class _Runtime:
     reconcile = AsyncMock(return_value=HandoffResult("ambiguous", "provider_outcome_unknown"))
 
 
-@pytest.mark.asyncio
-async def test_lost_heartbeat_cancels_external_await_without_terminal_write() -> None:
-    claim = DeliveryClaim(
+def _claim() -> DeliveryClaim:
+    subject_key = "approval:relationship:00000000-0000-0000-0000-000000000000"
+    return DeliveryClaim(
         presentation_id=uuid.uuid4(),
         presentation_generation=1,
-        presentation_key="approval:test:00000000-0000-0000-0000-000000000000:p:1",
+        presentation_key=f"{subject_key}:p:1",
         presentation_mode="single",
+        subject_kind="action",
+        subject_key=subject_key,
         claim_token=uuid.uuid4(),
-        claim_fence=1,
+        claim_fence=7,
         reconcile_only=False,
     )
+
+
+def test_recovery_transport_principal_requires_bound_daemon_scope() -> None:
+    token = AccessToken(
+        token="synthetic",
+        client_id="butler:relationship",
+        scopes=["approval-recovery:source"],
+        claims={"actor_type": "daemon", "butler_name": "relationship"},
+    )
+    assert (
+        authenticated_daemon_name(token, required_scope="approval-recovery:source")
+        == "relationship"
+    )
+    assert authenticated_daemon_name(token, required_scope="approval-recovery:switchboard") is None
+    mismatched = AccessToken(
+        token="synthetic",
+        client_id="butler:general",
+        scopes=["approval-recovery:source"],
+        claims={"actor_type": "daemon", "butler_name": "relationship"},
+    )
+    assert authenticated_daemon_name(mismatched, required_scope="approval-recovery:source") is None
+
+
+@pytest.mark.asyncio
+async def test_source_runtime_reuses_correlation_without_exporting_local_fence() -> None:
+    captured: list[dict[str, object]] = []
+
+    async def _dispatch(payload: dict[str, object]) -> dict[str, object]:
+        captured.append(payload)
+        return {"handoff": {"classification": "confirmed", "provider_reference": "ref-1"}}
+
+    runtime = ApprovalRecoveryRuntime(
+        source_butler="relationship",
+        owning_schema="relationship",
+        dispatch=_dispatch,
+        resolve_owner_recipient=AsyncMock(return_value="owner-synthetic"),
+        resolve_callback_secret=AsyncMock(return_value="callback-synthetic"),
+    )
+    claim = _claim()
+    envelope = {
+        "schema_version": "notify.v1",
+        "origin_butler": "relationship",
+        "delivery": {
+            "intent": "approval_request",
+            "channel": "telegram",
+            "message": "Synthetic approval.",
+            "recipient": "owner-synthetic",
+        },
+        "actions": [{"verb": "open_dashboard", "dashboard_url": "https://dashboard.example.test"}],
+    }
+
+    assert (await runtime.handoff(claim, envelope)).classification == "confirmed"
+    assert (await runtime.reconcile(claim)).classification == "confirmed"
+
+    handoff_recovery = captured[0]["recovery"]
+    reconcile_recovery = captured[1]["recovery"]
+    assert handoff_recovery == {**reconcile_recovery, "operation": "handoff"}
+    assert reconcile_recovery["operation"] == "reconcile"
+    assert "claim_token" not in handoff_recovery and "claim_fence" not in handoff_recovery
+    assert captured[1]["delivery"] == {
+        "intent": "approval_request",
+        "channel": "telegram",
+        "message": "",
+    }
+
+
+@pytest.mark.asyncio
+async def test_lost_heartbeat_cancels_external_await_without_terminal_write() -> None:
+    claim = _claim()
     repository = SimpleNamespace(
         cancel_ineligible_presentations=AsyncMock(return_value=0),
         claim_next=AsyncMock(return_value=claim),

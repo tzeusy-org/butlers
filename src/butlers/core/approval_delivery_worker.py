@@ -30,6 +30,8 @@ class DeliveryClaim:
     presentation_generation: int
     presentation_key: str
     presentation_mode: Literal["single", "burst_digest"]
+    subject_kind: Literal["action", "cohort"]
+    subject_key: str
     claim_token: Any
     claim_fence: int
     reconcile_only: bool

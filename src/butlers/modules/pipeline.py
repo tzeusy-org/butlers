@@ -23,6 +23,7 @@ from uuid import UUID
 from opentelemetry import metrics, trace
 from pydantic import BaseModel, ConfigDict, Field
 
+from butlers.core.approval_recovery_exclusion import message_inbox_recovery_exclusion_sql
 from butlers.core.model_routing import Complexity
 from butlers.core.routing_context import _routing_ctx_var
 from butlers.core.utils import coerce_request_id as _coerce_request_id
@@ -132,6 +133,7 @@ async def _load_realtime_history(
     Ordered chronologically (oldest first).
     """
     time_cutoff = received_at - timedelta(minutes=max_time_window_minutes)
+    history_exclusion = message_inbox_recovery_exclusion_sql()
 
     telegram_chat_id: str | None = None
     if source_channel in ("telegram_bot", "telegram_user_client"):
@@ -144,7 +146,7 @@ async def _load_realtime_history(
     async with pool.acquire() as conn:
         # Load time-based window
         time_window_messages = await conn.fetch(
-            """
+            f"""
             SELECT
                 normalized_text AS raw_content,
                 request_context ->> 'source_sender_identity' AS sender_id,
@@ -152,7 +154,8 @@ async def _load_realtime_history(
                 raw_payload -> 'metadata' AS raw_metadata,
                 COALESCE(direction, 'inbound') AS direction
             FROM message_inbox
-            WHERE (
+            WHERE {history_exclusion}
+                AND (
                     request_context ->> 'source_thread_identity' = $1
                     OR (
                         $4::text IS NOT NULL
@@ -180,7 +183,7 @@ async def _load_realtime_history(
 
         # Load count-based window
         count_window_messages = await conn.fetch(
-            """
+            f"""
             SELECT
                 normalized_text AS raw_content,
                 request_context ->> 'source_sender_identity' AS sender_id,
@@ -188,7 +191,8 @@ async def _load_realtime_history(
                 raw_payload -> 'metadata' AS raw_metadata,
                 COALESCE(direction, 'inbound') AS direction
             FROM message_inbox
-            WHERE (
+            WHERE {history_exclusion}
+                AND (
                     request_context ->> 'source_thread_identity' = $1
                     OR (
                         $3::text IS NOT NULL
@@ -254,10 +258,11 @@ async def _load_email_history(
 
     Returns messages in chronological order (oldest first).
     """
+    history_exclusion = message_inbox_recovery_exclusion_sql()
     async with pool.acquire() as conn:
         # Load all messages in thread
         chain_messages = await conn.fetch(
-            """
+            f"""
             SELECT
                 normalized_text AS raw_content,
                 request_context ->> 'source_sender_identity' AS sender_id,
@@ -265,7 +270,8 @@ async def _load_email_history(
                 raw_payload -> 'metadata' AS raw_metadata,
                 COALESCE(direction, 'inbound') AS direction
             FROM message_inbox
-            WHERE request_context ->> 'source_thread_identity' = $1
+            WHERE {history_exclusion}
+                AND request_context ->> 'source_thread_identity' = $1
                 AND received_at < $2
             ORDER BY received_at ASC
             """,
