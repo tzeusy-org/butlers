@@ -16,6 +16,7 @@ test_gemini_adapter.py.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import uuid
@@ -798,7 +799,10 @@ class TestSpawnerInvocation:
         # Pre-invoke failure (before runtime invocation) → reset not called
         adapter2 = MockAdapter()
         spawner2 = Spawner(config=config, config_dir=config_dir, runtime=adapter2)
-        with patch("butlers.core.spawner.read_system_prompt", side_effect=RuntimeError("boom")):
+        with patch(
+            "butlers.core.spawner.read_system_prompt_with_sources",
+            side_effect=RuntimeError("boom"),
+        ):
             result2 = await spawner2.trigger("hi", "tick")
         assert result2.success is False and "RuntimeError: boom" in result2.error
         assert adapter2.calls == [] and adapter2.reset_calls == 0
@@ -1454,11 +1458,12 @@ class TestSessionLogging:
         ):
             fake_session_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
             mock_create.return_value = fake_session_id
+            adapter = MockAdapter(result_text="Hello from mock!", capture=True)
             await Spawner(
                 config=config,
                 config_dir=config_dir,
                 pool=mock_pool,
-                runtime=MockAdapter(result_text="Hello from mock!"),
+                runtime=adapter,
             ).trigger("log me", "schedule")
             mock_create.assert_called_once()
             create_args, create_kwargs = mock_create.call_args
@@ -1466,6 +1471,22 @@ class TestSessionLogging:
             assert create_args[1] == "log me"
             assert create_args[2] == "schedule"
             assert create_kwargs.get("model") == _FALLBACK_MODEL_ID
+            effective_prompt = create_kwargs["effective_system_prompt"]
+            assert adapter.calls[0]["system_prompt"] == effective_prompt
+            assert (
+                create_kwargs["prompt_digest"]
+                == hashlib.sha256(effective_prompt.encode("utf-8")).hexdigest()
+            )
+            provenance = create_kwargs["prompt_provenance"]
+            sources = [entry["source"] for entry in provenance]
+            assert sources[:2] == ["roster:config/CLAUDE.md", "generated_default"]
+            assert sources[-5:] == [
+                "general_settings",
+                "situational_context",
+                "blind_spot_disclosure",
+                "switchboard_routing_instructions",
+                "memory_context",
+            ]
             mock_complete.assert_called_once()
             args, kwargs = mock_complete.call_args
             assert args[0] is mock_pool and args[1] == fake_session_id
@@ -3051,20 +3072,18 @@ class TestCancelSession:
         reached_window = asyncio.Event()
         proceed = asyncio.Event()
 
-        async def _blocking_prompt_override(*args: Any, **kwargs: Any) -> None:
-            # Fires after session_create() (and _pending_invoke_sessions
-            # registration) but before invoke_task is ever created --
-            # exactly the pre-invocation window the review flagged.
+        async def _blocking_mcp_warmup(*args: Any, **kwargs: Any) -> None:
+            # Prompt receipt persistence now happens at session_create(), then
+            # MCP warmup remains a pre-invocation window in which Stop must win.
             reached_window.set()
             await proceed.wait()
-            return None
 
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock) as mock_complete,
             patch(
-                "butlers.core.spawner.fetch_system_prompt_override",
-                side_effect=_blocking_prompt_override,
+                "butlers.core.spawner.Spawner._ensure_mcp_endpoints_warmed",
+                side_effect=_blocking_mcp_warmup,
             ),
         ):
             fake_session_id = uuid.UUID("00000000-0000-0000-0000-0000000000cd")
@@ -3426,14 +3445,13 @@ class TestCancelSession:
         cancelled = _dashboard_turn_result(
             "cancelled", message_id=message_id, request_id=request_id
         )
-        prompt_fetch_started = asyncio.Event()
-        allow_prompt_fetch = asyncio.Event()
+        warmup_started = asyncio.Event()
+        allow_warmup = asyncio.Event()
         adapter = MockAdapter(result_text="must not run", capture=True)
 
         async def _block_after_registration(*_args: Any, **_kwargs: Any) -> None:
-            prompt_fetch_started.set()
-            await allow_prompt_fetch.wait()
-            return None
+            warmup_started.set()
+            await allow_warmup.wait()
 
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as create,
@@ -3444,7 +3462,7 @@ class TestCancelSession:
                 return_value=active,
             ),
             patch(
-                "butlers.core.spawner.fetch_system_prompt_override",
+                "butlers.core.spawner.Spawner._ensure_mcp_endpoints_warmed",
                 side_effect=_block_after_registration,
             ),
             patch(
@@ -3474,18 +3492,18 @@ class TestCancelSession:
                 )
             )
             try:
-                await asyncio.wait_for(prompt_fetch_started.wait(), timeout=5.0)
+                await asyncio.wait_for(warmup_started.wait(), timeout=5.0)
                 stop_task = asyncio.create_task(
                     spawner.cancel_session_and_wait(str(fake_session_id), timeout_s=5.0)
                 )
                 await asyncio.sleep(0)
                 assert not stop_task.done(), "Stop woke before durable cancellation completed"
 
-                allow_prompt_fetch.set()
+                allow_warmup.set()
                 assert await asyncio.wait_for(stop_task, timeout=5.0) is True
                 result = await asyncio.wait_for(trigger_task, timeout=5.0)
             finally:
-                allow_prompt_fetch.set()
+                allow_warmup.set()
                 if not trigger_task.done():
                     trigger_task.cancel()
 

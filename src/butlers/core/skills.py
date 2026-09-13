@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,32 @@ _INCLUDE_PATTERN = re.compile(r"^\s*<!--\s*@include\s+([\w/._-]+\.md)\s*-->\s*$"
 _BARE_INCLUDE_PATTERN = re.compile(r"^\s*@([\w/._-]+\.md)\s*$")
 
 
+@dataclass(frozen=True, slots=True)
+class SystemPromptSource:
+    """One roster-relative or logical input to base-prompt resolution."""
+
+    source: str
+    status: str
+    content: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedSystemPrompt:
+    """Resolved base prompt and the inputs consulted to produce it."""
+
+    prompt: str
+    sources: tuple[SystemPromptSource, ...]
+
+
+def _roster_source(path: Path, roster_root: Path) -> str:
+    """Return a stable roster-relative identifier, never an absolute path."""
+    try:
+        relative = path.resolve().relative_to(roster_root.resolve())
+    except ValueError:
+        return "roster:unavailable_reference"
+    return f"roster:{relative.as_posix()}"
+
+
 # ---------------------------------------------------------------------------
 # 9.1 — CLAUDE.md and skills directory for LLM CLI spawner
 # ---------------------------------------------------------------------------
@@ -60,6 +87,8 @@ def _resolve_includes(
     roster_dir: Path,
     base_dir: Path | None = None,
     _seen: set[Path] | None = None,
+    source_records: list[SystemPromptSource] | None = None,
+    source_status: str = "present",
 ) -> str:
     """Replace supported include directives with file contents.
 
@@ -79,16 +108,41 @@ def _resolve_includes(
         m = _INCLUDE_PATTERN.match(line)
         if m is not None:
             rel_path = m.group(1)
+            target = roster_dir / rel_path
             if ".." in rel_path.split("/"):
                 logger.warning("Include path contains '..', skipping: %s", rel_path)
+                if source_records is not None:
+                    source_records.append(
+                        SystemPromptSource(
+                            source=_roster_source(target, roster_root),
+                            status="unavailable",
+                            content=None,
+                        )
+                    )
                 out.append(line)
                 continue
-            target = roster_dir / rel_path
             if not target.is_file():
                 logger.warning("Include file not found, preserving directive: %s", target)
+                if source_records is not None:
+                    source_records.append(
+                        SystemPromptSource(
+                            source=_roster_source(target, roster_root),
+                            status="unavailable",
+                            content=None,
+                        )
+                    )
                 out.append(line)
                 continue
-            included = target.read_text(encoding="utf-8").rstrip("\n")
+            raw_included = target.read_text(encoding="utf-8")
+            if source_records is not None:
+                source_records.append(
+                    SystemPromptSource(
+                        source=_roster_source(target, roster_root),
+                        status=source_status,
+                        content=raw_included,
+                    )
+                )
+            included = raw_included.rstrip("\n")
             out.append(included)
             continue
 
@@ -101,52 +155,131 @@ def _resolve_includes(
         target = (bare_base_dir / rel_path).resolve()
         if not _is_relative_to(target, roster_root):
             logger.warning("Bare include path escapes roster, skipping: %s", rel_path)
+            if source_records is not None:
+                source_records.append(
+                    SystemPromptSource(
+                        source="roster:unavailable_reference",
+                        status="unavailable",
+                        content=None,
+                    )
+                )
             out.append(line)
             continue
         if target in seen:
             logger.warning("Bare include cycle detected, skipping: %s", target)
+            if source_records is not None:
+                source_records.append(
+                    SystemPromptSource(
+                        source=_roster_source(target, roster_root),
+                        status="unavailable",
+                        content=None,
+                    )
+                )
             out.append(line)
             continue
         if not target.is_file():
             logger.warning("Include file not found, preserving directive: %s", target)
+            if source_records is not None:
+                source_records.append(
+                    SystemPromptSource(
+                        source=_roster_source(target, roster_root),
+                        status="unavailable",
+                        content=None,
+                    )
+                )
             out.append(line)
             continue
-        included = target.read_text(encoding="utf-8").rstrip("\n")
+        raw_included = target.read_text(encoding="utf-8")
+        if source_records is not None:
+            source_records.append(
+                SystemPromptSource(
+                    source=_roster_source(target, roster_root),
+                    status=source_status,
+                    content=raw_included,
+                )
+            )
+        included = raw_included.rstrip("\n")
         included = _resolve_includes(
             included,
             roster_dir,
             base_dir=target.parent,
             _seen={*seen, target},
+            source_records=source_records,
+            source_status=source_status,
         )
         out.append(included)
     return "\n".join(out)
 
 
-def _append_shared_markdown(content: str, roster_dir: Path, filename: str) -> str:
+def _append_shared_markdown(
+    content: str,
+    roster_dir: Path,
+    filename: str,
+    *,
+    source_records: list[SystemPromptSource] | None = None,
+    source_status: str = "present",
+) -> str:
     """Append ``shared/<filename>`` contents if the file exists and is non-empty."""
     shared_file = roster_dir / "shared" / filename
     if not shared_file.is_file():
+        if source_records is not None:
+            source_records.append(
+                SystemPromptSource(
+                    source=_roster_source(shared_file, roster_dir),
+                    status="unavailable",
+                    content=None,
+                )
+            )
         return content
 
-    shared_content = shared_file.read_text(encoding="utf-8").rstrip("\n")
+    raw_shared_content = shared_file.read_text(encoding="utf-8")
+    if source_records is not None:
+        source_records.append(
+            SystemPromptSource(
+                source=_roster_source(shared_file, roster_dir),
+                status=source_status,
+                content=raw_shared_content,
+            )
+        )
+    shared_content = raw_shared_content.rstrip("\n")
     if not shared_content:
         return content
 
     return content + "\n\n" + shared_content
 
 
-def _append_shared_files(content: str, roster_dir: Path) -> str:
+def _append_shared_files(
+    content: str,
+    roster_dir: Path,
+    *,
+    source_records: list[SystemPromptSource] | None = None,
+) -> str:
     """Append shared prompt snippets after include resolution.
 
     Order is intentional and stable:
     1. ``BUTLER_SKILLS.md``
     2. ``MCP_LOGGING.md``
     """
-    content = _append_shared_markdown(content, roster_dir, "BUTLER_SKILLS.md")
-    return _append_shared_markdown(content, roster_dir, "MCP_LOGGING.md")
+    content = _append_shared_markdown(
+        content,
+        roster_dir,
+        "BUTLER_SKILLS.md",
+        source_records=source_records,
+    )
+    return _append_shared_markdown(
+        content,
+        roster_dir,
+        "MCP_LOGGING.md",
+        source_records=source_records,
+    )
 
 
-def process_system_prompt_base(base_content: str, config_dir: Path) -> str:
+def process_system_prompt_base(
+    base_content: str,
+    config_dir: Path,
+    *,
+    source_records: list[SystemPromptSource] | None = None,
+) -> str:
     """Resolve includes and append shared snippets for a raw base prompt.
 
     *base_content* is the raw system-prompt body (either the on-disk
@@ -159,16 +292,54 @@ def process_system_prompt_base(base_content: str, config_dir: Path) -> str:
     whether the base prompt comes from disk or the database.
     """
     roster_dir = config_dir.parent
-    content = _resolve_includes(base_content, roster_dir, base_dir=config_dir)
-    return _append_shared_files(content, roster_dir)
+    content = _resolve_includes(
+        base_content,
+        roster_dir,
+        base_dir=config_dir,
+        source_records=source_records,
+    )
+    return _append_shared_files(content, roster_dir, source_records=source_records)
 
 
-def read_system_prompt(
+def _append_shadowed_roster_sources(
+    config_dir: Path,
+    sources: list[SystemPromptSource],
+) -> None:
+    """Record the disk base/include graph shadowed by a database override."""
+    roster_dir = config_dir.parent
+    claude_md = config_dir / "CLAUDE.md"
+    if not claude_md.is_file():
+        sources.append(
+            SystemPromptSource(
+                source=_roster_source(claude_md, roster_dir),
+                status="unavailable",
+                content=None,
+            )
+        )
+        return
+    raw_content = claude_md.read_text(encoding="utf-8")
+    sources.append(
+        SystemPromptSource(
+            source=_roster_source(claude_md, roster_dir),
+            status="shadowed",
+            content=raw_content,
+        )
+    )
+    _resolve_includes(
+        raw_content.strip(),
+        roster_dir,
+        base_dir=config_dir,
+        source_records=sources,
+        source_status="shadowed",
+    )
+
+
+def read_system_prompt_with_sources(
     config_dir: Path,
     butler_name: str,
     db_override: str | None = None,
-) -> str:
-    """Resolve the system prompt for a butler.
+) -> ResolvedSystemPrompt:
+    """Resolve the system prompt and its roster-relative source inventory.
 
     Resolution order (DB is the live override, disk is the seed/default):
 
@@ -186,16 +357,68 @@ def read_system_prompt(
     if db_override is not None:
         base = db_override.strip()
         if base:
-            return process_system_prompt_base(base, config_dir)
+            sources = [
+                SystemPromptSource(
+                    source="system_prompt_history",
+                    status="present",
+                    content=db_override,
+                )
+            ]
+            prompt = process_system_prompt_base(
+                base,
+                config_dir,
+                source_records=sources,
+            )
+            _append_shadowed_roster_sources(config_dir, sources)
+            return ResolvedSystemPrompt(prompt=prompt, sources=tuple(sources))
 
+    roster_dir = config_dir.parent
     claude_md = config_dir / "CLAUDE.md"
     if claude_md.is_file():
-        content = claude_md.read_text(encoding="utf-8").strip()
+        raw_content = claude_md.read_text(encoding="utf-8")
+        content = raw_content.strip()
         if content:
-            return process_system_prompt_base(content, config_dir)
+            sources = [
+                SystemPromptSource(
+                    source=_roster_source(claude_md, roster_dir),
+                    status="present",
+                    content=raw_content,
+                )
+            ]
+            return ResolvedSystemPrompt(
+                prompt=process_system_prompt_base(
+                    content,
+                    config_dir,
+                    source_records=sources,
+                ),
+                sources=tuple(sources),
+            )
     default = _DEFAULT_PROMPT_TEMPLATE.format(butler_name=butler_name)
     logger.debug("CLAUDE.md missing or empty in %s — using default prompt", config_dir)
-    return default
+    return ResolvedSystemPrompt(
+        prompt=default,
+        sources=(
+            SystemPromptSource(
+                source=_roster_source(claude_md, roster_dir),
+                status="unavailable",
+                content=None,
+            ),
+            SystemPromptSource(
+                source="generated_default",
+                status="present",
+                content=default,
+            ),
+        ),
+    )
+
+
+def read_system_prompt(
+    config_dir: Path,
+    butler_name: str,
+    db_override: str | None = None,
+) -> str:
+    """Compatibility wrapper returning only the resolved prompt text."""
+    return read_system_prompt_with_sources(config_dir, butler_name, db_override).prompt
 
 
 def get_skills_dir(config_dir: Path) -> Path | None:

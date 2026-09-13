@@ -96,7 +96,7 @@ from butlers.core.runtimes.base import RuntimeAdapter, validated_session_timeout
 from butlers.core.runtimes.codex import MCPToolDiscoveryError
 from butlers.core.session_process_logs import write as session_process_log_write
 from butlers.core.sessions import session_complete, session_create
-from butlers.core.skills import read_system_prompt
+from butlers.core.skills import read_system_prompt_with_sources
 
 # ---------------------------------------------------------------------------
 # Seam imports — functions extracted to focused sub-modules.
@@ -111,6 +111,7 @@ from butlers.core.spawner_context import (
     _memory_context_token_budget,
     _memory_module_enabled,
     compose_prompt_digest,
+    compose_effective_system_prompt_receipt,
     fetch_blind_spot_preamble,
     fetch_general_timezone_instruction,
     fetch_memory_context,
@@ -1974,87 +1975,6 @@ class Spawner:
             if span.is_recording():
                 trace_id = format(span.get_span_context().trace_id, "032x")
 
-            # effective_request_id was minted before the quota-skip loop above
-            # (non-null for both connector-sourced and internal triggers).
-
-            # Create session record with trace_id and request_id
-            if self._pool is not None:
-                session_id = await session_create(
-                    self._pool,
-                    final_prompt,
-                    trigger_source,
-                    trace_id,
-                    model=model,
-                    request_id=effective_request_id,
-                    ingestion_event_id=ingestion_event_id,
-                    complexity=str(complexity),
-                    resolution_source=resolution_source,
-                    butler_name=self._config.name,
-                )
-                logger.debug(
-                    "Session created with model=%s runtime_type=%s complexity=%s source=%s "
-                    "session_id=%s",
-                    model,
-                    resolved_runtime_type,
-                    complexity,
-                    resolution_source,
-                    session_id,
-                )
-                # Set session_id on span
-                span.set_attribute("session_id", str(session_id))
-                runtime_session_id = str(session_id)
-                ensure_runtime_session_capture(runtime_session_id)
-                set_runtime_session_routing_context(runtime_session_id, routing_context)
-                # Mark the session as real-but-not-yet-invoked so a Stop
-                # click landing in the pre-invocation window below (system-
-                # prompt/context/memory fetches, MCP warmup) is recognized by
-                # cancel_session() instead of falsely reporting "already
-                # finished". Discarded once the invoke_task is registered
-                # (or, defensively, in this method's finally block).
-                self._pending_invoke_sessions.add(runtime_session_id)
-
-                if dashboard_turn_id is not None:
-                    dashboard_cancel_settled_event = asyncio.Event()
-                    self._dashboard_cancel_settled_events[runtime_session_id] = (
-                        dashboard_cancel_settled_event
-                    )
-                    try:
-                        dashboard_request_id = uuid.UUID(str(effective_request_id))
-                    except (TypeError, ValueError) as exc:
-                        raise DashboardTurnControlError(
-                            "Dashboard turn has no valid request id for runtime registration."
-                        ) from exc
-
-                    dashboard_phase = (
-                        "classification" if self._config.name == "switchboard" else "route"
-                    )
-                    try:
-                        dashboard_gate = await register_session_and_check_cancel(
-                            self._pool,
-                            message_id=dashboard_turn_id,
-                            session_id=session_id,
-                            request_id=dashboard_request_id,
-                            butler_name=self._config.name,
-                            phase=dashboard_phase,
-                        )
-                    except Exception as exc:
-                        raise DashboardTurnControlError(
-                            "Could not register this dashboard runtime with its Stop control."
-                        ) from exc
-
-                    if dashboard_gate.outcome not in {"active", "cancelled"}:
-                        raise DashboardTurnControlError(
-                            "Dashboard runtime registration was not authorized: "
-                            f"{dashboard_gate.outcome}"
-                        )
-                    dashboard_turn_session_registered = True
-                    if dashboard_gate.outcome == "cancelled":
-                        # The durable Stop bit won before this process reached
-                        # runtime.invoke. Reuse the owner-cancel path so the
-                        # local session row remains honest and no adapter starts.
-                        self._owner_cancelled_sessions.add(runtime_session_id)
-                        raise asyncio.CancelledError()
-
             # Read system prompt. The live override (HEAD of
             # public.system_prompt_history, set via the dashboard prompt editor)
             # takes precedence over the on-disk CLAUDE.md seed when present.
@@ -2064,9 +1984,10 @@ class Spawner:
             prompt_override = await fetch_system_prompt_override(
                 shared_pool or self._pool, self._config.name
             )
-            system_prompt = read_system_prompt(
+            resolved_system_prompt = read_system_prompt_with_sources(
                 self._config_dir, self._config.name, db_override=prompt_override
             )
+            system_prompt = resolved_system_prompt.prompt
 
             # Fetch situational context preamble (fail-open)
             context_preamble_ctx = await fetch_situational_context_preamble(
@@ -2121,14 +2042,96 @@ class Spawner:
                 routing_instructions=routing_ctx,
                 context_preamble=context_preamble_ctx,
             )
-            system_prompt = _compose_system_prompt(
+            prompt_receipt = compose_effective_system_prompt_receipt(
                 system_prompt,
                 memory_ctx,
+                base_sources=[
+                    (source.source, source.status, source.content)
+                    for source in resolved_system_prompt.sources
+                ],
                 general_timezone_instruction=general_timezone_instruction,
                 routing_instructions=routing_ctx,
                 context_preamble=context_preamble_ctx,
                 blind_spot_preamble=blind_spot_preamble,
             )
+            system_prompt = prompt_receipt.prompt
+
+            # effective_request_id was minted before the quota-skip loop above
+            # (non-null for both connector-sourced and internal triggers).
+            # Prompt composition intentionally completes before the row is
+            # created: every new runtime session is born with an exact receipt,
+            # and no adapter can start between composition and persistence.
+            if self._pool is not None:
+                session_id = await session_create(
+                    self._pool,
+                    final_prompt,
+                    trigger_source,
+                    trace_id,
+                    model=model,
+                    request_id=effective_request_id,
+                    ingestion_event_id=ingestion_event_id,
+                    complexity=str(complexity),
+                    resolution_source=resolution_source,
+                    butler_name=self._config.name,
+                    effective_system_prompt=prompt_receipt.prompt,
+                    prompt_digest=prompt_receipt.digest,
+                    prompt_provenance=[entry.as_dict() for entry in prompt_receipt.provenance],
+                )
+                logger.debug(
+                    "Session created with model=%s runtime_type=%s complexity=%s source=%s "
+                    "session_id=%s",
+                    model,
+                    resolved_runtime_type,
+                    complexity,
+                    resolution_source,
+                    session_id,
+                )
+                span.set_attribute("session_id", str(session_id))
+                runtime_session_id = str(session_id)
+                ensure_runtime_session_capture(runtime_session_id)
+                set_runtime_session_routing_context(runtime_session_id, routing_context)
+                # Mark the session as real-but-not-yet-invoked so a Stop click
+                # in the remaining setup window is recognized honestly.
+                self._pending_invoke_sessions.add(runtime_session_id)
+
+                if dashboard_turn_id is not None:
+                    dashboard_cancel_settled_event = asyncio.Event()
+                    self._dashboard_cancel_settled_events[runtime_session_id] = (
+                        dashboard_cancel_settled_event
+                    )
+                    try:
+                        dashboard_request_id = uuid.UUID(str(effective_request_id))
+                    except (TypeError, ValueError) as exc:
+                        raise DashboardTurnControlError(
+                            "Dashboard turn has no valid request id for runtime registration."
+                        ) from exc
+
+                    dashboard_phase = (
+                        "classification" if self._config.name == "switchboard" else "route"
+                    )
+                    try:
+                        dashboard_gate = await register_session_and_check_cancel(
+                            self._pool,
+                            message_id=dashboard_turn_id,
+                            session_id=session_id,
+                            request_id=dashboard_request_id,
+                            butler_name=self._config.name,
+                            phase=dashboard_phase,
+                        )
+                    except Exception as exc:
+                        raise DashboardTurnControlError(
+                            "Could not register this dashboard runtime with its Stop control."
+                        ) from exc
+
+                    if dashboard_gate.outcome not in {"active", "cancelled"}:
+                        raise DashboardTurnControlError(
+                            "Dashboard runtime registration was not authorized: "
+                            f"{dashboard_gate.outcome}"
+                        )
+                    dashboard_turn_session_registered = True
+                    if dashboard_gate.outcome == "cancelled":
+                        self._owner_cancelled_sessions.add(runtime_session_id)
+                        raise asyncio.CancelledError()
 
             # Build credential env.
             # Caller-supplied env_override replaces the default env entirely (used by

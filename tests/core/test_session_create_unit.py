@@ -9,6 +9,7 @@ Covers validation logic that fires before any database interaction:
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from typing import Any
 
@@ -56,10 +57,29 @@ async def test_session_create_validation_and_return() -> None:
 
     expected_id = uuid.uuid4()
     pool2 = _FakePool(return_id=expected_id)
+    effective_prompt = "Synthetic system prompt"
+    provenance = [
+        {
+            "source": "roster:synthetic/CLAUDE.md",
+            "status": "present",
+            "bytes": len(effective_prompt.encode("utf-8")),
+            "sha": hashlib.sha256(effective_prompt.encode("utf-8")).hexdigest(),
+        }
+    ]
     result = await session_create(
-        pool2, prompt="Test", trigger_source="tick", request_id=str(uuid.uuid4())
+        pool2,
+        prompt="Test",
+        trigger_source="tick",
+        request_id=str(uuid.uuid4()),
+        effective_system_prompt=effective_prompt,
+        prompt_digest=hashlib.sha256(effective_prompt.encode("utf-8")).hexdigest(),
+        prompt_provenance=provenance,
     )
     assert result == expected_id
+    insert_args = pool2.fetchval_calls[0][1]
+    assert insert_args[8] == effective_prompt
+    assert insert_args[9] == hashlib.sha256(effective_prompt.encode("utf-8")).hexdigest()
+    assert insert_args[10] == provenance
 
 
 async def test_session_create_drops_stale_ingestion_event_link(monkeypatch: pytest.MonkeyPatch):

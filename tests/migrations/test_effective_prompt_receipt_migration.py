@@ -1,0 +1,94 @@
+"""Real-Postgres lifecycle for core_232 effective-prompt receipts."""
+
+from __future__ import annotations
+
+import importlib.util
+import uuid
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import asyncpg
+import pytest
+
+pytestmark = [pytest.mark.integration, pytest.mark.db]
+
+_MIGRATION_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "alembic/versions/core/core_232_effective_prompt_receipt.py"
+)
+
+
+def _load_migration():
+    spec = importlib.util.spec_from_file_location("core_232", _MIGRATION_PATH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+async def _run_migration(pool, direction: str) -> None:
+    statements: list[str] = []
+    module = _load_migration()
+    mocked_op = MagicMock()
+    mocked_op.execute.side_effect = statements.append
+    with patch.object(module, "op", mocked_op):
+        getattr(module, direction)()
+    for statement in statements:
+        await pool.execute(statement)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_receipt_columns_are_additive_atomic_and_rollback_safe(
+    provisioned_postgres_pool,
+) -> None:
+    async with provisioned_postgres_pool() as pool:
+        await pool.execute("CREATE TABLE sessions (id UUID PRIMARY KEY)")
+        legacy_id = uuid.uuid4()
+        await pool.execute("INSERT INTO sessions (id) VALUES ($1)", legacy_id)
+
+        await _run_migration(pool, "upgrade")
+        legacy = await pool.fetchrow(
+            "SELECT effective_system_prompt, prompt_digest, prompt_provenance "
+            "FROM sessions WHERE id = $1",
+            legacy_id,
+        )
+        assert legacy is not None
+        assert tuple(legacy) == (None, None, None)
+
+        receipt_id = uuid.uuid4()
+        await pool.execute(
+            "INSERT INTO sessions "
+            "(id, effective_system_prompt, prompt_digest, prompt_provenance) "
+            "VALUES ($1, 'exact prompt', $2, $3::jsonb)",
+            receipt_id,
+            "a" * 64,
+            [
+                {
+                    "source": "roster:synthetic/CLAUDE.md",
+                    "status": "present",
+                    "bytes": 12,
+                    "sha": "b" * 64,
+                }
+            ],
+        )
+        with pytest.raises(asyncpg.CheckViolationError):
+            await pool.execute(
+                "INSERT INTO sessions (id, effective_system_prompt) VALUES ($1, 'partial')",
+                uuid.uuid4(),
+            )
+
+        with pytest.raises(asyncpg.RaiseError, match="effective prompt receipts exist"):
+            await _run_migration(pool, "downgrade")
+
+        await pool.execute(
+            "UPDATE sessions SET effective_system_prompt = NULL, "
+            "prompt_digest = NULL, prompt_provenance = NULL WHERE id = $1",
+            receipt_id,
+        )
+        await _run_migration(pool, "downgrade")
+        columns = await pool.fetch(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = current_schema() AND table_name = 'sessions'"
+        )
+        assert {row["column_name"] for row in columns} == {"id"}
+        assert await pool.fetchval("SELECT count(*) FROM sessions") == 2

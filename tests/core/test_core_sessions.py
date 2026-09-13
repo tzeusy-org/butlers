@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import re
 import shutil
 import uuid
@@ -53,12 +54,25 @@ async def test_session_create_and_get(pool):
     from butlers.core.sessions import session_create, sessions_get
 
     req_id = str(uuid.uuid4())
+    effective_prompt = "# Exact synthetic system prompt"
+    prompt_digest = hashlib.sha256(effective_prompt.encode("utf-8")).hexdigest()
+    provenance = [
+        {
+            "source": "roster:synthetic/CLAUDE.md",
+            "status": "present",
+            "bytes": len(effective_prompt.encode("utf-8")),
+            "sha": prompt_digest,
+        }
+    ]
     session_id = await session_create(
         pool,
         prompt="Run daily report",
         trigger_source="tick",
         trace_id="abc-123",
         request_id=req_id,
+        effective_system_prompt=effective_prompt,
+        prompt_digest=prompt_digest,
+        prompt_provenance=provenance,
     )
     assert isinstance(session_id, uuid.UUID)
 
@@ -70,6 +84,14 @@ async def test_session_create_and_get(pool):
     assert session["result"] is None
     assert session["success"] is None
     assert session["completed_at"] is None
+    receipt = await pool.fetchrow(
+        "SELECT effective_system_prompt, prompt_digest, prompt_provenance "
+        "FROM sessions WHERE id = $1",
+        session_id,
+    )
+    assert receipt["effective_system_prompt"] == effective_prompt
+    assert receipt["prompt_digest"] == prompt_digest
+    assert receipt["prompt_provenance"] == provenance
 
     # Missing key returns None
     assert await sessions_get(pool, uuid.uuid4()) is None

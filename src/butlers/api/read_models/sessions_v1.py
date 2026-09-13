@@ -19,6 +19,7 @@ Query functions (all async):
     query_session_trigger_breakdown_fan_out(db, where, args, *, butler_names)
         -> FanOutTriggerBreakdownResult
     query_session_detail_fan_out(db, session_id) -> FanOutDetailResult
+    query_session_prompt_receipt_fan_out(db, session_id) -> FanOutPromptReceiptResult
 
 Cursor helpers:
     encode_session_cursor(started_at, row_id) -> str
@@ -81,6 +82,11 @@ DETAIL_COLUMNS: str = (
     "parent_session_id, complexity, resolution_source"
 )
 
+#: Sensitive effective-prompt content is deliberately isolated from both the
+#: list and ordinary detail projections. Only the owner-controlled receipt
+#: endpoint selects these columns.
+PROMPT_RECEIPT_COLUMNS: str = "id, effective_system_prompt, prompt_digest, prompt_provenance"
+
 # ---------------------------------------------------------------------------
 # Typed row DTOs
 # ---------------------------------------------------------------------------
@@ -132,6 +138,17 @@ class SessionDetailRow:
     parent_session_id: UUID | None
     complexity: str | None
     resolution_source: str | None
+
+
+@dataclass
+class SessionPromptReceiptRow:
+    """Typed DTO for the owner-only effective-prompt receipt."""
+
+    id: UUID
+    butler: str | None
+    effective_prompt: str | None
+    prompt_digest: str | None
+    prompt_provenance: Any
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +250,15 @@ class FanOutDetailResult:
     degraded_sources: list[str] = field(default_factory=list)
 
 
+@dataclass
+class FanOutPromptReceiptResult:
+    """Cross-butler prompt lookup preserving not-found versus degraded truth."""
+
+    row: SessionPromptReceiptRow | None = None
+    butler: str | None = None
+    degraded_sources: list[str] = field(default_factory=list)
+
+
 # ---------------------------------------------------------------------------
 # Row converters
 # ---------------------------------------------------------------------------
@@ -301,6 +327,27 @@ def row_to_detail(row: asyncpg.Record, *, butler: str | None = None) -> SessionD
         parent_session_id=row["parent_session_id"],
         complexity=row["complexity"],
         resolution_source=row["resolution_source"],
+    )
+
+
+def row_to_prompt_receipt(
+    row: asyncpg.Record, *, butler: str | None = None
+) -> SessionPromptReceiptRow:
+    """Convert the narrow sensitive projection to its typed DTO."""
+    provenance = row["prompt_provenance"]
+    if isinstance(provenance, str):
+        try:
+            provenance = json.loads(provenance)
+        except json.JSONDecodeError:
+            # Preserve corrupt evidence for the owner route to classify
+            # without exposing or trusting it.
+            pass
+    return SessionPromptReceiptRow(
+        id=row["id"],
+        butler=butler,
+        effective_prompt=row["effective_system_prompt"],
+        prompt_digest=row["prompt_digest"],
+        prompt_provenance=provenance,
     )
 
 
@@ -607,3 +654,22 @@ async def query_session_detail_fan_out(
             )
 
     return FanOutDetailResult(degraded_sources=failed)
+
+
+async def query_session_prompt_receipt_fan_out(
+    db: DatabaseManager,
+    session_id: UUID,
+) -> FanOutPromptReceiptResult:
+    """Find one persisted prompt receipt without widening ordinary reads."""
+    results, failed = await db.fan_out_with_status(
+        f"SELECT {PROMPT_RECEIPT_COLUMNS} FROM sessions WHERE id = $1",
+        (session_id,),
+    )
+    for butler_name, db_rows in results.items():
+        if db_rows:
+            return FanOutPromptReceiptResult(
+                row=row_to_prompt_receipt(db_rows[0], butler=butler_name),
+                butler=butler_name,
+                degraded_sources=failed,
+            )
+    return FanOutPromptReceiptResult(degraded_sources=failed)

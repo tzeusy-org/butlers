@@ -11,6 +11,7 @@ from butlers.core.skills import (
     get_skills_dir,
     read_agents_md,
     read_system_prompt,
+    read_system_prompt_with_sources,
     write_agents_md,
 )
 
@@ -201,12 +202,25 @@ def test_read_system_prompt_db_override_resolves_includes_and_shared(tmp_path: P
     shared.mkdir()
     (shared / "NOTIFY.md").write_text("Notify body.", encoding="utf-8")
     (shared / "BUTLER_SKILLS.md").write_text("## Skills\n- a", encoding="utf-8")
+    (config_dir / "CLAUDE.md").write_text("@AGENTS.md", encoding="utf-8")
+    (config_dir / "AGENTS.md").write_text("# Shadowed disk identity", encoding="utf-8")
 
     override = "# Live\n<!-- @include shared/NOTIFY.md -->\nEnd."
     result = read_system_prompt(config_dir, "test", db_override=override)
     assert "Notify body." in result
     assert "<!-- @include" not in result
     assert result.endswith("## Skills\n- a")
+
+    resolved = read_system_prompt_with_sources(config_dir, "test", db_override=override)
+    assert resolved.prompt == result
+    assert [(source.source, source.status) for source in resolved.sources] == [
+        ("system_prompt_history", "present"),
+        ("roster:shared/NOTIFY.md", "present"),
+        ("roster:shared/BUTLER_SKILLS.md", "present"),
+        ("roster:shared/MCP_LOGGING.md", "unavailable"),
+        ("roster:test-butler/CLAUDE.md", "shadowed"),
+        ("roster:test-butler/AGENTS.md", "shadowed"),
+    ]
 
 
 # ---------------------------------------------------------------------------
