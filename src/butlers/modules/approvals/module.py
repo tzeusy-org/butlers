@@ -257,6 +257,21 @@ class ApprovalsModule(Module):
         self._hook_pool: Any = None
         self._hook_runtime: Any = None
 
+    def approval_delivery_worker_components(self) -> tuple[Any, Any]:
+        """Return the schema-local repository and transient renderer.
+
+        Core owns the task lifecycle.  The module exposes only delivery-state
+        capabilities and never hands the worker its decision or executor APIs.
+        """
+        if self._hook_pool is None:
+            raise RuntimeError("Approvals module is not started")
+        from butlers.modules.approvals.delivery_recovery import (
+            ApprovalDeliveryRenderer,
+            ApprovalDeliveryRepository,
+        )
+
+        return ApprovalDeliveryRepository(self._hook_pool), ApprovalDeliveryRenderer()
+
     @property
     def name(self) -> str:
         return "approvals"

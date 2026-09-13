@@ -36,6 +36,7 @@ tests/core/test_butler_logging_jsonb_roundtrip.py
 tests/core/test_db.py
 tests/core/test_event_chains_mcp.py
 tests/core_tools/test_schedule_trigger_dispatch.py
+tests/integration/test_approval_delivery_worker.py
 tests/integration/test_approval_push_on_park.py
 tests/integration/test_approvals_remaining_jsonb_roundtrip.py
 tests/integration/test_calendar_sync_deadman_roundtrip.py

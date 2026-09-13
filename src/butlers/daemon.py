@@ -241,6 +241,11 @@ class ButlerDaemon:
         # gate wrapper, the email/recipient guards (via approvals_hooks), the
         # calendar overlap-approval enqueuer, and notify()'s own park sites.
         self._approval_push_runtime: Any | None = None
+        # RFC 0023 recovery remains dormant until the authenticated Messenger
+        # boundary supplies this narrow runtime in a later rollout slice.
+        self._approval_delivery_runtime: Any | None = None
+        self._approval_delivery_task: asyncio.Task | None = None
+        self._approval_delivery_stop: asyncio.Event | None = None
         self.blob_store: S3BlobStore | None = None
         # Background tasks spawned by route.execute accept phase (non-messenger butlers)
         self._route_inbox_tasks: set[asyncio.Task] = set()
@@ -443,6 +448,16 @@ class ButlerDaemon:
         else:
             # Clear the disabled_by marker on re-enable.
             await _state_set(pool, disabled_by_key, None)
+        if name == "approvals":
+            from butlers.core.approval_delivery_worker import (
+                start_approval_delivery_worker,
+                stop_approval_delivery_worker,
+            )
+
+            if enabled:
+                await start_approval_delivery_worker(self)
+            else:
+                await stop_approval_delivery_worker(self)
         logger.info("Module %r enabled=%s (persisted to state store)", name, enabled)
         return True
 
