@@ -40,8 +40,18 @@ from butlers.api.routers.ingestion_connectors import (
     _get_db_manager,
 )
 from butlers.modules.approvals.notifications import ApprovalPushRuntime
+from butlers.testing.approval_parking_fake import record_pending_action
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _use_mock_pool_park_recorder(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        "butlers.api.routers.ingestion_connectors.park_pending_action",
+        record_pending_action,
+    )
+
 
 # ---------------------------------------------------------------------------
 # Helpers
