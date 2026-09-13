@@ -1,10 +1,9 @@
 """Unit tests for the approval gate owner-bypass policy.
 
-Covers bu-nd5me: for owner-directed OUTBOUND sends, gate.py auto-approves to ANY
-active, verified owner channel — not only the primary one.  This deliberately
-relaxes the earlier bu-axdie outbound primacy requirement (owner self-notification
-is low-risk).  The shared ``is_primary_contact`` helper is unchanged and still
-governs inbound identity resolution and the email guard.
+Covers bu-nd5me: for owner-directed OUTBOUND sends, gate.py auto-approves any
+active, verified non-email owner channel. Email retains RFC 0017's stricter
+primary-address requirement. The shared ``is_primary_contact`` helper remains
+the ordinary direct-read primacy check for inbound identity and email delivery.
 
 [bu-nd5me]
 """
@@ -137,6 +136,8 @@ async def _call_gate(
     pool: AsyncMock,
     original_fn: AsyncMock | None = None,
     include_dossier: bool = True,
+    owner_channel_is_primary: bool = True,
+    tool_name: str = "telegram_send_message",
 ) -> dict:
     """Helper: build a gate wrapper and call it with the given tool_args."""
     if original_fn is None:
@@ -151,7 +152,7 @@ async def _call_gate(
     from butlers.modules.approvals.executor import ExecutionResult
 
     wrapper = _make_gate_wrapper(
-        tool_name="telegram_send_message",
+        tool_name=tool_name,
         original_fn=original_fn,
         pool=pool,
         expiry_hours=72,
@@ -167,7 +168,7 @@ async def _call_gate(
         patch(
             "butlers.modules.approvals.gate.resolve_owner_channel_via_definer",
             new=AsyncMock(
-                return_value=(resolved_contact, True)
+                return_value=(resolved_contact, owner_channel_is_primary)
                 if resolved_contact is not None and "owner" in resolved_contact.roles
                 else None
             ),
@@ -323,13 +324,10 @@ class TestIsPrimaryContact:
 
 
 class TestGateOwnerOutboundAutoApprove:
-    """gate.py auto-approves owner-directed OUTBOUND sends to any active owner channel.
+    """gate.py auto-approves only policy-safe owner-directed outbound sends.
 
-    bu-nd5me reverses the earlier bu-axdie outbound primacy requirement: owner
-    self-notification is low-risk, so a send to a verified (active) owner channel
-    auto-approves regardless of whether it is the primary entry for that channel
-    type.  Channel resolution only returns an owner for an active entity_facts
-    triple, so reaching the owner branch already implies a verified owner channel.
+    Non-email owner self-notification may use any verified active association.
+    Email retains RFC 0017's primary-address safeguard.
     """
 
     async def test_owner_primary_telegram_auto_approves(self) -> None:
@@ -885,26 +883,19 @@ class TestOwnerCrossSchemaFallback:
 
 
 # ---------------------------------------------------------------------------
-# bu-nd5me acceptance: notify() to a verified-but-secondary owner channel
+# Email primacy applies to the generic notify() approval wrapper too
 # ---------------------------------------------------------------------------
 
 
 class TestNotifySecondaryOwnerChannel:
-    """Acceptance for bu-nd5me using the notify() channel+recipient arg shape.
-
-    The reported regression: notify(channel="email", recipient="tzeuse@gmail.com")
-    parked even though tzeuse@ is a registered, active (non-primary) owner email.
-    These tests assert the owner-self-notification path now auto-approves while a
-    send to a non-owner recipient still parks.
-    """
+    """Secondary owner email remains gated through the generic notify shape."""
 
     _SECONDARY_OWNER_EMAIL = "tzeuse@gmail.com"
     _NON_OWNER_EMAIL = "stranger@example.com"
 
-    async def test_notify_secondary_owner_email_auto_approves(self) -> None:
-        """notify() to a non-primary but active owner email auto-approves."""
+    async def test_notify_secondary_owner_email_parks(self) -> None:
+        """A direct owner lookup cannot bypass email primacy."""
         owner = _owner_contact()
-        # is_primary would be False for the secondary address — must not matter now.
         pool = _make_pool(fetchrow_return={"primary": False})
 
         result = await _call_gate(
@@ -915,10 +906,12 @@ class TestNotifySecondaryOwnerChannel:
             },
             resolved_contact=owner,
             pool=pool,
+            owner_channel_is_primary=False,
+            tool_name="notify",
         )
-        assert result == {"status": "sent"}
+        assert result["status"] == "pending_approval"
 
-    async def test_notify_secondary_owner_email_auto_approves_cross_schema(self) -> None:
+    async def test_notify_secondary_owner_email_parks_cross_schema(self) -> None:
         """The messenger scenario: the butler role cannot read relationship schema,
         so resolve_contact_by_channel returns None and the owner is recognized via
         the SECURITY DEFINER fallback reporting a non-primary owner channel."""
@@ -951,19 +944,16 @@ class TestNotifySecondaryOwnerChannel:
                 channel="email",
                 recipient=self._SECONDARY_OWNER_EMAIL,
                 message="time-sensitive reminder",
+                _why="The secondary address requires explicit approval.",
+                _evidence=[],
             )
-        assert result == {"status": "sent"}
-        exec_mock.assert_awaited_once()
-        inserts = [
-            c for c in pool.execute.await_args_list if "INSERT INTO pending_actions" in c.args[0]
-        ]
-        assert inserts and "role:owner" in inserts[0].args
+        assert result["status"] == "pending_approval"
+        exec_mock.assert_not_awaited()
 
     async def test_notify_non_owner_email_still_parks(self) -> None:
         """notify() to a non-owner recipient with no standing rule still parks.
 
-        Guardrail: relaxing the owner primacy gate must NOT auto-approve sends to
-        non-owner recipients.
+        Guardrail: enforcing email primacy must not auto-approve non-owners.
         """
         non_owner = _non_owner_contact()
         pool = _make_pool(fetchrow_return=None)  # no standing rules (fetch → [])

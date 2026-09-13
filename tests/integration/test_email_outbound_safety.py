@@ -591,8 +591,7 @@ class TestNotifyRecipientValidation:
         assert notify_fn is not None
 
         daemon.switchboard_client = _mock_switchboard_client()
-        daemon._approval_push_runtime = object()
-        push = AsyncMock(return_value="delivered")
+        park = AsyncMock(side_effect=record_pending_action)
 
         with (
             patch(
@@ -603,7 +602,7 @@ class TestNotifyRecipientValidation:
                 "butlers.modules.approvals.rules.match_rules",
                 new=AsyncMock(return_value=None),
             ),
-            patch("butlers.modules.approvals.park.emit_approval_push", new=push),
+            patch("butlers.modules.approvals.email_guard.park_pending_action", new=park),
         ):
             result = await notify_fn(
                 channel="email",
@@ -616,7 +615,7 @@ class TestNotifyRecipientValidation:
             f"Known non-owner email '{KNOWN_NON_OWNER_EMAIL}' MUST be blocked "
             f"without a standing rule, got status={result.get('status')}"
         )
-        assert push.await_args.kwargs["origin_butler"] == "test-butler"
+        assert park.await_args.kwargs["origin_butler"] == "test-butler"
 
     async def test_standing_rule_permits_known_non_owner_email(self, butler_dir: Path) -> None:
         """A known non-owner contact WITH a matching standing rule MUST be allowed."""
@@ -1613,8 +1612,7 @@ class TestRouteExecuteApprovalGate:
             origin_butler="relationship",
             decision_dossier=_ROUTE_NON_OWNER_DOSSIER,
         )
-        daemon._approval_push_runtime = object()
-        push = AsyncMock(return_value="delivered")
+        park = AsyncMock(side_effect=record_pending_action)
 
         with (
             patch(
@@ -1625,7 +1623,7 @@ class TestRouteExecuteApprovalGate:
                 "butlers.modules.approvals.rules.match_rules",
                 new=AsyncMock(return_value=None),
             ),
-            patch("butlers.modules.approvals.park.emit_approval_push", new=push),
+            patch("butlers.modules.approvals.email_guard.park_pending_action", new=park),
         ):
             result = await route_execute_fn(**envelope)
 
@@ -1634,7 +1632,7 @@ class TestRouteExecuteApprovalGate:
         )
         assert "blocked" in result["error"]["message"].lower()
         assert result["error"]["retryable"] is False
-        assert push.await_args.kwargs["origin_butler"] == "messenger"
+        assert park.await_args.kwargs["origin_butler"] == "messenger"
         assert _parked_route_command(daemon) == (
             "email_send_message",
             {
@@ -1759,8 +1757,7 @@ class TestRouteExecuteTelegramApprovalGate:
 
         # Spy on the real delivery method to prove it is NEVER reached when blocked.
         send_spy = AsyncMock(return_value={"status": "sent"})
-        daemon._approval_push_runtime = object()
-        push = AsyncMock(return_value="delivered")
+        park = AsyncMock(side_effect=record_pending_action)
 
         with (
             patch(
@@ -1772,7 +1769,7 @@ class TestRouteExecuteTelegramApprovalGate:
                 new=AsyncMock(return_value=None),
             ),
             patch.object(TelegramModule, "_send_message", new=send_spy),
-            patch("butlers.modules.approvals.park.emit_approval_push", new=push),
+            patch("butlers.modules.approvals.email_guard.park_pending_action", new=park),
         ):
             result = await route_execute_fn(**envelope)
 
@@ -1784,7 +1781,7 @@ class TestRouteExecuteTelegramApprovalGate:
         error_message = error_obj.get("message", "") if isinstance(error_obj, dict) else ""
         assert "blocked" in error_message.lower(), f"Error must describe the block: {result}"
         assert result["error"]["retryable"] is False
-        assert push.await_args.kwargs["origin_butler"] == "messenger"
+        assert park.await_args.kwargs["origin_butler"] == "messenger"
         pending_inserts = [
             call
             for call in daemon.db.pool.execute.await_args_list

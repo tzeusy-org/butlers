@@ -32,9 +32,11 @@ import asyncpg
 import pytest
 
 from alembic import command
+from butlers.config import ApprovalRiskTier
 from butlers.db import Database
 from butlers.migrations import _build_alembic_config
 from butlers.modules.approvals.email_guard import check_email_recipient, check_recipient
+from butlers.modules.approvals.gate import _make_gate_wrapper
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
@@ -556,6 +558,7 @@ class TestSchemaIsolation:
                 park_tool_name="email_send_message",
                 park_tool_args={"to": target},
                 park_summary="email authorization matrix",
+                butler_name="messenger",
             )
 
         async def telegram_decision(target: str):
@@ -568,6 +571,7 @@ class TestSchemaIsolation:
                 park_tool_name="telegram_send_message",
                 park_tool_args={"chat_id": target},
                 park_summary="telegram authorization matrix",
+                butler_name="messenger",
             )
 
         pending_before = await messenger_role_pool.fetchval(
@@ -595,6 +599,40 @@ class TestSchemaIsolation:
             "SELECT count(*) FROM pending_actions WHERE status = 'pending'"
         )
         assert pending_after - pending_before == 4
+
+    async def test_messenger_role_email_wrapper_requires_primary_owner_address(
+        self, messenger_role_pool: asyncpg.Pool, seeded_data: dict
+    ) -> None:
+        """The production MCP wrapper preserves the email-specific primacy safeguard."""
+
+        async def send_email(to: str, subject: str, body: str) -> dict[str, str]:
+            return {"status": "sent", "to": to, "subject": subject, "body": body}
+
+        wrapper = _make_gate_wrapper(
+            tool_name="email_send_message",
+            original_fn=send_email,
+            pool=messenger_role_pool,
+            expiry_hours=72,
+            risk_tier=ApprovalRiskTier.MEDIUM,
+            rule_precedence=("contact_role", "standing_rule"),
+            butler_name="messenger",
+        )
+
+        primary = await wrapper(
+            to=seeded_data["owner_primary_email"],
+            subject="Owner delivery",
+            body="Primary address",
+        )
+        assert primary["status"] == "sent"
+
+        secondary = await wrapper(
+            to=seeded_data["owner_secondary_email"],
+            subject="Owner delivery",
+            body="Secondary address",
+            _why="The secondary address requires explicit approval.",
+            _evidence=[],
+        )
+        assert secondary["status"] == "pending_approval"
 
     async def test_isolated_role_owner_only_scoping_still_enforced(
         self, isolated_role_pool: asyncpg.Pool, seeded_data: dict

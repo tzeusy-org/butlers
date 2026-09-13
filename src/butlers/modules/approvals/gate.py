@@ -6,15 +6,13 @@ Wraps gated tools at MCP registration time so that:
    resolve via ``resolve_contact_by_channel()``.  Any owner-looking channel
    result is corroborated by the ambiguity-safe owner-only definer before the
    action is auto-approved with no standing rule required.
-   Owner self-notification is low-risk, so this auto-approve applies to ANY
-   active, verified owner channel — not only the primary one (bu-nd5me).  Channel
-   resolution only returns a row for an *active* ``relationship.entity_facts``
-   triple, so any owner-role match here is by definition a verified owner channel.
-   NOTE: this relaxes only the OUTBOUND gate.  Inbound identity resolution /
-   ingress routing keeps its ``is_primary`` requirement (RFC 0017 §2.1).
-3. For non-owner targets, standing approval rules are checked — if a rule
-   matches, the tool is auto-approved and executed immediately.
-4. If no rule matches (or the target is unresolvable), the PendingAction is
+   Owner self-notification is low-risk, so non-email channels may use any active,
+   verified owner association (bu-nd5me). Email retains RFC 0017's stricter
+   primary-address requirement because a wrong-address send has a materially
+   different disclosure risk.
+3. For targets without an owner bypass, including secondary owner email,
+   standing approval rules are checked. A match permits immediate execution.
+4. If no rule matches, or the target is unresolvable, the PendingAction is
    persisted with status='pending' and a structured ``pending_approval``
    response is returned to CC.
 
@@ -134,7 +132,9 @@ def _add_dossier_metadata_to_tool_schema(tool_obj: Any) -> None:
         {
             "_why": {
                 "type": "string",
-                "description": "Required rationale for non-owner approval-gated actions.",
+                "description": (
+                    "Required rationale for approval-gated actions without an owner bypass."
+                ),
             },
             "_blast_radius": {
                 "type": "string",
@@ -444,10 +444,21 @@ async def resolve_action_target_contact(
     writeback reuses this helper so a previously resolved owner remains
     entity-linked in the tally fact.
     """
+    resolved_contact, _owner_channel_is_primary = await _resolve_action_target_authorization(
+        pool, tool_args
+    )
+    return resolved_contact
+
+
+async def _resolve_action_target_authorization(
+    pool: Any,
+    tool_args: dict[str, Any],
+) -> tuple[ResolvedContact | None, bool | None]:
+    """Resolve a target and retain primacy for channel-based owner authorization."""
     resolved_contact = await _resolve_target_contact(pool, tool_args)
     identity = _extract_channel_identity(tool_args)
     if identity is None or identity[0] == "entity_id":
-        return resolved_contact
+        return resolved_contact, None
 
     # A normal non-owner resolution is authoritative and must never trigger an
     # owner-only fallback.  An owner-looking result still needs corroboration:
@@ -455,14 +466,12 @@ async def resolve_action_target_contact(
     # while the definer evaluates the full candidate set and rejects a variant
     # collision spanning owner and external entities.
     if resolved_contact is not None and "owner" not in resolved_contact.roles:
-        return resolved_contact
+        return resolved_contact, None
 
     fallback = await resolve_owner_channel_via_definer(pool, identity[0], identity[1])
     if fallback is not None:
-        resolved_contact, _ = fallback
-    else:
-        resolved_contact = None
-    return resolved_contact
+        return fallback
+    return None, None
 
 
 async def apply_approval_gates(
@@ -577,14 +586,12 @@ def _make_gate_wrapper(
     1. Resolves the target contact from tool_args using channel identity
        extraction and ``resolve_contact_by_channel()``.
     2. If the target has the ``'owner'`` role: auto-approve immediately (no
-       standing rule required).  Owner self-notification is low-risk, so this
-       applies to ANY active, verified owner channel — not only the primary one
-       (bu-nd5me).  Resolution only returns a row for an active
-       ``relationship.entity_facts`` triple, so an owner-role match is always a
-       verified owner channel.  This relaxes the OUTBOUND gate only; inbound
-       identity resolution keeps its ``is_primary`` requirement.
-    3. If the target is a known non-owner contact: check standing rules;
-       auto-approve if a rule matches, otherwise pend.
+       standing rule required) for an entity-id target, a primary owner email,
+       or any active verified non-email owner channel. Email preserves RFC 0017's
+       primary-address safeguard; secondary owner email falls through to the
+       standing-rule or parking path.
+    3. If the target has no owner bypass, including secondary owner email:
+       check standing rules; auto-approve if a rule matches, otherwise pend.
     4. If the target is unresolvable: require approval (conservative default).
 
     Safety-critical arguments declared by the owning module via
@@ -622,8 +629,9 @@ def _make_gate_wrapper(
 
         # Dossier metadata is always gate-only and is never forwarded to target
         # resolution, standing-rule matching, persistence as tool args, or the
-        # underlying tool. Validation happens only after owner resolution: owner
-        # calls deliberately remain exempt from the non-owner dossier contract.
+        # underlying tool. Validation happens after target resolution: only a
+        # target eligible for owner auto-approval is exempt from the required
+        # decision dossier.
         raw_why = _pop_dossier_value(tool_args, "_why", "why")
         raw_evidence = _pop_dossier_value(tool_args, "_evidence", "evidence")
         raw_blast_radius = _pop_dossier_value(tool_args, "_blast_radius", "blast_radius")
@@ -648,7 +656,7 @@ def _make_gate_wrapper(
         # double-encoding tool_args into a jsonb-typed STRING instead of an
         # OBJECT (bu-qvnce.6, bu-cymc4; see tests/relationship/test_jsonb_codec.py).
         # Validated dossier evidence is JSON-safe and bound directly after the
-        # non-owner boundary check below.
+        # no-owner-bypass boundary check below.
         safe_tool_args = json.loads(json.dumps(tool_args, default=str))
 
         # Build the display summary from the same JSON-safe representation so
@@ -656,14 +664,25 @@ def _make_gate_wrapper(
         agent_summary = f"Tool '{tool_name}' called with args: {json.dumps(safe_tool_args)}"
 
         # --- Role-based target resolution ---
-        resolved_contact = await resolve_action_target_contact(pool, tool_args)
+        resolved_contact, owner_channel_is_primary = await _resolve_action_target_authorization(
+            pool, tool_args
+        )
+        target_identity = _extract_channel_identity(tool_args)
+        owner_email_is_allowed = (
+            target_identity is None
+            or target_identity[0] != "email"
+            or owner_channel_is_primary is True
+        )
 
-        if resolved_contact is not None and "owner" in resolved_contact.roles:
+        if (
+            resolved_contact is not None
+            and "owner" in resolved_contact.roles
+            and owner_email_is_allowed
+        ):
             # Owner-directed outbound: auto-approve without any standing rule.
-            # Owner self-notification is low-risk, and resolution above only
-            # returns a row for an active, verified owner channel — so this
-            # covers ANY such channel, not just the primary one (bu-nd5me).
-            # entity_id dispatch and non-primary owner channels all land here.
+            # Email retains its primary-address safeguard; entity-id dispatch
+            # and active verified non-email owner channels land here regardless
+            # of channel primacy.
             dossier_or_error = approval_hooks.validate_owner_dossier(
                 raw_why=raw_why,
                 raw_evidence=raw_evidence,
@@ -745,8 +764,9 @@ def _make_gate_wrapper(
                 return exec_result.result or {}
             return {"error": exec_result.error}
 
-        # Non-owner or unresolvable calls need an honest decision dossier before
-        # they can be matched against a rule or parked.  Returning here is
+        # A target not eligible for owner auto-approval (including a secondary
+        # owner email), a non-owner, or an unresolvable call needs an honest
+        # decision dossier before rule matching or parking. Returning here is
         # intentionally before every database write, so a session can repair the
         # request and retry rather than leave an unreviewable action pending.
         dossier_or_error = approval_hooks.validate_non_owner_dossier(
@@ -757,7 +777,7 @@ def _make_gate_wrapper(
         )
         if isinstance(dossier_or_error, dict):
             logger.info(
-                "Rejected gated non-owner call without valid decision dossier "
+                "Rejected gated call without owner bypass or valid decision dossier "
                 "(tool=%r, action=%s, field=%s)",
                 tool_name,
                 action_id,
@@ -766,7 +786,7 @@ def _make_gate_wrapper(
             return dossier_or_error
         dossier = dossier_or_error
 
-        # Non-owner or unresolvable: check standing rules
+        # No owner bypass: check standing rules.
         rules = await pool.fetch(
             "SELECT * FROM approval_rules WHERE tool_name = $1 AND active = true "
             "ORDER BY created_at DESC, id ASC",
@@ -793,7 +813,7 @@ def _make_gate_wrapper(
                 )
 
         if matching_rule is not None and resolved_contact is not None and not unpinned_critical:
-            # Non-owner with matching standing rule: auto-approve
+            # Target with a matching standing rule: auto-approve.
             rule_id = matching_rule["id"]
 
             await pool.execute(
