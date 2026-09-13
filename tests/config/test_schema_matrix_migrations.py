@@ -46,6 +46,10 @@ RETIRED_MESSENGER_TRACKING_TABLES = {
 
 CHAIN_TABLES: dict[str, set[str]] = {
     "core": CORE_TABLES,
+    # Concierge owns fleet-wide views and catalog seeds, not base tables in
+    # its roster chain. Keeping the empty set explicit lets the matrix verify
+    # the chain ran without inventing a table expectation.
+    "concierge": set(),
     "finance": {"accounts", "bills", "subscriptions", "transactions"},
     "general": {"collections", "collection_items"},
     "health": {
@@ -160,6 +164,14 @@ def _load_one_db_roster_configs() -> list[ButlerConfig]:
 def _enabled_module_chains(config: ButlerConfig) -> tuple[str, ...]:
     chains: list[str] = []
     for module_name in sorted(config.modules.keys()):
+        # A self-named roster module (for example ``modules.lifestyle``) can
+        # share the butler's own Alembic branch label. It is not a second
+        # prerequisite module chain: the butler-specific phase below owns it.
+        # Treating it as an ordinary module would run lifestyle before its
+        # Memory dependency and seed ``predicate_registry`` before that table
+        # exists.
+        if module_name == config.name and has_butler_chain(config.name):
+            continue
         if module_name in CHAIN_TABLES:
             chains.append(module_name)
     return tuple(chains)
@@ -239,12 +251,24 @@ def test_one_db_schema_table_matrix_for_core_and_enabled_modules(postgres_contai
     db_url = create_migration_db(postgres_container, migration_db_name())
     configs = _load_one_db_roster_configs()
 
+    # Provision every schema's core tables before any butler-specific chain.
+    # Concierge's real migration builds a fleet-wide UNION over each rostered
+    # ``<schema>.sessions`` table, so the old single alphabetical pass reached
+    # concierge before QA and asked production migration SQL to reference a
+    # schema the fixture had not provisioned yet. Deterministic dependency phases
+    # mirror the topology honestly without hand-creating any production
+    # relation or weakening the multi-schema assertions below.
     for config in configs:
         schema = config.db_schema
         assert schema is not None
         asyncio.run(run_migrations(db_url, chain="core", schema=schema))
-        if has_butler_chain(config.name):
-            asyncio.run(run_migrations(db_url, chain=config.name, schema=schema))
+
+    # Module-owned tables are the next shared prerequisite layer. Lifestyle's
+    # butler chain seeds the Memory module's predicate registry, so its real
+    # memory chain must create that relation before the seed migration runs.
+    for config in configs:
+        schema = config.db_schema
+        assert schema is not None
         for module_chain in _enabled_module_chains(config):
             # Route each module chain to its target schema (private override or
             # the butler's own schema) — mirrors lifecycle.py step 8.
@@ -255,6 +279,15 @@ def test_one_db_schema_table_matrix_for_core_and_enabled_modules(postgres_contai
                     schema=_module_target_schema(config, module_chain),
                 )
             )
+
+    # Butler-specific chains run only after fleet core and module prerequisites
+    # exist. This is the first phase allowed to construct cross-schema views or
+    # seed module-owned registries.
+    for config in configs:
+        schema = config.db_schema
+        assert schema is not None
+        if has_butler_chain(config.name):
+            asyncio.run(run_migrations(db_url, chain=config.name, schema=schema))
 
     expected_by_schema, chain_by_schema = _expected_schema_matrix(configs)
     actual_by_schema = _fetch_tables_by_schema(db_url, set(expected_by_schema.keys()))
