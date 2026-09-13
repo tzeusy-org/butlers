@@ -3,8 +3,9 @@
 Wraps gated tools at MCP registration time so that:
 1. When a gated tool is called, the call is serialized into a PendingAction.
 2. Target contact resolution: extract channel identifier from tool_args and
-   resolve via ``resolve_contact_by_channel()``.  If the target has the
-   ``'owner'`` role, the action is auto-approved with no standing rule required.
+   resolve via ``resolve_contact_by_channel()``.  Any owner-looking channel
+   result is corroborated by the ambiguity-safe owner-only definer before the
+   action is auto-approved with no standing rule required.
    Owner self-notification is low-risk, so this auto-approve applies to ANY
    active, verified owner channel — not only the primary one (bu-nd5me).  Channel
    resolution only returns a row for an *active* ``relationship.entity_facts``
@@ -436,17 +437,31 @@ async def resolve_action_target_contact(
     """Resolve an action target using the gate's full normal/owner fallback.
 
     Non-relationship butlers may not read ``relationship.entity_facts`` under
-    schema isolation. In that case owner-directed sends are resolved through
-    the narrow SECURITY DEFINER fallback, exactly as the gate does before an
-    owner auto-approval. Terminal decision-memory writeback reuses this helper
-    so a previously resolved owner remains entity-linked in the tally fact.
+    schema isolation, so owner-directed sends use the narrow SECURITY DEFINER
+    fallback. Readable roles also require that lookup to corroborate an
+    owner-looking channel result because it evaluates all normalized candidates
+    together and rejects cross-entity ambiguity. Terminal decision-memory
+    writeback reuses this helper so a previously resolved owner remains
+    entity-linked in the tally fact.
     """
     resolved_contact = await _resolve_target_contact(pool, tool_args)
     identity = _extract_channel_identity(tool_args)
-    if resolved_contact is None and identity is not None and identity[0] != "entity_id":
-        fallback = await resolve_owner_channel_via_definer(pool, identity[0], identity[1])
-        if fallback is not None:
-            resolved_contact, _ = fallback
+    if identity is None or identity[0] == "entity_id":
+        return resolved_contact
+
+    # A normal non-owner resolution is authoritative and must never trigger an
+    # owner-only fallback.  An owner-looking result still needs corroboration:
+    # the normal resolver tries channel-normalization variants sequentially,
+    # while the definer evaluates the full candidate set and rejects a variant
+    # collision spanning owner and external entities.
+    if resolved_contact is not None and "owner" not in resolved_contact.roles:
+        return resolved_contact
+
+    fallback = await resolve_owner_channel_via_definer(pool, identity[0], identity[1])
+    if fallback is not None:
+        resolved_contact, _ = fallback
+    else:
+        resolved_contact = None
     return resolved_contact
 
 

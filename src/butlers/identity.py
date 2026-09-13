@@ -861,9 +861,10 @@ async def resolve_owner_channel_via_definer(
     :func:`resolve_contact_by_channel`); the function receives the predicate plus
     pre-normalised candidate object values.
 
-    Returns ``(owner_contact, is_primary)`` when *channel_value* is one of the
-    owner's registered handles for *channel_type*, else ``None`` (not an owner
-    channel, unknown channel type, or the function is unavailable).
+    Returns ``(owner_contact, is_primary)`` when the candidate values resolve
+    to exactly one live entity and that entity is the owner.  Returns ``None``
+    for non-owner, unknown, or cross-entity ambiguous identifiers, unknown
+    channel types, and unavailable lookup infrastructure.
     """
     canonical_channel = canonical_identity_channel_type(channel_type)
     predicate = _CHANNEL_TYPE_TO_PREDICATE.get(canonical_channel)

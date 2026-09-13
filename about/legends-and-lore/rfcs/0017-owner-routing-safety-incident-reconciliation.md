@@ -143,6 +143,23 @@ Deduplication refactor: both `email_guard.py` and `gate.py` previously
 maintained separate `is_primary` query logic.  Now both import
 `is_primary_contact` from `src/butlers/modules/approvals/_shared.py`.
 
+### 2.6 Cross-schema owner lookup must preserve ambiguity (bu-rp2ie7)
+
+Schema-isolated butlers cannot read `relationship.entity_facts` directly, so
+outbound gates use the owner-only `public.resolve_owner_triple` function rather
+than receiving broader relationship-schema privileges. That fallback is an
+authorization decision, not a general contact lookup: it MUST return an owner
+match only when the supplied channel candidates resolve to exactly one live
+entity across owner and non-owner facts.
+
+Filtering to owner facts before checking uniqueness is unsafe. If the same
+email address or Telegram identifier is attached to both the owner and an
+external entity, owner-first filtering erases the collision and can create an
+external-party bypass. The lookup therefore checks cross-entity ambiguity
+first and returns no authorization on a collision. The ordinary outbound email
+guard additionally retains this RFC's primary-address requirement; lookup
+failure or ambiguity falls through to standing rules and owner review.
+
 ---
 
 ## 3. Incident scenario replay
