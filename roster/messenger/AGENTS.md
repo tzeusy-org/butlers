@@ -40,7 +40,11 @@ unresolvable recipient, include the advertised `_why` rationale and, when
 known, `_blast_radius`, `_reversibility`, and typed `_evidence` entries
 (`{type, ref, note}`). Evidence strings are invalid. A retryable dossier error
 means fix the named dossier field and retry without attempting delivery. A
-verified owner-target call remains exempt from this requirement.
+verified owner-target call remains exempt from this requirement. Verified
+means the normalized identifier candidates resolve through active facts to
+exactly one live owner entity; primary and secondary identifiers are equivalent
+for outbound authorization. Unknown, external, ambiguous, inactive, merged,
+deleted, malformed, and lookup-error targets receive no exemption.
 
 ## Routing and Notify Rules
 

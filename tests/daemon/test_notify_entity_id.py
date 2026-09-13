@@ -75,18 +75,11 @@ def _make_runtime_config_row(butler_name: str = "test-butler") -> dict:
 
 
 def _make_fetchrow_side_effect(butler_name: str = "test-butler"):
-    """Return an async side_effect for pool.fetchrow that returns runtime_config rows
-    for runtime_config queries, is_primary=True for contact_info is_primary lookups,
-    and None for all other queries."""
+    """Return runtime-config rows and no result for unrelated lookups."""
 
     async def _fetchrow(query: str, *args, **kwargs):
         if "runtime_config" in query:
             return _make_runtime_config_row(butler_name)
-        # is_primary_contact queries public.contact_info for is_primary.
-        # Default to True so owner auto-approve continues to work in tests that
-        # use _known_contact_patch without explicitly overriding fetchrow.
-        if "contact_info" in query and "is_primary" in query:
-            return {"is_primary": True}
         return None
 
     return _fetchrow
@@ -212,9 +205,8 @@ async def _start_daemon_with_notify(
 def _known_contact_patch(email: str = "user@example.com") -> Any:
     """Context manager that patches identity resolution to return a known owner contact.
 
-    Patches both ``resolve_contact_by_channel`` (returns owner contact) and
-    ``is_primary_contact`` (returns True) so the email guard auto-approves without
-    a real DB hit.
+    Patches identity resolution to return a unique owner contact so the email
+    guard auto-approves without a real DB hit.
     """
     contact = ResolvedContact(
         contact_id=None,
@@ -229,8 +221,8 @@ def _known_contact_patch(email: str = "user@example.com") -> Any:
     with (
         patch("butlers.identity.resolve_contact_by_channel", side_effect=_mock_resolve),
         patch(
-            "butlers.modules.approvals.email_guard.is_primary_contact",
-            new=AsyncMock(return_value=True),
+            "butlers.identity.resolve_owner_channel_via_definer",
+            new=AsyncMock(return_value=(contact, True)),
         ),
     ):
         yield

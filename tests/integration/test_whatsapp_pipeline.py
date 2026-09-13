@@ -358,15 +358,20 @@ class _GateTestPool:
         self.approval_events: list[dict[str, Any]] = []
 
     async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
+        if "public.resolve_owner_triple" in query and len(args) >= 2:
+            candidates = {
+                str(value).split(":", 1)[1].lower() for value in args[1] if ":" in str(value)
+            }
+            matches = [
+                contact
+                for (_channel_type, channel_value), contact in self._contacts.items()
+                if channel_value.lower() in candidates
+            ]
+            entity_ids = {contact.get("entity_id") for contact in matches}
+            if len(entity_ids) != 1 or not matches or "owner" not in matches[0].get("roles", []):
+                return None
+            return {"entity_id": matches[0].get("entity_id"), "is_primary": True}
         if "relationship.entity_facts" in query and args:
-            if '"primary"' in query and len(args) == 3:
-                # is_primary_contact query (bead 7): SELECT "primary" FROM relationship.entity_facts
-                # WHERE subject=$1 AND predicate=$2 AND object=$3
-                channel_value = str(args[2])
-                found = any(ci_val == channel_value for (ci_type, ci_val) in self._contacts)
-                if not found:
-                    return None
-                return {"primary": True}
             if "ef.subject" in query and "entity_facts ef" in query and len(args) >= 2:
                 # resolve_contact_by_channel: SELECT ef.subject AS entity_id, e.canonical_name, ...
                 # WHERE ef.predicate=$1 AND ef.object=$2
