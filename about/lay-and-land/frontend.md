@@ -26,7 +26,7 @@ graph TB
 
     Shell --> Sidebar["Sidebar (left rail)"]
     Shell --> TopBar["Header bar (h=14)"]
-    Shell --> Main["main (Outlet, p-6, overflow-y-auto)"]
+    Shell --> Main["main (Outlet, responsive gutter + safe-area bottom, overflow-y-auto)"]
 
     TopBar --> PageHeader["PageHeader (breadcrumbs + actions)"]
 
@@ -41,13 +41,19 @@ graph TB
 ```
 
 ### Shell layout (`components/layout/Shell.tsx`)
-- `flex h-screen overflow-hidden bg-background` outer
+- `flex h-dvh overflow-hidden bg-background` outer, inset by
+  `--safe-area-top`, `--safe-area-left`, and `--safe-area-right`
 - Mobile sidebar: Radix `Sheet` from the left, hidden ≥`md`
 - Desktop sidebar: `<aside>` fixed at **56px** (`md:w-14`), full height,
   not collapsible. No width transition.
 - Header: `h-14`, `border-b border-border`, `px-6`, contains hamburger
   (mobile) and `<PageHeader />`
-- Main: `flex-1 overflow-y-auto p-6` (no left margin; rail and main are flex siblings, no underlap)
+- Main: `flex-1 overflow-y-auto`; it owns the single responsive outer gutter
+  through `--page-gutter-x` / `--page-gutter-y` and adds
+  `--safe-area-bottom` to its scrollable bottom padding (no left margin; rail
+  and main are flex siblings, no underlap). The gutter ramps at the canonical
+  phone, tablet (`768px`), and desktop (`1024px`) bands. Page wrappers inherit
+  this gutter rather than adding a second outer padding layer.
 
 This is the only persistent chrome. Pages do not own anything outside
 their `Outlet` rectangle.
@@ -636,9 +642,9 @@ migrated to the editorial archetype — see "Editorial archetype layout"
 below; `QaOverviewPage` predates the `<Page>` primitive and does not
 use this archetype.)
 
-- Max content width: unrestricted (fills `<main>` which has `p-6` from the
-  shell). No additional horizontal constraint.
-- Content padding: inherited from shell (`p-6`). `<Page>` adds `space-y-6`
+- Max content width: unrestricted (fills `<main>` inside the shell's responsive
+  page gutter). No additional horizontal constraint.
+- Content padding: inherited from the shell gutter. `<Page>` adds `space-y-6`
   between its internal regions (heading block, children).
 - Heading block: a flex row (`items-start justify-between gap-4`) containing
   two children: (left) a vertical stack of `<h1 text-3xl font-bold tracking-tight>`
@@ -695,7 +701,7 @@ workspace-like but predates the `<Page>` primitive and does not use it;
 
 - Max content width: unrestricted. Workspace pages are canvas-grade and own
   their own internal layout.
-- Content padding: inherited from shell (`p-6`). A workspace page with
+- Content padding: inherited from the shell gutter. A workspace page with
   floating/overlay elements may override with additional `pb-*` inside
   `children`, not in `<Page>`.
 - Heading block: same structure as overview. A `description` sentence is
@@ -886,8 +892,8 @@ Migration order (rough priority by blast radius and visitor frequency):
 2. **`max-w-5xl` for detail archetype.** No existing detail page enforces a
    max width today. Proposing `max-w-5xl` (64rem / 1024px) as the detail cap.
    Is this too narrow for `EntityDetailPage` which has wide tab panels? An
-   alternative is `max-w-6xl` (72rem) or no cap (letting the shell `p-6` +
-   sidebar handle it).
+   alternative is `max-w-6xl` (72rem) or no cap (letting the shell's responsive
+   gutter + sidebar handle it).
 
    **Reviewer answer:** Keep `max-w-5xl` (64rem). `EntityDetailPage` is the
    widest detail page in the roster and its tab panels are readable at 64rem
@@ -1077,8 +1083,9 @@ column from `AttentionList`, `KpiStrip`, and `RecentDaysIndex`; see
 `ChroniclesPage.tsx` for its current composition). The frame:
 
 - `display: grid`, `grid-template-columns: 1.4fr 1fr`, `gap: 56px`.
-- `max-width: 1280px`, page padding `48px 56px` on the
-  outermost wrapper.
+- `max-width: 1280px`; the wrapper adds no outer padding. The shell supplies
+  the sole responsive page gutter, so editorial pages do not stack a second
+  `px-*` / `py-*` ramp on top of it.
 - Left column carries the narrative: date eyebrow + briefing status
   pill, Display headline, Voice paragraph, attention list, KPI strip.
 - Right column carries the index: eyebrow-titled lists (Butlers, Next).
