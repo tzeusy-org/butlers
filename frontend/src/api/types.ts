@@ -3335,6 +3335,41 @@ export type ApprovalReversibility =
 export type ApprovalPushOutcome =
   "delivered" | "deferred" | "collapsed" | "duplicate" | "failed";
 
+export type ApprovalDeliveryState =
+  | "ready"
+  | "claimed"
+  | "handoff_started"
+  | "retry_wait"
+  | "delivered"
+  | "collapsed"
+  | "cancelled"
+  | "superseded"
+  | "ambiguous";
+
+export interface ApprovalDeliveryCohort {
+  eligible: boolean;
+  state: ApprovalDeliveryState | null;
+  generation: number | null;
+  attempt_count: number;
+  next_eligible_at: string | null;
+  stuck: boolean;
+  ambiguous: boolean;
+}
+
+export interface ApprovalDeliveryTruth {
+  source: "durable" | "legacy" | "unknown";
+  state: ApprovalDeliveryState | null;
+  mode: "single" | "burst_digest" | "collapsed" | null;
+  generation: number | null;
+  last_reason_code: string | null;
+  attempt_count: number;
+  next_eligible_at: string | null;
+  stuck: boolean;
+  ambiguous: boolean;
+  legacy_outcome: ApprovalPushOutcome | null;
+  cohort: ApprovalDeliveryCohort | null;
+}
+
 export interface ApprovalAction {
   id: string;
   butler: string;
@@ -3374,6 +3409,7 @@ export interface ApprovalAction {
    * action (bu-mda0r, bu-p5sg6).
    */
   push_failed?: boolean;
+  delivery?: ApprovalDeliveryTruth | null;
 }
 
 /**
@@ -3414,6 +3450,7 @@ export interface ApprovalSummary {
    * notified. Never fabricate calm (bu-mda0r, bu-p5sg6).
    */
   push_failed?: boolean;
+  delivery?: ApprovalDeliveryTruth | null;
 }
 
 /** Replayable dashboard routing failure shown on the Approvals/Command surface. */
@@ -3511,6 +3548,7 @@ export interface ApprovalDetail {
    * notified. Never fabricate calm (bu-mda0r, bu-p5sg6).
    */
   push_failed?: boolean;
+  delivery?: ApprovalDeliveryTruth | null;
 }
 
 export interface ApprovalAbandonRequest {
@@ -3582,8 +3620,17 @@ export interface ApprovalMetrics {
    * attempt will resolve "failed") until it is provisioned. Null when this
    * could not be determined (e.g. no approvals pool available) -- never
    * treat null as a false all-clear.
-   */
+  */
   callback_secret_configured?: boolean | null;
+  delivery_due_count?: number;
+  delivery_retry_wait_count?: number;
+  delivery_expired_lease_count?: number;
+  delivery_ambiguous_count?: number;
+  delivery_stuck_count?: number;
+  delivery_oldest_due_age_seconds?: number | null;
+  delivery_by_state?: Record<string, number>;
+  delivery_by_reason?: Record<string, number>;
+  delivery_sources_complete?: boolean;
 }
 
 /** Availability metadata for the independently aggregated approvals metric families. */

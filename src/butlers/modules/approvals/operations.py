@@ -31,6 +31,7 @@ from butlers.modules.approvals.autonomy_tracker import (
     record_approval as _record_approval,
 )
 from butlers.modules.approvals.decision_memory import DecisionMemoryWriter
+from butlers.modules.approvals.delivery_lifecycle import transition_pending_action
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.executor import _approval_write_transaction
 from butlers.modules.approvals.models import ActionStatus, ApprovalRule, PendingAction
@@ -76,26 +77,17 @@ async def expire_pending_action_if_stale(
     if expires_at >= effective_now:
         return None
 
-    expired_row = await pool.fetchrow(
-        "UPDATE pending_actions SET status = $1, decided_by = $2, decided_at = $3 "
-        "WHERE id = $4 AND status = $5 "
-        "RETURNING *",
-        ActionStatus.EXPIRED.value,
-        "system:expiry",
-        effective_now,
-        action.id,
-        ActionStatus.PENDING.value,
+    transition = await transition_pending_action(
+        pool,
+        action_id=action.id,
+        target_status=ActionStatus.EXPIRED,
+        decided_by="system:expiry",
+        event_actor="system:expiry",
+        event_reason="approval window elapsed",
+        event_metadata={"tool_name": action.tool_name},
+        now=effective_now,
     )
-    if expired_row is not None:
-        await record_approval_event(
-            pool,
-            ApprovalEventType.ACTION_EXPIRED,
-            actor="system:expiry",
-            action_id=action.id,
-            reason="approval window elapsed",
-            metadata={"tool_name": action.tool_name},
-            occurred_at=effective_now,
-        )
+    if transition.changed:
         return {
             "error": (
                 f"Action {action.id} expired at {expires_at.isoformat()} "
@@ -103,11 +95,11 @@ async def expire_pending_action_if_stale(
             )
         }
 
-    latest_row = await pool.fetchrow("SELECT * FROM pending_actions WHERE id = $1", action.id)
-    if latest_row is None:
+    if transition.action is None:
         return {"error": f"Action not found: {action.id}"}
-    latest_action = PendingAction.from_row(latest_row)
-    return {"error": f"Cannot transition from '{latest_action.status.value}' to '{target_action}'"}
+    return {
+        "error": (f"Cannot transition from '{transition.action.status.value}' to '{target_action}'")
+    }
 
 
 async def sweep_orphaned_prepared_actions(
@@ -139,26 +131,17 @@ async def sweep_orphaned_prepared_actions(
 
     expired_ids: list[str] = []
     for row in rows:
-        expired_row = await pool.fetchrow(
-            "UPDATE pending_actions SET status = $1, decided_by = $2, decided_at = $3 "
-            "WHERE id = $4 AND status = $5 "
-            "RETURNING id",
-            ActionStatus.EXPIRED.value,
-            "system:prepared_action_sweep",
-            effective_now,
-            row["id"],
-            ActionStatus.PENDING.value,
+        transition = await transition_pending_action(
+            pool,
+            action_id=row["id"],
+            target_status=ActionStatus.EXPIRED,
+            decided_by="system:prepared_action_sweep",
+            event_actor="system:prepared_action_sweep",
+            event_reason="prepared action expired unactioned",
+            event_metadata={"tool_name": row["tool_name"]},
+            now=effective_now,
         )
-        if expired_row is not None:
-            await record_approval_event(
-                pool,
-                ApprovalEventType.ACTION_EXPIRED,
-                actor="system:prepared_action_sweep",
-                action_id=row["id"],
-                reason="prepared action expired unactioned",
-                metadata={"tool_name": row["tool_name"]},
-                occurred_at=effective_now,
-            )
+        if transition.changed:
             expired_ids.append(str(row["id"]))
 
     return {"expired_count": len(expired_ids), "expired_ids": expired_ids}
@@ -210,42 +193,26 @@ async def approve_action(
     if action.status != ActionStatus.PENDING:
         return {"error": f"Cannot transition from '{action.status.value}' to 'approved'"}
 
-    now = datetime.now(UTC)
-    expired_result = await expire_pending_action_if_stale(pool, action, now=now)
-    if expired_result is not None:
-        return expired_result
-
     decided_by = f"human:{actor_id}"
-
-    # CAS update: pending → approved
-    approved_row = await pool.fetchrow(
-        "UPDATE pending_actions SET status = $1, decided_by = $2, decided_at = $3 "
-        "WHERE id = $4 AND status = $5 "
-        "RETURNING *",
-        ActionStatus.APPROVED.value,
-        decided_by,
-        now,
-        parsed_id,
-        ActionStatus.PENDING.value,
-    )
-    if approved_row is None:
-        latest_row = await pool.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
-        if latest_row is None:
-            return {"error": f"Action not found: {action_id}"}
-        latest_action = PendingAction.from_row(latest_row)
-        return {"error": (f"Cannot transition from '{latest_action.status.value}' to 'approved'")}
-
-    action = PendingAction.from_row(approved_row)
-
-    await record_approval_event(
+    transition = await transition_pending_action(
         pool,
-        ApprovalEventType.ACTION_APPROVED,
-        actor=_decision_event_actor(actor_id),
         action_id=parsed_id,
-        reason="approved via REST API",
-        metadata={"tool_name": action.tool_name},
-        occurred_at=now,
+        target_status=ActionStatus.APPROVED,
+        decided_by=decided_by,
+        event_actor=_decision_event_actor(actor_id),
+        event_reason="approved via REST API",
+        event_metadata={"tool_name": action.tool_name},
     )
+    if not transition.changed:
+        if transition.action is None:
+            return {"error": f"Action not found: {action_id}"}
+        return {
+            "error": (f"Cannot transition from '{transition.action.status.value}' to 'approved'")
+        }
+    if transition.expired_instead:
+        return {"error": f"Action {action_id} expired and cannot be approved"}
+    action = transition.action
+    assert action is not None
 
     # Post-approval autonomy tracker hook (task 7.1)
     # Wrap in try/except so tracker failure doesn't block approval
@@ -433,55 +400,34 @@ async def reject_action(
     if action.status != ActionStatus.PENDING:
         return {"error": f"Cannot transition from '{action.status.value}' to 'rejected'"}
 
-    now = datetime.now(UTC)
-    expired_result = await expire_pending_action_if_stale(
-        pool,
-        action,
-        now=now,
-        target_action=ActionStatus.REJECTED.value,
-    )
-    if expired_result is not None:
-        return expired_result
-
     escaped_reason = html.escape(reason, quote=True) if reason else None
     decided_by = f"human:{actor_id}"
     if escaped_reason:
         decided_by = f"{decided_by} (reason: {escaped_reason})"
 
-    rejected_row = await pool.fetchrow(
-        "UPDATE pending_actions SET status = $1, decided_by = $2, decided_at = $3 "
-        "WHERE id = $4 AND status = $5 "
-        "RETURNING *",
-        ActionStatus.REJECTED.value,
-        decided_by,
-        now,
-        parsed_id,
-        ActionStatus.PENDING.value,
-    )
-    if rejected_row is None:
-        latest_row = await pool.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
-        if latest_row is None:
-            return {"error": f"Action not found: {action_id}"}
-        latest_action = PendingAction.from_row(latest_row)
-        return {"error": (f"Cannot transition from '{latest_action.status.value}' to 'rejected'")}
-
-    await record_approval_event(
+    transition = await transition_pending_action(
         pool,
-        ApprovalEventType.ACTION_REJECTED,
-        actor=_decision_event_actor(actor_id),
         action_id=parsed_id,
-        reason=reason or "rejected via REST API",
-        metadata={"tool_name": action.tool_name},
-        occurred_at=now,
+        target_status=ActionStatus.REJECTED,
+        decided_by=decided_by,
+        event_actor=_decision_event_actor(actor_id),
+        event_reason=reason or "rejected via REST API",
+        event_metadata={"tool_name": action.tool_name},
     )
+    if not transition.changed:
+        if transition.action is None:
+            return {"error": f"Action not found: {action_id}"}
+        return {
+            "error": (f"Cannot transition from '{transition.action.status.value}' to 'rejected'")
+        }
+    if transition.expired_instead:
+        return {"error": f"Action {action_id} expired and cannot be rejected"}
+    rejected_action = transition.action
+    assert rejected_action is not None
 
     if decision_memory_writer is not None:
-        await decision_memory_writer.record_terminal_decision(
-            PendingAction.from_row(rejected_row), "rejected"
-        )
-
-    final_row = await pool.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
-    return PendingAction.from_row(final_row).to_dict()
+        await decision_memory_writer.record_terminal_decision(rejected_action, "rejected")
+    return rejected_action.to_dict()
 
 
 # ---------------------------------------------------------------------------

@@ -10,6 +10,7 @@ from datetime import timedelta
 from typing import Any, Literal
 
 from butlers.core.approval_delivery_worker import DeliveryClaim, HandoffResult
+from butlers.metrics_registry import get_or_create_gauge
 from butlers.modules.approvals.notifications import (
     build_approval_digest_envelope,
     build_approval_request_envelope,
@@ -36,6 +37,12 @@ _SAFE_REASONS = frozenset(
     }
 )
 
+approval_delivery_backlog = get_or_create_gauge(
+    "approval_delivery_backlog",
+    "Current content-blind approval delivery backlog by owning schema and kind.",
+    labelnames=["schema", "kind"],
+)
+
 
 @dataclass(frozen=True, slots=True)
 class DirectRenderSubject:
@@ -58,10 +65,13 @@ class DeliveryBacklogSnapshot:
     """Content-blind derived worker health."""
 
     due_count: int
+    retry_wait_count: int
     expired_lease_count: int
     ambiguous_count: int
     stuck_count: int
     oldest_due_age_seconds: float | None
+    by_state: Mapping[str, int]
+    by_reason: Mapping[str, int]
 
 
 def _backoff_seconds(presentation_key: str, attempt_number: int) -> float:
@@ -508,6 +518,7 @@ class ApprovalDeliveryRepository:
                     WHERE state IN ('ready', 'retry_wait')
                       AND next_attempt_at <= clock_timestamp()
                 )::integer AS due_count,
+                count(*) FILTER (WHERE state = 'retry_wait')::integer AS retry_wait_count,
                 count(*) FILTER (
                     WHERE state IN ('claimed', 'handoff_started')
                       AND claim_expires_at <= clock_timestamp()
@@ -531,13 +542,35 @@ class ApprovalDeliveryRepository:
             """,
             float(_STUCK_SLO_SECONDS),
         )
-        return DeliveryBacklogSnapshot(
+        state_rows = await self._pool.fetch(
+            "SELECT state, count(*)::integer AS count "
+            "FROM approval_delivery_presentations GROUP BY state"
+        )
+        reason_rows = await self._pool.fetch(
+            "SELECT last_reason_code AS reason, count(*)::integer AS count "
+            "FROM approval_delivery_presentations WHERE last_reason_code IS NOT NULL "
+            "GROUP BY last_reason_code"
+        )
+        snapshot = DeliveryBacklogSnapshot(
             due_count=row["due_count"],
+            retry_wait_count=row["retry_wait_count"],
             expired_lease_count=row["expired_lease_count"],
             ambiguous_count=row["ambiguous_count"],
             stuck_count=row["stuck_count"],
             oldest_due_age_seconds=row["oldest_due_age_seconds"],
+            by_state={item["state"]: item["count"] for item in state_rows},
+            by_reason={item["reason"]: item["count"] for item in reason_rows},
         )
+        schema_name = str(await self._pool.fetchval("SELECT current_schema()"))
+        for kind, value in (
+            ("due", snapshot.due_count),
+            ("retry_wait", snapshot.retry_wait_count),
+            ("expired_lease", snapshot.expired_lease_count),
+            ("ambiguous", snapshot.ambiguous_count),
+            ("stuck", snapshot.stuck_count),
+        ):
+            approval_delivery_backlog.labels(schema=schema_name, kind=kind).set(value)
+        return snapshot
 
     async def _lock_and_check_subject(self, connection: Any, claim: DeliveryClaim) -> bool:
         direct = await connection.fetchrow(
