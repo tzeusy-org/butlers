@@ -76,7 +76,7 @@ class ButlerEffectivePrompt(BaseModel):
     """Owner-only composed prompt preview and roster-drift receipt."""
 
     butler_name: str
-    status: Literal["captured", "preview", "legacy_unavailable", "corrupt"]
+    status: Literal["captured", "preview", "legacy_unavailable", "unavailable", "corrupt"]
     effective_prompt: str | None = None
     prompt_digest: str | None = None
     prompt_provenance: list[PromptProvenance]
@@ -261,6 +261,32 @@ async def get_butler_effective_prompt(
     memory/context layers.
     """
     _assert_butler_exists(name, configs)
+    try:
+        session_pool = db.pool(name)
+        latest = await session_pool.fetchrow(
+            """
+            SELECT effective_system_prompt, prompt_digest, prompt_provenance, started_at
+              FROM sessions
+             WHERE effective_system_prompt IS NOT NULL
+             ORDER BY started_at DESC, id DESC
+             LIMIT 1
+            """
+        )
+    except Exception:
+        logger.warning("Failed to read latest prompt receipt for butler=%s", name, exc_info=True)
+        return ApiResponse[ButlerEffectivePrompt](
+            data=ButlerEffectivePrompt(
+                butler_name=name,
+                status="unavailable",
+                prompt_provenance=[],
+                drift_status="unknown",
+                changed_sources=[],
+            )
+        )
+
+    # Read mutable roster/override layers only after receipt availability is
+    # established. A query failure is not permission to build a partial
+    # composition and label it as runtime truth.
     shared_pool = await _get_shared_pool(db)
     override = await shared_pool.fetchval(
         """
@@ -286,21 +312,6 @@ async def get_butler_effective_prompt(
         [entry.as_dict() for entry in preview_receipt.provenance]
     )
     roster_digest, current_roster = _roster_evidence(current_provenance)
-
-    try:
-        session_pool = db.pool(name)
-        latest = await session_pool.fetchrow(
-            """
-            SELECT effective_system_prompt, prompt_digest, prompt_provenance, started_at
-              FROM sessions
-             WHERE effective_system_prompt IS NOT NULL
-             ORDER BY started_at DESC, id DESC
-             LIMIT 1
-            """
-        )
-    except Exception:
-        logger.warning("Failed to read latest prompt receipt for butler=%s", name, exc_info=True)
-        latest = None
 
     if latest is None:
         return ApiResponse[ButlerEffectivePrompt](

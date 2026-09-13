@@ -1570,6 +1570,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 - edit in models →
 - resolved ·
+- Composed prompt unavailable.
 - Effective prompt unavailable.
 - edit prompt →
 - Could not load both versions to diff.
@@ -4300,4 +4301,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3372*
+*Total strings: 3373*

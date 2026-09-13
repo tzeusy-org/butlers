@@ -223,7 +223,6 @@ async def test_effective_prompt_preview_detects_changed_roster_source(
         "butlers.api.routers.butler_management._ROSTER_ROOT",
         roster_root,
     )
-
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         matched = await client.get(
             "/api/butlers/qa/prompt/effective",
@@ -242,6 +241,95 @@ async def test_effective_prompt_preview_detects_changed_roster_source(
     assert drifted.json()["data"]["drift_status"] == "drifted"
     assert drifted.json()["data"]["changed_sources"] == ["roster:qa/CLAUDE.md"]
     assert drifted.json()["data"]["drifted_since"] == "2026-09-13T10:00:00+00:00"
+
+
+async def test_effective_prompt_query_failure_is_unavailable_not_static_preview(
+    app,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A failed receipt read cannot promote mutable prompt layers to runtime truth."""
+    monkeypatch.setenv("DASHBOARD_API_KEY", "synthetic-owner-key")
+    roster_root = tmp_path / "roster"
+    config_dir = roster_root / "qa"
+    config_dir.mkdir(parents=True)
+    (config_dir / "CLAUDE.md").write_text(
+        "Static roster content that must not be returned",
+        encoding="utf-8",
+    )
+    shared_pool = _make_pool(fetchval_return="Mutable override that must not be returned")
+    session_pool = _make_pool()
+    session_pool.fetchrow = AsyncMock(side_effect=RuntimeError("synthetic query failure"))
+    db = _make_db(shared_pool)
+    db.pool = MagicMock(return_value=session_pool)
+    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
+    monkeypatch.setattr(
+        "butlers.api.routers.butler_management._ROSTER_ROOT",
+        roster_root,
+    )
+    roster_reader = MagicMock()
+    monkeypatch.setattr(
+        "butlers.api.routers.butler_management.read_system_prompt_with_sources",
+        roster_reader,
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get(
+            "/api/butlers/qa/prompt/effective",
+            headers={"X-API-Key": "synthetic-owner-key"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {
+        "butler_name": "qa",
+        "status": "unavailable",
+        "effective_prompt": None,
+        "prompt_digest": None,
+        "prompt_provenance": [],
+        "total_bytes": None,
+        "roster_digest": None,
+        "drift_status": "unknown",
+        "drifted_since": None,
+        "changed_sources": [],
+    }
+    shared_pool.fetchval.assert_not_awaited()
+    roster_reader.assert_not_called()
+
+
+async def test_effective_prompt_verified_absence_remains_a_roster_preview(
+    app,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A successful empty receipt query is distinct from query unavailability."""
+    monkeypatch.setenv("DASHBOARD_API_KEY", "synthetic-owner-key")
+    roster_root = tmp_path / "roster"
+    config_dir = roster_root / "qa"
+    config_dir.mkdir(parents=True)
+    (config_dir / "CLAUDE.md").write_text("Synthetic roster preview", encoding="utf-8")
+    shared_pool = _make_pool(fetchval_return=None)
+    session_pool = _make_pool(fetchrow_return=None)
+    db = _make_db(shared_pool)
+    db.pool = MagicMock(return_value=session_pool)
+    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
+    monkeypatch.setattr(
+        "butlers.api.routers.butler_management._ROSTER_ROOT",
+        roster_root,
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get(
+            "/api/butlers/qa/prompt/effective",
+            headers={"X-API-Key": "synthetic-owner-key"},
+        )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["status"] == "preview"
+    assert data["effective_prompt"] == "Synthetic roster preview"
+    assert data["drift_status"] == "unknown"
 
 
 async def test_effective_prompt_requires_owner_control_before_prompt_access(

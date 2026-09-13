@@ -8643,7 +8643,7 @@ export interface PromptVersion {
 
 export interface ButlerEffectivePrompt {
   butler_name: string;
-  status: "captured" | "preview" | "legacy_unavailable" | "corrupt";
+  status: "captured" | "preview" | "legacy_unavailable" | "unavailable" | "corrupt";
   effective_prompt: string | null;
   prompt_digest: string | null;
   prompt_provenance: PromptProvenanceEntry[];

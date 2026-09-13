@@ -186,7 +186,7 @@ describe("Effective prompt preview", () => {
     expect(screen.queryByText("No system prompt configured.")).toBeNull();
   });
 
-  it.each(["error", "corrupt"] as const)(
+  it.each(["error", "unavailable", "corrupt"] as const)(
     "keeps the mutable authoring prompt out of an unavailable %s receipt",
     (state) => {
       vi.mocked(useButlerPrompt).mockReturnValue({
@@ -205,7 +205,7 @@ describe("Effective prompt preview", () => {
               data: {
                 data: {
                   butler_name: "general",
-                  status: "corrupt",
+                  status: state,
                   effective_prompt: null,
                   prompt_digest: null,
                   prompt_provenance: [],
@@ -228,6 +228,9 @@ describe("Effective prompt preview", () => {
       expect(screen.getByText("Effective prompt unavailable.")).toBeTruthy();
       expect(screen.getByText(/authoring prompt remains separately editable/i)).toBeTruthy();
       expect(screen.queryByText(/Preview shows composed runtime instructions/)).toBeNull();
+      if (state === "unavailable") {
+        expect(screen.getByText("Prompt: receipt unavailable")).toBeTruthy();
+      }
     },
   );
 });

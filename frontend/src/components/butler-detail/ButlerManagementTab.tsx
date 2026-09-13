@@ -242,7 +242,6 @@ function SystemPromptSection({ butlerName }: { butlerName: string }) {
     data: effectiveData,
     isLoading: effectiveLoading,
     isError: effectiveError,
-    error: effectiveErrorValue,
   } = useButlerEffectivePrompt(butlerName);
   const [showEdit, setShowEdit] = useState(false);
   const [showDiff, setShowDiff] = useState(false);
@@ -254,7 +253,7 @@ function SystemPromptSection({ butlerName }: { butlerName: string }) {
   const effective = effectiveData?.data;
   const composedPrompt = effective?.effective_prompt ?? "";
   let driftHint = "Prompt: receipt pending";
-  if (effectiveError) {
+  if (effectiveError || effective?.status === "unavailable") {
     driftHint = "Prompt: receipt unavailable";
   } else if (effective?.status === "corrupt") {
     driftHint = "Prompt: corrupt receipt";
@@ -304,11 +303,8 @@ function SystemPromptSection({ butlerName }: { butlerName: string }) {
         <div className="h-20 w-full rounded bg-muted" />
       ) : (
         <>
-          {effectiveError && (
-            <p className="mb-2 text-xs text-destructive">
-              Composed prompt unavailable
-              {effectiveErrorValue instanceof Error ? `: ${effectiveErrorValue.message}` : "."}
-            </p>
+          {(effectiveError || effective?.status === "unavailable") && (
+            <p className="mb-2 text-xs text-destructive">Composed prompt unavailable.</p>
           )}
           <div className="max-w-[72ch] rounded border border-border bg-muted/20 px-4 py-3 font-serif text-sm leading-relaxed text-foreground">
             {composedPrompt || (
