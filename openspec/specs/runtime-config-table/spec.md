@@ -1,7 +1,7 @@
 # Runtime Config Table
 
 ## Purpose
-Defines the per-butler `runtime_config` DB table and the `RuntimeConfigAccessor` that provides TTL-cached read/seed access. The table is the runtime source of truth for operational tuning (`core_groups`, catalog read authority, concurrency, queue depth), seeded once from `[butler.runtime_seed]` in `butler.toml` on first boot, and managed thereafter via the dashboard. NOTE: migration `core_073` moved `model`, `runtime_type`, `args`, and `session_timeout_s` OFF this table onto `public.model_catalog`; those fields are now resolved per complexity tier by `resolve_model()` and edited via the model-settings surface, not here.
+Defines the per-butler `runtime_config` DB table and the `RuntimeConfigAccessor` that provides TTL-cached read/seed access. The table is the runtime source of truth for operational tuning such as catalog read authority, concurrency, and queue depth. Git-owned `[butler.runtime_seed].core_groups` is authoritative for capability presence; the DB may only narrow that declaration when it carries an explicit `core_groups_narrowing_reason`. NOTE: migration `core_073` moved `model`, `runtime_type`, `args`, and `session_timeout_s` OFF this table onto `public.model_catalog`; those fields are now resolved per complexity tier by `resolve_model()` and edited via the model-settings surface, not here.
 
 ## Requirements
 
@@ -15,13 +15,14 @@ Scope: v1-mandatory
 Schema (after migration `core_073` dropped `model`, `runtime_type`, `args`, and `session_timeout_s`):
 - `butler_name text PRIMARY KEY`
 - `core_groups text[]` (nullable; NULL means all groups enabled)
+- `core_groups_narrowing_reason text` (nullable; non-empty text is required for a DB-owned narrowing to remain effective)
 - `catalog_read_sensitivity text NOT NULL DEFAULT 'normal'` (one of `normal`, `internal`, `confidential`)
 - `max_concurrent int NOT NULL DEFAULT 3`
 - `max_queued int NOT NULL DEFAULT 10`
 - `seeded_at timestamptz NOT NULL DEFAULT now()`
 - `updated_at timestamptz NOT NULL DEFAULT now()`
 
-The `RuntimeConfig` dataclass (`src/butlers/core/runtime_config.py`) mirrors these columns: `butler_name`, `core_groups`, `catalog_read_sensitivity`, `max_concurrent`, `max_queued`, `seeded_at`, `updated_at`.
+The `RuntimeConfig` dataclass (`src/butlers/core/runtime_config.py`) mirrors these columns, including `core_groups_narrowing_reason` and the resolved core-group source/diff metadata used for operator visibility.
 
 #### Scenario: Table creation via migration
 - **WHEN** the Alembic migration runs against a butler database
@@ -59,9 +60,9 @@ Scope: v1-mandatory
 - **WHEN** `accessor.get()` is called with no prior cache and the DB query fails
 - **THEN** the accessor SHALL raise the DB exception (fatal — no config available)
 
-### Requirement: Seed-if-empty on first boot
+### Requirement: Seed and reconcile Git-owned core groups
 
-The accessor SHALL provide a `seed_if_empty(seed: RuntimeSeedConfig)` method that inserts a row from the toml seed values only if no row exists.
+The accessor SHALL provide a `seed_if_empty(seed: RuntimeSeedConfig)` method that inserts a row from the toml seed values when no row exists and reconciles an existing unreasoned `core_groups` value to the current Git declaration. Other runtime-config fields remain DB-owned and SHALL NOT be overwritten by this reconciliation.
 
 Source: Doctrine Rule #5 (git seeds identity and operational defaults)
 Scope: v1-mandatory
@@ -70,9 +71,21 @@ Scope: v1-mandatory
 - **WHEN** `seed_if_empty()` is called and the `runtime_config` table is empty
 - **THEN** a row SHALL be inserted with values from the `RuntimeSeedConfig` and `seeded_at` set to now
 
-#### Scenario: Subsequent boot uses existing row
-- **WHEN** `seed_if_empty()` is called and the `runtime_config` table already has a row
-- **THEN** the existing row SHALL be returned unchanged (toml seed values are ignored)
+#### Scenario: Unreasoned stale groups reconcile to Git
+- **WHEN** `seed_if_empty()` is called, the row's `core_groups` differs from `[butler.runtime_seed].core_groups`, and `core_groups_narrowing_reason` is null or blank
+- **THEN** the row's `core_groups` SHALL be transactionally reconciled to the Git declaration
+- **AND** the effective source SHALL be reported as Git without changing unrelated runtime-config fields
+- **AND** one `core_groups_reconciled` audit record SHALL describe the non-empty before/after diff without exposing sensitive runtime data
+
+#### Scenario: Explicit narrowing remains effective
+- **WHEN** the stored `core_groups` is a subset of the Git declaration and `core_groups_narrowing_reason` is non-empty
+- **THEN** the stored subset SHALL remain the effective core-group allowlist
+- **AND** the reason and DB source SHALL be visible through the runtime-config read surface
+
+#### Scenario: Repeated boot is idempotent
+- **WHEN** one or more daemons reconcile the same butler and Git declaration repeatedly or concurrently
+- **THEN** they SHALL converge on the same core-group row
+- **AND** the audit identity keyed by butler and TOML digest SHALL prevent duplicate reconciliation records
 
 #### Scenario: Concurrent daemon starts race on seed
 - **WHEN** two daemon instances call `seed_if_empty()` concurrently for the same butler
