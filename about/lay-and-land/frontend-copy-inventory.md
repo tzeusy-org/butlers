@@ -1248,6 +1248,15 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Promoted rules
 - Suggestion counts
 
+## `frontend/src/components/approvals/unroutable-attention-panel.tsx`
+
+- Unroutable messages
+- {} unroutable message
+- Retrying
+- Retry
+- Message queued for routing retry
+- Could not retry routing
+
 ## `frontend/src/components/audit/AuditIssuesDoor.tsx`
 
 - Resolving issue group…
@@ -1366,6 +1375,9 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - recent deliveries
 - wake = the subscriber was woken · reaction = what it reported doing
 - Reaction trace
+- {} {} delivery
+- Replaying
+- Replay
 - Subscriptions
 - Deliveries
 - domain events
@@ -4257,4 +4269,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3335*
+*Total strings: 3344*

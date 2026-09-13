@@ -2946,7 +2946,9 @@ class TestMessagePipelineProcessDashboardLanes:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_dashboard_failed_route_dead_letters_instead_of_returning_routed(self, mock_load):
+    async def test_dashboard_failed_route_dead_letters_instead_of_returning_routed(
+        self, mock_load, caplog
+    ):
         """(G3) route_to_butler was attempted but route.execute failed for the
         only target — this must dead-letter, not silently return a 'routed
         but errored' result with no in-thread reply."""
@@ -2971,18 +2973,24 @@ class TestMessagePipelineProcessDashboardLanes:
         )
         pipeline._dead_letter_dashboard_unroutable = AsyncMock(  # type: ignore[method-assign]
             return_value=RoutingResult(
-                target_butler="dead_letter", route_result={"dead_letter_id": "dl-3"}
+                target_butler="dead_letter",
+                route_result={"status": "unroutable", "dead_letter_id": "dl-3"},
+                routing_error="unroutable",
             )
         )
 
-        result = await pipeline.process(
-            "Log $50 expense",
-            tool_args=_dashboard_tool_args(),
-            message_inbox_id="00000000-0000-0000-0000-000000000006",
-        )
+        with caplog.at_level(logging.INFO, logger="butlers.modules.pipeline"):
+            result = await pipeline.process(
+                "Log $50 expense",
+                tool_args=_dashboard_tool_args(),
+                message_inbox_id="00000000-0000-0000-0000-000000000006",
+            )
 
         assert result.target_butler == "dead_letter"
         assert result.target_butler != "finance"
+        assert result.routing_error == "unroutable"
+        assert result.route_result["status"] == "unroutable"
+        assert not any(record.message == "Pipeline routed message" for record in caplog.records)
         pipeline._dead_letter_dashboard_unroutable.assert_awaited_once()
         call_kwargs = pipeline._dead_letter_dashboard_unroutable.await_args.kwargs
         assert "finance" in call_kwargs["failure_reason"]
@@ -3314,10 +3322,14 @@ class TestDeadLetterDashboardUnroutable:
 
         assert result.target_butler == "dead_letter"
         assert result.route_result["dead_letter_id"] == fake_dead_letter_id
+        assert result.route_result["status"] == "unroutable"
+        assert result.routing_error == "unroutable"
+        assert result.routed_targets == []
+        assert result.acked_targets == []
         mock_capture.assert_awaited_once()
         capture_kwargs = mock_capture.await_args.kwargs
         assert capture_kwargs["source_table"] == "message_inbox"
-        assert capture_kwargs["replay_eligible"] is False
+        assert capture_kwargs["replay_eligible"] is True
 
         fake_reply.assert_awaited_once()
         assert "11111111" in fake_reply.await_args.kwargs["message"]
