@@ -27,6 +27,7 @@ from uuid import UUID
 import asyncpg
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
 
+from butlers.api.audit_emit import authenticated_principal
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
 from butlers.api.deps import MCPClientManager, get_mcp_manager
@@ -59,6 +60,8 @@ from butlers.api.models.approval import (
     ExpireStaleActionsResponse,
     RuleConstraintSuggestion,
     TargetContact,
+    UnroutableAttentionItem,
+    UnroutableRetryResult,
 )
 from butlers.api.routers import audit as audit_router
 from butlers.modules.approvals import operations as approvals_ops
@@ -2005,6 +2008,28 @@ _ACTOR_DASHBOARD = "dashboard:rest-api"
 _TELEGRAM_CALLBACK_ACTOR = "owner@telegram"
 
 
+def _switchboard_pool(db_mgr: DatabaseManager) -> asyncpg.Pool:
+    """Return the Switchboard pool that owns the dead-letter queue."""
+    try:
+        return db_mgr.pool("switchboard")
+    except KeyError as exc:
+        raise HTTPException(status_code=503, detail="Switchboard database is unavailable") from exc
+
+
+def _unroutable_question(raw_payload: object) -> str:
+    """Extract only the owner-authored question from a dead-letter payload."""
+    payload = raw_payload
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except (json.JSONDecodeError, ValueError):
+            return "Message content unavailable"
+    if not isinstance(payload, dict):
+        return "Message content unavailable"
+    question = payload.get("message_text") or payload.get("content")
+    return str(question).strip() if question else "Message content unavailable"
+
+
 def _decision_actor_id(callback_actor: str | None, *, callback_authenticated: bool) -> str:
     """Accept Telegram provenance only from the authenticated callback route."""
     if callback_authenticated:
@@ -2257,6 +2282,96 @@ async def update_approvals_policy(
         raise HTTPException(status_code=500, detail=f"Failed to update policy: {exc}") from exc
 
     return ApiResponse(data=request)
+
+
+@router.get("/unroutable", response_model=ApiResponse[list[UnroutableAttentionItem]])
+async def list_unroutable_attention(
+    limit: int = Query(default=50, ge=1, le=200),
+    db_mgr: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[list[UnroutableAttentionItem]]:
+    """List replayable dashboard routing failures on the Command surface."""
+    pool = _switchboard_pool(db_mgr)
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, failure_reason, original_payload, created_at
+            FROM switchboard.dead_letter_queue
+            WHERE source_table = 'message_inbox'
+              AND replay_eligible
+              AND replayed_at IS NULL
+              AND request_context->>'source_channel' = 'dashboard'
+            ORDER BY created_at DESC
+            LIMIT $1
+            """,
+            limit,
+        )
+    return ApiResponse(
+        data=[
+            UnroutableAttentionItem(
+                id=str(row["id"]),
+                question=_unroutable_question(row["original_payload"]),
+                failure_reason=str(row["failure_reason"]),
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
+    )
+
+
+@router.post(
+    "/unroutable/{dead_letter_id}/retry",
+    response_model=ApiResponse[UnroutableRetryResult],
+)
+async def retry_unroutable_attention(
+    dead_letter_id: str,
+    db_mgr: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[UnroutableRetryResult]:
+    """Re-enqueue one dashboard dead-letter with its existing lineage."""
+    try:
+        parsed_id = UUID(dead_letter_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid dead_letter_id: {dead_letter_id}"
+        ) from exc
+
+    from butlers.tools.switchboard.dead_letter.replay import replay_dead_letter_request
+
+    pool = _switchboard_pool(db_mgr)
+    async with pool.acquire() as conn, conn.transaction():
+        eligible = await conn.fetchval(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM switchboard.dead_letter_queue
+                WHERE id = $1
+                  AND source_table = 'message_inbox'
+                  AND request_context->>'source_channel' = 'dashboard'
+            )
+            """,
+            parsed_id,
+        )
+        if not eligible:
+            raise HTTPException(status_code=404, detail="Unroutable message not found")
+        result = await replay_dead_letter_request(
+            conn,
+            dead_letter_id=parsed_id,
+            operator_identity=authenticated_principal(),
+            reason="Owner requested retry from the Command surface",
+        )
+
+    if not result.get("success"):
+        error = result.get("error")
+        if error in {"already_replayed", "not_replay_eligible"}:
+            raise HTTPException(status_code=409, detail=str(error))
+        if error == "dead_letter_not_found":
+            raise HTTPException(status_code=404, detail=str(error))
+        raise HTTPException(status_code=500, detail="Unroutable replay failed")
+
+    return ApiResponse(
+        data=UnroutableRetryResult(
+            dead_letter_id=str(parsed_id),
+            replayed_request_id=str(result["replayed_request_id"]),
+        )
+    )
 
 
 # ---------------------------------------------------------------------------

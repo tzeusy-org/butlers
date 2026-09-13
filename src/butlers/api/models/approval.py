@@ -211,6 +211,23 @@ class ApprovalSummary(BaseModel):
     )
 
 
+class UnroutableAttentionItem(BaseModel):
+    """Replayable dashboard routing failure shown on the Command surface."""
+
+    id: str
+    question: str
+    failure_reason: str
+    created_at: datetime
+
+
+class UnroutableRetryResult(BaseModel):
+    """Durable result of re-enqueueing one unroutable dashboard message."""
+
+    dead_letter_id: str
+    replayed_request_id: str
+    status: Literal["queued"] = "queued"
+
+
 class ApprovalsPolicy(BaseModel):
     """Owner Attention Policy singleton — GET/PUT /api/approvals/policy."""
 
