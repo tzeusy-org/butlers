@@ -162,8 +162,9 @@ import {
   MOCK_PROVIDERS,
   MOCK_IDENTITIES,
 } from "./mock-data.ts";
-import type { SpineEntry } from "./types.ts";
-import { buildSpineEntries } from "./spine-builder.ts";
+import type { CredentialState, SpineEntry } from "./types.ts";
+import { buildSpineEntries, compareSpineEntries } from "./spine-builder.ts";
+import { SPINE_GROUP_BY_STATE, SPINE_GROUP_ORDER } from "./constants.ts";
 import { useSpotifyStatus } from "@/hooks/use-spotify.ts";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -236,7 +237,6 @@ describe("SpineRow: one-row-template uniformity", () => {
     label: "Test Credential",
     state: "ok",
     subline: "verified 14:00",
-    lastTouchOrder: 0,
   };
 
   const userEntry: SpineEntry = {
@@ -478,10 +478,11 @@ describe("Spine sublines make no usage claim [bu-hd1vs]", () => {
     expect(byLabel.get("Gemini CLI")).toBe("not set");
   });
 
-  it("gives every user row one fixed rank, since none has a last-touch signal", () => {
-    const userRanks = spine.filter((e) => e.family === "user").map((e) => e.lastTouchOrder);
-    expect(userRanks.length).toBeGreaterThan(0);
-    expect(new Set(userRanks)).toEqual(new Set([800]));
+  it("projects no synthetic last-touch ordering", () => {
+    expect(spine.length).toBeGreaterThan(0);
+    for (const entry of spine) {
+      expect(entry).not.toHaveProperty("lastTouchOrder");
+    }
   });
 });
 
@@ -509,7 +510,7 @@ describe("SpineSearch", () => {
 });
 
 describe("SortPicker", () => {
-  it("renders three sort options", () => {
+  it("renders only severity and alpha sort options", () => {
     const entries = buildSpineEntries(MOCK_INVENTORY, "tze");
     const html = renderToStaticMarkup(
       <Spine
@@ -526,8 +527,79 @@ describe("SortPicker", () => {
       />,
     );
     expect(html).toContain('data-sort-mode="severity"');
-    expect(html).toContain('data-sort-mode="recency"');
     expect(html).toContain('data-sort-mode="alpha"');
+    expect(html).not.toContain('data-sort-mode="recency"');
+  });
+});
+
+describe("state-first spine ordering", () => {
+  it("maps every CredentialState exactly once into the five adopted groups", () => {
+    const states: CredentialState[] = [
+      "ok",
+      "expired",
+      "revoked",
+      "expiring",
+      "scope_mismatch",
+      "warn",
+      "checking",
+      "authorization_needed",
+      "rotating",
+      "never_set",
+      "failed",
+    ];
+
+    expect(SPINE_GROUP_ORDER).toEqual([
+      "needs-hand",
+      "in-progress",
+      "stale",
+      "ready",
+      "not-set",
+    ]);
+    expect(Object.keys(SPINE_GROUP_BY_STATE).sort()).toEqual([...states].sort());
+    expect(states.map((state) => [state, SPINE_GROUP_BY_STATE[state]])).toEqual([
+      ["ok", "ready"],
+      ["expired", "needs-hand"],
+      ["revoked", "needs-hand"],
+      ["expiring", "needs-hand"],
+      ["scope_mismatch", "needs-hand"],
+      ["warn", "stale"],
+      ["checking", "in-progress"],
+      ["authorization_needed", "needs-hand"],
+      ["rotating", "in-progress"],
+      ["never_set", "not-set"],
+      ["failed", "needs-hand"],
+    ]);
+  });
+
+  it("keeps severity primary and applies deterministic mode-specific tie breaks", () => {
+    const entry = (
+      key: string,
+      family: SpineEntry["family"],
+      label: string,
+      state: CredentialState,
+    ): SpineEntry => ({ key, family, label, state, mono: false, subline: state });
+    const entries = [
+      entry("u:beta", "user", "Beta", "failed"),
+      entry("s:zulu", "system", "Zulu", "expired"),
+      entry("s:same", "system", "Same", "failed"),
+      entry("c:same-b", "cli", "Same", "failed"),
+      entry("c:same-a", "cli", "Same", "failed"),
+    ];
+
+    expect([...entries].sort((a, b) => compareSpineEntries(a, b, "severity")).map((e) => e.key))
+      .toEqual(["s:zulu", "c:same-a", "c:same-b", "s:same", "u:beta"]);
+    expect([...entries].sort((a, b) => compareSpineEntries(a, b, "alpha")).map((e) => e.key))
+      .toEqual(["s:zulu", "u:beta", "c:same-a", "c:same-b", "s:same"]);
+
+    const duplicateFocus = [
+      { ...entry("u:google", "user", "Google", "ok"), identity: "zeta" },
+      { ...entry("u:google", "user", "Google", "ok"), identity: "alpha" },
+    ];
+    expect(
+      duplicateFocus
+        .sort((a, b) => compareSpineEntries(a, b, "alpha"))
+        .map((item) => item.identity),
+    ).toEqual(["alpha", "zeta"]);
   });
 });
 

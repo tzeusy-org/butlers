@@ -2,8 +2,44 @@
 // Spine entry builder — projects inventory data into flat SpineEntry list [bu-qu8v8]
 // ---------------------------------------------------------------------------
 
-import type { SpineEntry, InventoryResponse } from "./types.ts";
+import type { CredentialFamily, SpineEntry, SpineSortMode, InventoryResponse } from "./types.ts";
 import { severityRank } from "./constants.ts";
+
+const FAMILY_RANK: Record<CredentialFamily, number> = {
+  cli: 0,
+  system: 1,
+  user: 2,
+};
+
+function compareText(a: string, b: string): number {
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
+}
+
+/** Severity-first total ordering within one state group. */
+export function compareSpineEntries(
+  a: SpineEntry,
+  b: SpineEntry,
+  mode: SpineSortMode,
+): number {
+  const severity = severityRank(a.state) - severityRank(b.state);
+  if (severity !== 0) return severity;
+
+  if (mode === "severity") {
+    const family = FAMILY_RANK[a.family] - FAMILY_RANK[b.family];
+    if (family !== 0) return family;
+  }
+
+  const label = compareText(a.label.toLowerCase(), b.label.toLowerCase());
+  if (label !== 0) return label;
+  const focusKey = compareText(a.key, b.key);
+  if (focusKey !== 0) return focusKey;
+
+  // User rows intentionally keep provider-level focus keys, so two identities
+  // can share both label and focus key. Identity is a final internal-only
+  // disambiguator after the contract's four visible ordering keys.
+  return compareText(a.identity ?? "", b.identity ?? "");
+}
 
 /**
  * Real missing-capability count for a scope_mismatch credential, or a plain
@@ -51,19 +87,17 @@ export function buildSpineEntries(
   const identitySet = new Set(identityIds);
   const userSecrets = inventory.user.filter((s) => identitySet.has(s.identity));
 
-  const cli: SpineEntry[] = inventory.cli.map((r, i) => ({
+  const cli: SpineEntry[] = inventory.cli.map((r) => ({
     key: `c:${r.id}`,
     family: "cli" as const,
     label: r.label,
     state: r.state,
     mono: false,
-    lastTouchOrder:
-      r.state === "never_set" ? 900 : r.test ? i : 500,
     // bu-hd1vs: this used to end at `used ${r.lastUsed ?? "—"}`. Nothing has
     // ever persisted a per-credential usage time, so every healthy CLI row
     // read "used —" in production — which states that usage IS tracked and
     // there is none. The probe timestamp is the real last-touch signal these
-    // rows have (it already drives lastTouchOrder above), so say that instead.
+    // rows have, so say that instead.
     subline:
       r.state === "never_set"
         ? "not set"
@@ -76,13 +110,12 @@ export function buildSpineEntries(
             : "not probed",
   }));
 
-  const system: SpineEntry[] = inventory.system.map((s, i) => ({
+  const system: SpineEntry[] = inventory.system.map((s) => ({
     key: `s:${s.key}`,
     family: "system" as const,
     label: s.key,
     state: s.rowState === "missing" ? "never_set" : (s.state ?? "ok"),
     mono: true,
-    lastTouchOrder: s.rowState === "missing" ? 900 : i,
     subline:
       s.rowState === "missing"
         ? "not set"
@@ -101,12 +134,6 @@ export function buildSpineEntries(
     identity: s.identity,
     state: s.state,
     mono: false,
-    // Fixed rank: user rows carry no last-touch signal of their own (no usage
-    // time is tracked anywhere — bu-hd1vs), so they sort as one block after
-    // the system and probed-CLI rows and ahead of the never-set ones. This was
-    // already the production behaviour; the `s.lastUsed ? i : 800` it replaces
-    // could only ever take the 800 branch.
-    lastTouchOrder: 800,
     // bu-86c4c.1 (truth amnesty): these sublines used to hardcode a fake
     // failure age ("refresh failed · 2d") and a fake missing-scope count
     // ("1 scope missing") for EVERY expired / scope_mismatch credential,
@@ -148,8 +175,6 @@ export function buildSpineEntries(
 /** Pick the default focus key (most severe entry). */
 export function pickDefaultKey(entries: SpineEntry[]): string {
   if (entries.length === 0) return "";
-  const sorted = [...entries].sort((a, b) => {
-    return severityRank(a.state) - severityRank(b.state);
-  });
+  const sorted = [...entries].sort((a, b) => compareSpineEntries(a, b, "severity"));
   return sorted[0]?.key ?? entries[0]?.key ?? "";
 }

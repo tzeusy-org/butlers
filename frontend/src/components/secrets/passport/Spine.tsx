@@ -7,8 +7,8 @@
 // Structure:
 //   - IdentityChip strip at the top (viewing context)
 //   - SpineSearch (text filter)
-//   - SortPicker (severity | recency | alpha)
-//   - Groups: needs-hand (pinned) | cli runtimes | system | user
+//   - SortPicker (severity | alpha)
+//   - State-first groups: needs-hand | in-progress | stale | ready | not-set
 //   - SpineRow: relative position + sliver + dot + label + subline + right-glyph
 //
 // One-row-template uniformity: every family uses SpineRow with identical
@@ -18,16 +18,30 @@
 import * as React from "react";
 
 import { cn } from "@/lib/utils";
-import type { SpineEntry, SpineSortMode, Identity } from "./types.ts";
-import { needsHand, isUnverified, severityRank } from "./constants.ts";
+import type { Identity, SpineEntry, SpineGroupId, SpineSortMode } from "./types.ts";
+import { SPINE_GROUP_ORDER, STATE_CATALOG, spineGroupForState } from "./constants.ts";
+import { compareSpineEntries } from "./spine-builder.ts";
 import { CredentialDot, Sliver, Mono, IdentityChip, ProviderMark } from "./atoms.tsx";
 
 // ── Sorters ─────────────────────────────────────────────────────────────────
 
 const SORTERS: Record<SpineSortMode, (a: SpineEntry, b: SpineEntry) => number> = {
-  severity: (a, b) => severityRank(a.state) - severityRank(b.state),
-  recency:  (a, b) => (a.lastTouchOrder ?? 999) - (b.lastTouchOrder ?? 999),
-  alpha:    (a, b) => (a.label ?? "").toLowerCase().localeCompare((b.label ?? "").toLowerCase()),
+  severity: (a, b) => compareSpineEntries(a, b, "severity"),
+  alpha: (a, b) => compareSpineEntries(a, b, "alpha"),
+};
+
+const GROUP_LABELS: Record<SpineGroupId, { label: string; hint?: string }> = {
+  "needs-hand": { label: "needs hand", hint: "pinned" },
+  "in-progress": { label: "in progress", hint: "transient" },
+  stale: { label: "stale", hint: "unverified" },
+  ready: { label: "ready" },
+  "not-set": { label: "not set" },
+};
+
+const FAMILY_LABELS: Record<SpineEntry["family"], string> = {
+  cli: "CLI",
+  system: "System",
+  user: "User",
 };
 
 // ── SpineSearch ──────────────────────────────────────────────────────────────
@@ -86,8 +100,7 @@ export function SortPicker({
 }) {
   const opts: Array<{ id: SpineSortMode; label: string }> = [
     { id: "severity", label: "severity" },
-    { id: "recency",  label: "recency"  },
-    { id: "alpha",    label: "alpha"    },
+    { id: "alpha", label: "alpha" },
   ];
   return (
     <div className="flex items-baseline gap-1.5 px-3.5 pb-2.5">
@@ -171,6 +184,7 @@ export function SpineRow({
       data-key={entry.key}
       data-state={entry.state}
       data-active={active}
+      aria-label={`${FAMILY_LABELS[entry.family]} · ${entry.label}, ${STATE_CATALOG[entry.state].label}`}
       className={cn(
         "relative w-full text-left border-none cursor-pointer",
         "grid items-center gap-2",
@@ -249,6 +263,7 @@ function spineRowId(entry: SpineEntry): string {
 
 /** SpineGroup: section eyebrow + rows. Hidden when empty (calm-day invariant). */
 export function SpineGroup({
+  groupId,
   eyebrow,
   hint,
   items,
@@ -260,6 +275,7 @@ export function SpineGroup({
   onRowKeyDown,
   providers,
 }: {
+  groupId: SpineGroupId;
   eyebrow: string;
   hint?: string;
   items: SpineEntry[];
@@ -273,7 +289,7 @@ export function SpineGroup({
 }) {
   if (items.length === 0) return null;
   return (
-    <div className="pb-3" data-spine-group={eyebrow}>
+    <div className="pb-3" data-spine-group={groupId}>
       <div
         className="flex items-baseline justify-between px-3.5 pb-1.5 pt-3"
       >
@@ -384,54 +400,33 @@ export function Spine({
     [entries, search],
   );
 
-  const needsHandGroup = React.useMemo(
-    () => filtered.filter((e) => needsHand(e.state)).sort(cmp),
-    [filtered, cmp],
-  );
-  // Tri-state (bu-976n0): set-but-never-probed rows are an UNKNOWN, not a
-  // failure — they get their own quiet group instead of inflating the
-  // act-now "needs hand" bucket above.
-  const staleGroup = React.useMemo(
-    () => filtered.filter((e) => isUnverified(e.state)).sort(cmp),
-    [filtered, cmp],
-  );
-  const restCli = React.useMemo(
+  const groupedEntries = React.useMemo(
     () =>
-      filtered
-        .filter((e) => e.family === "cli" && !needsHand(e.state) && !isUnverified(e.state))
-        .sort(cmp),
-    [filtered, cmp],
-  );
-  const restSys = React.useMemo(
-    () =>
-      filtered
-        .filter((e) => e.family === "system" && !needsHand(e.state) && !isUnverified(e.state))
-        .sort(cmp),
-    [filtered, cmp],
-  );
-  const restUsr = React.useMemo(
-    () =>
-      filtered
-        .filter((e) => e.family === "user" && !needsHand(e.state) && !isUnverified(e.state))
-        .sort(cmp),
+      SPINE_GROUP_ORDER.map((groupId) => ({
+        groupId,
+        items: filtered
+          .filter((entry) => spineGroupForState(entry.state) === groupId)
+          .sort(cmp),
+      })),
     [filtered, cmp],
   );
 
-  // Running counter for global §N numbering — computed declaratively to
-  // avoid React Compiler immutability complaints about render-time mutation.
-  const n0NeedsHand = 0;
-  const n0Stale = needsHandGroup.length;
-  const n0Cli = n0Stale + staleGroup.length;
-  const n0Sys = n0Cli + restCli.length;
-  const n0Usr = n0Sys + restSys.length;
+  // Global §N numbering follows the same flattened group order as search and
+  // keyboard traversal. The five-item map keeps offsets declarative.
+  const groupSections = groupedEntries.map((section, index) => ({
+    ...section,
+    n0: groupedEntries
+      .slice(0, index)
+      .reduce((count, previous) => count + previous.items.length, 0),
+  }));
 
   // Rows span several visual groups but form one review order. Keep a single
   // native Tab stop and move that focus with arrows; this is local to the
   // credential buttons, so the search input and all other page controls keep
   // their normal keyboard behavior.
   const visibleEntries = React.useMemo(
-    () => [...needsHandGroup, ...staleGroup, ...restCli, ...restSys, ...restUsr],
-    [needsHandGroup, staleGroup, restCli, restSys, restUsr],
+    () => groupedEntries.flatMap((group) => group.items),
+    [groupedEntries],
   );
   const visibleRowIds = React.useMemo(
     () => visibleEntries.map(spineRowId),
@@ -513,86 +508,37 @@ export function Spine({
       <SortPicker mode={sortMode} onChange={onSortChange} />
 
       <div className="flex-1 min-h-0">
-        {/* Needs-hand group: always pinned, severity-sorted */}
-        <SpineGroup
-          eyebrow={`needs hand · ${needsHandGroup.length}`}
-          hint={needsHandGroup.length > 0 ? "pinned" : ""}
-          items={needsHandGroup}
-          n0={n0NeedsHand}
-          activeKey={activeKey}
-          onSelect={onSelect}
-          rovingRowId={activeRovingRowId}
-          onRowFocus={setRovingRowId}
-          onRowKeyDown={handleRowKeyDown}
-          providers={providers}
-        />
-        {needsHandGroup.length > 0 && (
-          <div
-            aria-hidden="true"
-            className="mx-0 my-1"
-            style={{ height: 1, background: "var(--border)" }}
-          />
-        )}
-
-        {/*
-         * Stale/unverified group (bu-976n0): set but never probed (or a
-         * stale probe). Quiet — no "pinned"/act-now hint, no alarm color.
-         * Per bu-a63hn's background staleness loop this bucket should stay
-         * near-empty and self-clear on its own re-probe cadence.
-         */}
-        <SpineGroup
-          eyebrow={`stale · ${staleGroup.length}`}
-          hint={staleGroup.length > 0 ? "unverified" : ""}
-          items={staleGroup}
-          n0={n0Stale}
-          activeKey={activeKey}
-          onSelect={onSelect}
-          rovingRowId={activeRovingRowId}
-          onRowFocus={setRovingRowId}
-          onRowKeyDown={handleRowKeyDown}
-          providers={providers}
-        />
-        {staleGroup.length > 0 && (
-          <div
-            aria-hidden="true"
-            className="mx-0 my-1"
-            style={{ height: 1, background: "var(--border)" }}
-          />
-        )}
-
-        <SpineGroup
-          eyebrow={`cli runtimes · ${restCli.length}`}
-          items={restCli}
-          n0={n0Cli}
-          activeKey={activeKey}
-          onSelect={onSelect}
-          rovingRowId={activeRovingRowId}
-          onRowFocus={setRovingRowId}
-          onRowKeyDown={handleRowKeyDown}
-          providers={providers}
-        />
-        <SpineGroup
-          eyebrow={`system · ${restSys.length}`}
-          items={restSys}
-          n0={n0Sys}
-          activeKey={activeKey}
-          onSelect={onSelect}
-          rovingRowId={activeRovingRowId}
-          onRowFocus={setRovingRowId}
-          onRowKeyDown={handleRowKeyDown}
-          providers={providers}
-        />
-        <SpineGroup
-          eyebrow={`integrations · ${restUsr.length}`}
-          items={restUsr}
-          n0={n0Usr}
-          activeKey={activeKey}
-          onSelect={onSelect}
-          rovingRowId={activeRovingRowId}
-          onRowFocus={setRovingRowId}
-          onRowKeyDown={handleRowKeyDown}
-          providers={providers}
-        />
+        {groupSections.map(({ groupId, items, n0 }, index) => {
+          if (items.length === 0) return null;
+          const { label, hint } = GROUP_LABELS[groupId];
+          const hasFollowingGroup = groupSections
+            .slice(index + 1)
+            .some((section) => section.items.length > 0);
+          return (
+            <React.Fragment key={groupId}>
+              <SpineGroup
+                groupId={groupId}
+                eyebrow={`${label} · ${items.length}`}
+                hint={hint}
+                items={items}
+                n0={n0}
+                activeKey={activeKey}
+                onSelect={onSelect}
+                rovingRowId={activeRovingRowId}
+                onRowFocus={setRovingRowId}
+                onRowKeyDown={handleRowKeyDown}
+                providers={providers}
+              />
+              {hasFollowingGroup && (
+                <div
+                  aria-hidden="true"
+                  className="mx-0 my-1"
+                  style={{ height: 1, background: "var(--border)" }}
+                />
+              )}
+            </React.Fragment>
+          );
+        })}
       </div>
 
       {/* Footer */}
