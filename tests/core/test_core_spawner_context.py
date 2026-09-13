@@ -1,6 +1,7 @@
 """Tests for context parameter in trigger (butlers-06j.2).
 
-Also covers spawned-prompt parity across runtime adapters (bu-1mq1d.3).
+Also covers spawned-prompt parity across runtime adapters (bu-1mq1d.3) and
+the per-layer prompt-composition token digest (bu-hz0g0).
 """
 
 from __future__ import annotations
@@ -13,7 +14,11 @@ import pytest
 from butlers.config import ButlerConfig
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import Spawner
-from butlers.core.spawner_context import _compose_system_prompt
+from butlers.core.spawner_context import (
+    ComposedPrompt,
+    _compose_system_prompt,
+    compose_prompt_digest,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -179,6 +184,48 @@ class TestSpawnedPromptParityAcrossRuntimes:
             "section (roster/relationship/AGENTS.md 'Scope Filter' heading) — a Claude-runtime "
             "session would silently skip the scope='relationship' facts-table guard."
         )
+
+
+class TestComposePromptDigest:
+    """bu-hz0g0: per-layer token digest for the composed system prompt.
+
+    ``compose_prompt_digest`` measures the five layers represented by the
+    ledger schema at the spawn seam. It estimates each layer's token count at
+    chars/4 (the same heuristic
+    ``butlers.modules.pipeline._load_email_history`` uses) rather than
+    requiring a tokenizer on the spawn hot path.
+    """
+
+    def test_all_layers_present_estimates_chars_over_four(self) -> None:
+        digest = compose_prompt_digest(
+            "base" * 10,  # 40 chars
+            "memory" * 10,  # 60 chars
+            general_timezone_instruction="tz" * 10,  # 20 chars
+            routing_instructions="route" * 10,  # 50 chars
+            context_preamble="ctx" * 10,  # 30 chars
+        )
+        assert digest == ComposedPrompt(
+            base_prompt_tokens=10,
+            timezone_instruction_tokens=5,
+            context_preamble_tokens=7,
+            routing_instructions_tokens=12,
+            memory_context_tokens=15,
+        )
+
+    def test_missing_optional_layers_are_zero_not_none(self) -> None:
+        digest = compose_prompt_digest("base prompt text", None)
+        assert digest == ComposedPrompt(
+            base_prompt_tokens=len("base prompt text") // 4,
+            timezone_instruction_tokens=0,
+            context_preamble_tokens=0,
+            routing_instructions_tokens=0,
+            memory_context_tokens=0,
+        )
+
+    def test_empty_string_layer_is_zero(self) -> None:
+        digest = compose_prompt_digest("base", "", general_timezone_instruction="")
+        assert digest.memory_context_tokens == 0
+        assert digest.timezone_instruction_tokens == 0
 
 
 class TestBlindSpotPreambleComposition:

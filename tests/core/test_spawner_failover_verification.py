@@ -540,17 +540,20 @@ class TestEligibleRuntimeFailureRetry:
         assert len(runtime_failures) == 1
         assert runtime_failures[0][2] == _PRIMARY_ID
         assert runtime_failures[0][5].startswith("empty_runtime_response")
-        mock_usage.assert_awaited_once_with(
-            mock_pool,
-            catalog_entry_id=_PRIMARY_ID,
-            butler_name="test-butler",
-            session_id=_SESSION_ID,
-            input_tokens=10,
-            output_tokens=0,
-            cached_input_tokens=0,
-            cache_creation_tokens=0,
-            purpose="schedule:consolidation",
-        )
+        mock_usage.assert_awaited_once()
+        _, usage_kwargs = mock_usage.call_args
+        assert usage_kwargs["catalog_entry_id"] == _PRIMARY_ID
+        assert usage_kwargs["butler_name"] == "test-butler"
+        assert usage_kwargs["session_id"] == _SESSION_ID
+        assert usage_kwargs["input_tokens"] == 10
+        assert usage_kwargs["output_tokens"] == 0
+        assert usage_kwargs["cached_input_tokens"] == 0
+        assert usage_kwargs["cache_creation_tokens"] == 0
+        assert usage_kwargs["purpose"] == "schedule:consolidation"
+        # bu-hz0g0: this dispatch never resumed a conversation (trigger_source
+        # is not "route"); the composed-prompt digest itself is covered by
+        # TestComposedPromptLedgerColumns in test_spawner_dispatch_attempt_provenance.py.
+        assert usage_kwargs["resume_outcome"] is None
 
     async def test_tool_only_adapter_result_remains_successful(self, tmp_path: Path) -> None:
         """A confirmed MCP action is a usable result even without final text."""

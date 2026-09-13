@@ -1230,8 +1230,10 @@ SELECT 1 FROM public.token_limits WHERE catalog_entry_id = $1 LIMIT 1
 _LEDGER_INSERT_SQL = """
 INSERT INTO public.token_usage_ledger
     (catalog_entry_id, butler_name, session_id, input_tokens, output_tokens,
-     cached_input_tokens, cache_creation_tokens, purpose)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     cached_input_tokens, cache_creation_tokens, purpose,
+     base_prompt_tokens, timezone_instruction_tokens, context_preamble_tokens,
+     routing_instructions_tokens, memory_context_tokens, resume_outcome)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 """
 
 # Read the configured monthly spend ceiling (singleton row id=1).
@@ -2752,6 +2754,12 @@ async def record_token_usage(
     cached_input_tokens: int = 0,
     cache_creation_tokens: int = 0,
     purpose: str | None = None,
+    base_prompt_tokens: int | None = None,
+    timezone_instruction_tokens: int | None = None,
+    context_preamble_tokens: int | None = None,
+    routing_instructions_tokens: int | None = None,
+    memory_context_tokens: int | None = None,
+    resume_outcome: str | None = None,
 ) -> None:
     """Record token usage to ``public.token_usage_ledger``.
 
@@ -2786,6 +2794,24 @@ async def record_token_usage(
         ``None`` when the caller has no meaningful purpose to report (kept
         nullable rather than defaulted so honestly-unknown rows stay
         distinguishable from a real, named purpose).
+    base_prompt_tokens, timezone_instruction_tokens, context_preamble_tokens,
+    routing_instructions_tokens, memory_context_tokens:
+        Per-layer token digest of the composed system prompt (bu-hz0g0), from
+        ``spawner_context.compose_prompt_digest()``. ``None`` for callers that
+        never compose a layered prompt (e.g. the discretion dispatcher lane),
+        kept nullable rather than defaulted to 0 so "no composition happened"
+        stays distinguishable from "this layer was empty".
+    resume_outcome:
+        Whether this dispatch resumed a provider-native session:
+        ``"resumed"`` (a resume handle was attached and the attempt using it
+        succeeded), ``"resume_failed_retried_cold"`` (the resume attempt
+        failed and was transparently retried cold on the same candidate), or
+        ``"resume_failed_terminal"`` (the resume attempt failed and was
+        ineligible for the transparent cold retry). ``None`` when resume was
+        never attempted this dispatch (non-conversational trigger, adapter
+        without resume support, no handle available, etc.) -- an evolving,
+        code-owned vocabulary with no DB-level CHECK constraint, mirroring
+        ``purpose``.
     """
     try:
         await pool.execute(
@@ -2798,6 +2824,12 @@ async def record_token_usage(
             cached_input_tokens,
             cache_creation_tokens,
             purpose,
+            base_prompt_tokens,
+            timezone_instruction_tokens,
+            context_preamble_tokens,
+            routing_instructions_tokens,
+            memory_context_tokens,
+            resume_outcome,
         )
     except Exception:
         logger.warning(
