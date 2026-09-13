@@ -95,7 +95,7 @@ def test_base_image_ships_the_pinned_dashboard_cli_sandbox_toolchain() -> None:
     """REQ-core-credentials-002: the image, not the host, owns the sandbox contract."""
     text = _dockerfile_base_text()
 
-    assert re.search(r"\bbubblewrap=0\.11\.0-2\+deb13u1\b", text)
+    assert re.search(r"\bbubblewrap=0\.12\.0-1~deb13u1\b", text)
     assert "dpkg-query" in text
     assert "bubblewrap" in text
     assert "runtime_cli_sandbox_init.c" in text
