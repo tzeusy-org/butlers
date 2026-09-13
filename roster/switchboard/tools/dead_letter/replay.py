@@ -89,6 +89,11 @@ async def _replay_dead_letter_request_locked(
             "message": f"This request was already replayed at {dead_letter['replayed_at']}",
         }
 
+    # Keep the row lock in the outer transaction while a savepoint contains
+    # replay work that can fail without aborting failure-state persistence.
+    replay_savepoint = conn.transaction()
+    await replay_savepoint.start()
+
     # Re-ingest with original request_id preserved in request_context
     try:
         # Insert into message_inbox with replay metadata
@@ -191,14 +196,9 @@ async def _replay_dead_letter_request_locked(
             ),
         )
 
-        return {
-            "success": True,
-            "replayed_request_id": str(new_request_id),
-            "original_request_id": str(dead_letter["original_request_id"]),
-            "dead_letter_id": str(dead_letter_id),
-        }
-
     except Exception as e:
+        await replay_savepoint.rollback()
+
         # Log failed replay attempt
         await conn.execute(
             """
@@ -239,6 +239,14 @@ async def _replay_dead_letter_request_locked(
             "success": False,
             "error": "replay_failed",
             "message": f"Replay failed: {str(e)}",
+        }
+    else:
+        await replay_savepoint.commit()
+        return {
+            "success": True,
+            "replayed_request_id": str(new_request_id),
+            "original_request_id": str(dead_letter["original_request_id"]),
+            "dead_letter_id": str(dead_letter_id),
         }
 
 
