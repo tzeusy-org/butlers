@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import shutil
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from unittest.mock import MagicMock
 
 import asyncpg
 import pytest
@@ -17,10 +20,16 @@ from butlers.core.approval_delivery_worker import (
     HandoffResult,
 )
 from butlers.db import register_jsonb_codec
+from butlers.modules.approvals import delivery_lifecycle
+from butlers.modules.approvals.delivery_lifecycle import (
+    defer_pending_action,
+    transition_pending_action,
+)
 from butlers.modules.approvals.delivery_recovery import (
     ApprovalDeliveryRenderer,
     ApprovalDeliveryRepository,
 )
+from butlers.modules.approvals.models import ActionStatus
 from butlers.modules.approvals.park import ParkAdmission, park_pending_action
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
@@ -551,3 +560,295 @@ async def test_stuck_age_starts_at_due_time_not_presentation_creation(
     assert overdue.stuck_count == 1
     assert overdue.oldest_due_age_seconds is not None
     assert overdue.oldest_due_age_seconds >= 16 * 60
+
+
+async def test_decision_and_handoff_start_linearize_without_revival(
+    delivery_pool: asyncpg.Pool,
+) -> None:
+    """The shared action lock gives either valid race ordering, never a sendable revival."""
+    admission = await _park(delivery_pool)
+    repository = ApprovalDeliveryRepository(delivery_pool)
+    claim = await repository.claim_next()
+    assert claim is not None
+
+    started, transition = await asyncio.gather(
+        repository.mark_handoff_started(claim),
+        transition_pending_action(
+            delivery_pool,
+            action_id=admission.action_id,
+            target_status=ActionStatus.APPROVED,
+            decided_by="owner",
+            event_actor="owner",
+            event_reason="synthetic decision race",
+        ),
+    )
+
+    assert transition.changed is True
+    row = await delivery_pool.fetchrow(
+        """
+        SELECT pa.status, p.state, p.next_attempt_at
+          FROM pending_actions AS pa
+          JOIN approval_delivery_intents AS i ON i.action_id = pa.id
+          JOIN approval_delivery_presentations AS p ON p.intent_id = i.id
+         WHERE pa.id = $1
+        """,
+        admission.action_id,
+    )
+    assert row["status"] == "approved"
+    assert row["state"] == "cancelled"
+    assert row["next_attempt_at"] is None
+    if started:
+        assert await repository.complete_handoff(claim, HandoffResult("confirmed")) is True
+        assert (
+            await delivery_pool.fetchval(
+                "SELECT count(*) FROM approval_delivery_attempts "
+                "WHERE presentation_id = $1 AND outcome = 'confirmed'",
+                claim.presentation_id,
+            )
+            == 1
+        )
+    else:
+        assert await repository.mark_handoff_started(claim) is False
+    assert await repository.claim_next() is None
+
+
+async def test_defer_replaces_prestart_generation_at_database_time(
+    delivery_pool: asyncpg.Pool,
+) -> None:
+    """A successful defer keeps one root and appends exactly one fenced successor."""
+    admission = await _park(delivery_pool)
+
+    transition = await defer_pending_action(
+        delivery_pool,
+        action_id=admission.action_id,
+        hours=3,
+        actor="owner",
+    )
+
+    assert transition.changed is True
+    rows = await delivery_pool.fetch(
+        """
+        SELECT p.presentation_generation, p.state,
+               p.presentation_key, p.not_before = pa.expires_at AS due_matches_expiry
+          FROM approval_delivery_intents AS i
+          JOIN pending_actions AS pa ON pa.id = i.action_id
+          JOIN approval_delivery_presentations AS p ON p.intent_id = i.id
+         WHERE i.action_id = $1 ORDER BY p.presentation_generation
+        """,
+        admission.action_id,
+    )
+    assert [row["presentation_generation"] for row in rows] == [1, 2]
+    assert [row["state"] for row in rows] == ["superseded", "ready"]
+    assert rows[1]["presentation_key"] == f"{admission.action_key}:p:2"
+    assert rows[1]["due_matches_expiry"] is True
+    assert await delivery_pool.fetchval("SELECT count(*) FROM deferred_notifications") == 0
+
+
+@pytest.mark.parametrize("operation", ["terminal", "defer"])
+async def test_transaction_exit_failure_emits_no_lifecycle_success(
+    delivery_pool: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    operation: str,
+) -> None:
+    """Rolled-back lifecycle work cannot publish a success metric or log."""
+    admission = await _park(delivery_pool)
+    real_write_transaction = delivery_lifecycle._approval_write_transaction
+
+    @asynccontextmanager
+    async def fail_at_transaction_exit(source: Any):
+        async with real_write_transaction(source) as connection:
+            yield connection
+            raise RuntimeError("synthetic commit boundary failure")
+
+    counter = MagicMock()
+    monkeypatch.setattr(delivery_lifecycle, "_approval_write_transaction", fail_at_transaction_exit)
+    monkeypatch.setattr(delivery_lifecycle, "approval_delivery_lifecycle_total", counter)
+
+    with (
+        caplog.at_level(logging.INFO, logger=delivery_lifecycle.__name__),
+        pytest.raises(RuntimeError, match="synthetic commit boundary failure"),
+    ):
+        if operation == "terminal":
+            await transition_pending_action(
+                delivery_pool,
+                action_id=admission.action_id,
+                target_status=ActionStatus.REJECTED,
+                decided_by="owner",
+                event_actor="owner",
+                event_reason="synthetic rollback",
+            )
+        else:
+            await defer_pending_action(
+                delivery_pool,
+                action_id=admission.action_id,
+                hours=2,
+                actor="owner",
+            )
+
+    counter.labels.assert_not_called()
+    assert "approval delivery terminalized" not in caplog.text
+    assert "approval delivery deferred" not in caplog.text
+    assert (
+        await delivery_pool.fetchval(
+            "SELECT status FROM pending_actions WHERE id = $1",
+            admission.action_id,
+        )
+        == "pending"
+    )
+
+
+async def test_handoff_first_defer_keeps_attempt_and_adds_successor(
+    delivery_pool: asyncpg.Pool,
+) -> None:
+    """Started work remains historical while defer schedules only generation g+1."""
+    admission = await _park(delivery_pool)
+    repository = ApprovalDeliveryRepository(delivery_pool)
+    claim = await repository.claim_next()
+    assert claim is not None
+    assert await repository.mark_handoff_started(claim) is True
+
+    transition = await defer_pending_action(
+        delivery_pool,
+        action_id=admission.action_id,
+        hours=1,
+        actor="owner",
+    )
+    assert transition.changed is True
+    assert await repository.complete_handoff(claim, HandoffResult("confirmed")) is True
+
+    rows = await delivery_pool.fetch(
+        "SELECT presentation_generation, state FROM approval_delivery_presentations "
+        "ORDER BY presentation_generation"
+    )
+    assert [dict(row) for row in rows] == [
+        {"presentation_generation": 1, "state": "delivered"},
+        {"presentation_generation": 2, "state": "ready"},
+    ]
+
+
+async def test_cohort_member_defer_preserves_other_digest_members(
+    delivery_pool: asyncpg.Pool,
+) -> None:
+    """Deferring one cohort member never cancels another eligible member's digest."""
+    admissions = [await _park(delivery_pool, ordinal=index) for index in range(5)]
+    fourth = admissions[3]
+
+    transition = await defer_pending_action(
+        delivery_pool,
+        action_id=fourth.action_id,
+        hours=2,
+        actor="owner",
+    )
+    assert transition.changed is True
+
+    memberships = await delivery_pool.fetch(
+        """
+        SELECT i.action_id, m.eligible
+          FROM approval_delivery_cohort_members AS m
+          JOIN approval_delivery_intents AS i ON i.id = m.intent_id
+         ORDER BY i.action_id
+        """
+    )
+    eligibility = {row["action_id"]: row["eligible"] for row in memberships}
+    assert eligibility[fourth.action_id] is False
+    assert eligibility[admissions[4].action_id] is True
+    assert (
+        await delivery_pool.fetchval(
+            "SELECT state FROM approval_delivery_presentations "
+            "WHERE presentation_mode = 'burst_digest'"
+        )
+        == "ready"
+    )
+    successor = await delivery_pool.fetchrow(
+        "SELECT presentation_generation, state FROM approval_delivery_presentations "
+        "WHERE intent_id = (SELECT id FROM approval_delivery_intents WHERE action_id = $1)",
+        fourth.action_id,
+    )
+    assert dict(successor) == {"presentation_generation": 1, "state": "ready"}
+
+
+async def test_defer_generation_is_independent_of_cohort_replacement_history(
+    delivery_pool: asyncpg.Pool,
+) -> None:
+    """A cohort's generation cannot skip or exhaust a direct action successor."""
+    admissions = [await _park(delivery_pool, ordinal=index) for index in range(5)]
+    fourth = admissions[3]
+    cohort = await delivery_pool.fetchrow(
+        """
+        SELECT c.id, c.cohort_key
+          FROM approval_delivery_cohort_members AS m
+          JOIN approval_delivery_cohorts AS c ON c.id = m.cohort_id
+          JOIN approval_delivery_intents AS i ON i.id = m.intent_id
+         WHERE i.action_id = $1
+        """,
+        fourth.action_id,
+    )
+    assert cohort is not None
+    await delivery_pool.execute(
+        """
+        UPDATE approval_delivery_presentations
+           SET state = 'cancelled', last_reason_code = 'cohort_empty',
+               next_attempt_at = NULL, updated_at = clock_timestamp()
+         WHERE cohort_id = $1 AND state = 'ready'
+        """,
+        cohort["id"],
+    )
+    await delivery_pool.execute(
+        """
+        INSERT INTO approval_delivery_presentations (
+            cohort_id, subject_key, subject_kind, presentation_mode,
+            presentation_generation, presentation_key, state,
+            last_reason_code, not_before
+        ) VALUES ($1, $2, 'cohort', 'burst_digest', 1000, $2 || ':p:1000',
+                  'delivered', NULL, clock_timestamp())
+        """,
+        cohort["id"],
+        cohort["cohort_key"],
+    )
+
+    first = await defer_pending_action(
+        delivery_pool,
+        action_id=fourth.action_id,
+        hours=2,
+        actor="owner",
+    )
+    assert first.changed is True
+    first_successor = await delivery_pool.fetchrow(
+        """
+        SELECT presentation_generation, presentation_key
+          FROM approval_delivery_presentations
+         WHERE intent_id = (
+             SELECT id FROM approval_delivery_intents WHERE action_id = $1
+         )
+           AND state = 'ready'
+        """,
+        fourth.action_id,
+    )
+    assert dict(first_successor) == {
+        "presentation_generation": 1,
+        "presentation_key": f"{fourth.action_key}:p:1",
+    }
+
+    second = await defer_pending_action(
+        delivery_pool,
+        action_id=fourth.action_id,
+        hours=3,
+        actor="owner",
+    )
+    assert second.changed is True
+    successor = await delivery_pool.fetchrow(
+        """
+        SELECT presentation_generation, presentation_key
+          FROM approval_delivery_presentations
+         WHERE intent_id = (
+             SELECT id FROM approval_delivery_intents WHERE action_id = $1
+         )
+           AND state = 'ready'
+        """,
+        fourth.action_id,
+    )
+    assert dict(successor) == {
+        "presentation_generation": 2,
+        "presentation_key": f"{fourth.action_key}:p:2",
+    }

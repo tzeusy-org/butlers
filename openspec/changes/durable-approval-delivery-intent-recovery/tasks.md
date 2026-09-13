@@ -34,12 +34,12 @@
 
 ## 5. Decision, expiry, retention, and operator truth
 
-- [ ] 5.1 Introduce a shared action-then-intent/presentation terminal transition helper and use it in approve, reject, explicit/stale expiry, and any future pending-to-terminal path; preserve executor behavior, cancel the action's unsent current/future presentations, and mark only that action's cohort membership ineligible without cancelling an eligible shared digest.
-- [ ] 5.2 Implement the authenticated dashboard defer transaction as the sole nonterminal scheduling writer: for each successful defer, extend expiry, supersede a pre-start generation or record a handoff-first historical result, and append exactly one `now + hours` successor under the shared lock; for a fourth cohort anchor or later collapsed member, mark only that membership ineligible for an unstarted cohort digest and create its direct successor.
-- [ ] 5.3 Ensure the worker only observes action eligibility and writes presentation/attempt evidence; cover send-start-versus-decision and defer-versus-send-start linearization races plus the late-result no-revival rule.
-- [ ] 5.4 Extend approval retention and immutable safe delivery-summary audit events so unresolved/ambiguous roots, presentations, and cohorts survive while their action or cohort membership is pending and terminal cleanup follows the established provenance contract.
-- [ ] 5.5 Extend approval API models, router joins, frontend types, and Approvals page rendering with safe delivery-state truth, legacy evidence labeling, generation/cohort status, and no “never attempted” fabrication.
-- [ ] 5.6 Add safe metrics/logs/read-model aggregation for due age, retry/lease backlog, ambiguous/stuck counts, cohort replacement, and closed reason dimensions without sensitive labels or action-mutating controls.
+- [x] 5.1 Introduce a shared action-then-intent/presentation terminal transition helper and use it in approve, reject, explicit/stale expiry, and any future pending-to-terminal path; preserve executor behavior, cancel the action's unsent current/future presentations, and mark only that action's cohort membership ineligible without cancelling an eligible shared digest.
+- [x] 5.2 Implement the authenticated dashboard defer transaction as the sole nonterminal scheduling writer: for each successful defer, extend expiry, supersede a pre-start generation or record a handoff-first historical result, and append exactly one `now + hours` successor under the shared lock; for a fourth cohort anchor or later collapsed member, mark only that membership ineligible for an unstarted cohort digest and create its direct successor.
+- [x] 5.3 Ensure the worker only observes action eligibility and writes presentation/attempt evidence; cover send-start-versus-decision and defer-versus-send-start linearization races plus the late-result no-revival rule.
+- [x] 5.4 Extend approval retention and immutable safe delivery-summary audit events so unresolved/ambiguous roots, presentations, and cohorts survive while their action or cohort membership is pending and terminal cleanup follows the established provenance contract.
+- [x] 5.5 Extend approval API models, router joins, frontend types, and Approvals page rendering with safe delivery-state truth, legacy evidence labeling, generation/cohort status, and no “never attempted” fabrication.
+- [x] 5.6 Add safe metrics/logs/read-model aggregation for due age, retry/lease backlog, ambiguous/stuck counts, cohort replacement, and closed reason dimensions without sensitive labels or action-mutating controls.
 
 ## 6. Real-PostgreSQL fault, concurrency, and compatibility verification
 

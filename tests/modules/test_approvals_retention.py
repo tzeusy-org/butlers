@@ -11,8 +11,12 @@ import asyncpg
 import pytest
 
 from alembic import command
+from butlers.core.approval_delivery_worker import HandoffResult
 from butlers.db import register_jsonb_codec
 from butlers.migrations import _build_alembic_config
+from butlers.modules.approvals.delivery_lifecycle import transition_pending_action
+from butlers.modules.approvals.delivery_recovery import ApprovalDeliveryRepository
+from butlers.modules.approvals.models import ActionStatus
 from butlers.modules.approvals.retention import (
     RetentionPolicy,
     cleanup_old_actions,
@@ -110,6 +114,205 @@ async def _insert_old_inactive_rule(pool) -> UUID:
         False,
     )
     return rule_id
+
+
+async def _park_delivery_action(pool: asyncpg.Pool):
+    now = datetime.now(UTC)
+    action_id = uuid4()
+    schema_name = await pool.fetchval("SELECT current_schema()")
+    action_key = f"approval:{schema_name}:{action_id}"
+    intent_id = uuid4()
+    await pool.execute(
+        """
+        INSERT INTO pending_actions (
+            id, tool_name, tool_args, agent_summary, status,
+            requested_at, expires_at, why, evidence, blast_radius, reversibility
+        ) VALUES ($1, 'relationship_assert_fact', $2, $3, 'pending',
+                  $4, $5, $6, '[]'::jsonb, 'contact', 'compensable')
+        """,
+        action_id,
+        {"fixture": "retention"},
+        "Synthetic retention fixture",
+        now,
+        now + timedelta(days=3),
+        "Synthetic retention reason",
+    )
+    await pool.execute(
+        """
+        INSERT INTO approval_delivery_intents (
+            id, action_id, action_key, owning_schema, origin_butler, admission_mode
+        ) VALUES ($1, $2, $3, $4, 'relationship', 'single')
+        """,
+        intent_id,
+        action_id,
+        action_key,
+        schema_name,
+    )
+    await pool.execute(
+        """
+        INSERT INTO approval_delivery_presentations (
+            intent_id, subject_key, subject_kind, presentation_mode,
+            presentation_generation, presentation_key, state,
+            not_before, next_attempt_at
+        ) VALUES ($1, $2, 'action', 'single', 1, $2 || ':p:1',
+                  'ready', $3, $3)
+        """,
+        intent_id,
+        action_key,
+        now,
+    )
+    return action_id
+
+
+async def test_delivery_retention_keeps_ambiguous_terminal_evidence(approvals_pool) -> None:
+    """Terminal action age never discards an unresolved provider outcome."""
+    action_id = await _park_delivery_action(approvals_pool)
+    repository = ApprovalDeliveryRepository(approvals_pool)
+    claim = await repository.claim_next()
+    assert claim is not None
+    assert await repository.mark_handoff_started(claim) is True
+    assert await repository.complete_handoff(
+        claim, HandoffResult("ambiguous", "provider_outcome_unknown")
+    )
+    transition = await transition_pending_action(
+        approvals_pool,
+        action_id=action_id,
+        target_status=ActionStatus.REJECTED,
+        decided_by="owner",
+        event_actor="owner",
+        event_reason="synthetic retention decision",
+    )
+    assert transition.changed is True
+    await approvals_pool.execute(
+        "UPDATE pending_actions SET decided_at = clock_timestamp() - interval '365 days' "
+        "WHERE id = $1",
+        action_id,
+    )
+
+    assert (
+        await cleanup_old_actions(
+            approvals_pool,
+            RetentionPolicy(pending_actions_retention_days=90),
+        )
+        == {}
+    )
+    assert (
+        await approvals_pool.fetchval(
+            "SELECT state FROM approval_delivery_presentations WHERE id = $1",
+            claim.presentation_id,
+        )
+        == "ambiguous"
+    )
+
+
+async def test_delivery_retention_deletes_resolved_root_after_safe_summary(approvals_pool) -> None:
+    """No-attempt terminal delivery cleans in order while its safe event survives."""
+    action_id = await _park_delivery_action(approvals_pool)
+    transition = await transition_pending_action(
+        approvals_pool,
+        action_id=action_id,
+        target_status=ActionStatus.EXPIRED,
+        decided_by="system:expiry",
+        event_actor="system:expiry",
+        event_reason="synthetic retention expiry",
+    )
+    assert transition.changed is True
+    await approvals_pool.execute(
+        "UPDATE pending_actions SET decided_at = clock_timestamp() - interval '365 days' "
+        "WHERE id = $1",
+        action_id,
+    )
+    summary_id = await approvals_pool.fetchval(
+        "SELECT event_id FROM approval_events WHERE action_id = $1 "
+        "AND event_type = 'approval_delivery_terminal'",
+        action_id,
+    )
+    assert summary_id is not None
+
+    assert await cleanup_old_actions(
+        approvals_pool,
+        RetentionPolicy(pending_actions_retention_days=90),
+    ) == {"expired": 1}
+    assert (
+        await approvals_pool.fetchval("SELECT id FROM pending_actions WHERE id = $1", action_id)
+        is None
+    )
+    event = await approvals_pool.fetchrow(
+        "SELECT action_id, event_metadata FROM approval_events WHERE event_id = $1",
+        summary_id,
+    )
+    assert event["action_id"] == action_id
+    assert event["event_metadata"]["reason_code"] == "action_expired"
+
+
+@pytest.mark.parametrize(
+    ("handoff_result", "expected_state"),
+    [
+        (HandoffResult("confirmed"), "delivered"),
+        (HandoffResult("safe_retry", "transport_unavailable"), "cancelled"),
+    ],
+)
+async def test_delivery_retention_cascades_attempted_terminal_graph_after_safe_summary(
+    approvals_pool,
+    handoff_result: HandoffResult,
+    expected_state: str,
+) -> None:
+    """Attempt rows stay immutable during life but age out with a resolved root."""
+    action_id = await _park_delivery_action(approvals_pool)
+    repository = ApprovalDeliveryRepository(approvals_pool)
+    claim = await repository.claim_next()
+    assert claim is not None
+    assert await repository.mark_handoff_started(claim) is True
+    assert await repository.complete_handoff(claim, handoff_result) is True
+
+    transition = await transition_pending_action(
+        approvals_pool,
+        action_id=action_id,
+        target_status=ActionStatus.REJECTED,
+        decided_by="owner",
+        event_actor="owner",
+        event_reason="synthetic attempted retention decision",
+    )
+    assert transition.changed is True
+    assert (
+        await approvals_pool.fetchval(
+            "SELECT state FROM approval_delivery_presentations WHERE id = $1",
+            claim.presentation_id,
+        )
+        == expected_state
+    )
+    with pytest.raises(asyncpg.RaiseError, match="append-only"):
+        await approvals_pool.execute(
+            "DELETE FROM approval_delivery_attempts WHERE presentation_id = $1",
+            claim.presentation_id,
+        )
+
+    await approvals_pool.execute(
+        "UPDATE pending_actions SET decided_at = clock_timestamp() - interval '365 days' "
+        "WHERE id = $1",
+        action_id,
+    )
+    summary_id = await approvals_pool.fetchval(
+        "SELECT event_id FROM approval_events WHERE action_id = $1 "
+        "AND event_type = 'approval_delivery_terminal'",
+        action_id,
+    )
+
+    assert await cleanup_old_actions(
+        approvals_pool,
+        RetentionPolicy(pending_actions_retention_days=90),
+    ) == {"rejected": 1}
+    assert (
+        await approvals_pool.fetchval(
+            "SELECT count(*) FROM approval_delivery_attempts WHERE presentation_id = $1",
+            claim.presentation_id,
+        )
+        == 0
+    )
+    assert await approvals_pool.fetchval(
+        "SELECT EXISTS (SELECT 1 FROM approval_events WHERE event_id = $1)",
+        summary_id,
+    )
 
 
 async def test_old_approved_unexecuted_action_is_excluded_from_retention_dry_run(
@@ -572,12 +775,173 @@ def _create_approvals_010_database(postgres_container) -> str:
     return db_url
 
 
+def _create_approvals_015_database(postgres_container) -> str:
+    """Create the historical delivery schema before cascade-aware retention."""
+    db_url = create_migration_db(postgres_container, migration_db_name())
+    command.upgrade(
+        _build_alembic_config(db_url, chains=["approvals"]),
+        "approvals@approvals_015",
+    )
+    return db_url
+
+
+def _migrate_approvals(db_url: str, target: str) -> None:
+    command.upgrade(
+        _build_alembic_config(db_url, chains=["approvals"]),
+        target,
+    )
+
+
+def _downgrade_approvals(db_url: str, target: str) -> None:
+    command.downgrade(
+        _build_alembic_config(db_url, chains=["approvals"]),
+        target,
+    )
+
+
 def _upgrade_approvals_to_head(db_url: str) -> None:
     """Apply the retention migration as a production upgrade would."""
     command.upgrade(
         _build_alembic_config(db_url, chains=["approvals"]),
         "approvals@head",
     )
+
+
+async def test_approvals_016_upgrades_existing_attempt_retention_and_downgrades_fail_closed(
+    postgres_container,
+) -> None:
+    """An approvals_015 database gains cascade cleanup without weakening immutability."""
+    db_url = await asyncio.to_thread(_create_approvals_015_database, postgres_container)
+    pool = await asyncpg.create_pool(
+        db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+    )
+    try:
+        confirmed_id = await _park_delivery_action(pool)
+        repository = ApprovalDeliveryRepository(pool)
+        confirmed_claim = await repository.claim_next()
+        assert confirmed_claim is not None
+        assert await repository.mark_handoff_started(confirmed_claim) is True
+        assert await repository.complete_handoff(confirmed_claim, HandoffResult("confirmed"))
+        confirmed_transition = await transition_pending_action(
+            pool,
+            action_id=confirmed_id,
+            target_status=ActionStatus.REJECTED,
+            decided_by="owner",
+            event_actor="owner",
+            event_reason="synthetic predecessor retention",
+        )
+        assert confirmed_transition.changed is True
+
+        ambiguous_id = await _park_delivery_action(pool)
+        ambiguous_claim = await repository.claim_next()
+        assert ambiguous_claim is not None
+        assert await repository.mark_handoff_started(ambiguous_claim) is True
+        assert await repository.complete_handoff(
+            ambiguous_claim,
+            HandoffResult("ambiguous", "provider_outcome_unknown"),
+        )
+        ambiguous_transition = await transition_pending_action(
+            pool,
+            action_id=ambiguous_id,
+            target_status=ActionStatus.REJECTED,
+            decided_by="owner",
+            event_actor="owner",
+            event_reason="synthetic ambiguous retention",
+        )
+        assert ambiguous_transition.changed is True
+        pending_id = await _park_delivery_action(pool)
+
+        await pool.execute(
+            "UPDATE pending_actions SET decided_at = clock_timestamp() - interval '365 days' "
+            "WHERE id = ANY($1::uuid[])",
+            [confirmed_id, ambiguous_id],
+        )
+        summary_id = await pool.fetchval(
+            "SELECT event_id FROM approval_events WHERE action_id = $1 "
+            "AND event_type = 'approval_delivery_terminal'",
+            confirmed_id,
+        )
+        with pytest.raises(asyncpg.RaiseError, match="append-only"):
+            await cleanup_old_actions(
+                pool,
+                RetentionPolicy(pending_actions_retention_days=90),
+            )
+        assert await pool.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM pending_actions WHERE id = $1)",
+            confirmed_id,
+        )
+    finally:
+        await pool.close()
+
+    await asyncio.to_thread(_migrate_approvals, db_url, "approvals@head")
+    upgraded_pool = await asyncpg.create_pool(
+        db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+    )
+    try:
+        with pytest.raises(asyncpg.RaiseError, match="append-only"):
+            await upgraded_pool.execute(
+                "DELETE FROM approval_delivery_attempts WHERE presentation_id = $1",
+                confirmed_claim.presentation_id,
+            )
+    finally:
+        await upgraded_pool.close()
+
+    await asyncio.to_thread(_downgrade_approvals, db_url, "approvals@approvals_015")
+    downgraded_pool = await asyncpg.create_pool(
+        db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+    )
+    try:
+        with pytest.raises(asyncpg.RaiseError, match="append-only"):
+            await cleanup_old_actions(
+                downgraded_pool,
+                RetentionPolicy(pending_actions_retention_days=90),
+            )
+        assert await downgraded_pool.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM pending_actions WHERE id = $1)",
+            confirmed_id,
+        )
+    finally:
+        await downgraded_pool.close()
+
+    await asyncio.to_thread(_migrate_approvals, db_url, "approvals@head")
+    final_pool = await asyncpg.create_pool(
+        db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+    )
+    try:
+        assert await cleanup_old_actions(
+            final_pool,
+            RetentionPolicy(pending_actions_retention_days=90),
+        ) == {"rejected": 1}
+        assert not await final_pool.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM pending_actions WHERE id = $1)",
+            confirmed_id,
+        )
+        assert await final_pool.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM pending_actions WHERE id = $1)",
+            ambiguous_id,
+        )
+        assert await final_pool.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM pending_actions WHERE id = $1)",
+            pending_id,
+        )
+        assert await final_pool.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM approval_events WHERE event_id = $1)",
+            summary_id,
+        )
+    finally:
+        await final_pool.close()
 
 
 async def test_approvals_upgrade_keeps_existing_execution_event_for_terminal_retention(

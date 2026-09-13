@@ -59,13 +59,13 @@ from butlers.modules.approvals.autonomy_tracker import (
     update_velocity as _update_velocity,
 )
 from butlers.modules.approvals.decision_memory import DecisionMemoryWriter
+from butlers.modules.approvals.delivery_lifecycle import transition_pending_action
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.executor import execute_approved_action
 from butlers.modules.approvals.executor import (
     list_executed_actions as _list_executed_actions_query,
 )
 from butlers.modules.approvals.models import ActionStatus, ApprovalRule, PendingAction
-from butlers.modules.approvals.operations import expire_pending_action_if_stale
 from butlers.modules.approvals.sensitivity import suggest_constraints
 from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, group_enabled
 
@@ -778,45 +778,29 @@ class ApprovalsModule(Module):
         except InvalidTransitionError as exc:
             return {"error": str(exc)}
 
-        now = datetime.now(UTC)
-        expired_result = await expire_pending_action_if_stale(self._db, action, now=now)
-        if expired_result is not None:
-            return expired_result
-
-        # Transition to approved with compare-and-set on pending state.
-        approved_row = await self._db.fetchrow(
-            "UPDATE pending_actions SET status = $1, decided_by = $2, decided_at = $3 "
-            "WHERE id = $4 AND status = $5 "
-            "RETURNING *",
-            ActionStatus.APPROVED.value,
-            _format_manual_decider(actor_id),
-            now,
-            parsed_id,
-            ActionStatus.PENDING.value,
+        transition = await transition_pending_action(
+            self._db,
+            action_id=parsed_id,
+            target_status=ActionStatus.APPROVED,
+            decided_by=_format_manual_decider(actor_id),
+            event_actor="user:manual",
+            event_reason="approved by operator",
+            event_metadata={"tool_name": action.tool_name},
         )
-        if approved_row is None:
-            latest_row = await self._db.fetchrow(
-                "SELECT * FROM pending_actions WHERE id = $1", parsed_id
-            )
-            if latest_row is None:
+        if not transition.changed:
+            if transition.action is None:
                 return {"error": f"Action not found: {action_id}"}
-            latest_action = PendingAction.from_row(latest_row)
             return {
                 "error": (
-                    f"Cannot transition from '{latest_action.status.value}' "
+                    f"Cannot transition from '{transition.action.status.value}' "
                     f"to '{ActionStatus.APPROVED.value}'"
                 )
             }
-        action = PendingAction.from_row(approved_row)
-        await record_approval_event(
-            self._db,
-            ApprovalEventType.ACTION_APPROVED,
-            actor="user:manual",
-            action_id=parsed_id,
-            reason="approved by operator",
-            metadata={"tool_name": action.tool_name},
-            occurred_at=now,
-        )
+        if transition.expired_instead:
+            return {"error": f"Action {action_id} expired and cannot be approved"}
+        action = transition.action
+        assert action is not None
+        now = action.decided_at or datetime.now(UTC)
 
         # Execute the original tool via the executor when this daemon has one.
         # A queue can intentionally exist without automatic gates; in that
@@ -978,61 +962,34 @@ class ApprovalsModule(Module):
         except InvalidTransitionError as exc:
             return {"error": str(exc)}
 
-        now = datetime.now(UTC)
-        expired_result = await expire_pending_action_if_stale(
-            self._db,
-            action,
-            now=now,
-            target_action=ActionStatus.REJECTED.value,
-        )
-        if expired_result is not None:
-            return expired_result
-
         # Build decided_by with optional reason
         escaped_reason = html.escape(reason, quote=True) if reason else None
         decided_by = _format_manual_decider(actor_id, reason=escaped_reason)
-
-        rejected_row = await self._db.fetchrow(
-            "UPDATE pending_actions SET status = $1, decided_by = $2, decided_at = $3 "
-            "WHERE id = $4 AND status = $5 "
-            "RETURNING *",
-            ActionStatus.REJECTED.value,
-            decided_by,
-            now,
-            parsed_id,
-            ActionStatus.PENDING.value,
+        transition = await transition_pending_action(
+            self._db,
+            action_id=parsed_id,
+            target_status=ActionStatus.REJECTED,
+            decided_by=decided_by,
+            event_actor="user:manual",
+            event_reason=reason or "rejected by operator",
+            event_metadata={"tool_name": action.tool_name},
         )
-        if rejected_row is None:
-            latest_row = await self._db.fetchrow(
-                "SELECT * FROM pending_actions WHERE id = $1", parsed_id
-            )
-            if latest_row is None:
+        if not transition.changed:
+            if transition.action is None:
                 return {"error": f"Action not found: {action_id}"}
-            latest_action = PendingAction.from_row(latest_row)
             return {
                 "error": (
-                    f"Cannot transition from '{latest_action.status.value}' "
+                    f"Cannot transition from '{transition.action.status.value}' "
                     f"to '{ActionStatus.REJECTED.value}'"
                 )
             }
-        await record_approval_event(
-            self._db,
-            ApprovalEventType.ACTION_REJECTED,
-            actor="user:manual",
-            action_id=parsed_id,
-            reason=reason or "rejected by operator",
-            metadata={"tool_name": action.tool_name},
-            occurred_at=now,
-        )
+        if transition.expired_instead:
+            return {"error": f"Action {action_id} expired and cannot be rejected"}
+        rejected_action = transition.action
+        assert rejected_action is not None
         if self._decision_memory_writer is not None:
-            await self._decision_memory_writer.record_terminal_decision(
-                PendingAction.from_row(rejected_row), "rejected"
-            )
-
-        final_row = await self._db.fetchrow(
-            "SELECT * FROM pending_actions WHERE id = $1", parsed_id
-        )
-        return PendingAction.from_row(final_row).to_dict()
+            await self._decision_memory_writer.record_terminal_decision(rejected_action, "rejected")
+        return rejected_action.to_dict()
 
     async def _pending_action_count(self) -> dict:
         """Return counts of pending actions by status."""
@@ -1048,9 +1005,8 @@ class ApprovalsModule(Module):
 
     async def _expire_stale_actions(self) -> dict:
         """Mark actions past their expires_at as expired."""
-        now = datetime.now(UTC)
-
         # Find all pending actions that have expired
+        now = datetime.now(UTC)
         rows = await self._db.fetch(
             "SELECT * FROM pending_actions WHERE status = $1 AND expires_at IS NOT NULL "
             "AND expires_at < $2",
@@ -1062,26 +1018,17 @@ class ApprovalsModule(Module):
         for row in rows:
             action = PendingAction.from_row(row)
 
-            expired_row = await self._db.fetchrow(
-                "UPDATE pending_actions SET status = $1, decided_by = $2, decided_at = $3 "
-                "WHERE id = $4 AND status = $5 "
-                "RETURNING id",
-                ActionStatus.EXPIRED.value,
-                "system:expiry",
-                now,
-                action.id,
-                ActionStatus.PENDING.value,
+            transition = await transition_pending_action(
+                self._db,
+                action_id=action.id,
+                target_status=ActionStatus.EXPIRED,
+                decided_by="system:expiry",
+                event_actor="system:expiry",
+                event_reason="approval window elapsed",
+                event_metadata={"tool_name": action.tool_name},
+                now=now,
             )
-            if expired_row is not None:
-                await record_approval_event(
-                    self._db,
-                    ApprovalEventType.ACTION_EXPIRED,
-                    actor="system:expiry",
-                    action_id=action.id,
-                    reason="approval window elapsed",
-                    metadata={"tool_name": action.tool_name},
-                    occurred_at=now,
-                )
+            if transition.changed:
                 expired_ids.append(str(action.id))
 
         return {
