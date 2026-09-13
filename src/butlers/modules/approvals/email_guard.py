@@ -163,10 +163,9 @@ async def check_email_recipient(
         The name of the butler that owns this guard (used for WS event
         attribution).  Pass ``None`` when the name is unavailable.
     approval_push_runtime:
-        Deterministic daemon dependencies used to notify the owner when this
-        guard parks an action.  ``None`` preserves the standalone-guard
-        behavior for callers that do not run a Switchboard delivery plane
-        (the action is still parked, just not pushed).
+        Compatibility-only daemon input retained while producers migrate
+        together. Atomic storage admission ignores it; the recovery worker owns
+        approval-request delivery.
 
     Returns
     -------

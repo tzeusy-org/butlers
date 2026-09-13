@@ -272,6 +272,8 @@ def is_well_formed_owner_channel_identifier(channel_type: str, channel_value: st
         return False
 
     canonical_channel = canonical_identity_channel_type(channel_type)
+    if canonical_channel not in OWNER_AUTHORIZED_IDENTITY_CHANNELS:
+        return False
     if canonical_channel == "email":
         return _EMAIL_IDENTIFIER_RE.fullmatch(value) is not None
     if canonical_channel in _TELEGRAM_PREFIX_CHANNEL_TYPES:

@@ -63,7 +63,7 @@ BEGIN
                                 SELECT 1
                                 FROM unnest(p_candidates) AS candidate(value)
                                 CROSS JOIN LATERAL (
-                                    SELECT substring(candidate.value FROM 14) AS digits
+                                    SELECT split_part(candidate.value, ':', 2) AS digits
                                 ) AS normalized
                                 WHERE candidate.value LIKE 'phone-digits:%'
                                   AND normalized.digits ~ '^[0-9]+$'

@@ -498,9 +498,9 @@ async def apply_approval_gates(
         Optional owning-memory writer passed to auto-approved executions after
         their terminal execution outcome has been committed.
     approval_push_runtime:
-        Deterministic daemon dependencies used to notify the owner when this
-        gate parks an action. ``None`` preserves the standalone gate behavior
-        for callers that do not run a Switchboard delivery plane.
+        Compatibility-only daemon input retained while producers migrate
+        together. Atomic storage admission ignores it; the recovery worker owns
+        approval-request delivery.
 
     Returns
     -------
