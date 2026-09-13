@@ -511,8 +511,14 @@ This requirement exists because the delivery architecture has two layers: `notif
 
 #### Scenario: Messenger route.execute permits owner delivery without rule
 - **WHEN** the Messenger's `route.execute` processes a `notify.v1` envelope
-- **AND** the target contact has the `owner` role
+- **AND** the exact target resolves unambiguously to a live contact with the `owner` role
 - **THEN** delivery proceeds immediately without checking standing rules
+
+#### Scenario: Messenger route.execute refuses ambiguous owner association
+- **WHEN** the Messenger's `route.execute` processes a `notify.v1` envelope
+- **AND** the channel identifier is active on both the owner and an external entity
+- **THEN** the target MUST NOT receive the owner bypass
+- **AND** delivery MUST follow the standing-rule or pending-approval path
 
 ### Requirement: [TARGET-STATE] Notify Response Envelope
 

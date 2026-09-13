@@ -606,6 +606,12 @@ SHALL remain independent of the deferred push.
   UTC
 - **AND** the pending action does not gain an hour of expiry from push timing
 
+#### Scenario: Approval push uses its owning daemon identity
+- **WHEN** a daemon parks a pending action and dispatches its owner-facing approval push
+- **THEN** the push envelope's `origin_butler` MUST be that daemon's configured name
+- **AND** Messenger MUST use `messenger` even when the routed request that caused the park originated in another domain butler
+- **AND** the routed domain origin MUST remain context on the original request rather than being asserted as the sender of the Messenger-owned push
+
 ### Requirement: Pending Actions Store Replayable Executable Commands
 
 An inline approval producer MUST persist the exact registered native tool name and a
