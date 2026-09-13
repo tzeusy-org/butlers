@@ -64,8 +64,23 @@ authentication mechanism.
 ### Requirement: Exact bounded mapping request
 
 An authenticated request SHALL carry a JSON object with the sole field
-`mappings`, containing one through 50 objects. The decoded body SHALL be no more
-than 32 KiB. Each object SHALL contain exactly `ha_person_id` and `entity_id`.
+`mappings`, containing one through 50 objects. The raw encoded HTTP request body
+SHALL be no more than 32 KiB (exactly 32,768 octets, excluding transport framing).
+After owner authentication and before UTF-8 or JSON decoding, a bounded request
+reader SHALL count the actual streamed body octets and stop once it observes octet
+32,769, retaining no more than those first 32,769 octets and reading no later
+chunks. It SHALL NOT use `Content-Length` as acceptance or rejection authority:
+an absent, understated, overstated, or otherwise misleading header and chunked
+delivery SHALL all be decided from the bytes actually read. Each decoded object
+SHALL contain exactly `ha_person_id` and `entity_id`.
+
+An authenticated body that exceeds 32,768 octets SHALL return HTTP `413` in the
+standard error envelope with exactly the fixed code `REQUEST_BODY_TOO_LARGE` and
+fixed message `Request body exceeds 32 KiB.` It SHALL not decode JSON, generate a
+receipt, derive an actor, acquire or inspect a pool, read protected mapping/entity
+state, or emit generic or explicit audit evidence. The result SHALL contain no
+counts, details, submitted value, body fragment, measured size, header value, or
+other request-derived data.
 
 `ha_person_id` SHALL be at most 255 UTF-8 bytes and match
 `\Aperson\.[a-z0-9_]+\Z` byte-for-byte. It SHALL be an exact owner-supplied,
@@ -92,11 +107,22 @@ fixed content-blind `422` and perform zero mapping writes.
 #### Scenario: Exact bounded request is accepted for evaluation
 
 - **WHEN** the authenticated owner submits between one and 50 distinct pairs,
-  the body is within 32 KiB, every Home Assistant ID has the exact accepted
-  syntax, every entity ID is a lowercase hyphenated RFC 4122 UUID, and the idempotency header has
-  the required opaque shape
+  the raw encoded body is at most 32,768 octets, every Home Assistant ID has the
+  exact accepted syntax, every entity ID is a lowercase hyphenated RFC 4122 UUID,
+  and the idempotency header has the required opaque shape
 - **THEN** the server SHALL evaluate exactly those pairs without normalization,
   provider lookup, name/alias resolution, or entity creation
+
+#### Scenario: Oversized encoded body is rejected before decoding
+
+- **WHEN** an authenticated request's streamed raw body exceeds 32,768 octets,
+  including excess made only from JSON whitespace or escaped spellings
+- **THEN** the route SHALL stop at the bounded read seam and return the fixed
+  `413 REQUEST_BODY_TOO_LARGE` result without JSON decoding
+- **AND** absent, false, or conflicting `Content-Length` and chunked delivery
+  SHALL not change the result
+- **AND** it SHALL create no receipt, acquire no pool, observe no protected
+  state, and emit no generic or explicit audit evidence
 
 #### Scenario: Duplicate batch member is rejected as a whole
 
@@ -278,12 +304,14 @@ exists after the transaction. A successful response SHALL have
 `received_count = created_count + unchanged_count` and zero refusal counts.
 
 A non-2xx response SHALL use RFC 0007's standard error envelope with a fixed
-code and message. Every post-authentication terminal response SHALL include a
-receipt; its `error.details` SHALL contain only that receipt, completeness flag,
+code and message. Except for the pre-decode fixed `413 REQUEST_BODY_TOO_LARGE`
+result, every post-authentication terminal response SHALL include a receipt;
+its `error.details` SHALL contain only that receipt, completeness flag,
 and aggregate count fields. A conflict SHALL
 be `409`, invalid structure/duplicates/references SHALL be `422`, and database
-unavailability SHALL be `503`. Mapping failures SHALL report
-`created_count = 0`.
+unavailability SHALL be `503`. The oversize result SHALL contain no receipt or
+details and SHALL touch no pool, protected state, or audit path. Mapping
+failures SHALL report `created_count = 0`.
 
 The endpoint SHALL be exempt from generic `DashboardAuditMiddleware` body
 reading and path-parameter capture. Post-read redaction is insufficient. Its
@@ -292,6 +320,8 @@ only server-derived actor, opaque receipt, the five aggregate counts, fixed
 outcome, and optional fixed failure category. Audit target, note, request
 summary/body, path parameters, free-text error, provider response, raw
 idempotency key, request digest, and both identifiers SHALL be absent.
+An oversize request SHALL emit no explicit audit event because rejection occurs
+before actor derivation, receipt creation, or pool access.
 
 Logs SHALL contain only the fixed route template, fixed outcome/failure
 category, and aggregate counts. Metrics and traces SHALL contain only fixed

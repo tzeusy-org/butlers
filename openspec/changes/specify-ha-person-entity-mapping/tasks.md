@@ -24,7 +24,11 @@
 - [ ] 3.1 Add the fail-closed dashboard route and browser client only after the
   separately approved `bu-pb6oy` credential-transport mechanism exists. Prove
   authentication finishes before body buffering, receipt creation, pool
-  acquisition, or protected reads.
+  acquisition, or protected reads. After authentication, enforce the 32,768-octet
+  raw encoded body maximum with a bounded streamed reader before UTF-8/JSON
+  decoding and without trusting `Content-Length`; oversize returns only fixed
+  `413 REQUEST_BODY_TOO_LARGE` and touches no receipt, actor, pool, protected
+  state, or audit path.
 - [ ] 3.2 Add the content-blind durable idempotency/receipt representation and
   transaction implementation without adding a mapping read/list API, MCP tool,
   direct-SQL operator path, entity creation, remap, update, or delete.
@@ -65,7 +69,14 @@
 - [ ] 4.6 API tests prove `503` when owner control is unconfigured, `401` for a
   missing/wrong credential, no pre-auth body/pool access, exact size/count/field
   validation, standard envelopes, aggregate-only `200/409/422/503` bodies, and
-  byte-for-byte replay of the stored terminal receipt.
+  byte-for-byte replay of the stored terminal receipt. At the raw-body seam,
+  prove exactly 32,768 octets may proceed while 32,769 cannot; oversized bodies
+  composed from whitespace or escaped JSON spellings are rejected before decode;
+  absent, understated, overstated, and conflicting `Content-Length` values cannot
+  bypass or falsely trigger the measured bound; and chunked delivery follows the
+  same rule. Assert the fixed `413 REQUEST_BODY_TOO_LARGE` envelope positively and
+  zero JSON-decoder, receipt, actor, pool, protected-state, generic-audit, or
+  explicit-audit interaction.
 - [ ] 4.7 Privacy absence-sentinel tests plant distinct synthetic sentinels in
   both identifiers and assert absence from response body/headers, error details,
   generic and explicit audit rows, captured logs, rendered exception text,
