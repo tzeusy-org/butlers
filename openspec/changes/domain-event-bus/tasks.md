@@ -74,3 +74,9 @@
 - [x] 11.9 API: deliveries carry their latest reaction as a separately labelled field; `GET /api/domain-events/events/{event_id}/reactions` returns the ordered trace; `GET /api/domain-events/contracts` exposes the projection.
 - [x] 11.10 `ButlerDomainEventsPanel` labels `wake <status>` and `reaction <status>` as distinct badges, calls out a delivered wake with no receipt, and expands the trace from a real `<button>` with `aria-expanded`/`aria-controls`.
 - [x] 11.11 Regression coverage for the live Travel to Finance `failed_permanent` shape: `tests/core_tools/test_domain_event_incomplete_receiver.py` pins the exact unwrap failure, its verbatim error text, its non-retryable classification, and that no reaction receipt is written. Read-only -- no replay, restart, or mutation of the live connector or runtime.
+
+## 12. Explicit owner delivery recovery (bu-h40h2b.1)
+
+- [x] 12.1 Add an atomic `failed_permanent -> pending` replay transition and the existing-router API verb; repeated/concurrent requests return 409 and create no duplicate work.
+- [x] 12.2 Surface the Replay verb beside permanently failed deliveries in `ButlerDomainEventsPanel`, preserving named degraded reads and transport/reaction separation.
+- [x] 12.3 Keep runtime verification read-only: no live delivery row, connector, or daemon is mutated by the acceptance probe.
