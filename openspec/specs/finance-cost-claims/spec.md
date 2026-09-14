@@ -45,6 +45,13 @@ the active runtime role. Assertion fields SHALL be immutable after insertion.
 - **WHEN** the privileged bootstrap reapplies broad public-table grants
 - **THEN** forced RLS SHALL preserve the same effective write boundary
 
+#### Scenario: The ledger is backed up and restored
+
+- **WHEN** the documented backup and certified restore path runs
+- **THEN** claims, resolutions, and events SHALL round-trip without loss
+- **AND** FORCE RLS, table ownership, and SECURITY DEFINER ownership SHALL match the source
+- **AND** ordinary `pg_dump` SHALL remain in fail-loud row-security-off mode
+
 ### Requirement: Loan settlement is atomic
 
 Superseding the active loan fact and inserting its settled successor SHALL run

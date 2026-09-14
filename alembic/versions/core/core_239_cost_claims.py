@@ -152,6 +152,15 @@ def upgrade() -> None:
         CREATE OR REPLACE FUNCTION public.cost_claim_audit_claim() RETURNS trigger
         LANGUAGE plpgsql AS $$
         BEGIN
+            IF current_user = (
+                   SELECT pg_get_userbyid(c.relowner)
+                   FROM pg_class AS c
+                   WHERE c.oid = TG_RELID
+               )
+               AND current_setting('butlers.cost_claim_restore', true) = 'on'
+            THEN
+                RETURN NEW;
+            END IF;
             INSERT INTO public.cost_claim_events
                 (claim_id, actor_role, action, old_state, new_state, idempotency_key)
             VALUES (
@@ -177,6 +186,15 @@ def upgrade() -> None:
         CREATE OR REPLACE FUNCTION public.cost_claim_audit_resolution() RETURNS trigger
         LANGUAGE plpgsql AS $$
         BEGIN
+            IF current_user = (
+                   SELECT pg_get_userbyid(c.relowner)
+                   FROM pg_class AS c
+                   WHERE c.oid = TG_RELID
+               )
+               AND current_setting('butlers.cost_claim_restore', true) = 'on'
+            THEN
+                RETURN NEW;
+            END IF;
             INSERT INTO public.cost_claim_events
                 (claim_id, actor_role, action, old_state, new_state, idempotency_key)
             VALUES (
@@ -246,6 +264,72 @@ def upgrade() -> None:
         "CREATE POLICY cost_claim_events_trigger_insert ON public.cost_claim_events FOR INSERT "
         "WITH CHECK (actor_role = current_user AND pg_trigger_depth() > 0)"
     )
+    op.execute(
+        """
+        DO $$
+        DECLARE
+            v_owner name := current_user;
+        BEGIN
+            EXECUTE format(
+                'CREATE POLICY cost_claims_restore_owner ON public.cost_claims '
+                'FOR INSERT WITH CHECK (current_user = %L)',
+                v_owner
+            );
+            EXECUTE format(
+                'CREATE POLICY cost_claim_resolutions_restore_owner '
+                'ON public.cost_claim_resolutions FOR INSERT '
+                'WITH CHECK (current_user = %L)',
+                v_owner
+            );
+            EXECUTE format(
+                'CREATE POLICY cost_claim_events_restore_owner ON public.cost_claim_events '
+                'FOR INSERT WITH CHECK (current_user = %L)',
+                v_owner
+            );
+        END $$
+        """
+    )
+    op.execute(
+        """
+        CREATE OR REPLACE FUNCTION public.cost_claim_restore_row(
+            p_relation TEXT,
+            p_payload JSONB
+        ) RETURNS void
+        LANGUAGE plpgsql
+        SECURITY DEFINER
+        SET search_path = pg_catalog, public
+        SET row_security = on
+        AS $$
+        BEGIN
+            PERFORM set_config('butlers.cost_claim_restore', 'on', true);
+
+            CASE p_relation
+                WHEN 'cost_claims' THEN
+                    INSERT INTO public.cost_claims
+                    SELECT (jsonb_populate_record(NULL::public.cost_claims, p_payload)).*;
+                WHEN 'cost_claim_resolutions' THEN
+                    INSERT INTO public.cost_claim_resolutions
+                    SELECT (jsonb_populate_record(
+                        NULL::public.cost_claim_resolutions, p_payload
+                    )).*;
+                WHEN 'cost_claim_events' THEN
+                    INSERT INTO public.cost_claim_events OVERRIDING SYSTEM VALUE
+                    SELECT (jsonb_populate_record(NULL::public.cost_claim_events, p_payload)).*;
+                    PERFORM setval(
+                        pg_get_serial_sequence('public.cost_claim_events', 'id'),
+                        GREATEST((SELECT max(id) FROM public.cost_claim_events), 1),
+                        EXISTS (SELECT 1 FROM public.cost_claim_events)
+                    );
+                ELSE
+                    RAISE EXCEPTION 'unsupported cost-claim restore relation';
+            END CASE;
+        END
+        $$
+        """
+    )
+    op.execute(
+        "REVOKE ALL PRIVILEGES ON FUNCTION public.cost_claim_restore_row(TEXT, JSONB) FROM PUBLIC"
+    )
     for role in _ALL_BUTLER_ROLES:
         _grant_if_role_exists(role)
 
@@ -255,6 +339,7 @@ def downgrade() -> None:
     op.execute("DROP FUNCTION IF EXISTS public.cost_claim_audit_resolution() CASCADE")
     op.execute("DROP FUNCTION IF EXISTS public.cost_claim_audit_claim() CASCADE")
     op.execute("DROP FUNCTION IF EXISTS public.cost_claim_immutable_assertion() CASCADE")
+    op.execute("DROP FUNCTION IF EXISTS public.cost_claim_restore_row(TEXT, JSONB)")
     op.execute("DROP TABLE IF EXISTS public.cost_claim_events")
     op.execute("DROP TABLE IF EXISTS public.cost_claim_resolutions")
     op.execute("DROP TABLE IF EXISTS public.cost_claims")

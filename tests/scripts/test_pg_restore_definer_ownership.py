@@ -538,7 +538,8 @@ def test_certified_restore_leaves_no_definer_function_owned_by_restorer(
         restored_count = _query(restored_url, f"SELECT count(*)::text FROM public.{table}")
         assert source_count == restored_count and source_count != ["0"], (
             f"public.{table} did not round-trip through the real backup and restore: "
-            f"source={source_count} restored={restored_count}"
+            f"source={source_count} restored={restored_count}\n"
+            f"restore stdout={result.stdout[-2000:]}\nrestore stderr={result.stderr[-2000:]}"
         )
         source_posture = _query(
             source_db_url,
@@ -554,6 +555,18 @@ def test_certified_restore_leaves_no_definer_function_owned_by_restorer(
         )
         assert restored_posture == source_posture
         assert restored_posture[0].startswith("true/true/"), restored_posture
+
+    restore_function_posture = _query(
+        restored_url,
+        "SELECT p.prosecdef::text || '/' || "
+        "(pg_get_userbyid(p.proowner) = pg_get_userbyid(c.relowner))::text || '/' || "
+        "has_function_privilege('public', p.oid, 'EXECUTE')::text "
+        "FROM pg_proc AS p "
+        "JOIN pg_namespace AS n ON n.oid = p.pronamespace "
+        "JOIN pg_class AS c ON c.oid = 'public.cost_claims'::regclass "
+        "WHERE n.nspname = 'public' AND p.proname = 'cost_claim_restore_row'",
+    )
+    assert restore_function_posture == ["true/true/false"]
 
     landed = _query(restored_url, _DEFINER_FUNCTIONS_OWNED_BY_SQL, login=login)
     assert landed == [], (

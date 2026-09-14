@@ -33,12 +33,23 @@ re-applies broad default DML grants to public tables. Replaying bootstrap theref
 must not widen effective claim or resolution authority.
 
 Claims, resolutions, and events are durable application evidence and remain in the
-nightly backup. Because all three tables force RLS, the backup uses PostgreSQL's
-row-security dump mode only for an exact allowlist whose unconditional `SELECT`
-policies are verified against a real bootstrapped database. An included forced-RLS
-table outside that allowlist, or a claim policy that stops exposing every row, fails
-the backup contract rather than publishing a partial artifact. Restore continues to
-recreate the forced-RLS and ownership/definer posture recorded by the dump.
+nightly backup. The ordinary `pg_dump` never enables row-security: it carries these
+tables' schema, ownership, policies, triggers, and fixed restore function, but omits
+their table data. A separately scoped `psql` query, bound to the same exported
+snapshot, then appends all three ledgers as hex-wrapped JSON staging rows. Before
+either producer writes an artifact, a live
+catalogue check requires each named table to retain FORCE RLS and exactly one
+permissive, non-restrictive `PUBLIC USING (true)` SELECT policy. Any other included
+forced-RLS relation still aborts ordinary `pg_dump`, and any changed claim read
+policy aborts the scoped export, so neither path can silently publish filtered data.
+
+Restore replays the staging rows through `cost_claim_restore_row()`, a fixed
+`SECURITY DEFINER` function owned with the tables, executable only while assuming
+that owner under the existing certified-restore membership precondition. It accepts
+only the three named relations and suppresses only the trigger events that would
+otherwise duplicate the historical event ledger. The artifact therefore preserves
+row parity, FORCE RLS, ownership, and the existing definer fence without granting a
+dump identity `BYPASSRLS` or opting the whole dump into row-security evaluation.
 
 Relationship creates `loan:{fact_id}` claims only after its canonical fact is
 durable. Projection failure cannot roll back the loan and is repaired by the

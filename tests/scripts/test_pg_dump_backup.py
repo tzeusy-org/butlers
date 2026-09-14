@@ -4,9 +4,10 @@ The nightly backup dumps as ``$POSTGRES_USER`` — the shared migration/runtime
 login that ``scripts/init-db.sql`` deliberately fences away from the
 trusted-bootstrap control plane.  ``pg_dump`` takes ``LOCK TABLE`` over every
 relation in scope before writing a byte, so one unreadable relation aborts the
-whole dump; because the script pipes through gzip under ``set -o pipefail`` with
-a cleanup trap, a failing run leaves *no file at all*.  Absence, not corruption,
-is the failure shape — and absence is the one that goes unnoticed.
+whole dump. The script captures the producer status explicitly and keeps a
+partial gzip behind a temporary name, so a failing run leaves *no file at all*.
+Absence, not corruption, is the failure shape — and absence is the one that
+goes unnoticed.
 
 Three things are pinned here:
 
@@ -57,7 +58,7 @@ _BACKUP_IMAGE = "postgres:17-alpine"
 docker_available = shutil.which("docker") is not None
 
 
-_EXPECTED_BACKUP_RLS_TABLES = {
+_EXPECTED_SCOPED_DATA_TABLES = {
     "public.cost_claims",
     "public.cost_claim_resolutions",
     "public.cost_claim_events",
@@ -76,7 +77,7 @@ def _read_backup_sets() -> tuple[set[str], set[str], set[str]]:
     return (
         _one("BACKUP_EXCLUDE_SCHEMAS"),
         _one("BACKUP_EXCLUDE_TABLES"),
-        _one("BACKUP_RLS_TABLES"),
+        _one("BACKUP_SCOPED_DATA_TABLES"),
     )
 
 
@@ -86,16 +87,19 @@ def _read_backup_sets() -> tuple[set[str], set[str], set[str]]:
 
 
 @pytest.mark.unit
-def test_script_enables_row_security_for_the_explicit_allowlist() -> None:
-    """The dump flag and durable FORCE-RLS allowlist move together."""
+def test_script_keeps_pg_dump_fail_loud_and_scopes_the_rls_data_path() -> None:
+    """The ordinary dump never opts globally into policy-filtered output."""
     code = [
         line
         for line in _SCRIPT.read_text(encoding="utf-8").splitlines()
         if not line.lstrip().startswith("#")
     ]
-    assert len([line for line in code if "--enable-row-security" in line]) == 1
-    _excluded_schemas, _excluded_tables, backup_rls_tables = _read_backup_sets()
-    assert backup_rls_tables == _EXPECTED_BACKUP_RLS_TABLES
+    assert not [line for line in code if "--enable-row-security" in line]
+    _excluded_schemas, _excluded_tables, scoped_data_tables = _read_backup_sets()
+    assert scoped_data_tables == _EXPECTED_SCOPED_DATA_TABLES
+    assert any('--snapshot="${BACKUP_SNAPSHOT}"' in line for line in code)
+    for table in scoped_data_tables:
+        assert any('"--exclude-table-data=${table}"' in line for line in code)
 
 
 @pytest.mark.unit
@@ -218,7 +222,7 @@ def test_exclusion_set_matches_the_fenced_objects_exactly(bootstrapped_db_url: s
     does it silently.  Deciding either way is a backup-completeness decision
     that belongs in the script's header, not in a quiet edit here.
     """
-    excluded_schemas, excluded_tables, backup_rls_tables = _read_backup_sets()
+    excluded_schemas, excluded_tables, scoped_data_tables = _read_backup_sets()
     fenced = _fetch(bootstrapped_db_url, _FENCED_RELATIONS_SQL)
     everything = _fetch(bootstrapped_db_url, _ALL_RELATIONS_SQL)
 
@@ -226,7 +230,9 @@ def test_exclusion_set_matches_the_fenced_objects_exactly(bootstrapped_db_url: s
         schema, _, _table = qualified.partition(".")
         return schema in excluded_schemas or qualified in excluded_tables
 
-    missed = sorted(rel for rel in fenced if not _is_excluded(rel) and rel not in backup_rls_tables)
+    missed = sorted(
+        rel for rel in fenced if not _is_excluded(rel) and rel not in scoped_data_tables
+    )
     assert not missed, (
         "These relations are fenced away from the backup role but are not "
         "excluded, so the nightly pg_dump aborts and publishes no file at all: "
@@ -250,7 +256,7 @@ def test_exclusion_set_matches_the_fenced_objects_exactly(bootstrapped_db_url: s
         f"only hiding data: schemas={unused_schemas} tables={unused_tables}."
     )
 
-    assert backup_rls_tables <= fenced
+    assert scoped_data_tables <= fenced
     policy_rows = _fetch_rows(
         bootstrapped_db_url,
         """
@@ -272,7 +278,7 @@ def test_exclusion_set_matches_the_fenced_objects_exactly(bootstrapped_db_url: s
         """,
     )
     assert policy_rows == [
-        (table, True, "r", True, "true") for table in sorted(_EXPECTED_BACKUP_RLS_TABLES)
+        (table, True, "r", True, "true") for table in sorted(_EXPECTED_SCOPED_DATA_TABLES)
     ], (
         "Every RLS table admitted to the backup must expose every row through one "
         f"permissive PUBLIC SELECT policy; got {policy_rows}."
@@ -378,16 +384,55 @@ def test_script_produces_a_verifiable_artifact(
     assert "CREATE TABLE public.entities" in dump
     assert "CREATE TABLE public.sessions" in dump
     # ... and every fenced object stayed out.
-    excluded_schemas, excluded_tables, backup_rls_tables = _read_backup_sets()
+    excluded_schemas, excluded_tables, scoped_data_tables = _read_backup_sets()
     for schema in excluded_schemas:
         assert f"CREATE SCHEMA {schema};" not in dump
     for qualified in excluded_tables:
         assert f"CREATE TABLE {qualified} " not in dump
-    for qualified in backup_rls_tables:
+    for qualified in scoped_data_tables:
         assert f"CREATE TABLE {qualified} " in dump
-        assert f"COPY {qualified} " in dump
-    assert "backup-contract-claim" in dump
-    assert str(claim_id) in dump
+        assert f"COPY {qualified} " not in dump
+    assert "-- Butlers scoped cost-claim ledger data" in dump
+    assert "SELECT public.cost_claim_restore_row(" in dump
+    staged_payloads = [
+        bytes.fromhex(line.split("\t", 2)[2]).decode("utf-8")
+        for line in dump.splitlines()
+        if line.startswith(
+            ("1\tcost_claims\t", "2\tcost_claim_resolutions\t", "3\tcost_claim_events\t")
+        )
+    ]
+    assert any("backup-contract-claim" in payload for payload in staged_payloads)
+    assert any(str(claim_id) in payload for payload in staged_payloads)
+
+
+@pytest.mark.db
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+def test_scoped_export_fails_before_publish_when_read_policy_can_filter(
+    bootstrapped_db_url: str, postgres_container, tmp_path: Path
+) -> None:
+    """A new restrictive policy cannot silently narrow the scoped export."""
+    engine = create_engine(bootstrapped_db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            conn.exec_driver_sql(
+                "CREATE POLICY cost_claims_backup_regression "
+                "ON public.cost_claims AS RESTRICTIVE FOR SELECT USING (false)"
+            )
+        result = _run_backup_script(
+            bootstrapped_db_url,
+            tmp_path,
+            str(postgres_container.get_exposed_port(5432)),
+        )
+        assert result.returncode != 0
+        assert "policy is not the exact full-row contract" in result.stderr
+        assert not list(tmp_path.glob("butlers_*.sql.gz"))
+    finally:
+        with engine.connect() as conn:
+            conn.exec_driver_sql(
+                "DROP POLICY IF EXISTS cost_claims_backup_regression ON public.cost_claims"
+            )
+        engine.dispose()
 
 
 @pytest.mark.db

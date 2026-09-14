@@ -187,6 +187,17 @@ async def test_real_roles_split_assertion_and_resolution_authority(db_url: str) 
             )
             == 1
         )
+        assert (
+            await relationship.fetchval(
+                "SELECT has_function_privilege(current_user, "
+                "'public.cost_claim_restore_row(text,jsonb)', 'EXECUTE')"
+            )
+            is False
+        )
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await relationship.execute(
+                "SELECT public.cost_claim_restore_row('cost_claims', '{}'::jsonb)"
+            )
 
         with pytest.raises((asyncpg.InsufficientPrivilegeError, asyncpg.CheckViolationError)):
             await general.execute(

@@ -146,6 +146,40 @@ Everything else in the table above is reconstructed by the bootstrap, expiring
 runtime state, or a deterministic projection rebuilt on the next detector run.
 No canonical source observation is excluded.
 
+### Forced-RLS cost-claim ledgers
+
+`public.cost_claims`, `public.cost_claim_resolutions`, and
+`public.cost_claim_events` are durable application evidence, not control-plane
+exceptions, so every published artifact preserves all of their rows. They cannot
+travel through ordinary `pg_dump` table-data output: the three tables use FORCE RLS,
+and globally enabling row-security would let an unrelated future policy silently
+filter another table.
+
+The producer therefore keeps ordinary `pg_dump` in its fail-loud
+`row_security=off` posture and excludes only these three tables' **data**, not their
+schema. It then appends a narrowly scoped staging block containing their rows as
+hex-wrapped JSON from the same exported PostgreSQL snapshot as the ordinary dump.
+Before writing either stream, it reads the live catalogue and
+requires the exact three tables to retain FORCE RLS plus exactly one permissive,
+non-restrictive `PUBLIC USING (true)` SELECT policy each. A missing table, an extra
+restrictive read policy, or any narrower expression fails the run before publication.
+Every other unexcluded fenced relation still makes ordinary `pg_dump` fail.
+
+During restore, the staged rows pass through
+`public.cost_claim_restore_row(text, jsonb)`. This fixed `SECURITY DEFINER` function
+is owned by the same role as the ledgers, has no `PUBLIC` execute grant, accepts only
+the three named relations, and temporarily suppresses only the audit-trigger events
+that replaying historical claim and resolution rows would otherwise duplicate. The
+restore must already satisfy the ownership membership precondition below to assume
+that owner. A failure in this scoped replay enables `ON_ERROR_STOP` for the appended
+block and prevents certification; it is never treated as a partial success.
+
+The real PostgreSQL contract tests compare source and restored row counts for all
+three tables and independently compare FORCE RLS and owner posture. They also prove
+the restore function remains security-definer, shares the table owner, and is not
+publicly executable. No dump role receives `BYPASSRLS`, no runtime role receives a
+restore capability, and no ledger is downgraded to an exclusion.
+
 `tests/scripts/test_pg_dump_backup.py` pins that claim against a real
 bootstrapped database, in both directions: it fails if a fenced object appears
 that the script does not exclude (which would silently stop producing backups),
