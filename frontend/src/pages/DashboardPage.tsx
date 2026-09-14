@@ -10,7 +10,7 @@
  * Responsive layout:
  *   - < lg  (< 1024px): single column, narrative on top, index below.
  *   - ≥ lg  (≥ 1024px): two columns at 1.4fr / 1fr, gap 56px.
- *   Frame: <Page archetype="editorial"> (max-width 1280px, responsive padding).
+ *   Frame: <Page archetype="editorial"> (max-width 1280px, inheriting Shell's responsive gutter).
  *
  * Data sources (no backend aggregation endpoint required):
  *   useBriefing()           -- DateEyebrow, BriefingStatus, Headline, Elaboration
