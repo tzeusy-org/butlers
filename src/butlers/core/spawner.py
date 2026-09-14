@@ -369,6 +369,29 @@ def _estimate_worst_case_call_cost(
     return cost
 
 
+async def _refuse_unregistered_private_runtime(
+    pool: asyncpg.Pool | None,
+    *,
+    effective_tier: str,
+) -> None:
+    """Record a content-blind refusal and stop before the remote compatibility fallback."""
+    await write_audit_entry(
+        pool,
+        "system:model_router",
+        "model.private_content_remote_refused",
+        {
+            "purpose_lane": PURPOSE_LANE_PRIVATE_CONTENT,
+            "effective_tier": effective_tier,
+            "reason": "unregistered_private_runtime",
+        },
+        result="error",
+        error="private_content_remote_refused",
+    )
+    raise PrivateContentModelUnavailable(
+        "private_content_remote_refused: local runtime unavailable"
+    )
+
+
 async def _write_dispatch_attempt(
     pool: asyncpg.Pool,
     *,
@@ -1931,6 +1954,11 @@ class Spawner:
                     resolved_runtime_type, provider_config
                 ).create_worker()
             except ValueError:
+                if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT:
+                    await _refuse_unregistered_private_runtime(
+                        self._pool,
+                        effective_tier=_failover_effective_tier or str(complexity),
+                    )
                 logger.warning(
                     "Catalog resolved unregistered runtime_type=%s for butler=%s; "
                     "falling back to default runtime_type=%s",
@@ -2720,6 +2748,11 @@ class Spawner:
                         resolved_runtime_type, next_provider_config
                     ).create_worker()
                 except ValueError:
+                    if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT:
+                        await _refuse_unregistered_private_runtime(
+                            self._pool,
+                            effective_tier=_failover_effective_tier,
+                        )
                     logger.warning(
                         "Failover candidate resolved unregistered runtime_type=%s for "
                         "butler=%s; falling back to default runtime_type=%s",

@@ -2338,6 +2338,7 @@ async def is_current_spend_rule_audited(
                       FROM public.audit_log
                      WHERE target = $1
                        AND action IN ('spend.rule.create', 'spend.rule.update')
+                       AND result = 'success'
                        AND ts >= $2
                 )
                 """,

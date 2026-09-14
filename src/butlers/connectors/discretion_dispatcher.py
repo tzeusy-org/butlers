@@ -102,9 +102,6 @@ _DEFAULT_TIMEOUT_S: float = 30.0
 _PURPOSE_LANES = frozenset({PURPOSE_LANE_STANDARD, PURPOSE_LANE_PRIVATE_CONTENT})
 
 
-PrivateContentRoutingRefused = PrivateContentModelUnavailable
-
-
 # bu-ur7go: discretion calls that fail with a provider/auth error (e.g. a
 # never-provisioned or revoked ~/.codex/auth.json — see bu-ofo3i) previously
 # vanished into the generic fail-open/fail-closed path with zero operator

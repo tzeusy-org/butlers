@@ -2126,6 +2126,61 @@ class TestCatalogModelResolution:
         audit.assert_awaited_once()
         assert audit.await_args.args[2] == "model.private_content_remote_refused"
 
+    async def test_private_routing_refuses_unregistered_local_runtime_without_remote_fallback(
+        self, tmp_path: Path
+    ) -> None:
+        """An accepted local candidate cannot become the hard-coded remote fallback."""
+        from butlers.core.model_routing import PrivateContentModelUnavailable
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        local_id = uuid.uuid4()
+        local = ("unregistered-local", "ollama/local-fixture", [], local_id, 120, "specialty")
+        spawner = Spawner(
+            config=_make_config(),
+            config_dir=config_dir,
+            pool=AsyncMock(),
+            runtime=MockAdapter(result_text="must not run", capture=True),
+        )
+
+        def adapter_for(runtime_type: str, *_args, **_kwargs):
+            if runtime_type == "unregistered-local":
+                raise ValueError("unregistered runtime")
+            pytest.fail(f"unexpected fallback adapter setup for {runtime_type}")
+
+        with (
+            patch(
+                "butlers.core.spawner._capture_pipeline_routing_context",
+                return_value={"request_context": {"source_channel": "whatsapp_user_client"}},
+            ),
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=local,
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=SimpleNamespace(
+                    allowed=True,
+                    usage_24h=0,
+                    usage_30d=0,
+                    limit_24h=None,
+                    limit_30d=None,
+                ),
+            ),
+            patch("butlers.core.spawner.write_audit_entry", new_callable=AsyncMock) as audit,
+            patch.object(spawner, "_resolve_provider_config", new_callable=AsyncMock),
+            patch.object(spawner, "_get_or_create_adapter", side_effect=adapter_for),
+            patch.object(spawner, "_fire_speculative_prewarm"),
+        ):
+            with pytest.raises(PrivateContentModelUnavailable, match="local runtime unavailable"):
+                await spawner.trigger("synthetic prompt", "route")
+
+        audit.assert_awaited_once()
+        assert audit.await_args.args[2] == "model.private_content_remote_refused"
+        assert audit.await_args.args[3]["reason"] == "unregistered_private_runtime"
+
     async def test_complexity_routing(self, tmp_path: Path):
         """Without pool: resolve_model not called. With pool: complexity forwarded."""
         from butlers.core.model_routing import Complexity

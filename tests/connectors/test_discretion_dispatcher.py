@@ -25,9 +25,13 @@ from butlers.connectors.discretion import DiscretionEvaluator
 from butlers.connectors.discretion_dispatcher import (
     PURPOSE_LANE_PRIVATE_CONTENT,
     DiscretionDispatcher,
-    PrivateContentRoutingRefused,
 )
-from butlers.core.model_routing import Complexity, QuotaStatus, SpendRoutingResult
+from butlers.core.model_routing import (
+    Complexity,
+    PrivateContentModelUnavailable,
+    QuotaStatus,
+    SpendRoutingResult,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -234,13 +238,13 @@ async def test_private_content_remote_only_refuses_before_provider_setup_and_aud
         ),
         patch(
             f"{_MODULE}.enforce_private_content_selection",
-            AsyncMock(side_effect=PrivateContentRoutingRefused("local model unavailable")),
+            AsyncMock(side_effect=PrivateContentModelUnavailable("local model unavailable")),
         ),
         patch.object(dispatcher, "_get_or_create_adapter") as get_adapter,
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock()) as provider_config,
         patch(f"{_MODULE}.write_audit_entry", AsyncMock()) as audit,
     ):
-        with pytest.raises(PrivateContentRoutingRefused, match="local model unavailable"):
+        with pytest.raises(PrivateContentModelUnavailable, match="local model unavailable"):
             await dispatcher.call("private fixture", identity="synthetic-chat")
 
     get_adapter.assert_not_called()

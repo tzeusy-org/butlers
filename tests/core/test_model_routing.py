@@ -16,7 +16,7 @@ from __future__ import annotations
 import shutil
 import time
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import asyncpg
@@ -1904,21 +1904,31 @@ async def test_private_content_remote_rule_requires_current_audit(pool: asyncpg.
     assert result.explicit_private_content is True
     await pool.execute(
         """
-        INSERT INTO public.audit_log (actor, action, target, ts)
-        VALUES ('owner', 'spend.rule.create', $1, $2)
+        INSERT INTO public.audit_log (actor, action, target, ts, result)
+        VALUES ('owner', 'spend.rule.create', $1, $2, NULL)
         """,
         f"rule:{rule['id']}",
-        rule["updated_at"] - timedelta(seconds=1),
+        rule["updated_at"],
     )
     assert await is_current_spend_rule_audited(pool, result) is False
 
     await pool.execute(
         """
-        INSERT INTO public.audit_log (actor, action, target, ts)
-        VALUES ('owner', 'spend.rule.create', $1, $2)
+        UPDATE public.audit_log
+           SET result = 'error'
+         WHERE target = $1
         """,
         f"rule:{rule['id']}",
-        rule["updated_at"],
+    )
+    assert await is_current_spend_rule_audited(pool, result) is False
+
+    await pool.execute(
+        """
+        UPDATE public.audit_log
+           SET result = 'success'
+         WHERE target = $1
+        """,
+        f"rule:{rule['id']}",
     )
     assert await is_current_spend_rule_audited(pool, result) is True
 
