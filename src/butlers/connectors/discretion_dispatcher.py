@@ -102,6 +102,7 @@ _DEFAULT_MAX_CONCURRENT: int = 4
 _DEFAULT_TIMEOUT_S: float = 30.0
 
 _PURPOSE_LANES = frozenset({PURPOSE_LANE_STANDARD, PURPOSE_LANE_PRIVATE_CONTENT})
+_PRIVATE_CONTENT_RUNTIME_FAILURE = "private_content_runtime_failure"
 
 
 # bu-ur7go: discretion calls that fail with a provider/auth error (e.g. a
@@ -728,15 +729,18 @@ class DiscretionDispatcher:
             decision = classify_failover_eligibility(
                 FailoverContext(exception=attempt_exc, process_info=adapter.last_process_info)
             )
+            private_failure = self._purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
             await record_dispatch_attempt(
                 self._pool,
                 catalog_entry_id=catalog_entry_id,
                 butler=self._butler_name,
                 outcome="runtime_failure",
                 attempt_index=attempt_count - 1,
-                failure_reason=decision.reason,
-                error_code=type(attempt_exc).__name__,
-                error_message=str(attempt_exc),
+                failure_reason=(
+                    _PRIVATE_CONTENT_RUNTIME_FAILURE if private_failure else decision.reason
+                ),
+                error_code=None if private_failure else type(attempt_exc).__name__,
+                error_message=None if private_failure else str(attempt_exc),
                 duration_ms=int((time.monotonic() - attempt_started_at) * 1000),
                 purpose_lane=self._purpose_lane,
             )
