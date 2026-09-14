@@ -252,12 +252,7 @@ __all__ = [
 
 
 async def start_approval_delivery_worker(daemon: Any) -> bool:
-    """Start one loop only for an active local Approvals module and runtime.
-
-    The delivery runtime remains deliberately absent until RFC 0023 task 4
-    supplies the authenticated Messenger boundary, so landing this worker does
-    not activate provider traffic.
-    """
+    """Start one loop only when the active module's server-held flag enables it."""
     existing = getattr(daemon, "_approval_delivery_task", None)
     if existing is not None and not existing.done():
         return False
@@ -269,6 +264,15 @@ async def start_approval_delivery_worker(daemon: Any) -> bool:
         (item for item in getattr(daemon, "_modules", ()) if item.name == "approvals"),
         None,
     )
+    rollout_enabled = getattr(module, "approval_delivery_worker_enabled", None)
+    if not callable(rollout_enabled):
+        return False
+    try:
+        if not await rollout_enabled():
+            return False
+    except Exception:
+        logger.warning("approval delivery worker rollout check failed closed")
+        return False
     components = getattr(module, "approval_delivery_worker_components", None)
     if not callable(components):
         return False

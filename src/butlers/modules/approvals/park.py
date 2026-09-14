@@ -1,10 +1,11 @@
 """Atomic admission for actions that require human approval.
 
 Every ordinary ``status='pending'`` producer enters through
-:func:`park_pending_action`. The helper owns one local transaction containing
-the action, immutable delivery-intent root, RFC 0021 burst admission, and the
-initial presentation/cohort records. It never resolves a recipient, renders a
-message, calls a provider, or writes the legacy ``approval_push_emissions``.
+:func:`park_pending_action`. A schema-local server-held rollout row selects
+exactly one path: the default-off path commits the action and retains the
+legacy best-effort push, while the enabled path atomically commits the action,
+immutable delivery-intent root, RFC 0021 burst admission, and initial
+presentation/cohort records. The enabled path never writes legacy emissions.
 
 Prepared insight actions retain their explicitly non-notifying path. They are
 surfaced by the insight digest and are not approval-delivery recovery subjects.
@@ -24,7 +25,8 @@ from butlers.core.approvals_policy import (
     approval_push_deliver_at,
     get_approvals_policy_quiet_hours,
 )
-from butlers.modules.approvals.notifications import ApprovalPushRuntime
+from butlers.modules.approvals.notifications import ApprovalPushRuntime, emit_approval_push
+from butlers.modules.approvals.rollout import read_approval_delivery_rollout
 
 AdmissionMode = Literal["single", "cohort_anchor", "collapsed"]
 _ORIGIN_RE = re.compile(r"^[a-z][a-z0-9_-]{0,62}$")
@@ -147,6 +149,89 @@ async def _existing_admission(
         not_before=row["not_before"],
         duplicate=True,
         legacy_duplicate=row["intent_id"] is None,
+    )
+
+
+async def _existing_pending_action(
+    connection: Any,
+    *,
+    action_id: uuid.UUID,
+    deduplication_key: str | None,
+) -> ParkAdmission | None:
+    """Resolve a disabled-rollout duplicate without touching recovery tables."""
+    row = await connection.fetchrow(
+        """
+        SELECT id
+          FROM pending_actions
+         WHERE id = $1
+            OR (
+                $2::text IS NOT NULL
+                AND deduplication_key = $2
+                AND status IN ('pending', 'approved', 'rejected', 'abandoned')
+            )
+         ORDER BY (id = $1) DESC, requested_at DESC, id
+         LIMIT 1
+        """,
+        action_id,
+        deduplication_key,
+    )
+    if row is None:
+        return None
+    return ParkAdmission(
+        action_id=row["id"],
+        intent_id=None,
+        action_key=None,
+        admission_mode=None,
+        presentation_key=None,
+        cohort_key=None,
+        not_before=None,
+        duplicate=True,
+        legacy_duplicate=True,
+    )
+
+
+async def _park_without_delivery(connection: Any, request: ParkRequest) -> ParkAdmission:
+    """Preserve pending-action and legacy notification behavior before cutover."""
+    await connection.execute(
+        "SELECT pg_advisory_xact_lock(hashtext('approval-delivery:' || current_schema()))"
+    )
+    existing = await _existing_pending_action(
+        connection,
+        action_id=request.action_id,
+        deduplication_key=request.deduplication_key,
+    )
+    if existing is not None:
+        return existing
+    await connection.execute(
+        """
+        INSERT INTO pending_actions (
+            id, tool_name, tool_args, agent_summary, session_id, status,
+            requested_at, expires_at, why, evidence, blast_radius, reversibility,
+            deduplication_key
+        ) VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9, $10, $11, $12)
+        """,
+        request.action_id,
+        request.tool_name,
+        request.tool_args,
+        request.agent_summary,
+        request.session_id,
+        request.requested_at,
+        request.expires_at,
+        request.why,
+        list(request.evidence),
+        request.blast_radius,
+        request.reversibility,
+        request.deduplication_key,
+    )
+    return ParkAdmission(
+        action_id=request.action_id,
+        intent_id=None,
+        action_key=None,
+        admission_mode=None,
+        presentation_key=None,
+        cohort_key=None,
+        not_before=None,
+        duplicate=False,
     )
 
 
@@ -419,13 +504,12 @@ async def park_pending_action(
     approval_push_runtime: ApprovalPushRuntime | None = None,
     deduplication_key: str | None = None,
 ) -> ParkAdmission:
-    """Atomically admit one ordinary pending action and its delivery state.
+    """Park one action through the server-held additive rollout boundary.
 
-    ``approval_push_runtime`` remains as a compatibility-only input while all
-    producers migrate together. Admission deliberately never invokes it: the
-    recovery worker and trusted Messenger handoff are later rollout slices.
+    Disabled schemas retain the established best-effort legacy push after the
+    pending row commits. Enabled schemas atomically create durable recovery
+    state and never write or dispatch through that legacy path.
     """
-    del approval_push_runtime
     request = ParkRequest(
         action_id=action_id,
         tool_name=tool_name,
@@ -444,7 +528,28 @@ async def park_pending_action(
     _validate_request(request)
     async with _connection(pool) as connection:
         async with connection.transaction():
-            return await _admit(connection, request)
+            rollout = await read_approval_delivery_rollout(connection, lock=True)
+            if rollout.admission_enabled:
+                return await _admit(connection, request)
+            admission = await _park_without_delivery(connection, request)
+
+    if not admission.duplicate and approval_push_runtime is not None:
+        await emit_approval_push(
+            pool=pool,
+            action={
+                "id": admission.action_id,
+                "tool_name": request.tool_name,
+                "requested_at": request.requested_at,
+                "expires_at": request.expires_at,
+                "why": request.why,
+                "blast_radius": request.blast_radius,
+                "reversibility": request.reversibility,
+            },
+            origin_butler=request.origin_butler,
+            runtime=approval_push_runtime,
+            now=request.requested_at,
+        )
+    return admission
 
 
 async def park_prepared_action(

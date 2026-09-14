@@ -272,6 +272,16 @@ class ApprovalsModule(Module):
 
         return ApprovalDeliveryRepository(self._hook_pool), ApprovalDeliveryRenderer()
 
+    async def approval_delivery_worker_enabled(self) -> bool:
+        """Return the server-held worker flag, defaulting closed on invalid state."""
+        if self._hook_pool is None:
+            return False
+        from butlers.modules.approvals.rollout import read_approval_delivery_rollout
+
+        async with self._hook_pool.acquire() as connection:
+            rollout = await read_approval_delivery_rollout(connection)
+        return rollout.worker_enabled
+
     @property
     def name(self) -> str:
         return "approvals"
