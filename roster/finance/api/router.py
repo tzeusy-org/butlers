@@ -31,6 +31,7 @@ if _spec is not None and _spec.loader is not None:
     _spec.loader.exec_module(_models)
 
     AccountModel = _models.AccountModel
+    CostClaimModel = _models.CostClaimModel
     BillModel = _models.BillModel
     BulkTransactionErrorDetail = _models.BulkTransactionErrorDetail
     BulkTransactionItem = _models.BulkTransactionItem
@@ -547,6 +548,76 @@ async def list_bills(
 # ---------------------------------------------------------------------------
 # GET /accounts — list accounts
 # ---------------------------------------------------------------------------
+
+
+@router.get("/cost-claims", response_model=PaginatedResponse[CostClaimModel])
+async def list_cost_claims(
+    state: str | None = Query(None, description="Filter by reconciliation state"),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> PaginatedResponse[CostClaimModel]:
+    """List shared claims without granting Finance access to a sibling schema."""
+    pool = _pool(db)
+    condition = "WHERE r.state = $1" if state else ""
+    args: list[object] = [state] if state else []
+    total = (
+        await pool.fetchval(
+            "SELECT count(*) FROM public.cost_claims c "
+            "JOIN public.cost_claim_resolutions r ON r.claim_id = c.id " + condition,
+            *args,
+        )
+        or 0
+    )
+    offset_pos = len(args) + 1
+    rows = await pool.fetch(
+        """
+        SELECT c.id, c.claim_key, c.asserted_by, c.kind, c.direction, c.amount,
+               c.currency, c.counterparty_entity_id, c.counterparty_label,
+               c.expected_on, c.description, c.asserted_at, c.superseded_at,
+               c.retracted_at, c.retraction_reason, r.state, r.matched_amount,
+               r.matched_currency, r.match_refs, r.unmatched_reason,
+               r.unverifiable_reason, r.evidence_horizon_at, r.decided_at
+        FROM public.cost_claims c
+        JOIN public.cost_claim_resolutions r ON r.claim_id = c.id
+        """
+        + condition
+        + f" ORDER BY c.asserted_at DESC, c.id DESC OFFSET ${offset_pos} LIMIT ${offset_pos + 1}",
+        *args,
+        offset,
+        limit,
+    )
+    data = [
+        CostClaimModel(
+            **{
+                **dict(row),
+                "id": str(row["id"]),
+                "amount": str(row["amount"]),
+                "matched_amount": (
+                    str(row["matched_amount"]) if row["matched_amount"] is not None else None
+                ),
+                "counterparty_entity_id": (
+                    str(row["counterparty_entity_id"])
+                    if row["counterparty_entity_id"] is not None
+                    else None
+                ),
+                "expected_on": str(row["expected_on"]) if row["expected_on"] else None,
+                "asserted_at": row["asserted_at"].isoformat(),
+                "superseded_at": (
+                    row["superseded_at"].isoformat() if row["superseded_at"] else None
+                ),
+                "retracted_at": (row["retracted_at"].isoformat() if row["retracted_at"] else None),
+                "evidence_horizon_at": (
+                    row["evidence_horizon_at"].isoformat() if row["evidence_horizon_at"] else None
+                ),
+                "decided_at": row["decided_at"].isoformat() if row["decided_at"] else None,
+            }
+        )
+        for row in rows
+    ]
+    return PaginatedResponse[CostClaimModel](
+        data=data, meta=PaginationMeta(total=total, offset=offset, limit=limit)
+    )
 
 
 @router.get("/accounts", response_model=PaginatedResponse[AccountModel])

@@ -907,6 +907,46 @@ async def test_list_bills_schema_prefix():
 
 
 @pytest.mark.asyncio
+async def test_list_cost_claims_projects_unverifiable_reason():
+    claim_id = uuid.uuid4()
+    rows = [
+        {
+            "id": claim_id,
+            "claim_key": "loan:fact-1",
+            "asserted_by": "relationship",
+            "kind": "receivable",
+            "direction": "inbound",
+            "amount": Decimal("25.00"),
+            "currency": "SGD",
+            "counterparty_entity_id": None,
+            "counterparty_label": "Alex",
+            "expected_on": None,
+            "description": "Lunch",
+            "asserted_at": _NOW,
+            "superseded_at": None,
+            "retracted_at": None,
+            "retraction_reason": None,
+            "state": "unverifiable",
+            "matched_amount": None,
+            "matched_currency": None,
+            "match_refs": [],
+            "unmatched_reason": None,
+            "unverifiable_reason": "no_account",
+            "evidence_horizon_at": None,
+            "decided_at": _NOW,
+        }
+    ]
+    app, _ = _make_app(fetch_rows=rows, fetchval_return=1)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/finance/cost-claims")
+
+    assert response.status_code == 200
+    assert response.json()["data"][0]["unverifiable_reason"] == "no_account"
+
+
+@pytest.mark.asyncio
 async def test_list_accounts_empty():
     """GET /api/finance/accounts returns empty list when no data."""
     app, _ = _make_app(fetch_rows=[], fetchval_return=0)

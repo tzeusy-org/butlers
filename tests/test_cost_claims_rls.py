@@ -1,0 +1,247 @@
+"""Real-role PostgreSQL contract tests for the shared cost-claim ledger."""
+
+from __future__ import annotations
+
+import asyncio
+import shutil
+import uuid
+from decimal import Decimal
+from urllib.parse import urlparse
+
+import asyncpg
+import pytest
+from sqlalchemy import create_engine
+
+from alembic import command
+from butlers.core.cost_claims import assert_claim
+from butlers.migrations import _build_alembic_config
+from butlers.testing.migration import (
+    create_migrated_test_db,
+    init_db_sql_for_dbapi,
+    migration_bootstrap_db_url,
+    migration_db_name,
+)
+
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(shutil.which("docker") is None, reason="Docker not available"),
+]
+
+
+@pytest.fixture(scope="module")
+def db_name() -> str:
+    return migration_db_name()
+
+
+@pytest.fixture(scope="module")
+def db_url(postgres_container, db_name: str) -> str:
+    return create_migrated_test_db(
+        postgres_container,
+        db_name,
+        chains=["core", "finance"],
+        schemas={"finance": "finance"},
+    )
+
+
+def test_init_db_replay_twice_preserves_forced_rls(
+    postgres_container, db_name: str, db_url: str
+) -> None:
+    migration_user = urlparse(db_url).username
+    assert migration_user is not None
+    engine = create_engine(
+        migration_bootstrap_db_url(postgres_container, db_name), isolation_level="AUTOCOMMIT"
+    )
+    source = init_db_sql_for_dbapi()
+    try:
+        for _ in range(2):
+            raw = engine.raw_connection()
+            try:
+                raw.autocommit = True
+                with raw.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT set_config('butlers.connecting_user', %s, false)",
+                        (migration_user,),
+                    )
+                    cursor.execute(source)
+            finally:
+                raw.close()
+        with engine.connect() as conn:
+            forced = conn.exec_driver_sql(
+                "SELECT relforcerowsecurity FROM pg_class "
+                "WHERE oid = 'public.cost_claims'::regclass"
+            ).scalar_one()
+        assert forced is True
+    finally:
+        engine.dispose()
+
+
+async def _role_conn(db_url: str, role: str) -> asyncpg.Connection:
+    conn = await asyncpg.connect(db_url)
+    await conn.execute(f"SET ROLE {role}")
+    await conn.execute("SET search_path TO finance, public")
+    return conn
+
+
+async def _insert_relationship_claim(conn: asyncpg.Connection, key: str) -> uuid.UUID:
+    row = await conn.fetchrow(
+        """
+        INSERT INTO public.cost_claims
+            (claim_key, asserted_by, kind, direction, amount, currency,
+             counterparty_label, description)
+        VALUES ($1, 'relationship', 'receivable', 'inbound', 25, 'SGD', 'Alex', 'Lunch')
+        RETURNING id
+        """,
+        key,
+    )
+    return row["id"]
+
+
+async def test_real_roles_split_assertion_and_resolution_authority(db_url: str) -> None:
+    relationship = await _role_conn(db_url, "butler_relationship_rw")
+    finance = await _role_conn(db_url, "butler_finance_rw")
+    general = await _role_conn(db_url, "butler_general_rw")
+    try:
+        claim_id = await _insert_relationship_claim(relationship, f"test:{uuid.uuid4()}")
+        assert (
+            await finance.fetchval(
+                "SELECT has_schema_privilege(current_user, 'relationship', 'USAGE')"
+            )
+            is False
+        )
+        assert (
+            await finance.fetchval(
+                "SELECT count(*) FROM public.cost_claims WHERE id = $1", claim_id
+            )
+            == 1
+        )
+
+        with pytest.raises((asyncpg.InsufficientPrivilegeError, asyncpg.CheckViolationError)):
+            await general.execute(
+                """
+                INSERT INTO public.cost_claims
+                    (claim_key, asserted_by, kind, direction, amount, currency,
+                     counterparty_label, description)
+                VALUES ($1, 'relationship', 'receivable', 'inbound', 25, 'SGD', 'Alex', 'Forged')
+                """,
+                f"test:{uuid.uuid4()}",
+            )
+
+        assert (
+            await general.execute(
+                "UPDATE public.cost_claims SET retracted_at = now(), retraction_reason = 'forged' "
+                "WHERE id = $1",
+                claim_id,
+            )
+            == "UPDATE 0"
+        )
+        assert (
+            await finance.execute(
+                "UPDATE public.cost_claims SET amount = 30 WHERE id = $1", claim_id
+            )
+            == "UPDATE 0"
+        )
+        assert (
+            await relationship.execute(
+                "UPDATE public.cost_claim_resolutions SET state = 'settled' WHERE claim_id = $1",
+                claim_id,
+            )
+            == "UPDATE 0"
+        )
+
+        assert (
+            await finance.execute(
+                "UPDATE public.cost_claim_resolutions SET state = 'settled', decided_at = now(), "
+                "decided_by = current_user WHERE claim_id = $1",
+                claim_id,
+            )
+            == "UPDATE 1"
+        )
+        assert (
+            await finance.fetchval(
+                "SELECT count(*) FROM public.cost_claim_events "
+                "WHERE claim_id = $1 AND action = 'resolved'",
+                claim_id,
+            )
+            >= 2
+        )  # seeded resolution plus the direct UPDATE
+    finally:
+        await relationship.close()
+        await finance.close()
+        await general.close()
+
+
+async def test_concurrent_identical_assert_has_one_live_row(db_url: str) -> None:
+    key = f"test:race:{uuid.uuid4()}"
+    pools = []
+    try:
+        for _ in range(2):
+
+            async def setup(conn: asyncpg.Connection) -> None:
+                await conn.execute("SET ROLE butler_relationship_rw")
+
+            pools.append(await asyncpg.create_pool(db_url, min_size=1, max_size=1, setup=setup))
+
+        values = dict(
+            claim_key=key,
+            asserted_by="relationship",
+            kind="receivable",
+            direction="inbound",
+            amount=Decimal("25.00"),
+            currency="SGD",
+            counterparty_entity_id=None,
+            counterparty_label="Alex",
+            expected_on=None,
+            description="Lunch",
+            evidence_kind="fact",
+            evidence_ref="fact-1",
+        )
+        first, second = await asyncio.gather(
+            assert_claim(pools[0], **values), assert_claim(pools[1], **values)
+        )
+        assert first["id"] == second["id"]
+        assert (
+            await pools[0].fetchval(
+                "SELECT count(*) FROM public.cost_claims WHERE asserted_by = 'relationship' "
+                "AND claim_key = $1 AND superseded_at IS NULL AND retracted_at IS NULL",
+                key,
+            )
+            == 1
+        )
+
+        changed = {**values, "amount": Decimal("30.00")}
+        amended = await assert_claim(pools[0], **changed)
+        assert amended["id"] != first["id"]
+        assert (
+            await pools[0].fetchval(
+                "SELECT superseded_at IS NOT NULL FROM public.cost_claims WHERE id = $1",
+                first["id"],
+            )
+            is True
+        )
+        assert (
+            await pools[0].fetchval(
+                "SELECT state FROM public.cost_claim_resolutions WHERE claim_id = $1",
+                amended["id"],
+            )
+            == "unreconciled"
+        )
+    finally:
+        await asyncio.gather(*(pool.close() for pool in pools))
+
+
+def test_core_239_downgrade_and_upgrade_round_trip(db_url: str) -> None:
+    finance_config = _build_alembic_config(db_url, ["finance"], target_schema="finance")
+    core_config = _build_alembic_config(db_url, ["core"], target_schema=None)
+    command.downgrade(finance_config, "finance@finance_014")
+    command.downgrade(core_config, "core@core_238")
+    engine = create_engine(db_url)
+    try:
+        with engine.connect() as conn:
+            assert (
+                conn.exec_driver_sql("SELECT to_regclass('public.cost_claims')").scalar_one()
+                is None
+            )
+    finally:
+        engine.dispose()
+    command.upgrade(core_config, "core@head")
+    command.upgrade(finance_config, "finance@head")

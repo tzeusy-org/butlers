@@ -3413,25 +3413,38 @@ async def list_entity_loans(
 
     rows = await pool.fetch(
         """
-        SELECT id, content, metadata, created_at,
+        SELECT f.id, f.content, f.metadata, f.created_at,
                'memory_module_legacy'::text AS src,
                NULL::float AS conf,
                NULL::timestamptz AS last_seen,
                NULL::float AS weight,
                false AS verified,
-               false AS "primary"
-        FROM facts
-        WHERE entity_id = $1
-          AND predicate = 'loan'
-          AND validity = 'active'
-          AND scope = 'relationship'
-        ORDER BY created_at DESC
+               false AS "primary",
+               c.id AS claim_id, cr.state AS resolution_state, cr.unverifiable_reason
+        FROM facts f
+        LEFT JOIN public.cost_claims c
+          ON c.asserted_by = 'relationship'
+         AND c.claim_key = 'loan:' || f.id::text
+         AND c.superseded_at IS NULL AND c.retracted_at IS NULL
+        LEFT JOIN public.cost_claim_resolutions cr ON cr.claim_id = c.id
+        WHERE f.entity_id = $1
+          AND f.predicate = 'loan'
+          AND f.validity = 'active'
+          AND f.scope = 'relationship'
+        ORDER BY f.created_at DESC
         OFFSET $2 LIMIT $3
         """,
         entity_id,
         offset,
         limit,
     )
+
+    def optional(row, key):
+        try:
+            return row[key]
+        except (KeyError, TypeError):
+            return None
+
     return [
         EntityLoan(
             id=r["id"],
@@ -3441,6 +3454,9 @@ async def list_entity_loans(
             direction=(r["metadata"] or {}).get("direction"),
             settled=(r["metadata"] or {}).get("settled"),
             settled_at=(r["metadata"] or {}).get("settled_at"),
+            claim_id=optional(r, "claim_id"),
+            resolution_state=optional(r, "resolution_state"),
+            unverifiable_reason=optional(r, "unverifiable_reason"),
             created_at=r["created_at"],
             src=r["src"],
             conf=r["conf"],

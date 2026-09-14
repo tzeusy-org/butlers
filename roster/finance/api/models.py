@@ -94,6 +94,34 @@ class AccountModel(BaseModel):
     updated_at: str
 
 
+class CostClaimModel(BaseModel):
+    """One shared typed claim with Finance's latest honest verdict."""
+
+    id: str
+    claim_key: str
+    asserted_by: str
+    kind: str
+    direction: str
+    amount: str
+    currency: str
+    counterparty_entity_id: str | None = None
+    counterparty_label: str | None = None
+    expected_on: str | None = None
+    description: str
+    asserted_at: str
+    superseded_at: str | None = None
+    retracted_at: str | None = None
+    retraction_reason: str | None = None
+    state: str
+    matched_amount: str | None = None
+    matched_currency: str | None = None
+    match_refs: list[str] = []
+    unmatched_reason: str | None = None
+    unverifiable_reason: str | None = None
+    evidence_horizon_at: str | None = None
+    decided_at: str | None = None
+
+
 class SpendingGroupModel(BaseModel):
     """A spending aggregation bucket (category, merchant, week, or month)."""
 
