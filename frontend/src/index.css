@@ -348,7 +348,7 @@
   /* ---------------------------------------------------------------------------
    * Spacing scale
    *
-   * Base unit: 0.25rem (4px). Linear steps 1–12.
+   * Base unit: 0.25rem (4px). Linear steps 1–14.
    * --space-N = N × 0.25rem
    * ---------------------------------------------------------------------------*/
   --space-1:   0.25rem;
@@ -363,6 +363,8 @@
   --space-10:  2.5rem;
   --space-11:  2.75rem;
   --space-12:  3rem;
+  --space-13:  3.25rem;
+  --space-14:  3.5rem;
 
   /* ---------------------------------------------------------------------------
    * Page gutter ramp (bu-8cdl1.13, Viewport and Modality Contract)
@@ -392,8 +394,8 @@
 
 @media (min-width: 1024px) {
   :root {
-    --page-gutter-x: var(--space-8);
-    --page-gutter-y: var(--space-6);
+    --page-gutter-x: var(--space-14);
+    --page-gutter-y: var(--space-12);
   }
 }
 

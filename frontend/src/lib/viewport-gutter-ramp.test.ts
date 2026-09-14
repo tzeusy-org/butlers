@@ -98,6 +98,8 @@ describe("page-gutter ramp tokens", () => {
     expect(tabletY).toBeGreaterThan(phoneY)
     expect(desktopX).toBeGreaterThanOrEqual(tabletX)
     expect(desktopY).toBeGreaterThanOrEqual(tabletY)
+    expect(desktopX).toBe(3.5)
+    expect(desktopY).toBe(3)
   })
 
   it("uses dvh instead of a fixed 100vh for the body's minimum height", () => {
