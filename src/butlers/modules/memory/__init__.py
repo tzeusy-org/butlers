@@ -1267,10 +1267,12 @@ class MemoryModule(Module):
             memory_id: str,
         ) -> dict[str, Any] | None:
             """Retrieve a specific memory by type and ID."""
+            read_policy = await module._catalog_read_policy()
             return await _reading.memory_get(
                 module._get_pool(),
                 memory_type,
                 memory_id,
+                read_policy=read_policy,
             )
 
         # --- Feedback tools ---

@@ -300,6 +300,36 @@ def _fill_section(
     return "".join(lines)
 
 
+def _fill_profile_section(
+    items: list[dict[str, Any]],
+    withheld_count: int,
+    char_budget: int,
+) -> str:
+    """Render Profile Facts while reserving the withheld receipt up front.
+
+    The receipt is an honesty marker, but it cannot bypass the profile-section
+    allocation. If even the header plus receipt cannot fit, omit the whole
+    section rather than returning an overflowing or partial marker.
+    """
+    header = "\n## Profile Facts\n"
+    if withheld_count <= 0:
+        return _fill_section(header, items, _format_fact_line, char_budget)
+
+    withheld_marker = f"_(withheld: {withheld_count})_\n"
+    if len(header) + len(withheld_marker) > char_budget:
+        return ""
+
+    facts_section = _fill_section(
+        header,
+        items,
+        _format_fact_line,
+        char_budget - len(withheld_marker),
+    )
+    if facts_section:
+        return facts_section + withheld_marker
+    return header + withheld_marker
+
+
 async def memory_context(
     pool: Pool,
     embedding_engine,
@@ -364,13 +394,21 @@ async def memory_context(
     read_policy = catalog_read_policy or await _search.load_catalog_read_policy(pool)
     allowed_sensitivities = read_policy.allowed_sensitivities
 
-    total_chars = token_budget * 4
+    preamble = "# Memory Context\n"
+    total_chars = max(token_budget * 4, 0)
+    if total_chars < len(preamble):
+        return ""
 
-    profile_budget = int(total_chars * _PROFILE_FACTS_FRAC)
-    task_budget = int(total_chars * _TASK_FACTS_FRAC)
-    rules_budget = int(total_chars * _RULES_FRAC)
-    episodes_budget = int(total_chars * _EPISODES_FRAC)
-    fleet_knowledge_budget = int(total_chars * _FLEET_KNOWLEDGE_FRAC)
+    # Fixed text participates in the requested budget before the five sections
+    # partition the remainder. This makes the documented maximum true even for
+    # small budgets rather than letting the preamble or a privacy receipt spill.
+    section_total_chars = total_chars - len(preamble)
+
+    profile_budget = int(section_total_chars * _PROFILE_FACTS_FRAC)
+    task_budget = int(section_total_chars * _TASK_FACTS_FRAC)
+    rules_budget = int(section_total_chars * _RULES_FRAC)
+    episodes_budget = int(section_total_chars * _EPISODES_FRAC)
+    fleet_knowledge_budget = int(section_total_chars * _FLEET_KNOWLEDGE_FRAC)
 
     # --- 1. Fetch profile facts (owner entity) ---
     profile_facts, profile_withheld = await _fetch_profile_facts(
@@ -437,21 +475,13 @@ async def memory_context(
         )
 
     # --- Assemble sections ---
-    preamble = "# Memory Context\n"
     sections: list[str] = [preamble]
 
-    profile_section = _fill_section(
-        "\n## Profile Facts\n",
+    profile_section = _fill_profile_section(
         profile_facts,
-        _format_fact_line,
+        profile_withheld,
         profile_budget,
     )
-    if profile_withheld > 0:
-        # A confidential owner fact is absent from the section above but its
-        # exclusion is reported, not silent — see _fetch_profile_facts.
-        if not profile_section:
-            profile_section = "\n## Profile Facts\n"
-        profile_section += f"_(withheld: {profile_withheld})_\n"
     if profile_section:
         sections.append(profile_section)
 

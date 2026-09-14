@@ -56,12 +56,15 @@ def _load_migration():
 
 
 class TestMigrationFileAndChain:
-    def test_chain_head_is_single_and_contains_this_migration(self) -> None:
+    def test_chain_head_is_single_and_follows_current_core_head(self) -> None:
         from butlers.migrations import get_chain_head, get_chain_revision_ids
 
+        mod = _load_migration()
         revision_ids = get_chain_revision_ids("core")
-        assert "core_234" in revision_ids
-        assert get_chain_head("core") in revision_ids
+        assert mod.revision == "core_234"
+        assert mod.down_revision == "core_233"
+        assert mod.revision in revision_ids
+        assert get_chain_head("core") == mod.revision
 
 
 class TestUpgradeSQLShape:

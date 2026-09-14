@@ -1084,6 +1084,26 @@ class TestToolDelegation:
             filters=None,
         )
 
+    async def test_memory_get_delegates_with_module_held_policy(self):
+        mod, tools, pool, _, reading, *_ = await self._setup_and_register()
+        held_policy = object()
+        mod._catalog_read_policy = AsyncMock(return_value=held_policy)
+        reading.memory_get = AsyncMock(return_value=None)
+
+        result = await tools["memory_get"](
+            memory_type="fact",
+            memory_id="550e8400-e29b-41d4-a716-446655440000",
+        )
+
+        assert result is None
+        mod._catalog_read_policy.assert_awaited_once_with()
+        reading.memory_get.assert_awaited_once_with(
+            pool,
+            "fact",
+            "550e8400-e29b-41d4-a716-446655440000",
+            read_policy=held_policy,
+        )
+
 
 # ---------------------------------------------------------------------------
 # Sender entity_id fallback in memory_store_fact

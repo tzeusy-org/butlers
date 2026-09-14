@@ -29,6 +29,7 @@ import pytest
 from butlers.db import register_jsonb_codec
 from butlers.modules.memory import search as _search
 from butlers.modules.memory.tools import context as _context
+from butlers.modules.memory.tools import reading as _reading
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
@@ -109,6 +110,35 @@ class TestExplicitSensitivityFilterAuthorization:
         assert result == []
 
 
+class TestDirectMemoryGetUsesHeldPolicy:
+    """A UUID must not become a local read-ceiling bypass."""
+
+    async def test_forwards_the_server_held_policy_to_atomic_retrieval(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        pool = AsyncMock()
+        memory_id = uuid.uuid4()
+        policy = _search.resolve_catalog_read_policy("normal")
+        get_memory = AsyncMock(return_value=None)
+        monkeypatch.setattr(_reading._storage, "get_memory", get_memory)
+
+        result = await _reading.memory_get(
+            pool,
+            "fact",
+            str(memory_id),
+            read_policy=policy,
+        )
+
+        assert result is None
+        get_memory.assert_awaited_once_with(
+            pool,
+            "fact",
+            memory_id,
+            allowed_sensitivities=policy.allowed_sensitivities,
+        )
+        pool.fetchval.assert_not_awaited()
+
+
 class TestMemoryContextAssemblyUsesOnePolicy:
     """Profile Facts and recall must agree on exactly one read_policy per
     memory_context assembly -- pinned by capturing what each fetch receives."""
@@ -145,6 +175,66 @@ class TestMemoryContextAssemblyUsesOnePolicy:
 
         assert captured["profile_allowed"] == policy.allowed_sensitivities
         assert captured["recall_policy"] is policy
+
+
+class TestWithheldMarkerBudget:
+    """The privacy receipt is part of, not appended after, the profile quota."""
+
+    async def test_saturated_profile_reserves_withheld_marker_before_fact_lines(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        token_budget = 300
+        preamble = "# Memory Context\n"
+        profile_budget = int((token_budget * 4 - len(preamble)) * _context._PROFILE_FACTS_FRAC)
+        header = "\n## Profile Facts\n"
+        marker = "_(withheld: 1)_\n"
+        prefix = "- [owner] [note]: "
+        suffix = " (confidence: 1.00)\n"
+        content = "x" * (profile_budget - len(header) - len(prefix) - len(suffix))
+        profile_fact = {"subject": "owner", "predicate": "note", "content": content}
+
+        async def fake_profile_facts(*_args, **_kwargs):
+            return [profile_fact], 1
+
+        monkeypatch.setattr(_context, "_fetch_profile_facts", fake_profile_facts)
+        monkeypatch.setattr(_context._search, "recall", AsyncMock(return_value=[]))
+
+        result = await _context.memory_context(
+            AsyncMock(),
+            MagicMock(),
+            "prompt",
+            "health",
+            token_budget=token_budget,
+            catalog_read_policy=_search.resolve_catalog_read_policy("normal"),
+        )
+
+        profile_section = result.removeprefix(preamble)
+        assert marker in profile_section
+        assert content not in profile_section
+        assert len(profile_section) <= profile_budget
+        assert len(result) <= token_budget * 4
+
+    async def test_tiny_budget_omits_unaffordable_profile_receipt(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def fake_profile_facts(*_args, **_kwargs):
+            return [], 1
+
+        monkeypatch.setattr(_context, "_fetch_profile_facts", fake_profile_facts)
+        monkeypatch.setattr(_context._search, "recall", AsyncMock(return_value=[]))
+
+        token_budget = 10
+        result = await _context.memory_context(
+            AsyncMock(),
+            MagicMock(),
+            "prompt",
+            "health",
+            token_budget=token_budget,
+            catalog_read_policy=_search.resolve_catalog_read_policy("normal"),
+        )
+
+        assert "withheld:" not in result
+        assert len(result) <= token_budget * 4
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +299,51 @@ async def _insert_fact(
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 class TestLocalCeilingEnforcedInSQL:
+    async def test_memory_get_hides_confidential_row_without_reference_bump(
+        self, ceiling_pool
+    ) -> None:
+        fact_id = await _insert_fact(
+            ceiling_pool,
+            content="direct retrieval ceiling regression",
+            sensitivity="confidential",
+        )
+        before = await ceiling_pool.fetchrow(
+            "SELECT reference_count, last_referenced_at FROM facts WHERE id = $1", fact_id
+        )
+
+        result = await _reading.memory_get(
+            ceiling_pool,
+            "fact",
+            str(fact_id),
+            read_policy=_search.resolve_catalog_read_policy("normal"),
+        )
+
+        after = await ceiling_pool.fetchrow(
+            "SELECT reference_count, last_referenced_at FROM facts WHERE id = $1", fact_id
+        )
+        assert result is None
+        assert dict(after) == dict(before)
+
+    async def test_memory_get_returns_and_bumps_row_within_ceiling(self, ceiling_pool) -> None:
+        fact_id = await _insert_fact(
+            ceiling_pool,
+            content="authorized direct retrieval",
+            sensitivity="normal",
+        )
+
+        result = await _reading.memory_get(
+            ceiling_pool,
+            "fact",
+            str(fact_id),
+            read_policy=_search.resolve_catalog_read_policy("normal"),
+        )
+
+        row = await ceiling_pool.fetchrow(
+            "SELECT reference_count FROM facts WHERE id = $1", fact_id
+        )
+        assert result is not None and result["id"] == str(fact_id)
+        assert row["reference_count"] == 1
+
     async def test_keyword_search_ceiling_zero_rows_when_only_above_ceiling_exists(
         self, ceiling_pool
     ) -> None:
