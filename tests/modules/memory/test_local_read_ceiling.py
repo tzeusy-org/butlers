@@ -375,24 +375,46 @@ class TestLocalCeilingEnforcedInSQL:
         confidential_id = await _insert_fact(
             ceiling_pool, content="unique needle echo foxtrot", sensitivity="confidential"
         )
-        results = await _search.keyword_search(
+        allowed = ["normal", "pii", "confidential"]
+        keyword_results = await _search.keyword_search(
             ceiling_pool,
             "unique needle echo foxtrot",
             "facts",
-            allowed_sensitivities=["normal", "pii", "confidential"],
+            allowed_sensitivities=allowed,
         )
-        assert {r["id"] for r in results} == {normal_id, confidential_id}
+        semantic_results = await _search.semantic_search(
+            ceiling_pool,
+            [0.1] * 384,
+            "facts",
+            allowed_sensitivities=allowed,
+        )
+        hybrid_results = await _search.hybrid_search(
+            ceiling_pool,
+            "unique needle echo foxtrot",
+            [0.1] * 384,
+            "facts",
+            allowed_sensitivities=allowed,
+        )
+        expected = {normal_id, confidential_id}
+        assert {r["id"] for r in keyword_results} == expected
+        assert {r["id"] for r in semantic_results} == expected
+        assert {r["id"] for r in hybrid_results} == expected
 
-    async def test_no_ceiling_argument_preserves_back_compat(self, ceiling_pool) -> None:
-        """allowed_sensitivities=None (the default) applies no filter at all --
-        existing low-level callers of keyword_search/semantic_search are
-        unaffected; the ceiling is opt-in at this layer and mandatory at
-        recall()/search()."""
+    async def test_omitted_low_level_ceiling_fails_closed(self, ceiling_pool) -> None:
+        """Every low-level search defaults to normal-only authorization."""
         await _insert_fact(
             ceiling_pool, content="unique needle golf hotel", sensitivity="confidential"
         )
-        results = await _search.keyword_search(ceiling_pool, "unique needle golf hotel", "facts")
-        assert len(results) == 1
+        keyword_results = await _search.keyword_search(
+            ceiling_pool, "unique needle golf hotel", "facts"
+        )
+        semantic_results = await _search.semantic_search(ceiling_pool, [0.1] * 384, "facts")
+        hybrid_results = await _search.hybrid_search(
+            ceiling_pool, "unique needle golf hotel", [0.1] * 384, "facts"
+        )
+        assert keyword_results == []
+        assert semantic_results == []
+        assert hybrid_results == []
 
     async def test_memory_context_withholds_confidential_owner_fact(self, ceiling_pool) -> None:
         """Reproduction + fix: a confidential owner fact is absent from

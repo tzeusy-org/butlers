@@ -49,6 +49,15 @@ _TS_CONFIG = "english"
 _RRF_K = 60
 
 
+def _resolve_local_allowed_sensitivities(
+    allowed_sensitivities: list[str] | None,
+) -> list[str]:
+    """Fail closed to normal-only when a low-level caller omits policy."""
+    if allowed_sensitivities is None:
+        return [DEFAULT_CATALOG_SENSITIVITY]
+    return list(allowed_sensitivities)
+
+
 # ---------------------------------------------------------------------------
 # Semantic search via pgvector
 # ---------------------------------------------------------------------------
@@ -73,12 +82,11 @@ async def semantic_search(
         limit: Max results (default 10).
         scope: Optional scope filter (only applied for facts/rules tables).
         tenant_id: Tenant scope for isolation (default 'shared').
-        allowed_sensitivities: When provided, the read ceiling applied in SQL
+        allowed_sensitivities: The read ceiling applied in SQL
             (``COALESCE(sensitivity, 'normal') = ANY(allowed_sensitivities)``)
             — the same mechanism ``search_catalog`` uses for cross-butler
-            reads, generalized to every local table. ``None`` means no
-            ceiling is applied (internal/back-compat callers only —
-            ``recall``/``search`` always supply a resolved ceiling).
+            reads, generalized to every local table. Omission fails closed to
+            normal-only access; policy-aware callers pass their resolved set.
 
     Returns:
         List of dicts with all table columns plus a ``similarity`` key
@@ -90,6 +98,7 @@ async def semantic_search(
     if table not in _VALID_TABLES:
         raise ValueError(f"Invalid table: {table!r}. Must be one of {sorted(_VALID_TABLES)}")
 
+    allowed_sensitivities = _resolve_local_allowed_sensitivities(allowed_sensitivities)
     embedding_str = str(query_embedding)
 
     # Build WHERE clause -------------------------------------------------
@@ -138,12 +147,9 @@ async def semantic_search(
     # Read ceiling: applied in SQL, identical shape to the catalog's
     # sensitivity filter (see resolve_allowed_sensitivities). every one of
     # episodes/facts/rules carries a sensitivity column.
-    if allowed_sensitivities is not None:
-        conditions.append(
-            f"COALESCE(sensitivity, '{DEFAULT_CATALOG_SENSITIVITY}') = ANY(${param_idx})"
-        )
-        params.append(list(allowed_sensitivities))
-        param_idx += 1
+    conditions.append(f"COALESCE(sensitivity, '{DEFAULT_CATALOG_SENSITIVITY}') = ANY(${param_idx})")
+    params.append(allowed_sensitivities)
+    param_idx += 1
 
     where = "WHERE " + " AND ".join(conditions) if conditions else ""
 
@@ -200,6 +206,7 @@ async def keyword_search(
     if table not in _VALID_TABLES:
         raise ValueError(f"Invalid table: {table!r}. Must be one of {sorted(_VALID_TABLES)}")
 
+    allowed_sensitivities = _resolve_local_allowed_sensitivities(allowed_sensitivities)
     cleaned_query = preprocess_search_query(query_text)
     if not cleaned_query:
         return []
@@ -239,12 +246,9 @@ async def keyword_search(
         conditions.append("(metadata->>'forgotten')::boolean IS NOT TRUE")
         conditions.append("retired_at IS NULL")
 
-    if allowed_sensitivities is not None:
-        conditions.append(
-            f"COALESCE(sensitivity, '{DEFAULT_CATALOG_SENSITIVITY}') = ANY(${param_idx})"
-        )
-        params.append(list(allowed_sensitivities))
-        param_idx += 1
+    conditions.append(f"COALESCE(sensitivity, '{DEFAULT_CATALOG_SENSITIVITY}') = ANY(${param_idx})")
+    params.append(allowed_sensitivities)
+    param_idx += 1
 
     where = " AND ".join(conditions)
 
@@ -295,6 +299,8 @@ async def hybrid_search(
         limit: Max results per search method and for final output.
         scope: Optional scope filter.
         tenant_id: Tenant scope for isolation (default 'shared').
+        allowed_sensitivities: Read ceiling forwarded to both search methods.
+            Omission fails closed to normal-only access.
 
     Returns:
         List of dicts with ``rrf_score``, ``semantic_rank``, and
@@ -305,6 +311,8 @@ async def hybrid_search(
     """
     if table not in _VALID_TABLES:
         raise ValueError(f"Invalid table: {table!r}. Must be one of {sorted(_VALID_TABLES)}")
+
+    allowed_sensitivities = _resolve_local_allowed_sensitivities(allowed_sensitivities)
 
     # Run both searches
     semantic_results = await semantic_search(
