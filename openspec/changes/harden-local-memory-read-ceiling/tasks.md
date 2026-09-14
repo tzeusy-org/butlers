@@ -9,8 +9,8 @@
 
 ## 2. Server-held local read enforcement
 
-- [x] 2.1 Pass the module-held read policy into direct `memory_get` without
-  exposing a caller authority argument.
+- [x] 2.1 Pass the module-held read policy into every public local retrieval
+  closure without exposing a caller authority argument.
 - [x] 2.2 Apply the allowed-sensitivity predicate to the atomic retrieval
   mutation so denied UUIDs have no observable reference side effect.
 - [x] 2.3 Add unit and real-Postgres regression coverage for denied and

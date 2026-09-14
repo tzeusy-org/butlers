@@ -1067,13 +1067,18 @@ class TestToolDelegation:
         assert kwargs["valid_at"] == valid_at
         assert kwargs["retention_class"] == retention_class
 
-    async def test_memory_search_delegates(self):
-        mod, tools, pool, _, reading, *_ = await self._setup_and_register()
+    async def test_private_memory_pool_search_uses_module_held_policy(self):
+        mod, tools, _pool, _, reading, *_ = await self._setup_and_register()
+        mod._config = MemoryModuleConfig(memory_schema="chronicler_mem")
+        private_memory_pool = AsyncMock(name="chronicler_memory_pool")
+        mod._memory_db = SimpleNamespace(pool=private_memory_pool)
+        held_policy = object()
+        mod._catalog_read_policy = AsyncMock(return_value=held_policy)
         mod._embedding_engine = make_embedding_engine_mock(mod._config.embedding_model)
         reading.memory_search = AsyncMock(return_value=[])
         await tools["memory_search"](query="test query")
-        reading.memory_search.assert_called_once_with(
-            pool,
+        reading.memory_search.assert_awaited_once_with(
+            private_memory_pool,
             mod._embedding_engine,
             "test query",
             types=None,
@@ -1082,7 +1087,36 @@ class TestToolDelegation:
             limit=10,
             min_confidence=0.2,
             filters=None,
+            read_policy=held_policy,
         )
+        mod._catalog_read_policy.assert_awaited_once_with()
+        private_memory_pool.fetchval.assert_not_awaited()
+
+    async def test_private_memory_pool_recall_uses_module_held_policy(self):
+        mod, tools, _pool, _, reading, *_ = await self._setup_and_register()
+        mod._config = MemoryModuleConfig(memory_schema="chronicler_mem")
+        private_memory_pool = AsyncMock(name="chronicler_memory_pool")
+        mod._memory_db = SimpleNamespace(pool=private_memory_pool)
+        held_policy = object()
+        mod._catalog_read_policy = AsyncMock(return_value=held_policy)
+        mod._embedding_engine = make_embedding_engine_mock(mod._config.embedding_model)
+        reading.memory_recall = AsyncMock(return_value=[])
+
+        result = await tools["memory_recall"]("topic")
+
+        assert result == []
+        reading.memory_recall.assert_awaited_once_with(
+            private_memory_pool,
+            mod._embedding_engine,
+            "topic",
+            scope=None,
+            limit=10,
+            filters=None,
+            request_context=None,
+            read_policy=held_policy,
+        )
+        mod._catalog_read_policy.assert_awaited_once_with()
+        private_memory_pool.fetchval.assert_not_awaited()
 
     async def test_memory_get_delegates_with_module_held_policy(self):
         mod, tools, pool, _, reading, *_ = await self._setup_and_register()

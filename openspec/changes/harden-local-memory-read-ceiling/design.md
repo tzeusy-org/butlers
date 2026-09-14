@@ -30,11 +30,14 @@ withheld receipt after its section had already consumed its allocation.
 
 ### Resolve authority at the module boundary and filter in the storage mutation
 
-The MCP closure resolves the existing runtime-config-held policy and passes it
-to `memory_get`; callers cannot supply a ceiling. The storage retrieval adds
-the allowed-sensitivity predicate to the same `UPDATE ... RETURNING` statement
-that increments reference metadata. This makes a denied row indistinguishable
-from an absent UUID and prevents a side-effecting pre-fetch.
+Every public MCP read closure resolves the existing runtime-config-held policy
+and passes it to its local reader; callers cannot supply a ceiling. This keeps
+private memory schemas, such as Chronicler's, from substituting a missing or
+stale local `runtime_config` row for their owning daemon's authority. The direct
+UUID retrieval adds the allowed-sensitivity predicate to the same `UPDATE ...
+RETURNING` statement that increments reference metadata. This makes a denied
+row indistinguishable from an absent UUID and prevents a side-effecting
+pre-fetch.
 
 Filtering after a generic fetch was rejected because it would still read a
 more-sensitive row and bump its reference metadata. A caller argument was
