@@ -143,6 +143,22 @@ def source_db_url(postgres_container) -> str:
     """
     db_url = create_migration_db(postgres_container, migration_db_name())
     command.upgrade(_build_alembic_config(db_url, chains=["core"]), "core@head")
+    engine = create_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            conn.exec_driver_sql("SET ROLE butler_relationship_rw")
+            conn.exec_driver_sql(
+                """
+                INSERT INTO public.cost_claims
+                    (claim_key, asserted_by, kind, direction, amount, currency,
+                     counterparty_label, description)
+                VALUES
+                    ('restore-contract-claim', 'relationship', 'receivable', 'inbound',
+                     25, 'SGD', 'Restore fixture', 'Durable restore contract evidence')
+                """
+            )
+    finally:
+        engine.dispose()
     return db_url
 
 
@@ -476,7 +492,7 @@ def test_restore_script_refuses_to_certify_a_laundered_restore(
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 def test_certified_restore_leaves_no_definer_function_owned_by_restorer(
-    backup_artifact: Path, postgres_container
+    backup_artifact: Path, source_db_url: str, postgres_container
 ) -> None:
     """A restore the script certifies has no definer function on the restorer.
 
@@ -508,6 +524,29 @@ def test_certified_restore_leaves_no_definer_function_owned_by_restorer(
     )
 
     restored_url = target.url(db_name)
+
+    for table in ("cost_claims", "cost_claim_resolutions", "cost_claim_events"):
+        source_count = _query(source_db_url, f"SELECT count(*)::text FROM public.{table}")
+        restored_count = _query(restored_url, f"SELECT count(*)::text FROM public.{table}")
+        assert source_count == restored_count and source_count != ["0"], (
+            f"public.{table} did not round-trip through the real backup and restore: "
+            f"source={source_count} restored={restored_count}"
+        )
+        source_posture = _query(
+            source_db_url,
+            "SELECT relrowsecurity::text || '/' || relforcerowsecurity::text || '/' || "
+            "pg_get_userbyid(relowner) FROM pg_class WHERE oid = "
+            f"'public.{table}'::regclass",
+        )
+        restored_posture = _query(
+            restored_url,
+            "SELECT relrowsecurity::text || '/' || relforcerowsecurity::text || '/' || "
+            "pg_get_userbyid(relowner) FROM pg_class WHERE oid = "
+            f"'public.{table}'::regclass",
+        )
+        assert restored_posture == source_posture
+        assert restored_posture[0].startswith("true/true/"), restored_posture
+
     landed = _query(restored_url, _DEFINER_FUNCTIONS_OWNED_BY_SQL, login=login)
     assert landed == [], (
         "These SECURITY DEFINER functions in public are owned by the restoring "

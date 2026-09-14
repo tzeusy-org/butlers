@@ -30,6 +30,14 @@ The policies are the security boundary because `scripts/init-db.sql` deliberatel
 re-applies broad default DML grants to public tables. Replaying bootstrap therefore
 must not widen effective claim or resolution authority.
 
+Claims, resolutions, and events are durable application evidence and remain in the
+nightly backup. Because all three tables force RLS, the backup uses PostgreSQL's
+row-security dump mode only for an exact allowlist whose unconditional `SELECT`
+policies are verified against a real bootstrapped database. An included forced-RLS
+table outside that allowlist, or a claim policy that stops exposing every row, fails
+the backup contract rather than publishing a partial artifact. Restore continues to
+recreate the forced-RLS and ownership/definer posture recorded by the dump.
+
 Relationship creates `loan:{fact_id}` claims only after its canonical fact is
 durable. Projection failure cannot roll back the loan and is repaired by the
 idempotent backfill. Settling a loan supersedes and replaces the fact in one

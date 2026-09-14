@@ -57,8 +57,15 @@ _BACKUP_IMAGE = "postgres:17-alpine"
 docker_available = shutil.which("docker") is not None
 
 
-def _read_exclusion_set() -> tuple[set[str], set[str]]:
-    """Parse the schema/table exclusion sets declared in the backup script."""
+_EXPECTED_BACKUP_RLS_TABLES = {
+    "public.cost_claims",
+    "public.cost_claim_resolutions",
+    "public.cost_claim_events",
+}
+
+
+def _read_backup_sets() -> tuple[set[str], set[str], set[str]]:
+    """Parse the exclusion and included-RLS sets declared in the backup script."""
     source = _SCRIPT.read_text(encoding="utf-8")
 
     def _one(name: str) -> set[str]:
@@ -66,7 +73,11 @@ def _read_exclusion_set() -> tuple[set[str], set[str]]:
         assert match is not None, f"{name} assignment not found in {_SCRIPT}"
         return set(match.group(1).split())
 
-    return _one("BACKUP_EXCLUDE_SCHEMAS"), _one("BACKUP_EXCLUDE_TABLES")
+    return (
+        _one("BACKUP_EXCLUDE_SCHEMAS"),
+        _one("BACKUP_EXCLUDE_TABLES"),
+        _one("BACKUP_RLS_TABLES"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -75,20 +86,16 @@ def _read_exclusion_set() -> tuple[set[str], set[str]]:
 
 
 @pytest.mark.unit
-def test_script_never_enables_row_security() -> None:
-    """``--enable-row-security`` would trade a loud failure for a silent one.
-
-    With row security left off (the pg_dump default), a table whose policies
-    hide rows from the dump role raises an error and the run fails visibly.
-    Turning it on makes that same dump succeed while quietly omitting exactly
-    those rows — a backup that lies about its own completeness.
-    """
+def test_script_enables_row_security_for_the_explicit_allowlist() -> None:
+    """The dump flag and durable FORCE-RLS allowlist move together."""
     code = [
         line
         for line in _SCRIPT.read_text(encoding="utf-8").splitlines()
         if not line.lstrip().startswith("#")
     ]
-    assert not [line for line in code if "--enable-row-security" in line]
+    assert len([line for line in code if "--enable-row-security" in line]) == 1
+    _excluded_schemas, _excluded_tables, backup_rls_tables = _read_backup_sets()
+    assert backup_rls_tables == _EXPECTED_BACKUP_RLS_TABLES
 
 
 @pytest.mark.unit
@@ -191,6 +198,15 @@ def _fetch(db_url: str, sql: str) -> set[str]:
         engine.dispose()
 
 
+def _fetch_rows(db_url: str, sql: str) -> list[tuple]:
+    engine = create_engine(db_url)
+    try:
+        with engine.connect() as conn:
+            return [tuple(row) for row in conn.execute(text(sql))]
+    finally:
+        engine.dispose()
+
+
 @pytest.mark.db
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
@@ -202,7 +218,7 @@ def test_exclusion_set_matches_the_fenced_objects_exactly(bootstrapped_db_url: s
     does it silently.  Deciding either way is a backup-completeness decision
     that belongs in the script's header, not in a quiet edit here.
     """
-    excluded_schemas, excluded_tables = _read_exclusion_set()
+    excluded_schemas, excluded_tables, backup_rls_tables = _read_backup_sets()
     fenced = _fetch(bootstrapped_db_url, _FENCED_RELATIONS_SQL)
     everything = _fetch(bootstrapped_db_url, _ALL_RELATIONS_SQL)
 
@@ -210,7 +226,7 @@ def test_exclusion_set_matches_the_fenced_objects_exactly(bootstrapped_db_url: s
         schema, _, _table = qualified.partition(".")
         return schema in excluded_schemas or qualified in excluded_tables
 
-    missed = sorted(rel for rel in fenced if not _is_excluded(rel))
+    missed = sorted(rel for rel in fenced if not _is_excluded(rel) and rel not in backup_rls_tables)
     assert not missed, (
         "These relations are fenced away from the backup role but are not "
         "excluded, so the nightly pg_dump aborts and publishes no file at all: "
@@ -232,6 +248,34 @@ def test_exclusion_set_matches_the_fenced_objects_exactly(bootstrapped_db_url: s
     assert not unused_schemas and not unused_tables, (
         "These exclusions no longer correspond to anything fenced and are now "
         f"only hiding data: schemas={unused_schemas} tables={unused_tables}."
+    )
+
+    assert backup_rls_tables <= fenced
+    policy_rows = _fetch_rows(
+        bootstrapped_db_url,
+        """
+        SELECT n.nspname || '.' || c.relname,
+               p.polpermissive,
+               p.polcmd,
+               p.polroles = ARRAY[0::oid],
+               pg_get_expr(p.polqual, p.polrelid)
+        FROM pg_policy AS p
+        JOIN pg_class AS c ON c.oid = p.polrelid
+        JOIN pg_namespace AS n ON n.oid = c.relnamespace
+        WHERE n.nspname || '.' || c.relname IN (
+            'public.cost_claims',
+            'public.cost_claim_resolutions',
+            'public.cost_claim_events'
+        )
+          AND p.polcmd = 'r'
+        ORDER BY 1
+        """,
+    )
+    assert policy_rows == [
+        (table, True, "r", True, "true") for table in sorted(_EXPECTED_BACKUP_RLS_TABLES)
+    ], (
+        "Every RLS table admitted to the backup must expose every row through one "
+        f"permissive PUBLIC SELECT policy; got {policy_rows}."
     )
 
 
@@ -290,6 +334,24 @@ def test_script_produces_a_verifiable_artifact(
     published but has quietly lost the application tables is no better than the
     absent file this bead is about.
     """
+    engine = create_engine(bootstrapped_db_url)
+    try:
+        with engine.begin() as conn:
+            conn.exec_driver_sql("SET ROLE butler_relationship_rw")
+            claim_id = conn.exec_driver_sql(
+                """
+                INSERT INTO public.cost_claims
+                    (claim_key, asserted_by, kind, direction, amount, currency,
+                     counterparty_label, description)
+                VALUES
+                    ('backup-contract-claim', 'relationship', 'receivable', 'inbound',
+                     25, 'SGD', 'Backup fixture', 'Durable backup contract evidence')
+                RETURNING id
+                """
+            ).scalar_one()
+    finally:
+        engine.dispose()
+
     backup_dir = tmp_path / "backups"
     backup_dir.mkdir()
 
@@ -309,11 +371,16 @@ def test_script_produces_a_verifiable_artifact(
     assert "CREATE TABLE public.entities" in dump
     assert "CREATE TABLE public.sessions" in dump
     # ... and every fenced object stayed out.
-    excluded_schemas, excluded_tables = _read_exclusion_set()
+    excluded_schemas, excluded_tables, backup_rls_tables = _read_backup_sets()
     for schema in excluded_schemas:
         assert f"CREATE SCHEMA {schema};" not in dump
     for qualified in excluded_tables:
         assert f"CREATE TABLE {qualified} " not in dump
+    for qualified in backup_rls_tables:
+        assert f"CREATE TABLE {qualified} " in dump
+        assert f"COPY {qualified} " in dump
+    assert "backup-contract-claim" in dump
+    assert str(claim_id) in dump
 
 
 @pytest.mark.db

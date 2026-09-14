@@ -96,14 +96,18 @@
 #
 # No ordinary application data is excluded, and tests/scripts/test_pg_dump_backup.py
 # proves that against a real bootstrapped database: it fails if a fenced object
-# appears that is not listed here, and equally if anything listed here is in
-# fact readable. Do not add an entry to make a red run go green — an entry here
-# is a decision that data will not be in the backup.
+# appears that is neither excluded nor named in BACKUP_RLS_TABLES, and equally
+# if anything listed there lacks an unconditional SELECT policy. Do not add an
+# exclusion to make a red run go green — an entry there is a decision that data
+# will not be in the backup.
 #
-# Do NOT add --enable-row-security to work around a row-level-security fence.
-# It turns a loud "permission denied" into a dump that silently omits the rows
-# the dump role's policies hide, which is the same class of failure as no
-# backup at all.
+# pg_dump needs --enable-row-security to COPY a FORCE RLS table as this
+# non-BYPASSRLS login. That flag is safe here only because BACKUP_RLS_TABLES is
+# an exact allowlist of durable application ledgers whose SELECT policies expose
+# every row to this already-trusted migration/backup login. The database-backed
+# contract fails if another included FORCE RLS relation appears or if one of
+# these policies ceases to be an unconditional full-row read. This keeps an RLS
+# change loud instead of silently publishing a partial backup.
 
 # NOTE: no `set -o pipefail` here. It is not POSIX, so the shebang above was a
 # lie on any host whose /bin/sh is dash — the script died on line 1 of its own
@@ -125,6 +129,9 @@ BACKUP_EXCLUDE_SCHEMAS="restore_drill_executor restore_drill_executor_admin dnd_
 # evidence projection, and excluding it is the one edit that would silently
 # empty that path. Four tests across two files fail if it is added.
 BACKUP_EXCLUDE_TABLES="public.dnd_generation_mutations public.user_context public.runtime_attention_outbox public.runtime_attention_delivery_lease public.runtime_attention_producer_control public.expected_signals public.runtime_probe_control_receipts public.fleet_cases public.fleet_case_links public.task_continuity"
+# Durable FORCE RLS application data included through explicit full-row SELECT
+# policies. Parsed and policy-verified by tests/scripts/test_pg_dump_backup.py.
+BACKUP_RLS_TABLES="public.cost_claims public.cost_claim_resolutions public.cost_claim_events"
 
 # A gzip stream smaller than this cannot hold a real dump (gzip's own
 # header+footer is ~20 bytes). Matches _BACKUP_MIN_SIZE_BYTES in
@@ -237,6 +244,7 @@ done
     --username="${POSTGRES_USER}" \
     --dbname="${POSTGRES_DB}" \
     --format=plain \
+    --enable-row-security \
     --no-password \
     "$@" \
   || echo "$?" > "${STATUSFILE}"

@@ -207,7 +207,9 @@ def upgrade() -> None:
         op.execute(f"ALTER TABLE public.{table} ENABLE ROW LEVEL SECURITY")
         op.execute(f"ALTER TABLE public.{table} FORCE ROW LEVEL SECURITY")
         op.execute(f"DROP POLICY IF EXISTS {table}_read ON public.{table}")
-        op.execute(f"CREATE POLICY {table}_read ON public.{table} FOR SELECT USING (true)")
+        op.execute(
+            f"CREATE POLICY {table}_read ON public.{table} FOR SELECT TO PUBLIC USING (true)"
+        )
     op.execute("DROP POLICY IF EXISTS cost_claims_insert_own ON public.cost_claims")
     op.execute(
         "CREATE POLICY cost_claims_insert_own ON public.cost_claims FOR INSERT "
