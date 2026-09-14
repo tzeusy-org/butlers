@@ -156,6 +156,7 @@ async def test_lifecycle_starts_once_only_for_active_approvals_and_stops_cleanly
     repository = _IdleRepository()
     module = SimpleNamespace(
         name="approvals",
+        approval_delivery_worker_enabled=AsyncMock(return_value=True),
         approval_delivery_worker_components=Mock(return_value=(repository, SimpleNamespace())),
     )
     daemon = SimpleNamespace(
@@ -182,3 +183,11 @@ async def test_lifecycle_starts_once_only_for_active_approvals_and_stops_cleanly
 
     daemon._module_runtime_states["approvals"].enabled = False
     assert await start_approval_delivery_worker(daemon) is False
+
+    daemon._module_runtime_states["approvals"].enabled = True
+    module.approval_delivery_worker_enabled.return_value = False
+    assert await start_approval_delivery_worker(daemon) is False
+
+    module.approval_delivery_worker_enabled.side_effect = RuntimeError("invalid rollout config")
+    assert await start_approval_delivery_worker(daemon) is False
+    assert module.approval_delivery_worker_components.call_count == 2

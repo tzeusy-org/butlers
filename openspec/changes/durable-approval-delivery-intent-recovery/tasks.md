@@ -47,12 +47,14 @@
 - [ ] 6.2 Add multi-worker real-PostgreSQL tests for `SKIP LOCKED` claims, stale lease fencing, token mismatch, heartbeat/terminal-write rejection, and restart recovery before send start.
 - [ ] 6.3 Add crash-injection tests at claim, pre-handoff marker, Messenger handoff persistence, provider acceptance before source result, terminal-result persistence, and daemon restart boundaries.
 - [ ] 6.4 Add decision/expiry/defer race tests proving cancellation before handoff prevents send, handoff-first blocks only future recovery, each successful defer creates exactly one fenced `now + hours` successor, cohort-member defer preserves other eligible digest members, and the worker never mutates a parked domain action.
-- [ ] 6.5 Add RFC 0021 regression tests for exact quiet-hours release/no re-gate, control-plane budget isolation, and concurrent first-three/digest/collapsed behavior outside generic deferred delivery.
+- [x] 6.5 Add RFC 0021 regression tests for exact quiet-hours release/no re-gate, control-plane budget isolation, and concurrent first-three/digest/collapsed behavior outside generic deferred delivery.
+  Evidence: `tests/integration/test_approval_push_on_park.py` passes the exact stored quiet-hours release and concurrent first-three/digest/collapsed cases with zero generic deferred rows; `tests/integration/test_approval_delivery_worker.py` passes admission plus confirmed processing while the insight broker is disabled, with its settings and candidates unchanged.
 - [ ] 6.6 Add generic-notification exclusion plus approval API/frontend redaction/truthful-state tests, retention/downgrade/stuck-observability tests, and exact-head focused/broader quality gates.
 
 ## 7. Additive rollout and rollback gate
 
-- [ ] 7.1 Ship additive schema/read compatibility and metrics with new writers/workers disabled; verify legacy rows are not backfilled, replayed, or dual-sent.
+- [x] 7.1 Ship additive schema/read compatibility and metrics with new writers/workers disabled; verify legacy rows are not backfilled, replayed, or dual-sent.
+  Evidence: the schema-local rollout row defaults both writer admission and worker startup to disabled; real-PostgreSQL coverage passes for default, absent, and rejected-invalid configuration with a durable pending action, zero intent/presentation/cohort/membership/attempt or legacy-emission rows, and no duplicate action under concurrent semantic-key parks. Daemon lifecycle coverage passes with no worker task when the server-held worker flag is disabled or unreadable.
 - [ ] 7.2 Execute an owner-authorized staging/canary drill using synthetic newly parked actions only, including worker restart, provider ambiguity, quiet-hours, and decision-race reconciliation.
 - [ ] 7.3 Enable new writers/workers schema-by-schema only after the canary evidence and dashboard truth review; monitor stuck/ambiguous/oldest-due metrics.
 - [ ] 7.4 Document binary rollback as additive and block schema downgrade/drop while any root/presentation/cohort/attempt/audit data exists; do not delete, replay, approve, execute, or backfill historical actions.

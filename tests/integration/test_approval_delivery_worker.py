@@ -8,6 +8,7 @@ import shutil
 import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -18,6 +19,7 @@ from butlers.core.approval_delivery_worker import (
     ApprovalDeliveryWorker,
     DeliveryClaim,
     HandoffResult,
+    start_approval_delivery_worker,
 )
 from butlers.db import register_jsonb_codec
 from butlers.modules.approvals import delivery_lifecycle
@@ -30,6 +32,7 @@ from butlers.modules.approvals.delivery_recovery import (
     ApprovalDeliveryRepository,
 )
 from butlers.modules.approvals.models import ActionStatus
+from butlers.modules.approvals.module import ApprovalsModule
 from butlers.modules.approvals.park import ParkAdmission, park_pending_action
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
@@ -66,6 +69,10 @@ async def delivery_pool(migrated_db_url: str):
     await pool.execute(
         "UPDATE public.approvals_policy SET quiet_start_hour = NULL, "
         "quiet_end_hour = NULL, timezone = 'UTC' WHERE id = 1"
+    )
+    await pool.execute(
+        "UPDATE approval_delivery_rollout "
+        "SET admission_enabled = true, worker_enabled = false WHERE singleton"
     )
     yield pool
     await pool.close()
@@ -150,6 +157,67 @@ class _SlowRuntime(_Runtime):
         self.started.set()
         await self.release.wait()
         return HandoffResult("confirmed")
+
+
+async def test_approval_recovery_ignores_exhausted_insight_daily_budget(
+    delivery_pool: asyncpg.Pool,
+) -> None:
+    """Approval control-plane admission and handoff never consume the insight budget."""
+    module = ApprovalsModule()
+    module._hook_pool = delivery_pool
+    daemon = SimpleNamespace(
+        config=SimpleNamespace(name="relationship"),
+        _modules=[module],
+        _module_runtime_states={"approvals": SimpleNamespace(health="active", enabled=True)},
+        _approval_delivery_runtime=_Runtime(),
+        _approval_delivery_task=None,
+        _approval_delivery_stop=None,
+    )
+    assert await start_approval_delivery_worker(daemon) is False
+    assert daemon._approval_delivery_task is None
+
+    await delivery_pool.execute(
+        "UPDATE public.insight_settings SET verbosity = 'off', custom_budget = NULL WHERE id = 1"
+    )
+    budget_before = dict(
+        await delivery_pool.fetchrow(
+            "SELECT verbosity, custom_budget, updated_at FROM public.insight_settings WHERE id = 1"
+        )
+    )
+    insight_rows_before = await delivery_pool.fetchval(
+        "SELECT count(*) FROM public.insight_candidates"
+    )
+
+    admission = await _park(delivery_pool)
+    runtime = _Runtime()
+    worker = ApprovalDeliveryWorker(
+        ApprovalDeliveryRepository(delivery_pool),
+        ApprovalDeliveryRenderer(dashboard_base_url="https://dashboard.example.test"),
+        runtime,
+    )
+
+    assert await worker.process_one() is True
+    assert len(runtime.handoffs) == 1
+    assert (
+        await delivery_pool.fetchval(
+            "SELECT count(*) FROM approval_delivery_attempts WHERE outcome = 'confirmed'"
+        )
+        == 1
+    )
+    assert await delivery_pool.fetchval("SELECT count(*) FROM deferred_notifications") == 0
+    assert (
+        dict(
+            await delivery_pool.fetchrow(
+                "SELECT verbosity, custom_budget, updated_at FROM public.insight_settings WHERE id = 1"
+            )
+        )
+        == budget_before
+    )
+    assert (
+        await delivery_pool.fetchval("SELECT count(*) FROM public.insight_candidates")
+        == insight_rows_before
+    )
+    assert admission.intent_id is not None
 
 
 async def test_skip_locked_claims_are_distinct_and_stale_fences_cannot_write(

@@ -103,6 +103,7 @@ CHAIN_TABLES: dict[str, set[str]] = {
         "approval_delivery_cohorts",
         "approval_delivery_intents",
         "approval_delivery_presentations",
+        "approval_delivery_rollout",
         "approval_events",
         "approval_rules",
         "pending_actions",
