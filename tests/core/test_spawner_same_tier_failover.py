@@ -511,9 +511,16 @@ class TestAC3RuntimeFailureRetry:
             error=RuntimeError("connection refused: provider unavailable"),
             result_text="remote-fallback-must-not-run",
         )
+        local_provider_config = {
+            "ollama": {
+                "npm": "@ai-sdk/openai-compatible",
+                "options": {"baseURL": "http://ollama:11434/v1"},
+                "models": {"private-primary": {"name": "private-primary"}},
+            }
+        }
 
         def adapter_for(runtime_type: str, *_args, **_kwargs):
-            if runtime_type == DEFAULT_RUNTIME_TYPE:
+            if runtime_type == "opencode":
                 return adapter
             if runtime_type == "unregistered-local":
                 raise ValueError("unregistered runtime")
@@ -530,7 +537,23 @@ class TestAC3RuntimeFailureRetry:
                 "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
                 return_value=_catalog_primary(
-                    model="ollama/private-primary", runtime_type=DEFAULT_RUNTIME_TYPE
+                    model="ollama/private-primary", runtime_type="opencode"
+                ),
+            ),
+            patch(
+                "butlers.core.spawner.enforce_private_content_selection",
+                new_callable=AsyncMock,
+                return_value=(
+                    (
+                        "opencode",
+                        "ollama/private-primary",
+                        [],
+                        _PRIMARY_CATALOG_ID,
+                        1800,
+                    ),
+                    False,
+                    local_provider_config,
+                    True,
                 ),
             ),
             patch(

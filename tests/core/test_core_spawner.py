@@ -2065,7 +2065,7 @@ class TestCatalogModelResolution:
             patch(
                 "butlers.core.spawner.enforce_private_content_selection",
                 new_callable=AsyncMock,
-                return_value=(local, False),
+                return_value=(local, False, None, True),
             ) as enforce_lane,
             patch(
                 "butlers.core.spawner.check_token_quota",
@@ -2126,10 +2126,10 @@ class TestCatalogModelResolution:
         audit.assert_awaited_once()
         assert audit.await_args.args[2] == "model.private_content_remote_refused"
 
-    async def test_private_routing_refuses_unregistered_local_runtime_without_remote_fallback(
+    async def test_private_routing_refuses_mismatched_ollama_runtime_before_adapter_setup(
         self, tmp_path: Path
     ) -> None:
-        """An accepted local candidate cannot become the hard-coded remote fallback."""
+        """An Ollama-shaped model on another runtime is not local authority."""
         from butlers.core.model_routing import PrivateContentModelUnavailable
 
         config_dir = tmp_path / "config"
@@ -2171,15 +2171,16 @@ class TestCatalogModelResolution:
             ),
             patch("butlers.core.spawner.write_audit_entry", new_callable=AsyncMock) as audit,
             patch.object(spawner, "_resolve_provider_config", new_callable=AsyncMock),
-            patch.object(spawner, "_get_or_create_adapter", side_effect=adapter_for),
+            patch.object(spawner, "_get_or_create_adapter", side_effect=adapter_for) as get_adapter,
             patch.object(spawner, "_fire_speculative_prewarm"),
         ):
-            with pytest.raises(PrivateContentModelUnavailable, match="local runtime unavailable"):
+            with pytest.raises(PrivateContentModelUnavailable, match="proven local model"):
                 await spawner.trigger("synthetic prompt", "route")
 
+        get_adapter.assert_not_called()
         audit.assert_awaited_once()
         assert audit.await_args.args[2] == "model.private_content_remote_refused"
-        assert audit.await_args.args[3]["reason"] == "unregistered_private_runtime"
+        assert audit.await_args.args[3]["reason"] == "local_model_unavailable"
 
     async def test_complexity_routing(self, tmp_path: Path):
         """Without pool: resolve_model not called. With pool: complexity forwarded."""

@@ -822,6 +822,7 @@ async def test_model_attempts_returns_real_rows(app):
         "tool_call_count": 0,
         "session_id": None,
         "logical_session_id": "req-abc-123",
+        "purpose_lane": "private_content",
     }
 
     _, mock_pool = _app_with_pool(app)
@@ -844,6 +845,7 @@ async def test_model_attempts_returns_real_rows(app):
     assert rows[0]["logical_session_id"] == "req-abc-123"
     assert rows[0]["tool_call_count"] == 0
     assert rows[0]["session_id"] is None
+    assert rows[0]["purpose_lane"] == "private_content"
     assert "ORDER BY ts DESC, id DESC" in mock_pool.fetch.call_args.args[0]
 
 

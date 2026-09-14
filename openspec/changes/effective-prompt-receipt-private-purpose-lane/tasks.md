@@ -16,8 +16,12 @@
 - [x] 3.1 Derive the closed purpose lane from trusted channel context without inspecting prompt or message content.
 - [x] 3.2 Enforce local-only selection/failover for private content and require a current explicitly targeted audited spend-rule exception for remote selection.
 - [x] 3.3 Record bounded refusal/override evidence and prove remote-only refusal occurs before provider setup or invocation.
+- [x] 3.4 Preserve the trusted source channel through normal and recovery route workers into Spawner classification.
+- [x] 3.5 Revalidate remote-rule authority atomically and bind locality to the captured runtime/provider origin.
+- [x] 3.6 Persist the closed lane on dispatch-attempt and token-usage evidence.
 
 ## 4. Documentation and verification
 
 - [x] 4.1 Update session lifecycle, daemon composition, and model-routing documentation.
 - [x] 4.2 Run focused backend/frontend tests, migration/schema gates, OpenSpec strict/overwrite checks, frontend lint/knip/build/test, planner, guards, and diff hygiene.
+- [x] 4.3 Cover the review-correction routing, override race, locality, receipt, lock, rollback, and evidence seams.

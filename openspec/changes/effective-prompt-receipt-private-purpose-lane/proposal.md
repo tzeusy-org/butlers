@@ -18,10 +18,11 @@ a non-local model without a purpose-specific refusal.
   current truth.
 - Add a closed `purpose_lane` dispatch label. WhatsApp and Telegram discretion calls and routed
   sessions are `private_content`; other work is `standard`.
-- Require `private_content` work to use an `ollama/` catalog model. A current, explicitly targeted,
+- Require `private_content` work to use an OpenCode `ollama/` catalog model through the loopback or
+  RFC 0008 owner-local Ollama origin captured for that dispatch. A current, explicitly targeted,
   successfully audited operator routing rule is the only bounded remote-model exception. Missing
-  local capacity or missing audit evidence refuses before adapter invocation and records only safe
-  refusal evidence.
+  locality proof, local capacity, or audit evidence refuses before adapter invocation and records
+  only safe refusal evidence.
 
 ## Non-Goals
 

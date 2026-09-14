@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import dataclasses
 import enum
+import ipaddress
 import json
 import logging
 import time
@@ -65,6 +66,7 @@ from collections import OrderedDict
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 import asyncpg
 
@@ -81,6 +83,7 @@ from butlers.core.model_capabilities import (
     CapabilityDescriptorError,
     effective_capabilities,
 )
+from butlers.core.purpose_lane import PURPOSE_LANE_STANDARD, PurposeLane
 
 if TYPE_CHECKING:
     from butlers.core.pricing import PricingConfig
@@ -1175,7 +1178,10 @@ all_candidates AS (
       AND mc.last_verified_ok IS DISTINCT FROM false
       AND COALESCE(bmo.complexity_tier, mc.complexity_tier) = $2
       AND mc.id != ALL($3::uuid[])
-      AND (NOT $4::boolean OR mc.model_id LIKE 'ollama/%')
+      AND (
+        NOT $4::boolean
+        OR (mc.runtime_type = 'opencode' AND mc.model_id LIKE 'ollama/%')
+      )
       AND mc.id NOT IN (SELECT catalog_entry_id FROM breaker_open)
 )
 SELECT
@@ -1237,8 +1243,8 @@ INSERT INTO public.token_usage_ledger
     (catalog_entry_id, butler_name, session_id, input_tokens, output_tokens,
      cached_input_tokens, cache_creation_tokens, purpose,
      base_prompt_tokens, timezone_instruction_tokens, context_preamble_tokens,
-     routing_instructions_tokens, memory_context_tokens, resume_outcome)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+     routing_instructions_tokens, memory_context_tokens, resume_outcome, purpose_lane)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 """
 
 # Read the configured monthly spend ceiling (singleton row id=1).
@@ -2239,9 +2245,9 @@ async def next_same_tier_candidate(
         Catalog entry IDs that have already been attempted or explicitly skipped
         for this logical session.  All of these are excluded from the result.
     local_only:
-        When true, require the canonical model id to start with ``ollama/``.
-        This is the private-content lane's proof of local execution; runtime type
-        and price are not equivalent locality signals.
+        When true, require the OpenCode runtime and canonical ``ollama/`` model
+        namespace. The caller separately supplies the captured provider-origin
+        authority used for invocation.
 
     Returns
     -------
@@ -2258,6 +2264,14 @@ async def next_same_tier_candidate(
         local_only,
     )
     if row is None:
+        return None
+    if not (
+        isinstance(row["runtime_type"], str)
+        and isinstance(row["model_id"], str)
+        and isinstance(row["id"], uuid.UUID)
+        and isinstance(row["session_timeout_s"], int)
+    ):
+        logger.warning("Same-tier candidate row had an invalid shape; refusing it")
         return None
     return (
         row["runtime_type"],
@@ -2335,16 +2349,34 @@ async def is_current_spend_rule_audited(
                 """
                 SELECT EXISTS (
                     SELECT 1
-                      FROM public.audit_log
-                     WHERE target = $1
-                       AND action IN ('spend.rule.create', 'spend.rule.update')
-                       AND actor = 'owner'
-                       AND result = 'success'
-                       AND ts >= $2
+                      FROM public.spend_rules AS rule
+                      JOIN public.audit_log AS audit
+                        ON audit.target = 'rule:' || rule.id::text
+                     WHERE rule.id = $1
+                       AND rule.updated_at = $2
+                       AND rule.action ->> 'model' = $3
+                       AND EXISTS (
+                            SELECT 1
+                              FROM jsonb_array_elements_text(
+                                CASE jsonb_typeof(rule.condition -> 'purpose')
+                                  WHEN 'array' THEN rule.condition -> 'purpose'
+                                  WHEN 'string' THEN jsonb_build_array(
+                                    rule.condition -> 'purpose'
+                                  )
+                                  ELSE '[]'::jsonb
+                                END
+                              ) AS purpose(value)
+                             WHERE lower(purpose.value) = 'private_content'
+                       )
+                       AND audit.action IN ('spend.rule.create', 'spend.rule.update')
+                       AND audit.actor = 'owner'
+                       AND audit.result = 'success'
+                       AND audit.ts >= rule.updated_at
                 )
                 """,
-                f"rule:{result.matched_rule_id}",
+                result.matched_rule_id,
                 result.matched_rule_updated_at,
+                result.resolved[1],
             )
         )
     except Exception:
@@ -2360,36 +2392,106 @@ class PrivateContentModelUnavailable(RuntimeError):
     """No local candidate or current audited remote exception exists."""
 
 
+def _is_owner_local_ollama_endpoint(raw_url: object) -> bool:
+    """Return whether an Ollama origin has explicit owner-local authority.
+
+    RFC 0008 names ``ollama`` as the sole tailnet host authorized for local LLM
+    inference. Loopback is local to the invoking host; any other DNS name or IP
+    remains uncertain and therefore remote for the private-content gate.
+    """
+    if not isinstance(raw_url, str) or not raw_url.strip():
+        return False
+    parsed = urlparse(raw_url.strip())
+    if parsed.scheme not in {"http", "https"} or parsed.hostname is None:
+        return False
+    hostname = parsed.hostname.casefold()
+    if hostname in {"localhost", "ollama"}:
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
+async def _provider_config_for_private_selection(
+    pool: asyncpg.Pool,
+    selection: tuple[str, str, list[str], uuid.UUID, int],
+) -> tuple[bool, dict[str, dict[str, Any]] | None]:
+    """Prove that a catalog selection executes through local Ollama.
+
+    The model namespace alone is editable metadata. Local authority requires
+    the OpenCode runtime (the only in-tree adapter that consumes the Ollama
+    provider config) plus an enabled provider row whose endpoint is an
+    unambiguous loopback URL. Missing, malformed, or unreadable configuration
+    denies locality.
+    """
+    runtime_type, model_id, *_rest = selection
+    if runtime_type != "opencode" or not model_id.startswith("ollama/"):
+        return False, None
+    from butlers.core.spawner_provider import resolve_provider_config
+
+    try:
+        provider_config = await resolve_provider_config(pool, model_id)
+    except Exception:
+        logger.warning(
+            "Private-content Ollama locality lookup failed; refusing local classification",
+            exc_info=True,
+        )
+        return False, None
+    if provider_config is None:
+        return False, None
+    raw_url = provider_config.get("ollama", {}).get("options", {}).get("baseURL")
+    return _is_owner_local_ollama_endpoint(raw_url), provider_config
+
+
 async def enforce_private_content_selection(
     pool: asyncpg.Pool,
     *,
     butler_name: str,
     effective_tier: str,
     routing_result: SpendRoutingResult,
-) -> tuple[tuple[str, str, list[str], uuid.UUID, int], bool]:
+) -> tuple[
+    tuple[str, str, list[str], uuid.UUID, int],
+    bool,
+    dict[str, dict[str, Any]] | None,
+    bool,
+]:
     """Return a local selection, or a current explicitly audited remote one.
 
-    The boolean is true only for the audited remote exception. Provider setup
-    belongs to the caller and must happen after this function returns.
+    The second value is true only for the audited remote exception. The third
+    is the exact provider configuration captured while proving an Ollama
+    selection; the caller must reuse it for adapter setup. The fourth says
+    whether that captured origin has owner-local authority for failover.
     """
     selected = routing_result.resolved
-    if selected[1].startswith("ollama/"):
-        return selected, False
-    if await is_current_spend_rule_audited(pool, routing_result):
-        return selected, True
-
-    local_candidate = await next_same_tier_candidate(
-        pool,
-        butler_name,
-        effective_tier,
-        [selected[3]],
-        local_only=True,
+    selected_is_local, selected_provider_config = await _provider_config_for_private_selection(
+        pool, selected
     )
-    if local_candidate is None:
-        raise PrivateContentModelUnavailable(
-            "private_content_remote_refused: local model unavailable"
+    if selected_is_local:
+        return selected, False, selected_provider_config, True
+    if await is_current_spend_rule_audited(pool, routing_result):
+        return selected, True, selected_provider_config, False
+
+    attempted_ids = [selected[3]]
+    while True:
+        local_candidate = await next_same_tier_candidate(
+            pool,
+            butler_name,
+            effective_tier,
+            attempted_ids,
+            local_only=True,
         )
-    return local_candidate, False
+        if local_candidate is None:
+            raise PrivateContentModelUnavailable(
+                "private_content_remote_refused: proven local model unavailable"
+            )
+        (
+            candidate_is_local,
+            candidate_provider_config,
+        ) = await _provider_config_for_private_selection(pool, local_candidate)
+        if candidate_is_local:
+            return local_candidate, False, candidate_provider_config, True
+        attempted_ids.append(local_candidate[3])
 
 
 async def apply_spend_routing_rules(
@@ -2885,6 +2987,7 @@ async def record_token_usage(
     cached_input_tokens: int = 0,
     cache_creation_tokens: int = 0,
     purpose: str | None = None,
+    purpose_lane: PurposeLane = PURPOSE_LANE_STANDARD,
     base_prompt_tokens: int | None = None,
     timezone_instruction_tokens: int | None = None,
     context_preamble_tokens: int | None = None,
@@ -2925,6 +3028,9 @@ async def record_token_usage(
         ``None`` when the caller has no meaningful purpose to report (kept
         nullable rather than defaulted so honestly-unknown rows stay
         distinguishable from a real, named purpose).
+    purpose_lane:
+        Closed content-handling lane persisted separately from the open-ended
+        spend-purpose dimension. Defaults to ``standard`` for legacy callers.
     base_prompt_tokens, timezone_instruction_tokens, context_preamble_tokens,
     routing_instructions_tokens, memory_context_tokens:
         Per-layer token digest of the composed system prompt (bu-hz0g0), from
@@ -2945,6 +3051,8 @@ async def record_token_usage(
         ``purpose``.
     """
     try:
+        if purpose_lane not in {"standard", "private_content"}:
+            raise ValueError("purpose_lane must be standard or private_content")
         await pool.execute(
             _LEDGER_INSERT_SQL,
             catalog_entry_id,
@@ -2961,6 +3069,7 @@ async def record_token_usage(
             routing_instructions_tokens,
             memory_context_tokens,
             resume_outcome,
+            purpose_lane,
         )
     except Exception:
         logger.warning(

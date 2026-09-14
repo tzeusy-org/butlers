@@ -9,8 +9,6 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-import sqlalchemy as sa
-
 from butlers.migrations import _chain_script_directory
 
 _RUNTIME_ATTENTION_REVISION = "core_198"
@@ -77,15 +75,9 @@ def preflight_runtime_attention_downgrade(op: Any, context: Any) -> None:
 
     protected = _runtime_attention_migration()
     bind = op.get_bind()
-    bind.execute(sa.text(protected._INSTALLER_SERIALIZATION_LOCK_SQL))
-    if bool(bind.execute(sa.text(protected._EXACT_ROLLBACK_READY_ABSENCE_SQL)).scalar_one()):
-        return
-    authorized = bool(
-        bind.execute(sa.text(protected._TRUSTED_BOOTSTRAP_ROLLBACK_SQL)).scalar_one()
-    ) and protected._has_trusted_finalized_interface(bind)
-    if authorized:
+    if protected.protected_rollback_preflight_passes(bind):
         return
     raise RuntimeError(
-        "core_236/core_237 cannot begin downgrade work because the protected "
+        "newer core revision cannot begin downgrade work because the protected "
         "core_198 rollback preflight failed"
     )

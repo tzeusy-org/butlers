@@ -35,12 +35,14 @@ def upgrade() -> None:
                    AND conname = '{_CONSTRAINT}'
             ) THEN
                 ALTER TABLE sessions ADD CONSTRAINT {_CONSTRAINT}
-                CHECK (purpose_lane IS NULL OR purpose_lane IN ('standard', 'private_content'));
+                CHECK (purpose_lane IS NULL OR purpose_lane IN ('standard', 'private_content'))
+                NOT VALID;
             END IF;
         END
         $$
         """
     )
+    op.execute(f"ALTER TABLE sessions VALIDATE CONSTRAINT {_CONSTRAINT}")
 
 
 def downgrade() -> None:

@@ -31,7 +31,9 @@ from butlers.core.model_routing import (
     BREAKER_OPEN_RULE_OVERRIDE_REASON_PREFIX,
     TIER_FALLTHROUGH_ORDER,
     Complexity,
+    PrivateContentModelUnavailable,
     RoutingEvidence,
+    SpendRoutingResult,
     TierQuotaExhausted,
     _check_deprecated_tier,
     _parse_max_cost_per_call,
@@ -40,6 +42,7 @@ from butlers.core.model_routing import (
     clear_routing_decision_cache,
     coerce_complexity_tier,
     compute_routing_score,
+    enforce_private_content_selection,
     get_breaker_state,
     get_breaker_states,
     get_routing_evidence,
@@ -1208,7 +1211,7 @@ async def test_next_same_tier_returns_matching_entry(pool: asyncpg.Pool) -> None
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
 async def test_next_same_tier_local_only_skips_higher_priority_remote(pool: asyncpg.Pool) -> None:
-    """The private-content selector treats only ollama model ids as local."""
+    """The private selector requires the OpenCode runtime and Ollama namespace."""
     await _insert_catalog_entry(
         pool,
         alias="nst-private-remote",
@@ -1219,6 +1222,7 @@ async def test_next_same_tier_local_only_skips_higher_priority_remote(pool: asyn
     local_id = await _insert_catalog_entry(
         pool,
         alias="nst-private-local",
+        runtime_type="opencode",
         model_id="ollama/qwen-synthetic:9b",
         complexity_tier="specialty",
         priority=1,
@@ -1235,6 +1239,63 @@ async def test_next_same_tier_local_only_skips_higher_priority_remote(pool: asyn
     assert result is not None
     assert result[1] == "ollama/qwen-synthetic:9b"
     assert str(result[3]) == local_id
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("selection", "provider_row"),
+    [
+        (
+            ("api", "ollama/qwen-synthetic:9b", [], uuid.uuid4(), 30),
+            {"config": {"base_url": "http://ollama:11434"}},
+        ),
+        (
+            ("opencode", "ollama/qwen-synthetic:9b", [], uuid.uuid4(), 30),
+            {"config": {"base_url": "https://remote.example.invalid"}},
+        ),
+    ],
+)
+async def test_private_selection_refuses_unproved_runtime_or_endpoint(
+    selection, provider_row
+) -> None:
+    """An Ollama-shaped name cannot establish local execution by itself."""
+    pool = AsyncMock()
+    pool.fetchrow.side_effect = [None] if selection[0] != "opencode" else [provider_row, None]
+    routing_result = SpendRoutingResult(resolved=selection)
+
+    with pytest.raises(PrivateContentModelUnavailable, match="proven local model unavailable"):
+        await enforce_private_content_selection(
+            pool,
+            butler_name="general",
+            effective_tier="specialty",
+            routing_result=routing_result,
+        )
+
+
+@pytest.mark.unit
+async def test_private_selection_captures_owner_local_provider_config() -> None:
+    """The gate returns the exact RFC 0008 Ollama origin for adapter setup."""
+    selection = ("opencode", "ollama/qwen-synthetic:9b", [], uuid.uuid4(), 30)
+    pool = AsyncMock()
+    pool.fetchrow.return_value = {"config": {"base_url": "http://ollama:11434"}}
+
+    selected, audited, provider_config, local = await enforce_private_content_selection(
+        pool,
+        butler_name="general",
+        effective_tier="specialty",
+        routing_result=SpendRoutingResult(resolved=selection),
+    )
+
+    assert selected == selection
+    assert audited is False
+    assert local is True
+    assert provider_config == {
+        "ollama": {
+            "npm": "@ai-sdk/openai-compatible",
+            "options": {"baseURL": "http://ollama:11434/v1"},
+            "models": {"qwen-synthetic:9b": {"name": "qwen-synthetic:9b"}},
+        }
+    }
 
 
 @pytest.mark.integration
@@ -1941,6 +2002,20 @@ async def test_private_content_remote_rule_requires_current_audit(pool: asyncpg.
         f"rule:{rule['id']}",
     )
     assert await is_current_spend_rule_audited(pool, result) is True
+
+    await pool.execute(
+        """
+        UPDATE public.spend_rules
+           SET action = '{"model":"different-target"}'::jsonb,
+               updated_at = updated_at + interval '1 second'
+         WHERE id = $1
+        """,
+        rule["id"],
+    )
+    assert await is_current_spend_rule_audited(pool, result) is False
+
+    await pool.execute("DELETE FROM public.spend_rules WHERE id = $1", rule["id"])
+    assert await is_current_spend_rule_audited(pool, result) is False
 
 
 # ---------------------------------------------------------------------------

@@ -54,16 +54,18 @@ def upgrade() -> None:
                     OR
                     (
                         effective_system_prompt IS NOT NULL
+                        AND prompt_digest IS NOT NULL
                         AND prompt_digest ~ '^[0-9a-f]{{64}}$'
                         AND prompt_provenance IS NOT NULL
                         AND jsonb_typeof(prompt_provenance) = 'array'
                     )
-                );
+                ) NOT VALID;
             END IF;
         END
         $$
         """
     )
+    op.execute(f"ALTER TABLE sessions VALIDATE CONSTRAINT {_CONSTRAINT}")
 
 
 def downgrade() -> None:

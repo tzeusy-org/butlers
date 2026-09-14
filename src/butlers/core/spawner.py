@@ -88,6 +88,8 @@ from butlers.core.model_routing import (
 from butlers.core.permissions import SPAWN_PERMISSION, check_permission
 from butlers.core.purpose_lane import (
     PURPOSE_LANE_PRIVATE_CONTENT,
+    PURPOSE_LANE_STANDARD,
+    PurposeLane,
     purpose_lane_from_routing_context,
 )
 from butlers.core.route_inbox import RouteInboxLeaseLost
@@ -132,6 +134,7 @@ from butlers.core.spawner_guardrails import (
 from butlers.core.spawner_provider import (
     _derive_llm_provider,  # noqa: F401 — re-export for test patches
     resolve_provider_config,  # noqa: F401 — re-export for test patches
+    retarget_ollama_provider_config,
 )
 from butlers.core.spawner_tool_calls import (
     _dedup_tool_calls_by_id,  # noqa: F401 — re-export for test patches
@@ -406,6 +409,7 @@ async def _write_dispatch_attempt(
     tool_call_count: int | None = None,
     logical_session_id: str | None = None,
     duration_ms: int | None = None,
+    purpose_lane: PurposeLane = PURPOSE_LANE_STANDARD,
     produce_fleet_halt: bool = False,
 ) -> int | None:
     """Write one attempt row to public.model_dispatch_attempts (best-effort).
@@ -442,6 +446,7 @@ async def _write_dispatch_attempt(
         tool_call_count=tool_call_count,
         logical_session_id=logical_session_id,
         duration_ms=duration_ms,
+        purpose_lane=purpose_lane,
         produce_fleet_halt=produce_fleet_halt,
     )
 
@@ -1549,7 +1554,9 @@ class Spawner:
         # after operator-rule evaluation but before prewarm/provider setup: only
         # a rule explicitly scoped to this lane with current audit evidence may
         # authorize the selected remote model.
-        if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT and not model.startswith("ollama/"):
+        _private_provider_config: dict[str, dict[str, Any]] | None = None
+        _private_local_failover_allowed = False
+        if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT:
             if catalog_entry_id is None or self._pool is None:
                 exc = PrivateContentModelUnavailable(
                     "private_content_remote_refused: local model unavailable"
@@ -1586,7 +1593,12 @@ class Spawner:
                 )
             )
             try:
-                lane_selection, audited_remote_override = await enforce_private_content_selection(
+                (
+                    lane_selection,
+                    audited_remote_override,
+                    _private_provider_config,
+                    _private_local_failover_allowed,
+                ) = await enforce_private_content_selection(
                     self._pool,
                     butler_name=self._config.name,
                     effective_tier=_failover_effective_tier or str(complexity),
@@ -1688,6 +1700,7 @@ class Spawner:
                 ),
                 tool_call_count=0,
                 logical_session_id=effective_request_id,
+                purpose_lane=purpose_lane,
             )
 
         _attempted_ids: list[uuid.UUID] = []
@@ -1728,6 +1741,7 @@ class Spawner:
                     failure_reason=perm_msg,
                     tool_call_count=0,
                     logical_session_id=effective_request_id,
+                    purpose_lane=purpose_lane,
                 )
                 return await self._dashboard_preflight_failure(
                     dashboard_turn_id=dashboard_turn_id,
@@ -1780,6 +1794,7 @@ class Spawner:
                     failure_reason=quota_msg,
                     tool_call_count=0,
                     logical_session_id=effective_request_id,
+                    purpose_lane=purpose_lane,
                 )
 
                 if _failover_effective_tier is None:
@@ -1790,14 +1805,21 @@ class Spawner:
                         model=model,
                     )
 
-                next_candidate = await next_same_tier_candidate(
-                    self._pool,
-                    self._config.name,
-                    _failover_effective_tier,
-                    _attempted_ids,
-                    **(
-                        {"local_only": True} if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT else {}
-                    ),
+                next_candidate = (
+                    None
+                    if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
+                    and not _private_local_failover_allowed
+                    else await next_same_tier_candidate(
+                        self._pool,
+                        self._config.name,
+                        _failover_effective_tier,
+                        _attempted_ids,
+                        **(
+                            {"local_only": True}
+                            if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
+                            else {}
+                        ),
+                    )
                 )
                 if next_candidate is None:
                     # No candidates remain: hard block.
@@ -1875,6 +1897,7 @@ class Spawner:
                     failure_reason=ceiling_msg,
                     tool_call_count=0,
                     logical_session_id=effective_request_id,
+                    purpose_lane=purpose_lane,
                     produce_fleet_halt=True,
                 )
                 return await self._dashboard_preflight_failure(
@@ -1936,6 +1959,7 @@ class Spawner:
                     failure_reason=cap_msg,
                     tool_call_count=0,
                     logical_session_id=effective_request_id,
+                    purpose_lane=purpose_lane,
                 )
                 return await self._dashboard_preflight_failure(
                     dashboard_turn_id=dashboard_turn_id,
@@ -1945,7 +1969,11 @@ class Spawner:
 
         # Resolve provider config (e.g. Ollama base URL) for the model
         try:
-            provider_config = await self._resolve_provider_config(model)
+            provider_config = (
+                _private_provider_config
+                if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT and model.startswith("ollama/")
+                else await self._resolve_provider_config(model)
+            )
 
             # Select adapter for the resolved runtime type (lazy instantiation on demand).
             # Fall back to the default adapter if the catalog resolved an unregistered runtime type.
@@ -2570,6 +2598,7 @@ class Spawner:
                             if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
                             else trigger_source
                         ),
+                        purpose_lane=purpose_lane,
                         resume_outcome=_resume_outcome,
                         **_composed_prompt_ledger_kwargs(_composed_prompt_digest),
                     )
@@ -2596,6 +2625,7 @@ class Spawner:
                             error_message=str(_attempt_exc),
                             tool_call_count=len(_attempt_tool_calls),
                             logical_session_id=effective_request_id,
+                            purpose_lane=purpose_lane,
                             duration_ms=int((time.monotonic() - _attempt_t0) * 1000),
                         )
                     # Mark as already classified so the outer except handler does not
@@ -2658,6 +2688,7 @@ class Spawner:
                         error_message=str(_attempt_exc),
                         tool_call_count=len(_attempt_tool_calls),
                         logical_session_id=effective_request_id,
+                        purpose_lane=purpose_lane,
                         duration_ms=_failed_attempt_duration_ms,
                     )
 
@@ -2674,14 +2705,21 @@ class Spawner:
                     preconsumed_runtime_tool_calls = _attempt_tool_calls
                     raise _attempt_exc
 
-                next_candidate = await next_same_tier_candidate(
-                    self._pool,
-                    self._config.name,
-                    _failover_effective_tier,
-                    _attempted_ids,
-                    **(
-                        {"local_only": True} if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT else {}
-                    ),
+                next_candidate = (
+                    None
+                    if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
+                    and not _private_local_failover_allowed
+                    else await next_same_tier_candidate(
+                        self._pool,
+                        self._config.name,
+                        _failover_effective_tier,
+                        _attempted_ids,
+                        **(
+                            {"local_only": True}
+                            if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
+                            else {}
+                        ),
+                    )
                 )
                 if next_candidate is None:
                     # All same-tier candidates exhausted — terminal failure.
@@ -2714,6 +2752,7 @@ class Spawner:
                             error_message=str(_attempt_exc),
                             tool_call_count=len(_attempt_tool_calls),
                             logical_session_id=effective_request_id,
+                            purpose_lane=purpose_lane,
                             duration_ms=_failed_attempt_duration_ms,
                         )
                     preconsumed_runtime_tool_calls = _attempt_tool_calls
@@ -2742,7 +2781,13 @@ class Spawner:
                 catalog_timeout_s = next_timeout_s
 
                 # Re-create the runtime adapter for the new model's runtime type.
-                next_provider_config = await self._resolve_provider_config(model)
+                next_provider_config = (
+                    retarget_ollama_provider_config(_private_provider_config, model)
+                    if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
+                    and model.startswith("ollama/")
+                    and _private_provider_config is not None
+                    else await self._resolve_provider_config(model)
+                )
                 try:
                     runtime = self._get_or_create_adapter(
                         resolved_runtime_type, next_provider_config
@@ -2910,6 +2955,7 @@ class Spawner:
                         session_id=session_id,
                         tool_call_count=len(tool_calls) if tool_calls else 0,
                         logical_session_id=effective_request_id,
+                        purpose_lane=purpose_lane,
                         duration_ms=int((time.monotonic() - _attempt_t0) * 1000),
                     )
 
@@ -3519,6 +3565,7 @@ class Spawner:
                         if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
                         else trigger_source
                     ),
+                    purpose_lane=purpose_lane,
                     resume_outcome=_resume_outcome,
                     **_composed_prompt_ledger_kwargs(_composed_prompt_digest),
                 )

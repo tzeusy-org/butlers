@@ -182,6 +182,13 @@ async def test_private_content_uses_local_candidate_and_content_blind_attributio
     remote = _catalog_result()
     local_id = uuid.uuid4()
     local = ("opencode", "ollama/qwen3.5:9b", [], local_id, 30)
+    local_provider_config = {
+        "ollama": {
+            "npm": "@ai-sdk/openai-compatible",
+            "options": {"baseURL": "http://ollama:11434/v1"},
+            "models": {"qwen3.5:9b": {"name": "qwen3.5:9b"}},
+        }
+    }
     unchanged = SpendRoutingResult(resolved=remote[:5])
 
     with (
@@ -195,12 +202,15 @@ async def test_private_content_uses_local_candidate_and_content_blind_attributio
         ),
         patch(
             f"{_MODULE}.enforce_private_content_selection",
-            AsyncMock(return_value=(local, False)),
+            AsyncMock(return_value=(local, False, local_provider_config, True)),
         ) as enforce_lane,
         patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter) as get_adapter,
-        patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
+        patch.object(
+            dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)
+        ) as provider_lookup,
         patch(f"{_MODULE}.record_token_usage", AsyncMock()) as record_usage,
+        patch(f"{_MODULE}.record_dispatch_attempt", AsyncMock()) as record_attempt,
     ):
         result = await dispatcher.call("private fixture", identity="synthetic-chat")
 
@@ -211,10 +221,14 @@ async def test_private_content_uses_local_candidate_and_content_blind_attributio
         effective_tier="specialty",
         routing_result=unchanged,
     )
-    get_adapter.assert_called_once_with("opencode", None)
+    get_adapter.assert_called_once_with("opencode", local_provider_config)
+    provider_lookup.assert_not_awaited()
     assert adapter.invoke.await_args.kwargs["model"] == "ollama/qwen3.5:9b"
     assert record_usage.await_args.kwargs["purpose"] == PURPOSE_LANE_PRIVATE_CONTENT
+    assert record_usage.await_args.kwargs["purpose_lane"] == PURPOSE_LANE_PRIVATE_CONTENT
     assert record_usage.await_args.kwargs["butler_name"] == "__discretion__"
+    assert record_attempt.await_args.kwargs["outcome"] == "success"
+    assert record_attempt.await_args.kwargs["purpose_lane"] == PURPOSE_LANE_PRIVATE_CONTENT
 
 
 async def test_private_content_remote_only_refuses_before_provider_setup_and_audits() -> None:
@@ -283,7 +297,7 @@ async def test_private_content_allows_current_audited_explicit_remote_override()
         ),
         patch(
             f"{_MODULE}.enforce_private_content_selection",
-            AsyncMock(return_value=(remote[:5], True)),
+            AsyncMock(return_value=(remote[:5], True, None, False)),
         ) as enforce_lane,
         patch(f"{_MODULE}.next_same_tier_candidate", AsyncMock()) as next_candidate,
         patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),

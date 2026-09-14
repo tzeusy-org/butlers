@@ -63,16 +63,20 @@ or message identifiers are never used as the lane value.
 
 ### D5: Private content defaults to local and remote use requires current audit evidence
 
-A catalog model is local only when its canonical `model_id` begins `ollama/`; runtime type or zero
-price alone is not proof. Before any adapter is created or invoked, private-content selection and
-same-tier failover exclude non-local models.
+A catalog model is local only when it uses the OpenCode runtime, its canonical `model_id` begins
+`ollama/`, and the exact provider origin captured for the dispatch is loopback or the RFC 0008
+owner-local `ollama` Tailnet service. Missing, malformed, unreadable, or other provider config is not
+proof. The gate returns the captured config and adapter setup reuses it; it never validates one
+origin and then re-reads another. Before any adapter is created or invoked, private-content
+selection and same-tier failover exclude unproved models.
 
 The only exception is an existing operator spend-routing rule whose condition explicitly matches
 `purpose=private_content`, whose action explicitly names the selected remote model, and whose latest
 successful `spend.rule.create` or `spend.rule.update` audit evidence is at least as new as the rule.
-A catch-all, tier-only rule, old audit for a subsequently changed rule, audit read failure, or
-post-selection code path is not authority. The exception is recorded as `audited_remote_override`
-without content.
+One database snapshot revalidates the live rule identifier, revision, private-purpose condition,
+selected target, and owner audit. A concurrent update or delete, catch-all, tier-only rule, old
+audit for a subsequently changed rule, audit read failure, or post-selection code path is not
+authority. The exception is recorded as `audited_remote_override` without content.
 
 If no local model and no valid audited exception exists, routing refuses before provider setup or
 invocation, appends a bounded audit/dispatch-attempt reason, and exposes the refusal without falling
