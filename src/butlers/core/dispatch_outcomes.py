@@ -16,6 +16,7 @@ import uuid
 import asyncpg
 
 from butlers.core.model_routing import CEILING_DENIAL_REASON_PREFIX, get_breaker_state
+from butlers.core.purpose_lane import PURPOSE_LANE_STANDARD, PurposeLane
 from butlers.metrics_registry import get_or_create_counter
 
 logger = logging.getLogger(__name__)
@@ -93,8 +94,8 @@ _DISPATCH_ATTEMPTS_INSERT = """
     INSERT INTO public.model_dispatch_attempts
         (session_id, catalog_entry_id, butler, outcome,
          failure_reason, error_code, error_message,
-         tool_call_count, attempt_index, logical_session_id, duration_ms, ts)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, clock_timestamp())
+         tool_call_count, attempt_index, logical_session_id, duration_ms, purpose_lane, ts)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, clock_timestamp())
 """
 
 _DISPATCH_ATTEMPTS_INSERT_RETURNING_ID = _DISPATCH_ATTEMPTS_INSERT + " RETURNING id"
@@ -154,6 +155,7 @@ async def record_dispatch_attempt(
     tool_call_count: int | None = None,
     logical_session_id: str | None = None,
     duration_ms: int | None = None,
+    purpose_lane: PurposeLane = PURPOSE_LANE_STANDARD,
     produce_fleet_halt: bool = False,
 ) -> int | None:
     """Persist one attempt and atomically append any operational edge.
@@ -206,6 +208,7 @@ async def record_dispatch_attempt(
             attempt_index,
             logical_session_id,
             duration_ms,
+            purpose_lane,
         )
 
         if outcome not in _QUALIFYING_BREAKER_OUTCOMES and not produce_fleet_halt:

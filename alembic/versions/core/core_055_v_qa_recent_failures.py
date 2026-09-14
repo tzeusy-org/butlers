@@ -273,7 +273,11 @@ def upgrade() -> None:
                 healing_fingerprint TEXT,
                 started_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
                 completed_at        TIMESTAMPTZ,
-                continuation_of_session_id UUID
+                continuation_of_session_id UUID,
+                effective_system_prompt TEXT,
+                prompt_digest       TEXT,
+                prompt_provenance   JSONB,
+                purpose_lane        TEXT
             )
         """)
 

@@ -121,7 +121,7 @@ async def test_discretion_dispatcher_writes_identity_and_purpose_via_real_pool(
 
     row = await pool.fetchrow(
         """
-        SELECT butler_name, session_id, purpose, input_tokens, output_tokens,
+        SELECT butler_name, session_id, purpose, purpose_lane, input_tokens, output_tokens,
                base_prompt_tokens, timezone_instruction_tokens,
                context_preamble_tokens, routing_instructions_tokens,
                memory_context_tokens, resume_outcome
@@ -133,6 +133,7 @@ async def test_discretion_dispatcher_writes_identity_and_purpose_via_real_pool(
     assert row is not None
     assert row["session_id"] is None
     assert row["purpose"] == "discretion"
+    assert row["purpose_lane"] == "standard"
     assert row["input_tokens"] == 7 and row["output_tokens"] == 3
     # bu-hz0g0: discretion never composes a layered prompt or resumes a
     # conversation, so every new column stays honestly NULL.
@@ -160,11 +161,12 @@ async def test_record_token_usage_purpose_defaults_null_when_omitted(pool: async
         output_tokens=1,
     )
     written = await pool.fetchrow(
-        "SELECT purpose FROM public.token_usage_ledger WHERE catalog_entry_id = $1 "
+        "SELECT purpose, purpose_lane FROM public.token_usage_ledger WHERE catalog_entry_id = $1 "
         "ORDER BY recorded_at DESC LIMIT 1",
         entry_id,
     )
     assert written is not None and written["purpose"] is None
+    assert written["purpose_lane"] == "standard"
 
 
 async def test_composition_and_resume_columns_exist_and_are_nullable(pool: asyncpg.Pool) -> None:

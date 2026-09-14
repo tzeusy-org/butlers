@@ -39,6 +39,7 @@ vi.mock("@/hooks/use-butlers", () => ({
 }));
 
 vi.mock("@/hooks/use-butler-management", () => ({
+  useButlerEffectivePrompt: vi.fn(),
   useButlerPrompt: vi.fn(),
   useUpdateButlerPrompt: vi.fn(),
   useButlerPromptHistory: vi.fn(),
@@ -52,6 +53,7 @@ vi.mock("@/hooks/use-model-catalog", () => ({
 }));
 
 import {
+  useButlerEffectivePrompt,
   useButlerPrompt,
   useUpdateButlerPrompt,
   useButlerPromptHistory,
@@ -88,6 +90,25 @@ function renderTab(butlerName = "general") {
 const PROMPT_TEXT = "You are a helpful butler.";
 
 function setupDefaultHooks(mutateFn = vi.fn()) {
+  vi.mocked(useButlerEffectivePrompt).mockReturnValue({
+    data: {
+      data: {
+        butler_name: "general",
+        status: "captured",
+        effective_prompt: "Composed synthetic roster identity",
+        prompt_digest: "a".repeat(64),
+        prompt_provenance: [],
+        total_bytes: 34,
+        roster_digest: "b".repeat(64),
+        drift_status: "matches_git",
+        drifted_since: null,
+        changed_sources: [],
+      },
+    },
+    isLoading: false,
+    isError: false,
+    error: null,
+  } as unknown as ReturnType<typeof useButlerEffectivePrompt>);
   vi.mocked(useButlerPrompt).mockReturnValue({
     data: { data: { version: 1, prompt: PROMPT_TEXT, updated_by: "owner" } },
     isLoading: false,
@@ -144,6 +165,75 @@ function openEditModal() {
   const editButton = screen.getByText("edit prompt →");
   fireEvent.click(editButton);
 }
+
+describe("Effective prompt preview", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupDefaultHooks();
+  });
+  afterEach(() => cleanup());
+
+  it("shows composed roster identity and an honest git-match receipt", () => {
+    vi.mocked(useButlerPrompt).mockReturnValue({
+      data: { data: { version: 0, prompt: "", updated_by: null } },
+      isLoading: false,
+    } as ReturnType<typeof useButlerPrompt>);
+
+    renderTab();
+
+    expect(screen.getByText("Composed synthetic roster identity")).toBeTruthy();
+    expect(screen.getByText(/Prompt: matches git @/)).toBeTruthy();
+    expect(screen.queryByText("No system prompt configured.")).toBeNull();
+  });
+
+  it.each(["error", "unavailable", "corrupt"] as const)(
+    "keeps the mutable authoring prompt out of an unavailable %s receipt",
+    (state) => {
+      vi.mocked(useButlerPrompt).mockReturnValue({
+        data: { data: { version: 3, prompt: "Mutable authoring prompt", updated_by: "owner" } },
+        isLoading: false,
+      } as ReturnType<typeof useButlerPrompt>);
+      vi.mocked(useButlerEffectivePrompt).mockReturnValue(
+        state === "error"
+          ? ({
+              data: undefined,
+              isLoading: false,
+              isError: true,
+              error: new Error("receipt unavailable"),
+            } as unknown as ReturnType<typeof useButlerEffectivePrompt>)
+          : ({
+              data: {
+                data: {
+                  butler_name: "general",
+                  status: state,
+                  effective_prompt: null,
+                  prompt_digest: null,
+                  prompt_provenance: [],
+                  total_bytes: null,
+                  roster_digest: null,
+                  drift_status: "unknown",
+                  drifted_since: null,
+                  changed_sources: [],
+                },
+              },
+              isLoading: false,
+              isError: false,
+              error: null,
+            } as unknown as ReturnType<typeof useButlerEffectivePrompt>),
+      );
+
+      renderTab();
+
+      expect(screen.queryByText("Mutable authoring prompt")).toBeNull();
+      expect(screen.getByText("Effective prompt unavailable.")).toBeTruthy();
+      expect(screen.getByText(/authoring prompt remains separately editable/i)).toBeTruthy();
+      expect(screen.queryByText(/Preview shows composed runtime instructions/)).toBeNull();
+      if (state === "unavailable") {
+        expect(screen.getByText("Prompt: receipt unavailable")).toBeTruthy();
+      }
+    },
+  );
+});
 
 // ---------------------------------------------------------------------------
 // Tests: PromptEditModal mutation wiring

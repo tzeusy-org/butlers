@@ -7,7 +7,7 @@ pagination metadata, and common summary models used across all endpoints.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, computed_field
@@ -235,6 +235,7 @@ class SessionSummary(BaseModel):
     duration_ms: int | None = None
     model: str | None = None
     complexity: str | None = None
+    purpose_lane: Literal["standard", "private_content"] | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
     # Additive list-only outcome discriminator. It is true only for the
@@ -556,6 +557,7 @@ class TopSession(BaseModel):
     output_tokens: int
     model: str
     started_at: str
+    purpose_lane: Literal["standard", "private_content"] | None = None
 
 
 class ScheduleCost(BaseModel):

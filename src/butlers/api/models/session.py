@@ -11,10 +11,10 @@ views, ``SessionKindBreakdown`` for the session-kinds analytics endpoint,
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 
 class ProcessLog(BaseModel):
@@ -210,5 +210,40 @@ class SessionDetail(BaseModel):
     process_log: ProcessLog | None = None
     complexity: str | None = None
     resolution_source: str | None = None
+    purpose_lane: Literal["standard", "private_content"] | None = None
     correction_count: int = 0
     linked_message: LinkedChatMessage | None = None
+
+
+class PromptProvenance(BaseModel):
+    """Content-blind evidence for one named effective-prompt source."""
+
+    model_config = {"extra": "forbid"}
+
+    source: str = Field(
+        pattern=r"^(?:[a-z][a-z0-9_]*|roster:[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)$"
+    )
+    status: Literal["present", "unavailable", "shadowed"]
+    bytes: int = Field(ge=0)
+    sha: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def validate_availability_evidence(self) -> PromptProvenance:
+        """Keep absent sources explicit and present-source evidence complete."""
+        if self.status == "unavailable" and (self.bytes != 0 or self.sha is not None):
+            raise ValueError("unavailable prompt source must carry zero bytes and no digest")
+        if self.status in {"present", "shadowed"} and self.sha is None:
+            raise ValueError("present or shadowed prompt source must carry a digest")
+        return self
+
+
+class SessionPromptReceipt(BaseModel):
+    """Owner-only exact effective system prompt captured at session creation."""
+
+    id: UUID
+    butler: str
+    status: Literal["captured", "legacy_unavailable", "corrupt"]
+    effective_prompt: str | None = None
+    prompt_digest: str | None = None
+    prompt_provenance: list[PromptProvenance]
+    total_bytes: int | None = None

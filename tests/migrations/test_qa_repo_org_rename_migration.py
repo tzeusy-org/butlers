@@ -94,7 +94,7 @@ def test_migration_chain_metadata_and_downgrade_preserves_operator_choices() -> 
     assert module.revision == "core_235"
     assert module.down_revision == "core_234"
     assert module.revision in get_chain_revision_ids("core")
-    assert get_chain_head("core") == module.revision
+    assert get_chain_head("core") == "core_238"
     assert module.branch_labels is None
     assert module.depends_on is None
     assert "tzeusy-org/butlers" in module.RETARGET_QA_REPOSITORY_SQL

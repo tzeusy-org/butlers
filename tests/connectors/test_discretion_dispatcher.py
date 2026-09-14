@@ -22,8 +22,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from butlers.connectors.discretion import DiscretionEvaluator
-from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
-from butlers.core.model_routing import Complexity, QuotaStatus, SpendRoutingResult
+from butlers.connectors.discretion_dispatcher import (
+    PURPOSE_LANE_PRIVATE_CONTENT,
+    DiscretionDispatcher,
+)
+from butlers.core.model_routing import (
+    Complexity,
+    PrivateContentModelUnavailable,
+    QuotaStatus,
+    SpendRoutingResult,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -161,6 +169,155 @@ async def test_call_with_identity_records_per_connector_butler_name() -> None:
         "resume_outcome",
     ):
         assert kwargs.get(composition_kwarg) is None
+
+
+async def test_private_content_uses_local_candidate_and_content_blind_attribution() -> None:
+    """Private connector content never follows a higher-priority remote default."""
+    pool = MagicMock()
+    dispatcher = DiscretionDispatcher(
+        pool=pool,
+        purpose_lane=PURPOSE_LANE_PRIVATE_CONTENT,
+    )
+    adapter = _make_adapter()
+    remote = _catalog_result()
+    local_id = uuid.uuid4()
+    local = ("opencode", "ollama/qwen3.5:9b", [], local_id, 30)
+    local_provider_config = {
+        "ollama": {
+            "npm": "@ai-sdk/openai-compatible",
+            "options": {"baseURL": "http://ollama:11434/v1"},
+            "models": {"qwen3.5:9b": {"name": "qwen3.5:9b"}},
+        }
+    }
+    unchanged = SpendRoutingResult(resolved=remote[:5])
+
+    with (
+        patch(
+            f"{_MODULE}.resolve_model_with_effective_tier",
+            AsyncMock(return_value=remote),
+        ),
+        patch(
+            f"{_MODULE}.apply_spend_routing_rules",
+            AsyncMock(return_value=unchanged),
+        ),
+        patch(
+            f"{_MODULE}.enforce_private_content_selection",
+            AsyncMock(return_value=(local, False, local_provider_config, True)),
+        ) as enforce_lane,
+        patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
+        patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter) as get_adapter,
+        patch.object(
+            dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)
+        ) as provider_lookup,
+        patch(f"{_MODULE}.record_token_usage", AsyncMock()) as record_usage,
+        patch(f"{_MODULE}.record_dispatch_attempt", AsyncMock()) as record_attempt,
+    ):
+        result = await dispatcher.call("private fixture", identity="synthetic-chat")
+
+    assert result == "FORWARD"
+    enforce_lane.assert_awaited_once_with(
+        pool,
+        butler_name="__discretion__",
+        effective_tier="specialty",
+        routing_result=unchanged,
+    )
+    get_adapter.assert_called_once_with("opencode", local_provider_config)
+    provider_lookup.assert_not_awaited()
+    assert adapter.invoke.await_args.kwargs["model"] == "ollama/qwen3.5:9b"
+    assert record_usage.await_args.kwargs["purpose"] == PURPOSE_LANE_PRIVATE_CONTENT
+    assert record_usage.await_args.kwargs["purpose_lane"] == PURPOSE_LANE_PRIVATE_CONTENT
+    assert record_usage.await_args.kwargs["butler_name"] == "__discretion__"
+    assert record_attempt.await_args.kwargs["outcome"] == "success"
+    assert record_attempt.await_args.kwargs["purpose_lane"] == PURPOSE_LANE_PRIVATE_CONTENT
+
+
+async def test_private_content_remote_only_refuses_before_provider_setup_and_audits() -> None:
+    """No local candidate is a visible refusal, never a remote fallback."""
+    pool = MagicMock()
+    dispatcher = DiscretionDispatcher(
+        pool=pool,
+        purpose_lane=PURPOSE_LANE_PRIVATE_CONTENT,
+    )
+    remote = _catalog_result()
+    unchanged = SpendRoutingResult(resolved=remote[:5])
+
+    with (
+        patch(
+            f"{_MODULE}.resolve_model_with_effective_tier",
+            AsyncMock(return_value=remote),
+        ),
+        patch(
+            f"{_MODULE}.apply_spend_routing_rules",
+            AsyncMock(return_value=unchanged),
+        ),
+        patch(
+            f"{_MODULE}.enforce_private_content_selection",
+            AsyncMock(side_effect=PrivateContentModelUnavailable("local model unavailable")),
+        ),
+        patch.object(dispatcher, "_get_or_create_adapter") as get_adapter,
+        patch.object(dispatcher, "_resolve_provider_config", AsyncMock()) as provider_config,
+        patch(f"{_MODULE}.write_audit_entry", AsyncMock()) as audit,
+    ):
+        with pytest.raises(PrivateContentModelUnavailable, match="local model unavailable"):
+            await dispatcher.call("private fixture", identity="synthetic-chat")
+
+    get_adapter.assert_not_called()
+    provider_config.assert_not_awaited()
+    audit.assert_awaited_once()
+    assert audit.await_args.args[2] == "model.private_content_remote_refused"
+    assert "synthetic-chat" not in repr(audit.await_args)
+
+
+async def test_private_content_allows_current_audited_explicit_remote_override() -> None:
+    """A purpose-specific current audit is the sole remote exception."""
+    pool = MagicMock()
+    dispatcher = DiscretionDispatcher(
+        pool=pool,
+        purpose_lane=PURPOSE_LANE_PRIVATE_CONTENT,
+    )
+    adapter = _make_adapter()
+    remote = _catalog_result()
+    rule_id = uuid.uuid4()
+    routed = SpendRoutingResult(
+        resolved=remote[:5],
+        matched_rule_id=rule_id,
+        matched_rule_updated_at=None,
+        explicit_private_content=True,
+        target_model=remote[1],
+    )
+
+    with (
+        patch(
+            f"{_MODULE}.resolve_model_with_effective_tier",
+            AsyncMock(return_value=remote),
+        ),
+        patch(
+            f"{_MODULE}.apply_spend_routing_rules",
+            AsyncMock(return_value=routed),
+        ),
+        patch(
+            f"{_MODULE}.enforce_private_content_selection",
+            AsyncMock(return_value=(remote[:5], True, None, False)),
+        ) as enforce_lane,
+        patch(f"{_MODULE}.next_same_tier_candidate", AsyncMock()) as next_candidate,
+        patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
+        patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
+        patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
+        patch(f"{_MODULE}.record_token_usage", AsyncMock()),
+        patch(f"{_MODULE}.write_audit_entry", AsyncMock()) as audit,
+    ):
+        result = await dispatcher.call("private fixture")
+
+    assert result == "FORWARD"
+    enforce_lane.assert_awaited_once_with(
+        pool,
+        butler_name="__discretion__",
+        effective_tier="specialty",
+        routing_result=routed,
+    )
+    next_candidate.assert_not_awaited()
+    assert adapter.invoke.await_args.kwargs["model"] == remote[1]
+    assert audit.await_args.args[2] == "model.private_content_remote_override"
 
 
 async def test_call_without_identity_falls_back_to_constructor_butler_name() -> None:

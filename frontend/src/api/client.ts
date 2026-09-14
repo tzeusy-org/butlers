@@ -108,6 +108,7 @@ import type {
   SearchResults,
   SessionAggregate,
   SessionDetail,
+  SessionPromptReceipt,
   SessionParams,
   SessionSummary,
   KeysetResponse,
@@ -423,6 +424,7 @@ import type {
   ActivityFeed,
   ActivityFeedParams,
   ButlerMemoryStats,
+  ButlerEffectivePrompt,
   PromptVersion,
   PromptUpdateRequest,
   ButlerTool,
@@ -731,6 +733,13 @@ export function getSessionAggregate(
 /** Fetch a single session by ID (cross-butler). */
 export function getSession(id: string): Promise<ApiResponse<SessionDetail>> {
   return apiFetch<ApiResponse<SessionDetail>>(`/sessions/${encodeURIComponent(id)}`);
+}
+
+/** Fetch the separately protected effective-system-prompt receipt on demand. */
+export function getSessionPrompt(id: string): Promise<ApiResponse<SessionPromptReceipt>> {
+  return apiFetch<ApiResponse<SessionPromptReceipt>>(
+    `/sessions/${encodeURIComponent(id)}/prompt`,
+  );
 }
 
 /** Fetch sessions for a specific butler. */
@@ -6656,6 +6665,15 @@ export function getHomeCommandLog(params?: {
 /** GET /api/butlers/{name}/prompt — current versioned system prompt. */
 export function getButlerPrompt(name: string): Promise<ApiResponse<PromptVersion>> {
   return apiFetch<ApiResponse<PromptVersion>>(`/butlers/${name}/prompt`);
+}
+
+/** GET /api/butlers/{name}/prompt/effective — protected composed prompt + drift truth. */
+export function getButlerEffectivePrompt(
+  name: string,
+): Promise<ApiResponse<ButlerEffectivePrompt>> {
+  return apiFetch<ApiResponse<ButlerEffectivePrompt>>(
+    `/butlers/${encodeURIComponent(name)}/prompt/effective`,
+  );
 }
 
 /** PUT /api/butlers/{name}/prompt — update prompt, snapshots prior version. */
