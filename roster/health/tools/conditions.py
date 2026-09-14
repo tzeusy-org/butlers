@@ -397,12 +397,27 @@ async def symptom_update(
     name = updates.get("name", row["content"])
     occurred_at = updates.get("occurred_at", row["valid_at"])
 
+    # Repair pre-classification symptom rows as part of the edit, and atomically
+    # retire any catalog entry written while the symptom was still ``normal``.
+    # Catalog search excludes rows with ``invalid_at`` set.
     await pool.execute(
-        "UPDATE facts SET content = $2, metadata = $3, valid_at = $4 WHERE id = $1",
+        "WITH updated AS ("
+        " UPDATE facts"
+        " SET content = $2, metadata = $3, valid_at = $4, sensitivity = $5"
+        " WHERE id = $1"
+        " RETURNING id"
+        ")"
+        " UPDATE public.memory_catalog AS mc"
+        " SET confidence = 0, invalid_at = now(), updated_at = now()"
+        " FROM updated"
+        " WHERE mc.source_schema = current_schema()"
+        " AND mc.source_table = 'facts'"
+        " AND mc.source_id = updated.id",
         sym_uuid,
         name,
         new_meta,
         occurred_at,
+        HEALTH_SENSITIVITY_CONFIDENTIAL,
     )
 
     cond_id = new_meta.get("condition_id")
