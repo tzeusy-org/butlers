@@ -162,6 +162,47 @@ connector process.
 ./scripts/dev.sh
 ```
 
+## compose.sh
+
+Launches the Docker Compose stack and configures its Tailscale Serve mappings.
+
+### Tailscale Serve data-plane probe
+
+`tailscale_serve_probe.py` performs one read-only HTTPS GET against the
+configured health route.  It uses strict certificate-chain, hostname, and
+expiry validation, requires HTTP 200 with top-level JSON `{"status":"ok"}`,
+and retries timeouts and other transient transport failures with fixed bounds.
+Its transport is intentionally injectable for tests.
+
+The Compose launcher validates that Serve status is readable, well-formed, and
+contains the expected mappings before lifecycle startup.  These failure classes
+remain distinct: `status-unreadable`, `status-malformed`, and `mapping-missing`.
+After the stack and egress firewall are up, it runs the data-plane probe only
+when `TAILSCALE_SERVE_PROBE_COMMAND` is set and
+`TAILSCALE_SERVE_PROBE_CONTEXT=off-host`.  The context label is only an operator
+policy gate: the probe derives its actual Tailscale DNS identity on the executor,
+rejects the target host, and emits the identity attestation that the launcher
+requires before accepting success. Both target and executor identities must be
+qualified `.ts.net` names; a local or single-label name cannot be off-host
+evidence. The command is split into argv (no shell evaluation), its first
+executable must resolve locally before Serve or Compose lifecycle work, and it
+receives `--url`, `--timeout`, `--retries`, and `--retry-delay` arguments.
+Timeout is finite and at most 30 seconds, retries are limited to three, retry
+delay is finite and at most five seconds, and the launcher wraps the whole
+executor (including DNS, SSH, and authentication setup) in a derived outer
+deadline. Remote/runtime executor failures remain post-start probe failures.
+Executor stdout, stderr, and configured argv are never echoed; the launcher
+emits only stable, content-blind outcome classes. An operator-supplied executor
+can therefore run `python3 scripts/tailscale_serve_probe.py` from an independent
+tailnet client. Without a
+configured executor, the launcher reports `control-plane mappings only` instead
+of claiming data-plane readiness.  With an explicitly configured executor, a
+usable `Self.DNSName` is required before any Serve or Compose lifecycle mutation;
+an absent or malformed target fails as `data-plane target-unavailable` rather
+than silently skipping the HTTPS check.  Probe failures classify as `cert-invalid`,
+`route-404`, `timeout`, or `executor-timeout` with sanitized, actionable guidance
+and never alter Serve state.
+
 ## clear-processes.sh
 
 Kills processes currently listening on the expected local dev ports.
