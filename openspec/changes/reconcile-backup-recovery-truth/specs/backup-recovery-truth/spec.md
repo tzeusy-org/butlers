@@ -117,6 +117,7 @@ Scope: v1-mandatory
   owner, or other catalog drift without reading application row content
 - **AND** only the checker result bound into that attempt's protected row may
   satisfy ownership/ACL recovery proof; repository tests and prose may not
+  substitute for, upgrade, or repair that verdict
 
 #### Scenario: Removing ownership evidence is not accepted as recovery
 
@@ -284,9 +285,11 @@ Scope: v1-mandatory
 - **THEN** failure code is respectively `restore_failed`,
   `credential_count_mismatch`, `filtered_event_verification_failed`, or
   `ownership_acl_mismatch`, with non-null attempted time and artifact facts
-- **AND** scope is null for `restore_failed`, `application_data` for credential
-  or filtered-event failure, and `application_data_with_filtered_events` only
-  when filtered-event verification passed before ownership/ACL failed
+- **AND** scope is null for `restore_failed`; `application_data` for a
+  filtered-event failure or a credential-count mismatch unless filtered-event
+  verification passed first; and `application_data_with_filtered_events` only
+  when filtered-event verification passed before a later credential-count or
+  ownership/ACL failure
 
 #### Scenario: Cleanup failure overrides a prior passing stage
 
