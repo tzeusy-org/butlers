@@ -279,12 +279,12 @@ function ArchetypeWrapper({
     return <div className="max-w-2xl">{children}</div>;
   }
   if (archetype === "editorial") {
-    // The editorial archetype owns its own layout (two-column grid, max-width
-    // 1280px, responsive page padding). The <Page> wrapper does not add
-    // space-y-6 here; editorial pages compose the two-column region directly.
+    // Shell owns the single responsive outer gutter for every route, including
+    // legacy surfaces that have not migrated to <Page>. Editorial Page owns
+    // only the readable-width frame here so its padding does not stack with
+    // Shell's --page-gutter-* ramp.
     return (
       <div
-        className="px-4 py-8 sm:px-8 lg:px-14 lg:py-12"
         style={{
           maxWidth: "1280px",
         }}
