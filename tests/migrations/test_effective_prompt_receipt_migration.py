@@ -1,4 +1,4 @@
-"""Real-Postgres lifecycle for core_234/core_235 prompt and purpose receipts."""
+"""Real-Postgres lifecycle for core_236/core_237 prompt and purpose receipts."""
 
 from __future__ import annotations
 
@@ -14,15 +14,15 @@ pytestmark = [pytest.mark.integration, pytest.mark.db]
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
-    / "alembic/versions/core/core_234_effective_prompt_receipt.py"
+    / "alembic/versions/core/core_236_effective_prompt_receipt.py"
 )
 _PURPOSE_MIGRATION_PATH = (
-    Path(__file__).resolve().parents[2] / "alembic/versions/core/core_235_session_purpose_lane.py"
+    Path(__file__).resolve().parents[2] / "alembic/versions/core/core_237_session_purpose_lane.py"
 )
 
 
 def _load_migration():
-    spec = importlib.util.spec_from_file_location("core_234", _MIGRATION_PATH)
+    spec = importlib.util.spec_from_file_location("core_236", _MIGRATION_PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -31,13 +31,13 @@ def _load_migration():
 
 def test_prompt_receipt_migrations_extend_the_live_core_head() -> None:
     receipt = _load_migration()
-    purpose_spec = importlib.util.spec_from_file_location("core_235", _PURPOSE_MIGRATION_PATH)
+    purpose_spec = importlib.util.spec_from_file_location("core_237", _PURPOSE_MIGRATION_PATH)
     assert purpose_spec is not None and purpose_spec.loader is not None
     purpose = importlib.util.module_from_spec(purpose_spec)
     purpose_spec.loader.exec_module(purpose)
 
-    assert (receipt.revision, receipt.down_revision) == ("core_234", "core_233")
-    assert (purpose.revision, purpose.down_revision) == ("core_235", "core_234")
+    assert (receipt.revision, receipt.down_revision) == ("core_236", "core_235")
+    assert (purpose.revision, purpose.down_revision) == ("core_237", "core_236")
 
 
 async def _run_migration(pool, direction: str) -> None:
@@ -121,7 +121,7 @@ async def test_purpose_lane_is_closed_additive_and_rollback_safe(
         await pool.execute("INSERT INTO sessions (id) VALUES ($1)", legacy_id)
 
         statements: list[str] = []
-        spec = importlib.util.spec_from_file_location("core_235", _PURPOSE_MIGRATION_PATH)
+        spec = importlib.util.spec_from_file_location("core_237", _PURPOSE_MIGRATION_PATH)
         assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)

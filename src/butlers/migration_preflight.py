@@ -86,6 +86,6 @@ def preflight_runtime_attention_downgrade(op: Any, context: Any) -> None:
     if authorized:
         return
     raise RuntimeError(
-        "core_234/core_235 cannot begin downgrade work because the protected "
+        "core_236/core_237 cannot begin downgrade work because the protected "
         "core_198 rollback preflight failed"
     )
