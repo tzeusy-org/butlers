@@ -768,7 +768,7 @@ class TestSpawnerUndeliveredReplyAccounting:
             patch(
                 "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=_catalog_result(),
+                return_value=_catalog_result(model="ollama/test-model"),
             ),
             patch(
                 "butlers.core.spawner.check_token_quota",
@@ -784,6 +784,9 @@ class TestSpawnerUndeliveredReplyAccounting:
                         "limit_30d": None,
                     },
                 )(),
+            ),
+            patch.object(
+                spawner, "_resolve_provider_config", new_callable=AsyncMock, return_value=None
             ),
         ):
             mock_sc.return_value = _SESSION_ID
@@ -818,7 +821,7 @@ class TestSpawnerUndeliveredReplyAccounting:
             patch(
                 "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=_catalog_result(),
+                return_value=_catalog_result(model="ollama/test-model"),
             ),
             patch(
                 "butlers.core.spawner.check_token_quota",
@@ -834,6 +837,9 @@ class TestSpawnerUndeliveredReplyAccounting:
                         "limit_30d": None,
                     },
                 )(),
+            ),
+            patch.object(
+                spawner, "_resolve_provider_config", new_callable=AsyncMock, return_value=None
             ),
         ):
             mock_sc.return_value = _SESSION_ID

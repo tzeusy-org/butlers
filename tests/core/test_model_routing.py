@@ -1914,9 +1914,19 @@ async def test_private_content_remote_rule_requires_current_audit(pool: asyncpg.
 
     await pool.execute(
         """
+        INSERT INTO public.audit_log (actor, action, target, ts, result)
+        VALUES ('not-owner', 'spend.rule.create', $1, $2, 'success')
+        """,
+        f"rule:{rule['id']}",
+        rule["updated_at"],
+    )
+    assert await is_current_spend_rule_audited(pool, result) is False
+
+    await pool.execute(
+        """
         UPDATE public.audit_log
            SET result = 'error'
-         WHERE target = $1
+         WHERE target = $1 AND actor = 'owner'
         """,
         f"rule:{rule['id']}",
     )
@@ -1926,7 +1936,7 @@ async def test_private_content_remote_rule_requires_current_audit(pool: asyncpg.
         """
         UPDATE public.audit_log
            SET result = 'success'
-         WHERE target = $1
+         WHERE target = $1 AND actor = 'owner'
         """,
         f"rule:{rule['id']}",
     )

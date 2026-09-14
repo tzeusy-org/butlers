@@ -46,6 +46,7 @@ from fastapi import (
 from fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from butlers.api.audit_emit import authenticated_principal
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
 from butlers.api.deps import (
@@ -2056,10 +2057,11 @@ async def create_spend_rule(
     try:
         await audit_append(
             db.pool("switchboard"),
-            actor="owner",
+            actor=authenticated_principal(),
             action="spend.rule.create",
             target=f"rule:{rule.id}",
             note=f"position={position} condition={condition_payload} action={action_payload}",
+            result="success",
         )
     except Exception:
         logger.warning("Audit append failed for spend.rule.create", exc_info=True)
@@ -2166,10 +2168,11 @@ async def update_spend_rule(
     try:
         await audit_append(
             db.pool("switchboard"),
-            actor="owner",
+            actor=authenticated_principal(),
             action="spend.rule.update",
             target=f"rule:{rule_id}",
             note=f"position={new_position} condition={new_condition} action={new_action}",
+            result="success",
         )
     except Exception:
         logger.warning("Audit append failed for spend.rule.update", exc_info=True)
