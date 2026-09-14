@@ -115,22 +115,24 @@ score = 0.4 * relevance + 0.3 * importance + 0.2 * recency + 0.1 * effective_con
 
 The [`memory_context` interface](../../src/butlers/modules/memory/tools/context.py)
 assembles sections in the order below and omits empty sections. Its
-`token_budget` is approximate: the implementation allocates character quotas
-using four characters per token, not a model tokenizer.
+`token_budget` is converted to a hard character budget using four characters
+per token, not a model tokenizer. The preamble, section headers, and the
+content-blind `withheld: N` privacy receipt all consume that same total budget.
 
 | Section | Character allocation | Ordering and selection |
 |---|---|---|
-| Profile Facts | 30% | Owner facts by importance descending, creation time descending, then ID ascending |
+| Profile Facts | 20% | Owner facts by importance descending, creation time descending, then ID ascending |
 | Task-Relevant Facts | 35% | Recall facts excluding profile duplicates, by composite score descending, creation time descending, then ID ascending |
 | Active Rules | 20% | Maturity rank descending, effectiveness descending, creation time descending, then ID ascending |
 | Recent Episodes | 15% | Newest first; opt-in with `include_recent_episodes=True` |
-| Fleet Knowledge | 10% additional | Opt-in with `include_fleet_knowledge=True`; other butlers' catalog entries under the server-held catalog read policy |
+| Fleet Knowledge | 10% | Opt-in with `include_fleet_knowledge=True`; other butlers' catalog entries under the server-held catalog read policy |
 
 The first three sections have explicit stable tie breakers. Recent episodes
 are ordered by creation time without a secondary ID sort. These are section
-quotas, not a hard bound on the complete prompt: headers also consume space,
-and enabling Fleet Knowledge adds its quota without reducing the others.
-Catalog search failure omits that optional section instead of failing assembly.
+quotas totaling 100% across all five sections, including the two opt-in
+sections. Enabling Fleet Knowledge does not add an extra quota beyond the hard
+total budget. Catalog search failure omits that optional section instead of
+failing assembly.
 
 The retired memory design proposed a shared `TokenBudgeter` abstraction and a
 uniform tie-breaking rule for every section. Those implementation proposals are
