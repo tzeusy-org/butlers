@@ -94,6 +94,34 @@ async def approval_push_pool(migrated_db_url: str):
         "SET quiet_start_hour = NULL, quiet_end_hour = NULL, timezone = 'UTC' "
         "WHERE id = 1"
     )
+    await pool.execute(
+        "UPDATE approval_delivery_rollout "
+        "SET admission_enabled = true, worker_enabled = false WHERE singleton"
+    )
+    yield pool
+    await pool.close()
+
+
+@pytest.fixture
+async def disabled_rollout_pool(migrated_db_url: str):
+    """Return a clean pool with the new writer and worker kept default-off."""
+    pool = await asyncpg.create_pool(
+        migrated_db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+    )
+    await pool.execute(
+        "TRUNCATE approval_delivery_attempts, approval_delivery_cohort_members, "
+        "approval_delivery_presentations, approval_delivery_cohorts, "
+        "approval_delivery_intents, approval_push_emissions, approval_events, "
+        "pending_actions, deferred_notifications CASCADE"
+    )
+    await pool.execute(
+        "INSERT INTO approval_delivery_rollout (singleton) VALUES (true) "
+        "ON CONFLICT (singleton) DO UPDATE "
+        "SET admission_enabled = false, worker_enabled = false"
+    )
     yield pool
     await pool.close()
 
@@ -182,6 +210,73 @@ def _runtime(dispatch: AsyncMock) -> ApprovalPushRuntime:
         credential_store=credential_store,
         dashboard_base_url="https://dashboard.example.test",
     )
+
+
+@pytest.mark.parametrize("config_state", ["default", "absent", "invalid"])
+async def test_disabled_rollout_parks_without_recovery_rows_or_dual_write(
+    disabled_rollout_pool: asyncpg.Pool,
+    config_state: str,
+) -> None:
+    """Absent, disabled, or rejected-invalid config keeps durable recovery inert."""
+    if config_state == "absent":
+        await disabled_rollout_pool.execute("DELETE FROM approval_delivery_rollout")
+    elif config_state == "invalid":
+        with pytest.raises(asyncpg.NotNullViolationError):
+            await disabled_rollout_pool.execute(
+                "UPDATE approval_delivery_rollout SET admission_enabled = NULL"
+            )
+
+    dispatch = AsyncMock()
+    now = datetime.now(UTC)
+    deduplication_key = f"relationship:rollout:{uuid.uuid4()}"
+    admission = await park_pending_action(
+        disabled_rollout_pool,
+        action_id=uuid.uuid4(),
+        tool_name="relationship_assert_fact",
+        tool_args={
+            "subject": "owner",
+            "approval_delivery_admission_enabled": True,
+            "approval_delivery_worker_enabled": True,
+        },
+        agent_summary="Default-off rollout admission",
+        requested_at=now,
+        expires_at=now + timedelta(hours=72),
+        origin_butler="relationship",
+        approval_push_runtime=_runtime(dispatch),
+        deduplication_key=deduplication_key,
+    )
+
+    duplicates = await asyncio.gather(
+        *(
+            park_pending_action(
+                disabled_rollout_pool,
+                action_id=uuid.uuid4(),
+                tool_name="relationship_assert_fact",
+                tool_args={"subject": "owner"},
+                agent_summary="Concurrent default-off duplicate",
+                requested_at=now,
+                expires_at=now + timedelta(hours=72),
+                origin_butler="relationship",
+                approval_push_runtime=_runtime(dispatch),
+                deduplication_key=deduplication_key,
+            )
+            for _ in range(2)
+        )
+    )
+
+    assert admission.intent_id is None
+    assert all(item.duplicate and item.action_id == admission.action_id for item in duplicates)
+    assert await disabled_rollout_pool.fetchval("SELECT count(*) FROM pending_actions") == 1
+    for table in (
+        "approval_delivery_intents",
+        "approval_delivery_presentations",
+        "approval_delivery_cohorts",
+        "approval_delivery_cohort_members",
+        "approval_delivery_attempts",
+    ):
+        assert await disabled_rollout_pool.fetchval(f"SELECT count(*) FROM {table}") == 0
+    assert await disabled_rollout_pool.fetchval("SELECT count(*) FROM approval_push_emissions") == 0
+    dispatch.assert_not_awaited()
 
 
 async def test_park_deduplication_key_blocks_owner_decisions_and_allows_expiry(

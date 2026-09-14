@@ -184,6 +184,9 @@ async def approval_pool(migrated_db_url: str):
         "approval_events, pending_actions, approval_rules CASCADE"
     )
     await pool.execute(
+        "UPDATE approval_delivery_rollout SET admission_enabled = true WHERE singleton"
+    )
+    await pool.execute(
         """
         INSERT INTO pending_actions (id, tool_name, tool_args, status, requested_at)
         VALUES ($1, 'send_telegram', $2, 'pending', $3)
