@@ -98,13 +98,24 @@ async def memory_get(
     pool: Pool,
     memory_type: str,
     memory_id: str,
+    *,
+    read_policy: _search.CatalogReadPolicy | None = None,
 ) -> dict[str, Any] | None:
     """Retrieve a specific memory by type and ID.
 
-    Converts the string memory_id to a UUID, delegates to _storage.get_memory(),
-    and serializes the result for JSON output.
+    Converts the string memory_id to a UUID, applies the server-held sensitivity
+    ceiling in the atomic storage retrieval, and serializes the result for JSON
+    output. A row above the ceiling is indistinguishable from an absent UUID and
+    does not receive a reference-metadata bump.
     """
-    result = await _storage.get_memory(pool, memory_type, uuid.UUID(memory_id))
+    if read_policy is None:
+        read_policy = await _search.load_catalog_read_policy(pool)
+    result = await _storage.get_memory(
+        pool,
+        memory_type,
+        uuid.UUID(memory_id),
+        allowed_sensitivities=read_policy.allowed_sensitivities,
+    )
     if result is None:
         return None
     return _serialize_row(result)

@@ -2463,17 +2463,22 @@ async def get_memory(
     pool: Pool,
     memory_type: str,
     memory_id: uuid.UUID,
+    *,
+    allowed_sensitivities: tuple[str, ...] | list[str],
 ) -> dict | None:
-    """Retrieve a single memory by type and UUID, bumping its reference count.
+    """Retrieve one authorized memory by type and UUID, bumping its reference count.
 
     Atomically increments ``reference_count`` by 1 and sets
-    ``last_referenced_at`` to now. Returns the full record as a dict,
-    or ``None`` if not found.
+    ``last_referenced_at`` to now for a row at an allowed sensitivity. Returns
+    the full record as a dict, or ``None`` if the row is absent or not
+    authorized for this server-held policy.
 
     Args:
         pool: asyncpg connection pool.
         memory_type: One of 'episode', 'fact', 'rule'.
         memory_id: The UUID of the memory item.
+        allowed_sensitivities: Persisted sensitivity values allowed by the
+            server-held read policy.
 
     Returns:
         A dict of the full record, or None if not found.
@@ -2488,13 +2493,16 @@ async def get_memory(
 
     table = _TYPE_TABLE[memory_type]
 
-    # Bump reference_count and last_referenced_at, returning the updated row
+    # Filter within the same UPDATE that bumps reference metadata: a denied UUID
+    # must not leak its existence or mutate its row before returning None.
     row = await pool.fetchrow(
         f"UPDATE {table} "
         f"SET reference_count = reference_count + 1, last_referenced_at = now() "
         f"WHERE id = $1 "
+        f"  AND COALESCE(sensitivity, '{_DEFAULT_CATALOG_SENSITIVITY}') = ANY($2) "
         f"RETURNING *",
         memory_id,
+        list(allowed_sensitivities),
     )
 
     if row is None:

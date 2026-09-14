@@ -1,7 +1,7 @@
 """Reclassify existing condition/symptom/medication facts as confidential.
 
 Revision ID: core_234
-Revises: core_231
+Revises: core_233
 Create Date: 2026-09-06 00:00:00.000000
 
 bu-ksij2: renumbered from core_222 to core_234 -- this migration's original
@@ -9,8 +9,10 @@ core_222/down_revision=core_221 collided with the already-merged
 core_222_entity_graph_edges_concierge_grant.py (PR #4029, bu-8cdl1.8), which
 also claimed revision core_222 off core_221, producing two heads on the core
 chain and failing `alembic upgrade core@head` fleet-wide (see CI run
-34023370720). The replacement follows core_231, the merged core-chain head at
-takeover time; core_232 and core_233 were already reserved by open PRs.
+34023370720). The replacement initially followed core_231, the merged
+core-chain head at takeover time. core_232 and core_233 subsequently landed,
+so this revision is serialized after core_233 rather than creating a second
+core head.
 
 bu-2jtfw.3: the health butler's condition_add/symptom_log/medication_add/
 medication_log_dose write paths never passed a ``sensitivity`` argument to
@@ -51,7 +53,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "core_234"
-down_revision = "core_231"
+down_revision = "core_233"
 branch_labels = None
 depends_on = None
 
