@@ -27,7 +27,7 @@
 
 - [x] 4.1 Validate the OpenSpec change strictly and run targeted memory,
   Health, and migration tests plus relevant static guards.
-- [ ] 4.2 Rewrite PR commit-message PII trailers, push the exact rebased head,
+- [x] 4.2 Rewrite PR commit-message PII trailers, push the exact rebased head,
   and close the two review threads with compliant terminal replies.
 - [ ] 4.3 Obtain fresh independent exact-head alignment review and hosted CI;
   do not merge in this review lane.
