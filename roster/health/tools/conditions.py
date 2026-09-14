@@ -9,7 +9,12 @@ from typing import Any
 
 import asyncpg
 
-from butlers.tools.health._helpers import _get_owner_entity_id, _normalize_end_date, _row_to_dict
+from butlers.tools.health._helpers import (
+    HEALTH_SENSITIVITY_CONFIDENTIAL,
+    _get_owner_entity_id,
+    _normalize_end_date,
+    _row_to_dict,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +111,7 @@ async def condition_add(
             scope="health",
             valid_at=None,  # property fact — supersedes previous for same name
             metadata=metadata,
+            sensitivity=HEALTH_SENSITIVITY_CONFIDENTIAL,
         )
     )["id"]
 
@@ -216,6 +222,7 @@ async def condition_update(
             scope="health",
             valid_at=None,  # property fact — supersedes the previous
             metadata=new_meta,
+            sensitivity=HEALTH_SENSITIVITY_CONFIDENTIAL,
         )
     )["id"]
 
@@ -310,6 +317,7 @@ async def symptom_log(
             entity_id=owner_entity_id,
             valid_at=valid_at,
             metadata=metadata,
+            sensitivity=HEALTH_SENSITIVITY_CONFIDENTIAL,
         )
     )["id"]
 
@@ -389,12 +397,27 @@ async def symptom_update(
     name = updates.get("name", row["content"])
     occurred_at = updates.get("occurred_at", row["valid_at"])
 
+    # Repair pre-classification symptom rows as part of the edit, and atomically
+    # retire any catalog entry written while the symptom was still ``normal``.
+    # Catalog search excludes rows with ``invalid_at`` set.
     await pool.execute(
-        "UPDATE facts SET content = $2, metadata = $3, valid_at = $4 WHERE id = $1",
+        "WITH updated AS ("
+        " UPDATE facts"
+        " SET content = $2, metadata = $3, valid_at = $4, sensitivity = $5"
+        " WHERE id = $1"
+        " RETURNING id"
+        ")"
+        " UPDATE public.memory_catalog AS mc"
+        " SET confidence = 0, invalid_at = now(), updated_at = now()"
+        " FROM updated"
+        " WHERE mc.source_schema = current_schema()"
+        " AND mc.source_table = 'facts'"
+        " AND mc.source_id = updated.id",
         sym_uuid,
         name,
         new_meta,
         occurred_at,
+        HEALTH_SENSITIVITY_CONFIDENTIAL,
     )
 
     cond_id = new_meta.get("condition_id")
