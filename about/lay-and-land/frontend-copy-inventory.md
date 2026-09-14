@@ -3781,6 +3781,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/components/sessions/PurposeLaneBadge.tsx`
 
+- Not recorded
 - Purpose lane: {}
 
 ## `frontend/src/components/sessions/SessionDetailDrawer.tsx`
@@ -4301,4 +4302,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3373*
+*Total strings: 3374*

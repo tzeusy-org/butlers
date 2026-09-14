@@ -5,7 +5,7 @@ export function PurposeLaneBadge({
 }: {
   lane: "standard" | "private_content" | null | undefined;
 }) {
-  if (!lane) return <span className="text-xs text-muted-foreground">—</span>;
+  if (!lane) return <span className="text-xs text-muted-foreground">Not recorded</span>;
   const isPrivate = lane === "private_content";
   const label = isPrivate ? "Private content" : "Standard";
   return (

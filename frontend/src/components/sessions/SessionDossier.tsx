@@ -209,7 +209,7 @@ function EffectivePromptReceipt({ sessionId }: { sessionId: string }) {
                 <td className="px-2 py-1.5">{entry.status}</td>
                 <td className="px-2 py-1.5 text-right tabular-nums">{entry.bytes}</td>
                 <td className="px-2 py-1.5 font-mono" title={entry.sha ?? undefined}>
-                  {entry.sha?.slice(0, 10) ?? "—"}
+                  {entry.sha?.slice(0, 10) ?? "Unavailable."}
                 </td>
               </tr>
             ))}
