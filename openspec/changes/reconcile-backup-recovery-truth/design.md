@@ -241,8 +241,10 @@ older pass, and no field comes from another row or a newer filesystem artifact.
 Within one row, cleanup failure is terminal; otherwise the first failed ordered
 stage selects its exact code. Artifact/manifest binding failures expose no
 artifact facts; pre-restore coverage failures expose bound facts with null
-scope; restore failure has null scope; credential or filtered-event failure has
-`application_data`; and ownership/ACL failure may use
+scope; restore failure has null scope; a filtered-event failure has
+`application_data`; a credential-count failure has `application_data` unless
+filtered-event verification already passed; and a later credential-count or
+ownership/ACL failure may use
 `application_data_with_filtered_events` only after that checker passed.
 
 No path, filename, schema/table name, owner/role, digest, credential metadata,
