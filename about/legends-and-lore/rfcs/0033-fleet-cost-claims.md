@@ -15,14 +15,16 @@ state in unconstrained fact metadata and inferred USD when currency was absent.
 `public.cost_claims` is a typed projection of a butler-owned source record.
 Currency is required and never inferred. The stable `(asserted_by, claim_key)`
 identity has at most one live row; amendments supersede rather than mutate the
-assertion. `public.cost_claim_resolutions` holds Finance's verdict and
-`public.cost_claim_events` is a trigger-written audit trail.
+assertion. `public.cost_claim_resolutions` holds Finance's verdict; a new assertion
+has no resolution until Finance evaluates it. `public.cost_claim_events` is a
+trigger-written audit trail.
 
 Forced row-level security derives authority from `current_user`:
 
 - an asserting runtime role may insert and lifecycle-update only its own claims;
 - assertion fields are immutable after insert;
 - only `butler_finance_rw` may write resolution verdicts;
+- runtime roles cannot delete assertions, resolutions, or events;
 - all runtime roles may read the public projection;
 - no role receives access to another butler's schema.
 
@@ -46,7 +48,9 @@ database transaction, then retracts a corresponding live claim.
 Finance deterministically reconciles active claims under one advisory lock. It
 matches direction, amount, counterparty, time window, and exact currency, excludes
 transfers, and binds a transaction to at most one claim in
-`finance.claim_match_bindings`. It never performs FX conversion.
+`finance.claim_match_bindings`. Each successful sweep atomically rebuilds those
+current bindings from current evidence before choosing claims, so stale evidence
+cannot reserve a transaction. It never performs FX conversion.
 
 Verdicts distinguish:
 

@@ -40,6 +40,8 @@ def _grant_if_role_exists(role: str) -> None:
                 EXECUTE 'GRANT SELECT, INSERT, UPDATE ON public.cost_claims TO "{role}"';
                 EXECUTE 'GRANT SELECT, INSERT, UPDATE ON public.cost_claim_resolutions TO "{role}"';
                 EXECUTE 'GRANT SELECT, INSERT ON public.cost_claim_events TO "{role}"';
+                EXECUTE 'REVOKE DELETE ON public.cost_claims, public.cost_claim_resolutions, '
+                        || 'public.cost_claim_events FROM "{role}"';
             END IF;
         EXCEPTION
             WHEN insufficient_privilege OR undefined_object OR undefined_table THEN NULL;
@@ -150,10 +152,6 @@ def upgrade() -> None:
         CREATE OR REPLACE FUNCTION public.cost_claim_audit_claim() RETURNS trigger
         LANGUAGE plpgsql AS $$
         BEGIN
-            IF TG_OP = 'INSERT' THEN
-                INSERT INTO public.cost_claim_resolutions (claim_id, decided_by)
-                VALUES (NEW.id, NEW.asserted_by_role);
-            END IF;
             INSERT INTO public.cost_claim_events
                 (claim_id, actor_role, action, old_state, new_state, idempotency_key)
             VALUES (
@@ -225,9 +223,23 @@ def upgrade() -> None:
         "DROP POLICY IF EXISTS cost_claim_resolutions_finance ON public.cost_claim_resolutions"
     )
     op.execute(
-        "CREATE POLICY cost_claim_resolutions_finance ON public.cost_claim_resolutions FOR ALL "
+        "DROP POLICY IF EXISTS cost_claim_resolutions_finance_insert "
+        "ON public.cost_claim_resolutions"
+    )
+    op.execute(
+        "DROP POLICY IF EXISTS cost_claim_resolutions_finance_update "
+        "ON public.cost_claim_resolutions"
+    )
+    op.execute(
+        "CREATE POLICY cost_claim_resolutions_finance_insert "
+        "ON public.cost_claim_resolutions FOR INSERT "
+        "WITH CHECK (current_user = 'butler_finance_rw')"
+    )
+    op.execute(
+        "CREATE POLICY cost_claim_resolutions_finance_update "
+        "ON public.cost_claim_resolutions FOR UPDATE "
         "USING (current_user = 'butler_finance_rw') "
-        "WITH CHECK (current_user = 'butler_finance_rw' OR pg_trigger_depth() > 0)"
+        "WITH CHECK (current_user = 'butler_finance_rw')"
     )
     op.execute("DROP POLICY IF EXISTS cost_claim_events_trigger_insert ON public.cost_claim_events")
     op.execute(

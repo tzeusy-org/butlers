@@ -147,7 +147,7 @@ def source_db_url(postgres_container) -> str:
     try:
         with engine.begin() as conn:
             conn.exec_driver_sql("SET ROLE butler_relationship_rw")
-            conn.exec_driver_sql(
+            claim_id = conn.exec_driver_sql(
                 """
                 INSERT INTO public.cost_claims
                     (claim_key, asserted_by, kind, direction, amount, currency,
@@ -155,7 +155,15 @@ def source_db_url(postgres_container) -> str:
                 VALUES
                     ('restore-contract-claim', 'relationship', 'receivable', 'inbound',
                      25, 'SGD', 'Restore fixture', 'Durable restore contract evidence')
+                RETURNING id
                 """
+            ).scalar_one()
+            conn.exec_driver_sql("SET ROLE butler_finance_rw")
+            conn.exec_driver_sql(
+                "INSERT INTO public.cost_claim_resolutions "
+                "(claim_id, state, unverifiable_reason) "
+                "VALUES (%s, 'unverifiable', 'no_account')",
+                (claim_id,),
             )
     finally:
         engine.dispose()

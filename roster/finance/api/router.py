@@ -564,7 +564,7 @@ async def list_cost_claims(
     total = (
         await pool.fetchval(
             "SELECT count(*) FROM public.cost_claims c "
-            "JOIN public.cost_claim_resolutions r ON r.claim_id = c.id " + condition,
+            "LEFT JOIN public.cost_claim_resolutions r ON r.claim_id = c.id " + condition,
             *args,
         )
         or 0
@@ -579,7 +579,7 @@ async def list_cost_claims(
                r.matched_currency, r.match_refs, r.unmatched_reason,
                r.unverifiable_reason, r.evidence_horizon_at, r.decided_at
         FROM public.cost_claims c
-        JOIN public.cost_claim_resolutions r ON r.claim_id = c.id
+        LEFT JOIN public.cost_claim_resolutions r ON r.claim_id = c.id
         """
         + condition
         + f" ORDER BY c.asserted_at DESC, c.id DESC OFFSET ${offset_pos} LIMIT ${offset_pos + 1}",
@@ -596,6 +596,7 @@ async def list_cost_claims(
                 "matched_amount": (
                     str(row["matched_amount"]) if row["matched_amount"] is not None else None
                 ),
+                "match_refs": row["match_refs"] or [],
                 "counterparty_entity_id": (
                     str(row["counterparty_entity_id"])
                     if row["counterparty_entity_id"] is not None

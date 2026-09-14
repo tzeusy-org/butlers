@@ -37,6 +37,8 @@ the active runtime role. Assertion fields SHALL be immutable after insertion.
 - **THEN** the insert SHALL succeed
 - **AND** a forged `asserted_by` or another role's update SHALL fail
 - **AND** only `butler_finance_rw` SHALL write a resolution
+- **AND** assertion SHALL NOT create a resolution before Finance evaluates it
+- **AND** no runtime role SHALL delete claims, resolutions, or their event history
 
 #### Scenario: Bootstrap is replayed
 
@@ -80,6 +82,12 @@ SHALL distinguish settled, ambiguous, unreconciled, and unverifiable outcomes.
 - **WHEN** exactly one eligible same-currency transaction matches
 - **THEN** Finance SHALL bind it to the claim and record settled or partially settled
 - **AND** the transaction SHALL NOT bind to a second claim
+
+#### Scenario: Previously matched evidence changes
+
+- **WHEN** a bound transaction ceases to match its claim
+- **THEN** Finance SHALL release the stale binding before evaluating active claims
+- **AND** a newly matching claim MAY bind that transaction in the same sweep
 
 ### Requirement: Public APIs project the same claim truth
 

@@ -45,7 +45,9 @@ async def _role_conn(db_url: str, role: str) -> asyncpg.Connection:
     return conn
 
 
-async def _claim(db_url: str, *, key: str, currency: str = "SGD") -> uuid.UUID:
+async def _claim(
+    db_url: str, *, key: str, currency: str = "SGD", counterparty: str = "Alex"
+) -> uuid.UUID:
     conn = await asyncpg.connect(db_url)
     try:
         await conn.execute("SET ROLE butler_relationship_rw")
@@ -55,11 +57,12 @@ async def _claim(db_url: str, *, key: str, currency: str = "SGD") -> uuid.UUID:
                 (claim_key, asserted_by, kind, direction, amount, currency,
                  counterparty_label, expected_on, description)
             VALUES ($1, 'relationship', 'receivable', 'inbound', 25, $2,
-                    'Alex', current_date, 'Lunch')
+                    $3, current_date, 'Lunch')
             RETURNING id
             """,
             key,
             currency,
+            counterparty,
         )
         return row["id"]
     finally:
@@ -171,6 +174,61 @@ async def test_two_claims_cannot_bind_one_transaction(db_url: str) -> None:
             == 0
         )
         assert await pool.fetchval("SELECT count(*) FROM claim_match_bindings") == 1
+    finally:
+        await pool.close()
+
+
+async def test_changed_transaction_evidence_releases_stale_binding_before_reconciliation(
+    db_url: str,
+) -> None:
+    first = await _claim(db_url, key=f"test:rebind-first:{uuid.uuid4()}", counterparty="Alex")
+    second = await _claim(db_url, key=f"test:rebind-second:{uuid.uuid4()}", counterparty="Blair")
+    pool = await _finance_pool(db_url)
+    try:
+        account_id = await pool.fetchval(
+            "INSERT INTO accounts (institution, type, currency, last_synced_at) "
+            "VALUES ('Test', 'checking', 'SGD', now()) RETURNING id"
+        )
+        transaction_id = await pool.fetchval(
+            """
+            INSERT INTO transactions
+                (account_id, posted_at, merchant, amount, currency, direction, category)
+            VALUES ($1, now(), 'Alex', 25, 'SGD', 'credit', 'income') RETURNING id
+            """,
+            account_id,
+        )
+        await reconcile_cost_claims(pool)
+        assert (
+            await pool.fetchval(
+                "SELECT claim_id FROM claim_match_bindings WHERE transaction_id = $1",
+                transaction_id,
+            )
+            == first
+        )
+
+        await pool.execute(
+            "UPDATE transactions SET merchant = 'Blair', updated_at = now() WHERE id = $1",
+            transaction_id,
+        )
+        await reconcile_cost_claims(pool)
+
+        resolutions = {
+            row["claim_id"]: (row["state"], row["unmatched_reason"])
+            for row in await pool.fetch(
+                "SELECT claim_id, state, unmatched_reason "
+                "FROM public.cost_claim_resolutions WHERE claim_id = ANY($1::uuid[])",
+                [first, second],
+            )
+        }
+        assert resolutions[first] == ("unreconciled", "no_candidate_in_window")
+        assert resolutions[second] == ("settled", None)
+        assert (
+            await pool.fetchval(
+                "SELECT claim_id FROM claim_match_bindings WHERE transaction_id = $1",
+                transaction_id,
+            )
+            == second
+        )
     finally:
         await pool.close()
 
@@ -288,6 +346,52 @@ async def test_fresh_feed_distinguishes_no_candidate_multiple_and_currency_misma
         assert (mismatch_row["state"], mismatch_row["unmatched_reason"]) == (
             "ambiguous",
             "currency_mismatch",
+        )
+    finally:
+        await pool.close()
+
+
+async def test_same_currency_candidate_with_cross_currency_candidate_is_ambiguous(
+    db_url: str,
+) -> None:
+    claim_id = await _claim(db_url, key=f"test:mixed-currency:{uuid.uuid4()}")
+    pool = await _finance_pool(db_url)
+    try:
+        account_id = await pool.fetchval(
+            "INSERT INTO accounts (institution, type, currency, last_synced_at) "
+            "VALUES ('Test', 'checking', 'SGD', now()) RETURNING id"
+        )
+        transaction_ids = await pool.fetch(
+            """
+            INSERT INTO transactions
+                (account_id, posted_at, merchant, amount, currency, direction, category)
+            VALUES
+                ($1, now(), 'Alex', 25, 'SGD', 'credit', 'income'),
+                ($1, now(), 'Alex Lunch', 25, 'USD', 'credit', 'income')
+            RETURNING id
+            """,
+            account_id,
+        )
+
+        await reconcile_cost_claims(pool)
+
+        row = await pool.fetchrow(
+            "SELECT state, unmatched_reason, match_refs "
+            "FROM public.cost_claim_resolutions WHERE claim_id = $1",
+            claim_id,
+        )
+        assert (row["state"], row["unmatched_reason"]) == (
+            "ambiguous",
+            "currency_mismatch",
+        )
+        assert set(json.loads(row["match_refs"])) == {
+            str(transaction["id"]) for transaction in transaction_ids
+        }
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM claim_match_bindings WHERE claim_id = $1", claim_id
+            )
+            == 0
         )
     finally:
         await pool.close()

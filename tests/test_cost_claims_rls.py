@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 import asyncpg
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.exc import ProgrammingError
 
 from alembic import command
 from butlers.core.cost_claims import assert_claim
@@ -67,10 +68,82 @@ def test_init_db_replay_twice_preserves_forced_rls(
                 raw.close()
         with engine.connect() as conn:
             forced = conn.exec_driver_sql(
-                "SELECT relforcerowsecurity FROM pg_class "
-                "WHERE oid = 'public.cost_claims'::regclass"
+                "SELECT relname, relforcerowsecurity FROM pg_class "
+                "WHERE oid IN ('public.cost_claims'::regclass, "
+                "'public.cost_claim_resolutions'::regclass, "
+                "'public.cost_claim_events'::regclass)"
+            ).all()
+            delete_policies = conn.exec_driver_sql(
+                "SELECT count(*) FROM pg_policy WHERE polrelid IN "
+                "('public.cost_claims'::regclass, "
+                "'public.cost_claim_resolutions'::regclass, "
+                "'public.cost_claim_events'::regclass) AND polcmd = 'd'"
             ).scalar_one()
-        assert forced is True
+        assert len(forced) == 3
+        assert all(row.relforcerowsecurity for row in forced)
+        assert delete_policies == 0
+
+        runtime_engine = create_engine(db_url)
+        claim_id = uuid.uuid4()
+        try:
+            with runtime_engine.begin() as conn:
+                conn.exec_driver_sql("SET ROLE butler_relationship_rw")
+                conn.exec_driver_sql(
+                    """
+                    INSERT INTO public.cost_claims
+                        (id, claim_key, asserted_by, kind, direction, amount, currency,
+                         counterparty_label, description)
+                    VALUES (%s, %s, 'relationship', 'receivable', 'inbound', 25, 'SGD',
+                            'Alex', 'Lunch')
+                    """,
+                    (claim_id, f"test:bootstrap-delete:{uuid.uuid4()}"),
+                )
+                conn.exec_driver_sql("SET ROLE butler_finance_rw")
+                conn.exec_driver_sql(
+                    "INSERT INTO public.cost_claim_resolutions (claim_id, state) "
+                    "VALUES (%s, 'settled')",
+                    (claim_id,),
+                )
+
+            protected_tables = {
+                "cost_claims": "id",
+                "cost_claim_resolutions": "claim_id",
+                "cost_claim_events": "claim_id",
+            }
+            for table, claim_column in protected_tables.items():
+                with runtime_engine.connect() as conn:
+                    conn.exec_driver_sql("SET ROLE butler_finance_rw")
+                    assert (
+                        conn.exec_driver_sql(
+                            "SELECT has_table_privilege(current_user, %s, 'DELETE')",
+                            (f"public.{table}",),
+                        ).scalar_one()
+                        is False
+                    )
+                    with pytest.raises(ProgrammingError, match="permission denied"):
+                        conn.exec_driver_sql(
+                            f"DELETE FROM public.{table} WHERE {claim_column} = %s",  # noqa: S608
+                            (claim_id,),
+                        )
+
+            with runtime_engine.connect() as conn:
+                conn.exec_driver_sql("SET ROLE butler_finance_rw")
+                assert (
+                    conn.exec_driver_sql(
+                        "SELECT count(*) FROM public.cost_claim_resolutions WHERE claim_id = %s",
+                        (claim_id,),
+                    ).scalar_one()
+                    == 1
+                )
+                assert (
+                    conn.exec_driver_sql(
+                        "SELECT count(*) FROM public.cost_claim_events WHERE claim_id = %s",
+                        (claim_id,),
+                    ).scalar_one()
+                    == 2
+                )
+        finally:
+            runtime_engine.dispose()
     finally:
         engine.dispose()
 
@@ -149,12 +222,19 @@ async def test_real_roles_split_assertion_and_resolution_authority(db_url: str) 
         )
 
         assert (
+            await finance.fetchval(
+                "SELECT count(*) FROM public.cost_claim_resolutions WHERE claim_id = $1", claim_id
+            )
+            == 0
+        )
+
+        assert (
             await finance.execute(
-                "UPDATE public.cost_claim_resolutions SET state = 'settled', decided_at = now(), "
-                "decided_by = current_user WHERE claim_id = $1",
+                "INSERT INTO public.cost_claim_resolutions (claim_id, state) "
+                "VALUES ($1, 'settled')",
                 claim_id,
             )
-            == "UPDATE 1"
+            == "INSERT 0 1"
         )
         assert (
             await finance.fetchval(
@@ -162,8 +242,8 @@ async def test_real_roles_split_assertion_and_resolution_authority(db_url: str) 
                 "WHERE claim_id = $1 AND action = 'resolved'",
                 claim_id,
             )
-            >= 2
-        )  # seeded resolution plus the direct UPDATE
+            == 1
+        )
     finally:
         await relationship.close()
         await finance.close()
@@ -223,7 +303,7 @@ async def test_concurrent_identical_assert_has_one_live_row(db_url: str) -> None
                 "SELECT state FROM public.cost_claim_resolutions WHERE claim_id = $1",
                 amended["id"],
             )
-            == "unreconciled"
+            is None
         )
     finally:
         await asyncio.gather(*(pool.close() for pool in pools))

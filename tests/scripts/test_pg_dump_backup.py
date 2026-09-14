@@ -349,6 +349,13 @@ def test_script_produces_a_verifiable_artifact(
                 RETURNING id
                 """
             ).scalar_one()
+            conn.exec_driver_sql("SET ROLE butler_finance_rw")
+            conn.exec_driver_sql(
+                "INSERT INTO public.cost_claim_resolutions "
+                "(claim_id, state, unverifiable_reason) "
+                "VALUES (%s, 'unverifiable', 'no_account')",
+                (claim_id,),
+            )
     finally:
         engine.dispose()
 

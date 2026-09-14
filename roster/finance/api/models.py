@@ -112,7 +112,7 @@ class CostClaimModel(BaseModel):
     superseded_at: str | None = None
     retracted_at: str | None = None
     retraction_reason: str | None = None
-    state: str
+    state: str | None = None
     matched_amount: str | None = None
     matched_currency: str | None = None
     match_refs: list[str] = []

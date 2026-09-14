@@ -68,33 +68,27 @@ async def reconcile_cost_claims(pool: asyncpg.Pool) -> dict[str, Any]:
         if not acquired:
             return {"acquired": False, "processed": 0, "outcomes": {}}
         try:
-            # An amended/retracted assertion frees its old transaction. The
-            # historical resolution remains attached to the old claim row.
-            await conn.execute(
-                """
-                DELETE FROM claim_match_bindings b
-                USING public.cost_claims c
-                WHERE c.id = b.claim_id
-                  AND (c.superseded_at IS NOT NULL OR c.retracted_at IS NOT NULL)
-                """
-            )
-            claims = await conn.fetch(
-                """
-                SELECT c.*,
-                       COALESCE(NULLIF(btrim(c.counterparty_label), ''), e.canonical_name)
-                           AS effective_counterparty_label
-                FROM public.cost_claims c
-                LEFT JOIN public.entities e ON e.id = c.counterparty_entity_id
-                WHERE c.superseded_at IS NULL AND c.retracted_at IS NULL
-                ORDER BY c.asserted_at, c.id
-                """
-            )
             outcomes: dict[str, int] = {}
-            for record in claims:
-                claim = dict(record)
-                async with conn.transaction():
+            async with conn.transaction():
+                # Bindings describe only the current sweep's evidence. Rebuild
+                # them atomically so changed evidence cannot leave a stale
+                # transaction reserved while another claim is evaluated.
+                await conn.execute("DELETE FROM claim_match_bindings")
+                claims = await conn.fetch(
+                    """
+                    SELECT c.*,
+                           COALESCE(NULLIF(btrim(c.counterparty_label), ''), e.canonical_name)
+                               AS effective_counterparty_label
+                    FROM public.cost_claims c
+                    LEFT JOIN public.entities e ON e.id = c.counterparty_entity_id
+                    WHERE c.superseded_at IS NULL AND c.retracted_at IS NULL
+                    ORDER BY c.asserted_at, c.id
+                    """
+                )
+                for record in claims:
+                    claim = dict(record)
                     outcome = await _reconcile_one(conn, claim)
-                outcomes[outcome] = outcomes.get(outcome, 0) + 1
+                    outcomes[outcome] = outcomes.get(outcome, 0) + 1
             return {"acquired": True, "processed": len(claims), "outcomes": outcomes}
         finally:
             await conn.execute("SELECT pg_advisory_unlock(hashtextextended($1, 0))", _LOCK_NAME)
@@ -170,7 +164,7 @@ async def _reconcile_one(conn: asyncpg.Connection, claim: dict[str, Any]) -> str
         if payee_match and amount_match:
             plausible.append(row)
     same_currency = [row for row in plausible if row["currency"] == currency]
-    if not same_currency and plausible:
+    if any(row["currency"] != currency for row in plausible):
         await _write_resolution(
             conn,
             claim["id"],
