@@ -1211,6 +1211,7 @@ class MemoryModule(Module):
               "limit": 10
             }
             """
+            read_policy = await module._catalog_read_policy()
             return await _reading.memory_search(
                 module._get_pool(),
                 module._get_embedding_engine(),
@@ -1221,6 +1222,7 @@ class MemoryModule(Module):
                 limit=limit,
                 min_confidence=min_confidence,
                 filters=filters,
+                read_policy=read_policy,
             )
 
         @_tool("core")
@@ -1251,6 +1253,7 @@ class MemoryModule(Module):
             ] = None,
         ) -> list[dict[str, Any]]:
             """High-level composite-scored retrieval of relevant facts and rules."""
+            read_policy = await module._catalog_read_policy()
             return await _reading.memory_recall(
                 module._get_pool(),
                 module._get_embedding_engine(),
@@ -1259,6 +1262,7 @@ class MemoryModule(Module):
                 limit=limit,
                 filters=filters,
                 request_context=request_context,
+                read_policy=read_policy,
             )
 
         @_tool("core")
