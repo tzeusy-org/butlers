@@ -383,8 +383,19 @@ class _SuccessAdapter(RuntimeAdapter):
 
 def _catalog_result(
     model: str = "test-model",
+    runtime_type: str = "codex",
 ) -> tuple[str, str, list, uuid.UUID, int, str]:
-    return ("codex", model, [], _CATALOG_ID, 300, "workhorse")
+    return (runtime_type, model, [], _CATALOG_ID, 300, "workhorse")
+
+
+def _local_ollama_provider_config() -> dict[str, dict[str, Any]]:
+    return {
+        "ollama": {
+            "npm": "@ai-sdk/openai-compatible",
+            "options": {"baseURL": "http://127.0.0.1:11434/v1"},
+            "models": {"test-model": {"name": "test-model"}},
+        }
+    }
 
 
 def _make_spawner(
@@ -768,7 +779,7 @@ class TestSpawnerUndeliveredReplyAccounting:
             patch(
                 "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=_catalog_result(model="ollama/test-model"),
+                return_value=_catalog_result(model="ollama/test-model", runtime_type="opencode"),
             ),
             patch(
                 "butlers.core.spawner.check_token_quota",
@@ -785,9 +796,12 @@ class TestSpawnerUndeliveredReplyAccounting:
                     },
                 )(),
             ),
-            patch.object(
-                spawner, "_resolve_provider_config", new_callable=AsyncMock, return_value=None
+            patch(
+                "butlers.core.spawner_provider.resolve_provider_config",
+                new_callable=AsyncMock,
+                return_value=_local_ollama_provider_config(),
             ),
+            patch.object(spawner, "_get_or_create_adapter", return_value=adapter),
         ):
             mock_sc.return_value = _SESSION_ID
             result = await spawner.trigger("Did I miss the Dr Ng followup?", "route")
@@ -821,7 +835,7 @@ class TestSpawnerUndeliveredReplyAccounting:
             patch(
                 "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=_catalog_result(model="ollama/test-model"),
+                return_value=_catalog_result(model="ollama/test-model", runtime_type="opencode"),
             ),
             patch(
                 "butlers.core.spawner.check_token_quota",
@@ -838,9 +852,12 @@ class TestSpawnerUndeliveredReplyAccounting:
                     },
                 )(),
             ),
-            patch.object(
-                spawner, "_resolve_provider_config", new_callable=AsyncMock, return_value=None
+            patch(
+                "butlers.core.spawner_provider.resolve_provider_config",
+                new_callable=AsyncMock,
+                return_value=_local_ollama_provider_config(),
             ),
+            patch.object(spawner, "_get_or_create_adapter", return_value=adapter),
         ):
             mock_sc.return_value = _SESSION_ID
             result = await spawner.trigger("Did I miss the Dr Ng followup?", "route")

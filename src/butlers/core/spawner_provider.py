@@ -40,7 +40,7 @@ async def resolve_provider_config(
     ``public.provider_config`` for the Ollama provider's configured base
     URL and returns a config dict that OpenCode can consume, including the
     ``npm`` adapter package, ``/v1``-suffixed base URL, and explicit model
-    registration.  See https://docs.ollama.com/integrations/opencode
+    registration. See the Ollama OpenCode integration documentation.
 
     Returns ``None`` when no provider is configured, the model doesn't
     use a provider prefix, or no DB pool is available.
