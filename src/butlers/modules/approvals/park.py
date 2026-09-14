@@ -2,10 +2,10 @@
 
 Every ordinary ``status='pending'`` producer enters through
 :func:`park_pending_action`. A schema-local server-held rollout row selects
-exactly one path: the default-off path commits the action and retains the
-legacy best-effort push, while the enabled path atomically commits the action,
-immutable delivery-intent root, RFC 0021 burst admission, and initial
-presentation/cohort records. The enabled path never writes legacy emissions.
+exactly one path: the default-off path commits only the established pending
+action, while the enabled path atomically commits the action, immutable
+delivery-intent root, RFC 0021 burst admission, and initial presentation/cohort
+records. Legacy emission rows remain read-only in both paths.
 
 Prepared insight actions retain their explicitly non-notifying path. They are
 surfaced by the insight digest and are not approval-delivery recovery subjects.
@@ -25,7 +25,7 @@ from butlers.core.approvals_policy import (
     approval_push_deliver_at,
     get_approvals_policy_quiet_hours,
 )
-from butlers.modules.approvals.notifications import ApprovalPushRuntime, emit_approval_push
+from butlers.modules.approvals.notifications import ApprovalPushRuntime
 from butlers.modules.approvals.rollout import read_approval_delivery_rollout
 
 AdmissionMode = Literal["single", "cohort_anchor", "collapsed"]
@@ -191,7 +191,7 @@ async def _existing_pending_action(
 
 
 async def _park_without_delivery(connection: Any, request: ParkRequest) -> ParkAdmission:
-    """Preserve pending-action and legacy notification behavior before cutover."""
+    """Preserve pending-action behavior without any notification writer before cutover."""
     await connection.execute(
         "SELECT pg_advisory_xact_lock(hashtext('approval-delivery:' || current_schema()))"
     )
@@ -506,10 +506,11 @@ async def park_pending_action(
 ) -> ParkAdmission:
     """Park one action through the server-held additive rollout boundary.
 
-    Disabled schemas retain the established best-effort legacy push after the
-    pending row commits. Enabled schemas atomically create durable recovery
-    state and never write or dispatch through that legacy path.
+    Disabled schemas commit only the established pending action. Enabled
+    schemas atomically create durable recovery state. Neither path writes or
+    dispatches through the read-only legacy emission path.
     """
+    del approval_push_runtime
     request = ParkRequest(
         action_id=action_id,
         tool_name=tool_name,
@@ -531,25 +532,7 @@ async def park_pending_action(
             rollout = await read_approval_delivery_rollout(connection, lock=True)
             if rollout.admission_enabled:
                 return await _admit(connection, request)
-            admission = await _park_without_delivery(connection, request)
-
-    if not admission.duplicate and approval_push_runtime is not None:
-        await emit_approval_push(
-            pool=pool,
-            action={
-                "id": admission.action_id,
-                "tool_name": request.tool_name,
-                "requested_at": request.requested_at,
-                "expires_at": request.expires_at,
-                "why": request.why,
-                "blast_radius": request.blast_radius,
-                "reversibility": request.reversibility,
-            },
-            origin_butler=request.origin_butler,
-            runtime=approval_push_runtime,
-            now=request.requested_at,
-        )
-    return admission
+            return await _park_without_delivery(connection, request)
 
 
 async def park_prepared_action(

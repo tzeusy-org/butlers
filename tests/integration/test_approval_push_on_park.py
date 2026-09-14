@@ -275,8 +275,8 @@ async def test_disabled_rollout_parks_without_recovery_rows_or_dual_write(
         "approval_delivery_attempts",
     ):
         assert await disabled_rollout_pool.fetchval(f"SELECT count(*) FROM {table}") == 0
-    assert await disabled_rollout_pool.fetchval("SELECT count(*) FROM approval_push_emissions") == 1
-    dispatch.assert_awaited_once()
+    assert await disabled_rollout_pool.fetchval("SELECT count(*) FROM approval_push_emissions") == 0
+    dispatch.assert_not_awaited()
 
 
 async def test_park_deduplication_key_blocks_owner_decisions_and_allows_expiry(

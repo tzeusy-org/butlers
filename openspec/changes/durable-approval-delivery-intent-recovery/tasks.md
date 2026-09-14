@@ -54,7 +54,7 @@
 ## 7. Additive rollout and rollback gate
 
 - [x] 7.1 Ship additive schema/read compatibility and metrics with new writers/workers disabled; verify legacy rows are not backfilled, replayed, or dual-sent.
-  Evidence: the schema-local rollout row defaults both writer admission and worker startup to disabled; real-PostgreSQL coverage passes for default, absent, and rejected-invalid configuration with a durable pending action, zero intent/presentation/cohort/membership/attempt rows, one legacy emission only, and no duplicate emission under concurrent semantic-key parks. Daemon lifecycle coverage passes with no worker task when the server-held worker flag is disabled or unreadable.
+  Evidence: the schema-local rollout row defaults both writer admission and worker startup to disabled; real-PostgreSQL coverage passes for default, absent, and rejected-invalid configuration with a durable pending action, zero intent/presentation/cohort/membership/attempt or legacy-emission rows, and no duplicate action under concurrent semantic-key parks. Daemon lifecycle coverage passes with no worker task when the server-held worker flag is disabled or unreadable.
 - [ ] 7.2 Execute an owner-authorized staging/canary drill using synthetic newly parked actions only, including worker restart, provider ambiguity, quiet-hours, and decision-race reconciliation.
 - [ ] 7.3 Enable new writers/workers schema-by-schema only after the canary evidence and dashboard truth review; monitor stuck/ambiguous/oldest-due metrics.
 - [ ] 7.4 Document binary rollback as additive and block schema downgrade/drop while any root/presentation/cohort/attempt/audit data exists; do not delete, replay, approve, execute, or backfill historical actions.
