@@ -480,7 +480,7 @@ async def get_instance_facts() -> ApiResponse[InstanceFacts]:
 #: origin/main" for the Deployment card: the baked ``butlers-app`` image
 #: never includes a ``.git`` checkout (see Dockerfile), so the running
 #: dashboard-api process cannot run `git` against its own history.
-_GITHUB_REPO = "Tzeusy/butlers"
+_GITHUB_REPO = "tzeusy-org/butlers"
 _GITHUB_COMPARE_TIMEOUT_S = 5.0
 
 #: Repeated /system page loads must not hammer GitHub's anonymous rate limit

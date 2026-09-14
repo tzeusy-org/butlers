@@ -69,6 +69,7 @@ tests/migrations/test_model_dispatch_attempts_outcome_index.py
 tests/migrations/test_owner_conditions_migration.py
 tests/migrations/test_priority_contacts_cascade_audit.py
 tests/migrations/test_qa_investigation_events_migration.py
+tests/migrations/test_qa_repo_org_rename_migration.py
 tests/migrations/test_retire_legacy_permission_seeds_migration.py
 tests/migrations/test_shared_pool_startup_lock.py
 tests/migrations/test_tombstone_memory_calendar_episodes_migration.py

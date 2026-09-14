@@ -121,6 +121,7 @@ tests/core/healing/test_anonymizer.py
 tests/core/healing/test_label_sanitization_gate.py
 tests/core/qa/test_butler_reports.py
 tests/core/qa/test_journal.py
+tests/core/qa/test_repo_clone.py
 tests/core/qa/test_repo_whitelist.py
 tests/core/qa/test_retention.py
 tests/core/qa/test_session_records.py
