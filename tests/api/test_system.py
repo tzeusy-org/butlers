@@ -377,8 +377,11 @@ class TestCommitsBehindMain:
         assert github.calls == []
 
     async def test_returns_ahead_by_on_success(self, monkeypatch):
-        _install_fake_github(monkeypatch, payload={"ahead_by": 7})
+        github = _install_fake_github(monkeypatch, payload={"ahead_by": 7})
         assert await _commits_behind_main("deadbeef") == 7
+        assert github.calls == [
+            "https://api.github.com/repos/tzeusy-org/butlers/compare/deadbeef...main"
+        ]
 
     async def test_returns_none_on_non_200(self, monkeypatch):
         _install_fake_github(monkeypatch, status_code=404, payload={})

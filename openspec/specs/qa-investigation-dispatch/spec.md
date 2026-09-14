@@ -89,7 +89,7 @@ Investigation agents SHALL operate in a sandboxed environment with minimal crede
 #### Scenario: GitHub credentials from secrets store
 - **WHEN** the QA staffer needs to create a PR
 - **THEN** it retrieves the GitHub token from the system secrets store at key `BUTLERS_QA_GH_TOKEN` (managed via the dashboard at /secrets)
-- **AND** the token is scoped to: branch push + PR creation + PR labeling on `Tzeusy/butlers`
+- **AND** the token is scoped to: branch push + PR creation + PR labeling on `tzeusy-org/butlers`
 - **AND** the token SHALL NOT have merge or approve permissions — humans remain in the merge seat
 - **AND** if the secret is not found, the investigation completes but transitions to `failed` with reason `"no_gh_token"`
 
