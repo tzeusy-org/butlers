@@ -9,7 +9,7 @@ regurgitation condition fact was catalog-searchable by any caller at the
 default read ceiling.
 
 The write paths are fixed going forward (see
-``tests/tools/test_health_condition_sensitivity.py``). This migration is the
+``roster/health/tests/test_tools.py``). This migration is the
 backfill: reclassify already-written canonical facts as ``confidential`` and
 purge any already-cataloged rows sourced from them.
 
