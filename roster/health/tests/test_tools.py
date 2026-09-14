@@ -863,15 +863,36 @@ async def test_symptom_search_no_matches(pool):
 
 
 async def test_symptom_update_edits_in_place(pool):
-    """symptom_update edits the existing temporal fact in place (same id)."""
+    """symptom_update edits in place and repairs legacy catalog exposure."""
     from butlers.tools.health import symptom_log, symptom_search, symptom_update
 
     sym = await symptom_log(pool, "UpdSym", 4, notes="mild")
+    source_schema = await pool.fetchval("SELECT current_schema()")
+    await pool.execute("UPDATE facts SET sensitivity = 'normal' WHERE id = $1", sym["id"])
+    await pool.execute(
+        "INSERT INTO public.memory_catalog"
+        " (source_schema, source_table, source_id, summary, sensitivity)"
+        " VALUES ($1, 'facts', $2, 'legacy symptom summary', 'normal')",
+        source_schema,
+        sym["id"],
+    )
+
     updated = await symptom_update(pool, str(sym["id"]), severity=8, notes="worse now")
     # Same identity — temporal facts are not superseded.
     assert updated["id"] == sym["id"]
     assert updated["severity"] == 8
     assert updated["notes"] == "worse now"
+
+    sensitivity = await pool.fetchval("SELECT sensitivity FROM facts WHERE id = $1", sym["id"])
+    assert sensitivity == "confidential"
+    catalog_visible = await pool.fetchval(
+        "SELECT count(*) FROM public.memory_catalog"
+        " WHERE source_schema = $1 AND source_table = 'facts' AND source_id = $2"
+        " AND invalid_at IS NULL",
+        source_schema,
+        sym["id"],
+    )
+    assert catalog_visible == 0
 
     # Exactly one active entry remains (no duplicate coexisting symptom).
     matches = [s for s in await symptom_search(pool, name="UpdSym")]
