@@ -166,6 +166,7 @@ export {
   getRoutingLog,
   setButlerEligibility,
   getSession,
+  getSessionPrompt,
   getSessions,
   getSessionAggregate,
   getSymptoms,
@@ -463,6 +464,7 @@ export type {
   SessionAggregateButler,
   SessionAggregateTriggerSource,
   SessionDetail,
+  SessionPromptReceipt,
   SessionParams,
   SessionSummary,
   KeysetMeta,
@@ -1214,6 +1216,7 @@ export type {
 
 export {
   getButlerPrompt,
+  getButlerEffectivePrompt,
   updateButlerPrompt,
   getButlerPromptHistory,
   getButlerTools,
@@ -1223,6 +1226,7 @@ export {
 
 export type {
   PromptVersion,
+  ButlerEffectivePrompt,
   PromptUpdateRequest,
   ButlerTool,
   MemoryAccess,

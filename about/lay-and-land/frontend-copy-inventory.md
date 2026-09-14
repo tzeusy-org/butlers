@@ -996,6 +996,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - No session data available.
 - Butler
 - Model
+- Purpose
 - Tokens
 - Cost
 - When
@@ -1022,7 +1023,6 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - any tier
 - Trigger
 - any trigger
-- Purpose
 - any purpose
 - Action (set at least one effect)
 - Route to model
@@ -1570,7 +1570,8 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 - edit in models →
 - resolved ·
-- No system prompt configured.
+- Composed prompt unavailable.
+- Effective prompt unavailable.
 - edit prompt →
 - Could not load both versions to diff.
 - No tool grants configured for this butler.
@@ -3778,6 +3779,11 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - credential value
 - human-readable label
 
+## `frontend/src/components/sessions/PurposeLaneBadge.tsx`
+
+- Not recorded
+- Purpose lane: {}
+
 ## `frontend/src/components/sessions/SessionDetailDrawer.tsx`
 
 - Session detail unavailable
@@ -3787,6 +3793,12 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/components/sessions/SessionDossier.tsx`
 
+- Loading effective prompt receipt…
+- Retry
+- Source
+- State
+- Bytes
+- SHA
 - Metadata
 - Prompt
 - Result
@@ -3800,6 +3812,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Copy to clipboard
 - Butler
 - Trigger
+- Purpose
 - Started
 - Completed
 - Elapsed
@@ -3819,6 +3832,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Time
 - Butler
 - Trigger
+- Purpose
 - Request ID
 - Prompt
 - Model
@@ -4288,4 +4302,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3363*
+*Total strings: 3374*

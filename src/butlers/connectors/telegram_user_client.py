@@ -68,7 +68,10 @@ from butlers.connectors.discretion import (
     DiscretionEvaluator,
     classify_ignore_kind,
 )
-from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
+from butlers.connectors.discretion_dispatcher import (
+    PURPOSE_LANE_PRIVATE_CONTENT,
+    DiscretionDispatcher,
+)
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
@@ -391,6 +394,7 @@ class TelegramUserClientConnector:
             DiscretionDispatcher(
                 pool=db_pool,
                 codex_auth_authority=codex_auth_authority,
+                purpose_lane=PURPOSE_LANE_PRIVATE_CONTENT,
             )
             if db_pool is not None
             else None

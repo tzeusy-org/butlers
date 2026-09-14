@@ -312,6 +312,7 @@ function setHooks({
           output_tokens: 2500,
           model: "claude-sonnet",
           started_at: "2026-05-17T10:00:00Z",
+          purpose_lane: "private_content",
         },
       ],
       meta: {},
@@ -1552,6 +1553,7 @@ describe("SpendPage — why (evidence layer)", () => {
     expect(section.textContent).toContain("Most Expensive Sessions");
     expect(section.textContent).toContain("general");
     expect(section.textContent).toContain("$1.23");
+    expect(section.textContent).toContain("Private content");
   });
 
   it("footnotes dropped butlers alongside a populated Top Sessions table (bu-jad4j.3)", async () => {

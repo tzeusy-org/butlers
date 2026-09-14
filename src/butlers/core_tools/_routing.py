@@ -831,6 +831,9 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
             if isinstance(parsed_route.input.context.get("_trusted_approval_recovery"), dict):
                 _route_internal_context["approval_recovery"] = True
         _content_blind_route = bool(_route_internal_context)
+        _route_internal_context["request_context"] = {
+            "source_channel": parsed_route.request_context.source_channel
+        }
         _observability_request_id = (
             opaque_route_ref(route_request_id) if _content_blind_route else route_request_id
         )
@@ -1095,7 +1098,10 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 route_metrics.record_route_process_latency(process_latency_ms)
 
                 _tracer = trace.get_tracer("butlers")
-                _content_blind_process = bool(_internal_context)
+                _content_blind_process = (
+                    "conceptual_message" in _internal_context
+                    or _internal_context.get("approval_recovery") is True
+                )
                 _observability_inbox_id = (
                     opaque_route_ref(_inbox_id) if _content_blind_process else _inbox_id
                 )

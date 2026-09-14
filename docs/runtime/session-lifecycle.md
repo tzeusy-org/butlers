@@ -24,6 +24,15 @@ A session represents one ephemeral LLM CLI invocation. The session log (`src/but
 | `ingestion_event_id` | Connector | UUID of the ingestion event (NULL for non-connector triggers) |
 | `complexity` | Trigger/scheduler | Complexity tier used for model selection |
 | `resolution_source` | Model routing | How the model was resolved (`"catalog"` or `"toml_fallback"`) |
+| `purpose_lane` | Trusted routing/connector context | Closed `standard` or `private_content` dispatch purpose; never inferred from prompt text |
+| `effective_prompt` | Prompt composer | Exact effective system-prompt bytes supplied to the adapter; separate from caller `prompt` |
+| `prompt_digest` | Prompt composer | Lowercase SHA-256 of `effective_prompt` UTF-8 bytes |
+| `prompt_provenance` | Prompt composer | Ordered source/status/byte-count/digest metadata without source content or absolute paths |
+
+The effective-system-prompt receipt is immutable creation evidence. It is returned only by the
+authenticated `GET /api/sessions/{id}/prompt` door after digest and byte-count verification; list,
+aggregate, ordinary detail, audit, metric, and telemetry surfaces do not copy it. Legacy rows may
+lack a receipt and are reported as unavailable rather than reconstructed from current files.
 
 The `trigger_source` field is validated against a fixed set: `tick`, `external`, `trigger`, `route`, `healing`, or `schedule:<task-name>`. The `request_id` parameter is required and must not be `None`.
 

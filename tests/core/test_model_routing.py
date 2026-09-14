@@ -31,7 +31,9 @@ from butlers.core.model_routing import (
     BREAKER_OPEN_RULE_OVERRIDE_REASON_PREFIX,
     TIER_FALLTHROUGH_ORDER,
     Complexity,
+    PrivateContentModelUnavailable,
     RoutingEvidence,
+    SpendRoutingResult,
     TierQuotaExhausted,
     _check_deprecated_tier,
     _parse_max_cost_per_call,
@@ -40,10 +42,12 @@ from butlers.core.model_routing import (
     clear_routing_decision_cache,
     coerce_complexity_tier,
     compute_routing_score,
+    enforce_private_content_selection,
     get_breaker_state,
     get_breaker_states,
     get_routing_evidence,
     get_routing_scores,
+    is_current_spend_rule_audited,
     next_same_tier_candidate,
     resolve_model,
     resolve_model_with_effective_tier,
@@ -1206,6 +1210,97 @@ async def test_next_same_tier_returns_matching_entry(pool: asyncpg.Pool) -> None
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
+async def test_next_same_tier_local_only_skips_higher_priority_remote(pool: asyncpg.Pool) -> None:
+    """The private selector requires the OpenCode runtime and Ollama namespace."""
+    await _insert_catalog_entry(
+        pool,
+        alias="nst-private-remote",
+        model_id="remote-frontier",
+        complexity_tier="specialty",
+        priority=100,
+    )
+    local_id = await _insert_catalog_entry(
+        pool,
+        alias="nst-private-local",
+        runtime_type="opencode",
+        model_id="ollama/qwen-synthetic:9b",
+        complexity_tier="specialty",
+        priority=1,
+    )
+
+    result = await next_same_tier_candidate(
+        pool,
+        "general",
+        "specialty",
+        [],
+        local_only=True,
+    )
+
+    assert result is not None
+    assert result[1] == "ollama/qwen-synthetic:9b"
+    assert str(result[3]) == local_id
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("selection", "provider_row"),
+    [
+        (
+            ("api", "ollama/qwen-synthetic:9b", [], uuid.uuid4(), 30),
+            {"config": {"base_url": "http://ollama:11434"}},
+        ),
+        (
+            ("opencode", "ollama/qwen-synthetic:9b", [], uuid.uuid4(), 30),
+            {"config": {"base_url": "https://remote.example.invalid"}},
+        ),
+    ],
+)
+async def test_private_selection_refuses_unproved_runtime_or_endpoint(
+    selection, provider_row
+) -> None:
+    """An Ollama-shaped name cannot establish local execution by itself."""
+    pool = AsyncMock()
+    pool.fetchrow.side_effect = [None] if selection[0] != "opencode" else [provider_row, None]
+    routing_result = SpendRoutingResult(resolved=selection)
+
+    with pytest.raises(PrivateContentModelUnavailable, match="proven local model unavailable"):
+        await enforce_private_content_selection(
+            pool,
+            butler_name="general",
+            effective_tier="specialty",
+            routing_result=routing_result,
+        )
+
+
+@pytest.mark.unit
+async def test_private_selection_captures_owner_local_provider_config() -> None:
+    """The gate returns the exact RFC 0008 Ollama origin for adapter setup."""
+    selection = ("opencode", "ollama/qwen-synthetic:9b", [], uuid.uuid4(), 30)
+    pool = AsyncMock()
+    pool.fetchrow.return_value = {"config": {"base_url": "http://ollama:11434"}}
+
+    selected, audited, provider_config, local = await enforce_private_content_selection(
+        pool,
+        butler_name="general",
+        effective_tier="specialty",
+        routing_result=SpendRoutingResult(resolved=selection),
+    )
+
+    assert selected == selection
+    assert audited is False
+    assert local is True
+    assert provider_config == {
+        "ollama": {
+            "npm": "@ai-sdk/openai-compatible",
+            "options": {"baseURL": "http://ollama:11434/v1"},
+            "models": {"qwen-synthetic:9b": {"name": "qwen-synthetic:9b"}},
+        }
+    }
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
 async def test_next_same_tier_excludes_attempted_id(pool: asyncpg.Pool) -> None:
     """Excludes already-attempted catalog entry IDs."""
     entry_id = await _insert_catalog_entry(
@@ -1825,6 +1920,102 @@ async def test_spend_rule_purpose_condition_at_dispatch(pool: asyncpg.Pool) -> N
     )
     assert routed_discretion.resolved[1] == "cheap-model"
     assert str(routed_discretion.resolved[3]) == cheap_id
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_private_content_remote_rule_requires_current_audit(pool: asyncpg.Pool) -> None:
+    """Only an audit at least as new as the explicit rule revision authorizes remote use."""
+    await pool.execute("TRUNCATE public.spend_rules")
+    await _insert_catalog_entry(
+        pool,
+        alias="private-base",
+        model_id="ollama/private-local",
+        complexity_tier="specialty",
+        priority=100,
+    )
+    remote_id = await _insert_catalog_entry(
+        pool,
+        alias="private-remote",
+        model_id="remote-private-override",
+        complexity_tier="specialty",
+        priority=1,
+    )
+    resolved = await _resolved_tuple(pool, "general", Complexity.SPECIALTY)
+    rule = await pool.fetchrow(
+        """
+        INSERT INTO public.spend_rules (position, condition, action)
+        VALUES (0, '{"purpose":"private_content"}'::jsonb,
+                '{"model":"remote-private-override"}'::jsonb)
+        RETURNING id, updated_at
+        """
+    )
+
+    result = await apply_spend_routing_rules(
+        pool,
+        "general",
+        Complexity.SPECIALTY,
+        resolved,
+        trigger_source="private_content",
+    )
+
+    assert result.resolved[1] == "remote-private-override"
+    assert str(result.resolved[3]) == remote_id
+    assert result.explicit_private_content is True
+    await pool.execute(
+        """
+        INSERT INTO public.audit_log (actor, action, target, ts, result)
+        VALUES ('owner', 'spend.rule.create', $1, $2, NULL)
+        """,
+        f"rule:{rule['id']}",
+        rule["updated_at"],
+    )
+    assert await is_current_spend_rule_audited(pool, result) is False
+
+    await pool.execute(
+        """
+        INSERT INTO public.audit_log (actor, action, target, ts, result)
+        VALUES ('not-owner', 'spend.rule.create', $1, $2, 'success')
+        """,
+        f"rule:{rule['id']}",
+        rule["updated_at"],
+    )
+    assert await is_current_spend_rule_audited(pool, result) is False
+
+    await pool.execute(
+        """
+        UPDATE public.audit_log
+           SET result = 'error'
+         WHERE target = $1 AND actor = 'owner'
+        """,
+        f"rule:{rule['id']}",
+    )
+    assert await is_current_spend_rule_audited(pool, result) is False
+
+    await pool.execute(
+        """
+        UPDATE public.audit_log
+           SET result = 'success'
+         WHERE target = $1 AND actor = 'owner'
+        """,
+        f"rule:{rule['id']}",
+    )
+    assert await is_current_spend_rule_audited(pool, result) is True
+
+    await pool.execute(
+        """
+        UPDATE public.spend_rules
+           SET action = '{"model":"different-target"}'::jsonb,
+               updated_at = updated_at + interval '1 second'
+         WHERE id = $1
+        """,
+        rule["id"],
+    )
+    assert await is_current_spend_rule_audited(pool, result) is False
+
+    await pool.execute("DELETE FROM public.spend_rules WHERE id = $1", rule["id"])
+    assert await is_current_spend_rule_audited(pool, result) is False
 
 
 # ---------------------------------------------------------------------------

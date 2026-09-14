@@ -499,6 +499,100 @@ class TestAC3RuntimeFailureRetry:
         # Adapter was invoked twice (once for primary, once for fallback)
         assert adapter.invoke_calls == 2
 
+    async def test_private_failover_refuses_unregistered_local_runtime_without_remote_fallback(
+        self, tmp_path: Path
+    ) -> None:
+        """A local-only retry cannot become the hard-coded remote fallback."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        mock_pool = AsyncMock()
+        adapter = _FailThenSuccessAdapter(
+            fail_count=1,
+            error=RuntimeError("connection refused: provider unavailable"),
+            result_text="remote-fallback-must-not-run",
+        )
+        local_provider_config = {
+            "ollama": {
+                "npm": "@ai-sdk/openai-compatible",
+                "options": {"baseURL": "http://ollama:11434/v1"},
+                "models": {"private-primary": {"name": "private-primary"}},
+            }
+        }
+
+        def adapter_for(runtime_type: str, *_args, **_kwargs):
+            if runtime_type == "opencode":
+                return adapter
+            if runtime_type == "unregistered-local":
+                raise ValueError("unregistered runtime")
+            pytest.fail(f"unexpected adapter setup for {runtime_type}")
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner._capture_pipeline_routing_context",
+                return_value={"request_context": {"source_channel": "whatsapp_user_client"}},
+            ),
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=_catalog_primary(
+                    model="ollama/private-primary", runtime_type="opencode"
+                ),
+            ),
+            patch(
+                "butlers.core.spawner.enforce_private_content_selection",
+                new_callable=AsyncMock,
+                return_value=(
+                    (
+                        "opencode",
+                        "ollama/private-primary",
+                        [],
+                        _PRIMARY_CATALOG_ID,
+                        1800,
+                    ),
+                    False,
+                    local_provider_config,
+                    True,
+                ),
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=_QUOTA_ALLOWED,
+            ),
+            patch(
+                "butlers.core.spawner.next_same_tier_candidate",
+                new_callable=AsyncMock,
+                return_value=(
+                    "unregistered-local",
+                    "ollama/private-fallback",
+                    [],
+                    _FALLBACK_CATALOG_ID,
+                    1800,
+                ),
+            ) as next_candidate,
+            patch.object(Spawner, "_get_or_create_adapter", side_effect=adapter_for),
+            patch("butlers.core.spawner.write_audit_entry", new_callable=AsyncMock) as audit,
+        ):
+            mock_create.return_value = _SESSION_ID
+            result = await Spawner(
+                config=_make_config(), config_dir=config_dir, pool=mock_pool, runtime=adapter
+            ).trigger("private fixture", "route")
+
+        assert result.success is False
+        assert "PrivateContentModelUnavailable" in (result.error or "")
+        assert result.model == "ollama/private-fallback"
+        assert adapter.invoke_calls == 1
+        assert next_candidate.await_args.kwargs == {"local_only": True}
+        refusal = [
+            call
+            for call in audit.await_args_list
+            if call.args[2] == "model.private_content_remote_refused"
+        ]
+        assert len(refusal) == 1
+        assert refusal[0].args[3]["reason"] == "unregistered_private_runtime"
+
     async def test_fallback_gets_pristine_env_after_mutating_failed_attempt(
         self, tmp_path: Path
     ) -> None:

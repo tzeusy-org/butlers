@@ -13,10 +13,12 @@ import pytest
 
 from butlers.config import ButlerConfig
 from butlers.core.runtimes.base import RuntimeAdapter
+from butlers.core.skills import read_system_prompt_with_sources
 from butlers.core.spawner import Spawner
 from butlers.core.spawner_context import (
     ComposedPrompt,
     _compose_system_prompt,
+    compose_effective_system_prompt_receipt,
     compose_prompt_digest,
 )
 
@@ -258,3 +260,64 @@ class TestBlindSpotPreambleComposition:
             routing_instructions="routing",
         )
         assert composed == "base\n\ncontext\n\nblind-spot-block\n\nrouting"
+
+
+def test_effective_prompt_receipt_is_deterministic_for_synthetic_roster(tmp_path: Path) -> None:
+    """The receipt covers exact composed UTF-8 bytes and every named layer."""
+    roster = tmp_path / "roster"
+    config_dir = roster / "synthetic"
+    shared = roster / "shared"
+    config_dir.mkdir(parents=True)
+    shared.mkdir()
+    (config_dir / "CLAUDE.md").write_text("@AGENTS.md", encoding="utf-8")
+    (config_dir / "AGENTS.md").write_text("# Synthetic identity\nUse tools.", encoding="utf-8")
+    (shared / "BUTLER_SKILLS.md").write_text("# Shared skills", encoding="utf-8")
+
+    resolved = read_system_prompt_with_sources(config_dir, "synthetic")
+    base_sources = [(source.source, source.status, source.content) for source in resolved.sources]
+    first = compose_effective_system_prompt_receipt(
+        resolved.prompt,
+        None,
+        base_sources=base_sources,
+        general_timezone_instruction="Timezone: UTC",
+    )
+    second = compose_effective_system_prompt_receipt(
+        resolved.prompt,
+        None,
+        base_sources=base_sources,
+        general_timezone_instruction="Timezone: UTC",
+    )
+
+    assert first == second
+    assert first.prompt == ("# Synthetic identity\nUse tools.\n\n# Shared skills\n\nTimezone: UTC")
+    assert first.total_bytes == len(first.prompt.encode("utf-8"))
+    assert first.digest == "a2946810270f4009bb3949b1929980dcfe31e79885f6abd153a15df05c876c0f"
+    assert [entry.source for entry in first.provenance] == [
+        "roster:synthetic/CLAUDE.md",
+        "roster:synthetic/AGENTS.md",
+        "roster:shared/BUTLER_SKILLS.md",
+        "roster:shared/MCP_LOGGING.md",
+        "general_settings",
+        "situational_context",
+        "blind_spot_disclosure",
+        "switchboard_routing_instructions",
+        "memory_context",
+    ]
+    assert [entry.status for entry in first.provenance] == [
+        "present",
+        "present",
+        "present",
+        "unavailable",
+        "present",
+        "unavailable",
+        "unavailable",
+        "unavailable",
+        "unavailable",
+    ]
+    assert all(str(tmp_path) not in entry.source for entry in first.provenance)
+    assert all(
+        (entry.bytes == 0 and entry.sha is None)
+        if entry.status == "unavailable"
+        else entry.sha is not None
+        for entry in first.provenance
+    )

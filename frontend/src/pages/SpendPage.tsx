@@ -87,6 +87,7 @@ import { SpendVerdictOpener } from "@/components/costs/SpendVerdictOpener";
 import { formatCostUsd } from "@/lib/format-cost";
 import { cn } from "@/lib/utils";
 import { Time } from "@/components/ui/time";
+import { PurposeLaneBadge } from "@/components/sessions/PurposeLaneBadge";
 import { announce } from "@/lib/shell-announcer";
 import { usePageSubject } from "@/lib/page-context.tsx";
 import {
@@ -1153,6 +1154,9 @@ function TopSessionsSection({
                       <TableHead className="text-left py-2 px-2 font-normal">
                         Model
                       </TableHead>
+                      <TableHead className="text-left py-2 px-2 font-normal">
+                        Purpose
+                      </TableHead>
                       <TableHead className="text-right py-2 px-2 font-normal">
                         Tokens
                       </TableHead>
@@ -1180,6 +1184,9 @@ function TopSessionsSection({
                         </TableCell>
                         <TableCell className="py-2 px-2 text-muted-foreground text-xs">
                           {s.model}
+                        </TableCell>
+                        <TableCell className="py-2 px-2">
+                          <PurposeLaneBadge lane={s.purpose_lane} />
                         </TableCell>
                         <TableCell className="py-2 px-2 text-right tabular-nums text-xs">
                           {s.input_tokens.toLocaleString()} /{" "}

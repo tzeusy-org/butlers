@@ -23,6 +23,7 @@ inline.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from datetime import datetime
 from typing import Any, Literal
@@ -30,6 +31,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import TypeAdapter, ValidationError
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_pricing
@@ -51,13 +53,16 @@ from butlers.api.models.session import (
     LatencyStats,
     LinkedChatMessage,
     ProcessLog,
+    PromptProvenance,
     SessionAggregate,
     SessionAggregateButler,
     SessionAggregateTriggerSource,
     SessionDetail,
     SessionKindBreakdown,
     SessionKindItem,
+    SessionPromptReceipt,
 )
+from butlers.api.owner_control import require_dashboard_owner_control
 from butlers.api.owner_time_bounds import owner_zoneinfo, resolve_owner_time_bound
 from butlers.api.read_models.sessions_v1 import (
     SUMMARY_COLUMNS,
@@ -66,6 +71,7 @@ from butlers.api.read_models.sessions_v1 import (
     decode_session_cursor,
     query_session_aggregate_fan_out,
     query_session_detail_fan_out,
+    query_session_prompt_receipt_fan_out,
     query_session_summaries_keyset_fan_out,
     query_session_trigger_breakdown_fan_out,
     row_to_summary,
@@ -78,6 +84,15 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 butler_sessions_router = APIRouter(prefix="/api/butlers", tags=["butlers", "sessions"])
+
+_PROMPT_PROVENANCE_ADAPTER = TypeAdapter(list[PromptProvenance])
+_PROMPT_DYNAMIC_SOURCES = (
+    "general_settings",
+    "situational_context",
+    "blind_spot_disclosure",
+    "switchboard_routing_instructions",
+    "memory_context",
+)
 
 
 def _get_db_manager() -> DatabaseManager:
@@ -274,6 +289,7 @@ def _dto_to_summary(dto: SessionSummaryRow, pricing: PricingConfig | None = None
         duration_ms=dto.duration_ms,
         model=dto.model,
         complexity=dto.complexity,
+        purpose_lane=dto.purpose_lane,
         input_tokens=dto.input_tokens,
         output_tokens=dto.output_tokens,
         cancelled_by_owner=dto.cancelled_by_owner,
@@ -304,6 +320,7 @@ def _dto_to_detail(dto: SessionDetailRow) -> SessionDetail:
         parent_session_id=dto.parent_session_id,
         complexity=dto.complexity,
         resolution_source=dto.resolution_source,
+        purpose_lane=dto.purpose_lane,
     )
 
 
@@ -625,6 +642,81 @@ async def get_session_aggregate(
 # ---------------------------------------------------------------------------
 # Cross-butler detail: GET /api/sessions/{session_id}
 # ---------------------------------------------------------------------------
+
+
+@router.get("/{session_id}/prompt", response_model=ApiResponse[SessionPromptReceipt])
+async def get_session_prompt_receipt(
+    session_id: UUID,
+    _owner: str = Depends(require_dashboard_owner_control),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[SessionPromptReceipt]:
+    """Return the exact effective prompt to the authenticated dashboard owner.
+
+    This is a distinct, narrow fan-out so prompt content cannot enter the
+    ordinary session detail or list projections. A complete miss is a 404;
+    any miss over an incomplete fan-out is a 503 because the receipt may live
+    in an unreachable schema.
+    """
+    result = await query_session_prompt_receipt_fan_out(db, session_id)
+    if result.row is None or result.butler is None:
+        if result.degraded_sources:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Session prompt unavailable because one or more butler "
+                    "databases could not be queried."
+                ),
+            )
+        raise HTTPException(status_code=404, detail="Session prompt not found")
+
+    row = result.row
+    if row.effective_prompt is None and row.prompt_digest is None and row.prompt_provenance is None:
+        receipt = SessionPromptReceipt(
+            id=row.id,
+            butler=result.butler,
+            status="legacy_unavailable",
+            prompt_provenance=[],
+        )
+    else:
+        try:
+            if row.effective_prompt is None or row.prompt_digest is None:
+                raise ValueError("incomplete receipt")
+            prompt_bytes = row.effective_prompt.encode("utf-8")
+            if hashlib.sha256(prompt_bytes).hexdigest() != row.prompt_digest:
+                raise ValueError("digest mismatch")
+            provenance = _PROMPT_PROVENANCE_ADAPTER.validate_python(row.prompt_provenance)
+            sources = tuple(entry.source for entry in provenance)
+            if (
+                len(sources) <= len(_PROMPT_DYNAMIC_SOURCES)
+                or sources[-len(_PROMPT_DYNAMIC_SOURCES) :] != _PROMPT_DYNAMIC_SOURCES
+                or any(
+                    source != "system_prompt_history"
+                    and source != "generated_default"
+                    and not source.startswith("roster:")
+                    for source in sources[: -len(_PROMPT_DYNAMIC_SOURCES)]
+                )
+            ):
+                raise ValueError("unexpected prompt provenance sources")
+            receipt = SessionPromptReceipt(
+                id=row.id,
+                butler=result.butler,
+                status="captured",
+                effective_prompt=row.effective_prompt,
+                prompt_digest=row.prompt_digest,
+                prompt_provenance=provenance,
+                total_bytes=len(prompt_bytes),
+            )
+        except (TypeError, UnicodeEncodeError, ValidationError, ValueError):
+            receipt = SessionPromptReceipt(
+                id=row.id,
+                butler=result.butler,
+                status="corrupt",
+                prompt_provenance=[],
+            )
+    return ApiResponse[SessionPromptReceipt](
+        data=receipt,
+        meta=ApiMeta(sources_degraded=result.degraded_sources or None),
+    )
 
 
 @router.get("/{session_id}", response_model=ApiResponse[SessionDetail])
