@@ -143,7 +143,7 @@ def build_user_context(
 
     Butlers is a single-user deployment, so the principal is always the
     ``owner``.  Even so, this helper records *how* the request reached the
-    dashboard (source, client IP, whether an API key was presented) so the
+    dashboard (source, client IP, verified authentication method) so the
     audit log answers the operator's "who/where" question without forcing
     callers to reconstruct request state from scratch.
 
@@ -188,9 +188,10 @@ def build_user_context(
             # Cap to keep audit rows compact; full UA is rarely useful.
             context["user_agent"] = user_agent[:256]
 
-        # Whether the request presented an API key.  We do NOT record the key
-        # itself (it would be a credential leak) — only its presence.
-        context["api_key_authenticated"] = bool(request.headers.get("x-api-key"))
+        # A presented header is not proof, notably on independently authorized
+        # callback routes. Record only the method the central boundary verified.
+        authority = getattr(request.state, "owner_authority", None)
+        context["api_key_authenticated"] = getattr(authority, "method", None) == "header"
 
     if extra:
         context.update(extra)
