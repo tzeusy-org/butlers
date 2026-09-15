@@ -67,5 +67,5 @@ Scope: v1-mandatory
 
 #### Scenario: Owner-only access
 
-- **WHEN** a non-owner session calls `GET /api/health/briefing`
+- **WHEN** a non-owner session calls `GET /api/health/briefing` (meaning a valid central owner transport session whose independent Health domain-owner assertion fails)
 - **THEN** the response MUST be HTTP 403 and no cache entry is read or written

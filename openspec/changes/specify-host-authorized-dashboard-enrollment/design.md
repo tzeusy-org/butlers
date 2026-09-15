@@ -82,6 +82,11 @@ the key, locks the singleton and atomically records the target mode/key-generati
 digest with epoch revocation. Repeating it with unchanged configuration is a
 no-op. API startup compares its effective configuration with that committed
 generation; mismatch is unavailable and cannot mutate or repair authority.
+Every header-authenticated request compares the process key generation with
+the authoritative current generation before accepting the key. Configured-key
+session issuance repeats that comparison under its final transaction lock. A
+still-running stale worker returns unavailable immediately after reconciliation,
+until restarted with matching configuration; no old-key grace window exists.
 The host operation requires initialized consistent state and cannot repair a
 missing singleton. A key generation digest is internal restricted state, never
 an output.
