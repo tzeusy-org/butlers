@@ -8,12 +8,14 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import secrets
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
 import asyncpg
+from opentelemetry.instrumentation.utils import suppress_instrumentation
 
 from butlers.api.owner_auth.verifier import InvalidProof, WebAuthnVerifier, decode
 from butlers.db import database_name_from_env, db_params_from_env, register_jsonb_codec
@@ -68,7 +70,10 @@ def _token() -> str:
 def _digest(value: str | None) -> str | None:
     if value is None:
         return None
-    return hashlib.sha256(value.encode()).hexdigest()
+    try:
+        return hashlib.sha256(value.encode()).hexdigest()
+    except (AttributeError, UnicodeError):
+        raise AuthError("UNAUTHORIZED") from None
 
 
 def _locator(value: str) -> str:
@@ -102,14 +107,15 @@ class OwnerAuthService:
             raise AuthError()
         try:
             # SET LOCAL ROLE happens on every checkout; asyncpg resets session role.
-            async with self.pool.acquire() as connection, connection.transaction():
-                await connection.execute("SET LOCAL ROLE dashboard_auth_api")
-                await register_jsonb_codec(connection)
-                raw = await connection.fetchval(
-                    "SELECT dashboard_auth.api($1, $2::jsonb)",
-                    action,
-                    self._config() | values,
-                )
+            with suppress_instrumentation():
+                async with self.pool.acquire() as connection, connection.transaction():
+                    await connection.execute("SET LOCAL ROLE dashboard_auth_api")
+                    await register_jsonb_codec(connection)
+                    raw = await connection.fetchval(
+                        "SELECT dashboard_auth.api($1, $2::jsonb)",
+                        action,
+                        self._config() | values,
+                    )
             result = json.loads(raw) if isinstance(raw, str) else raw
             if not isinstance(result, dict):
                 raise AuthError()
@@ -150,12 +156,18 @@ class OwnerAuthService:
     async def intent(self, preauth_token: str, csrf_token: str, operation: str) -> dict:
         if operation not in ("enroll", "recover"):
             raise AuthError("BAD_REQUEST")
-        return await self._call(
+        data = await self._call(
             "intent",
             **self._proof(preauth_token, csrf_token),
             operation=operation,
             request_id=_token(),
         )
+        return {
+            "request_id": data["request_id"],
+            "expires_at": data["expires_at"],
+            "operation": data["operation"],
+            "canonical_origin": data["canonical_origin"],
+        }
 
     def _options(self, ceremony: dict) -> dict:
         remaining = max(
@@ -303,14 +315,13 @@ class OwnerAuthService:
 
     def _check_key(self, api_key: str | None) -> None:
         configured = self.config.api_key
-        if (
-            not isinstance(api_key, str)
-            or not configured
-            or not hmac.compare_digest(
-                api_key.encode(),
-                configured.encode(),
-            )
-        ):
+        if not isinstance(api_key, str) or not configured:
+            raise AuthError("UNAUTHORIZED")
+        try:
+            matches = hmac.compare_digest(api_key.encode(), configured.encode())
+        except UnicodeError:
+            raise AuthError("UNAUTHORIZED") from None
+        if not matches:
             raise AuthError("UNAUTHORIZED")
 
     async def key_session(self, api_key: str) -> IssuedSession:
@@ -375,9 +386,10 @@ class OwnerAuthService:
     async def cleanup(self) -> None:
         if self.pool is None:
             return
-        async with self.pool.acquire() as connection, connection.transaction():
-            await connection.execute("SET LOCAL ROLE dashboard_auth_api")
-            await connection.execute("SELECT dashboard_auth.cleanup()")
+        with suppress_instrumentation():
+            async with self.pool.acquire() as connection, connection.transaction():
+                await connection.execute("SET LOCAL ROLE dashboard_auth_api")
+                await connection.execute("SELECT dashboard_auth.cleanup()")
 
 
 async def _cleanup_loop(service: OwnerAuthService) -> None:
@@ -390,19 +402,55 @@ async def _cleanup_loop(service: OwnerAuthService) -> None:
         await asyncio.sleep(300)
 
 
-async def create_owner_auth_service(config: Any) -> OwnerAuthService:
-    """Create the dedicated pool; unavailability stays fail closed, health stays up."""
-    try:
-        pool = await asyncpg.create_pool(
-            **db_params_from_env(),
-            database=database_name_from_env("butlers"),
-            min_size=1,
-            max_size=3,
-            command_timeout=5,
-            timeout=5,
+async def _initialize_auth_connection(connection: asyncpg.Connection) -> None:
+    """RESET ROLE must never recover host authority on a dashboard connection."""
+    with suppress_instrumentation():
+        safe = await connection.fetchval(
+            """
+            WITH RECURSIVE reachable(oid) AS (
+                SELECT oid FROM pg_roles WHERE rolname=session_user
+                UNION
+                SELECT m.roleid FROM pg_auth_members m JOIN reachable r ON m.member=r.oid
+            ), host_function AS (
+                SELECT p.oid FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+                WHERE n.nspname='dashboard_auth' AND p.proname='host'
+                  AND p.proargtypes='25 3802'::oidvector
+            )
+            SELECT EXISTS(SELECT FROM host_function)
+              AND pg_has_role(session_user, 'dashboard_auth_api', 'MEMBER')
+              AND NOT EXISTS (
+                SELECT FROM reachable JOIN pg_roles r USING(oid)
+                WHERE r.rolsuper OR r.rolcreaterole OR r.rolcreatedb OR r.rolbypassrls
+                   OR has_function_privilege(r.oid,
+                        (SELECT oid FROM host_function), 'EXECUTE')
+              )
+            """
         )
-    except Exception:
-        pool = None
+        if safe is not True:
+            raise AuthError()
+        await register_jsonb_codec(connection)
+
+
+async def create_owner_auth_service(config: Any) -> OwnerAuthService:
+    """Use a dedicated Tier 0 login; never borrow the host's administrative login."""
+    pool = None
+    user = os.environ.get("DASHBOARD_AUTH_DB_USER")
+    password = os.environ.get("DASHBOARD_AUTH_DB_PASSWORD")
+    if user and password:
+        try:
+            params = db_params_from_env() | {"user": user, "password": password}
+            with suppress_instrumentation():
+                pool = await asyncpg.create_pool(
+                    **params,
+                    database=database_name_from_env("butlers"),
+                    min_size=1,
+                    max_size=3,
+                    command_timeout=5,
+                    timeout=5,
+                    init=_initialize_auth_connection,
+                )
+        except Exception:
+            logging.getLogger(__name__).warning("Owner authentication storage unavailable")
     service = OwnerAuthService(pool, config)
     service._cleanup_task = asyncio.create_task(_cleanup_loop(service))
     return service

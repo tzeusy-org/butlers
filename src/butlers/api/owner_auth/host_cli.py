@@ -7,6 +7,7 @@ import json
 
 import asyncpg
 import click
+from opentelemetry.instrumentation.utils import suppress_instrumentation
 
 from butlers.api.owner_auth.service import AuthError, _locator
 from butlers.db import database_name_from_env, db_params_from_env
@@ -18,25 +19,26 @@ async def run_host_operation(action: str, config, *, request_id=None, confirm_re
         _locator(request_id)
     connection = None
     try:
-        connection = await asyncpg.connect(
-            **db_params_from_env(),
-            database=database_name_from_env("butlers"),
-            command_timeout=5,
-            timeout=5,
-        )
-        raw = await connection.fetchval(
-            "SELECT dashboard_auth.host($1,$2::jsonb)",
-            action,
-            json.dumps(
-                {
-                    "origin": config.origin,
-                    "rp_id": config.rp_id,
-                    "key_generation": config.key_generation,
-                    "request_id": request_id,
-                    "confirm_revoke": confirm_revoke,
-                }
-            ),
-        )
+        with suppress_instrumentation():
+            connection = await asyncpg.connect(
+                **db_params_from_env(),
+                database=database_name_from_env("butlers"),
+                command_timeout=5,
+                timeout=5,
+            )
+            raw = await connection.fetchval(
+                "SELECT dashboard_auth.host($1,$2::jsonb)",
+                action,
+                json.dumps(
+                    {
+                        "origin": config.origin,
+                        "rp_id": config.rp_id,
+                        "key_generation": config.key_generation,
+                        "request_id": request_id,
+                        "confirm_revoke": confirm_revoke,
+                    }
+                ),
+            )
         result = json.loads(raw)
         if "error" in result:
             raise AuthError(result["error"])
@@ -121,3 +123,15 @@ def reconcile_mode(confirm_revoke: bool) -> None:
 def rebind_origin(confirm_revoke: bool) -> None:
     """Bind one new HTTPS origin/RP and require host-authorized recovery."""
     _execute("rebind_origin", confirm_revoke=confirm_revoke)
+
+
+@auth.command("revoke-sessions")
+@click.option(
+    "--confirm-revoke",
+    is_flag=True,
+    required=True,
+    help="Revoke every browser session and pending login without retiring the passkey.",
+)
+def revoke_sessions(confirm_revoke: bool) -> None:
+    """Advance the browser session epoch; ordinary passkey sign-in remains available."""
+    _execute("revoke_sessions", confirm_revoke=confirm_revoke)
