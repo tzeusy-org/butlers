@@ -12,6 +12,7 @@ import logging
 import re
 from dataclasses import dataclass
 
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from fido2.server import Fido2Server
 from fido2.webauthn import (
     AttestationObject,
@@ -23,6 +24,8 @@ from fido2.webauthn import (
 
 # Yubico's debug messages can contain credential identifiers.
 logging.getLogger("fido2").disabled = True
+logging.getLogger("fido2").propagate = False
+logging.getLogger("fido2").handlers = [logging.NullHandler()]
 logging.getLogger("fido2.server").disabled = True
 
 
@@ -151,6 +154,22 @@ class WebAuthnVerifier:
                 data = auth.credential_data
                 if data is None or data.public_key[3] not in (-7, -257):
                     raise InvalidProof()
+                key = data.public_key
+                if key[3] == -7:
+                    if key[1] != 2 or key[-1] != 1 or len(key[-2]) != 32 or len(key[-3]) != 32:
+                        raise InvalidProof()
+                    ec.EllipticCurvePublicNumbers(
+                        int.from_bytes(key[-2]),
+                        int.from_bytes(key[-3]),
+                        ec.SECP256R1(),
+                    ).public_key()
+                else:
+                    if key[1] != 3:
+                        raise InvalidProof()
+                    rsa.RSAPublicNumbers(
+                        int.from_bytes(key[-2]),
+                        int.from_bytes(key[-1]),
+                    ).public_key()
                 if encode(data.credential_id) != response["rawId"]:
                     raise InvalidProof()
                 material = encode(bytes(data))
@@ -162,6 +181,10 @@ class WebAuthnVerifier:
                 self.server.authenticate_complete(state, [data], parsed)
                 auth = parsed.response.authenticator_data
                 material = None
+            if auth.extensions is not None or (
+                not registration and auth.credential_data is not None
+            ):
+                raise InvalidProof()
             be, bs = bool(auth.flags & 8), bool(auth.flags & 16)
             if bs and not be:
                 raise InvalidProof()
