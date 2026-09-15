@@ -33,7 +33,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.audit import AuditTableNotAvailableError
 from butlers.api.routers.data_ops import (
@@ -47,6 +46,7 @@ from butlers.api.routers.data_ops import (
     _get_db_manager,
     _sign_token,
 )
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 

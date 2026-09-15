@@ -43,7 +43,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.routers import oauth as oauth_module
 from butlers.api.routers.oauth import (
     _clear_state_store,
@@ -54,6 +53,7 @@ from butlers.api.routers.oauth import (
     _UserinfoError,
 )
 from butlers.google_account_registry import GoogleAccountNotFoundError
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
 

@@ -17,7 +17,6 @@ from uuid import uuid4
 import pytest
 from fastapi import FastAPI
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerConnectionInfo,
@@ -29,6 +28,7 @@ from butlers.api.deps import (
 from butlers.api.routers import oauth as oauth_router
 from butlers.api.routers.butlers import _get_roster_dir
 from butlers.api.routers.notifications import _get_db_manager
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 # ---------------------------------------------------------------------------
 # Notification row factory
