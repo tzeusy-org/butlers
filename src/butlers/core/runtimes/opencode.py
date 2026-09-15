@@ -36,6 +36,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, ClassVar
 
+from butlers.core.child_env import without_owner_auth
 from butlers.core.runtimes.base import RuntimeAdapter, register_adapter
 
 logger = logging.getLogger(__name__)
@@ -1041,7 +1042,7 @@ class OpenCodeAdapter(RuntimeAdapter):
             # servers, instructions, or provider config to override —
             # otherwise let OpenCode use its own config so provider
             # auth/keys are preserved.
-            subprocess_env = dict(env) if env else {}
+            subprocess_env = without_owner_auth(env or {})
             if mcp_servers or instructions_path or self._provider_config:
                 subprocess_env["OPENCODE_CONFIG"] = str(config_path)
 
