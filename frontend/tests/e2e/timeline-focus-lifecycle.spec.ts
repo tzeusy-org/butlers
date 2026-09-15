@@ -33,7 +33,7 @@ async function mockTimeline(page: Page) {
   }));
 
   await page.route("**/api/**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: [] }) }),
+    new URL(route.request().url()).pathname.startsWith("/api/auth/owner/") ? route.fallback() : route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: [] }) }),
   );
   await page.route(/\/api\/timeline\/histogram(?:\?.*)?$/, (route) =>
     route.fulfill({
