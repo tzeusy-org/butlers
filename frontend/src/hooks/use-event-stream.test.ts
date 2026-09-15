@@ -357,6 +357,16 @@ describe("useEventStream", () => {
     expect(ws?.close).toHaveBeenCalled();
   });
 
+  it.each([4401, 4403])("stops reconnecting on authentication close %s", (code) => {
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useEventStream());
+    const ws = getLastWsInstance();
+    act(() => ws?.simulateClose(code));
+    expect(result.current.status).toBe("closed");
+    act(() => vi.advanceTimersByTime(60_000));
+    expect(wsConstructorSpy).toHaveBeenCalledOnce();
+  });
+
   it("disconnect() closes the socket and sets status to 'closed'", async () => {
     const { result } = renderHook(() => useEventStream());
     const ws = getLastWsInstance();
