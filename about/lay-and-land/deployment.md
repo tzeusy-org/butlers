@@ -278,7 +278,10 @@ docker compose up -d
 ## Dashboard owner-authentication placement
 
 The dashboard API owns the central owner boundary, bounded WebAuthn/session
-router and dedicated `dashboard_auth` persistence. Trusted host CLI operations
+router and dedicated `dashboard_auth` persistence. Its pool logs in with
+restricted Tier 0 `DASHBOARD_AUTH_DB_USER/PASSWORD`, separately from host
+administrative `POSTGRES_*` access; setting a role on an administrative login
+is insufficient because that session could reset its role. Trusted host CLI operations
 authorize exact browser-bound registration/recovery intents; the API cannot
 authorize an intent through a public endpoint. Butler runtime and generic
 Secrets surfaces have no authority over this schema. Domain owner/contact
