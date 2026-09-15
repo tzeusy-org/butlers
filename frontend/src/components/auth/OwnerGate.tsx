@@ -72,7 +72,7 @@ function OwnerAccess({ status, initialMessage, onAuthenticated }: {
   const passkeys = secure && typeof PublicKeyCredential !== "undefined" && !!navigator.credentials;
   useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, []);
   useEffect(() => () => { flight.current?.abort(); preauth.current = undefined; }, []);
-  useEffect(() => { if (!busy) action.current?.focus(); }, [busy]);
+  useEffect(() => { if (!busy) action.current?.focus(); }, [busy, intent, ceremony]);
 
   async function abandon() {
     const target = pending.current; const token = preauth.current;
@@ -95,12 +95,12 @@ function OwnerAccess({ status, initialMessage, onAuthenticated }: {
       if (!controller.signal.aborted) {
         if (error instanceof DOMException && ["NotAllowedError", "AbortError"].includes(error.name)) {
           setMessage(intent ? "Registration cancelled. Start again when you are ready." : "Sign-in cancelled. Try again when you are ready.");
-          await abandon(); setIntent(null); setCeremony(null);
+          await abandon(); setIntent(null); setCeremony(null); await onAuthenticated();
         } else {
           setMessage(error instanceof OwnerAuthError ? error.message : "The request could not be completed. Check the connection and try again.");
           if (error instanceof OwnerAuthError && error.status === 429) setNextCheck(Date.now() + 60_000);
           if (error instanceof OwnerAuthError && [401, 403, 409].includes(error.status)) {
-            await abandon(); setIntent(null); setCeremony(null);
+            await abandon(); setIntent(null); setCeremony(null); await onAuthenticated();
           }
         }
       }
@@ -152,7 +152,7 @@ function OwnerAccess({ status, initialMessage, onAuthenticated }: {
   const cancel = () => {
     flight.current?.abort(); flight.current = null; setBusy(false);
     setMessage(intent ? "Registration cancelled. Host recovery, if approved, remains in effect." : "Sign-in cancelled.");
-    setIntent(null); setCeremony(null); void abandon(); action.current?.focus();
+    setIntent(null); setCeremony(null); void abandon().then(() => onAuthenticated());
   };
   const expired = intent && Date.parse(intent.expires_at) <= now;
   const command = intent ? `butlers auth ${intent.operation === "recover" ? "authorize-recovery" : "authorize-registration"} --request ${intent.request_id}${intent.operation === "recover" ? " --confirm-revoke" : ""}` : "";

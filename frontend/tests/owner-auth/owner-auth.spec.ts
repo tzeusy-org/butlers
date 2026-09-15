@@ -68,6 +68,19 @@ test("real HTTPS native passkey lifecycle, independent CSRF, recovery and privat
       return { denied: denied.status, allowed: allowed.status };
     });
     expect(csrfProof).toEqual({ denied: 403, allowed: 200 });
+    // Model provider sync with a second synthetic authenticator. Private test
+    // keys stay in memory; no assertion prints the virtual credential record.
+    const syncedContext = await browser.newContext({ ignoreHTTPSErrors: true });
+    const syncedPage = await syncedContext.newPage();
+    const syncedAuthenticator = await virtualAuthenticator(syncedPage);
+    const virtualCredentials = await authenticator.cdp.send("WebAuthn.getCredentials", { authenticatorId: authenticator.authenticatorId });
+    for (const credential of virtualCredentials.credentials) {
+      await syncedAuthenticator.cdp.send("WebAuthn.addCredential", { authenticatorId: syncedAuthenticator.authenticatorId, credential });
+    }
+    await syncedPage.goto(origin);
+    await syncedPage.getByRole("button", { name: "Sign in with passkey" }).click();
+    await expect.poll(async () => (await status(syncedPage)).authenticated).toBe(true);
+    await syncedContext.close();
     await page.reload();
     await expect(page.getByRole("button", { name: "Owner session" })).toBeVisible();
     await signOut(page);

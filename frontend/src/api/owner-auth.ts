@@ -61,6 +61,7 @@ function decode(value: unknown, max = 65536): ArrayBuffer {
   return result;
 }
 function encode(value: ArrayBuffer): string {
+  if (!(value instanceof ArrayBuffer) || value.byteLength > 65_536) throw new OwnerAuthError(413);
   return btoa(String.fromCharCode(...new Uint8Array(value))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
@@ -78,7 +79,8 @@ export function credentialWire(value: Credential | null, operation: "register" |
   if (!value || value.type !== "public-key") throw new OwnerAuthError(400);
   const credential = value as PublicKeyCredential;
   const id = encode(credential.rawId);
-  if (id !== credential.id || credential.rawId.byteLength > 1023 || Object.keys(credential.getClientExtensionResults()).length) throw new OwnerAuthError(400);
+  if (id !== credential.id || !credential.rawId.byteLength || credential.rawId.byteLength > 1023 || Object.keys(credential.getClientExtensionResults()).length) throw new OwnerAuthError(400);
+  if (credential.authenticatorAttachment && !["platform", "cross-platform"].includes(credential.authenticatorAttachment)) throw new OwnerAuthError(400);
   const response = credential.response;
   const clientDataJSON = encode(response.clientDataJSON);
   if (response.clientDataJSON.byteLength > 4096) throw new OwnerAuthError(400);
