@@ -3,6 +3,7 @@
 from .finance_jobs import (
     run_anomaly_insight_scan,
     run_bill_reconciliation_sweep,
+    run_cost_claim_reconciliation_sweep,
     run_insight_scan,
     run_monthly_finance_digest,
 )
@@ -10,6 +11,7 @@ from .finance_jobs import (
 __all__ = [
     "run_insight_scan",
     "run_bill_reconciliation_sweep",
+    "run_cost_claim_reconciliation_sweep",
     "run_anomaly_insight_scan",
     "run_monthly_finance_digest",
 ]

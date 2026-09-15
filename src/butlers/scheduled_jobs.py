@@ -921,6 +921,18 @@ async def _run_finance_bill_reconciliation_sweep_job(
     return await mod.run_bill_reconciliation_sweep(pool)
 
 
+async def _run_finance_cost_claim_reconciliation_sweep_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run Finance's deterministic shared cost-claim reconciliation sweep."""
+    del job_args
+    from butlers.jobs._roster_loader import load_roster_jobs
+
+    mod = load_roster_jobs("finance")
+    return await mod.run_cost_claim_reconciliation_sweep(pool)
+
+
 async def _run_finance_anomaly_insight_scan_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -1144,6 +1156,18 @@ async def _run_relationship_interaction_sync_job(
 
     mod = load_roster_jobs("relationship")
     return await mod.run_interaction_sync(pool)
+
+
+async def _run_relationship_loan_cost_claim_backfill_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Retry idempotent Relationship loan claim projections."""
+    del job_args
+    from butlers.jobs._roster_loader import load_roster_jobs
+
+    mod = load_roster_jobs("relationship")
+    return await mod.run_loan_cost_claim_backfill(pool)
 
 
 async def _run_relationship_memory_curation_job(
@@ -1948,6 +1972,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "calendar_overlay_contribution": _run_finance_calendar_overlay_contribution_job,
             "insight_scan": _run_finance_insight_scan_job,
             "bill_reconciliation_sweep": _run_finance_bill_reconciliation_sweep_job,
+            "cost_claim_reconciliation_sweep": _run_finance_cost_claim_reconciliation_sweep_job,
             "anomaly_insight_scan": _run_finance_anomaly_insight_scan_job,
             "monthly_finance_digest": _run_finance_monthly_finance_digest_job,
             "simplefin_sync": _run_finance_simplefin_sync_job,
@@ -1960,6 +1985,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "calendar_prep_contribution": _run_relationship_calendar_prep_contribution_job,
             "insight_scan": _run_relationship_insight_scan_job,
             "interaction_sync": _run_relationship_interaction_sync_job,
+            "loan_cost_claim_backfill": _run_relationship_loan_cost_claim_backfill_job,
             "memory_curation": _run_relationship_memory_curation_job,
             "pending_actions_curation": _run_relationship_pending_actions_curation_job,
             "fact_retraction_curation": _run_relationship_fact_retraction_curation_job,

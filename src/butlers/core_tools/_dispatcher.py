@@ -10,6 +10,7 @@ from butlers.core_tools._chronicler import register_chronicler_tools
 from butlers.core_tools._continuity import register_continuity_tools
 from butlers.core_tools._conversation_recall import register_conversation_recall_tool
 from butlers.core_tools._conversation_reply import register_conversation_reply_tool
+from butlers.core_tools._cost_claims import register_cost_claim_tools
 from butlers.core_tools._delegation import register_delegation_tools
 from butlers.core_tools._domain_events import register_domain_event_tools
 from butlers.core_tools._fleet_cases import register_fleet_case_tools
@@ -83,5 +84,6 @@ def register_all_core_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) ->
     register_delegation_tools(ctx, mcp, _core_tool)
     register_domain_event_tools(ctx, mcp, _core_tool)
     register_fleet_case_tools(ctx, mcp, _core_tool)
+    register_cost_claim_tools(ctx, mcp, _core_tool)
     register_graph_tools(ctx, mcp, _core_tool)
     register_shutdown_tool(ctx, mcp, _core_tool)

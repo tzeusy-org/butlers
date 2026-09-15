@@ -413,6 +413,8 @@ git push                # Push to remote (bead mutations already in Dolt)
 
 ## Notes to self
 
+- Public-table GRANTs are not a cost-claim authority boundary: `scripts/init-db.sql` deliberately re-widens them. `public.cost_claims`, `cost_claim_resolutions`, and `cost_claim_events` rely on enabled and forced RLS keyed to the active runtime role; migration tests must replay bootstrap and execute writes under real `SET ROLE` identities.
+
 - In partitioned-index migrations, a blocking `pg_advisory_lock()` waiter can retain a snapshot that `CREATE INDEX CONCURRENTLY` waits for. Use bounded `pg_try_advisory_lock()` polling in autocommit with waits outside PostgreSQL; `core_231` and its concurrent migration regression cover this failure mode.
 - A disconnect watcher inside the dashboard's nested `BaseHTTPMiddleware` stack needs AnyIO level cancellation. A one-shot `asyncio.Task.cancel()` followed by awaiting the watcher can deadlock response delivery; `IngestionReadBudgetRoute` uses a watcher-owned `CancelScope`, and full-app API tests protect the middleware interaction.
 - After mechanically rebuilding an active `MODIFIED` block, scan for a scenario body joined directly to the next `##` or `###` heading before tightening `spec-overwrite-baseline.json`. OpenSpec strict validation can still pass when the joined heading is parsed as scenario prose, which can hide later requirements from the body-loss guard and make valid ratchet entries look obsolete.

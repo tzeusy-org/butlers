@@ -615,6 +615,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
 
     @_tool("tracking")
     async def loan_create(
+        currency: str,
         contact_id: uuid.UUID | None = None,
         amount: Decimal | None = None,
         direction: str | None = None,
@@ -622,7 +623,6 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         lender_contact_id: uuid.UUID | None = None,
         borrower_contact_id: uuid.UUID | None = None,
         amount_cents: int | None = None,
-        currency: str = "USD",
     ) -> dict[str, Any]:
         """Create a loan record with legacy + spec-compatible fields."""
         return await _loans.loan_create(

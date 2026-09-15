@@ -76,6 +76,80 @@ cat > /dev/null
 dd if=/dev/urandom bs=512 count=1 2>/dev/null
 """
 
+
+#: A valid but deliberately tiny gzip stream.  Once the scoped ledger replay
+#: is appended, an empty ``pg_dump`` stream is no longer itself undersized.
+_FAKE_GZIP_UNDERSIZE = """#!/bin/sh
+set -eu
+
+real_gzip="${FAKE_REAL_GZIP:?}"
+if [ "${1:-}" = "-dc" ]; then
+  exec "${real_gzip}" "$@"
+fi
+cat > /dev/null
+exec "${real_gzip}" -c /dev/null
+"""
+
+
+#: A DB-free psql stand-in that models the real snapshot holder's command
+#: stream.  It writes the exported snapshot and policy proof only after psql
+#: receives each matching ``\\o`` reset, then records the producer ordering.
+_FAKE_PSQL = """#!/bin/sh
+set -eu
+
+log="${FAKE_PSQL_LOG:?}"
+command=""
+want_command=0
+for arg in "$@"; do
+  if [ "${want_command}" -eq 1 ]; then
+    command="${arg}"
+    break
+  fi
+  if [ "${arg}" = "-c" ]; then
+    want_command=1
+  fi
+done
+
+if [ -n "${command}" ]; then
+  case "${command}" in
+    *"SET TRANSACTION SNAPSHOT"*)
+      printf '%s\\n' 'scoped-export' >> "${log}"
+      ;;
+    *"pg_policy AS p"*)
+      printf '%s\\n' 'standalone-policy-precheck' >> "${log}"
+      printf '3\\n'
+      ;;
+    *"SELECT format("*)
+      printf '%s\\n' 'restore-authorization' >> "${log}"
+      printf '%s\\n' '-- synthetic restore authorization'
+      ;;
+  esac
+  exit 0
+fi
+
+output_file=""
+while IFS= read -r line; do
+  case "${line}" in
+    "\\\\o "*)
+      output_file=${line#"\\\\o "}
+      ;;
+    "\\\\o")
+      case "${output_file}" in
+        */id)
+          printf 'ABCDEF-012345\\n' > "${output_file}"
+          printf '%s\\n' 'snapshot-exported' >> "${log}"
+          ;;
+        */policy-count)
+          printf '3\\n' > "${output_file}"
+          printf '%s\\n' 'snapshot-policy-verified' >> "${log}"
+          ;;
+      esac
+      output_file=""
+      ;;
+  esac
+done
+"""
+
 #: mv stand-in that fails only when publishing the artifact -- a full disk at
 #: the last step. The script never enumerated this one, which is the point:
 #: the receipt comes from the EXIT trap, not from a list of known failures.
@@ -104,6 +178,8 @@ def _run(
     env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
     env["BACKUP_DIR"] = str(backup_dir)
     env["BACKUP_RETAIN_DAYS"] = "10000"
+    env["FAKE_PSQL_LOG"] = str(backup_dir / ".fake-psql-events")
+    env["FAKE_REAL_GZIP"] = shutil.which("gzip") or "/bin/gzip"
     env.update(env_overrides)
     return subprocess.run(
         [_SHELL, str(_SCRIPT)], env=env, capture_output=True, text=True, timeout=60
@@ -125,6 +201,7 @@ def bin_dir(tmp_path: Path) -> Path:
     d = tmp_path / "bin"
     d.mkdir()
     _install_stub(d, "pg_dump", _FAKE_PG_DUMP)
+    _install_stub(d, "psql", _FAKE_PSQL)
     return d
 
 
@@ -148,11 +225,24 @@ def test_successful_run_records_success_and_names_the_artifact(backup_dir: Path,
     assert receipt["artifact"] == published[0].name
 
 
+def test_policy_proof_is_snapshot_bound_before_the_scoped_export(backup_dir: Path, bin_dir: Path):
+    """The DB-free harness follows the same psql/snapshot ordering as production."""
+    proc = _run(backup_dir, bin_dir)
+
+    assert proc.returncode == 0, proc.stderr
+    assert (backup_dir / ".fake-psql-events").read_text(encoding="utf-8").splitlines() == [
+        "snapshot-exported",
+        "snapshot-policy-verified",
+        "scoped-export",
+        "restore-authorization",
+    ]
+
+
 @pytest.mark.parametrize(
     ("stubs", "env", "expected_reason"),
     [
         ({}, {"FAKE_PG_DUMP_MODE": "fail"}, "pg_dump_failed"),
-        ({}, {"FAKE_PG_DUMP_MODE": "empty"}, "artifact_undersize"),
+        ({"gzip": _FAKE_GZIP_UNDERSIZE}, {}, "artifact_undersize"),
         ({"gzip": _FAKE_GZIP}, {}, "artifact_corrupt"),
         ({"mv": _FAKE_MV}, {}, "unexpected_error"),
     ],

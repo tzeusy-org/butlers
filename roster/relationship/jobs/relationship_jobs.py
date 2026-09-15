@@ -29,6 +29,14 @@ from butlers.modules.approvals.park import park_prepared_action
 
 logger = logging.getLogger(__name__)
 
+
+async def run_loan_cost_claim_backfill(db_pool: asyncpg.Pool) -> dict[str, int]:
+    """Repair missing loan projections; idempotence makes scheduled retries safe."""
+    from butlers.tools.relationship.loans import backfill_loan_cost_claims
+
+    return await backfill_loan_cost_claims(db_pool)
+
+
 # Every pending_actions row these curation jobs park belongs to the
 # relationship butler -- they only ever run inside this daemon (bu-g27ib).
 _ORIGIN_BUTLER = "relationship"

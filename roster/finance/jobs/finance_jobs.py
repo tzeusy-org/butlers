@@ -30,6 +30,7 @@ from butlers.credential_store import CredentialStore
 from butlers.tools.finance.alerts import detect_price_changes, register_obligations
 from butlers.tools.finance.anomaly_detection import anomaly_scan
 from butlers.tools.finance.budgets import _period_anchor, budget_status, resolve_budget_zone
+from butlers.tools.finance.claim_reconciliation import reconcile_cost_claims
 from butlers.tools.finance.overview import subscription_audit
 from butlers.tools.finance.pattern_recognition import predict_bills
 from butlers.tools.finance.reconciliation import reconcile_bills
@@ -42,6 +43,23 @@ from butlers.tools.switchboard.insight.broker import propose_insight_candidate
 UTC_ZONE = ZoneInfo("UTC")
 
 logger = logging.getLogger(__name__)
+
+
+async def run_cost_claim_reconciliation_sweep(db_pool: asyncpg.Pool) -> dict[str, Any]:
+    """Run the deterministic cost-claim sweep without an LLM session."""
+    async with _finance_scoped_connection(db_pool) as conn:
+        return await reconcile_cost_claims(_SingleConnectionPool(conn))
+
+
+class _SingleConnectionPool:
+    """Pool-shaped adapter preserving the finance search path for a whole sweep."""
+
+    def __init__(self, conn: asyncpg.Connection) -> None:
+        self._conn = conn
+
+    @asynccontextmanager
+    async def acquire(self):
+        yield self._conn
 
 
 @asynccontextmanager
