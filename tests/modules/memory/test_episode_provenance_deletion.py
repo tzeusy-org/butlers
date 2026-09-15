@@ -16,12 +16,12 @@ import asyncpg
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.routers.memory import _get_db_manager, list_facts, list_rules
 from butlers.db import register_jsonb_codec
 from butlers.migrations import run_migrations
 from butlers.modules.memory.storage import get_links
 from butlers.testing.migration import create_migration_db, migration_db_name
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
