@@ -22,6 +22,7 @@ from butlers.connectors.spotify import (
 )
 from butlers.migrations import _build_alembic_config, run_migrations
 from butlers.testing.migration import (
+    create_migrated_test_db,
     create_migration_db,
     migration_bootstrap_db_url,
     migration_db_name,
@@ -429,7 +430,10 @@ def test_restart_recovery_and_recently_played_reconciliation(postgres_container)
 
 def test_downgrade_drops_table_and_revokes_sessions_grant(postgres_container) -> None:
     db_name = migration_db_name()
-    db_url = _migrate_core(postgres_container, db_name)
+    # This rollback owns core_230, not later protected authentication state.
+    db_url = create_migrated_test_db(
+        postgres_container, db_name, chains=["core"], revisions={"core": "core_230"}
+    )
     bootstrap_core = _build_alembic_config(
         migration_bootstrap_db_url(postgres_container, db_name), chains=["core"]
     )
