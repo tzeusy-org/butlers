@@ -37,14 +37,12 @@ from __future__ import annotations
 
 import asyncio
 import collections
-import hmac
 import json
 import logging
-import os
 import time
 from typing import Any
 
-from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 logger = logging.getLogger(__name__)
 
@@ -130,30 +128,14 @@ def _reset_events_bus_for_tests() -> None:
     _events_subscribers.clear()
 
 
-def _auth_ws_api_key(token: str | None) -> bool:
-    """Return True if *token* matches the configured DASHBOARD_API_KEY.
-
-    Mirrors the auth helpers in approvals.py / spend.py / settings_console.py:
-    when DASHBOARD_API_KEY is not set, all tokens are accepted (dev mode).
-    """
-    expected = os.environ.get("DASHBOARD_API_KEY") or None
-    if expected is None:
-        return True
-    if not token:
-        return False
-    return hmac.compare_digest(token, expected)
-
-
 @router.websocket("/stream")
 async def events_stream(
     websocket: WebSocket,
-    api_key: str | None = Query(None),
 ) -> None:
     """WebSocket stream multiplexing every dashboard-relevant event (move 5).
 
-    Authentication: pass the dashboard API key via ``?api_key=<key>`` at
-    upgrade time (browsers cannot set ``X-API-Key`` headers on WS upgrades).
-    Closes with WS code 4401 on auth failure.
+    The central boundary verifies the secure owner cookie and exact Origin
+    before upgrade, then rechecks session authority before every event.
 
     On connect the server sends a ``snapshot`` message containing the recent
     ring buffer (up to the last 200 events across all types) so a client is
@@ -162,7 +144,7 @@ async def events_stream(
     event when the connection has been idle for
     ``_EVENTS_HEARTBEAT_INTERVAL_S`` seconds.
     """
-    if not _auth_ws_api_key(api_key):
+    if getattr(websocket.state, "owner_authority", None) is None:
         await websocket.close(code=4401)
         return
 
