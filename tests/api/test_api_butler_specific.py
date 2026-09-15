@@ -24,7 +24,6 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerConnectionInfo,
@@ -42,6 +41,7 @@ from butlers.api.routers.spotify import _exchange_code_for_tokens, _TokenExchang
 from butlers.api.routers.spotify import (
     _get_db_manager as _spotify_get_db,
 )
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 
