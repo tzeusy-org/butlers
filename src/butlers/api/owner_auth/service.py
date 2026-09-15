@@ -25,6 +25,8 @@ _ERRORS = {
     "RATE_LIMITED": (429, "Owner authentication rate limit reached"),
     "AUTH_UNAVAILABLE": (503, "Owner authentication unavailable"),
     "BAD_REQUEST": (400, "Invalid owner authentication request"),
+    "INVALID_REQUEST": (400, "Invalid owner authentication request"),
+    "REQUEST_TOO_LARGE": (413, "Owner authentication request too large"),
 }
 
 
