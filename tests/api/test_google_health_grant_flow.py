@@ -44,13 +44,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.routers import google_health as gh_module
 from butlers.api.routers import oauth as oauth_module
 from butlers.api.routers import secrets_v2 as sv2_module
 from butlers.api.routers.google_health import GOOGLE_HEALTH_SCOPE_URLS
 from butlers.api.routers.oauth import _clear_state_store
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 
