@@ -47,8 +47,8 @@ async def _build_env(
 
     Other than `PATH`, only declared variables are included — undeclared env
     vars do not leak through. Includes butler-level required/optional vars and
-    module credential vars. Dashboard owner-auth variables are always withheld,
-    even if declared.
+    module credential vars. Owner-auth and administrative database variables are
+    always withheld, even if declared.
 
     Runtime authentication is handled by CLI-level OAuth tokens (device-code
     flow via the dashboard), not API keys.
