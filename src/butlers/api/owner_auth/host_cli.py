@@ -135,3 +135,15 @@ def rebind_origin(confirm_revoke: bool) -> None:
 def revoke_sessions(confirm_revoke: bool) -> None:
     """Advance the browser session epoch; ordinary passkey sign-in remains available."""
     _execute("revoke_sessions", confirm_revoke=confirm_revoke)
+
+
+@auth.command("clear-pending")
+@click.option(
+    "--confirm-revoke",
+    is_flag=True,
+    required=True,
+    help="Invalidate every pending browser context and host-approved ceremony.",
+)
+def clear_pending(confirm_revoke: bool) -> None:
+    """Release pending capacity without exposing visitor identities."""
+    _execute("clear_pending", confirm_revoke=confirm_revoke)

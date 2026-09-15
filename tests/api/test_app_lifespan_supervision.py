@@ -77,6 +77,8 @@ def _install_common_mocks(monkeypatch, *, call_counts: dict) -> None:
     monkeypatch.setattr(api_app, "init_pricing", MagicMock())
     monkeypatch.setattr(api_app, "get_butler_configs", MagicMock(return_value=[]))
     monkeypatch.setattr(api_app, "init_db_manager", AsyncMock(return_value=mock_db))
+    monkeypatch.setattr(api_app, "create_owner_auth_service", AsyncMock(return_value=None))
+    monkeypatch.setattr(api_app, "close_owner_auth_service", AsyncMock())
     monkeypatch.setattr(api_app, "get_db_manager", MagicMock(return_value=mock_db))
     monkeypatch.setattr(api_app, "wire_db_dependencies", MagicMock())
     monkeypatch.setattr(api_app, "get_mcp_manager", MagicMock())

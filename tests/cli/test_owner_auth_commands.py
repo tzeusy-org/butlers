@@ -18,7 +18,13 @@ def test_host_commands_are_registered_require_confirmation_and_do_not_expose_mat
     monkeypatch.setenv("DASHBOARD_API_KEY", "private-configured-key-sentinel")
     runner = CliRunner()
     assert "auth" in runner.invoke(cli, ["--help"]).output
-    for command in ("authorize-recovery", "reconcile-mode", "rebind-origin", "revoke-sessions"):
+    for command in (
+        "authorize-recovery",
+        "reconcile-mode",
+        "rebind-origin",
+        "revoke-sessions",
+        "clear-pending",
+    ):
         args = [command] + (["--request", "A" * 43] if command == "authorize-recovery" else [])
         with patch(
             "butlers.api.owner_auth.host_cli.run_host_operation", new_callable=AsyncMock

@@ -66,7 +66,7 @@ CREATE TABLE dashboard_auth.rate_buckets (
 CREATE TABLE dashboard_auth.audit (
  ts timestamptz NOT NULL DEFAULT clock_timestamp(),
  action text NOT NULL CHECK(action IN ('registration','login','session','logout','revoke',
- 'authorize_registration','authorize_recovery','reconcile_mode','rebind_origin','revoke_sessions','cleanup')),
+ 'authorize_registration','authorize_recovery','reconcile_mode','rebind_origin','revoke_sessions','clear_pending','cleanup')),
  outcome text NOT NULL CHECK(outcome IN ('success','denied','counter_anomaly')),
  actor text NOT NULL CHECK(actor IN ('owner','host_operator','unauthenticated'))
 );
@@ -88,6 +88,8 @@ BEGIN
  SELECT * INTO s FROM dashboard_auth.instance WHERE singleton FOR UPDATE;
  t := clock_timestamp();
  IF NOT FOUND THEN RETURN '{"error":"AUTH_UNAVAILABLE"}'; END IF;
+ IF (s.state='configured_key') IS DISTINCT FROM (s.key_generation IS NOT NULL) THEN
+  RETURN '{"error":"AUTH_UNAVAILABLE"}'; END IF;
  mode_ok := s.key_generation IS NOT DISTINCT FROM p->>'key_generation';
  browser_ok := COALESCE(mode_ok AND s.origin IS NOT NULL AND s.origin=p->>'origin'
                     AND s.rp_id=p->>'rp_id', false);
@@ -311,6 +313,17 @@ BEGIN
  SELECT * INTO s FROM dashboard_auth.instance WHERE singleton FOR UPDATE;
  t := clock_timestamp();
  IF NOT FOUND THEN RETURN '{"error":"AUTH_UNAVAILABLE"}'; END IF;
+ IF (s.state='configured_key') IS DISTINCT FROM (s.key_generation IS NOT NULL) THEN
+  RETURN '{"error":"AUTH_UNAVAILABLE"}'; END IF;
+ IF action='clear_pending' THEN
+  IF NOT COALESCE((p->>'confirm_revoke')::boolean,false) THEN RETURN '{"error":"FORBIDDEN"}'; END IF;
+  IF s.key_generation IS DISTINCT FROM p->>'key_generation' THEN RETURN '{"error":"AUTH_UNAVAILABLE"}'; END IF;
+  UPDATE dashboard_auth.contexts SET revoked=true WHERE NOT revoked;
+  UPDATE dashboard_auth.intents SET consumed=true,authorized=false WHERE NOT consumed;
+  UPDATE dashboard_auth.ceremonies SET consumed=true WHERE NOT consumed;
+  INSERT INTO dashboard_auth.audit(action,outcome,actor) VALUES(action,'success','host_operator');
+  RETURN jsonb_build_object('operation',action,'canonical_origin',s.origin,'changed',true);
+ END IF;
  IF action='revoke_sessions' THEN
   IF NOT COALESCE((p->>'confirm_revoke')::boolean,false) THEN RETURN '{"error":"FORBIDDEN"}'; END IF;
   IF s.key_generation IS DISTINCT FROM p->>'key_generation' THEN RETURN '{"error":"AUTH_UNAVAILABLE"}'; END IF;
@@ -387,7 +400,8 @@ BEGIN
  DELETE FROM dashboard_auth.contexts WHERE digest IN (SELECT digest FROM dashboard_auth.contexts WHERE expires_at<t-interval '23 hours' LIMIT 1000);
  DELETE FROM dashboard_auth.sessions WHERE digest IN (SELECT digest FROM dashboard_auth.sessions WHERE expires_at<t-interval '23 hours' LIMIT 1000);
  DELETE FROM dashboard_auth.csrf WHERE (session_digest,digest) IN (SELECT session_digest,digest FROM dashboard_auth.csrf WHERE expires_at<t-interval '23 hours' LIMIT 1000);
- UPDATE dashboard_auth.credentials SET credential_id=NULL,credential_data=NULL,user_handle=NULL
+ UPDATE dashboard_auth.credentials SET credential_id=NULL,credential_data=NULL,user_handle=NULL,
+  backup_eligible=false,backup_state=false,counter=0,retired_at=NULL
   WHERE credential_epoch IN (SELECT credential_epoch FROM dashboard_auth.credentials
    WHERE NOT active AND retired_at<t-interval '23 hours' AND credential_id IS NOT NULL LIMIT 1000);
  DELETE FROM dashboard_auth.audit WHERE ctid IN (SELECT ctid FROM dashboard_auth.audit WHERE ts<t-interval '30 days' LIMIT 2000);

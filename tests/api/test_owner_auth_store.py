@@ -339,6 +339,11 @@ async def test_expiry_capacity_cancel_and_missing_singleton_fail_closed(store):
         "UPDATE dashboard_auth.rate_buckets SET minute=clock_timestamp()-interval '2 minutes'; UPDATE dashboard_auth.contexts SET expires_at=clock_timestamp()-interval '1 second'"
     )
     assert await store.context()
+    await store.pool.execute("UPDATE dashboard_auth.instance SET state='configured_key'")
+    assert (await store.status())["state"] == "unavailable"
+    with pytest.raises(AuthError):
+        await host(store, "reconcile_mode", confirm_revoke=True)
+    await store.pool.execute("UPDATE dashboard_auth.instance SET state='keyless_unenrolled'")
     await store.pool.execute("DELETE FROM dashboard_auth.instance")
     assert (await store.status())["state"] == "unavailable"
     with pytest.raises(AuthError):
@@ -355,6 +360,10 @@ async def test_cleanup_removes_retired_material_and_receipts_never_reopen(store)
     await store.cleanup()
     retired = await store.pool.fetchrow("SELECT * FROM dashboard_auth.credentials WHERE NOT active")
     assert retired["credential_id"] is retired["credential_data"] is retired["user_handle"] is None
+    assert retired["retired_at"] is None
+    assert (
+        retired["counter"] == 0 and not retired["backup_eligible"] and not retired["backup_state"]
+    )
     assert await store.pool.fetchval("SELECT count(*) FROM dashboard_auth.audit") == 0
     assert not (await store.status(issued.token))["authenticated"]
     assert (await store.status())["state"] == "recovery_pending"
@@ -384,6 +393,13 @@ async def test_both_adopted_algorithms_and_options_retry(store, rsa_key):
 
 async def test_host_session_revoke_and_origin_rebind_preserve_exact_authority_boundaries(store):
     key, handle, issued = await enrolled(store)
+    context, options, response = await login(store, key, handle)
+    await host(store, "clear_pending", confirm_revoke=True)
+    assert (await store.status(issued.token))["authenticated"]
+    with pytest.raises(AuthError):
+        await store.finish_login(
+            context.token, context.data["csrf_token"], options["ceremony_id"], response
+        )
     context, options, response = await login(store, key, handle)
     await host(store, "revoke_sessions", confirm_revoke=True)
     assert not (await store.status(issued.token))["authenticated"]
@@ -460,6 +476,16 @@ async def test_capacity_limits_remain_global_and_host_control_works_while_satura
         )
     assert limited.value.status_code == 429
     await host(store, "revoke_sessions", confirm_revoke=True)
+    await host(store, "clear_pending", confirm_revoke=True)
+    assert (
+        await store.pool.fetchval("SELECT count(*) FROM dashboard_auth.contexts WHERE NOT revoked")
+        == 0
+    )
+    assert not await store.pool.fetchval(
+        "SELECT authorized FROM dashboard_auth.intents WHERE id=$1", intent["request_id"]
+    )
+    assert (await store.status())["state"] == "keyless_unenrolled"
+    assert await store.context()
 
 
 async def test_failed_finishes_consume_durable_rate_budget_without_consuming_proof(store):
@@ -576,6 +602,30 @@ async def test_factory_requires_real_restricted_login_and_reset_role_cannot_rest
             await close_owner_auth_service(replication)
         finally:
             await store.pool.execute("ALTER ROLE synthetic_dashboard_login NOREPLICATION")
+        await store.pool.execute("GRANT pg_execute_server_program TO synthetic_dashboard_login")
+        try:
+            executor = await create_owner_auth_service(store.config)
+            accepted_program_authority = executor.pool is not None
+            await close_owner_auth_service(executor)
+            assert not accepted_program_authority
+        finally:
+            await store.pool.execute(
+                "REVOKE pg_execute_server_program FROM synthetic_dashboard_login"
+            )
+        await store.pool.execute(
+            "GRANT USAGE ON SCHEMA dashboard_auth TO synthetic_dashboard_login; "
+            "GRANT UPDATE(authorized) ON dashboard_auth.intents TO synthetic_dashboard_login"
+        )
+        try:
+            direct_writer = await create_owner_auth_service(store.config)
+            accepted_direct_write = direct_writer.pool is not None
+            await close_owner_auth_service(direct_writer)
+            assert not accepted_direct_write
+        finally:
+            await store.pool.execute(
+                "REVOKE UPDATE(authorized) ON dashboard_auth.intents FROM synthetic_dashboard_login; "
+                "REVOKE USAGE ON SCHEMA dashboard_auth FROM synthetic_dashboard_login"
+            )
         # NOINHERIT does not help: a SET ROLE-capable ancestor still grants host authority.
         await store.pool.execute(
             "CREATE ROLE synthetic_host_login_capability NOLOGIN; GRANT EXECUTE ON FUNCTION dashboard_auth.host(text,jsonb) TO synthetic_host_login_capability; GRANT synthetic_host_login_capability TO synthetic_dashboard_login"

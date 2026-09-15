@@ -423,10 +423,24 @@ async def _initialize_auth_connection(connection: asyncpg.Connection) -> None:
               AND pg_has_role(session_user, 'dashboard_auth_api', 'MEMBER')
               AND NOT EXISTS (
                 SELECT FROM reachable JOIN pg_roles r USING(oid)
-                WHERE r.rolsuper OR r.rolcreaterole OR r.rolcreatedb
+                WHERE r.rolname NOT IN (session_user, 'dashboard_auth_api')
+                   OR r.rolsuper OR r.rolcreaterole OR r.rolcreatedb
                    OR r.rolbypassrls OR r.rolreplication
+                   OR r.oid=(SELECT datdba FROM pg_database WHERE datname=current_database())
                    OR has_function_privilege(r.oid,
                         (SELECT oid FROM host_function), 'EXECUTE')
+                   OR EXISTS (
+                        SELECT FROM pg_namespace n WHERE n.nspname='dashboard_auth'
+                          AND (n.nspowner=r.oid OR has_schema_privilege(r.oid,n.oid,'CREATE'))
+                   )
+                   OR EXISTS (
+                        SELECT FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+                        WHERE n.nspname='dashboard_auth' AND c.relkind IN ('r','p','v','m','f')
+                          AND (has_table_privilege(r.oid,c.oid,
+                               'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+                               OR has_any_column_privilege(r.oid,c.oid,
+                                  'SELECT,INSERT,UPDATE,REFERENCES'))
+                   )
               )
             """
         )
