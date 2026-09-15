@@ -290,10 +290,13 @@ def test_core_only_migrations_keep_session_stubs_in_sync(postgres_container):
 
     assert {"cached_input_tokens", "cache_creation_tokens"} <= public_columns
 
+    from butlers.migrations import _chain_script_directory
+
+    # The QA view migration owns these runtime-session stubs. A private auth
+    # schema can also have a sessions table without sharing this data model.
+    stub_schemas = _chain_script_directory("core").get_revision("core_055").module._SESSION_SCHEMAS
     session_stubs = {
-        table_name: columns
-        for table_name, columns in table_columns.items()
-        if table_name != "public.sessions" and table_name.endswith(".sessions")
+        f"{schema}.sessions": table_columns[f"{schema}.sessions"] for schema in stub_schemas
     }
     assert session_stubs, "core-only provisioning must create QA sessions stubs"
 
