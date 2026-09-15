@@ -79,14 +79,10 @@ export interface EventBusContextValue {
 const EventBusContext = createContext<EventBusContextValue | null>(null);
 
 export interface EventBusProviderProps {
-  /** Optional DASHBOARD_API_KEY for query-param auth. Leave undefined when
-   *  the server has no API key configured (dev mode) -- mirrors
-   *  useEventStream's own option. */
-  apiKey?: string;
   children: ReactNode;
 }
 
-export function EventBusProvider({ apiKey, children }: EventBusProviderProps) {
+export function EventBusProvider({ children }: EventBusProviderProps) {
   // One Set of listeners per event type, keyed in a ref rather than state --
   // dispatch must never itself trigger a re-render. Listeners are plain
   // side-effecting callbacks (cache patches, ticker updates), not rendered
@@ -100,7 +96,6 @@ export function EventBusProvider({ apiKey, children }: EventBusProviderProps) {
   }, []);
 
   const { status, lastEventAt, health } = useEventStream({
-    apiKey,
     onEvent: dispatch,
   });
 

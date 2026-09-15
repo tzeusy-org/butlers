@@ -1,3 +1,13 @@
+import { beforeEach } from "vitest";
+import { rememberOwnerCsrf } from "@/api/owner-session";
+
+// Domain-component tests run below OwnerGate with an established synthetic
+// owner session. Auth-boundary tests explicitly clear it to test real bootstrap.
+if (typeof location === "undefined") {
+  Object.defineProperty(globalThis, "location", { value: new URL("https://butlers.test/"), configurable: true });
+}
+beforeEach(() => rememberOwnerCsrf({ csrf_token: "synthetic-domain-test-csrf", csrf_expires_at: new Date(Date.now() + 1_800_000).toISOString() }));
+
 /**
  * Global vitest setup — runs before every test file.
  *

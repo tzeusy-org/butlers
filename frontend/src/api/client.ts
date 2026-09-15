@@ -1,3 +1,4 @@
+import { ownerFetch } from "./owner-session";
 /**
  * Typed fetch wrapper for the Butlers dashboard API.
  *
@@ -552,7 +553,7 @@ export async function apiFetch<T>(
 
   let response: Response;
   try {
-    response = await fetch(url, {
+    response = await ownerFetch(url, {
       ...fetchOptions,
       signal: controller.signal,
       headers: {
@@ -1761,7 +1762,7 @@ export async function importCalendarIcs(args: {
   form.append("butler_name", args.butlerName);
   if (args.calendarId) form.append("calendar_id", args.calendarId);
 
-  const response = await fetch(`${API_BASE_URL}/calendar/import/ics`, {
+  const response = await ownerFetch(`${API_BASE_URL}/calendar/import/ics`, {
     method: "POST",
     headers: { Accept: "application/json" },
     body: form,
@@ -5470,7 +5471,7 @@ export function createConversation(
   body: CreateConversationRequest,
   signal?: AbortSignal,
 ): Promise<Response> {
-  return fetch(`${API_BASE_URL}/butlers/${encodeURIComponent(butlerName)}/conversations`, {
+  return ownerFetch(`${API_BASE_URL}/butlers/${encodeURIComponent(butlerName)}/conversations`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
     body: JSON.stringify(body),
@@ -5488,7 +5489,7 @@ export function sendMessage(
   body: SendMessageRequest,
   signal?: AbortSignal,
 ): Promise<Response> {
-  return fetch(
+  return ownerFetch(
     `${API_BASE_URL}/butlers/${encodeURIComponent(butlerName)}/conversations/${encodeURIComponent(conversationId)}/messages`,
     {
       method: "POST",

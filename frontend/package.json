@@ -20,7 +20,8 @@
     "story:test": "vitest run --configLoader runner --reporter=verbose src/**/*.a11y.test.tsx",
     "test:e2e": "playwright test",
     "test:e2e:headed": "playwright test --headed",
-    "test:e2e:install": "playwright install --with-deps chromium"
+    "test:e2e:install": "playwright install --with-deps chromium",
+    "test:owner-auth": "playwright test --config playwright.owner-auth.config.ts"
   },
   "dependencies": {
     "@dagrejs/dagre": "^2.0.4",
