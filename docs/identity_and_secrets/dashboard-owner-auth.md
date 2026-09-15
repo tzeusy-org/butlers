@@ -73,6 +73,34 @@ header/body/query capture for authentication; verify absence using synthetic
 sentinels before any real ceremony. These public source facts do not certify a
 particular live proxy configuration.
 
+## Provision the restricted authentication connection
+
+The authentication pool uses `DASHBOARD_AUTH_DB_USER` and
+`DASHBOARD_AUTH_DB_PASSWORD`, with the existing PostgreSQL host, port and database.
+These are Tier 0 infrastructure credentials. Missing credentials fail closed;
+the pool must not fall back to the administrative `POSTGRES_USER/PASSWORD`.
+Host CLI operations continue to use that separate trusted administrative path.
+
+Prepare the following through the existing authorized database/secret-provisioning
+workflow before live cutover:
+
+1. Apply the additive auth migration, which creates the private schema and the
+   `dashboard_auth_api` capability role.
+2. Provision a dedicated `LOGIN`, `NOINHERIT`, `NOSUPERUSER`, `NOCREATEDB`,
+   `NOCREATEROLE` principal with membership only in the required auth API role.
+   It must not own the schema or be able to assume a host/schema-owner role.
+3. Supply its password through deployment secrets only to the dashboard API.
+   Never put password values in SQL files, shell history, process arguments,
+   diagnostic output, the frontend or runtime-child configuration.
+4. Verify with the actual restricted connection that permitted API functions
+   work, direct table/host-function access fails, and `RESET ROLE` cannot regain
+   administrative authority. A connection logged in as an administrator and
+   subsequently restricted with `SET ROLE` does not satisfy this isolation.
+
+No role/password provisioning follows automatically from adoption, tests or
+merge. Record only the operation category and pass/fail outcome in the live
+receipt, not connection credentials or authentication records.
+
 ## Initialize deployment configuration
 
 After the separately authorized additive migration creates the empty auth
