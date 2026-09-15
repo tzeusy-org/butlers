@@ -1,82 +1,33 @@
 # Project Plan
 
-> **Purpose:** Summarize the development milestones and current status of the Butlers project.
-> **Audience:** Contributors, stakeholders, anyone tracking project progress.
-> **Prerequisites:** None.
+> **Purpose:** Locate the maintained scope, milestone evidence, and execution plan.
+> **Audience:** Contributors and reviewers deciding what work is required or complete.
 
-## Overview
+Butlers develops against capability specifications grounded in its doctrine.
+A list of implemented components is not evidence that a milestone is complete:
+completion depends on the promised behavior and its verification.
 
-Butlers follows a milestone-driven development plan. The project has grown from initial prototyping to a functional alpha with 10 butler roles, 8+ modules, 6+ connectors, a React dashboard, E2E benchmarking, and an OpenSpec planning system. Development is guided by the OpenSpec tree (`openspec/`) and project doctrine (`about/heart-and-soul/`).
+| Question | Maintained source |
+|---|---|
+| What belongs in the product? | [Vision](../../about/heart-and-soul/vision.md) and [v1 scope](../../about/heart-and-soul/v1.md) |
+| Which v1 criteria have evidence? | [v1 status](../../about/heart-and-soul/v1-status.md), including its refresh rule |
+| What behavior is required? | [Capability specifications](../../openspec/specs/) |
+| What changes are being designed or delivered? | [Active OpenSpec changes](../../openspec/changes/); an unarchived directory alone does not prove approval or implementation |
+| What can be worked on now? | Beads dependencies, ownership, and acceptance criteria; start with `bd ready`, then `bd show <id>` |
+| What actually runs? | [Topology](../../about/lay-and-land/README.md), [roster](../../roster/), and the relevant implementation and runtime evidence |
 
-## Current State
+Dated audit dossiers record observations and proposals at a particular point
+in time. They inform planning; they do not replace current specifications or
+prove that work shipped. The [redesign index](../redesigns/README.md) identifies
+those retained records.
 
-The project has reached a functional alpha state with substantial implementation across all layers:
+## Verification
 
-### Core Infrastructure (Implemented)
-- **Butler daemon lifecycle:** Config loading, startup phases, shutdown, health status.
-- **State store:** KV JSONB operations (get/set/delete/list) with per-butler schema isolation.
-- **Scheduler:** Cron-based task dispatch with staggering, TOML sync, and calendar projection.
-- **Spawner:** Multi-runtime LLM CLI spawner (Claude Code, Codex, OpenCode/Gemini), ephemeral MCP config generation, session serialization.
-- **Session management:** Creation, completion, audit fields, trigger source tracking, cost/token capture.
-- **Module system:** Abstract base class contract, dependency resolution via topological sort, Alembic migration chains.
-- **Credential store:** DB-first resolution with environment variable fallback, Google OAuth integration.
-- **Telemetry:** OpenTelemetry tracing, structured logging, Prometheus metrics, Grafana dashboards.
-
-### Connectors (Implemented)
-- **Telegram bot connector:** Polling/webhook modes, tiered text extraction, lifecycle reactions.
-- **Telegram user client:** Readonly Telethon MTProto, live-stream ingestion, bounded backfill.
-- **Gmail connector:** OAuth DB-first, polling with history-based sync, label filtering, triage rules.
-- **Discord connector:** Draft v2-only, passive ingestion for contextualization.
-
-### Modules (Implemented)
-- **Approvals:** Gate wrapper, pending actions, standing rules, risk tiers, redaction, audit events.
-- **Calendar:** Unified view, scheduled task projection, RRULE events, CRUD tools.
-- **Contacts:** Google sync, public schema, contact_info, entity linkage.
-- **Email:** Gmail integration, inbox search, send/reply tools.
-- **Mailbox:** Message storage, ingestion tracking.
-- **Memory:** Tiered storage (episodes/facts/rules), hybrid search, embedding, consolidation, entity graph.
-- **Telegram:** Bot/user client tools, approval integration.
-- **Pipeline:** Routing prompt construction, identity resolution, UUIDv7 message IDs.
-
-### Dashboard (Implemented)
-- React frontend with OKLCH design system and shadcn/ui components.
-- 80+ API endpoints across 18 domain groups.
-- Auto-discovered butler routers from roster.
-- SSE streaming for live updates.
-- Butler detail pages with 10+ tabs.
-- Switchboard-specific views (registry, routing log, triage, backfill).
-
-### Butler Roles (10 in Roster)
-- **Switchboard:** Message routing, decomposition, registry, lifecycle management.
-- **General:** Catch-all assistant.
-- **Relationship:** Personal CRM, 40+ tools, entity resolution.
-- **Health:** Medications, measurements, conditions, symptoms, meals.
-- **Finance:** Transactions, subscriptions, bills.
-- **Messenger:** Delivery execution plane.
-- **Education:** Learning and study assistant.
-- **Travel:** Trip planning, bookings, itineraries.
-- **Home:** Home automation integration (aspirational).
-
-## Memory Subsystem Plan
-
-The tiered memory subsystem's design (documented in `docs/modules/memory.md`):
-
-- **Eden tier:** Hot storage for recent episodes and facts.
-- **Mid-Term tier:** Consolidated knowledge promoted from Eden via LRU.
-- **Long-Term tier:** Permanent knowledge base with semantic search.
-- **Promotion/Eviction:** LRU-based movement between tiers with consolidation.
-
-## Active Development Areas
-
-Current focus areas based on recent OpenSpec changes:
-
-- **Adapter integration test suites:** Standardized testing for connector adapters.
-- **Memory residual gaps:** Closing remaining memory subsystem implementation gaps.
-- **CRUD-to-SPO migration:** Migrating entity storage from CRUD to subject-predicate-object triples.
-- **Predicate registry enforcement:** Enforcing a controlled vocabulary for entity predicates.
-- **Documentation information architecture:** Reorganizing docs for contributor-friendly navigation (this documentation set is part of that effort).
+Run `openspec list` to inspect unarchived change status and `bd show <id>` for
+the owning task. Check the cited commit, tests, and deployment evidence before
+reusing a completion claim from the v1 status page or a historical report.
 
 ## Related Pages
 
-- [OpenSpec Overview](openspec-overview.md) -- How specifications drive development
-- [Testing Strategy](../testing/testing-strategy.md) -- Quality gates and test pyramid
+- [OpenSpec workflow](openspec-overview.md): proposing, validating, and closing a change.
+- [Testing and verification](../../about/craft-and-care/testing-and-verification.md): the evidence required for completion.

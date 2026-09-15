@@ -10,9 +10,9 @@ name: E2E Main Schedule
 # surfaces loudly within one cycle instead of lying red silently. On recovery it
 # comments and closes that issue.
 #
-# It deliberately does NOT touch branch protection or required checks — main is
-# unprotected by design (network-boundary security doctrine); flipping that is an
-# owner call, left as a possible follow-up.
+# It deliberately does NOT change the live merge-queue ruleset. That ruleset
+# requires check/guards/frontend; making frontend-e2e required is a separate
+# owner decision.
 
 on:
   schedule:

@@ -81,7 +81,7 @@ Beads JSONL export/linter, FastAPI, React/Vite/Vitest, Docker/testcontainers.
 
 | File | Responsibility |
 |---|---|
-| `alembic/versions/core/<allocated-next-core-revision>_beads_projection.py` | Core migration allocated from the exact rebased core-chain head at implementation time: schema, private tables, active reader views, role boundaries, and constraints. This planning packet reserves neither its revision identifier nor its predecessor. |
+| `alembic/versions/core/<allocated-next-core-revision>_beads_projection.py` | Core migration allocated from the fetched core-chain head at implementation time: schema, private tables, active reader views, role boundaries, and constraints. This planning packet reserves neither its revision identifier nor its predecessor. |
 | `src/butlers/core/beads_projection.py` | Typed snapshot model, source selector, async `BeadReadProvider`, atomic active-view reader, freshness classifier, and pure JSONL compatibility adapter. |
 | `scripts/beads_projection_exporter.py` | Tracker-host-only deterministic candidate parser, lint normalizer, advisory-lock publisher, retention, and bounded run reporting. Must carry PEP 723 metadata. |
 | `src/butlers/jobs/decision_review.py` | Source-agnostic decision calculation and lint/attention integration; no direct runtime parser after cutover. |
@@ -248,12 +248,11 @@ observable freshness signal.
 ### Task 2: Create the projection schema and privilege boundary
 
 **Revision-allocation precondition:** Immediately before creating this migration,
-rebase the implementation branch onto its exact target base, inspect the core
-chain's single head in that rebased worktree, and allocate the next core Alembic
-revision with `down_revision` set to that head. Do not reuse a revision
-identifier, filename, or predecessor from this planning packet. If the target
-base advances before implementation or review, rebase and repeat this
-allocation from the new exact rebased core-chain head at implementation time.
+fetch the target branch, inspect the core chain's single head, and allocate the
+next core Alembic revision with `down_revision` set to that observed head. Do not
+reuse a revision identifier, filename, or predecessor from this planning packet.
+If a later fetch demonstrates a migration conflict, rebase to resolve it and
+repeat the allocation; do not refresh-rebase an otherwise clean PR.
 
 **Files:**
 
@@ -656,9 +655,10 @@ allocation from the new exact rebased core-chain head at implementation time.
   `--force-with-lease` only when its history was rebased. Do not use broad
   staging or push directly to `main`.
 
-  Open a non-draft PR, keep session links out of all PR metadata, wait for all
-  hosted checks, resolve every review thread, and use the repository exact-base
-  merge helper only after independent exact-head review.
+  Open a non-draft PR, keep session links out of all PR metadata, wait for the
+  applicable PR-head gates, resolve every review thread, and add the reviewed
+  PR to the merge queue with `gh pr merge <n> --squash --auto`. The queue's
+  `merge_group` run is the terminal merged-tree gate.
 
 ## Plan Self-Review
 
@@ -668,9 +668,9 @@ allocation from the new exact rebased core-chain head at implementation time.
   operational authorization boundary.
 - **Completeness scan:** Every future source/test path, interface, bounded field
   set, command, expected outcome, and owner gate is named. The core migration
-  revision is allocated only from the exact rebased core-chain head at
-  implementation time, so this planning packet reserves no revision identifier
-  or predecessor and remains valid if the target base advances.
+  revision is allocated only after fetching and inspecting the current
+  core-chain head, so this planning packet reserves no revision identifier or
+  predecessor and remains valid if the target base advances.
 - **Type consistency:** `BeadReadProvider.read_active()` returns one
   `BeadSnapshot`; the exporter publishes its data, decision review consumes it,
   and API/UI expose only its source/freshness provenance.

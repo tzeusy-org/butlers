@@ -206,6 +206,7 @@ output_price_per_token = 0.000003   # $3.00 / 1M tokens
 
 [models."opencode-go/kimi-k2.6"]
 input_price_per_token = 0.00000095  # $0.95 / 1M tokens
+cached_input_price_per_token = 0.000000095  # $0.095 / 1M tokens (assumed 10% of input, matching the qwen3.6/3.7-plus cache discount reconciled from the same price sheet)
 output_price_per_token = 0.000004   # $4.00 / 1M tokens
 
 # Prices reconciled against the OpenCode Go price sheet (2026-07-05).
@@ -220,6 +221,7 @@ output_price_per_token = 0.000004   # $4.00 / 1M tokens
 
 [models."opencode-go/mimo-v2.5"]
 input_price_per_token = 0.00000014  # $0.14 / 1M tokens
+cached_input_price_per_token = 0.000000014  # $0.014 / 1M tokens (assumed 10% of input, matching the qwen3.6/3.7-plus cache discount reconciled from the same price sheet)
 output_price_per_token = 0.00000028  # $0.28 / 1M tokens
 
 [models."opencode-go/mimo-v2.5-pro"]
@@ -272,19 +274,25 @@ output_price_per_token = 0.00000028  # $0.28 / 1M tokens
 
 # Ollama (local/self-hosted) — zero cost
 # Model IDs match the ollama/ prefix used in model_catalog_defaults.toml
+# billing_class = "local" so a known zero marginal cost is never confused
+# with a metered model missing from this file (bu-2jtfw.4).
 
 [models."ollama/qwen2.5-coder:7b"]
 input_price_per_token = 0.0
 output_price_per_token = 0.0
+billing_class = "local"
 
 [models."ollama/llama3.3:latest"]
 input_price_per_token = 0.0
 output_price_per_token = 0.0
+billing_class = "local"
 
 [models."ollama/deepseek-r1:32b"]
 input_price_per_token = 0.0
 output_price_per_token = 0.0
+billing_class = "local"
 
 [models."ollama/qwen3.5:9b"]
 input_price_per_token = 0.0
 output_price_per_token = 0.0
+billing_class = "local"

@@ -125,8 +125,8 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
 - **MODIFIED capability** `connector-base-spec`:
   - Adds the `observed_scopes`, `observed_scopes_fetched_at`,
     `required_scopes_version`, and `auth_status` fields to the
-    `connector_registry` row and to the `ConnectorDetail` Pydantic response
-    model.
+    `connector_registry` row and to the flat `ConnectorDetailEntry` Pydantic
+    wire response model.
   - Adds the requirement that connectors with OAuth credential type SHALL
     refresh `observed_scopes` opportunistically on every token refresh and
     SHALL re-introspect on a configurable cadence (default 6h) so drift is
@@ -155,8 +155,8 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
 ### Modified Capabilities
 
 - `connector-base-spec` — additive columns on `connector_registry` and
-  additive fields on `ConnectorDetail` Pydantic response. No behavior of the
-  base spec changes.
+  additive fields on the flat `ConnectorDetailEntry` Pydantic wire response.
+  No behavior of the base spec changes.
 - `dashboard-ingestion-dispatch-console` — an active `## ADDED Requirements`
   delta extends the existing canonical recovery resolver with the durable
   generic-OAuth, Spotify, and non-OAuth authority split.
@@ -173,15 +173,15 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
     handling to owner `public.entity_info` via `resolve_owner_entity_info()`;
     keep the OAuth app client ID in `CredentialStore`; and add only derived
     scope or connection metadata where this capability requires it.
-  - `src/butlers/api/routers/ingestion_events.py` — replace the HTTP 503 stub
-    in the reauth handler with the contract defined here.
+  - `src/butlers/api/routers/ingestion_connectors.py` — replace the HTTP 503
+    stub in the reauth handler with the contract defined here.
   - `src/butlers/migrations/versions/` — Alembic migration adding
     `observed_scopes TEXT[]`, `observed_scopes_fetched_at TIMESTAMPTZ`,
     `required_scopes_version SMALLINT`, `auth_status VARCHAR` columns to
     `public.connector_registry`.
   - `src/butlers/connectors/spotify/` — periodic re-introspection task;
     connector-owned Passport projection data remains content-blind.
-  - `frontend/src/components/ingestion/ConnectorDetail.tsx` — wire `scopes[]`
+  - `frontend/src/components/ingestion/connectors/ConnectorDetailView.tsx` — wire `scopes[]`
     block; render `ReauthCallout` from `auth.status`; render `ScopeList` from
     `scopes[]` per-row `status` + `serif_note`.
 
@@ -313,7 +313,7 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
   `openspec/specs/connector-spotify/spec.md`,
   `openspec/specs/butler-secrets/spec.md`, `bu-fj7lx`, and `bu-3ifcj`
 - Connector base spec (extension target) —
-  `openspec/specs/connector-base-spec/spec.md:381-419`
+  `openspec/specs/connector-base-spec/spec.md:425-451`
 - Credential masking contract (must not contradict) —
   `openspec/specs/core-credentials/spec.md:52-99,200-223`
 - Non-OAuth connectors (must degrade gracefully) —

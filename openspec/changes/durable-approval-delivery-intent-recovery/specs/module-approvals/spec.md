@@ -38,7 +38,13 @@ Scope: v1-mandatory
 - **AND** delivery backlog metrics remain a separate safe aggregation rather than action payload data
 
 ### Requirement: Status Transition Contract
-The approval lifecycle SHALL allow `pending -> approved|rejected|expired` and `approved -> executed|abandoned`, with `rejected|expired|executed|abandoned` terminal and invalid transitions raising `InvalidTransitionError`; every transition out of `pending` SHALL atomically fence or cancel its nonterminal approval-delivery presentations without granting the notification worker domain-action mutation authority. Each authenticated dashboard defer remains a pending-state operation and appends exactly one bounded successor presentation generation through its own shared transaction path.
+
+The approval lifecycle MUST allow `pending -> approved|rejected|expired`,
+`approved -> executed|abandoned`, and no transition from
+`rejected|expired|executed|abandoned`. Invalid transitions raise
+`InvalidTransitionError`.
+
+Every transition out of `pending` SHALL atomically fence or cancel its nonterminal approval-delivery presentations without granting the notification worker domain-action mutation authority. Each authenticated dashboard defer remains a pending-state operation and appends exactly one bounded successor presentation generation through its own shared transaction path.
 
 ID: REQ-module-approvals-002
 Source: RFC-0021,RFC-0023
@@ -83,3 +89,32 @@ Scope: v1-mandatory
 - **WHEN** the executor is called for an action that is already `executed`
 - **THEN** the stored `execution_result` is returned idempotently
 - **AND** no second execution or notification delivery occurs
+
+#### Scenario: Abandon an approved unexecuted action
+
+- **WHEN** an authenticated dashboard actor requests abandonment with a
+  non-blank reason for an action whose status is `approved` and execution
+  result is null
+- **THEN** a compare-and-set UPDATE transitions it to `abandoned`
+- **AND** an immutable `action_abandoned` event records the actor and exact
+  reason in the same transaction
+- **AND** the action cannot subsequently execute or return to an eligible
+  recovery state.
+
+#### Scenario: Invalid abandonment source state is rejected
+
+- **WHEN** abandonment targets an action that is pending, rejected, expired,
+  executed, abandoned, or has a non-null execution result
+- **THEN** no action state or event is written
+- **AND** the caller receives a transition error describing the durable current
+  state.
+
+#### Scenario: Retry and abandonment race
+
+- **WHEN** retry dispatch and abandonment concurrently target the same approved
+  action with a null execution result
+- **THEN** the executor acquires a database row lock before any handler is
+  invoked, and abandonment's compare-and-set waits for that lock
+- **AND** only the winning terminal outcome is durably recorded
+- **AND** the loser returns the current durable state without appending another
+  terminal event.

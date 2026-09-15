@@ -24,6 +24,15 @@ A session represents one ephemeral LLM CLI invocation. The session log (`src/but
 | `ingestion_event_id` | Connector | UUID of the ingestion event (NULL for non-connector triggers) |
 | `complexity` | Trigger/scheduler | Complexity tier used for model selection |
 | `resolution_source` | Model routing | How the model was resolved (`"catalog"` or `"toml_fallback"`) |
+| `purpose_lane` | Trusted routing/connector context | Closed `standard` or `private_content` dispatch purpose; never inferred from prompt text |
+| `effective_prompt` | Prompt composer | Exact effective system-prompt bytes supplied to the adapter; separate from caller `prompt` |
+| `prompt_digest` | Prompt composer | Lowercase SHA-256 of `effective_prompt` UTF-8 bytes |
+| `prompt_provenance` | Prompt composer | Ordered source/status/byte-count/digest metadata without source content or absolute paths |
+
+The effective-system-prompt receipt is immutable creation evidence. It is returned only by the
+authenticated `GET /api/sessions/{id}/prompt` door after digest and byte-count verification; list,
+aggregate, ordinary detail, audit, metric, and telemetry surfaces do not copy it. Legacy rows may
+lack a receipt and are reported as unavailable rather than reconstructed from current files.
 
 The `trigger_source` field is validated against a fixed set: `tick`, `external`, `trigger`, `route`, `healing`, or `schedule:<task-name>`. The `request_id` parameter is required and must not be `None`.
 
@@ -63,6 +72,17 @@ The session log supports several query patterns:
 - **`sessions_daily(pool, from_date, to_date)`** --- Per-day session counts and token usage with per-model breakdowns. Powers the dashboard usage chart.
 - **`top_sessions(pool, limit)`** --- Highest-token completed sessions, ordered by total tokens descending.
 - **`schedule_costs(pool)`** --- Joins `scheduled_tasks` with `sessions` via the `trigger_source` convention to compute per-schedule token usage, plus a forecast: `projected_monthly_runs` per schedule, the cron expression's own cadence over an average Gregorian calendar month (30.436875 days), and a top-level `forecast_basis` stating that basis once for the whole result (it is a constant, so it is not repeated per row). The cadence is counted over a whole number of the expression's own repeat cycles from a fixed anchor, so it is a pure function of the cron string and does not change with the time of the request; a cadence that cannot be established yields `0.0`, meaning "unknown", not "never runs", and never raises. Keep it separate from the measured totals in the same row.
+
+## Friction Ledger
+
+`session_complete()` derives a typed friction row into `sessions_friction` for every session that was not clean, keyed on `(session_id, kind, ordinal)` for idempotence. Derivation is deterministic (`_classify_friction_kind()` in `sessions.py`, mirroring the same guardrail/timeout signatures as `by_error_marker`) — no LLM judgment. A clean session (`success=True`, no leftover `error`) writes zero rows. Kinds:
+
+- `degenerate_tool_loop` / `guardrail_termination` --- spawner guardrail terminations (repeated identical tool calls, or a tool-call/token budget cap).
+- `classification_timeout` --- a switchboard classification dispatch (mini model, ≤60s) that timed out.
+- `recovered_error` --- the session ultimately succeeded but carries a leftover `error` string from a mid-session failure.
+- `dead_end` --- any other unclassified failure.
+
+A friction-write failure is logged and swallowed; it never blocks the append-only session-close contract.
 
 ## JSONB Handling
 

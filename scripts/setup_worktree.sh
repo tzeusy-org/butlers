@@ -50,6 +50,7 @@ CACHE_DIRS=(
 )
 
 SYMLINKED_COUNT=0
+FALLBACK_COUNT=0
 
 for cache_dir in "${CACHE_DIRS[@]}"; do
   source_path="${MAIN_REPO_ROOT}/${cache_dir}"
@@ -58,6 +59,34 @@ for cache_dir in "${CACHE_DIRS[@]}"; do
   # Skip if source doesn't exist (main repo hasn't run npm install yet)
   if [ ! -e "$source_path" ]; then
     continue
+  fi
+
+  # Guard against linking a broken cache: `test -e` and `ln -s` both succeed
+  # against an empty or unreadable directory, so an empty source silently
+  # propagates a dead symlink into every worktree (bu-87osw). Check content,
+  # not just existence.
+  if [ -d "$source_path" ] && [ -z "$(ls -A "$source_path" 2>/dev/null)" ]; then
+    echo "Warning: ${source_path} exists but is empty -- symlinking it would leave a dead ${cache_dir} in this worktree." >&2
+
+    # Idempotent: a prior fallback run may have already installed here.
+    if [ -d "$target_path" ] && [ ! -L "$target_path" ] && [ -n "$(ls -A "$target_path" 2>/dev/null)" ]; then
+      echo "Reusing the already-installed local ${cache_dir} in this worktree." >&2
+      FALLBACK_COUNT=$((FALLBACK_COUNT + 1))
+      continue
+    fi
+
+    package_dir="${WORKTREE_ROOT}/$(dirname "$cache_dir")"
+    package_json="${package_dir}/package.json"
+    if [ -f "$package_json" ] && command -v npm >/dev/null 2>&1; then
+      echo "Falling back to a local 'npm install' for ${cache_dir} inside this worktree (gitignored, costs disk per worktree -- see AGENTS.md 'Worktree node_modules')." >&2
+      ( cd "$package_dir" && npm install )
+      FALLBACK_COUNT=$((FALLBACK_COUNT + 1))
+      continue
+    fi
+
+    echo "Error: cannot fall back to 'npm install' for ${cache_dir} (missing ${package_json} or npm unavailable)." >&2
+    echo "Fix ${source_path} in the main repo (repopulate it as a user-owned install) or install dependencies manually." >&2
+    exit 1
   fi
 
   # Create parent directory if needed
@@ -74,10 +103,15 @@ for cache_dir in "${CACHE_DIRS[@]}"; do
   SYMLINKED_COUNT=$((SYMLINKED_COUNT + 1))
 done
 
-if [ "$SYMLINKED_COUNT" -eq 0 ]; then
+if [ "$SYMLINKED_COUNT" -eq 0 ] && [ "$FALLBACK_COUNT" -eq 0 ]; then
   echo "No caches available to symlink (main repo hasn't run npm install yet)."
 else
-  echo "Symlinked $SYMLINKED_COUNT cache directory(ies) from main repo."
+  if [ "$SYMLINKED_COUNT" -gt 0 ]; then
+    echo "Symlinked $SYMLINKED_COUNT cache directory(ies) from main repo."
+  fi
+  if [ "$FALLBACK_COUNT" -gt 0 ]; then
+    echo "Installed $FALLBACK_COUNT cache directory(ies) locally as a fallback (see warnings above)."
+  fi
 fi
 
 # Copy the machine-local Dolt server pointer into the new worktree.

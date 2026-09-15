@@ -66,6 +66,13 @@ class DeliveryEntry(BaseModel):
     """
 
 
+class DeliveryReplayResult(BaseModel):
+    """Durable result of requeueing one permanently failed delivery."""
+
+    delivery_id: str
+    status: str
+
+
 class ReactionEntry(BaseModel):
     """One ``public.domain_event_reactions`` row -- a step in the trace."""
 

@@ -50,9 +50,10 @@ CREATE TABLE IF NOT EXISTS facts (
     validity TEXT NOT NULL DEFAULT 'active'
 );
 CREATE TABLE IF NOT EXISTS rules (
-    id       BIGSERIAL PRIMARY KEY,
-    maturity TEXT NOT NULL DEFAULT 'candidate',
-    metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+    id         BIGSERIAL PRIMARY KEY,
+    maturity   TEXT NOT NULL DEFAULT 'candidate',
+    metadata   JSONB NOT NULL DEFAULT '{}'::jsonb,
+    retired_at TIMESTAMPTZ
 );
 CREATE TABLE IF NOT EXISTS public.consolidation_runs (
     id                 BIGSERIAL PRIMARY KEY,

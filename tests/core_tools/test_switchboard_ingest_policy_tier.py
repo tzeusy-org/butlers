@@ -164,6 +164,50 @@ async def test_no_control_falls_back_to_default(monkeypatch):
     assert buffer.enqueue_calls[0]["policy_tier"] == "default"
 
 
+async def test_captionless_photo_with_attachment_reaches_enqueue(monkeypatch):
+    """bu-x03u6l: a captionless media message (empty normalized_text, non-empty
+    attachments) must still be enqueued for routing/dispatch — the pre-existing
+    ``if normalized_text:`` truthiness gate silently dropped it after
+    bu-2jtfw.7 made empty normalized_text legitimate for captionless media.
+    """
+    buffer = _FakeBuffer()
+    ingest, _request_id = _register_and_grab_ingest(monkeypatch, buffer)
+
+    kwargs = _envelope_kwargs("default")
+    kwargs["payload"] = {
+        "raw": {},
+        "normalized_text": "",
+        "attachments": [
+            {
+                "media_type": "image/jpeg",
+                "storage_ref": "s3://bucket/photo.jpg",
+                "size_bytes": 1024,
+            },
+        ],
+    }
+
+    await ingest(**kwargs)
+
+    assert len(buffer.enqueue_calls) == 1
+    assert buffer.enqueue_calls[0]["message_text"] == ""
+    assert buffer.enqueue_calls[0]["attachments"] == kwargs["payload"]["attachments"]
+
+
+async def test_no_text_no_attachments_does_not_enqueue(monkeypatch):
+    """Without a caption or attachments there is nothing to route — the
+    enqueue gate should still skip a genuinely empty message.
+    """
+    buffer = _FakeBuffer()
+    ingest, _request_id = _register_and_grab_ingest(monkeypatch, buffer)
+
+    kwargs = _envelope_kwargs("default")
+    kwargs["payload"] = {"raw": {}, "normalized_text": ""}
+
+    await ingest(**kwargs)
+
+    assert len(buffer.enqueue_calls) == 0
+
+
 async def test_spoken_metadata_only_triage_reaches_durable_buffer(monkeypatch):
     """The core ingest handoff preserves pre-resolved spoken capture-only triage."""
     buffer = _FakeBuffer()

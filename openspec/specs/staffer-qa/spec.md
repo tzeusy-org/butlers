@@ -203,7 +203,7 @@ The QA Staffer SHALL operate with a least-privilege security model: dedicated cr
 - **WHEN** the QA Staffer creates PRs
 - **THEN** it retrieves the GitHub token via `CredentialStore.resolve("BUTLERS_QA_GH_TOKEN")` which checks: (1) `qa.butler_secrets` (QA staffer's own schema), (2) shared fallback pools, (3) env fallback if configured — per RFC 0006 Tier 1 resolution order
 - **AND** the secret is provisioned in the QA staffer's own butler_secrets table with `category = "qa"`, `is_sensitive = true` — managed via the QA staffer's secrets page on the dashboard at /secrets
-- **AND** the token is scoped to: branch push, PR creation, PR labeling on `Tzeusy/butlers`
+- **AND** the token is scoped to: branch push, PR creation, PR labeling on `tzeusy-org/butlers`
 - **AND** the token SHALL NOT have merge/approve permissions — humans remain in the merge seat
 - **AND** if the secret is not found at any tier, the investigation completes but transitions to `failed` with reason `"no_gh_token"`
 

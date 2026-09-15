@@ -240,10 +240,34 @@ class TestStafferTypeInRegistry:
         'The Switchboard dispatches to the named target regardless of type.'
         Calling notify() with target='messenger' routes to the Messenger staffer.
         """
-        from butlers.daemon import CORE_TOOL_NAMES
+        from unittest.mock import MagicMock
 
-        # The notify core tool must be present in the daemon's tool registration,
-        # confirming it can dispatch to named targets including staffers.
-        assert "notify" in CORE_TOOL_NAMES, (
-            "notify must be a core tool so any butler can dispatch to the Messenger (RFC 0003)"
+        from butlers.config import ButlerType
+        from butlers.core_tools import ToolContext
+        from butlers.core_tools._notifications import register_notification_tools
+
+        registrations: list[tuple[str, str]] = []
+
+        def core_tool(group: str, **tool_kwargs):
+            def register(fn):
+                registrations.append((tool_kwargs.get("name", fn.__name__), group))
+                return fn
+
+            return register
+
+        register_notification_tools(
+            ToolContext(
+                daemon=MagicMock(),
+                pool=MagicMock(),
+                spawner=MagicMock(),
+                butler_name="general",
+                butler_type=ButlerType.BUTLER,
+                is_switchboard=False,
+                is_messenger=False,
+                route_metrics=MagicMock(),
+            ),
+            MagicMock(),
+            core_tool,
         )
+
+        assert ("notify", "notifications") in registrations

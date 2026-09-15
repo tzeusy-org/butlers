@@ -23,6 +23,7 @@ from uuid import UUID
 from opentelemetry import metrics, trace
 from pydantic import BaseModel, ConfigDict, Field
 
+from butlers.core.approval_recovery_exclusion import message_inbox_recovery_exclusion_sql
 from butlers.core.model_routing import Complexity
 from butlers.core.routing_context import _routing_ctx_var
 from butlers.core.utils import coerce_request_id as _coerce_request_id
@@ -68,6 +69,8 @@ def _decomposition_empty_counter() -> metrics.Counter:
 
 _ROUTE_TOOL_NAME_RE = re.compile(r"(?:^|[^a-z0-9])route_to_butler$", re.IGNORECASE)
 _FILE_BUG_REPORT_TOOL_NAME_RE = re.compile(r"(?:^|[^a-z0-9])file_bug_report$", re.IGNORECASE)
+_ANSWER_QUESTION_TOOL_NAME_RE = re.compile(r"(?:^|[^a-z0-9])answer_question$", re.IGNORECASE)
+_CANNOT_ANSWER_TOOL_NAME_RE = re.compile(r"(?:^|[^a-z0-9])cannot_answer$", re.IGNORECASE)
 _TELEGRAM_CHAT_ID_RE = re.compile(r"^-?\d+$")
 _TELEGRAM_CHAT_MESSAGE_RE = re.compile(r"^(?P<chat_id>-?\d+):(?P<message_id>\d+)$")
 
@@ -130,6 +133,7 @@ async def _load_realtime_history(
     Ordered chronologically (oldest first).
     """
     time_cutoff = received_at - timedelta(minutes=max_time_window_minutes)
+    history_exclusion = message_inbox_recovery_exclusion_sql()
 
     telegram_chat_id: str | None = None
     if source_channel in ("telegram_bot", "telegram_user_client"):
@@ -142,7 +146,7 @@ async def _load_realtime_history(
     async with pool.acquire() as conn:
         # Load time-based window
         time_window_messages = await conn.fetch(
-            """
+            f"""
             SELECT
                 normalized_text AS raw_content,
                 request_context ->> 'source_sender_identity' AS sender_id,
@@ -150,7 +154,8 @@ async def _load_realtime_history(
                 raw_payload -> 'metadata' AS raw_metadata,
                 COALESCE(direction, 'inbound') AS direction
             FROM message_inbox
-            WHERE (
+            WHERE {history_exclusion}
+                AND (
                     request_context ->> 'source_thread_identity' = $1
                     OR (
                         $4::text IS NOT NULL
@@ -178,7 +183,7 @@ async def _load_realtime_history(
 
         # Load count-based window
         count_window_messages = await conn.fetch(
-            """
+            f"""
             SELECT
                 normalized_text AS raw_content,
                 request_context ->> 'source_sender_identity' AS sender_id,
@@ -186,7 +191,8 @@ async def _load_realtime_history(
                 raw_payload -> 'metadata' AS raw_metadata,
                 COALESCE(direction, 'inbound') AS direction
             FROM message_inbox
-            WHERE (
+            WHERE {history_exclusion}
+                AND (
                     request_context ->> 'source_thread_identity' = $1
                     OR (
                         $3::text IS NOT NULL
@@ -252,10 +258,11 @@ async def _load_email_history(
 
     Returns messages in chronological order (oldest first).
     """
+    history_exclusion = message_inbox_recovery_exclusion_sql()
     async with pool.acquire() as conn:
         # Load all messages in thread
         chain_messages = await conn.fetch(
-            """
+            f"""
             SELECT
                 normalized_text AS raw_content,
                 request_context ->> 'source_sender_identity' AS sender_id,
@@ -263,7 +270,8 @@ async def _load_email_history(
                 raw_payload -> 'metadata' AS raw_metadata,
                 COALESCE(direction, 'inbound') AS direction
             FROM message_inbox
-            WHERE request_context ->> 'source_thread_identity' = $1
+            WHERE {history_exclusion}
+                AND request_context ->> 'source_thread_identity' = $1
                 AND received_at < $2
             ORDER BY received_at ASC
             """,
@@ -523,11 +531,11 @@ def _build_dashboard_lane_prompt(
     conversation_id: str | None = None,
     page_context: dict[str, Any] | None = None,
 ) -> str:
-    """Build the CC prompt for dashboard chat-widget messages (two lanes).
+    """Build the CC prompt for dashboard chat-widget messages (four lanes).
 
     Unlike :func:`_build_routing_prompt`, this prompt is used only for the
     dashboard channel (the owner's floating chat widget). It teaches the
-    classification session to pick one of two lanes instead of always
+    classification session to pick one of four lanes instead of always
     calling ``route_to_butler``:
 
     - **Lane A (data statement/correction):** call ``route_to_butler`` exactly
@@ -538,6 +546,19 @@ def _build_dashboard_lane_prompt(
       (see ``core_tools/_switchboard.py``), not here.
     - **Lane B (bug/system report):** call ``file_bug_report`` instead. Bug
       reports must NEVER be routed to a domain butler via ``route_to_butler``.
+    - **Lane C (action request):** call ``route_to_butler`` exactly as in
+      Lane A — this classifier's only job is picking the target butler. The
+      deterministic block injected into the routed envelope (see Lane A)
+      carries the propose-don't-apply contract; this prompt does not need to
+      (and must not try to) enforce it itself.
+    - **Lane D (question):** call ``answer_question`` for an identified domain
+      or system scope, or ``cannot_answer`` when no owner can be identified.
+
+    An input that cannot be confidently placed into any lane is never a
+    best-guess route: the classifier is instructed to call no tool at all,
+    which surfaces to the owner as an in-thread clarifying prompt via the
+    existing dashboard dead-letter net (``_dead_letter_dashboard_unroutable``)
+    rather than risking a wrong domain butler or a silently-applied action.
 
     ``conversation_id``/``page_context`` are surfaced here for the model's
     own reasoning (e.g. to write a grounded ``prompt``/``context`` for
@@ -559,7 +580,7 @@ def _build_dashboard_lane_prompt(
     prompt_parts = [
         "This message was sent from the owner's dashboard chat widget "
         "(a floating chat panel available on every dashboard page). Decide "
-        "which of TWO LANES it belongs to, then call exactly one tool:\n\n"
+        "which of FOUR LANES it belongs to, then call at most one tool:\n\n"
         "LANE A — data statement or correction (e.g. 'Alice's birthday is "
         "actually March 3rd', 'mark this receipt as reimbursed'): call the "
         "`route_to_butler` MCP tool exactly as you would for any other "
@@ -573,19 +594,51 @@ def _build_dashboard_lane_prompt(
         "with a concise `summary` of the problem. Do NOT call `route_to_butler` "
         "for a bug/system report — it must never be routed to a domain "
         "butler.\n\n"
-        "If the message is genuinely ambiguous or you cannot classify it "
-        "into either lane, still call `route_to_butler` with the "
-        "best-guess specialist (or `general`) rather than calling nothing — "
-        "an unrouted dashboard message leaves the owner's chat waiting with "
-        "no reply.\n\n"
-        "IMPORTANT: You MUST call exactly one of `route_to_butler` or "
-        "`file_bug_report` at least once. Do NOT call `notify`.\n\n"
-        "If `route_to_butler` returns `{status: 'refused', reason: "
-        "'dashboard_lane_conflict'}`, `file_bug_report` already handled the "
-        "message. Treat that refusal as terminal: Do NOT call either tool again; "
-        "respond with your brief text summary.\n\n"
-        "After calling the tool, respond with a brief text summary of your "
-        "decision.\n\n"
+        "LANE C — action request (e.g. 'send an email to Alice about dinner', "
+        "'book this flight', 'delete that reminder'): the owner is asking you "
+        "to DO something with a real-world effect, not just record a fact. "
+        "Call `route_to_butler` exactly as in LANE A — pick the specialist "
+        "butler whose domain owns this action. The routed butler session's "
+        "own deterministic instructions require it to route the actual write "
+        "through its approval-gated tool and reply with a proposal, never a "
+        "completion claim — that enforcement happens downstream; you do not "
+        "need to (and must not try to) apply or confirm anything here.\n\n"
+        "LANE D — question (e.g. 'how much did I spend on groceries this "
+        "month?', 'what model does the finance butler use?', 'why did health "
+        "flag milk?'): the owner is asking something, not asserting a fact, "
+        "reporting a bug, or requesting an action.\n"
+        "  - If a specialist butler's own data clearly owns the answer, call "
+        "`answer_question` with scope='domain', a self-contained `question`, "
+        "and `target`=that butler. Do NOT call `route_to_butler` for a "
+        "question — it must never be routed there.\n"
+        "  - If the question is about the butler ecosystem/infrastructure "
+        "itself (not one butler's domain data), call `answer_question` with "
+        "scope='system' and `question` set (omit `target`).\n"
+        "  - If you cannot identify an owning butler or scope at all, do NOT "
+        "guess a target and do NOT call `route_to_butler`. Call "
+        "`cannot_answer` with `question_summary`, `scope_checked` (what you "
+        "considered), and `reason` instead.\n\n"
+        "If the message is genuinely ambiguous — you cannot tell which lane "
+        "it belongs to, or whether it is a statement or an action request — "
+        "do NOT guess. Do not call `route_to_butler`, `file_bug_report`, "
+        "`answer_question`, `cannot_answer`, or any other tool. Respond only "
+        "with your brief text summary explaining what is unclear; the owner "
+        "will see an in-thread prompt asking them to clarify, and can resend "
+        "a more specific message. This ambiguous/no-tool path is for messages "
+        "that are not clearly a question at all — an actual question with no "
+        "identifiable owner always resolves via LANE D's `cannot_answer`, "
+        "never this silent path and never a guessed route.\n\n"
+        "IMPORTANT: For LANE A, B, C, or D, call exactly one of "
+        "`route_to_butler`, `file_bug_report`, `answer_question`, or "
+        "`cannot_answer` at least once. Do NOT call `notify`.\n\n"
+        "If any of `route_to_butler`, `file_bug_report`, `answer_question`, or "
+        "`cannot_answer` returns `{status: 'refused', reason: "
+        "'dashboard_lane_conflict'}`, another one of these tools already "
+        "handled the message this turn. Treat that refusal as terminal: do "
+        "NOT call any of these tools again; respond with your brief text "
+        "summary.\n\n"
+        "After calling the tool (or deciding the message is ambiguous), "
+        "respond with a brief text summary of your decision.\n\n"
     ]
 
     if conversation_id:
@@ -665,6 +718,133 @@ def _extract_bug_report_calls(
         return True, succeeded, case_reference if isinstance(case_reference, str) else None
 
     return False, False, None
+
+
+def _extract_cannot_answer_calls(
+    tool_calls: list[dict[str, Any]],
+) -> tuple[bool, bool, str | None]:
+    """Parse ``cannot_answer`` tool calls out of a spawn result's tool_calls.
+
+    Also matches an ``answer_question(scope="system")`` call: that scope
+    always falls back to the same dead-letter/honest-decline path today (no
+    Concierge available — bu-0ynlk.3), returning the exact
+    ``{"status": "ok"/"error", "dead_letter_id": ...}`` shape ``cannot_answer``
+    returns — so callers only need this one function to detect "this turn was
+    terminally declined, not routed".
+
+    Returns
+    -------
+    tuple
+        ``(attempted, succeeded, dead_letter_id)`` — whether the decline lane
+        was engaged at all, whether the dead-letter capture itself succeeded,
+        and the dead-letter id if the tool returned one.
+    """
+    for call in tool_calls:
+        name = str(call.get("name", "") or "").strip()
+        is_cannot_answer = bool(_CANNOT_ANSWER_TOOL_NAME_RE.search(name))
+        is_answer_question = bool(_ANSWER_QUESTION_TOOL_NAME_RE.search(name))
+        if not is_cannot_answer and not is_answer_question:
+            continue
+
+        if is_answer_question:
+            args: Any = (
+                call.get("input")
+                or call.get("args")
+                or call.get("arguments")
+                or call.get("parameters")
+                or call.get("params")
+                or {}
+            )
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except (json.JSONDecodeError, ValueError):
+                    args = {}
+            if not isinstance(args, dict):
+                args = {}
+            if str(args.get("scope") or "") != "system":
+                # scope="domain" — a routing dispatch, not a decline.
+                continue
+
+        result = call.get("result")
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except (json.JSONDecodeError, ValueError):
+                result = {}
+        if not isinstance(result, dict):
+            result = {}
+
+        if result.get("status") == "refused":
+            # A prior terminal tool owns the turn. This declined call did not
+            # dead-letter anything and must not override the first lane's
+            # accepted result in the pipeline's early-return ordering.
+            continue
+
+        succeeded = result.get("status") == "ok"
+        dead_letter_id = result.get("dead_letter_id")
+        return True, succeeded, dead_letter_id if isinstance(dead_letter_id, str) else None
+
+    return False, False, None
+
+
+def _extract_answer_question_calls(
+    tool_calls: list[dict[str, Any]],
+) -> tuple[list[str], list[str], list[str]]:
+    """Parse domain-scope ``answer_question`` calls into (routed, acked,
+    failed) lists — mirrors ``_extract_routed_butlers`` so a successful
+    dispatch flows through the same routing-verdict/telemetry bookkeeping as
+    ``route_to_butler``. A scope="system" call is deliberately excluded here
+    — that scope always falls back to a terminal decline today, handled by
+    :func:`_extract_cannot_answer_calls`, not a route.
+    """
+    routed: list[str] = []
+    acked: list[str] = []
+    failed: list[str] = []
+
+    for call in tool_calls:
+        name = str(call.get("name", "") or "").strip()
+        if not _ANSWER_QUESTION_TOOL_NAME_RE.search(name):
+            continue
+
+        args: Any = (
+            call.get("input")
+            or call.get("args")
+            or call.get("arguments")
+            or call.get("parameters")
+            or call.get("params")
+            or {}
+        )
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except (json.JSONDecodeError, ValueError):
+                args = {}
+        if not isinstance(args, dict):
+            args = {}
+        if str(args.get("scope") or "") == "system":
+            # scope="system" — never a domain dispatch, regardless of outcome.
+            continue
+
+        result = call.get("result")
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except (json.JSONDecodeError, ValueError):
+                result = {}
+        if not isinstance(result, dict):
+            result = {}
+
+        butler = str(args.get("target") or result.get("butler") or "").strip()
+        if not butler:
+            continue
+        routed.append(butler)
+        if result.get("status") in ("ok", "accepted"):
+            acked.append(butler)
+        else:
+            failed.append(butler)
+
+    return routed, acked, failed
 
 
 def _extract_routed_butlers(
@@ -1552,7 +1732,7 @@ class MessagePipeline:
                     original_payload={"message_text": message_text},
                     request_context=request_context or {},
                     error_details={"cc_output": cc_output[:500] if cc_output else ""},
-                    replay_eligible=False,
+                    replay_eligible=True,
                 )
             dead_letter_id = str(dl_id)
         except Exception:
@@ -1606,7 +1786,11 @@ class MessagePipeline:
 
         return RoutingResult(
             target_butler="dead_letter",
-            route_result={"dead_letter_id": dead_letter_id},
+            route_result={"status": "unroutable", "dead_letter_id": dead_letter_id},
+            routing_error="unroutable",
+            routed_targets=[],
+            acked_targets=[],
+            failed_targets=[],
         )
 
     @staticmethod
@@ -2416,9 +2600,43 @@ class MessagePipeline:
                                     exc_info=True,
                                 )
 
+                        # Dashboard channel: the policy bypass (sticky/pinned
+                        # routing via control.pinned_target) skips the
+                        # classification session entirely, so it must inject
+                        # the same deterministic conversation_id/page_context
+                        # confirm-loop block that route_to_butler would have
+                        # (see core_tools/_switchboard.py) -- otherwise a
+                        # pinned dashboard turn silently loses page context
+                        # (bu-0ynlk.4).
+                        _bypass_dashboard_context_block: str | None = None
+                        if source == "dashboard":
+                            from butlers.core_tools._switchboard import (
+                                _build_dashboard_confirm_block,
+                                _dashboard_conversation_id_from_context,
+                            )
+
+                            if dashboard_context is None:
+                                dashboard_context = await self._load_dashboard_context(
+                                    message_inbox_id
+                                )
+                            _bypass_conversation_id = _dashboard_conversation_id_from_context(
+                                dashboard_context
+                            )
+                            if _bypass_conversation_id:
+                                _bypass_dashboard_context_block = _build_dashboard_confirm_block(
+                                    conversation_id=_bypass_conversation_id,
+                                    page_context=(
+                                        dashboard_context.get("page_context")
+                                        if isinstance(dashboard_context, dict)
+                                        else None
+                                    ),
+                                )
+
                         _bypass_input: dict[str, Any] = {"prompt": message_text}
                         if _bypass_input_context is not None:
                             _bypass_input["context"] = _bypass_input_context
+                        elif _bypass_dashboard_context_block is not None:
+                            _bypass_input["context"] = _bypass_dashboard_context_block
 
                         bypass_envelope: dict[str, Any] = {
                             "schema_version": "route.v1",
@@ -2876,9 +3094,10 @@ class MessagePipeline:
                                 message_text, butlers, conversation_history, attachments
                             )
                         elif source == "dashboard":
-                            # Dashboard chat widget: two-lane classification
-                            # (data statement -> route_to_butler; bug/system
-                            # report -> file_bug_report) instead of the
+                            # Dashboard chat widget: four-lane classification
+                            # (data statement/action -> route_to_butler;
+                            # bug/system report -> file_bug_report; question ->
+                            # answer_question/cannot_answer) instead of the
                             # always-route standard prompt.
                             routing_prompt = _build_dashboard_lane_prompt(
                                 message_text,
@@ -2966,6 +3185,7 @@ class MessagePipeline:
                                     mcp_server=_local_tool_server,
                                     prompt=routing_prompt,
                                     include_bug_report=(source == "dashboard"),
+                                    include_question_lane=(source == "dashboard"),
                                     butler_name=self._source_butler,
                                     credential_store=self._credential_store,
                                 )
@@ -3459,7 +3679,67 @@ class MessagePipeline:
                                 failed_targets=[] if bug_succeeded else ["qa"],
                             )
 
+                        # Dashboard Lane D (decline path): cannot_answer, or
+                        # answer_question(scope="system") falling back to the
+                        # same dead-letter/honest-decline path (bu-0ynlk.2).
+                        # Also terminal — the tool already captured the
+                        # dead-letter row and posted the in-thread decline
+                        # reply itself, so this must NEVER fall through to
+                        # the generic "no lane decision" dead-letter net
+                        # below (that would double-capture and double-reply).
+                        ca_attempted, ca_succeeded, ca_dead_letter_id = (
+                            _extract_cannot_answer_calls(tool_calls)
+                        )
+                        if ca_attempted:
+                            ca_lifecycle = "routed" if ca_succeeded else "errored"
+                            if message_inbox_id:
+                                completed_at = datetime.now(UTC)
+                                await self._update_message_inbox_lifecycle(
+                                    message_inbox_id=message_inbox_id,
+                                    decomposition_output={
+                                        "request_id": request_id,
+                                        "lane": "cannot_answer",
+                                        "dead_letter_id": ca_dead_letter_id,
+                                    },
+                                    dispatch_outcomes={
+                                        "request_id": request_id,
+                                        "acked": [],
+                                        "failed": [],
+                                    },
+                                    response_summary=cc_output[:500] if cc_output else "",
+                                    lifecycle_state=ca_lifecycle,
+                                    classified_at=completed_at,
+                                    classification_duration_ms=spawn_latency_ms,
+                                    final_state_at=completed_at,
+                                )
+                            return RoutingResult(
+                                target_butler="dead_letter",
+                                route_result={
+                                    "lane": "cannot_answer",
+                                    "dead_letter_id": ca_dead_letter_id,
+                                },
+                                routing_error=(
+                                    None
+                                    if ca_succeeded
+                                    else "cannot_answer: decline persistence failed"
+                                ),
+                                routed_targets=[],
+                                acked_targets=[],
+                                failed_targets=[],
+                            )
+
                     routed, acked, failed = _extract_routed_butlers(tool_calls)
+                    if source == "dashboard" and _payload_type != "conversation_history":
+                        # Dashboard Lane D (answer path): merge a domain-scope
+                        # answer_question dispatch into the same
+                        # routed/acked/failed bookkeeping route_to_butler
+                        # uses, so it flows through the identical
+                        # verdict-mining/telemetry/dead-letter logic below
+                        # (bu-0ynlk.2).
+                        aq_routed, aq_acked, aq_failed = _extract_answer_question_calls(tool_calls)
+                        routed = routed + aq_routed
+                        acked = acked + aq_acked
+                        failed = failed + aq_failed
                     failed_details = [f"{b}: routing failed" for b in failed]
 
                     # Routing verdict mining substrate (bu-aga08): record one

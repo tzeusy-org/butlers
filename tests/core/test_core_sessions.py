@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import re
 import shutil
 import uuid
@@ -53,12 +54,26 @@ async def test_session_create_and_get(pool):
     from butlers.core.sessions import session_create, sessions_get
 
     req_id = str(uuid.uuid4())
+    effective_prompt = "# Exact synthetic system prompt"
+    prompt_digest = hashlib.sha256(effective_prompt.encode("utf-8")).hexdigest()
+    provenance = [
+        {
+            "source": "roster:synthetic/CLAUDE.md",
+            "status": "present",
+            "bytes": len(effective_prompt.encode("utf-8")),
+            "sha": prompt_digest,
+        }
+    ]
     session_id = await session_create(
         pool,
         prompt="Run daily report",
         trigger_source="tick",
         trace_id="abc-123",
         request_id=req_id,
+        effective_system_prompt=effective_prompt,
+        prompt_digest=prompt_digest,
+        prompt_provenance=provenance,
+        purpose_lane="private_content",
     )
     assert isinstance(session_id, uuid.UUID)
 
@@ -70,6 +85,15 @@ async def test_session_create_and_get(pool):
     assert session["result"] is None
     assert session["success"] is None
     assert session["completed_at"] is None
+    assert session["purpose_lane"] == "private_content"
+    receipt = await pool.fetchrow(
+        "SELECT effective_system_prompt, prompt_digest, prompt_provenance "
+        "FROM sessions WHERE id = $1",
+        session_id,
+    )
+    assert receipt["effective_system_prompt"] == effective_prompt
+    assert receipt["prompt_digest"] == prompt_digest
+    assert receipt["prompt_provenance"] == provenance
 
     # Missing key returns None
     assert await sessions_get(pool, uuid.uuid4()) is None
@@ -228,10 +252,290 @@ async def test_sessions_list_and_summary(pool):
     summary = await sessions_summary(pool, period="7d")
     assert summary["total_sessions"] >= 3
     assert "by_model" in summary
+    # A clean run of successful sessions produces zero failures and an empty
+    # error-marker breakdown (bu-8cdl1.9 slice 1).
+    assert summary["succeeded"] >= 3
+    assert summary["failed"] == 0
+    assert summary["by_error_marker"] == {}
 
     # Invalid period raises
     with pytest.raises((ValueError, Exception)):
         await sessions_summary(pool, period="invalid_period")
+
+
+@pytest.mark.pg_clock
+@_asyncio_session
+async def test_sessions_summary_error_marker_breakdown(pool):
+    """A guardrail-marker failure increments failed + by_error_marker deterministically."""
+    from butlers.core.sessions import session_complete, session_create, sessions_summary
+
+    guardrail_sid = await session_create(
+        pool,
+        prompt="task guardrail",
+        trigger_source="tick",
+        request_id=str(uuid.uuid4()),
+        model="claude-3",
+    )
+    await session_complete(
+        pool,
+        guardrail_sid,
+        output=None,
+        tool_calls=[],
+        duration_ms=100,
+        success=False,
+        error="RuntimeError: degenerate_tool_loop: 5 consecutive identical calls to foo",
+    )
+
+    other_sid = await session_create(
+        pool,
+        prompt="task other",
+        trigger_source="tick",
+        request_id=str(uuid.uuid4()),
+        model="claude-3",
+    )
+    await session_complete(
+        pool,
+        other_sid,
+        output=None,
+        tool_calls=[],
+        duration_ms=100,
+        success=False,
+        error="ValueError: something unrelated broke",
+    )
+
+    # Genuine switchboard classification timeout: "mini" model, <=60s bound.
+    classification_sid = await session_create(
+        pool,
+        prompt="classify inbound message",
+        trigger_source="classification",
+        request_id=str(uuid.uuid4()),
+        model="claude-haiku-4-5-mini",
+    )
+    await session_complete(
+        pool,
+        classification_sid,
+        output=None,
+        tool_calls=[],
+        duration_ms=100,
+        success=False,
+        error="TimeoutError: Session timed out after 45s (model=claude-haiku-4-5-mini, "
+        "butler=switchboard)",
+    )
+
+    # A non-classification switchboard timeout (e.g. a route-dispatch session)
+    # emits the identical message template but with a non-"mini" model. This
+    # must NOT be misclassified as classification_timeout (bu-ixqo6 review
+    # finding on PR #4004).
+    route_sid = await session_create(
+        pool,
+        prompt="dispatch to butler",
+        trigger_source="route",
+        request_id=str(uuid.uuid4()),
+        model="claude-sonnet-4-6",
+    )
+    await session_complete(
+        pool,
+        route_sid,
+        output=None,
+        tool_calls=[],
+        duration_ms=100,
+        success=False,
+        error="TimeoutError: Session timed out after 30s (model=claude-sonnet-4-6, "
+        "butler=switchboard)",
+    )
+
+    summary = await sessions_summary(pool, period="7d")
+    assert summary["failed"] >= 4
+    assert summary["by_error_marker"]["degenerate_tool_loop"] == 1
+    assert summary["by_error_marker"]["classification_timeout"] == 1
+    # ValueError plus the non-classification switchboard timeout both bucket
+    # under "other".
+    assert summary["by_error_marker"]["other"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Friction ledger (bu-8cdl1.9 S2)
+# ---------------------------------------------------------------------------
+
+
+@_asyncio_session
+async def test_friction_events_derived_at_session_close(pool):
+    """Each session_complete call derives zero or one typed friction row."""
+    from butlers.core.sessions import session_complete, session_create
+
+    async def _friction_kinds(session_id: uuid.UUID) -> list[str]:
+        rows = await pool.fetch(
+            "SELECT kind FROM sessions_friction WHERE session_id = $1 ORDER BY kind", session_id
+        )
+        return [r["kind"] for r in rows]
+
+    # Clean session: zero friction rows.
+    clean_sid = await session_create(
+        pool, prompt="clean run", trigger_source="tick", request_id=str(uuid.uuid4())
+    )
+    await session_complete(
+        pool, clean_sid, output="ok", tool_calls=[], duration_ms=10, success=True
+    )
+    assert await _friction_kinds(clean_sid) == []
+
+    # Guardrail-marker failure -> degenerate_tool_loop.
+    loop_sid = await session_create(
+        pool, prompt="loop", trigger_source="tick", request_id=str(uuid.uuid4())
+    )
+    await session_complete(
+        pool,
+        loop_sid,
+        output=None,
+        tool_calls=[],
+        duration_ms=10,
+        success=False,
+        error="RuntimeError: degenerate_tool_loop: 5 consecutive identical calls to foo",
+    )
+    assert await _friction_kinds(loop_sid) == ["degenerate_tool_loop"]
+
+    # Tool-call/token budget guardrail -> guardrail_termination.
+    budget_sid = await session_create(
+        pool, prompt="budget", trigger_source="tick", request_id=str(uuid.uuid4())
+    )
+    await session_complete(
+        pool,
+        budget_sid,
+        output=None,
+        tool_calls=[],
+        duration_ms=10,
+        success=False,
+        error="GuardrailError: tool_call_budget_exceeded after 40 calls",
+    )
+    assert await _friction_kinds(budget_sid) == ["guardrail_termination"]
+
+    # Switchboard classification timeout (mini model, <=60s) -> classification_timeout.
+    classification_sid = await session_create(
+        pool,
+        prompt="classify inbound message",
+        trigger_source="classification",
+        request_id=str(uuid.uuid4()),
+        model="claude-haiku-4-5-mini",
+    )
+    await session_complete(
+        pool,
+        classification_sid,
+        output=None,
+        tool_calls=[],
+        duration_ms=10,
+        success=False,
+        error="TimeoutError: Session timed out after 45s (model=claude-haiku-4-5-mini, "
+        "butler=switchboard)",
+    )
+    assert await _friction_kinds(classification_sid) == ["classification_timeout"]
+
+    # Success carrying a leftover error string -> recovered_error.
+    recovered_sid = await session_create(
+        pool, prompt="recovered", trigger_source="tick", request_id=str(uuid.uuid4())
+    )
+    await session_complete(
+        pool,
+        recovered_sid,
+        output="done after retry",
+        tool_calls=[],
+        duration_ms=10,
+        success=True,
+        error="transient ToolError: first attempt failed, retried",
+    )
+    assert await _friction_kinds(recovered_sid) == ["recovered_error"]
+
+    # Unclassified failure -> dead_end.
+    dead_end_sid = await session_create(
+        pool, prompt="dead end", trigger_source="tick", request_id=str(uuid.uuid4())
+    )
+    await session_complete(
+        pool,
+        dead_end_sid,
+        output=None,
+        tool_calls=[],
+        duration_ms=10,
+        success=False,
+        error="ValueError: something unrelated broke",
+    )
+    assert await _friction_kinds(dead_end_sid) == ["dead_end"]
+
+
+@_asyncio_session
+async def test_friction_events_idempotent_on_session_kind_ordinal(pool):
+    """Re-deriving friction for the same session/kind never duplicates the row."""
+    from butlers.core.sessions import _record_friction_event, session_complete, session_create
+
+    sid = await session_create(
+        pool, prompt="loop", trigger_source="tick", request_id=str(uuid.uuid4())
+    )
+    await session_complete(
+        pool,
+        sid,
+        output=None,
+        tool_calls=[],
+        duration_ms=10,
+        success=False,
+        error="RuntimeError: degenerate_tool_loop: repeat",
+    )
+
+    # Simulate a redundant derivation pass for the same session/kind.
+    await _record_friction_event(
+        pool,
+        sid,
+        success=False,
+        error="RuntimeError: degenerate_tool_loop: repeat",
+        model=None,
+    )
+
+    rows = await pool.fetch("SELECT kind FROM sessions_friction WHERE session_id = $1", sid)
+    assert len(rows) == 1
+    assert rows[0]["kind"] == "degenerate_tool_loop"
+
+
+@pytest.mark.pg_clock
+@_asyncio_session
+async def test_friction_summary_zero_fills_and_counts_by_kind(pool):
+    """friction_summary zero-fills every kind and counts derived episodes (bu-8cdl1.9 S3)."""
+    from butlers.core.sessions import friction_summary, session_complete, session_create
+
+    loop_sid = await session_create(
+        pool, prompt="loop", trigger_source="tick", request_id=str(uuid.uuid4())
+    )
+    await session_complete(
+        pool,
+        loop_sid,
+        output=None,
+        tool_calls=[],
+        duration_ms=10,
+        success=False,
+        error="RuntimeError: degenerate_tool_loop: repeat",
+    )
+
+    budget_sid = await session_create(
+        pool, prompt="budget", trigger_source="tick", request_id=str(uuid.uuid4())
+    )
+    await session_complete(
+        pool,
+        budget_sid,
+        output=None,
+        tool_calls=[],
+        duration_ms=10,
+        success=False,
+        error="GuardrailError: tool_call_budget_exceeded after 40 calls",
+    )
+
+    summary = await friction_summary(pool, period="7d")
+    assert summary["period"] == "7d"
+    assert summary["by_kind"]["degenerate_tool_loop"] == 1
+    assert summary["by_kind"]["guardrail_termination"] == 1
+    # Zero-filled, not omitted, for kinds with no episodes in the window.
+    assert summary["by_kind"]["classification_timeout"] == 0
+    assert summary["by_kind"]["recovered_error"] == 0
+    assert summary["by_kind"]["dead_end"] == 0
+    assert summary["total"] == 2
+
+    # Invalid period raises, same contract as sessions_summary.
+    with pytest.raises(ValueError):
+        await friction_summary(pool, period="invalid_period")
 
 
 # ---------------------------------------------------------------------------
@@ -370,7 +674,11 @@ async def test_top_sessions_date_range_filters_by_started_at(pool):
     from butlers.core.sessions import session_complete, session_create, top_sessions
 
     in_range = await session_create(
-        pool, prompt="in-range", trigger_source="tick", request_id=str(uuid.uuid4())
+        pool,
+        prompt="in-range",
+        trigger_source="tick",
+        request_id=str(uuid.uuid4()),
+        purpose_lane="private_content",
     )
     await pool.execute(
         "UPDATE sessions SET started_at = $2 WHERE id = $1",
@@ -411,6 +719,12 @@ async def test_top_sessions_date_range_filters_by_started_at(pool):
     scoped_ids = {s["session_id"] for s in scoped["sessions"]}
     assert str(in_range) in scoped_ids
     assert str(out_of_range) not in scoped_ids
+    assert (
+        next(
+            row["purpose_lane"] for row in scoped["sessions"] if row["session_id"] == str(in_range)
+        )
+        == "private_content"
+    )
 
     # Omitting both from_date/to_date preserves all-time behavior (back-compat).
     all_time = await top_sessions(pool, limit=10)
@@ -492,6 +806,49 @@ async def test_schedule_costs_date_range_filters_runs(pool):
 
     with pytest.raises(ValueError):
         await schedule_costs(pool, from_date="2026-05-01")
+
+
+@_asyncio_session
+async def test_schedule_costs_disabled_schedule_reports_history_without_forecast(pool):
+    """A disabled (retired) schedule keeps its measured history but is never
+    forecast -- scheduler.py disables a removed TOML schedule rather than
+    deleting it, so its historical sessions must not silently disappear, but
+    it also must never rank as if it will keep running (bu-2jtfw.4)."""
+    from butlers.core.scheduler import schedule_create
+    from butlers.core.sessions import schedule_costs, session_complete, session_create
+
+    await schedule_create(pool, name="retired-report", cron="0 8 * * *", prompt="run report")
+    await pool.execute(
+        "UPDATE scheduled_tasks SET enabled = false WHERE name = $1", "retired-report"
+    )
+
+    run = await session_create(
+        pool,
+        prompt="historical run",
+        trigger_source="schedule:retired-report",
+        request_id=str(uuid.uuid4()),
+        model="claude-3",
+    )
+    await session_complete(
+        pool,
+        run,
+        output="ok",
+        tool_calls=[],
+        duration_ms=10,
+        success=True,
+        input_tokens=1000,
+        output_tokens=500,
+    )
+
+    result = await schedule_costs(pool)
+    entries = [e for e in result["schedules"] if e["name"] == "retired-report"]
+    assert entries, "a disabled schedule's history must still appear"
+    assert entries[0]["enabled"] is False
+    assert entries[0]["total_runs"] == 1
+    assert entries[0]["total_input_tokens"] == 1000
+    # A daily cron would normally project ~30 runs/month -- disabled means
+    # never, regardless of what the cron expression implies.
+    assert entries[0]["projected_monthly_runs"] == 0.0
 
 
 # ---------------------------------------------------------------------------

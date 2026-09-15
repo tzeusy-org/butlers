@@ -46,6 +46,7 @@ function makeStats(overrides: Partial<MemoryStats> = {}): MemoryStats {
     established_rules: 39,
     proven_rules: 9,
     anti_pattern_rules: 0,
+    retired_rules: 0,
     last_consolidation_at: "2026-06-12T06:00:00+08:00",
     last_consolidation_facts_produced: 12,
     dead_letter_episodes: 0,

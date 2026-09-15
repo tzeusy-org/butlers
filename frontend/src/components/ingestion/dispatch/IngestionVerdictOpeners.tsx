@@ -8,7 +8,7 @@
 // ---------------------------------------------------------------------------
 
 import { DispatchVerdict, type VerdictClause } from "@/components/ui/dispatch-verdict";
-import { useConnectorSummaries, useConnectorSummariesWithAggregates, usePipelineStats } from "@/hooks/use-ingestion";
+import { useConnectorSummaries, usePipelineStats } from "@/hooks/use-ingestion";
 import { useIngestionWindowRollup } from "@/hooks/use-ingestion-events";
 import { formatCostUsd } from "@/lib/format-cost";
 import { deriveConnectorDispatchInfo } from "@/components/ingestion/connectors/connector-auth";
@@ -35,8 +35,9 @@ function attentionClauses(connectors: ConnectorSummary[]): VerdictClause[] {
   return connectors
     .filter(
       (connector) =>
-        deriveConnectorDispatchInfo(connector).needsAttention ||
-        Boolean(connector.operational_warnings?.length),
+        !connector.archived &&
+        (deriveConnectorDispatchInfo(connector).needsAttention ||
+          Boolean(connector.operational_warnings?.length)),
     )
     .slice(0, 3)
     .map((connector) => ({
@@ -116,7 +117,10 @@ export function IngestionTimelineVerdictOpener({ range }: { range: IngestionRang
   const window = useMemo(() => timelineWindow(range), [range]);
   const rollup = useIngestionWindowRollup(window);
   const connectors = useConnectorSummaries();
-  const connectorRows = connectors.data?.data ?? [];
+  const connectorResponse = connectors.data?.data;
+  const connectorRows = (connectorResponse?.connectors ?? []).filter(
+    (connector) => !connector.archived,
+  );
 
   return (
     <DispatchVerdict
@@ -128,7 +132,7 @@ export function IngestionTimelineVerdictOpener({ range }: { range: IngestionRang
           label: "connector registry",
           isLoading: connectors.isLoading,
           isError:
-            connectors.isError || connectors.data?.meta?.connector_registry_available === false,
+            connectors.isError || connectorResponse?.connector_registry_available === false,
         },
       ]}
       clauses={[
@@ -173,7 +177,7 @@ function connectorHealthClauses(
 
 /** Verdict above the connectors roster. */
 export function IngestionConnectorsVerdictOpener() {
-  const connectors = useConnectorSummariesWithAggregates();
+  const connectors = useConnectorSummaries();
   const response = connectors.data?.data;
   const rows = response?.connectors ?? [];
   const activeRows = rows.filter((connector) => !connector.archived);

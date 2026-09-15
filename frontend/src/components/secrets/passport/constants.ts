@@ -2,7 +2,7 @@
 // Passport constants — state catalog and spine helpers [bu-qu8v8]
 // ---------------------------------------------------------------------------
 
-import type { CredentialState, StateMeta } from "./types.ts";
+import type { CredentialState, SpineGroupId, StateMeta } from "./types.ts";
 
 // ── State catalog ────────────────────────────────────────────────────────────
 // rank: severity sort order. 0 = most urgent, 99 = quietest.
@@ -22,24 +22,49 @@ export const STATE_CATALOG: Record<CredentialState, StateMeta> = {
   authorization_needed: {
     label: "authorization needed", tone: "amber", sliver: true, rank: 3,
   },
-  rotating:      { label: "rotating…", tone: "amber", sliver: false, rank: 4 },
+  rotating:      { label: "rotating…", tone: "dim",   sliver: false, rank: 4 },
   ok:            { label: "healthy",        tone: "ok",    sliver: false, rank: 5 },
   failed:        { label: "failed",         tone: "red",   sliver: true,  rank: 1 },
   never_set:     { label: "not set",        tone: "dim",   sliver: false, rank: 9 },
 };
 
-/**
- * States that are genuinely "needs hand" — a probe actually failed, a token
- * actually expired/was revoked, or a scope is actually missing. Pinned at the
- * top of the spine as the act-now bucket.
- *
- * Deliberately EXCLUDES "warn" (bu-976n0): set-but-never-probed is an unknown,
- * not a failure — see UNVERIFIED_STATES below. "rotating" stays here as a
- * transient in-flight indicator, unchanged from prior behavior.
- */
-export const NEEDS_HAND_STATES = new Set<CredentialState>([
-  "expired", "revoked", "scope_mismatch", "expiring", "authorization_needed", "rotating", "failed",
-]);
+/** Fixed state-first group order for rendering, search, and roving focus. */
+export const SPINE_GROUP_ORDER: readonly SpineGroupId[] = [
+  "needs-hand",
+  "in-progress",
+  "stale",
+  "ready",
+  "not-set",
+];
+
+/** Exhaustive single-home mapping for every API credential state. */
+export const SPINE_GROUP_BY_STATE: Record<CredentialState, SpineGroupId> = {
+  expired: "needs-hand",
+  revoked: "needs-hand",
+  scope_mismatch: "needs-hand",
+  expiring: "needs-hand",
+  authorization_needed: "needs-hand",
+  failed: "needs-hand",
+  checking: "in-progress",
+  rotating: "in-progress",
+  warn: "stale",
+  ok: "ready",
+  never_set: "not-set",
+};
+
+function statesInGroup(group: SpineGroupId): Set<CredentialState> {
+  return new Set(
+    (Object.keys(SPINE_GROUP_BY_STATE) as CredentialState[]).filter(
+      (state) => SPINE_GROUP_BY_STATE[state] === group,
+    ),
+  );
+}
+
+/** Genuinely broken or owner-actionable states. */
+export const NEEDS_HAND_STATES = statesInGroup("needs-hand");
+
+/** Quiet set-but-unverified states. */
+const STALE_STATES = statesInGroup("stale");
 
 /**
  * States that are merely unverified — set, but with no successful probe on
@@ -47,7 +72,11 @@ export const NEEDS_HAND_STATES = new Set<CredentialState>([
  * should be near-empty and self-clearing once the background staleness loop
  * (bu-a63hn) re-probes it, not a standing amber alarm (bu-976n0).
  */
-export const UNVERIFIED_STATES = new Set<CredentialState>(["warn"]);
+export const UNVERIFIED_STATES = STALE_STATES;
+
+export function spineGroupForState(state: CredentialState): SpineGroupId {
+  return SPINE_GROUP_BY_STATE[state];
+}
 
 export function needsHand(state: CredentialState): boolean {
   return NEEDS_HAND_STATES.has(state);

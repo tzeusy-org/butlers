@@ -11,10 +11,12 @@ key id, the capability expiry, and the receipt timestamp.  The raw nonce and
 the signature are never stored, so the table cannot be replayed back into a
 valid capability.
 
-Only ``butler_switchboard_rw`` holds ``SELECT``/``INSERT``/``DELETE`` here, and
-``core_201`` forces a row-security policy on top so even the table owner --- the
-shared migration/dashboard login --- is fenced out of the rows.  See that
-migration for the boundary this repository assumes.
+Only ``butler_switchboard_rw`` holds ``SELECT``/``INSERT``/``DELETE`` here.
+``core_201`` installs the row-security policy and ``core_212`` FORCEs it, so
+even the table owner --- the shared migration/dashboard login --- is fenced
+out of the rows; core_212 also blocks ``TRUNCATE`` outright, since RLS never
+gates it and the owner cannot be stripped of the implicit right to it.  See
+those migrations for the boundary this repository assumes.
 """
 
 from __future__ import annotations

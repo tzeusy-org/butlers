@@ -19,11 +19,14 @@ export type CredentialState =
 /** Credential family. */
 export type CredentialFamily = "user" | "system" | "cli";
 
+/** State-first spine group. */
+export type SpineGroupId = "needs-hand" | "in-progress" | "stale" | "ready" | "not-set";
+
 /** Deduplicated failing/unverified counts supplied by the inventory backend. */
 export type CredentialFamilyCounts = Record<CredentialFamily, number>;
 
 /** Sort mode for the spine. */
-export type SpineSortMode = "severity" | "recency" | "alpha";
+export type SpineSortMode = "severity" | "alpha";
 
 /** A single spine entry — one row in the left-hand index. */
 export interface SpineEntry {
@@ -46,8 +49,6 @@ export interface SpineEntry {
   mono: boolean;
   /** Secondary line in the row (state detail). */
   subline: string;
-  /** Sort order for recency mode. Lower = more recent. */
-  lastTouchOrder: number;
 }
 
 /** State metadata for display. */

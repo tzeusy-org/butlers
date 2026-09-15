@@ -250,8 +250,29 @@ class IngestPayloadV1(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     raw: dict[str, Any] | None = None
-    normalized_text: NonEmptyStr
+    # Not a NonEmptyStr: a captioned-media message's normalized_text is the
+    # caption, which is legitimately "" when the sender attached media with no
+    # caption. The connector must never synthesize a placeholder like "Photo"
+    # to satisfy a non-empty constraint (bu-2jtfw.7) — the real content lives
+    # in `attachments`, not in this field.
+    normalized_text: Annotated[str, StringConstraints(strip_whitespace=True)]
     attachments: tuple[IngestAttachment, ...] | None = None
+
+    @model_validator(mode="after")
+    def _validate_normalized_text_or_attachments(self) -> IngestPayloadV1:
+        """normalized_text stays non-empty for text/caption content.
+
+        It MAY be empty only for a captionless media message, i.e. when
+        `attachments` carries the real content instead (bu-2jtfw.7).
+        """
+        if not self.normalized_text and not self.attachments:
+            raise PydanticCustomError(
+                "normalized_text_or_attachments_required",
+                "payload.normalized_text must be non-empty unless payload.attachments "
+                "is non-empty.",
+                {},
+            )
+        return self
 
 
 PayloadType = Literal["conversation_history"]
@@ -585,9 +606,7 @@ class NotifyDeliveryV1(BaseModel):
     def _validate_message_required_for_send_reply(cls, value: str, info: ValidationInfo) -> str:
         """Message must be non-empty for owner-facing delivery intents."""
         intent = info.data.get("intent")
-        if intent in ("send", "reply", "insight", "approval_request") and (
-            not value or not value.strip()
-        ):
+        if intent in ("send", "reply", "insight") and (not value or not value.strip()):
             raise PydanticCustomError(
                 "message_required",
                 "delivery.message must be non-empty for {intent} intent.",
@@ -597,6 +616,47 @@ class NotifyDeliveryV1(BaseModel):
 
 
 ApprovalActionVerb = Literal["approve", "reject", "open_dashboard"]
+ApprovalRecoveryOperation = Literal["handoff", "reconcile"]
+ApprovalRecoverySubjectKind = Literal["action", "cohort"]
+ApprovalRecoveryPresentationMode = Literal["single", "burst_digest"]
+
+
+class ApprovalRecoveryV1(BaseModel):
+    """Correlation-only recovery request; authority is transport-derived."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    operation: ApprovalRecoveryOperation
+    subject_kind: ApprovalRecoverySubjectKind
+    subject_key: NonEmptyStr
+    presentation_key: NonEmptyStr
+    presentation_generation: int = Field(ge=1, le=1000)
+    presentation_mode: ApprovalRecoveryPresentationMode
+
+    @model_validator(mode="after")
+    def _validate_binding_shape(self) -> ApprovalRecoveryV1:
+        expected_mode = "single" if self.subject_kind == "action" else "burst_digest"
+        if self.presentation_mode != expected_mode:
+            raise PydanticCustomError(
+                "approval_recovery_mode_mismatch",
+                "approval recovery subject kind and presentation mode do not match.",
+                {},
+            )
+        prefix = "approval:" if self.subject_kind == "action" else "approval-cohort:"
+        if not self.subject_key.startswith(prefix):
+            raise PydanticCustomError(
+                "approval_recovery_subject_mismatch",
+                "approval recovery subject key has the wrong kind prefix.",
+                {},
+            )
+        expected_key = f"{self.subject_key}:p:{self.presentation_generation}"
+        if self.presentation_key != expected_key:
+            raise PydanticCustomError(
+                "approval_recovery_presentation_mismatch",
+                "approval recovery presentation key does not match its subject and generation.",
+                {},
+            )
+        return self
 
 
 class ApprovalRequestActionV1(BaseModel):
@@ -639,6 +699,7 @@ class NotifyRequestV1(BaseModel):
     # delivery so Messenger can validate it again against the flush-time target.
     decision_dossier: dict[str, Any] | None = None
     actions: tuple[ApprovalRequestActionV1, ...] | None = None
+    recovery: ApprovalRecoveryV1 | None = None
 
     @field_validator("schema_version")
     @classmethod
@@ -732,7 +793,34 @@ class NotifyRequestV1(BaseModel):
                     "actions are only valid for approval_request intent.",
                     {},
                 )
+            if self.recovery is not None:
+                raise PydanticCustomError(
+                    "approval_recovery_intent_required",
+                    "recovery is only valid for approval_request intent.",
+                    {},
+                )
             return self
+
+        if self.recovery is not None and self.recovery.operation == "reconcile":
+            if (
+                self.delivery.message != ""
+                or self.delivery.recipient is not None
+                or self.actions is not None
+                or self.decision_dossier is not None
+            ):
+                raise PydanticCustomError(
+                    "approval_reconcile_content_forbidden",
+                    "approval recovery reconciliation must be correlation-only.",
+                    {},
+                )
+            return self
+
+        if not self.delivery.message.strip():
+            raise PydanticCustomError(
+                "message_required",
+                "delivery.message must be non-empty for approval_request intent.",
+                {},
+            )
 
         if self.delivery.recipient is None:
             raise PydanticCustomError(
@@ -791,6 +879,7 @@ __all__ = [
     "IngestSenderV1",
     "IngestSourceV1",
     "ApprovalRequestActionV1",
+    "ApprovalRecoveryV1",
     "NotifyDeliveryV1",
     "NotifyRequestContextV1",
     "NotifyRequestV1",

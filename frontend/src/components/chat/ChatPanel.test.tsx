@@ -16,10 +16,12 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router";
 
 import { ChatContent } from "./ChatPanel";
+import { PageContextProvider } from "@/lib/page-context.tsx";
 import type { Message } from "@/api/types.ts";
 
 // ---------------------------------------------------------------------------
@@ -34,6 +36,11 @@ vi.mock("@/hooks/use-conversations.ts", () => ({
   useConversations: vi.fn(),
   useConversationMessages: vi.fn(),
   useConversationSearch: vi.fn(),
+  useMessageSearch: vi.fn(() => ({
+    data: { data: [], meta: { next_cursor: null, has_more: false } },
+    isLoading: false,
+    isError: false,
+  })),
 }));
 
 vi.mock("@/api/client.ts", () => ({
@@ -43,11 +50,13 @@ vi.mock("@/api/client.ts", () => ({
 const createConversationMock = vi.fn();
 const sendMessageMock = vi.fn();
 const cancelConversationMessageTurnMock = vi.fn();
+const getConversationMessagesMock = vi.fn();
 vi.mock("@/api/index.ts", () => ({
   createConversation: (...args: unknown[]) => createConversationMock(...args),
   sendMessage: (...args: unknown[]) => sendMessageMock(...args),
   cancelConversationMessageTurn: (...args: unknown[]) =>
     cancelConversationMessageTurnMock(...args),
+  getConversationMessages: (...args: unknown[]) => getConversationMessagesMock(...args),
 }));
 
 // consumeSseStream is mocked to synchronously replay a scripted event queue,
@@ -65,7 +74,12 @@ vi.mock("./sse-utils.ts", () => ({
   },
 }));
 
-import { useConversations, useConversationMessages, useConversationSearch } from "@/hooks/use-conversations.ts";
+import {
+  useConversations,
+  useConversationMessages,
+  useConversationSearch,
+  useMessageSearch,
+} from "@/hooks/use-conversations.ts";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -88,12 +102,16 @@ function mockHooksEmpty() {
   } as unknown as ReturnType<typeof useConversationSearch>);
 }
 
-function renderChatContent() {
+function renderChatContent(initialPath = "/") {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const content = () => (
-    <QueryClientProvider client={queryClient}>
-      <ChatContent butlerName="switchboard" />
-    </QueryClientProvider>
+    <MemoryRouter initialEntries={[initialPath]}>
+      <QueryClientProvider client={queryClient}>
+        <PageContextProvider>
+          <ChatContent butlerName="switchboard" />
+        </PageContextProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
   );
   const view = render(content());
   return {
@@ -107,6 +125,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   scriptedEvents = [];
   activeSseEventHandler = null;
+  // Safe default for the non-abort-stream-failure recovery refetch
+  // (bu-0ynlk.7) -- see FloatingChatWidget.test.tsx for the dedicated
+  // recovery-path coverage; ChatPanel shares the same code path.
+  getConversationMessagesMock.mockResolvedValue({ data: [] });
   mockHooksEmpty();
   window.localStorage.clear();
 });
@@ -223,18 +245,26 @@ describe("ChatContent — resume / New-conversation lifecycle (bu-5gp95)", () =>
 
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const { rerender } = render(
-      <QueryClientProvider client={queryClient}>
-        <ChatContent butlerName="finance" />
-      </QueryClientProvider>,
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <PageContextProvider>
+            <ChatContent butlerName="finance" />
+          </PageContextProvider>
+        </QueryClientProvider>
+      </MemoryRouter>,
     );
 
     // Auto-resumed to finance's thread (sidebar entry + header title).
     expect(screen.getAllByText("finance thread")).toHaveLength(2);
 
     rerender(
-      <QueryClientProvider client={queryClient}>
-        <ChatContent butlerName="calendar" />
-      </QueryClientProvider>,
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <PageContextProvider>
+            <ChatContent butlerName="calendar" />
+          </PageContextProvider>
+        </QueryClientProvider>
+      </MemoryRouter>,
     );
 
     // Must re-resume to calendar's own thread (sidebar + header), not get
@@ -641,9 +671,13 @@ describe("ChatContent — send-error classification", () => {
     });
     expect(sendMessageMock).toHaveBeenCalledTimes(1);
     expect(sendMessageMock.mock.calls[0][1]).toBe("conv-retry-1");
+    // page_context is now attached (bu-0ynlk.4 fixes ChatPanel's previous
+    // "sends no context at all" bypass) — default capture (route only, no
+    // query params on "/").
     expect(sendMessageMock.mock.calls[0][2]).toEqual({
       message: "hello switchboard",
       message_id: firstPayload.message_id,
+      page_context: { route: "/" },
     });
     // A retry is the same logical message, so it must retain the first
     // optimistic bubble rather than append a duplicate alongside it.
@@ -842,7 +876,7 @@ describe("ChatContent — Stop button", () => {
     await waitFor(() => {
       expect(screen.getByText("Cancelled by owner")).toBeDefined();
     });
-    expect(screen.getByRole("status").textContent).toBe("This turn was stopped.");
+    expect(screen.getByTestId("chat-stop-status").textContent).toBe("This turn was stopped.");
   });
 
   it("keeps the optimistic message visible through a confirmed Stop before conversation_created", async () => {
@@ -904,7 +938,7 @@ describe("ChatContent — Stop button", () => {
       await Promise.resolve();
     });
 
-    expect(screen.getByRole("status").textContent).toBe("Stopping this turn.");
+    expect(screen.getByTestId("chat-stop-status").textContent).toBe("Stopping this turn.");
     expect(screen.queryByTestId("chat-activity-status")).toBeNull();
     expect(screen.queryByRole("link", { name: "finance" })).toBeNull();
 
@@ -915,7 +949,7 @@ describe("ChatContent — Stop button", () => {
       });
     });
     expect(screen.getByText("Cancelled by owner")).toBeDefined();
-    expect(screen.getByRole("status").textContent).toBe("This turn was stopped.");
+    expect(screen.getByTestId("chat-stop-status").textContent).toBe("This turn was stopped.");
     expect(screen.queryByTestId("chat-activity-status")).toBeNull();
     expect(screen.queryByRole("link", { name: "finance" })).toBeNull();
 
@@ -948,7 +982,7 @@ describe("ChatContent — Stop button", () => {
 
     expect(screen.getByText("Cancelled by owner")).toBeDefined();
     expect(screen.queryByText("Waiting for the in-flight ingress to settle.")).toBeNull();
-    expect(screen.getByRole("status").textContent).toBe("This turn was stopped.");
+    expect(screen.getByTestId("chat-stop-status").textContent).toBe("This turn was stopped.");
   });
 
   it("keeps an SSE-confirmed Stop visible when its POST later says already finished", async () => {
@@ -979,7 +1013,7 @@ describe("ChatContent — Stop button", () => {
     });
 
     expect(screen.getByText("Cancelled by owner")).toBeDefined();
-    expect(screen.getByRole("status").textContent).toBe("This turn was stopped.");
+    expect(screen.getByTestId("chat-stop-status").textContent).toBe("This turn was stopped.");
   });
 
   it("ignores a late Stop result after the owner starts a different turn", async () => {
@@ -994,7 +1028,7 @@ describe("ChatContent — Stop button", () => {
 
     fireEvent.click(screen.getByTestId("chat-stop-button"));
     expect((screen.getByTestId("chat-stop-button") as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByRole("status").textContent).toBe("Stopping this turn.");
+    expect(screen.getByTestId("chat-stop-status").textContent).toBe("Stopping this turn.");
     fireEvent.click(screen.getByText("New"));
 
     scriptedEvents = [
@@ -1064,5 +1098,248 @@ describe("ChatContent — Stop button", () => {
       queryKey: ["conversation-messages", "switchboard", "conv-finished-1"],
     });
     expect(useConversationMessages).toHaveBeenLastCalledWith("switchboard", "conv-finished-1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Page-context capture / ContextChip (bu-0ynlk.4)
+// ---------------------------------------------------------------------------
+
+describe("ChatContent — page-context capture", () => {
+  it("attaches route + query params captured at send time (fixes the prior 'no context at all' bypass)", async () => {
+    createConversationMock.mockResolvedValue({ ok: true } as Response);
+    scriptedEvents = [{ event: "done", data: {} }];
+
+    renderChatContent("/entities/concentration?predicate=child-of");
+
+    const input = screen.getByPlaceholderText("Type a message...");
+    fireEvent.change(input, { target: { value: "Alice is child-of Bob" } });
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Send message"));
+    });
+
+    expect(createConversationMock.mock.calls[0][1]).toEqual(
+      expect.objectContaining({
+        message: "Alice is child-of Bob",
+        page_context: {
+          route: "/entities/concentration",
+          query_params: { predicate: "child-of" },
+        },
+      }),
+    );
+  });
+
+  it("omits the page_context key entirely when the ContextChip is detached", async () => {
+    createConversationMock.mockResolvedValue({ ok: true } as Response);
+    scriptedEvents = [{ event: "done", data: {} }];
+
+    renderChatContent("/entities/concentration?predicate=child-of");
+    fireEvent.click(screen.getByTestId("context-chip-remove"));
+
+    const input = screen.getByPlaceholderText("Type a message...");
+    fireEvent.change(input, { target: { value: "Alice is child-of Bob" } });
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Send message"));
+    });
+
+    const payload = createConversationMock.mock.calls[0][1] as Record<string, unknown>;
+    expect(payload).not.toHaveProperty("page_context");
+  });
+
+  it("never attaches page_context on a policy 'none' route (/secrets)", async () => {
+    createConversationMock.mockResolvedValue({ ok: true } as Response);
+    scriptedEvents = [{ event: "done", data: {} }];
+
+    renderChatContent("/secrets");
+
+    expect(screen.getByTestId("context-chip").getAttribute("data-policy")).toBe("none");
+    expect(screen.queryByTestId("context-chip-remove")).toBeNull();
+
+    const input = screen.getByPlaceholderText("Type a message...");
+    fireEvent.change(input, { target: { value: "what's my API key" } });
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Send message"));
+    });
+
+    expect(createConversationMock.mock.calls[0][1]).not.toHaveProperty("page_context");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Message-search jump-to-message scroll/highlight parity with
+// FloatingChatWidget (bu-qaisp)
+// ---------------------------------------------------------------------------
+
+describe("ChatContent — message-search jump-to-message scroll parity (bu-qaisp)", () => {
+  const JUMP_CONVERSATIONS = [
+    {
+      id: "conv-a",
+      butler_name: "switchboard",
+      title: "Thread A",
+      status: "active",
+      created_at: "2026-08-01T00:00:00.000Z",
+      updated_at: "2026-08-02T00:00:00.000Z",
+      message_count: 1,
+      routed_butler: null,
+    },
+    {
+      id: "conv-b",
+      butler_name: "switchboard",
+      title: "Thread B",
+      status: "active",
+      created_at: "2026-07-01T00:00:00.000Z",
+      updated_at: "2026-07-02T00:00:00.000Z",
+      message_count: 1,
+      routed_butler: null,
+    },
+  ];
+
+  const MESSAGE_A: Message = {
+    id: "msg-a",
+    conversation_id: "conv-a",
+    role: "user",
+    content: "Hello from A",
+    tool_calls: null,
+    error: null,
+    model: null,
+    input_tokens: null,
+    output_tokens: null,
+    duration_ms: null,
+    session_id: null,
+    request_id: null,
+    created_at: "2026-08-02T00:00:00.000Z",
+  };
+
+  const MESSAGE_TARGET: Message = {
+    ...MESSAGE_A,
+    id: "msg-target",
+    conversation_id: "conv-b",
+    content: "Found me via search",
+  };
+
+  // Pre-built, referentially-stable per-conversation results (not constructed
+  // fresh inside the mockImplementation callback below) — matching the
+  // pattern in mockHooksForConversationRefetchGap() above. A fresh object
+  // literal returned on every call defeats useConversationTurn's
+  // `[activeConversationId, messagesData, streaming]` effect dependency
+  // (use-conversation-turn.ts), which compares messagesData by reference:
+  // an ever-changing reference re-fires that effect on every render and
+  // drives ChatContent into an infinite synchronous render loop inside
+  // act() (100% CPU, no test timeout ever fires since the loop never
+  // yields to the event loop). This previously hung the whole file's CI run
+  // deterministically; the production jump-to-message wiring itself was not
+  // the cause.
+  const MESSAGES_A_RESULT = {
+    data: { data: [MESSAGE_A], meta: {} },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useConversationMessages>;
+  const MESSAGES_B_RESULT = {
+    data: { data: [MESSAGE_TARGET], meta: {} },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useConversationMessages>;
+  const MESSAGES_EMPTY_RESULT = {
+    data: { data: [], meta: {} },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useConversationMessages>;
+
+  function mockHooksForJumpToMessage() {
+    vi.mocked(useConversations).mockReturnValue({
+      data: { data: JUMP_CONVERSATIONS, meta: {} },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useConversations>);
+
+    vi.mocked(useConversationMessages).mockImplementation(
+      (_butlerName: string, conversationId: string | null) => {
+        if (conversationId === "conv-a") return MESSAGES_A_RESULT;
+        if (conversationId === "conv-b") return MESSAGES_B_RESULT;
+        return MESSAGES_EMPTY_RESULT;
+      },
+    );
+
+    vi.mocked(useConversationSearch).mockReturnValue({
+      data: { data: [], meta: {} },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useConversationSearch>);
+
+    vi.mocked(useMessageSearch).mockReturnValue({
+      data: {
+        data: [
+          {
+            message_id: "msg-target",
+            conversation_id: "conv-b",
+            role: "user",
+            created_at: "2026-07-02T00:00:00.000Z",
+            butler_name: "switchboard",
+            session_id: null,
+            snippet: "Found me via search",
+            highlight_ranges: [],
+            deep_link: "/butlers/switchboard",
+          },
+        ],
+        meta: { next_cursor: null, has_more: false },
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useMessageSearch>);
+  }
+
+  it("switches to the matched conversation and scrolls/highlights the anchor message on a same-butler search-result click", async () => {
+    mockHooksForJumpToMessage();
+    const scrollIntoViewMock = vi.fn();
+    const originalScrollIntoView = window.HTMLElement.prototype.scrollIntoView;
+    window.HTMLElement.prototype.scrollIntoView = scrollIntoViewMock;
+
+    try {
+      renderChatContent();
+
+      // Auto-resumed to conv-a first (sidebar entry + header title).
+      expect(screen.getAllByText("Thread A")).toHaveLength(2);
+
+      fireEvent.change(screen.getByPlaceholderText("Search..."), {
+        target: { value: "search" },
+      });
+
+      const searchResult = await screen.findByTestId("message-search-result");
+      fireEvent.click(searchResult);
+
+      // Switched to the matched conversation (conv-b) — its title now shows
+      // only in the header, since the sidebar is displaying search results.
+      await waitFor(() => expect(screen.getByText("Thread B")).toBeDefined());
+
+      // The matched message's bubble is scrolled into view and highlighted,
+      // mirroring FloatingChatWidget's scrollToMessageAnchor wiring.
+      await waitFor(() =>
+        expect(scrollIntoViewMock).toHaveBeenCalledWith({ behavior: "smooth", block: "center" }),
+      );
+      const bubble = document.getElementById("m-msg-target");
+      expect(bubble).not.toBeNull();
+      expect(within(bubble as HTMLElement).getByText("Found me via search")).toBeDefined();
+      expect(bubble?.classList.contains("chat-message-highlight")).toBe(true);
+    } finally {
+      window.HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
+    }
+  });
+
+  it("leaves plain conversation switches (no messageId) unaffected — no scroll/highlight call", async () => {
+    mockHooksForJumpToMessage();
+    const scrollIntoViewMock = vi.fn();
+    const originalScrollIntoView = window.HTMLElement.prototype.scrollIntoView;
+    window.HTMLElement.prototype.scrollIntoView = scrollIntoViewMock;
+
+    try {
+      renderChatContent();
+
+      expect(screen.getAllByText("Thread A")).toHaveLength(2);
+
+      fireEvent.click(screen.getByText("Thread B"));
+
+      await waitFor(() => expect(screen.getAllByText("Thread B")).toHaveLength(2));
+      expect(scrollIntoViewMock).not.toHaveBeenCalledWith({
+        behavior: "smooth",
+        block: "center",
+      });
+    } finally {
+      window.HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
+    }
   });
 });

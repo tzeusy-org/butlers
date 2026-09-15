@@ -81,6 +81,7 @@ class ScheduleConfig:
     job_args: dict[str, Any] | None = None
     max_token_budget: int | None = None
     complexity: str | None = None
+    continuity: bool = False
 
 
 @dataclass
@@ -88,18 +89,21 @@ class RuntimeSeedConfig:
     """Sole butler-scoped runtime configuration from ``[butler.runtime_seed]``.
 
     Used on first boot to seed the per-schema ``runtime_config`` DB table and,
-    thereafter, as the in-memory fallback when the ``RuntimeConfigAccessor``
-    is unavailable or its cache is empty. This is the only butler-scoped
-    runtime config source in git.
+    thereafter, as the Git authority for ``core_groups`` plus the in-memory
+    fallback when the ``RuntimeConfigAccessor`` is unavailable or its cache is
+    empty. This is the only butler-scoped runtime config source in git.
 
     Fields:
 
     - ``core_groups`` / ``catalog_read_sensitivity`` /
-      ``max_concurrent_sessions`` / ``max_queued_sessions`` are the operational
+      ``max_concurrent_sessions`` / ``max_queued_sessions`` /
+      ``tool_exposure_policy`` are the operational
       tuning knobs that map to the DB-backed
-      ``runtime_config`` row. The Spawner prefers the DB row via
+      ``runtime_config`` row. Operational fields prefer the DB row via
       :class:`RuntimeConfigAccessor` and falls back to the values here when
-      no accessor is wired.
+      no accessor is wired. ``tool_exposure_policy`` is hot: the DB-backed
+      row is authoritative per invocation, and this seed value only applies
+      before the row is first seeded.
     - ``liveness_ttl_seconds`` / ``route_contract_min`` / ``route_contract_max``
       are registration-only and are not stored in ``runtime_config``.
 
@@ -117,6 +121,7 @@ class RuntimeSeedConfig:
     liveness_ttl_seconds: int = 300
     route_contract_min: int = 1
     route_contract_max: int = 1
+    tool_exposure_policy: Literal["eager_filtered", "auto"] = "eager_filtered"
 
 
 @dataclass
@@ -275,8 +280,8 @@ class ButlerConfig:
     #       "https://www.googleapis.com/auth/gmail.modify",
     #   ]
     #
-    #   [oauth.spotify]
-    #   scopes = ["user-read-recently-played", "user-top-read"]
+    #   [oauth.example_provider]
+    #   scopes = ["profile.read", "activity.read"]
     #
     # These declarations are read by the dashboard OAuth router to resolve the
     # scope-set for each provider as the union of all butler declarations.
@@ -350,7 +355,8 @@ def _parse_runtime_seed(butler_section: dict) -> RuntimeSeedConfig:
 
     Returns a RuntimeSeedConfig using dataclass defaults for any absent fields.
     This section is operational-only; model selection lives in the model
-    catalog, while runtime adapter type lives in top-level ``[runtime]``.
+    catalog, while runtime adapter type is fixed for the whole roster in
+    butlers.core.runtimes.DEFAULT_RUNTIME_TYPE.
     """
     seed_section = butler_section.get("runtime_seed", {})
 
@@ -413,6 +419,13 @@ def _parse_runtime_seed(butler_section: dict) -> RuntimeSeedConfig:
     route_contract_min = int(seed_section.get("route_contract_min", 1))
     route_contract_max = int(seed_section.get("route_contract_max", 1))
 
+    tool_exposure_policy = seed_section.get("tool_exposure_policy", "eager_filtered")
+    if tool_exposure_policy not in {"eager_filtered", "auto"}:
+        raise ConfigError(
+            "Invalid butler.runtime_seed.tool_exposure_policy: "
+            f"{tool_exposure_policy!r}. Expected eager_filtered or auto."
+        )
+
     return RuntimeSeedConfig(
         core_groups=core_groups,
         catalog_read_sensitivity=catalog_read_sensitivity,
@@ -421,6 +434,7 @@ def _parse_runtime_seed(butler_section: dict) -> RuntimeSeedConfig:
         liveness_ttl_seconds=liveness_ttl_seconds,
         route_contract_min=route_contract_min,
         route_contract_max=route_contract_max,
+        tool_exposure_policy=tool_exposure_policy,
     )
 
 
@@ -485,6 +499,10 @@ def _parse_schedule_entry(entry: Any, index: int) -> ScheduleConfig:
             )
         complexity = normalized_complexity
 
+    raw_continuity = entry.get("continuity", False)
+    if not isinstance(raw_continuity, bool):
+        raise ConfigError(f"{entry_path}.continuity must be a boolean when set")
+
     if dispatch_mode == ScheduleDispatchMode.PROMPT:
         if prompt is None or not prompt.strip():
             raise ConfigError(f"{entry_path} with dispatch_mode='prompt' requires non-empty prompt")
@@ -499,12 +517,15 @@ def _parse_schedule_entry(entry: Any, index: int) -> ScheduleConfig:
             dispatch_mode=dispatch_mode,
             max_token_budget=max_token_budget,
             complexity=complexity,
+            continuity=raw_continuity,
         )
 
     if prompt is not None:
         raise ConfigError(f"{entry_path}.prompt is not allowed when dispatch_mode='job'")
     if job_name is None or not job_name.strip():
         raise ConfigError(f"{entry_path} with dispatch_mode='job' requires non-empty job_name")
+    if raw_continuity:
+        raise ConfigError(f"{entry_path}.continuity is only valid when dispatch_mode='prompt'")
 
     return ScheduleConfig(
         name=name,
@@ -580,7 +601,9 @@ def parse_approval_config(raw: dict[str, Any] | None) -> ApprovalConfig | None:
 
 
 def validate_approval_config(
-    approval_config: ApprovalConfig | None, registered_tools: set[str]
+    approval_config: ApprovalConfig | None,
+    registered_tools: set[str],
+    tool_metadata: dict[str, Any] | None = None,
 ) -> None:
     """Validate that all gated tools are actually registered.
 
@@ -594,11 +617,24 @@ def validate_approval_config(
         configured.
     registered_tools:
         Set of all tool names registered by the butler's modules.
+    tool_metadata:
+        Optional ``{tool_name: ToolMeta}`` map aggregated from every active
+        module's ``tool_metadata()``. When given, also enforces the reverse
+        direction (bu-0ynlk.1): a chat-reachable write tool — one a module
+        explicitly declared with ``arg_sensitivities={"_write": True, ...}``
+        (the convention ``spotify``/``steam`` already use) — that is
+        registered but missing from ``gated_tools`` fails validation, closing
+        the gap where a butler enables approvals but forgets to gate one of
+        its own write tools. Only tools using this opt-in declaration are
+        checked; tools whose owning module has not declared it are
+        unaffected.
 
     Raises
     ------
     ConfigError
-        If any gated tool names are not in *registered_tools*.
+        If any gated tool names are not in *registered_tools*, or (when
+        *tool_metadata* is given) if a declared write tool is registered but
+        not gated.
     """
     if approval_config is None or not approval_config.enabled:
         return
@@ -611,6 +647,23 @@ def validate_approval_config(
             f"Unknown gated tool(s) in approval config: {tools_str}. "
             f"These tools are not registered by any module."
         )
+
+    if tool_metadata:
+        ungated_write_tools = sorted(
+            tool_name
+            for tool_name, meta in tool_metadata.items()
+            if tool_name in registered_tools
+            and getattr(meta, "arg_sensitivities", {}).get("_write") is True
+            and tool_name not in approval_config.gated_tools
+        )
+        if ungated_write_tools:
+            tools_str = ", ".join(ungated_write_tools)
+            raise ConfigError(
+                f"Chat-reachable write tool(s) not covered by approval config: "
+                f"{tools_str}. These tools are declared as writes via "
+                f"tool_metadata() but have no gated_tools entry — add one or "
+                f"mark the tool read-only."
+            )
 
 
 def _messenger_bot_scope_enabled(module_cfg: dict[str, Any]) -> bool:

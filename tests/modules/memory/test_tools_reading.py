@@ -109,6 +109,32 @@ class TestMemoryGet:
         assert await memory_get(pool, "fact", SAMPLE_STR) is None
 
 
+class TestReadPolicyForwarding:
+    async def test_search_forwards_held_policy(
+        self, pool: AsyncMock, engine: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        policy = _helpers._search.resolve_catalog_read_policy("internal")
+        search = AsyncMock(return_value=[])
+        monkeypatch.setattr(_helpers._search, "search", search)
+
+        result = await memory_search(pool, engine, "topic", read_policy=policy)
+
+        assert result == []
+        assert search.await_args.kwargs["read_policy"] is policy
+
+    async def test_recall_forwards_held_policy(
+        self, pool: AsyncMock, engine: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        policy = _helpers._search.resolve_catalog_read_policy("internal")
+        recall = AsyncMock(return_value=[])
+        monkeypatch.setattr(_helpers._search, "recall", recall)
+
+        result = await memory_recall(pool, engine, "topic", read_policy=policy)
+
+        assert result == []
+        assert recall.await_args.kwargs["read_policy"] is policy
+
+
 # ---------------------------------------------------------------------------
 # memory_confirm
 # ---------------------------------------------------------------------------

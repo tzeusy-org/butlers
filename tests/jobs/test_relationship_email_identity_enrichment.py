@@ -18,6 +18,8 @@ from typing import Any
 
 import pytest
 
+from butlers.testing.approval_parking_fake import record_pending_action
+
 _MODULE_KEY = "butlers.jobs._roster.relationship_jobs"
 
 
@@ -128,13 +130,12 @@ class _FakePool:
 
 @pytest.fixture(autouse=True)
 def _register_real_approval_hooks(monkeypatch: pytest.MonkeyPatch):
-    """Register real pool-scoped hooks for each FakePool created by a test."""
+    """Register a narrow park recorder for each unit-test FakePool."""
     import butlers.core.approvals_hooks as _hooks
     from butlers.modules.approvals.email_guard import (
         check_email_recipient,
         check_recipient,
     )
-    from butlers.modules.approvals.park import park_pending_action as _real_park
 
     original_init = _FakePool.__init__
     registrations = []
@@ -145,7 +146,7 @@ def _register_real_approval_hooks(monkeypatch: pytest.MonkeyPatch):
             self,
             email_guard=check_email_recipient,
             recipient_guard=check_recipient,
-            park_pending_action=_real_park,
+            park_pending_action=record_pending_action,
         )
         registrations.append((self, runtime))
 

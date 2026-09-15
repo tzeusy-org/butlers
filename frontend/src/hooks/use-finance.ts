@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   getFinanceAccounts,
   getFinanceExpectedSignals,
+  getFinanceObligations,
   getFinanceSpendingSummary,
   getFinanceSubscriptions,
   getFinanceTransactions,
@@ -55,6 +56,17 @@ export function useFinanceExpectedSignals() {
   return useQuery({
     queryKey: ["finance", "expected-signals"],
     queryFn: getFinanceExpectedSignals,
+    refetchInterval: FINANCE_POLL_MS,
+    placeholderData: (previousData) => previousData,
+  });
+}
+
+/** List the forward obligation ledger (warn-by dates, cancellation-door
+ * status, pre-charge price-change flags). Refreshes every 60s. */
+export function useFinanceObligations() {
+  return useQuery({
+    queryKey: ["finance", "obligations"],
+    queryFn: getFinanceObligations,
     refetchInterval: FINANCE_POLL_MS,
     placeholderData: (previousData) => previousData,
   });

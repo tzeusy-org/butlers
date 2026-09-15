@@ -45,11 +45,23 @@ SWITCHBOARD_ROLE = "butler_switchboard_rw"
 # Fixed protocol bounds (bu-0uqgo.3 design). These are contract, not tuning:
 # CLAIM_LEASE_SECONDS and STALE_SENDING_SECONDS agreeing is what makes an
 # expired claim and a recoverable claim the same thing.
-SERVICE_LEASE_TTL_SECONDS = 60
-LEASE_HEARTBEAT_SECONDS = 10
-CLAIM_LEASE_SECONDS = 60
+#
+# Worst-case single-episode transport is bounded by MAX_TRANSPORT_ATTEMPTS
+# full TRANSPORT_DEADLINE_SECONDS timeouts plus the backoff between them:
+# 3*30 + 1 + 5 = 96s. The worker renews the service lease once per episode
+# (after ``_deliver`` returns, before claiming the next one, see
+# ``RuntimeAttentionDeliveryWorker.run_once``), so the lease is never touched
+# *during* a single episode's transport. Every TTL below must therefore
+# comfortably clear 96s, or a live claimant can be fenced mid-send by a
+# successor that steals the lease while the original holder is still
+# transporting (bu-5urw8) -- the fenced row then reads ``uncertain`` and
+# offers the operator a reissue that would duplicate an already-delivered
+# page. 150s clears the bound with ~54s of margin for per-attempt DB
+# round-trips this budget does not otherwise account for.
+SERVICE_LEASE_TTL_SECONDS = 150
+CLAIM_LEASE_SECONDS = 150
 TRANSPORT_DEADLINE_SECONDS = 30
-STALE_SENDING_SECONDS = 60
+STALE_SENDING_SECONDS = 150
 MAX_TRANSPORT_ATTEMPTS = 3
 RETRY_BACKOFF_SECONDS: tuple[float, ...] = (1.0, 5.0)
 
@@ -287,7 +299,7 @@ class RuntimeAttentionOutbox:
 
     # -- terminal transitions ------------------------------------------------
 
-    async def _finish(self, episode: OutboxEpisode, statement: str) -> bool:
+    async def _finish(self, episode: OutboxEpisode, statement: str, *extra: Any) -> bool:
         async with self._switchboard_tx() as connection:
             row = await connection.fetchrow(
                 statement,
@@ -295,16 +307,24 @@ class RuntimeAttentionOutbox:
                 episode.claim_token,
                 episode.claim_epoch,
                 episode.delivery_lease_epoch,
+                *extra,
             )
         return row is not None
 
-    async def mark_sent(self, episode: OutboxEpisode) -> bool:
-        """Record a confirmed delivery. ``False`` means the claim was fenced."""
+    async def mark_sent(
+        self, episode: OutboxEpisode, *, notification_ref: uuid.UUID | None = None
+    ) -> bool:
+        """Record a confirmed delivery. ``False`` means the claim was fenced.
+
+        ``notification_ref`` is the optional scalar linkage to the logged
+        ``switchboard.notifications`` row the CHECK constraint permits for a
+        ``sent`` episode; it carries no delivery-error evidence of its own.
+        """
         return await self._finish(
             episode,
             """
             UPDATE public.runtime_attention_outbox
-            SET lifecycle_state = 'sent', delivered_at = now()
+            SET lifecycle_state = 'sent', delivered_at = now(), notification_ref = $5
             WHERE id = $1
               AND lifecycle_state = 'sending'
               AND claim_token = $2
@@ -312,15 +332,31 @@ class RuntimeAttentionOutbox:
               AND delivery_lease_epoch = $4
             RETURNING id
             """,
+            notification_ref,
         )
 
-    async def mark_failed(self, episode: OutboxEpisode) -> bool:
-        """Record a terminal failure that is *proven* not to have delivered."""
+    async def mark_failed(
+        self,
+        episode: OutboxEpisode,
+        *,
+        error_class: str,
+        error_detail: str,
+        notification_ref: uuid.UUID | None = None,
+    ) -> bool:
+        """Record a terminal failure that is *proven* not to have delivered.
+
+        ``error_class``/``error_detail`` must be one of the fixed pairs
+        ``ck_runtime_attention_outbox_delivery_evidence`` accepts; anything
+        else is rejected at the database, never at this layer.
+        """
         return await self._finish(
             episode,
             """
             UPDATE public.runtime_attention_outbox
-            SET lifecycle_state = 'failed'
+            SET lifecycle_state = 'failed',
+                delivery_error_class = $5,
+                delivery_error_detail = $6,
+                notification_ref = $7
             WHERE id = $1
               AND lifecycle_state = 'sending'
               AND claim_token = $2
@@ -328,15 +364,33 @@ class RuntimeAttentionOutbox:
               AND delivery_lease_epoch = $4
             RETURNING id
             """,
+            error_class,
+            error_detail,
+            notification_ref,
         )
 
-    async def mark_uncertain(self, episode: OutboxEpisode) -> bool:
-        """Record an ambiguous send. Terminal: it is never reclaimed."""
+    async def mark_uncertain(
+        self,
+        episode: OutboxEpisode,
+        *,
+        error_class: str,
+        error_detail: str,
+        notification_ref: uuid.UUID | None = None,
+    ) -> bool:
+        """Record an ambiguous send. Terminal: it is never reclaimed.
+
+        ``error_class``/``error_detail`` must be one of the fixed pairs
+        ``ck_runtime_attention_outbox_delivery_evidence`` accepts; anything
+        else is rejected at the database, never at this layer.
+        """
         return await self._finish(
             episode,
             """
             UPDATE public.runtime_attention_outbox
-            SET lifecycle_state = 'uncertain'
+            SET lifecycle_state = 'uncertain',
+                delivery_error_class = $5,
+                delivery_error_detail = $6,
+                notification_ref = $7
             WHERE id = $1
               AND lifecycle_state = 'sending'
               AND claim_token = $2
@@ -344,6 +398,9 @@ class RuntimeAttentionOutbox:
               AND delivery_lease_epoch = $4
             RETURNING id
             """,
+            error_class,
+            error_detail,
+            notification_ref,
         )
 
     # -- recovery ------------------------------------------------------------
@@ -399,12 +456,21 @@ class RuntimeAttentionOutbox:
         may have handed the message to the provider before dying, so the only
         honest terminal state is ``uncertain`` — replaying it would be exactly
         the double delivery this lane exists to prevent.
+
+        ``delivery_error_class``/``delivery_error_detail`` are set to the
+        fixed ``('transport_uncertain', 'worker_recovery')`` pair
+        ``ck_runtime_attention_outbox_delivery_evidence`` reserves for exactly
+        this recovery-fenced path (mirrors ``routing.transport.WORKER_RECOVERY``).
+        ``notification_ref`` stays NULL: no delivery was observed here, so
+        there is no notification to link.
         """
         async with self._switchboard_tx() as connection:
             row = await connection.fetchrow(
                 """
                 UPDATE public.runtime_attention_outbox
-                SET lifecycle_state = 'uncertain'
+                SET lifecycle_state = 'uncertain',
+                    delivery_error_class = 'transport_uncertain',
+                    delivery_error_detail = 'worker_recovery'
                 WHERE id = $1
                   AND lifecycle_state = 'sending'
                   AND claim_token = $2

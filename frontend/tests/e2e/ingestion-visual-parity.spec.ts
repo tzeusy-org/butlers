@@ -126,8 +126,8 @@ const FIXTURE_EVENTS = [
   }),
 ];
 
-/** A minimal backend ConnectorEntry for the gmail connector (fixture). */
-const FIXTURE_CONNECTOR_BACKEND = {
+/** A minimal canonical connector-detail payload for the gmail connector. */
+const FIXTURE_CONNECTOR_DETAIL = {
   connector_type: "gmail",
   endpoint_identity: "alice@example.com",
   instance_id: "inst-001",
@@ -148,6 +148,23 @@ const FIXTURE_CONNECTOR_BACKEND = {
   checkpoint_cursor: null,
   checkpoint_updated_at: null,
   settings: null,
+};
+
+/** A role-aware canonical connector summary for roster, timeline, and System. */
+const FIXTURE_CONNECTOR_SUMMARY = {
+  connector_type: "gmail",
+  endpoint_identity: "alice@example.com",
+  liveness: "online",
+  state: "healthy",
+  error_message: null,
+  version: "1.0.0",
+  uptime_s: 86400,
+  last_heartbeat_at: new Date(Date.now() - 60_000).toISOString(),
+  first_seen_at: "2026-01-01T00:00:00Z",
+  today: { messages_ingested: 42, messages_failed: 1, uptime_pct: 100 },
+  hourly_events: Array(24).fill(0),
+  operational_role: "runtime_instance",
+  checkpoints: [],
 };
 
 /**
@@ -188,14 +205,27 @@ async function installCommonMocks(page: Page) {
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        data: [FIXTURE_CONNECTOR_BACKEND],
+        data: { connectors: [FIXTURE_CONNECTOR_SUMMARY] },
       }),
     });
   });
 
-  // 3. Switchboard connector detail for gmail/alice@example.com
+  // 3. Canonical connector detail for gmail/alice@example.com
   await page.route(
-    "**/api/switchboard/connectors/gmail/alice%40example.com/stats*",
+    "**/api/ingestion/connectors/gmail/alice%40example.com*",
+    (route) => {
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ data: FIXTURE_CONNECTOR_DETAIL }),
+      });
+    },
+  );
+
+  // 4. Canonical connector stats for gmail. Registered after the detail
+  // handler so it wins under Playwright's LIFO route matching.
+  await page.route(
+    "**/api/ingestion/connectors/gmail/alice%40example.com/stats*",
     (route) => {
       route.fulfill({
         status: 200,
@@ -205,28 +235,7 @@ async function installCommonMocks(page: Page) {
     },
   );
 
-  // 4. Connector stats for gmail
-  await page.route(
-    "**/api/switchboard/connectors/gmail/alice%40example.com*",
-    (route) => {
-      route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ data: FIXTURE_CONNECTOR_BACKEND }),
-      });
-    },
-  );
-
-  // 5. Switchboard connector list
-  await page.route("**/api/switchboard/connectors*", (route) => {
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ data: [FIXTURE_CONNECTOR_BACKEND] }),
-    });
-  });
-
-  // 5b. Connector-scoped sub-sections: events, incidents, routing-rules [bu-5ywn2]
+  // 5. Connector-scoped sub-sections: events, incidents, routing-rules [bu-5ywn2]
   //     These must be registered before the generic connectors catch-all so
   //     they win under LIFO matching. The catch-all (**/api/**) would return
   //     { data: [] } which does not match ConnectorEventsResponse shape and
@@ -504,7 +513,7 @@ test.describe("ingestion visual parity — route smoke", () => {
     );
 
     // The KPI strip (data-testid='kpi-strip') must be visible when the connector
-    // data loads. The mocks above return FIXTURE_CONNECTOR_BACKEND so the normal
+    // data loads. The mocks above return FIXTURE_CONNECTOR_DETAIL so the normal
     // Dispatch-language layout (ConnectorDetailView) renders.
     // Note: legacy detail-loading / detail-not-found testids were removed in
     // bu-1jh6i (Page archetype adoption); the Page shell's state elements have

@@ -479,9 +479,10 @@ claim completion from planned tests alone.
    package scripts, then typecheck/lint the touched surfaces.
 6. Run the broader affected approval/notify/scheduler regression suite; inspect
    all required and full hosted check rollups from the exact pushed head.
-7. Re-fetch/rebase the PR on live `origin/main`, rerun changed-head gates,
-   obtain independent exact-head review, and use the repository’s exact-base
-   merge helper only if a separately authorized owner asks to merge.
+7. Fetch live `origin/main` and resolve only a real conflict; do not rebase a
+   clean PR merely to refresh it. Rerun changed-head gates after any rewrite,
+   obtain independent exact-head review, and, only when separately authorized,
+   add the PR to the merge queue with `gh pr merge <n> --squash --auto`.
 
 ## Rollout and rollback decision table
 

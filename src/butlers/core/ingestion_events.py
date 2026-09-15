@@ -1810,43 +1810,27 @@ async def ingestion_window_rollup(
         f"{where_clause}"
     )
 
-    try:
-        event_count: int = await pool.fetchval(event_count_sql, *args)
-    except Exception:
-        logger.debug("ingestion_window_rollup: event count query failed", exc_info=True)
-        event_count = 0
+    event_count: int = await pool.fetchval(event_count_sql, *args)
 
-    # Session count + cost: fan-out to all registered butler schemas.
-    # We fetch only the event IDs (not full rows) and cap the array to avoid
-    # transferring unbounded data to the application layer.
-    # A cap of 10,000 IDs is sufficient for rollup accuracy in typical windows;
-    # very large windows return an approximate count and approximate cost.
-    _SESSION_COUNT_ID_CAP = 10_000
+    # Each owning pool aggregates its sessions against the same event filter.
+    # Keep matching IDs in PostgreSQL: truncating an application-side ID array
+    # silently lost sessions/cost beyond the first 10,000 events. IN also
+    # preserves membership semantics if an ID occurs in both event stores.
     session_count = 0
     total_cost: float | None = None
     unpriced_session_count = 0
     no_usage_session_count = 0
     if db is not None and event_count > 0:
-        id_sql = (
-            f"SELECT id FROM ("
+        matching_events_sql = (
+            f"SELECT id::text FROM ("
             f"SELECT {_INGESTED_COLS} FROM public.ingestion_events "
             f"UNION ALL "
             f"SELECT {_FILTERED_COLS} FROM connectors.filtered_events"
             f") AS combined"
             f"{where_clause}"
-            f" LIMIT {_SESSION_COUNT_ID_CAP}"
         )
-        try:
-            id_rows = await pool.fetch(id_sql, *args)
-            event_ids = [str(row["id"]) for row in id_rows]
-        except Exception:
-            logger.debug("ingestion_window_rollup: event ID fetch failed", exc_info=True)
-            event_ids = []
-
-        if event_ids:
-            try:
-                fan_results, _failed = await db.fan_out_with_status(
-                    """
+        fan_results, failed = await db.fan_out_with_status(
+            f"""
                     SELECT
                         COUNT(*) AS cnt,
                         COALESCE(model, '') AS model,
@@ -1856,7 +1840,7 @@ async def ingestion_window_rollup(
                         COALESCE(cache_creation_tokens, 0)::bigint AS cache_creation_tokens,
                         cost
                     FROM sessions
-                    WHERE request_id = ANY($1::text[])
+                    WHERE request_id IN ({matching_events_sql})
                     GROUP BY
                         model,
                         COALESCE(input_tokens, 0),
@@ -1865,41 +1849,41 @@ async def ingestion_window_rollup(
                         COALESCE(cache_creation_tokens, 0),
                         cost
                     """,
-                    (event_ids,),
+            tuple(args),
+        )
+        if failed:
+            raise RuntimeError("Ingestion rollup session sources unavailable")
+        for rows in fan_results.values():
+            for row in rows:
+                row_session_count = int(row.get("cnt") or 0)
+                session_count += row_session_count
+                raw_cost = row.get("cost")
+                if isinstance(raw_cost, str):
+                    try:
+                        raw_cost = json.loads(raw_cost)
+                    except json.JSONDecodeError:
+                        pass
+                session_cost = _compute_session_cost_usd(
+                    {
+                        "model": row.get("model"),
+                        "input_tokens": int(row.get("input_tokens") or 0),
+                        "output_tokens": int(row.get("output_tokens") or 0),
+                        "cached_input_tokens": int(row.get("cached_input_tokens") or 0),
+                        "cache_creation_tokens": int(row.get("cache_creation_tokens") or 0),
+                        "cost": raw_cost,
+                    },
+                    pricing,
                 )
-                for rows in fan_results.values():
-                    for row in rows:
-                        row_session_count = int(row.get("cnt") or 0)
-                        session_count += row_session_count
-                        raw_cost = row.get("cost")
-                        if isinstance(raw_cost, str):
-                            try:
-                                raw_cost = json.loads(raw_cost)
-                            except json.JSONDecodeError:
-                                pass
-                        session_cost = _compute_session_cost_usd(
-                            {
-                                "model": row.get("model"),
-                                "input_tokens": int(row.get("input_tokens") or 0),
-                                "output_tokens": int(row.get("output_tokens") or 0),
-                                "cached_input_tokens": int(row.get("cached_input_tokens") or 0),
-                                "cache_creation_tokens": int(row.get("cache_creation_tokens") or 0),
-                                "cost": raw_cost,
-                            },
-                            pricing,
-                        )
-                        cost_evidence = _classify_session_cost_evidence(row, session_cost)
-                        if cost_evidence == "unpriced":
-                            unpriced_session_count += row_session_count
-                            continue
-                        if cost_evidence == "no_usage":
-                            no_usage_session_count += row_session_count
-                            continue
-                        if total_cost is None:
-                            total_cost = 0.0
-                        total_cost += session_cost * row_session_count
-            except Exception:
-                logger.debug("ingestion_window_rollup: session fan-out failed", exc_info=True)
+                cost_evidence = _classify_session_cost_evidence(row, session_cost)
+                if cost_evidence == "unpriced":
+                    unpriced_session_count += row_session_count
+                    continue
+                if cost_evidence == "no_usage":
+                    no_usage_session_count += row_session_count
+                    continue
+                if total_cost is None:
+                    total_cost = 0.0
+                total_cost += session_cost * row_session_count
 
     return {
         "events": event_count,

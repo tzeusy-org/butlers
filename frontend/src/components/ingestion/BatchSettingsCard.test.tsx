@@ -8,6 +8,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BatchSettingsCard } from "./BatchSettingsCard";
 import { BATCH_CONNECTOR_TYPES } from "./BatchSettingsCard.constants";
 import type { ConnectorDetail } from "@/api/types.ts";
+import { useUpdateConnectorSettings } from "@/hooks/use-ingestion";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
@@ -73,6 +74,14 @@ function makeMutation(overrides: object = {}) {
   };
 }
 
+function LiveMutationCard({ connector }: { connector: ConnectorDetail }) {
+  const settingsMutation = useUpdateConnectorSettings(
+    connector.connector_type,
+    connector.endpoint_identity,
+  );
+  return <BatchSettingsCard connector={connector} settingsMutation={settingsMutation} />;
+}
+
 describe("BATCH_CONNECTOR_TYPES", () => {
   it("includes telegram_user_client", () => {
     expect(BATCH_CONNECTOR_TYPES.has("telegram_user_client")).toBe(true);
@@ -107,6 +116,7 @@ describe("BatchSettingsCard", () => {
     act(() => root.unmount());
     container.remove();
     queryClient.clear();
+    vi.unstubAllGlobals();
   });
 
   function render(
@@ -120,6 +130,16 @@ describe("BatchSettingsCard", () => {
             connector={connector}
             settingsMutation={mutation as ReturnType<typeof import("@/hooks/use-ingestion").useUpdateConnectorSettings>}
           />
+        </QueryClientProvider>,
+      );
+    });
+  }
+
+  function renderWithLiveMutation(connector: ConnectorDetail) {
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <LiveMutationCard connector={connector} />
         </QueryClientProvider>,
       );
     });
@@ -219,6 +239,48 @@ describe("BatchSettingsCard", () => {
     render(makeConnector({ settings: { flush_interval_s: 1800 } }));
     const saveBtn = container.querySelector("[data-testid='flush-interval-save-btn']");
     expect(saveBtn).toBeNull();
+  });
+
+  it("saves through the canonical PATCH with the exact settings payload", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ data: {} }),
+      text: async () => "",
+      headers: { get: () => "application/json" },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderWithLiveMutation(makeConnector({ settings: { flush_interval_s: 900 } }));
+
+    const input = container.querySelector(
+      "[data-testid='flush-interval-input']",
+    ) as HTMLInputElement | null;
+    if (!input) throw new Error("Input not found");
+    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    await act(async () => {
+      nativeInputValueSetter?.call(input, "1200");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    const saveButton = container.querySelector(
+      "[data-testid='flush-interval-save-btn']",
+    ) as HTMLButtonElement | null;
+    if (!saveButton) throw new Error("Save button not found");
+    await act(async () => {
+      saveButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(
+      "/api/ingestion/connectors/telegram_user_client/test-identity/settings",
+    );
+    expect(init.method).toBe("PATCH");
+    expect(init.body).toBe(JSON.stringify({ settings: { flush_interval_s: 1200 } }));
   });
 
   // -------------------------------------------------------------------------

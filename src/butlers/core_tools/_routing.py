@@ -18,11 +18,19 @@ from functools import partial
 from typing import Any
 
 import asyncpg
+from fastmcp.server.dependencies import get_access_token
 from opentelemetry import trace
 from opentelemetry.context import Context as OtelContext
 from opentelemetry.trace import Link as OtelLink
 from pydantic import ValidationError
 
+from butlers.core.approval_delivery_transport import (
+    MessengerApprovalHandoffRepository,
+    RecoveryAuthorityError,
+    TrustedRecoveryContext,
+    authenticated_daemon_name,
+)
+from butlers.core.approval_delivery_worker import HandoffResult
 from butlers.core.dashboard_turns import claim_target, mark_route_enqueued, mark_terminal
 from butlers.core.model_routing import Complexity, coerce_complexity_tier
 from butlers.core.route_inbox import (
@@ -63,6 +71,102 @@ _ROUTE_ERROR_RETRYABLE: dict[str, bool] = {
     "overload_rejected": True,
     "internal_error": False,
 }
+
+_APPROVAL_RECOVERY_REFUSAL = "Approval recovery authority rejected."
+
+
+def _approval_recovery_refusal_response() -> dict[str, Any]:
+    """Return the sole content-blind pre-auth Messenger recovery refusal."""
+    return {
+        "schema_version": "route_response.v1",
+        "status": "error",
+        "error": {
+            "class": "validation_error",
+            "message": _APPROVAL_RECOVERY_REFUSAL,
+            "retryable": False,
+        },
+    }
+
+
+def _raw_input_has_approval_recovery(input_payload: Any) -> bool:
+    """Detect the reserved recovery field without interpreting its contents."""
+    if not isinstance(input_payload, dict):
+        return False
+    context = input_payload.get("context")
+    if not isinstance(context, dict):
+        return False
+    notify_request = context.get("notify_request")
+    return isinstance(notify_request, dict) and "recovery" in notify_request
+
+
+def _preauthenticate_messenger_recovery(
+    *,
+    schema_version: str,
+    request_context: dict[str, Any],
+    input_payload: dict[str, Any],
+    subrequest: dict[str, Any] | None,
+    target: dict[str, Any] | None,
+    source_metadata: dict[str, Any] | None,
+    trace_context: dict[str, str] | None,
+    trusted_route_callers: set[str] | frozenset[str] | list[str],
+) -> TrustedRecoveryContext:
+    """Authenticate and bind recovery before any trace, log, lookup, or response detail."""
+    switchboard_principal = authenticated_daemon_name(
+        get_access_token(),
+        required_scope="approval-recovery:switchboard",
+    )
+    if switchboard_principal != "switchboard":
+        raise RecoveryAuthorityError("Messenger requires authenticated Switchboard")
+
+    route_payload: dict[str, Any] = {
+        "schema_version": schema_version,
+        "request_context": request_context,
+        "input": input_payload,
+    }
+    if subrequest is not None:
+        route_payload["subrequest"] = subrequest
+    if target is not None:
+        route_payload["target"] = target
+    if source_metadata is not None:
+        route_payload["source_metadata"] = source_metadata
+    if trace_context is not None:
+        route_payload["trace_context"] = trace_context
+
+    parsed_route = parse_route_envelope(route_payload)
+    if (
+        parsed_route.request_context.source_endpoint_identity != "switchboard"
+        or "switchboard" not in trusted_route_callers
+    ):
+        raise RecoveryAuthorityError("Messenger recovery route caller is not Switchboard")
+    input_context = parsed_route.input.context
+    if not isinstance(input_context, dict):
+        raise RecoveryAuthorityError("trusted recovery context is missing")
+    raw_notify_request = input_context.get("notify_request")
+    if not isinstance(raw_notify_request, dict):
+        raise RecoveryAuthorityError("recovery notify request is missing")
+    notify_request = parse_notify_request(raw_notify_request)
+    recovery = notify_request.recovery
+    if recovery is None:
+        raise RecoveryAuthorityError("recovery correlation is missing")
+    if notify_request.origin_butler != parsed_route.request_context.source_sender_identity:
+        raise RecoveryAuthorityError("recovery origin does not match route sender")
+
+    raw_trusted = input_context.get("_trusted_approval_recovery")
+    if not isinstance(raw_trusted, dict):
+        raise RecoveryAuthorityError("trusted recovery context is missing")
+    trusted = TrustedRecoveryContext.from_internal_dict(raw_trusted)
+    if trusted.issuer != notify_request.origin_butler or any(
+        (
+            trusted.operation != recovery.operation,
+            trusted.subject_kind != recovery.subject_kind,
+            trusted.subject_key != recovery.subject_key,
+            trusted.presentation_key != recovery.presentation_key,
+            trusted.presentation_generation != recovery.presentation_generation,
+            trusted.presentation_mode != recovery.presentation_mode,
+        )
+    ):
+        raise RecoveryAuthorityError("trusted recovery context does not match request")
+    return trusted
 
 
 def _build_interactive_route_guidance(
@@ -158,7 +262,7 @@ def _build_route_runtime_context(
         for att in attachments:
             filename = att.get("filename", "unnamed")
             media_type = att.get("media_type", "unknown")
-            size_kb = att.get("size_bytes", 0) / 1024
+            size_kb = (att.get("size_bytes") or 0) / 1024
             storage_ref = att.get("storage_ref")
             if storage_ref:
                 att_lines.append(
@@ -166,17 +270,24 @@ def _build_route_runtime_context(
                     f"size={size_kb:.1f}KB, storage_ref={storage_ref}"
                 )
             else:
+                # No retrieval tool exists for a storage_ref-less attachment yet
+                # (bu-2jtfw.7 S4, attachment_materialize, is unimplemented) — say
+                # so honestly instead of promising an "on-demand retrieval" verb
+                # that does not exist.
                 att_lines.append(
                     f"  - filename={filename}, media_type={media_type}, "
-                    f"size={size_kb:.1f}KB, status=pending_lazy_fetch"
+                    "status=unavailable (could not be fetched; no storage_ref)"
                 )
         context_parts.append(
             f"\nATTACHMENTS ({len(attachments)} file(s)):\n"
             + "\n".join(att_lines)
-            + "\n\nTo retrieve an attachment, call `get_attachment(storage_ref=<storage_ref>)` "
-            "using the EXACT storage_ref value shown above (starts with 's3://'). "
-            "Do NOT pass the filename. "
-            "Lazy-fetch attachments (no storage_ref) require on-demand retrieval."
+            + "\n\nTo view an IMAGE attachment, call "
+            "`attachment_view(storage_ref=<storage_ref>)` using the EXACT storage_ref "
+            "value shown above (starts with 's3://') — it returns the image itself. "
+            "For a non-image attachment with a storage_ref, call "
+            "`get_attachment(storage_ref=<storage_ref>)` instead. Do NOT pass the "
+            "filename as storage_ref. An attachment shown as status=unavailable has "
+            "no retrieval tool yet — do not guess at its contents; say so plainly."
         )
     non_interactive_guidance = _build_non_interactive_route_safety_guidance(
         source_channel, addressed=addressed
@@ -259,6 +370,13 @@ class _RoutedDeliveryCommand:
     execute: Callable[[], Awaitable[Any]]
 
 
+ROUTED_COMMUNICATION_CHANNEL_IDENTITY_TYPES: dict[str, str] = {
+    "email": "email",
+    "telegram": "telegram",
+    "whatsapp": "whatsapp_jid",
+}
+
+
 async def _build_routed_delivery_command(
     *,
     daemon: Any,
@@ -274,6 +392,8 @@ async def _build_routed_delivery_command(
     """Materialize the registered native command before approval evaluation."""
     if intent not in {"send", "reply"}:
         return None
+    if channel not in ROUTED_COMMUNICATION_CHANNEL_IDENTITY_TYPES:
+        raise ValueError(f"Unsupported notify channel: {channel}")
 
     notify_prefix = f"[{origin}]"
     if channel == "email":
@@ -431,7 +551,7 @@ async def _build_routed_delivery_command(
             execute=partial(send_tool, recipient=target, text=rendered_text),
         )
 
-    raise ValueError(f"Unsupported notify channel: {channel}")
+    raise RuntimeError(f"Registered notify channel lacks a delivery handler: {channel}")
 
 
 def _format_validation_error(prefix: str, exc: ValidationError) -> str:
@@ -518,6 +638,22 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
         trace_context: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Execute routed requests and terminate messenger notify deliveries."""
+        trusted_messenger_recovery: TrustedRecoveryContext | None = None
+        if butler_name == "messenger" and _raw_input_has_approval_recovery(input):
+            try:
+                trusted_messenger_recovery = _preauthenticate_messenger_recovery(
+                    schema_version=schema_version,
+                    request_context=request_context,
+                    input_payload=input,
+                    subrequest=subrequest,
+                    target=target,
+                    source_metadata=source_metadata,
+                    trace_context=trace_context,
+                    trusted_route_callers=daemon.config.trusted_route_callers,
+                )
+            except Exception:
+                return _approval_recovery_refusal_response()
+
         parent_ctx = extract_trace_context(trace_context) if trace_context else None
         tracer = trace.get_tracer("butlers")
         with tracer.start_as_current_span("butler.tool.route.execute", context=parent_ctx) as _span:
@@ -540,6 +676,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 spawner=spawner,
                 butler_name=butler_name,
                 route_metrics=route_metrics,
+                trusted_messenger_recovery=trusted_messenger_recovery,
             )
 
     async def _route_execute_inner(
@@ -558,6 +695,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
         spawner: Any,
         butler_name: str,
         route_metrics: Any,
+        trusted_messenger_recovery: TrustedRecoveryContext | None = None,
     ) -> dict[str, Any]:
         started_at = time.monotonic()
 
@@ -690,7 +828,12 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
             _conceptual_message = parsed_route.input.context.get("conceptual_message")
             if isinstance(_conceptual_message, dict):
                 _route_internal_context["conceptual_message"] = dict(_conceptual_message)
+            if isinstance(parsed_route.input.context.get("_trusted_approval_recovery"), dict):
+                _route_internal_context["approval_recovery"] = True
         _content_blind_route = bool(_route_internal_context)
+        _route_internal_context["request_context"] = {
+            "source_channel": parsed_route.request_context.source_channel
+        }
         _observability_request_id = (
             opaque_route_ref(route_request_id) if _content_blind_route else route_request_id
         )
@@ -955,7 +1098,10 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 route_metrics.record_route_process_latency(process_latency_ms)
 
                 _tracer = trace.get_tracer("butlers")
-                _content_blind_process = bool(_internal_context)
+                _content_blind_process = (
+                    "conceptual_message" in _internal_context
+                    or _internal_context.get("approval_recovery") is True
+                )
                 _observability_inbox_id = (
                     opaque_route_ref(_inbox_id) if _content_blind_process else _inbox_id
                 )
@@ -1014,22 +1160,52 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                             _conversation_id: uuid.UUID | None = None
                             if source_thread_identity:
                                 try:
-                                    from butlers.api.conversations import (
-                                        conversation_get_or_create_by_thread,
-                                    )
+                                    if source_channel == "dashboard":
+                                        # A dashboard turn's source_thread_identity IS
+                                        # the dashboard_conversations.id the owner is
+                                        # already looking at (see
+                                        # build_dashboard_envelope's external_thread_id),
+                                        # not a channel key to upsert against.
+                                        # get_or_create_by_thread would otherwise treat
+                                        # it as a novel (butler_name, source_channel,
+                                        # source_thread_identity) key and fork a second,
+                                        # invisible "ghost" anchor every turn (bu-0ynlk.5)
+                                        # -- resolve the existing row by id instead,
+                                        # regardless of which butler classification
+                                        # routed this turn to.
+                                        from butlers.api.conversations import (
+                                            conversation_get_by_id_any_butler,
+                                        )
 
-                                    _conversation, _ = await conversation_get_or_create_by_thread(
-                                        _pool,
-                                        butler_name=butler_name,
-                                        source_channel=source_channel,
-                                        source_thread_identity=source_thread_identity,
-                                        # The raw, un-fenced prompt -- _prompt is the
-                                        # <routed_message>-wrapped text (_wrap_routed_
-                                        # message), which would otherwise pollute the
-                                        # conversation's auto-generated title.
-                                        first_message=parsed_route.input.prompt,
-                                    )
-                                    _conversation_id = _conversation["id"]
+                                        _existing_conversation = (
+                                            await conversation_get_by_id_any_butler(
+                                                _pool,
+                                                uuid.UUID(source_thread_identity),
+                                            )
+                                        )
+                                        if _existing_conversation is not None:
+                                            _conversation_id = _existing_conversation["id"]
+                                    else:
+                                        from butlers.api.conversations import (
+                                            conversation_get_or_create_by_thread,
+                                        )
+
+                                        (
+                                            _conversation,
+                                            _,
+                                        ) = await conversation_get_or_create_by_thread(
+                                            _pool,
+                                            butler_name=butler_name,
+                                            source_channel=source_channel,
+                                            source_thread_identity=source_thread_identity,
+                                            # The raw, un-fenced prompt -- _prompt is
+                                            # the <routed_message>-wrapped text
+                                            # (_wrap_routed_message), which would
+                                            # otherwise pollute the conversation's
+                                            # auto-generated title.
+                                            first_message=parsed_route.input.prompt,
+                                        )
+                                        _conversation_id = _conversation["id"]
                                 except Exception as exc:
                                     logger.debug(
                                         "conversation anchor lookup/create failed for "
@@ -1065,6 +1241,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                                     # unresolved for recovery rather than recording a
                                     # false terminal failure.
                                     route_lease_lost=lease_lost,
+                                    attachments=parsed_route.input.attachments,
                                 ),
                             )
                             if lease_lost.is_set():
@@ -1200,7 +1377,11 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
         try:
             notify_request = parse_notify_request(raw_notify_request)
         except ValidationError as exc:
-            message = _format_validation_error("Invalid notify.v1 request", exc)
+            message = (
+                "Invalid approval recovery request."
+                if "recovery" in raw_notify_request
+                else _format_validation_error("Invalid notify.v1 request", exc)
+            )
             channel = None
             if isinstance(raw_notify_request.get("delivery"), dict):
                 raw_channel = raw_notify_request["delivery"].get("channel")
@@ -1234,6 +1415,125 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                     message=message,
                 ),
             )
+
+        if notify_request.recovery is not None:
+            trusted = trusted_messenger_recovery
+            if trusted is None:
+                return _approval_recovery_refusal_response()
+
+            recovery_pool = daemon.db.pool if daemon.db is not None else None
+            if recovery_pool is None:
+                return _route_error_response(
+                    context_payload=route_context,
+                    error_class="target_unavailable",
+                    message="Approval recovery store unavailable.",
+                )
+
+            modules_by_name = {module.name: module for module in daemon._modules}
+            channel = notify_request.delivery.channel
+            provider_call: Callable[[], Awaitable[Any]] | None = None
+            preflight_reason = "transport_unavailable"
+            reconcile_call: Callable[[str], Awaitable[HandoffResult]] | None = None
+
+            if trusted.operation == "handoff":
+                recipient = notify_request.delivery.recipient
+                owner_channel_type = "whatsapp_jid" if channel == "whatsapp" else channel
+                owner_channel = None
+                if recipient:
+                    owner_channel = await resolve_owner_channel_via_definer(
+                        recovery_pool,
+                        owner_channel_type,
+                        recipient,
+                    )
+                if owner_channel is None:
+                    preflight_reason = "owner_recipient_unavailable"
+                elif channel == "telegram" and (telegram_module := modules_by_name.get("telegram")):
+                    rendered = notify_request.delivery.message
+                    prefix = f"[{notify_request.origin_butler}]"
+                    if not rendered.lstrip().startswith(prefix):
+                        rendered = f"{prefix} {rendered}"
+
+                    async def _telegram_provider_call() -> Any:
+                        return await telegram_module._send_message(
+                            recipient,
+                            rendered,
+                            reply_markup=_approval_request_reply_markup(
+                                notify_request.actions or ()
+                            ),
+                        )
+
+                    provider_call = _telegram_provider_call
+                elif channel == "email" and (email_module := modules_by_name.get("email")):
+                    raw_subject = notify_request.delivery.subject or "Approval requested"
+                    prefix = f"[{notify_request.origin_butler}]"
+                    subject = (
+                        raw_subject
+                        if prefix.lower() in raw_subject.lower()
+                        else f"{prefix} {raw_subject}"
+                    )
+
+                    async def _email_provider_call() -> Any:
+                        return await email_module._send_email(
+                            recipient,
+                            subject,
+                            notify_request.delivery.message,
+                        )
+
+                    provider_call = _email_provider_call
+                elif channel == "whatsapp" and (whatsapp_module := modules_by_name.get("whatsapp")):
+                    send_tool = getattr(whatsapp_module, "_send_message", None)
+                    if callable(send_tool):
+                        rendered = notify_request.delivery.message
+                        prefix = f"[{notify_request.origin_butler}]"
+                        if not rendered.lstrip().startswith(prefix):
+                            rendered = f"{prefix} {rendered}"
+
+                        async def _whatsapp_provider_call() -> Any:
+                            return await send_tool(recipient=recipient, text=rendered)
+
+                        provider_call = _whatsapp_provider_call
+            else:
+                module = modules_by_name.get(channel)
+                reconcile_tool = getattr(module, "reconcile_approval_delivery", None)
+                if callable(reconcile_tool):
+
+                    async def _reconcile_provider(presentation_key: str) -> HandoffResult:
+                        raw = await reconcile_tool(presentation_key)
+                        if isinstance(raw, HandoffResult):
+                            return raw
+                        if not isinstance(raw, dict):
+                            raise RuntimeError("approval recovery reconciliation was invalid")
+                        return HandoffResult(
+                            classification=raw.get("classification"),
+                            reason_code=raw.get("reason_code"),
+                            provider_reference=raw.get("provider_reference"),
+                        )
+
+                    reconcile_call = _reconcile_provider
+
+            handoff = await MessengerApprovalHandoffRepository(recovery_pool).process(
+                trusted,
+                provider_call=provider_call,
+                reconcile_call=reconcile_call,
+                preflight_reason=preflight_reason,
+            )
+            handoff_payload: dict[str, Any] = {"classification": handoff.classification}
+            if handoff.reason_code is not None:
+                handoff_payload["reason_code"] = handoff.reason_code
+            if handoff.provider_reference is not None:
+                handoff_payload["provider_reference"] = handoff.provider_reference
+            return _route_success_response(
+                context_payload=route_context,
+                result_payload={
+                    "notify_response": {
+                        "schema_version": "notify_response.v1",
+                        "request_context": {"request_id": route_request_id},
+                        "status": "ok",
+                        "handoff": handoff_payload,
+                    }
+                },
+            )
+
         channel = notify_request.delivery.channel
         intent = notify_request.delivery.intent
         message_text = notify_request.delivery.message
@@ -1267,7 +1567,12 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                     raise ValueError(
                         "approval_request owner validation requires an initialized database pool."
                     )
-                owner_channel_type = "whatsapp_jid" if channel == "whatsapp" else channel
+                try:
+                    owner_channel_type = ROUTED_COMMUNICATION_CHANNEL_IDENTITY_TYPES[channel]
+                except KeyError as exc:
+                    raise ValueError(
+                        f"approval_request uses unsupported channel: {channel}"
+                    ) from exc
                 owner_channel = await resolve_owner_channel_via_definer(
                     approval_pool,
                     owner_channel_type,
@@ -1290,17 +1595,17 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 notify_context=notify_context,
             )
 
-            # Channel-general role-based approval gating for NON-email channels
-            # (telegram, whatsapp, and any future channel).  route.execute calls
+            # Channel-general role-based approval gating for non-email channels.
+            # route.execute calls
             # module delivery methods directly (not MCP tools), so the MCP-level
             # approval wrappers are not in this path.  Mirror what notify() does
             # via check_recipient (bu-nsml2 / #2722) so a non-owner recipient on
             # any non-email channel is gated/parked exactly as on email:
             # owner-directed sends auto-approve on any active verified owner
             # channel, while non-owner recipients require a standing rule or are
-            # parked (fail-closed).  Email is gated separately in its own block
-            # below via check_email_recipient, which additionally enforces the
-            # email-only channel-primacy / context-conflict incident behaviour.
+            # parked (fail-closed). Email is gated separately via
+            # check_email_recipient so non-owner context conflicts retain their
+            # established behavior; owner authorization is channel-uniform.
             if delivery_command is not None and channel != "email":
                 gate_target = delivery_command.approval_target
                 if gate_target:
@@ -1322,7 +1627,11 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                                 f"Message: {message_text!r}"
                             ),
                             session_id=get_current_runtime_session_id(),
-                            butler_name=origin,
+                            # The pending row and push runtime belong to Messenger.
+                            # The originating domain butler remains in the routed
+                            # request, but cannot be asserted as the sender of a
+                            # second Messenger-owned approval notification.
+                            butler_name=daemon.config.name,
                             **dossier_kwargs,
                             enforce_dossier=True,
                             approval_push_runtime=daemon._approval_push_runtime,
@@ -1335,6 +1644,11 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                                 dossier_error=decision.dossier_error,
                             )
                         if not decision.allowed:
+                            if decision.reason == "parking_failed":
+                                raise RuntimeError(
+                                    "Delivery remains blocked because approval parking failed; "
+                                    "no pending action was created."
+                                )
                             raise ValueError(
                                 f"Delivery blocked: {channel} target '{gate_target}' is a "
                                 f"{decision.contact_desc} and no standing approval rule "
@@ -1418,7 +1732,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                                 f"Message: {message_text!r}"
                             ),
                             session_id=get_current_runtime_session_id(),
-                            butler_name=origin,
+                            butler_name=daemon.config.name,
                             **dossier_kwargs,
                             enforce_dossier=True,
                             approval_push_runtime=daemon._approval_push_runtime,
@@ -1431,6 +1745,11 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                                 dossier_error=decision.dossier_error,
                             )
                         if not decision.allowed:
+                            if decision.reason == "parking_failed":
+                                raise RuntimeError(
+                                    "Delivery remains blocked because approval parking failed; "
+                                    "no pending action was created."
+                                )
                             raise ValueError(
                                 f"Delivery blocked: email target '{email_target}' is a "
                                 f"{decision.contact_desc} and no standing approval rule matches. "

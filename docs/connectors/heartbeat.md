@@ -93,15 +93,17 @@ The Switchboard derives connector liveness from heartbeat recency:
 
 | Condition | Derived state |
 |---|---|
-| Last heartbeat < 2 min ago | `online` |
-| Last heartbeat 2-4 min ago | `stale` |
-| Last heartbeat > 4 min ago | `offline` |
-| No heartbeat ever received | `unknown` |
+| Last heartbeat < 5 min ago | `online` |
+| Last heartbeat 5-15 min ago | `stale` |
+| Last heartbeat > 15 min ago | `offline` |
+| No heartbeat ever received | `offline` |
 
 Rules:
 - `stale` connectors remain eligible for display but are flagged in the dashboard.
 - `offline` connectors are flagged as down. No automatic deregistration.
 - The Switchboard MUST NOT automatically remove connector records. Cleanup is an operator action.
+- `unclassified` is not a liveness state: it applies only to a registry row whose
+  operational role has not yet been claimed as a runtime instance.
 
 ## Self-Registration
 
@@ -160,11 +162,12 @@ psql -h localhost -U butlers -d butlers -c \
   "SELECT connector_type, endpoint_identity, state,
           NOW() - last_heartbeat_at AS heartbeat_age
    FROM switchboard.connector_registry ORDER BY connector_type;"
-# Expected: all running connectors present; heartbeat_age < 2 minutes (online threshold)
+# Expected: all running connectors present; heartbeat_age < 5 minutes (online threshold)
 
 # 2. Liveness state transitions correctly (online/stale/offline)
-# Stop a connector and wait 3 minutes, then query liveness
-# Expected: state transitions from 'online' → 'stale' at 2 min → 'offline' at 4 min
+# Stop a connector and wait past each threshold, then query liveness
+# Expected: state transitions from 'online' → 'stale' at 5 min → 'offline' after more than 15 min;
+# a runtime connector with no heartbeat is also offline
 
 # 3. connector_heartbeat_log accumulates entries at ~2-minute intervals
 psql -h localhost -U butlers -d butlers -c \
@@ -179,8 +182,9 @@ grep "heartbeat.*server_time\|clock_drift" /var/log/butlers/gmail-connector.log 
 # Expected: server_time field present in acknowledgment; drift logged if > threshold
 
 # 5. Dashboard shows connector liveness derived from heartbeat recency
-curl -s http://localhost:41200/api/connectors | python3 -m json.tool | grep -E "state|last_heartbeat"
-# Expected: each connector shows state=online and a recent last_heartbeat_at timestamp
+curl -s http://localhost:41200/api/ingestion/connectors/summaries | python3 -m json.tool | grep -E "liveness|last_heartbeat"
+# Expected: each runtime connector shows online/stale/offline liveness from its
+# heartbeat; storage-only checkpoints are nested under their parent
 ```
 
 ## Related Pages

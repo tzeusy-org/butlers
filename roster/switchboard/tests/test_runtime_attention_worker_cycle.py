@@ -95,7 +95,9 @@ class _FakeOutbox:
     async def claim_is_current(self, episode: OutboxEpisode) -> bool:
         return True
 
-    async def mark_sent(self, episode: OutboxEpisode) -> bool:
+    async def mark_sent(
+        self, episode: OutboxEpisode, *, notification_ref: uuid.UUID | None = None
+    ) -> bool:
         if self._mark_sent_error is not None:
             raise self._mark_sent_error
         self.marked_sent += 1

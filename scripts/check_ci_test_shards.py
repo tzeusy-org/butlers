@@ -156,6 +156,18 @@ def _collect_node_ids(
     }
 
 
+def collect_lane_node_ids(lane: str, *, repo_root: Path = REPO_ROOT) -> set[str]:
+    """Collect every node id the CI marker selection for ``lane`` picks up today.
+
+    Shared by ``verify`` and ``scripts/check_test_budget.py`` so the budget
+    ratchet counts exactly the population the shards run.
+    """
+    config = _lane_config(lane)
+    return _collect_node_ids(
+        paths=[], marker=config.marker, ignore_e2e=config.ignore_e2e, repo_root=repo_root
+    )
+
+
 def _node_file(node_id: str) -> str:
     return node_id.split("::", maxsplit=1)[0]
 
@@ -176,9 +188,7 @@ def _validate_lane(*, lane: str, shard_specs: list[ShardSpec], repo_root: Path) 
             f"{lane}: expected shard indexes {expected_indexes}, found {actual_indexes}"
         )
 
-    full_nodes = _collect_node_ids(
-        paths=[], marker=config.marker, ignore_e2e=config.ignore_e2e, repo_root=repo_root
-    )
+    full_nodes = collect_lane_node_ids(lane, repo_root=repo_root)
     if not full_nodes:
         raise ValueError(f"{lane}: marker selection produced zero tests")
     full_files = {_node_file(node_id) for node_id in full_nodes}

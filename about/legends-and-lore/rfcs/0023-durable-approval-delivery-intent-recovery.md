@@ -187,6 +187,14 @@ terminal/expired, or a provider outcome is ambiguous. This is at-least-once
 recovery for work that has not crossed an uncertain side-effect boundary; it is
 not an unsound exactly-once claim.
 
+The v1 worker polls idle schemas every 5 seconds and claims a 30-second lease.
+Safe retries start at 15 seconds, double through six bounded exponent steps,
+add deterministic 0-20% jitter derived from the immutable presentation key and
+attempt number, and cap at 15 minutes. A due presentation older than 15
+minutes, an expired lease, or any ambiguous presentation is derived as stuck.
+These values belong only to approval recovery and do not inherit the generic
+scheduler or deferred-notification cadence.
+
 ### 4. Trusted provider handoff and ambiguity
 
 The source worker carries an immutable logical recovery subject plus a

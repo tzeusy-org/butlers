@@ -44,6 +44,7 @@ from butlers.core.domain_events import (
     list_subscriptions,
     mark_delivery_delivered,
     mark_delivery_failed,
+    requeue_failed_delivery,
     upsert_subscription,
 )
 from butlers.core_tools._domain_events import (
@@ -1423,6 +1424,41 @@ async def test_sweep_marks_permanent_route_error_failed_permanent_immediately(
         pool, subscriber_butler="health", status="failed_permanent"
     )
     assert any(row["id"] == delivery_id for row in rows)
+
+
+async def test_failed_permanent_delivery_replay_requeues_exactly_once(pool: asyncpg.Pool) -> None:
+    """Concurrent owner retries produce one queue transition, never two."""
+    _event_id, delivery_id = await _insert_delivery_row(
+        pool,
+        event_type=f"replay.permanent_failure.{uuid.uuid4().hex}",
+        source_butler="travel",
+        subscriber_butler="finance",
+        status="failed_permanent",
+        updated_at_ago=timedelta(0),
+        attempt_count=5,
+    )
+
+    outcomes = await asyncio.gather(
+        requeue_failed_delivery(pool, delivery_id),
+        requeue_failed_delivery(pool, delivery_id),
+    )
+
+    assert sorted(outcomes) == ["conflict", "pending"]
+    row = await pool.fetchrow(
+        """
+        SELECT status, attempt_count, error_message, task_id, task_name, delivered_at
+        FROM public.domain_event_deliveries WHERE id = $1
+        """,
+        delivery_id,
+    )
+    assert dict(row) == {
+        "status": "pending",
+        "attempt_count": 0,
+        "error_message": None,
+        "task_id": None,
+        "task_name": None,
+        "delivered_at": None,
+    }
 
 
 async def test_sweep_is_idempotent_when_run_concurrently_with_live_fanout(

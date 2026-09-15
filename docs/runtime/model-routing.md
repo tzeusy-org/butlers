@@ -47,12 +47,21 @@ As of migration `core_073`, `model`, `runtime_type`, `args`, and `session_timeou
 the chosen catalog entry id and its `session_timeout_s`, and are edited via the dashboard's **Models
 tab** / `GET/PATCH /api/model-settings` (`src/butlers/api/routers/model_settings.py`).
 
-`{schema}.runtime_config` retains only the cold operational fields --- `core_groups`,
-`max_concurrent`, `max_queued` --- which are seeded from `[butler.runtime_seed]` in `butler.toml` on
-first boot, read through the 30s TTL cache in `RuntimeConfigAccessor`
-(`src/butlers/core/runtime_config.py`), edited via `GET/PATCH /api/butlers/{name}/runtime-config`,
-and require a daemon restart to take effect. Do not look for model settings on the runtime-config
-surface, and do not add operational limits to the catalog.
+`{schema}.runtime_config` is no longer cold-only. It holds `core_groups`, `max_concurrent`, and
+`max_queued` (cold: require a daemon restart to take effect) alongside `catalog_read_sensitivity`
+and, as of migration `core_224`, `tool_exposure_policy` (hot: a PATCH takes effect for the next
+planned session with no restart). All five fields are seeded from `[butler.runtime_seed]` in
+`butler.toml` on first boot and edited via `GET/PATCH /api/butlers/{name}/runtime-config`
+(`src/butlers/api/routers/runtime_config.py`), which reports each field's tier in the response's
+`field_tiers` map.
+
+Cold fields are read through the 30s TTL cache in `RuntimeConfigAccessor`
+(`src/butlers/core/runtime_config.py`). `tool_exposure_policy` is closed to `eager_filtered` (default,
+conservative) or `auto`, and every per-attempt caller MUST resolve it through
+`RuntimeConfigAccessor.get_tool_exposure_policy()`, which always reads the DB directly instead of the
+TTL cache --- the dashboard API and the butler daemon can be separate processes, so a cached read
+cannot guarantee the first session planned after a committed PATCH sees the new policy. Do not look
+for model settings on the runtime-config surface, and do not add operational limits to the catalog.
 
 ### Verification evidence is not routing evidence
 
@@ -113,6 +122,36 @@ The `public.butler_model_overrides` table allows per-butler customization withou
 
 When `resolve_model()` returns `None`, the spawner falls back to the model configured in `[butler.runtime].model` in `butler.toml`.
 
+### Private-content purpose lane
+
+Dispatch purpose is a closed, content-blind dimension. A trusted WhatsApp or Telegram source marks
+the dispatch `private_content`; all other and unknown sources remain `standard`. The classifier
+reads only the established routing/connector channel token. It never inspects prompt, message,
+sender, recipient, or thread content to infer sensitivity.
+
+`private_content` is local-first and fail-closed. A model is proven local only when its catalog row
+uses the OpenCode runtime, its canonical `model_id` begins `ollama/`, and the exact provider origin
+captured for the dispatch is loopback or the RFC 0008 owner-local `ollama` Tailnet service. Missing,
+malformed, unreadable, or other endpoints are not locality evidence. The accepted provider config
+is reused for adapter setup rather than re-read after authorization. Initial selection and
+same-tier failover therefore skip unproved entries before adapter setup. If no eligible local entry
+exists, the dispatch is refused and a bounded `model.private_content_remote_refused` audit record is
+attempted without private content.
+
+The narrow remote exception reuses the existing operator spend-rule surface rather than adding a
+second routing system. The first matching rule must explicitly set `purpose=private_content`, its
+action must explicitly name the selected remote model, and a successful audit entry for the current
+rule revision must exist. One database snapshot revalidates the live rule's identity, revision,
+condition, target, and owner audit; concurrent update or deletion therefore denies. Catch-all,
+tier-only, stale, or unverifiable rules are not authority. An accepted exception records
+`model.private_content_remote_override`; subsequent failover remains local-only rather than
+authorizing a different remote model.
+
+New private discretion usage retains its existing spend purpose and carries the separate closed
+`purpose_lane=private_content` on token-usage and dispatch-attempt evidence with the stable
+dispatcher identity, never a raw chat or sender identifier. New ordinary sessions and their
+dispatch attempts persist the same purpose lane for session-list and dossier visibility.
+
 ## Capability fit (bu-6jv4m.7)
 
 Everything above decides whether an entry is *allowed*. It does not decide whether the entry can do
@@ -163,6 +202,8 @@ The quota system prevents runaway costs by limiting token consumption per model 
 ### Token Usage Recording
 
 `record_token_usage()` writes to `public.token_usage_ledger` after each session completes. This is best-effort: errors are logged and never propagate to the caller.
+
+The ledger also carries a token digest for five tracked layers of the composed system prompt (`base_prompt_tokens`, `timezone_instruction_tokens`, `context_preamble_tokens`, `routing_instructions_tokens`, `memory_context_tokens`, from `spawner_context.compose_prompt_digest()`) and `resume_outcome` (whether a conversational turn resumed a provider-native session: `resumed`, `resume_failed_retried_cold`, `resume_failed_terminal`, or `NULL` when resume was never attempted). The separately governed blind-spot preamble is outside this ledger schema. Both fields are additive and nullable — a caller with no composed prompt of its own (the discretion dispatcher lane) omits them and the columns stay honestly `NULL` rather than a fabricated `0`.
 
 ## Resolution Flow in the Spawner
 

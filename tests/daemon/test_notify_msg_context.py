@@ -22,7 +22,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from butlers.testing.approval_parking_fake import record_pending_action
+
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _use_mock_pool_park_recorder(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        "butlers.modules.approvals.email_guard.park_pending_action",
+        record_pending_action,
+    )
+
 
 _ENTITY_ID = uuid.UUID("aabbccdd-0000-0000-0000-000000000001")
 
@@ -305,6 +316,7 @@ class TestCheckEmailRecipientMsgContextPassthrough:
                 park_tool_args={},
                 park_summary="test",
                 msg_context="personal",
+                butler_name="messenger",
             )
 
         assert decision.allowed is False
@@ -346,6 +358,7 @@ class TestCheckEmailRecipientMsgContextPassthrough:
                 park_tool_name="notify",
                 park_tool_args={},
                 park_summary="test",
+                butler_name="messenger",
                 # msg_context omitted → no context check
             )
 

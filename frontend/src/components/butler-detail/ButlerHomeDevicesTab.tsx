@@ -30,6 +30,7 @@ import {
 
 import { Badge } from "@/components/ui/badge";
 import { Time } from "@/components/ui/time";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Panel, KpiCell, ErrorLine } from "@/components/butler-detail/atoms";
 import { chartColor } from "@/lib/chart-colors";
 import { HomeAtmosphereLocationPanel } from "@/components/butler-detail/HomeAtmosphereLocationPanel";
@@ -85,6 +86,8 @@ interface KpiStripProps {
   offlineError: boolean;
   /** isError for overdue maintenance count cell */
   overdueError: boolean;
+  /** False when ha_source_health shows HA unreachable — counts below may be stale. */
+  haSourceAvailable: boolean | undefined;
 }
 
 function KpiStrip({
@@ -96,6 +99,7 @@ function KpiStrip({
   snapshotError,
   offlineError,
   overdueError,
+  haSourceAvailable,
 }: KpiStripProps) {
   const kpiValue = (v: number | undefined) =>
     isLoading ? "..." : v != null ? String(v) : "—";
@@ -105,6 +109,15 @@ function KpiStrip({
       className="col-span-1 lg:col-span-4 grid grid-cols-2 sm:grid-cols-4"
       data-testid="kpi-strip"
     >
+      {haSourceAvailable === false && (
+        <div className="col-span-2 sm:col-span-4 px-1 pb-1">
+          <SourceDegradedNote
+            label="Home Assistant"
+            detail="unreachable. Device and snapshot counts may be stale"
+            testId="ha-source-degraded-note"
+          />
+        </div>
+      )}
       <Panel testId="kpi-item">
         {snapshotError ? (
           <ErrorLine>Failed to load device count.</ErrorLine>
@@ -617,6 +630,13 @@ export default function ButlerHomeDevicesTab() {
         snapshotError={snapshotError}
         offlineError={offlineError}
         overdueError={overdueError}
+        haSourceAvailable={
+          snapshotStatus?.ha_source_available === false ||
+          offlineDevices?.meta.ha_source_available === false ||
+          deviceInventory?.meta.ha_source_available === false
+            ? false
+            : undefined
+        }
       />
 
       <HomeAtmosphereLocationPanel />

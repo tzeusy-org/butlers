@@ -38,20 +38,16 @@ vi.mock("sonner", () => ({
 }));
 
 vi.mock("@/hooks/use-ingestion-events", () => ({
-  useIngestionEventLineage: vi.fn(),
   useIngestionEventReplays: vi.fn(),
   useIngestionEventPayload: vi.fn(),
   useIngestionEventSessions: vi.fn(),
-  useIngestionEventRollup: vi.fn(),
   useIngestionEventDetail: vi.fn(),
 }));
 
 import {
-  useIngestionEventLineage,
   useIngestionEventReplays,
   useIngestionEventPayload,
   useIngestionEventSessions,
-  useIngestionEventRollup,
   useIngestionEventDetail,
 } from "@/hooks/use-ingestion-events";
 import { EventDrawer } from "./EventDrawer";
@@ -177,18 +173,11 @@ describe("EventDrawer — per-session cost column", () => {
   }
 
   function mockSessions(sessions: IngestionEventSession[]) {
-    vi.mocked(useIngestionEventLineage).mockReturnValue({
-      sessions: {
+    vi.mocked(useIngestionEventSessions).mockReturnValue({
         data: { data: sessions },
         isLoading: false,
         isError: false,
-      } as unknown as ReturnType<typeof useIngestionEventSessions>,
-      rollup: {
-        data: undefined,
-        isLoading: false,
-        isError: false,
-      } as unknown as ReturnType<typeof useIngestionEventRollup>,
-    });
+      } as unknown as ReturnType<typeof useIngestionEventSessions>);
   }
 
   it("renders the real cost when cost_usd is a positive number", () => {
@@ -284,18 +273,11 @@ describe("EventDrawer — per-session cost column", () => {
   });
 
   it("shows loading skeleton while sessions are loading", () => {
-    vi.mocked(useIngestionEventLineage).mockReturnValue({
-      sessions: {
+    vi.mocked(useIngestionEventSessions).mockReturnValue({
         data: undefined,
         isLoading: true,
         isError: false,
-      } as unknown as ReturnType<typeof useIngestionEventSessions>,
-      rollup: {
-        data: undefined,
-        isLoading: true,
-        isError: false,
-      } as unknown as ReturnType<typeof useIngestionEventRollup>,
-    });
+      } as unknown as ReturnType<typeof useIngestionEventSessions>);
     renderDrawer();
     expect(container.querySelector("[data-testid='sessions-tab-loading']")).not.toBeNull();
   });
@@ -361,18 +343,11 @@ describe("EventDrawer — raw tab", () => {
     root = createRoot(container);
     queryClient = makeQueryClient();
 
-    vi.mocked(useIngestionEventLineage).mockReturnValue({
-      sessions: {
+    vi.mocked(useIngestionEventSessions).mockReturnValue({
         data: { data: [] },
         isLoading: false,
         isError: false,
-      } as unknown as ReturnType<typeof useIngestionEventSessions>,
-      rollup: {
-        data: undefined,
-        isLoading: false,
-        isError: false,
-      } as unknown as ReturnType<typeof useIngestionEventRollup>,
-    });
+      } as unknown as ReturnType<typeof useIngestionEventSessions>);
 
     vi.mocked(useIngestionEventReplays).mockReturnValue({
       data: undefined,
@@ -572,14 +547,9 @@ describe("EventDrawer — disclosure choreography", () => {
       isLoading: false,
       isError: false,
     } as unknown as ReturnType<typeof useIngestionEventDetail>);
-    vi.mocked(useIngestionEventLineage).mockReturnValue({
-      sessions: { data: { data: [] }, isLoading: false, isError: false } as unknown as ReturnType<
+    vi.mocked(useIngestionEventSessions).mockReturnValue({ data: { data: [] }, isLoading: false, isError: false } as unknown as ReturnType<
         typeof useIngestionEventSessions
-      >,
-      rollup: { data: undefined, isLoading: false, isError: false } as unknown as ReturnType<
-        typeof useIngestionEventRollup
-      >,
-    });
+      >);
   });
 
   afterEach(() => {
@@ -635,16 +605,11 @@ describe("EventDrawer — disclosure choreography", () => {
   });
 
   it("announces a polite live-region status once session data resolves", () => {
-    vi.mocked(useIngestionEventLineage).mockReturnValue({
-      sessions: {
+    vi.mocked(useIngestionEventSessions).mockReturnValue({
         data: { data: [makeSession(), makeSession({ id: "s2" })] },
         isLoading: false,
         isError: false,
-      } as unknown as ReturnType<typeof useIngestionEventSessions>,
-      rollup: { data: undefined, isLoading: false, isError: false } as unknown as ReturnType<
-        typeof useIngestionEventRollup
-      >,
-    });
+      } as unknown as ReturnType<typeof useIngestionEventSessions>);
     renderDrawer(vi.fn());
     const status = container.querySelector('[role="status"]');
     expect(status).not.toBeNull();

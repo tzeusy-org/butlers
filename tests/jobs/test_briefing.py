@@ -15,6 +15,7 @@ import pytest
 
 from butlers.config import ButlerConfig, ButlerType
 from butlers.jobs.briefing import (
+    _LIFESTYLE_DURABLE_PREDICATES,
     SPECIALIST_BUTLERS,
     _get_butler_typed_specialist_butlers,
     collect_briefing_contributions,
@@ -22,10 +23,13 @@ from butlers.jobs.briefing import (
     contribution_key,
     run_finance_briefing_contribution,
     run_health_briefing_contribution,
+    run_home_briefing_contribution,
+    run_lifestyle_briefing_contribution,
     run_relationship_briefing_contribution,
     today_sgt,
     validate_contribution,
 )
+from butlers.jobs.home import HASourceUnmeasurableError
 
 # Existing relationship-briefing tests (birthday highlight coverage etc.) do
 # not exercise the bu-27dxl.5.4 delegation seed and use pool mocks that don't
@@ -37,6 +41,43 @@ pytestmark = pytest.mark.unit
 
 _DATE_2026_03_25 = date(2026, 3, 25)
 _DATE_STR_2026_03_25 = "2026-03-25"
+
+
+def test_lifestyle_briefing_uses_the_complete_stable_taste_taxonomy() -> None:
+    assert set(_LIFESTYLE_DURABLE_PREDICATES) == {
+        "likes_genre",
+        "likes_artist",
+        "likes_cuisine",
+        "favorite_restaurant",
+        "favorite_recipe",
+        "hobby",
+        "food_preference",
+        "food_dislike",
+        "routine",
+        "listening_pattern",
+        "purpose",
+        "context",
+    }
+
+
+async def test_lifestyle_briefing_summary_uses_full_counts_not_limited_highlights() -> None:
+    pool = MagicMock()
+    pool.fetch = AsyncMock(side_effect=[[], []])
+    pool.fetchval = AsyncMock(side_effect=[27, 14])
+    write = AsyncMock()
+
+    with (
+        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
+        patch("butlers.jobs.briefing._write_contribution", write),
+    ):
+        result = await run_lifestyle_briefing_contribution(pool, None)
+
+    envelope = write.await_args.args[1]
+    assert envelope["summary"] == (
+        "27 new consumption note(s) today. 14 taste preference(s) captured today."
+    )
+    assert result["consumption_notes"] == 27
+    assert result["taste_updates"] == 14
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +308,64 @@ async def test_run_finance_briefing_contribution_avoids_ambiguous_bound_datetime
     assert "$2 - $1" not in anomaly_sql
     assert len(anomaly_args) == 3
     assert result["spending_anomalies"] == 0
+
+
+# ---------------------------------------------------------------------------
+# run_home_briefing_contribution — ha_source_health guard (bu-8t4sc)
+# ---------------------------------------------------------------------------
+
+
+class _RecordingPool:
+    """Minimal pool stub recording every ``fetch`` SQL for call-shape assertions."""
+
+    def __init__(self) -> None:
+        self.fetch_calls: list[str] = []
+
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        self.fetch_calls.append(sql)
+        return []
+
+
+async def test_run_home_briefing_contribution_unmeasurable_during_ha_outage():
+    """An HA outage must not report a false all-clear (bu-8t4sc).
+
+    ha_entity_snapshot's captured_at is re-stamped on every connector run
+    regardless of contact success, so without this guard a stale snapshot
+    from before the outage would silently report "0 device alerts, 0
+    temperature outliers" -- the trust-fix defect this bead closes.
+    """
+    pool = _RecordingPool()
+    with (
+        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
+        patch("butlers.jobs.briefing._write_contribution", new_callable=AsyncMock),
+        patch(
+            "butlers.jobs.briefing._require_ha_source_healthy",
+            new=AsyncMock(side_effect=HASourceUnmeasurableError("outage", last_success_at=None)),
+        ),
+    ):
+        result = await run_home_briefing_contribution(pool, None)
+
+    assert result["ha_source_unmeasurable"] is True
+    assert result["device_alerts"] == 0
+    assert result["temp_outliers"] == 0
+    assert not any("ha_entity_snapshot" in sql for sql in pool.fetch_calls)
+
+
+async def test_run_home_briefing_contribution_healthy_queries_snapshot():
+    """A healthy HA source still runs the normal device/temperature scan."""
+    pool = _RecordingPool()
+    with (
+        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
+        patch("butlers.jobs.briefing._write_contribution", new_callable=AsyncMock),
+        patch(
+            "butlers.jobs.briefing._require_ha_source_healthy",
+            new=AsyncMock(return_value=None),
+        ),
+    ):
+        result = await run_home_briefing_contribution(pool, None)
+
+    assert result["ha_source_unmeasurable"] is False
+    assert any("ha_entity_snapshot" in sql for sql in pool.fetch_calls)
 
 
 # ---------------------------------------------------------------------------

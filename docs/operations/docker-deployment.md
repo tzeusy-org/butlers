@@ -131,6 +131,15 @@ volume-mounts `src/` for live edits.
 Serves the dashboard API and `/health`. The `--hotreload` variant is
 `dashboard-api-hotreload`.
 
+Dashboard runtime CLI children use the base image's immutable
+`runtime-cli-sandbox-inputs.json` version-3 asset. The image generates it only
+after the final PID1 shim install and records the shim executable plus its exact
+regular-file interpreter/library closure separately from provider inputs. The
+application rejects an old, malformed, or mismatched asset before allocating a
+sandbox identity or staging authority; upgrades and rollbacks therefore use a
+matched application/base-image pair, never runtime dependency discovery or a
+provider-derived fallback.
+
 Dashboard is the only service that receives the runtime-probe *signing* key, because it is the only
 service that signs. Both key mounts default to tracked, unprovisioned placeholders, so the stack
 boots in one command on a machine that has provisioned neither --- with the control plane closed.

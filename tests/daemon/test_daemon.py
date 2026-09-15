@@ -38,13 +38,12 @@ from pydantic import BaseModel
 from starlette.requests import ClientDisconnect
 from starlette.testclient import TestClient
 
-from butlers.credentials import CredentialError
-from butlers.daemon import (
-    DOMAIN_CORE_TOOL_NAMES,
-    UNIVERSAL_CORE_TOOL_NAMES,
-    ButlerDaemon,
-    _McpSseDisconnectGuard,
+from butlers.core.tool_call_capture import (
+    reset_current_runtime_trigger_source,
+    set_current_runtime_trigger_source,
 )
+from butlers.credentials import CredentialError
+from butlers.daemon import ButlerDaemon, _McpSseDisconnectGuard
 from butlers.mcp_patches import (
     apply_streamable_http_client_disconnect_patch,
     apply_streamable_http_disconnect_patch,
@@ -304,11 +303,13 @@ def butler_dir_with_modules(tmp_path: Path) -> Path:
     )
 
 
-def _make_runtime_config_row(butler_name: str = "test-butler") -> dict:
+def _make_runtime_config_row(
+    butler_name: str = "test-butler", core_groups: list[str] | None = None
+) -> dict:
     """Return a dict-like row for the runtime_config table, as returned by asyncpg.fetchrow."""
     return {
         "butler_name": butler_name,
-        "core_groups": None,
+        "core_groups": core_groups,
         "catalog_read_sensitivity": "normal",
         "max_concurrent": 3,
         "max_queued": 10,
@@ -317,19 +318,21 @@ def _make_runtime_config_row(butler_name: str = "test-butler") -> dict:
     }
 
 
-def _make_fetchrow_side_effect(butler_name: str = "test-butler"):
+def _make_fetchrow_side_effect(
+    butler_name: str = "test-butler", core_groups: list[str] | None = None
+):
     """Return an async side_effect for pool.fetchrow that returns runtime_config rows
     for runtime_config queries and None for all other queries."""
 
     async def _fetchrow(query: str, *args, **kwargs):
         if "runtime_config" in query:
-            return _make_runtime_config_row(butler_name)
+            return _make_runtime_config_row(butler_name, core_groups=core_groups)
         return None
 
     return _fetchrow
 
 
-def _patch_infra():
+def _patch_infra(*, core_groups: list[str] | None = None):
     """Return a dict of patches for all infrastructure dependencies."""
     mock_conn = AsyncMock()
     mock_conn.execute = AsyncMock(return_value=None)
@@ -343,7 +346,7 @@ def _patch_infra():
     mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
     mock_pool.fetchval = AsyncMock(return_value=None)
     mock_pool.execute = AsyncMock(return_value=None)
-    mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect())
+    mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect(core_groups=core_groups))
     mock_pool.fetch = AsyncMock(return_value=[])
 
     mock_db = MagicMock()
@@ -562,9 +565,73 @@ async def test_all_core_tools_registered(butler_dir: Path) -> None:
         daemon = ButlerDaemon(butler_dir, registry=ModuleRegistry())
         await daemon.start()
 
-    # "general" is a domain butler → gets universal + domain tools, not
-    # messenger or switchboard tools.
-    assert set(registered_tools) == UNIVERSAL_CORE_TOOL_NAMES | DOMAIN_CORE_TOOL_NAMES
+    # A domain butler receives its actual group-gated surface, not a parallel
+    # hand-maintained catalog.  The dispatcher inventory test owns exhaustive
+    # coverage; this startup test protects the daemon integration seam.
+    assert len(set(registered_tools)) == 66
+    assert {"state_get", "notify", "deadline_create", "delegate_wake", "route.execute"} <= set(
+        registered_tools
+    )
+    assert {
+        "chronicler_day_close_refresh",
+        "delivery_preferences_set",
+        "ingest",
+    }.isdisjoint(registered_tools)
+
+
+@pytest.mark.parametrize(
+    ("core_groups", "graph_enabled"),
+    [
+        (["graph"], True),
+        (["infra"], False),
+        (None, True),
+    ],
+    ids=["graph-allowlisted", "graph-omitted", "null-all-groups"],
+)
+async def test_graph_core_group_registration(
+    butler_dir: Path, core_groups: list[str] | None, graph_enabled: bool
+) -> None:
+    """The graph group follows the existing allowlist and always-on gates."""
+    patches = _patch_infra(core_groups=core_groups)
+    registered_tools: list[str] = []
+
+    mock_mcp = MagicMock()
+
+    def tool_decorator(*_decorator_args, **decorator_kwargs):
+        declared_name = decorator_kwargs.get("name")
+
+        def decorator(fn):
+            registered_tools.append(declared_name or fn.__name__)
+            return fn
+
+        return decorator
+
+    mock_mcp.tool = tool_decorator
+
+    with (
+        patches["db_from_env"],
+        patches["run_migrations"],
+        patches["validate_credentials"],
+        patches["validate_module_credentials"],
+        patches["init_telemetry"],
+        patches["sync_schedules"],
+        patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
+        patches["Spawner"],
+        patches["get_adapter"],
+        patches["shutil_which"],
+        patches["start_mcp_server"],
+        patches["connect_switchboard"],
+        patches["create_audit_pool"],
+        patches["recover_route_inbox"],
+    ):
+        daemon = ButlerDaemon(butler_dir, registry=ModuleRegistry())
+        await daemon.start()
+
+    graph_tools = {"entity_graph_walk", "entity_graph_path"}
+    assert graph_tools.issubset(registered_tools) is graph_enabled
+    # Existing infrastructure controls remain callable even when a group
+    # allowlist excludes graph and every other ordinary core group.
+    assert {"route.execute", "cancel_session"}.issubset(registered_tools)
 
 
 async def test_module_lifecycle(butler_dir_with_modules: Path) -> None:
@@ -1526,6 +1593,40 @@ async def test_notify_delivery_and_failures(butler_dir: Path) -> None:
     r_conn = await notify_fn(channel="email", message="Hello")
     assert r_conn["status"] == "error"
     assert "unreachable" in r_conn["error"].lower()
+
+
+async def test_manual_chronicler_refresh_suppresses_notify_without_affecting_schedule(
+    tmp_path: Path,
+) -> None:
+    """Historical regeneration is silent; the normal scheduled close still delivers."""
+    butler_dir = _make_butler_toml(tmp_path, butler_name="chronicler")
+    daemon, notify_fn = await _start_daemon_with_notify(butler_dir, _patch_infra())
+    assert notify_fn is not None
+    mock_result = MagicMock(is_error=False, data={"notification_id": "n-1", "status": "sent"})
+    daemon.switchboard_client = AsyncMock()
+    daemon.switchboard_client.call_tool = AsyncMock(return_value=mock_result)
+
+    manual_token = set_current_runtime_trigger_source("api:day_close_refresh:2026-09-03")
+    try:
+        manual_result = await notify_fn(channel="email", message="Historical summary")
+    finally:
+        reset_current_runtime_trigger_source(manual_token)
+
+    assert manual_result == {
+        "status": "suppressed",
+        "reason": "manual_day_close_refresh_tool_policy",
+        "retryable": False,
+    }
+    daemon.switchboard_client.call_tool.assert_not_awaited()
+
+    scheduled_token = set_current_runtime_trigger_source("schedule:chronicler_day_close")
+    try:
+        scheduled_result = await notify_fn(channel="email", message="Scheduled summary")
+    finally:
+        reset_current_runtime_trigger_source(scheduled_token)
+
+    assert scheduled_result["status"] == "ok"
+    daemon.switchboard_client.call_tool.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

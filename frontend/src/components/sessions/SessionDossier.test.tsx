@@ -7,6 +7,11 @@ import { MemoryRouter } from "react-router";
 
 import { SessionDossier } from "@/components/sessions/SessionDossier";
 import type { SessionDetail } from "@/api/types";
+import { useSessionPromptReceipt } from "@/hooks/use-sessions";
+
+vi.mock("@/hooks/use-sessions", () => ({
+  useSessionPromptReceipt: vi.fn(),
+}));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -49,6 +54,13 @@ describe("SessionDossier", () => {
   }
 
   beforeEach(() => {
+    vi.mocked(useSessionPromptReceipt).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useSessionPromptReceipt>);
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -70,6 +82,42 @@ describe("SessionDossier", () => {
       (a) => a.getAttribute("href") === "/butlers/general",
     );
     expect(link).toBeDefined();
+  });
+
+  it("shows the private purpose lane and fetches effective prompt only after disclosure", () => {
+    vi.mocked(useSessionPromptReceipt).mockReturnValue({
+      data: {
+        data: {
+          id: BASE_SESSION.id,
+          butler: BASE_SESSION.butler,
+          status: "captured",
+          effective_prompt: "Synthetic effective instructions",
+          prompt_digest: "a".repeat(64),
+          prompt_provenance: [
+            { source: "roster:general/CLAUDE.md", status: "present", bytes: 32, sha: "b".repeat(64) },
+          ],
+          total_bytes: 32,
+        },
+        meta: {},
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useSessionPromptReceipt>);
+
+    renderDossier({ ...BASE_SESSION, purpose_lane: "private_content" });
+    expect(document.body.querySelector('[aria-label="Purpose lane: Private content"]')).not.toBeNull();
+    expect(vi.mocked(useSessionPromptReceipt)).not.toHaveBeenCalled();
+
+    const disclosure = Array.from(document.body.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Effective prompt"),
+    );
+    act(() => disclosure?.click());
+
+    expect(vi.mocked(useSessionPromptReceipt)).toHaveBeenCalledWith(BASE_SESSION.id);
+    expect(document.body.textContent).toContain("Synthetic effective instructions");
+    expect(document.body.textContent).toContain("roster:general/CLAUDE.md");
   });
 
   it("links Trace ID to the timeline pre-filtered by trace", () => {

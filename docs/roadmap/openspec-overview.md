@@ -1,126 +1,61 @@
-# OpenSpec Overview
+# OpenSpec Workflow
 
-> **Purpose:** Explain how OpenSpec is used in Butlers for spec-driven development.
-> **Audience:** Contributors proposing changes, reviewers, anyone understanding the planning process.
-> **Prerequisites:** None.
+> **Purpose:** Explain where requirements live and how a change reaches the baseline.
+> **Audience:** Contributors proposing changes and reviewers checking delivery.
+> **Prerequisites:** [Project knowledge map](../../about/README.md)
 
-## Overview
+[Capability specs](../../openspec/specs/) are the maintained requirements.
+[Active changes](../../openspec/changes/) contain proposals and deltas;
+[archived changes](../../openspec/changes/archive/) preserve their delivery
+history. A proposal is not implementation authority, and an archive directory
+is not proof that its requirements reached the baseline.
 
-Butlers uses OpenSpec as its spec-driven development workflow. Every significant change -- new features, architectural modifications, cross-cutting concerns -- flows through a structured pipeline: proposal, specification, design, tasks. This ensures changes are well-reasoned before implementation begins and provides a durable record of design decisions.
+| Artifact | Question it answers |
+|---|---|
+| `openspec/specs/<capability>/spec.md` | What behavior is required now? |
+| `openspec/changes/<change>/proposal.md` | Why change it, and which capabilities are affected? |
+| `openspec/changes/<change>/specs/<capability>/spec.md` | Which requirements and WHEN/THEN scenarios change? |
+| `openspec/changes/<change>/design.md` | How will the change work, including tradeoffs and migration? |
+| `openspec/changes/<change>/tasks.md` | Which implementation and verification steps remain? |
+| `openspec/changes/archive/<dated-change>/` | What was proposed and delivered in that change? |
 
-## The OpenSpec Pipeline
+## Contributor Workflow
 
-Each change follows four stages:
+1. Read the governing doctrine, RFC, and baseline requirements. The
+   [development principles](../../about/heart-and-soul/development.md#openspec-driven-development)
+   define when a specification or RFC is required.
+2. Write the proposal and capability deltas. Preserve existing requirements
+   and scenarios unless the change explicitly amends them; record unresolved
+   decisions and obtain any required owner sign-off before implementation.
+3. Capture design choices in `design.md` and use countable `- [ ]` checkboxes
+   in `tasks.md`. Track execution ownership and dependencies in Beads, as
+   required by the [development workflow](../../about/heart-and-soul/development.md#issue-tracking-with-beads).
+4. Implement and verify the approved behavior. Update the affected specs,
+   runbooks, and interface documentation in the same change.
+5. Before archiving, compare same-named MODIFIED requirements in other active
+   changes. Apply the delivered delta to the baseline and inspect the actual
+   requirement-body diff. Rebuild any overlapping delta against that refreshed
+   baseline so a later archive cannot undo it. Follow the
+   [repository archive cautions](../../AGENTS.md#two-unarchived-openspec-changes-can-silently-overwrite-each-other).
+6. Validate the baseline and active changes, then archive the completed change.
+   Confirm its requirements landed and refresh relevant v1 evidence before
+   closing the epic. Moving a directory alone does not complete this step.
 
-### 1. Proposal (`proposal.md`)
+## Verification
 
-A short document (typically 1-2 pages) answering three questions:
-
-- **Why:** What problem exists and why it matters.
-- **What Changes:** High-level description of what will be added, modified, or removed.
-- **Capabilities:** List of new or modified capabilities, grouped by domain.
-- **Impact:** Code changes, schema changes, dependencies.
-
-Proposals are the entry point for discussion. They do not prescribe implementation details.
-
-### 2. Specifications (`specs/{capability}/spec.md`)
-
-Each capability listed in the proposal gets a detailed spec. Specs define:
-
-- **Requirements:** Structured as `## ADDED Requirements` or `## MODIFIED Requirements` sections.
-- **Behavior contracts:** What the system must do, expressed as testable assertions.
-- **Schema:** Database tables, API payloads, configuration formats.
-- **Error handling:** Expected failure modes and recovery behavior.
-
-Specs are normative -- they are the source of truth for what the system should do.
-
-### 3. Design (`design.md`)
-
-The technical design document that explains how the specs will be implemented:
-
-- Architecture decisions and trade-offs.
-- Component interactions and data flow.
-- Migration strategy for existing data or behavior.
-- Performance considerations.
-
-### 4. Tasks (`tasks.md`)
-
-The implementation breakdown:
-
-- Ordered task list with dependencies.
-- Each task references specific spec requirements.
-- Tasks are sized for single-session work items.
-
-## Directory Structure
-
-OpenSpec content lives under `openspec/` in the repository:
-
-```
-openspec/
-  changes/
-    {change-name}/
-      proposal.md
-      design.md
-      tasks.md
-      specs/
-        {capability-name}/
-          spec.md
-    archive/
-      {completed-change-name}/
-        ...
+```bash
+openspec list
+openspec validate --all --strict
+make check-spec-overwrites
+python3 scripts/check_archived_requirements_landed.py
 ```
 
-Active changes live directly under `changes/`. Completed changes are moved to `changes/archive/`.
-
-## Active Changes
-
-Current (non-archived) OpenSpec changes include:
-
-- **adapter-integration-test-suites** -- Standardized integration testing patterns for connector adapters.
-- **memory-residual-gaps** -- Closing remaining gaps in the tiered memory subsystem.
-- **crud-to-spo-migration** -- Migrating entity storage from CRUD operations to subject-predicate-object triples.
-- **predicate-registry-enforcement** -- Enforcing a controlled vocabulary for entity predicates.
-- **docs-information-architecture-rewrite** -- Reorganizing the documentation from implementation-surface taxonomy to contributor-mental-model taxonomy.
-
-## Archived Changes
-
-Completed changes in the archive include:
-
-- **2026-02-24-alpha-release-mvp** -- The comprehensive baseline spec set capturing the entire alpha system: 70+ capabilities across core infrastructure, connectors, modules, dashboard, butler roles, and testing.
-- **2026-02-24-contacts-identity-model** -- Contacts and identity resolution system.
-- **multi-account-google** -- Google multi-account OAuth and account registry.
-- **connector-live-listener** -- Audio live-listener connector.
-- **session-process-logs** -- Session lifecycle and process log capture.
-- **dynamic-model-routing** -- LLM model catalog and per-butler model routing.
-- **connector-ingestion-request-id** -- Canonical request ID assignment at ingest.
-- **education-butler** / **education-dashboard** -- Education butler role and dashboard.
-- **transitory-entity-on-fact-storage** -- Entity-first fact storage model.
-- **home-assistant-integration** -- Wyoming protocol integration.
-
-## Capability Domains
-
-The alpha baseline spec set organizes capabilities into these domains:
-
-| Domain | Examples |
-|--------|----------|
-| Core Infrastructure | daemon, state, scheduler, spawner, sessions, modules, credentials, skills, telemetry, notify |
-| Connectors | base-spec, telegram-bot, telegram-user-client, gmail, discord |
-| Modules | approvals, calendar, contacts, email, mailbox, memory, telegram, pipeline |
-| Dashboard | shell, visibility, butler-management, admin-gateway, domain-pages, API |
-| Butler Roles | base-spec, switchboard, general, relationship, health, messenger, finance, travel |
-| Testing | test infrastructure, E2E plans, benchmarks |
-
-## How to Propose a Change
-
-1. Create a directory under `openspec/changes/{descriptive-name}/`.
-2. Write `proposal.md` with Why, What Changes, Capabilities, and Impact sections.
-3. After proposal review, write specs for each listed capability.
-4. Write `design.md` with technical approach.
-5. Write `tasks.md` with implementation breakdown.
-6. Implement tasks, referencing spec requirements.
-7. When complete, move the change directory to `changes/archive/`.
+These commands inspect different properties: syntax and scenarios, destructive
+active deltas, and missing archived requirements. Review the semantic diff as
+well; validator success does not establish approval, implementation, or runtime
+health. `make check-guards` runs the repository's combined guard set.
 
 ## Related Pages
 
-- [Project Plan](project-plan.md) -- Overall milestone tracking
-- [Testing Strategy](../testing/testing-strategy.md) -- How specs translate to tests
+- [Project plan](project-plan.md): maintained scope and execution sources.
+- [Documentation maintenance](../../about/craft-and-care/review-and-documentation.md#document-lifecycle): synthesis and retirement rules.

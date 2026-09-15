@@ -34,7 +34,9 @@ All data-bearing surfaces follow consistent state patterns:
 The application shell defines the outermost structural frame: the sidebar navigation, page header with breadcrumbs, command palette, keyboard shortcuts, theme system, loading/error/empty state patterns, auto-refresh architecture, and the full UI primitive library. All domain pages render inside this shell and inherit its design system, responsive behavior, and operational affordances.
 
 The technology stack is: React 18 with TypeScript, React Router v7 (browser router), TanStack Query v5 for server state, Tailwind CSS v4 with shadcn/ui components (backed by Radix UI primitives), Lucide icons, Sonner toast notifications, class-variance-authority for variant-driven styling, and Vite as the build tool.
+
 ## Requirements
+
 ### Requirement: Application Entry Point and Provider Hierarchy
 
 The application SHALL boot via a React 18 StrictMode render. The provider hierarchy is: `StrictMode` > `QueryClientProvider` (TanStack Query) > `RouterProvider` (React Router). ReactQueryDevtools are included in development builds but start closed.
@@ -136,6 +138,35 @@ The shell SHALL implement a responsive sidebar + main content layout that fills 
 - **AND** the main content area below the header fills remaining vertical space with `overflow-y-auto` and 24px padding (`p-6`)
 - **AND** the header contains the `PageHeader` component alongside the mobile hamburger button (on small screens)
 
+### Requirement: Chat Dock Rail (>= xl breakpoint)
+
+The shell SHALL accept an optional `chatDock` slot, rendering the global "Talk to Butlers" chat surface as a docked rail — a sibling column of `<main>`, never an overlay — at or above the `xl` Tailwind breakpoint (1280px). Below that breakpoint, or when the dock has been collapsed, the floating popover widget (`FloatingChatWidget`) is the only chat posture (bu-0ynlk.11).
+
+#### Scenario: Docked rail at >= xl
+
+- **WHEN** the viewport width is at or above the `xl` breakpoint (1280px) and the dock has not been collapsed
+- **THEN** `Shell`'s `chatDock` prop renders inside an `<aside>` element (implicit `role="complementary"`, no explicit `role` attribute — redundant on `<aside>`) with a hairline `border-l border-border` and no shadow class
+- **AND** the `<aside>` is a flex sibling of `<main>`, not an absolutely-positioned overlay
+- **AND** the floating popover widget does not render at the same time
+- **AND** the docked chat renders `ChatDock`, sharing the Switchboard-routed conversation set with the popover
+
+#### Scenario: Popover fallback below xl or while collapsed
+
+- **WHEN** the viewport width is below the `xl` breakpoint, or the docked rail has been collapsed via its Collapse button
+- **THEN** the shell renders no `chatDock` landmark
+- **AND** the floating popover widget (`FloatingChatWidget`, bottom-right button) is the only chat posture
+- **AND** if the dock was collapsed while the viewport is still >= xl, the popover's trigger button reopens the dock instead of opening the popover itself
+
+#### Scenario: Dock open/collapsed state persists
+
+- **WHEN** the operator collapses or reopens the docked rail
+- **THEN** the choice is persisted to `localStorage` under `butlers.chat-dock-open` (boolean) and survives a reload at the same viewport width
+
+#### Scenario: Dock width persists
+
+- **WHEN** the operator drags the dock's resize handle (a `role="separator"` splitter, keyboard-adjustable via arrow keys)
+- **THEN** the width is clamped between 360px and 560px and persisted to `localStorage` under `butlers.chat-dock-width`, restored on the next mount
+
 ### Requirement: Sidebar Navigation (56px Icon Rail)
 
 The sidebar SHALL be a fixed 56px-wide icon rail providing primary navigation. It SHALL consist of a brand mark, icon-only navigation items with floating tooltips, butler status dots, live badge indicators, and a footer status summary.
@@ -157,8 +188,8 @@ The sidebar SHALL be a fixed 56px-wide icon rail providing primary navigation. I
 - **WHEN** the sidebar renders
 - **THEN** navigation items are organized into three labelled sections displayed in order:
   1. **Main** — Overview (`/`, exact match), Butlers (`/butlers`), QA (`/qa`; butler-aware on `qa`; badge), Ingestion (`/ingestion`), Approvals (`/approvals`; badge), Memory (`/memory`), Entities (`/entities`), Secrets (`/secrets`), Settings (`/settings`; badge)
-  2. **Dedicated Butlers** — Education (`/education`; butler-aware on `education`), Health (`/health/measurements`), Calendar (`/calendar`), Chronicles (`/chronicles`; butler-aware on `chronicler`)
-  3. **Telemetry** — Timeline (`/timeline`), Notifications (`/notifications`), Issues (`/issues`), Sessions (`/sessions`), Audit Log (`/audit-log`), System (`/system`)
+  2. **Dedicated Butlers** -- Education (`/education`; butler-aware on `education`), Health (`/health`), Calendar (`/calendar`), Chronicles (`/chronicles`; butler-aware on `chronicler`)
+  3. **Telemetry** -- Timeline (`/timeline`), Notifications (`/notifications`), Issues (`/issues`), Sessions (`/sessions`), Spend (`/spend`), Audit Log (`/audit-log`), System (`/system`)
 - **AND** section headers are hidden on the desktop rail (icon-only mode); sections are separated by a thin horizontal `border-border` divider
 - **AND** a section auto-expands when any of its items (including group children) matches the current active route
 - **AND** sections with no visible items (all butler-filtered) are excluded from rendering
@@ -209,7 +240,7 @@ The sidebar SHALL be a fixed 56px-wide icon rail providing primary navigation. I
 
 - **WHEN** the sidebar renders
 - **THEN** a `Settings` nav item links to `/settings`
-- **AND** no separate sidebar entries exist for `/settings/models`, `/settings/spend`, or `/settings/permissions` — these are reached via the Console panels
+- **AND** no separate sidebar entries exist for `/settings/models`, `/settings/spend`, or `/settings/permissions`; Models and Permissions are reached via the Console panels, while Spend uses the canonical `/spend` Telemetry entry
 
 #### Scenario: Sidebar Approvals badge source
 
@@ -225,107 +256,6 @@ The sidebar SHALL be a fixed 56px-wide icon rail providing primary navigation. I
 - **WHEN** the butlers query is loading or has failed
 - **THEN** the dot renders neutral/dim (`bg-muted-foreground/40`) to avoid a misleading green state
 - **AND** the `title` attribute reads "Loading butlers" (loading) or "Butlers query failed" (error)
-
-### Requirement: Full Route Map
-
-The router SHALL define all application routes as children of the root layout. All routes SHALL share the shell, header, error boundary, and sidebar.
-
-The route map SHALL include the Settings Console sub-routes and the ingestion dispatch console sub-routes as first-class child routes (not page-level `?tab=` state).
-
-#### Scenario: Top-level routes
-
-- **WHEN** the router is initialized
-- **THEN** the following routes are registered:
-  - `/` -- Overview dashboard
-  - `/butlers` -- Butler list
-  - `/butlers/:name` -- Butler detail (parameterized)
-  - `/sessions` -- Session list
-  - `/sessions/:id` -- Session detail (parameterized)
-  - `/timeline` -- Unified timeline (operational cross-butler stream; sessions, notifications, errors)
-  - `/chronicles` -- Chronicles page (retrospective lived-time reconstruction over Chronicler episodes; distinct from `/timeline`)
-  - `/notifications` -- Notifications center
-  - `/issues` -- Issues center
-  - `/audit-log` -- Audit log
-  - `/approvals` -- Approvals queue (rendered by `ApprovalsPage`)
-  - `/approvals/rules` -- Approval standing rules
-  - `/calendar` -- Calendar workspace
-  - `/contacts` -- Redirect to `/entities?has=contact` (legacy bookmark compatibility; `public.contacts` was dropped in core_134)
-  - `/contacts/:contactId` -- Redirect to `/entities?has=contact` (legacy per-contact bookmark compatibility)
-  - `/groups` -- Groups list (not in sidebar; reachable via the relationship butler's CRM tab Quick Links)
-  - `/costs` -- Costs and usage (not in sidebar)
-  - `/memory` -- Memory system
-  - `/memory/facts/:factId` -- Fact detail (parameterized)
-  - `/memory/rules/:ruleId` -- Rule detail (parameterized)
-  - `/memory/episodes/:episodeId` -- Episode detail (parameterized)
-  - `/entities` -- Entity plex, the owner ego-graph landing (`PlexPage`)
-  - `/entities/index` -- Entities index (`EntitiesIndexPage`)
-  - `/entities/concentration` -- Entity concentration view
-  - `/entities/hop`, `/entities/columns`, `/entities/social-map` -- retired views; redirect into the plex
-  - `/entities/:entityId` -- Entity detail (parameterized)
-  - `/health` -- Health overview (`HealthOverviewPage`)
-  - `/health/measurements` -- Health measurements
-  - `/health/medications` -- Health medications
-  - `/health/conditions` -- Health conditions
-  - `/health/symptoms` -- Health symptoms
-  - `/health/meals` -- Health meals
-  - `/health/research` -- Health research
-  - `/education` -- Education (`EducationPage`)
-  - `/ingestion` -- Ingestion Timeline ledger
-  - `/ingestion/connectors` -- Ingestion connector roster
-  - `/ingestion/connectors/:connectorType/:endpointIdentity` -- Ingestion connector detail (parameterized)
-  - `/ingestion/filters` -- Ingestion Filters pipeline
-  - `/qa` -- QA overview (`QaOverviewPage`)
-  - `/qa/patrols/:patrolId` -- QA patrol detail (parameterized)
-  - `/qa/investigations` -- QA investigations list
-  - `/qa/investigations/:attemptId` -- QA investigation detail (parameterized)
-  - `/system` -- System overview (`SystemPage`; version, uptime, DB state, backup state, egress catalog, butler heartbeats)
-  - `/settings` -- Settings Console (`SettingsConsolePage`; system-side only)
-  - `/settings/models` -- Settings model catalog (`SettingsModelsPage`)
-  - `/settings/spend` -- Settings spend (`SettingsSpendPage`)
-  - `/settings/permissions` -- Settings permissions (`SettingsPermissionsPage`)
-  - `/secrets` -- Secrets management (per-user OAuth provider setup lives here, not under `/settings`)
-
-#### Scenario: Settings Console routes
-
-- **WHEN** the frontend router is configured
-- **THEN** the following routes are registered, each rendering within the `RootLayout`:
-  - `/settings` → `SettingsConsolePage`
-  - `/settings/models` → `SettingsModelsPage`
-  - `/settings/spend` → `SettingsSpendPage`
-  - `/settings/permissions` → `SettingsPermissionsPage`
-- **AND** the legacy `/settings` → `SettingsPage` registration is REMOVED and `frontend/src/pages/SettingsPage.tsx` is DELETED in the same change
-- **AND** `/settings` is system-side only (catalog, spend, permissions, audit, webhooks)
-
-#### Scenario: Approvals route replacement
-
-- **WHEN** the frontend router is configured
-- **THEN** `/approvals` renders the new `ApprovalsPage` (rewritten in this change), not the legacy page
-
-#### Scenario: Per-user OAuth stays at /secrets
-
-- **WHEN** the frontend router is configured
-- **THEN** provider-setup cards (`GoogleOAuthSection`, `HomeAssistantSetupCard`, `OwnTracksSetupCard`, `SpotifySetupCard`, `SteamSetupCard`, `WhatsAppSetupCard`, `GoogleHealthStatusCard`) are consumed by `SecretsPage` and NOT by any `/settings/*` route
-- **AND** per-user OAuth (Google, Spotify, Telegram, Steam, etc.) lives on `/secrets` to keep `/settings` system-side only
-
-#### Scenario: Ingestion sub-routes share the dashboard shell
-
-- **WHEN** the owner opens `/ingestion/connectors`
-- **THEN** the route renders inside the root dashboard shell
-- **AND** the sidebar and page header remain present
-- **AND** the content is the ingestion connector roster, not a legacy tab panel
-- **AND** these ingestion routes are first-class child routes; the redesigned ingestion surface SHALL NOT rely on a single `/ingestion` component with page-level `?tab=` state as its primary route map
-
-#### Scenario: Ingestion connector detail is route-addressable
-
-- **WHEN** the owner opens `/ingestion/connectors/:connectorType/:endpointIdentity`
-- **THEN** the router loads the connector detail route directly
-- **AND** refresh or deep-link navigation preserves the selected connector
-
-#### Scenario: Legacy tab query state is compatibility only
-
-- **WHEN** a legacy `/ingestion?tab=filters` URL is visited
-- **THEN** the app normalizes it to `/ingestion/filters`
-- **AND** future route ownership remains in `dashboard-ingestion-dispatch-console` rather than the shell spec
 
 ### Requirement: Page Header with Breadcrumbs
 
@@ -424,56 +354,6 @@ The command palette SHALL be a modal overlay providing cross-entity search with 
 - **WHEN** results are displayed in the command palette
 - **THEN** a footer bar shows keyboard hints: up/down arrows to navigate, Enter to open
 - **AND** an ESC keyboard hint is shown next to the search input
-
-### Requirement: Keyboard Shortcuts System
-
-The application SHALL support vim-inspired two-key navigation shortcuts and search shortcuts, registered globally via the `useKeyboardShortcuts` hook.
-
-#### Scenario: Search shortcuts
-
-- **WHEN** the user presses `Cmd+K` or `Ctrl+K` (regardless of focus context)
-- **THEN** the command palette opens
-- **WHEN** the user presses `/` outside of input/textarea/contentEditable elements
-- **THEN** the command palette opens
-
-#### Scenario: Two-key "g" navigation
-
-- **WHEN** the user presses `g` followed by a second key within 1 second
-- **THEN** the application navigates to the corresponding route:
-  - `g` then `o` -- Overview (`/`)
-  - `g` then `b` -- Butlers (`/butlers`)
-  - `g` then `s` -- Sessions (`/sessions`)
-  - `g` then `t` -- Timeline (`/timeline`)
-  - `g` then `n` -- Notifications (`/notifications`)
-  - `g` then `i` -- Issues (`/issues`)
-  - `g` then `a` -- Audit Log (`/audit-log`)
-  - `g` then `m` -- Memory (`/memory`)
-  - `g` then `c` -- Contacts (`/contacts`)
-  - `g` then `h` -- Health (`/health/measurements`)
-  - `g` then `e` -- Ingestion (`/ingestion`)
-- **AND** the pending "g" state expires after 1 second if no second key is pressed
-- **AND** shortcuts do not fire when focus is in an input, textarea, or contentEditable element
-
-#### Scenario: Shortcut hints dialog
-
-- **WHEN** the user clicks the floating "?" button in the bottom-right corner of the viewport
-- **THEN** a dialog opens listing all available keyboard shortcuts with their key combinations
-- **AND** the button has `opacity-60` by default and `opacity-100` on hover
-- **AND** the button is fixed-positioned at `bottom-4 right-4` with `z-50`
-
-#### Scenario: Page-scoped shortcut suspension
-
-Page-scoped shortcuts (registered per-page via `useRegisterShortcut`, e.g. approvals triage j/k/a/d/x/u) are suspended in the contexts below so they never collide with typing or leak underneath an overlay that owns the keyboard.
-
-- **WHEN** focus is in an `input`, `textarea`, `<select>`, or `contentEditable` element
-- **THEN** page-scoped shortcuts do not fire
-- **WHEN** focus sits inside any open dialog (`[role="dialog"]`), whether modal or not
-- **THEN** the keystroke belongs to that dialog and page-scoped shortcuts do not fire
-- **WHEN** a modal dialog (`[role="dialog"][aria-modal="true"]`, e.g. the command menu, the `?` help sheet, or any `useModalChoreography` overlay) is open
-- **THEN** page-scoped shortcuts are suspended app-wide regardless of where focus sits
-- **WHEN** only a non-modal dialog (`[role="dialog"]` without `aria-modal`, e.g. the persistent floating chat widget mounted in the shell) is open and focus is on the page
-- **THEN** page-scoped shortcuts continue to fire — a non-modal overlay does not claim the app's keyboard
-- **AND** a binding may opt out of all of the above suspension contexts by setting `allowWhenSuspended`
 
 ### Requirement: Dark Mode and Theme System
 
@@ -741,7 +621,7 @@ The Settings Console page (`SettingsConsolePage`) SHALL serve as the system-conf
 
 - **WHEN** the user visits `/settings`
 - **THEN** a panel grid renders one panel per sub-surface: Models, Spend, Approvals, Permissions, and Secrets
-- **AND** clicking a panel navigates to its corresponding route: `/settings/models`, `/settings/spend`, `/approvals`, `/settings/permissions`, and `/secrets` respectively
+- **AND** clicking a panel navigates to its corresponding route: `/settings/models`, `/spend`, `/approvals`, `/settings/permissions`, and `/secrets` respectively
 - **AND** panels with a live data summary fetch independently so a slow or failing panel does not block the others
 
 #### Scenario: Settings Console live stream
@@ -771,6 +651,160 @@ Shared utilities SHALL underpin component styling and settings persistence.
 - **WHEN** `localStorage` read or write operations fail (e.g., in private browsing or quota exceeded)
 - **THEN** all settings functions silently catch errors and return fallback values
 - **AND** the application continues to function with default settings
+
+### Requirement: Canonical Route Map
+
+The router SHALL define all application routes as children of the root layout. All routes SHALL share the shell, header, error boundary, and sidebar.
+
+The route map SHALL include the Settings Console sub-routes and the ingestion dispatch console sub-routes as first-class child routes (not page-level `?tab=` state).
+
+#### Scenario: Top-level routes
+
+- **WHEN** the router is initialized
+- **THEN** the following routes are registered:
+  - `/` -- Overview dashboard
+  - `/chat` -- Full-page chat, the global "Talk to Butlers" surface (bu-0ynlk.11)
+  - `/chat/:conversationId` -- Full-page chat deep-linked to one conversation, resolved cross-butler by id (parameterized)
+  - `/butlers` -- Butler list
+  - `/butlers/:name` -- Butler detail (parameterized)
+  - `/sessions` -- Session list
+  - `/sessions/:id` -- Session detail (parameterized)
+  - `/timeline` -- Unified timeline (operational cross-butler stream; sessions, notifications, errors)
+  - `/chronicles` -- Chronicles page (retrospective lived-time reconstruction over Chronicler episodes; distinct from `/timeline`)
+  - `/notifications` -- Notifications center
+  - `/issues` -- Issues center
+  - `/audit-log` -- Audit log
+  - `/approvals` -- Approvals queue (rendered by `ApprovalsPage`)
+  - `/approvals/rules` -- Approval standing rules
+  - `/calendar` -- Calendar workspace
+  - `/contacts` -- Redirect to `/entities/index?has=contact` (legacy bookmark compatibility; `public.contacts` was dropped in core_134)
+  - `/contacts/:contactId` -- Redirect to `/entities/index?has=contact` (legacy per-contact bookmark compatibility)
+  - `/groups` -- Groups list (not in sidebar; reachable via the relationship butler's CRM tab Quick Links)
+  - `/spend` -- Canonical Spend page (`SpendPage`)
+  - `/costs` -- Redirect to `/spend` (legacy bookmark compatibility)
+  - `/memory` -- Memory system
+  - `/memory/facts/:factId` -- Fact detail (parameterized)
+  - `/memory/rules/:ruleId` -- Rule detail (parameterized)
+  - `/memory/episodes/:episodeId` -- Episode detail (parameterized)
+  - `/entities` -- Entity plex, the owner ego-graph landing (`PlexPage`)
+  - `/entities/index` -- Entities index (`EntitiesIndexPage`)
+  - `/entities/concentration` -- Entity concentration view
+  - `/entities/hop`, `/entities/columns`, `/entities/social-map` -- retired views; redirect into the plex
+  - `/entities/:entityId` -- Entity detail (parameterized)
+  - `/health` -- Health overview (`HealthOverviewPage`)
+  - `/health/measurements` -- Health measurements
+  - `/health/medications` -- Health medications
+  - `/health/conditions` -- Health conditions
+  - `/health/symptoms` -- Health symptoms
+  - `/health/meals` -- Health meals
+  - `/health/research` -- Health research
+  - `/education` -- Education (`EducationPage`)
+  - `/ingestion` -- Ingestion Timeline ledger
+  - `/ingestion/connectors` -- Ingestion connector roster
+  - `/ingestion/connectors/:connectorType/:endpointIdentity` -- Ingestion connector detail (parameterized)
+  - `/ingestion/filters` -- Ingestion Filters pipeline
+  - `/qa` -- QA overview (`QaOverviewPage`)
+  - `/qa/patrols/:patrolId` -- QA patrol detail (parameterized)
+  - `/qa/investigations` -- QA investigations list
+  - `/qa/investigations/:attemptId` -- QA investigation detail (parameterized)
+  - `/system` -- System overview (`SystemPage`; version, uptime, DB state, backup state, egress catalog, butler heartbeats)
+  - `/settings` -- Settings Console (`SettingsConsolePage`; system-side only)
+  - `/settings/models` -- Settings model catalog (`SettingsModelsPage`)
+  - `/settings/spend` -- Redirect to `/spend` (legacy Settings Console compatibility)
+  - `/settings/permissions` -- Settings permissions (`SettingsPermissionsPage`)
+  - `/secrets` -- Secrets management (per-user OAuth provider setup lives here, not under `/settings`)
+
+#### Scenario: Settings Console routes
+
+- **WHEN** the frontend router is configured
+- **THEN** the following routes are registered, each rendering within the `RootLayout`:
+  - `/settings` → `SettingsConsolePage`
+  - `/settings/models` → `SettingsModelsPage`
+  - `/settings/spend` → redirect to `/spend`
+  - `/settings/permissions` → `SettingsPermissionsPage`
+- **AND** the legacy `/settings` → `SettingsPage` registration is REMOVED and `frontend/src/pages/SettingsPage.tsx` is DELETED in the same change
+- **AND** `/settings` is system-side only (catalog, spend, permissions, audit, webhooks)
+
+#### Scenario: Approvals route replacement
+
+- **WHEN** the frontend router is configured
+- **THEN** `/approvals` renders the new `ApprovalsPage` (rewritten in this change), not the legacy page
+
+#### Scenario: Per-user OAuth stays at /secrets
+
+- **WHEN** the frontend router is configured
+- **THEN** provider-setup cards (`GoogleOAuthSection`, `HomeAssistantSetupCard`, `OwnTracksSetupCard`, `SpotifySetupCard`, `SteamSetupCard`, `WhatsAppSetupCard`, `GoogleHealthStatusCard`) are consumed by `SecretsPage` and NOT by any `/settings/*` route
+- **AND** per-user OAuth (Google, Spotify, Telegram, Steam, etc.) lives on `/secrets` to keep `/settings` system-side only
+
+#### Scenario: Ingestion sub-routes share the dashboard shell
+
+- **WHEN** the owner opens `/ingestion/connectors`
+- **THEN** the route renders inside the root dashboard shell
+- **AND** the sidebar and page header remain present
+- **AND** the content is the ingestion connector roster, not a legacy tab panel
+- **AND** these ingestion routes are first-class child routes; the redesigned ingestion surface SHALL NOT rely on a single `/ingestion` component with page-level `?tab=` state as its primary route map
+
+#### Scenario: Ingestion connector detail is route-addressable
+
+- **WHEN** the owner opens `/ingestion/connectors/:connectorType/:endpointIdentity`
+- **THEN** the router loads the connector detail route directly
+- **AND** refresh or deep-link navigation preserves the selected connector
+
+#### Scenario: Legacy tab query state is compatibility only
+
+- **WHEN** a legacy `/ingestion?tab=filters` URL is visited
+- **THEN** the app normalizes it to `/ingestion/filters`
+- **AND** future route ownership remains in `dashboard-ingestion-dispatch-console` rather than the shell spec
+
+### Requirement: Canonical Keyboard Shortcuts System
+
+The application SHALL support vim-inspired two-key navigation shortcuts and search shortcuts, registered globally via the `useKeyboardShortcuts` hook.
+
+#### Scenario: Search shortcuts
+
+- **WHEN** the user presses `Cmd+K` or `Ctrl+K` (regardless of focus context)
+- **THEN** the command palette opens
+- **WHEN** the user presses `/` outside of input/textarea/contentEditable elements
+- **THEN** the command palette opens
+
+#### Scenario: Two-key "g" navigation
+
+- **WHEN** the user presses `g` followed by a second key within 1 second
+- **THEN** the application navigates to the corresponding route:
+  - `g` then `o` -- Overview (`/`)
+  - `g` then `b` -- Butlers (`/butlers`)
+  - `g` then `s` -- Sessions (`/sessions`)
+  - `g` then `t` -- Timeline (`/timeline`)
+  - `g` then `n` -- Notifications (`/notifications`)
+  - `g` then `i` -- Issues (`/issues`)
+  - `g` then `a` -- Audit Log (`/audit-log`)
+  - `g` then `m` -- Memory (`/memory`)
+  - `g` then `c` -- Contacts (`/entities/index?has=contact`)
+  - `g` then `h` -- Health (`/health`)
+  - `g` then `e` -- Ingestion (`/ingestion`)
+- **AND** the pending "g" state expires after 1 second if no second key is pressed
+- **AND** shortcuts do not fire when focus is in an input, textarea, or contentEditable element
+
+#### Scenario: Shortcut hints dialog
+
+- **WHEN** the user clicks the floating "?" button in the bottom-right corner of the viewport
+- **THEN** a dialog opens listing all available keyboard shortcuts with their key combinations
+- **AND** the button has `opacity-60` by default and `opacity-100` on hover
+- **AND** the button is fixed-positioned at `bottom-4 right-4` with `z-50`
+
+#### Scenario: Page-scoped shortcut suspension
+
+Page-scoped shortcuts (registered per-page via `useRegisterShortcut`, e.g. approvals triage j/k/a/d/x/u) are suspended in the contexts below so they never collide with typing or leak underneath an overlay that owns the keyboard.
+
+- **WHEN** focus is in an `input`, `textarea`, `<select>`, or `contentEditable` element
+- **THEN** page-scoped shortcuts do not fire
+- **WHEN** focus sits inside any open dialog (`[role="dialog"]`), whether modal or not
+- **THEN** the keystroke belongs to that dialog and page-scoped shortcuts do not fire
+- **WHEN** a modal dialog (`[role="dialog"][aria-modal="true"]`, e.g. the command menu, the `?` help sheet, or any `useModalChoreography` overlay) is open
+- **THEN** page-scoped shortcuts are suspended app-wide regardless of where focus sits
+- **WHEN** only a non-modal dialog (`[role="dialog"]` without `aria-modal`, e.g. the persistent floating chat widget mounted in the shell) is open and focus is on the page
+- **THEN** page-scoped shortcuts continue to fire — a non-modal overlay does not claim the app's keyboard
+- **AND** a binding may opt out of all of the above suspension contexts by setting `allowWhenSuspended`
 
 ## Source References
 

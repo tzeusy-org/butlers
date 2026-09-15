@@ -82,11 +82,14 @@ The spawner generates a config declaring a single MCP server --- this butler's F
 
 ### 5. System Prompt Composition
 
-The system prompt is composed from three layers (in stable order for token-cache efficiency):
+The system prompt is composed in `spawner_context._compose_system_prompt()` from these layers, in stable order for token-cache efficiency (each appended as a suffix, separated by one blank line, only when non-empty):
 
 1. **Base system prompt** --- read from the butler's `CLAUDE.md`
-2. **Owner routing instructions** --- fetched from the `routing_instructions` table, sorted by priority
-3. **Memory context** --- retrieved from the memory module based on the prompt content
+2. **General timezone instruction** --- from shared owner settings
+3. **Situational context preamble** --- from the context bus (`butlers.context_bus`)
+4. **Blind-spot preamble** --- declared expected-signal absence (bu-2jtfw.13). Absent whenever every signal the butler has declared a dependency on (`butlers.core.blind_spot_declarations.declared_signal_patterns`) is PRESENT, so this layer is a byte-identical no-op in the common case. Gated by the per-butler `runtime_config.blind_spot_preamble_enabled` kill switch (default on). Unlike every other layer here, its underlying fetch (`fetch_blind_spot_preamble` / `evaluate_declared_signals`) is deliberately **fail-closed**: a query error surfaces as a typed "source health could not be evaluated" block rather than silently omitting the layer.
+5. **Owner routing instructions** --- fetched from the `routing_instructions` table, sorted by priority (switchboard only)
+6. **Memory context** --- retrieved from the memory module based on the prompt content
 
 ### 6. Runtime Invocation and Same-Tier Failover Loop
 

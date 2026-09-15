@@ -697,6 +697,42 @@ async def test_api_key(
     return result
 
 
+class _OpenCodeGoTestCommandShapeError(Exception):
+    """Raised when the opencode-go test command has no recognized model flag.
+
+    Distinguishes a stale/reshaped ``test_command`` (registry.py's opencode-go
+    entry needs repinning) from a genuine credential failure, so the operator
+    is not shown a misleading "failing OpenCode Go credential" result.
+    """
+
+
+# Flag spellings the opencode-go test command's model argument may use.
+# ``-p ... -m ...`` at registry.py's opencode-openai entry establishes ``-m``
+# as a live short form for this CLI's "model"-shaped flags.
+_OPENCODE_GO_MODEL_FLAGS = ("--model", "-m")
+
+
+def _substitute_opencode_go_test_model(test_command: list[str]) -> list[str]:
+    """Return ``test_command`` with its model argument mapped to CLI execution spelling.
+
+    Locates the model flag by scanning for either ``--model`` or ``-m``
+    followed by a value, rather than assuming a fixed index — the opencode-go
+    ``test_command`` in registry.py has already changed shape once (see its
+    maintenance note) and may again.
+    """
+    result = list(test_command)
+    for index, token in enumerate(result):
+        if token in _OPENCODE_GO_MODEL_FLAGS and index + 1 < len(result):
+            execution_model = canonical_to_execution_model(result[index + 1])
+            if execution_model is not None:
+                result[index + 1] = execution_model
+            return result
+    raise _OpenCodeGoTestCommandShapeError(
+        "opencode-go test command has no recognized model flag "
+        f"({' or '.join(_OPENCODE_GO_MODEL_FLAGS)}): {test_command!r}"
+    )
+
+
 async def _run_provider_test(
     provider_def: CLIAuthProviderDef,
     db_manager: Any,
@@ -734,10 +770,7 @@ async def _run_provider_test(
     try:
         test_command = list(provider_def.test_command)
         if provider_def.name == "opencode-go":
-            model_index = test_command.index("--model")
-            execution_model = canonical_to_execution_model(test_command[model_index + 1])
-            if execution_model is not None:
-                test_command[model_index + 1] = execution_model
+            test_command = _substitute_opencode_go_test_model(test_command)
         authority = load_validated_readonly_authority(provider_def)
         if authority is None:
             return CLIAuthTestResponse(
@@ -777,6 +810,13 @@ async def _run_provider_test(
             provider=provider_def.name,
             success=False,
             detail="Provider CLI credential check failed.",
+        )
+    except _OpenCodeGoTestCommandShapeError as exc:
+        logger.error("opencode-go test command shape mismatch: %s", exc)
+        return CLIAuthTestResponse(
+            provider=provider_def.name,
+            success=False,
+            detail=f"Test command misconfigured (not a credential failure): {exc}",
         )
     except SandboxUnavailableError:
         return CLIAuthTestResponse(

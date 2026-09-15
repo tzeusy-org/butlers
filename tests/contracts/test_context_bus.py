@@ -29,6 +29,7 @@ class TestContextSignalVocabulary:
             "socializing",
             "commuting",
             "at_home",
+            "in_space",
             "away",
             "dnd",
         }

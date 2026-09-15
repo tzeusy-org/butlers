@@ -17,6 +17,7 @@ import pytest
 from butlers.core.attention_ledger import (
     ATTENTION_LEDGER_SESSION_KEY,
     URGENT_PRIORITY_THRESHOLD,
+    attention_event_recorded_since,
     count_attention_events_since,
     find_notify_dispatch_for_session,
     get_suppressing_context,
@@ -219,6 +220,51 @@ class TestCountAttentionEventsSince:
             "failed": 0,
             "suppressed": 0,
         }
+
+
+class TestAttentionEventRecordedSince:
+    """bu-8cdl1.7 Slice 4: the per-dedup_key existence check
+    fleet_cases.evaluate_case_attention uses to key a bypass to one per
+    quiet-hours window rather than once per call."""
+
+    async def test_none_pool_fails_open_to_false(self):
+        assert (
+            await attention_event_recorded_since(
+                None, dedup_key="fleet_case:health:owner:x", since=datetime.now(UTC)
+            )
+            is False
+        )
+
+    async def test_true_when_a_matching_row_exists(self):
+        pool = AsyncMock()
+        pool.fetchval = AsyncMock(return_value=1)
+        since = datetime.now(UTC)
+
+        result = await attention_event_recorded_since(
+            pool, dedup_key="fleet_case:health:owner:x", since=since
+        )
+
+        assert result is True
+        query, dedup_key, recorded_since = pool.fetchval.await_args.args
+        assert "public.attention_ledger" in query
+        assert dedup_key == "fleet_case:health:owner:x"
+        assert recorded_since == since
+
+    async def test_false_when_no_matching_row_exists(self):
+        pool = AsyncMock()
+        pool.fetchval = AsyncMock(return_value=None)
+        result = await attention_event_recorded_since(
+            pool, dedup_key="fleet_case:health:owner:x", since=datetime.now(UTC)
+        )
+        assert result is False
+
+    async def test_query_failure_fails_open_to_false(self):
+        pool = AsyncMock()
+        pool.fetchval = AsyncMock(side_effect=Exception("boom"))
+        result = await attention_event_recorded_since(
+            pool, dedup_key="fleet_case:health:owner:x", since=datetime.now(UTC)
+        )
+        assert result is False
 
 
 class TestGetSuppressingContextSignal:

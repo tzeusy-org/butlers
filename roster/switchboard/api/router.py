@@ -7,16 +7,15 @@ database via asyncpg.
 
 Ingestion has moved to the Switchboard MCP server's ``ingest`` tool.
 
-The connector/ingestion fanout endpoints query Prometheus via PromQL when
+The ingestion fanout endpoint queries Prometheus via PromQL when
 ``PROMETHEUS_URL`` is set (e.g. ``http://lgtm:9090``); when the env var is
-absent or Prometheus is unavailable they fall back gracefully (empty list for
-per-connector fanout, DB rollup for the cross-connector matrix).  The connector
-stats time-series endpoint is sourced entirely from the database (bu-c48im) —
-it does not consult Prometheus.
+absent or Prometheus is unavailable it falls back to the DB-backed
+cross-connector matrix.
 """
 
 from __future__ import annotations
 
+import base64
 import datetime
 import importlib.util
 import json
@@ -33,20 +32,14 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.briefing.cache import BriefingCache, get_cache, resolve_owner_id
 from butlers.api.db import DatabaseManager
-from butlers.api.models import ApiMeta, ApiResponse, PaginatedResponse, PaginationMeta
-from butlers.api.oauth_scope_registry import (
-    build_scope_rows,
-    compute_auth_status,
-    get_applicability,
-    get_scope_manifest,
+from butlers.api.models import (
+    ApiResponse,
+    CursorPaginatedResponse,
+    CursorPaginationMeta,
+    PaginatedResponse,
+    PaginationMeta,
 )
 from butlers.config import load_config
-from butlers.connectors.registry_roles import CHECKPOINT as CHECKPOINT_ROLE
-from butlers.connectors.registry_roles import UNKNOWN as UNKNOWN_ROLE
-from butlers.connectors.registry_roles import (
-    normalize_operational_role as _normalize_role,
-)
-from butlers.core.liveness import derive_liveness as _liveness
 from butlers.core.mcp_urls import runtime_mcp_url
 from butlers.modules.metrics.prometheus import async_query
 from butlers.tools.switchboard.registry.registry import (
@@ -67,10 +60,6 @@ if _spec is not None and _spec.loader is not None:
     HeartbeatResponse = _models.HeartbeatResponse
     SetEligibilityRequest = _models.SetEligibilityRequest
     SetEligibilityResponse = _models.SetEligibilityResponse
-    ConnectorEntry = _models.ConnectorEntry
-    ConnectorAuthBlock = _models.ConnectorAuthBlock
-    ConnectorScopeRow = _models.ConnectorScopeRow
-    ConnectorSummary = _models.ConnectorSummary
     ConnectorStatsHourly = _models.ConnectorStatsHourly
     ConnectorStatsDaily = _models.ConnectorStatsDaily
     FanoutRow = _models.FanoutRow
@@ -88,8 +77,6 @@ if _spec is not None and _spec.loader is not None:
     RoutingInstruction = _models.RoutingInstruction
     RoutingInstructionCreate = _models.RoutingInstructionCreate
     RoutingInstructionUpdate = _models.RoutingInstructionUpdate
-    CursorUpdateRequest = _models.CursorUpdateRequest
-    ConnectorSettingsUpdateRequest = _models.ConnectorSettingsUpdateRequest
     validate_condition = _models.validate_condition
     IngestionRule = _models.IngestionRule
     IngestionRuleCreate = _models.IngestionRuleCreate
@@ -103,6 +90,10 @@ if _spec is not None and _spec.loader is not None:
     validate_ingestion_action = _models.validate_ingestion_action
     validate_rule_type_for_scope = _models.validate_rule_type_for_scope
     InsightCandidate = _models.InsightCandidate
+    FleetCaseSummary = _models.FleetCaseSummary
+    FleetCaseEvidenceEntry = _models.FleetCaseEvidenceEntry
+    FleetCaseLinkEntry = _models.FleetCaseLinkEntry
+    FleetCaseDetail = _models.FleetCaseDetail
     RulePromotionSuggestion = _models.RulePromotionSuggestion
     RulePromotionAutoApplied = _models.RulePromotionAutoApplied
     RulePromotionSurface = _models.RulePromotionSurface
@@ -131,94 +122,6 @@ def _get_prometheus_url() -> str | None:
 # DB fallback helpers for when Prometheus is unavailable
 _DB_TRUNC: dict[str, str] = {"24h": "hour", "7d": "day", "30d": "day"}
 _DB_INTERVAL: dict[str, str] = {"24h": "24 hours", "7d": "7 days", "30d": "30 days"}
-
-
-async def _connector_stats_from_db(
-    connector_type: str,
-    endpoint_identity: str,
-    period: PeriodLiteral,
-    db: DatabaseManager,
-) -> ApiResponse:
-    """Compute per-connector time-series from public.ingestion_events.
-
-    Sources volume from public.ingestion_events (the same table the roster
-    sparkline and recent-events list use) rather than heartbeat counter-deltas.
-    This correctly reflects all transports — including websocket connectors such
-    as home_assistant that never increment connector_heartbeat_log counters.
-    """
-    pool = _pool(db)
-    trunc = _DB_TRUNC[period]
-    interval = _DB_INTERVAL[period]
-    try:
-        # Skip-aware (bu-c48im): UNION public.ingestion_events (ingested/failed)
-        # with connectors.filtered_events (the skip volume) so the detail
-        # histogram sees the same DISTINCT filtered series as the overview
-        # (bu-scyro). filtered_events is never folded into messages_ingested.
-        rows = await pool.fetch(
-            f"""
-            SELECT bucket,
-                   SUM(ingested)::bigint  AS messages_ingested,
-                   SUM(failed)::bigint    AS messages_failed,
-                   SUM(filtered)::bigint  AS messages_filtered
-            FROM (
-                SELECT date_trunc('{trunc}', received_at AT TIME ZONE 'UTC')
-                           AT TIME ZONE 'UTC' AS bucket,
-                       COUNT(*) FILTER (WHERE status = 'ingested') AS ingested,
-                       COUNT(*) FILTER (WHERE status = 'failed')   AS failed,
-                       0 AS filtered
-                FROM public.ingestion_events
-                WHERE COALESCE(source_provider, source_channel) = $1
-                  AND source_endpoint_identity = $2
-                  AND received_at >= NOW() - INTERVAL '{interval}'
-                GROUP BY 1
-                UNION ALL
-                SELECT date_trunc('{trunc}', received_at AT TIME ZONE 'UTC')
-                           AT TIME ZONE 'UTC' AS bucket,
-                       0 AS ingested, 0 AS failed,
-                       COUNT(*) AS filtered
-                FROM connectors.filtered_events
-                WHERE connector_type = $1
-                  AND endpoint_identity = $2
-                  AND received_at >= NOW() - INTERVAL '{interval}'
-                GROUP BY 1
-            ) combined
-            GROUP BY bucket ORDER BY bucket
-            """,
-            connector_type,
-            endpoint_identity,
-        )
-    except Exception:
-        # Genuine failure of the DB series (not an empty result). Degrade
-        # honestly per the fleet convention rather than fabricating a clean
-        # zero series (mirrors the overview's hourly_events_available).
-        logger.warning("connector stats DB query failed", exc_info=True)
-        return ApiResponse(data=[], meta=ApiMeta(hourly_events_available=False))
-
-    if period == "24h":
-        data: list = [
-            ConnectorStatsHourly(
-                connector_type=connector_type,
-                endpoint_identity=endpoint_identity,
-                hour=r["bucket"].isoformat(),
-                messages_ingested=int(r["messages_ingested"]),
-                messages_failed=int(r["messages_failed"]),
-                messages_filtered=int(r["messages_filtered"]),
-            )
-            for r in rows
-        ]
-    else:
-        data = [
-            ConnectorStatsDaily(
-                connector_type=connector_type,
-                endpoint_identity=endpoint_identity,
-                day=r["bucket"].date().isoformat(),
-                messages_ingested=int(r["messages_ingested"]),
-                messages_failed=int(r["messages_failed"]),
-                messages_filtered=int(r["messages_filtered"]),
-            )
-            for r in rows
-        ]
-    return ApiResponse(data=data, meta=ApiMeta(hourly_events_available=True))
 
 
 def _normalize_jsonb_string_list(raw: Any) -> list[str]:
@@ -520,7 +423,7 @@ async def list_insight_candidates(
         rows = await pool.fetch(
             "SELECT id, origin_butler, priority, category, dedup_key, cooldown_days,"
             " expires_at, message, channel, metadata, created_at, status,"
-            " delivered_at, delivery_attempt_count"
+            " delivered_at, delivery_attempt_count, prepared_action_id"
             " FROM public.insight_candidates"
             f" WHERE {where}"
             " ORDER BY priority DESC, created_at ASC"
@@ -548,11 +451,280 @@ async def list_insight_candidates(
             status=r["status"],
             delivered_at=str(r["delivered_at"]) if r["delivered_at"] else None,
             delivery_attempt_count=int(r["delivery_attempt_count"] or 0),
+            prepared_action_id=str(r["prepared_action_id"]) if r["prepared_action_id"] else None,
         )
         for r in rows
     ]
 
     return ApiResponse[list[InsightCandidate]](data=data)
+
+
+# ---------------------------------------------------------------------------
+# GET /cases, GET /cases/{case_id} — read-only fleet case file reader
+# (bu-8cdl1.7 Slice 2, RFC 0032)
+# ---------------------------------------------------------------------------
+
+# Valid state/posture values for public.fleet_cases (see core_217 CHECK constraints).
+_FLEET_CASE_STATES = ("open", "watching", "closing", "closed")
+_FLEET_CASE_POSTURES = ("silent", "routine", "active", "urgent")
+
+# Defensive caps on a single case's evidence/links — a case accreting past
+# these needs a dedicated paginated sub-resource, out of scope for this
+# read-only slice.
+_FLEET_CASE_EVIDENCE_LIMIT = 500
+_FLEET_CASE_LINKS_LIMIT = 500
+
+
+def _encode_fleet_case_cursor(updated_at: datetime.datetime, row_id: str) -> str:
+    """Encode a ``(updated_at, id)`` keyset position into an opaque cursor."""
+    payload = {"ua": updated_at.isoformat(), "id": str(row_id)}
+    return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
+
+
+def _decode_fleet_case_cursor(cursor: str) -> tuple[datetime.datetime, str]:
+    """Decode an opaque cursor string back to ``(updated_at, id)``.
+
+    Raises:
+        ValueError: If the cursor is malformed or cannot be decoded.
+    """
+    try:
+        raw = base64.urlsafe_b64decode(cursor.encode())
+        payload = json.loads(raw)
+        updated_at = datetime.datetime.fromisoformat(payload["ua"])
+        row_id: str = payload["id"]
+        return updated_at, row_id
+    except (KeyError, ValueError, TypeError) as exc:
+        raise ValueError(f"Invalid cursor: {exc}") from exc
+
+
+@router.get("/cases", response_model=CursorPaginatedResponse[FleetCaseSummary])
+async def list_fleet_cases(
+    state: str | None = Query(
+        None,
+        description=(
+            "Comma-separated state filter (open, watching, closing, closed). "
+            "Omit to include all states."
+        ),
+    ),
+    posture: str | None = Query(
+        None,
+        description="Comma-separated posture filter (silent, routine, active, urgent).",
+    ),
+    limit: int = Query(50, ge=1, le=200, description="Maximum number of rows to return"),
+    cursor: str | None = Query(
+        None,
+        description=(
+            "Opaque cursor from the previous page's ``next_cursor`` field. "
+            "Omit to fetch the first page."
+        ),
+    ),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> CursorPaginatedResponse[FleetCaseSummary]:
+    """List fleet cases from ``public.fleet_cases`` (RFC 0032), newest-updated first.
+
+    Read-only SELECT — every butler role has SELECT on ``fleet_cases`` (see
+    migration ``core_217``); only ``butler_switchboard_rw`` may write. This
+    reader is hosted on the Switchboard API surface because the Switchboard
+    is the sole arbiter of a case's existence/state/posture, mirroring the
+    ``/insights`` reader above.
+
+    Cursor pagination on ``(updated_at DESC, id DESC)`` — no ``total`` count
+    is computed per request. Pass the ``next_cursor`` from a previous
+    response as the ``cursor`` query param to fetch the next page.
+
+    Falls back gracefully to an empty page when the table does not exist
+    (degraded / partially migrated DB).
+    """
+    states = [s.strip() for s in state.split(",") if s.strip()] if state else None
+    if states:
+        invalid_states = [s for s in states if s not in _FLEET_CASE_STATES]
+        if invalid_states:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Invalid state(s) {invalid_states}; "
+                    f"expected one of {', '.join(_FLEET_CASE_STATES)}"
+                ),
+            )
+
+    postures = [p.strip() for p in posture.split(",") if p.strip()] if posture else None
+    if postures:
+        invalid_postures = [p for p in postures if p not in _FLEET_CASE_POSTURES]
+        if invalid_postures:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Invalid posture(s) {invalid_postures}; "
+                    f"expected one of {', '.join(_FLEET_CASE_POSTURES)}"
+                ),
+            )
+
+    cursor_pos: tuple[datetime.datetime, str] | None = None
+    if cursor is not None:
+        try:
+            cursor_pos = _decode_fleet_case_cursor(cursor)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"Invalid cursor: {exc}") from exc
+
+    pool = _pool(db)
+
+    conditions: list[str] = []
+    args: list[object] = []
+    if states:
+        args.append(states)
+        conditions.append(f"state = ANY(${len(args)}::text[])")
+    if postures:
+        args.append(postures)
+        conditions.append(f"posture = ANY(${len(args)}::text[])")
+    if cursor_pos is not None:
+        args.append(cursor_pos[0])
+        ua_idx = len(args)
+        args.append(cursor_pos[1])
+        id_idx = len(args)
+        conditions.append(f"(updated_at, id) < (${ua_idx}, ${id_idx})")
+
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    args.append(limit + 1)  # fetch one extra row to compute has_more
+    limit_idx = len(args)
+
+    try:
+        rows = await pool.fetch(
+            "SELECT id, correlation_key, state, posture, outcome,"
+            " opened_at, updated_at, closed_at"
+            " FROM public.fleet_cases"
+            f" {where}"
+            " ORDER BY updated_at DESC, id DESC"
+            f" LIMIT ${limit_idx}",
+            *args,
+        )
+    except Exception:
+        logger.warning("fleet_cases not available; returning empty page", exc_info=True)
+        return CursorPaginatedResponse[FleetCaseSummary](
+            data=[], meta=CursorPaginationMeta(next_cursor=None, has_more=False)
+        )
+
+    has_more = len(rows) > limit
+    page_rows = rows[:limit]
+
+    data = [
+        FleetCaseSummary(
+            id=str(r["id"]),
+            correlation_key=r["correlation_key"],
+            state=r["state"],
+            posture=r["posture"],
+            outcome=r["outcome"],
+            opened_at=str(r["opened_at"]) if r["opened_at"] else None,
+            updated_at=str(r["updated_at"]) if r["updated_at"] else None,
+            closed_at=str(r["closed_at"]) if r["closed_at"] else None,
+        )
+        for r in page_rows
+    ]
+
+    next_cursor = None
+    if has_more and page_rows:
+        last = page_rows[-1]
+        next_cursor = _encode_fleet_case_cursor(last["updated_at"], str(last["id"]))
+
+    return CursorPaginatedResponse[FleetCaseSummary](
+        data=data,
+        meta=CursorPaginationMeta(next_cursor=next_cursor, has_more=has_more),
+    )
+
+
+@router.get("/cases/{case_id}", response_model=ApiResponse[FleetCaseDetail])
+async def get_fleet_case(
+    case_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[FleetCaseDetail]:
+    """Return one fleet case with its accreted evidence and ledger links.
+
+    Evidence is ordered oldest-first (``contributed_at ASC``) so the
+    response reads as the situation's narrative history; links are ordered
+    by ``linked_at ASC``. Both lists are capped defensively — a case
+    accreting past the cap needs a dedicated paginated sub-resource, out of
+    scope for this read-only slice.
+
+    Returns:
+        200 — the case plus its evidence/links
+        404 — no case with that id exists
+        422 — malformed ``case_id``
+        503 — switchboard database (or ``fleet_cases`` table) unavailable
+    """
+    try:
+        case_uuid = UUID(case_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid case_id: {exc}") from exc
+
+    pool = _pool(db)
+
+    try:
+        case_row = await pool.fetchrow(
+            "SELECT id, correlation_key, state, posture, outcome,"
+            " opened_at, updated_at, closed_at"
+            " FROM public.fleet_cases WHERE id = $1",
+            case_uuid,
+        )
+    except Exception as exc:
+        logger.warning("fleet_cases lookup failed for %s", case_id, exc_info=True)
+        raise HTTPException(status_code=503, detail="Fleet case store unavailable") from exc
+
+    if case_row is None:
+        raise HTTPException(status_code=404, detail=f"Fleet case '{case_id}' not found")
+
+    try:
+        evidence_rows = await pool.fetch(
+            "SELECT id, case_id, contributor, kind, ref, payload, contributed_at"
+            " FROM public.fleet_case_evidence WHERE case_id = $1"
+            " ORDER BY contributed_at ASC, id ASC"
+            f" LIMIT {_FLEET_CASE_EVIDENCE_LIMIT}",
+            case_uuid,
+        )
+        link_rows = await pool.fetch(
+            "SELECT id, case_id, link_kind, ref, metadata, linked_at"
+            " FROM public.fleet_case_links WHERE case_id = $1"
+            " ORDER BY linked_at ASC, id ASC"
+            f" LIMIT {_FLEET_CASE_LINKS_LIMIT}",
+            case_uuid,
+        )
+    except Exception as exc:
+        logger.warning("fleet_case_evidence/links lookup failed for %s", case_id, exc_info=True)
+        raise HTTPException(status_code=503, detail="Fleet case store unavailable") from exc
+
+    detail = FleetCaseDetail(
+        id=str(case_row["id"]),
+        correlation_key=case_row["correlation_key"],
+        state=case_row["state"],
+        posture=case_row["posture"],
+        outcome=case_row["outcome"],
+        opened_at=str(case_row["opened_at"]) if case_row["opened_at"] else None,
+        updated_at=str(case_row["updated_at"]) if case_row["updated_at"] else None,
+        closed_at=str(case_row["closed_at"]) if case_row["closed_at"] else None,
+        evidence=[
+            FleetCaseEvidenceEntry(
+                id=str(r["id"]),
+                case_id=str(r["case_id"]),
+                contributor=r["contributor"],
+                kind=r["kind"],
+                ref=r["ref"],
+                payload=r["payload"],
+                contributed_at=str(r["contributed_at"]) if r["contributed_at"] else None,
+            )
+            for r in evidence_rows
+        ],
+        links=[
+            FleetCaseLinkEntry(
+                id=str(r["id"]),
+                case_id=str(r["case_id"]),
+                link_kind=r["link_kind"],
+                ref=r["ref"],
+                metadata=r["metadata"],
+                linked_at=str(r["linked_at"]) if r["linked_at"] else None,
+            )
+            for r in link_rows
+        ],
+    )
+
+    return ApiResponse[FleetCaseDetail](data=detail)
 
 
 # ---------------------------------------------------------------------------
@@ -948,698 +1120,6 @@ async def get_eligibility_history(
     )
 
 
-def _build_connector_auth_blocks(
-    connector_type: str,
-    observed_scopes: list[str] | None,
-    required_scopes_version: int | None,
-) -> tuple[Any, list[Any] | None]:
-    """Compute the (auth, scopes) blocks for a connector-detail response.
-
-    Returns (ConnectorAuthBlock, list[ConnectorScopeRow] | None).
-
-    Spec: openspec/changes/add-connector-oauth-scope-surface/
-          specs/connector-oauth-scope-surface/spec.md
-    """
-    applicability = get_applicability(connector_type)
-    manifest = get_scope_manifest(connector_type)
-
-    if not applicability.oauth_supported or manifest is None:
-        # Non-OAuth connector: return unsupported auth block with alt_surface.
-        auth_block = ConnectorAuthBlock(
-            status="unsupported",
-            type=applicability.credential_model,
-            note=applicability.note,
-            alt_surface={
-                "kind": applicability.alt_surface_kind or "static-token",
-                "validity_known": False,
-                "validity_expires_at": None,
-                "remediation_path": (
-                    applicability.alt_surface_remediation_path or "/settings/connectors"
-                ),
-            },
-        )
-        return auth_block, []
-
-    # OAuth connector: compute auth_status and scopes block.
-    auth_status = compute_auth_status(
-        connector_type=connector_type,
-        manifest=manifest,
-        observed_scopes=observed_scopes,
-        required_scopes_version=required_scopes_version,
-    )
-
-    normalized_status = auth_status
-    recovery_reason: Literal["expired", "rotation-needed"] | None = None
-    if connector_type == "spotify" and auth_status in {"expired", "rotation-needed"}:
-        normalized_status = "needs_reauth"
-        recovery_reason = auth_status
-
-    auth_block = ConnectorAuthBlock(
-        status=normalized_status,
-        type="oauth",
-        note=f"{applicability.credential_model} · oauth refresh",
-        required_scopes_version=required_scopes_version,
-        manifest_version=manifest.version,
-        recovery_reason=recovery_reason,
-    )
-
-    scope_rows_raw = build_scope_rows(manifest, observed_scopes)
-    scope_rows = [
-        ConnectorScopeRow(
-            name=sr.name,
-            category=sr.category,
-            status=sr.status,
-            sensitive_granted=sr.sensitive_granted,
-            granted_at=sr.granted_at,
-            required_since=sr.required_since,
-            serif_note=sr.serif_note,
-        )
-        for sr in scope_rows_raw
-    ]
-
-    return auth_block, scope_rows
-
-
-def _row_to_connector_entry(r: dict) -> Any:
-    """Convert a connector_registry asyncpg row dict to ConnectorEntry."""
-    connector_type = r["connector_type"]
-
-    # OAuth scope surface: read the columns added by core_114 migration.
-    # Fall back gracefully to None when columns are absent (pre-migration rows
-    # or list endpoints that do not SELECT these columns).
-    observed_scopes: list[str] | None = r.get("observed_scopes")
-    required_scopes_version: int | None = r.get("required_scopes_version")
-
-    auth_block, scope_rows = _build_connector_auth_blocks(
-        connector_type, observed_scopes, required_scopes_version
-    )
-
-    return ConnectorEntry(
-        connector_type=connector_type,
-        endpoint_identity=r["endpoint_identity"],
-        instance_id=str(r["instance_id"]) if r.get("instance_id") else None,
-        version=r.get("version"),
-        state=str(r.get("state") or "unknown"),
-        error_message=r.get("error_message"),
-        uptime_s=r.get("uptime_s"),
-        last_heartbeat_at=str(r["last_heartbeat_at"]) if r.get("last_heartbeat_at") else None,
-        first_seen_at=str(r["first_seen_at"]),
-        registered_via=str(r.get("registered_via") or "self"),
-        counter_messages_ingested=int(r.get("counter_messages_ingested") or 0),
-        counter_messages_failed=int(r.get("counter_messages_failed") or 0),
-        counter_source_api_calls=int(r.get("counter_source_api_calls") or 0),
-        counter_checkpoint_saves=int(r.get("counter_checkpoint_saves") or 0),
-        counter_dedupe_accepted=int(r.get("counter_dedupe_accepted") or 0),
-        today_messages_ingested=int(r.get("today_messages_ingested") or 0),
-        today_messages_failed=int(r.get("today_messages_failed") or 0),
-        checkpoint_cursor=r.get("checkpoint_cursor"),
-        checkpoint_updated_at=str(r["checkpoint_updated_at"])
-        if r.get("checkpoint_updated_at")
-        else None,
-        operational_role=_normalize_role(r.get("operational_role")),
-        parent_endpoint_identity=r.get("parent_endpoint_identity"),
-        settings=r.get("settings"),
-        auth=auth_block,
-        scopes=scope_rows,
-    )
-
-
-# ---------------------------------------------------------------------------
-# GET /connectors — list all connectors
-# ---------------------------------------------------------------------------
-
-
-@router.get("/connectors", response_model=ApiResponse[list[ConnectorEntry]])
-async def list_connectors(
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[list[ConnectorEntry]]:
-    """List all connectors from the connector registry.
-
-    Returns current state for each connector. Suitable for populating
-    connector cards on the Overview and Connectors tabs, including health
-    badge rows.
-
-    When the connector registry cannot be read, returns an empty list with
-    ``meta.connector_registry_available = false`` so a caller can distinguish
-    that degraded fallback from a true empty roster.
-    """
-    pool = _pool(db)
-
-    try:
-        rows = await pool.fetch(
-            "SELECT cr.connector_type, cr.endpoint_identity, cr.instance_id,"
-            " cr.version, cr.state, cr.error_message, cr.uptime_s,"
-            " cr.last_heartbeat_at, cr.first_seen_at, cr.registered_via,"
-            " cr.counter_messages_ingested, cr.counter_messages_failed,"
-            " cr.counter_source_api_calls, cr.counter_checkpoint_saves,"
-            " cr.counter_dedupe_accepted,"
-            " cr.checkpoint_cursor, cr.checkpoint_updated_at,"
-            " cr.operational_role, cr.parent_endpoint_identity,"
-            " cr.observed_scopes, cr.required_scopes_version,"
-            " COALESCE(ts.today_ingested, 0) AS today_messages_ingested,"
-            " COALESCE(ts.today_failed, 0) AS today_messages_failed"
-            " FROM switchboard.connector_registry cr"
-            " LEFT JOIN ("
-            "   SELECT connector_type, endpoint_identity,"
-            "     SUM(delta_ingested) AS today_ingested,"
-            "     SUM(delta_failed) AS today_failed"
-            "   FROM ("
-            "     SELECT connector_type, endpoint_identity, instance_id,"
-            "       GREATEST(0, MAX(counter_messages_ingested)"
-            "         - MIN(NULLIF(counter_messages_ingested, 0))) AS delta_ingested,"
-            "       GREATEST(0, MAX(counter_messages_failed)"
-            "         - MIN(NULLIF(counter_messages_failed, 0))) AS delta_failed"
-            "     FROM switchboard.connector_heartbeat_log"
-            "     WHERE received_at >= CURRENT_DATE"
-            "     GROUP BY connector_type, endpoint_identity, instance_id"
-            "   ) per_instance"
-            "   GROUP BY connector_type, endpoint_identity"
-            " ) ts ON cr.connector_type = ts.connector_type"
-            "   AND cr.endpoint_identity = ts.endpoint_identity"
-            " ORDER BY cr.connector_type, cr.endpoint_identity",
-        )
-    except Exception:
-        logger.warning(
-            "connector_registry table not available; returning empty list", exc_info=True
-        )
-        return ApiResponse[list[ConnectorEntry]](
-            data=[],
-            meta=ApiMeta(connector_registry_available=False),
-        )
-
-    data = [_row_to_connector_entry(dict(row)) for row in rows]
-    return ApiResponse[list[ConnectorEntry]](
-        data=data,
-        meta=ApiMeta(connector_registry_available=True),
-    )
-
-
-# ---------------------------------------------------------------------------
-# GET /connectors/summary — aggregate summary across all connectors
-# ---------------------------------------------------------------------------
-
-
-@router.get("/connectors/summary", response_model=ApiResponse[ConnectorSummary])
-async def get_connectors_summary(
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[ConnectorSummary]:
-    """Return aggregate connector health and volume summary.
-
-    Drives the summary stats row at the top of the Connectors tab
-    (total, online, stale, offline, ingested, failed, error rate).
-
-    Counts runtime instances only (bu-6jv4m.11): fleet liveness describes
-    executable connector processes, and a stored checkpoint cursor has no
-    process to be live or dead. Rows whose persisted ``operational_role`` is
-    ``unknown`` land in ``unknown_count`` instead of being guessed into the
-    online or the offline side.
-
-    Falls back gracefully to a zero-value summary on DB errors.
-    """
-    pool = _pool(db)
-
-    try:
-        # Fetch per-connector heartbeat + message counters so liveness can be
-        # computed in Python, consistent with /api/ingestion/connectors/summaries
-        # and /cross-summary (all three now share the same liveness thresholds).
-        rows = await pool.fetch(
-            """
-            SELECT
-                last_heartbeat_at,
-                operational_role,
-                coalesce(counter_messages_ingested, 0) AS messages_ingested,
-                coalesce(counter_messages_failed, 0)   AS messages_failed
-            FROM switchboard.connector_registry
-            WHERE deleted_at IS NULL
-              -- Archived (superseded) identities are excluded from the
-              -- fleet-health rollup so a permanently-offline dead endpoint
-              -- stops dragging the online/stale/offline counts down (bu-33dm2).
-              AND archived_at IS NULL
-            """,
-        )
-    except Exception:
-        logger.warning(
-            "connector_registry not available for summary; returning zeros", exc_info=True
-        )
-        return ApiResponse[ConnectorSummary](data=ConnectorSummary())
-
-    if rows is None:
-        return ApiResponse[ConnectorSummary](data=ConnectorSummary())
-
-    online = stale = offline = unknown = 0
-    runtime_instances = 0
-    total_ingested = total_failed = 0
-    for r in rows:
-        role = _normalize_role(r["operational_role"])
-        if role == CHECKPOINT_ROLE:
-            # Storage state, not a process: no liveness to count and no volume
-            # to attribute to the fleet (bu-6jv4m.11).
-            continue
-        if role == UNKNOWN_ROLE:
-            unknown += 1
-            continue
-        runtime_instances += 1
-        lv = _liveness(r["last_heartbeat_at"])
-        if lv == "online":
-            online += 1
-        elif lv == "stale":
-            stale += 1
-        else:
-            offline += 1
-        total_ingested += int(r["messages_ingested"] or 0)
-        total_failed += int(r["messages_failed"] or 0)
-
-    total_attempts = total_ingested + total_failed
-    error_rate_pct = (total_failed / total_attempts * 100.0) if total_attempts > 0 else 0.0
-
-    summary = ConnectorSummary(
-        total_connectors=runtime_instances,
-        online_count=online,
-        stale_count=stale,
-        offline_count=offline,
-        unknown_count=unknown,
-        total_messages_ingested=total_ingested,
-        total_messages_failed=total_failed,
-        error_rate_pct=round(error_rate_pct, 2),
-    )
-    return ApiResponse[ConnectorSummary](data=summary)
-
-
-# ---------------------------------------------------------------------------
-# GET /connectors/{connector_type}/{endpoint_identity} — connector detail
-# ---------------------------------------------------------------------------
-
-
-@router.get(
-    "/connectors/{connector_type}/{endpoint_identity}",
-    response_model=ApiResponse[ConnectorEntry],
-)
-async def get_connector_detail(
-    connector_type: str,
-    endpoint_identity: str,
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[ConnectorEntry]:
-    """Return current state for a single connector.
-
-    Raises 404 if the connector is not found in the registry.
-    """
-    pool = _pool(db)
-
-    try:
-        row = await pool.fetchrow(
-            "SELECT cr.connector_type, cr.endpoint_identity, cr.instance_id,"
-            " cr.version, cr.state, cr.error_message, cr.uptime_s,"
-            " cr.last_heartbeat_at, cr.first_seen_at, cr.registered_via,"
-            " cr.counter_messages_ingested, cr.counter_messages_failed,"
-            " cr.counter_source_api_calls, cr.counter_checkpoint_saves,"
-            " cr.counter_dedupe_accepted,"
-            " cr.checkpoint_cursor, cr.checkpoint_updated_at,"
-            " cr.operational_role, cr.parent_endpoint_identity,"
-            " cr.observed_scopes, cr.required_scopes_version,"
-            " COALESCE(ts.today_ingested, 0) AS today_messages_ingested,"
-            " COALESCE(ts.today_failed, 0) AS today_messages_failed"
-            " FROM switchboard.connector_registry cr"
-            " LEFT JOIN ("
-            "   SELECT connector_type, endpoint_identity,"
-            "     SUM(delta_ingested) AS today_ingested,"
-            "     SUM(delta_failed) AS today_failed"
-            "   FROM ("
-            "     SELECT connector_type, endpoint_identity, instance_id,"
-            "       GREATEST(0, MAX(counter_messages_ingested)"
-            "         - MIN(NULLIF(counter_messages_ingested, 0))) AS delta_ingested,"
-            "       GREATEST(0, MAX(counter_messages_failed)"
-            "         - MIN(NULLIF(counter_messages_failed, 0))) AS delta_failed"
-            "     FROM switchboard.connector_heartbeat_log"
-            "     WHERE received_at >= CURRENT_DATE"
-            "     GROUP BY connector_type, endpoint_identity, instance_id"
-            "   ) per_instance"
-            "   GROUP BY connector_type, endpoint_identity"
-            " ) ts ON cr.connector_type = ts.connector_type"
-            "   AND cr.endpoint_identity = ts.endpoint_identity"
-            " WHERE cr.connector_type = $1 AND cr.endpoint_identity = $2",
-            connector_type,
-            endpoint_identity,
-        )
-    except Exception:
-        logger.warning(
-            "connector_registry not available for detail lookup %r/%r",
-            connector_type,
-            endpoint_identity,
-            exc_info=True,
-        )
-        raise HTTPException(status_code=503, detail="Connector registry is not available")
-
-    if row is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Connector '{connector_type}/{endpoint_identity}' not found",
-        )
-
-    return ApiResponse[ConnectorEntry](data=_row_to_connector_entry(dict(row)))
-
-
-# ---------------------------------------------------------------------------
-# DELETE /connectors/{connector_type}/{endpoint_identity} — deregister connector
-# ---------------------------------------------------------------------------
-
-
-@router.delete(
-    "/connectors/{connector_type}/{endpoint_identity}",
-    response_model=ApiResponse[dict],
-)
-async def delete_connector(
-    connector_type: str,
-    endpoint_identity: str,
-    request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[dict]:
-    """Remove a connector from the registry.
-
-    Use this to clean up stale or renamed connectors that are no longer active.
-    Also removes associated heartbeat log entries.
-    """
-    pool = _pool(db)
-
-    deleted = await pool.fetchval(
-        "DELETE FROM switchboard.connector_registry"
-        " WHERE connector_type = $1 AND endpoint_identity = $2"
-        " RETURNING connector_type",
-        connector_type,
-        endpoint_identity,
-    )
-
-    if deleted is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Connector '{connector_type}/{endpoint_identity}' not found",
-        )
-
-    # Best-effort cleanup of heartbeat log entries
-    try:
-        await pool.execute(
-            "DELETE FROM switchboard.connector_heartbeat_log"
-            " WHERE connector_type = $1 AND endpoint_identity = $2",
-            connector_type,
-            endpoint_identity,
-        )
-    except Exception:
-        logger.warning(
-            "Failed to clean up heartbeat_log for %s/%s",
-            connector_type,
-            endpoint_identity,
-            exc_info=True,
-        )
-
-    logger.info("Deregistered connector: %s/%s", connector_type, endpoint_identity)
-
-    # Explicit audit — middleware also fires; this carries the semantic operation label.
-    await emit_dashboard_audit(
-        db,
-        butler="switchboard",
-        operation="connector_delete",
-        method="DELETE",
-        path=f"/api/switchboard/connectors/{connector_type}/{endpoint_identity}",
-        path_params={"connector_type": connector_type, "endpoint_identity": endpoint_identity},
-        response_status=200,
-        request=request,
-    )
-
-    return ApiResponse[dict](data={"deleted": f"{connector_type}/{endpoint_identity}"})
-
-
-# ---------------------------------------------------------------------------
-# PATCH /connectors/{connector_type}/{endpoint_identity}/cursor — update cursor
-# ---------------------------------------------------------------------------
-
-
-@router.patch(
-    "/connectors/{connector_type}/{endpoint_identity}/cursor",
-    response_model=ApiResponse[ConnectorEntry],
-)
-async def update_connector_cursor(
-    connector_type: str,
-    endpoint_identity: str,
-    request: Request,
-    body: CursorUpdateRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[ConnectorEntry]:
-    """Update a connector's checkpoint cursor value.
-
-    Body must contain ``{"cursor": "<value>"}`` where value is a non-empty
-    string.  Writes directly to ``connector_registry.checkpoint_cursor`` and
-    sets ``checkpoint_updated_at = now()``.
-
-    Note: the cursor is only read on connector startup — changes take effect
-    on the next connector restart.
-    """
-    pool = _pool(db)
-
-    # Update cursor + timestamp, returning the full row for the response.
-    try:
-        row = await pool.fetchrow(
-            "UPDATE switchboard.connector_registry"
-            " SET checkpoint_cursor = $3,"
-            "     checkpoint_updated_at = now()"
-            " WHERE connector_type = $1 AND endpoint_identity = $2"
-            " RETURNING *",
-            connector_type,
-            endpoint_identity,
-            body.cursor,
-        )
-    except Exception:
-        logger.warning(
-            "Failed to update cursor for %s/%s",
-            connector_type,
-            endpoint_identity,
-            exc_info=True,
-        )
-        raise HTTPException(status_code=503, detail="Connector registry is not available")
-
-    if row is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Connector '{connector_type}/{endpoint_identity}' not found",
-        )
-
-    # The RETURNING * gives us the registry columns but not the today-stats
-    # join.  Fill the today-stats fields with zero so the model validates.
-    row_dict = dict(row)
-    row_dict.setdefault("today_messages_ingested", 0)
-    row_dict.setdefault("today_messages_failed", 0)
-
-    logger.info(
-        "Updated cursor for %s/%s to %r",
-        connector_type,
-        endpoint_identity,
-        body.cursor,
-    )
-
-    # Explicit audit — middleware also fires; this carries the semantic operation label.
-    await emit_dashboard_audit(
-        db,
-        butler="switchboard",
-        operation="connector_cursor_patch",
-        method="PATCH",
-        path=f"/api/switchboard/connectors/{connector_type}/{endpoint_identity}/cursor",
-        path_params={"connector_type": connector_type, "endpoint_identity": endpoint_identity},
-        response_status=200,
-        request=request,
-    )
-
-    return ApiResponse[ConnectorEntry](data=_row_to_connector_entry(row_dict))
-
-
-# ---------------------------------------------------------------------------
-# PATCH /connectors/{type}/{identity}/settings — update connector settings
-# ---------------------------------------------------------------------------
-
-
-@router.patch(
-    "/connectors/{connector_type}/{endpoint_identity}/settings",
-    response_model=ApiResponse[ConnectorEntry],
-)
-async def update_connector_settings(
-    connector_type: str,
-    endpoint_identity: str,
-    request: Request,
-    body: ConnectorSettingsUpdateRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[ConnectorEntry]:
-    """Merge new settings into a connector's settings JSONB.
-
-    The body ``settings`` object is shallow-merged with the existing
-    settings (top-level keys are replaced, not deep-merged).
-
-    Note: ``flush_interval_s`` is live-reloaded by the connector's flush
-    scanner on its next wake cycle (no restart required). Other settings
-    are read on connector startup and require a restart to take effect.
-    """
-    pool = _pool(db)
-
-    try:
-        row = await pool.fetchrow(
-            "UPDATE switchboard.connector_registry"
-            " SET settings = COALESCE(settings, '{}'::jsonb) || $3::jsonb"
-            " WHERE connector_type = $1 AND endpoint_identity = $2"
-            " RETURNING *",
-            connector_type,
-            endpoint_identity,
-            body.settings,
-        )
-    except Exception:
-        logger.warning(
-            "Failed to update settings for %s/%s",
-            connector_type,
-            endpoint_identity,
-            exc_info=True,
-        )
-        raise HTTPException(status_code=503, detail="Connector registry is not available")
-
-    if row is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Connector '{connector_type}/{endpoint_identity}' not found",
-        )
-
-    row_dict = dict(row)
-    row_dict.setdefault("today_messages_ingested", 0)
-    row_dict.setdefault("today_messages_failed", 0)
-
-    logger.info(
-        "Updated settings for %s/%s",
-        connector_type,
-        endpoint_identity,
-    )
-
-    # Explicit audit — middleware also fires; this carries the semantic operation label.
-    await emit_dashboard_audit(
-        db,
-        butler="switchboard",
-        operation="connector_settings_patch",
-        method="PATCH",
-        path=f"/api/switchboard/connectors/{connector_type}/{endpoint_identity}/settings",
-        path_params={"connector_type": connector_type, "endpoint_identity": endpoint_identity},
-        body={"setting_keys": list(body.settings.keys())},
-        response_status=200,
-        request=request,
-    )
-
-    return ApiResponse[ConnectorEntry](data=_row_to_connector_entry(row_dict))
-
-
-# ---------------------------------------------------------------------------
-# GET /connectors/{connector_type}/{endpoint_identity}/stats — time-series stats
-# ---------------------------------------------------------------------------
-
-
-@router.get(
-    "/connectors/{connector_type}/{endpoint_identity}/stats",
-    response_model=ApiResponse[list[ConnectorStatsHourly] | list[ConnectorStatsDaily]],
-)
-async def get_connector_stats(
-    connector_type: str,
-    endpoint_identity: str,
-    period: PeriodLiteral = Query("24h", description="Time window: 24h, 7d, or 30d"),
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[list[ConnectorStatsHourly] | list[ConnectorStatsDaily]]:
-    """Return time-series connector stats sourced from the DB.
-
-    The hourly/daily volume series is sourced entirely from the database
-    (``public.ingestion_events`` UNIONed with ``connectors.filtered_events``)
-    via :func:`_connector_stats_from_db`, bucketed by the requested period:
-    - ``period=24h``: hourly buckets for the last 24 hours → ConnectorStatsHourly
-    - ``period=7d``: daily buckets for the last 7 days → ConnectorStatsDaily
-    - ``period=30d``: daily buckets for the last 30 days → ConnectorStatsDaily
-
-    Each bucket carries a DISTINCT ``messages_filtered`` skip-volume series
-    (bu-c48im) so self-persisting connectors' skip decisions are visible on the
-    detail histogram, mirroring the connector-summaries overview (bu-scyro).
-    The response envelope carries ``meta.hourly_events_available`` — ``false``
-    only on a genuine DB-query failure — so a failed read is never rendered as an
-    honest all-quiet chart.
-
-    Prometheus is intentionally NOT consulted here (bu-c48im): it has no
-    per-connector filtered/skip metric, and this endpoint's former Prometheus-only
-    ``source_api_calls``/``dedupe_accepted`` counters were never rendered by any
-    surface (the detail view's lifetime counters read ``connector.counters`` from
-    the registry, not this series). Per cruft doctrine the Prometheus source is
-    dropped for this endpoint entirely; the per-connector fanout endpoint still
-    uses Prometheus.
-    """
-    return await _connector_stats_from_db(connector_type, endpoint_identity, period, db)
-
-
-# ---------------------------------------------------------------------------
-# GET /connectors/{connector_type}/{endpoint_identity}/fanout — fanout breakdown
-# ---------------------------------------------------------------------------
-
-
-@router.get(
-    "/connectors/{connector_type}/{endpoint_identity}/fanout",
-    response_model=ApiResponse[list[FanoutRow]],
-)
-async def get_connector_fanout(
-    connector_type: str,
-    endpoint_identity: str,
-    period: PeriodLiteral = Query("24h", description="Time window: 24h, 7d, or 30d"),
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[list[FanoutRow]]:
-    """Return fanout distribution for a single connector sourced from Prometheus.
-
-    Aggregates routed message counts per target butler over the requested period.
-    Used to populate the fanout distribution table in the Connectors tab detail
-    view.
-
-    Requires ``PROMETHEUS_URL`` env var.  Returns an empty list when Prometheus
-    is not configured or unavailable.
-
-    Prometheus metric name expected:
-    - ``switchboard_routed_messages_total``
-      (labels: connector_type, endpoint_identity, target_butler, outcome)
-    """
-    prom_url = _get_prometheus_url()
-    if not prom_url:
-        logger.debug("PROMETHEUS_URL not set; fanout requires Prometheus")
-        return ApiResponse[list[FanoutRow]](data=[])
-
-    hours = _PERIOD_HOURS[period]
-    label_filter = f'connector_type="{connector_type}",endpoint_identity="{endpoint_identity}"'
-    q = (
-        f"sum by (target_butler) "
-        f"(increase(switchboard_routed_messages_total{{{label_filter}}}[{hours}h]))"
-    )
-
-    results = await async_query(prom_url, q)
-    if results and isinstance(results[0], dict) and "error" in results[0]:
-        logger.warning(
-            "Prometheus query error for connector fanout %s/%s: %s",
-            connector_type,
-            endpoint_identity,
-            results[0]["error"],
-        )
-        return ApiResponse[list[FanoutRow]](data=[])
-
-    data = []
-    for series in results:
-        target_butler = series.get("metric", {}).get("target_butler", "unknown")
-        try:
-            count = int(float(series["value"][1]))
-        except (KeyError, IndexError, TypeError, ValueError):
-            count = 0
-        if count > 0:
-            data.append(
-                FanoutRow(
-                    connector_type=connector_type,
-                    endpoint_identity=endpoint_identity,
-                    target_butler=target_butler,
-                    message_count=count,
-                )
-            )
-
-    data.sort(key=lambda r: r.message_count, reverse=True)
-    return ApiResponse[list[FanoutRow]](data=data)
-
-
 # ---------------------------------------------------------------------------
 # GET /ingestion/overview — overview aggregates
 # ---------------------------------------------------------------------------
@@ -1663,9 +1143,7 @@ async def get_ingestion_overview(
 
     ``total_ingested`` is derived from ``message_inbox`` as the sum of all
     tier1 + tier2 + tier3 messages in the period.  This ensures that messages
-    processed by internal modules are counted correctly.  Per-connector
-    time-series stats are now sourced from Prometheus (see
-    ``get_connector_stats``).
+    processed by internal modules are counted correctly.
 
     Falls back gracefully when tables are missing.
     """

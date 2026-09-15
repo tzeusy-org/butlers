@@ -3,7 +3,9 @@
 ## Purpose
 
 The Chronicler butler is a domain butler that reconstructs past time from already-captured evidence across the Butlers ecosystem. It owns retrospective time reconstruction with point events, overlapping episodes, correction overlays, and source projection adapters. Chronicler reads from approved migration-tracked source surfaces, writes only to its own schema, preserves source provenance, precision, and uncertainty on every row, and never invokes an LLM per ingestion event. Per RFC 0014, Chronicler does not plan, schedule, dispatch, ingest externally, or notify.
+
 ## Requirements
+
 ### Requirement: Butler Identity and Wire Contract
 
 The Chronicler butler SHALL expose a stable identity as a domain butler (not
@@ -243,8 +245,16 @@ User corrections SHALL layer on top of canonical projections via an
 
 ### Requirement: Source Compatibility Declarations
 
-Every source adapter SHALL declare its chronicler compatibility status
-before projection runs against it.
+Every source adapter SHALL declare its chronicler compatibility status before
+projection runs against it. A supported Health source is a read-only projection
+of durable `health.facts` evidence after the Health memory `mem_011` migration
+has established its table-specific `SELECT` grant for
+`butler_chronicler_rw`, not direct delivery of a raw external event to
+Chronicler.
+
+ID: REQ-butler-chronicler-007
+Source: RFC 0014 Amendment 1; [Observed] `src/butlers/chronicler/contracts.py`
+Scope: v1-mandatory
 
 #### Scenario: Initial supported sources
 
@@ -253,7 +263,23 @@ before projection runs against it.
 - **AND** `google_calendar.completed` SHALL be declared `supported`
 - **AND** `spotify.session_summary` SHALL be declared `deferred` unless a
   durable evidence surface exists
-- **AND** `google_health.*` SHALL be declared `deferred`
+- **AND** `google_health.measurements` SHALL be declared `supported` for
+  Health fact projections
+- **AND** `health.steps` and `health.heart_rate` SHALL each be declared
+  `supported` for their Health fact projections
+
+#### Scenario: Health fact projection is not direct connector ingest
+
+- **WHEN** a supported Health source is projected after its Health memory
+  `mem_011` read prerequisite is applied
+- **THEN** Chronicler SHALL read only its approved `health.facts` surface on
+  its scheduled adapter path
+- **AND** that surface SHALL be accessed through the existing, migration-
+  tracked `mem_011` `SELECT` grant rather than a direct runtime ACL fallback
+- **AND** Chronicler SHALL NOT receive or retain the raw Google Health
+  connector envelope as a projection input
+- **AND** source availability SHALL remain independent of connector heartbeat
+  status and of any direct connector-to-Chronicler route
 
 #### Scenario: Optional schema guard
 
@@ -295,6 +321,11 @@ Chronicler projection adapters SHALL NOT invoke an LLM on a per-event basis.
   from tool-call results rather than depending on prose citations
 - **AND** the candidate SHALL carry a structured `date_label` equal to the
   owner-timezone local day represented by its cache key and cache window
+- **AND** the cache key SHALL bind that date to the exact resolved owner IANA
+  timezone, so different local-day windows cannot share a cache row or writer
+  lock
+- **AND** writer serialization SHALL retain the actual date and exact timezone
+  tuple rather than treating a fixed-width hash as identity
 - **AND** the cache writer SHALL use a documented deterministic shape predicate
   to admit only owner-facing retrospective prose, not a model judgment or a
   second LLM call

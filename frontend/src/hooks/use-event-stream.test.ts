@@ -117,6 +117,38 @@ import { EVENT_HEARTBEAT_DEADLINE_MS, useEventStream } from "./use-event-stream"
 // ---------------------------------------------------------------------------
 
 describe("useEventStream", () => {
+  it("coalesces ingestion bursts and snapshot replay without postponing the refresh indefinitely", () => {
+    vi.useFakeTimers();
+    const onEvent = vi.fn();
+    renderHook(() => useEventStream({ onEvent }));
+    const event = { type: "ingestion", ts: 1, data: {} };
+    act(() => getLastWsInstance()?.simulateMessage({ type: "snapshot", ts: 1, events: [event, event] }));
+    act(() => vi.advanceTimersByTime(200));
+    act(() => getLastWsInstance()?.simulateMessage(event));
+    expect(mockApplyFleetEvent).not.toHaveBeenCalled();
+    expect(onEvent).toHaveBeenCalledTimes(3);
+    act(() => vi.advanceTimersByTime(50));
+    expect(mockApplyFleetEvent).toHaveBeenCalledTimes(1);
+    expect(mockApplyFleetEvent).toHaveBeenCalledWith(mockQueryClient, event);
+    act(() => getLastWsInstance()?.simulateMessage(event));
+    act(() => vi.advanceTimersByTime(250));
+    expect(mockApplyFleetEvent).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["unmount", "disconnect", "disable"])("cancels a queued ingestion refresh on %s", (mode) => {
+    vi.useFakeTimers();
+    const { result, unmount, rerender } = renderHook(({ enabled }) => useEventStream({ enabled }), {
+      initialProps: { enabled: true },
+    });
+    act(() => getLastWsInstance()?.simulateMessage({ type: "ingestion", ts: 1, data: {} }));
+    act(() => {
+      if (mode === "unmount") unmount();
+      else if (mode === "disconnect") result.current.disconnect();
+      else rerender({ enabled: false });
+    });
+    act(() => vi.advanceTimersByTime(250));
+    expect(mockApplyFleetEvent).not.toHaveBeenCalled();
+  });
   it("opens a WebSocket to /events/stream on mount", () => {
     renderHook(() => useEventStream());
     expect(wsConstructorSpy).toHaveBeenCalledOnce();

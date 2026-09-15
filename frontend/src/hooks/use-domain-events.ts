@@ -4,14 +4,18 @@
  * domain-event-bus visibility panel.
  */
 
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 
 import {
   listDomainEventSubscriptions,
   listDomainEventDeliveries,
   listDomainEventReactions,
+  listDomainEventContracts,
+  replayDomainEventDelivery,
   type DomainEventSubscriptionsParams,
   type DomainEventDeliveriesParams,
+  type DomainEventContractsParams,
 } from "@/api/index.ts";
 import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval";
 
@@ -24,12 +28,38 @@ export function useDomainEventSubscriptions(params: DomainEventSubscriptionsPara
   });
 }
 
+/**
+ * Every materialized publisher contract, not just this butler's own: a
+ * subscription's bound version has to be compared against its publisher's
+ * current contract, which may belong to a different butler entirely.
+ */
+export function useDomainEventContracts(params: DomainEventContractsParams = {}) {
+  const refetchInterval = useBusAwarePollInterval();
+  return useQuery({
+    queryKey: ["domain-event-contracts", params],
+    queryFn: () => listDomainEventContracts(params),
+    refetchInterval,
+  });
+}
+
 export function useDomainEventDeliveries(params: DomainEventDeliveriesParams = {}) {
   const refetchInterval = useBusAwarePollInterval();
   return useQuery({
     queryKey: ["domain-event-deliveries", params],
     queryFn: () => listDomainEventDeliveries(params),
     refetchInterval,
+  });
+}
+
+export function useReplayDomainEventDelivery() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: replayDomainEventDelivery,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["domain-event-deliveries"] });
+      toast.success("Delivery queued for replay");
+    },
+    onError: (error: Error) => toast.error(error.message || "Could not replay delivery"),
   });
 }
 

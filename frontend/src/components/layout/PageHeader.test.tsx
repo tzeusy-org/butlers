@@ -342,6 +342,49 @@ describe("PageHeader", () => {
     ).toBe("down");
   });
 
+  it("renders a client-link banner, not a fleet banner, when this browser's own network is down", () => {
+    // The socket reporting "open" here mirrors what a stale connection can
+    // still report right up until it drops -- the client-link override must
+    // win regardless of the underlying fleet status (bu-8cdl1.13).
+    act(() => {
+      root.render(
+        <MemoryRouter initialEntries={["/sessions"]}>
+          <PageHeader liveStatus="open" clientLink="offline" />
+        </MemoryRouter>,
+      );
+    });
+    const indicator = container.querySelector('[data-testid="shell-live-indicator"]');
+    expect(indicator?.getAttribute("data-live-state")).toBe("client-offline");
+    expect(indicator?.textContent).toContain("You're offline");
+    expect(indicator?.getAttribute("title")).not.toContain("Fleet");
+  });
+
+  it("shows a visible data-age stamp on the client-offline banner, not only in a hover title", () => {
+    act(() => {
+      root.render(
+        <MemoryRouter initialEntries={["/sessions"]}>
+          <PageHeader liveStatus="closed" clientLink="offline" lastEventAt={Date.now() - 125_000} />
+        </MemoryRouter>,
+      );
+    });
+    const indicator = container.querySelector('[data-testid="shell-live-indicator"]');
+    // Visible text, not just the title attribute -- a coarse-pointer phone
+    // approval link has no hover to reveal a tooltip-only fact.
+    expect(indicator?.textContent).toContain("2m old");
+  });
+
+  it("falls back to the fleet-driven display when the client link is online", () => {
+    act(() => {
+      root.render(
+        <MemoryRouter initialEntries={["/sessions"]}>
+          <PageHeader liveStatus="open" clientLink="online" />
+        </MemoryRouter>,
+      );
+    });
+    const indicator = container.querySelector('[data-testid="shell-live-indicator"]');
+    expect(indicator?.getAttribute("data-live-state")).toBe("connected");
+  });
+
   it("renders a router-based back-to-board link on butler detail routes, reachable on mobile", () => {
     act(() => {
       root.render(

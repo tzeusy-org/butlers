@@ -7,7 +7,8 @@ import { MemoryRouter } from "react-router";
 
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { OPEN_ENTITY_FINDER_EVENT } from "@/lib/entity-finder";
-import { OPEN_SHORTCUT_HELP_EVENT } from "@/lib/shortcut-help";
+import { OPEN_CHAT_WIDGET_EVENT, OPEN_SHORTCUT_HELP_EVENT } from "@/lib/shortcut-help";
+import { ShortcutRegistryProvider, useRegisterShortcut } from "@/hooks/use-register-shortcut";
 import { G_CHORD_ROUTES } from "@/lib/route-registry";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -224,6 +225,106 @@ describe("useKeyboardShortcuts", () => {
     });
 
     expect(window.__pendingGNav).toBe(false);
+  });
+
+  it("dispatches OPEN_CHAT_WIDGET_EVENT on bare 'c' outside editable fields (bu-0ynlk.13)", () => {
+    const listener = vi.fn();
+    window.addEventListener(OPEN_CHAT_WIDGET_EVENT, listener);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <Harness />
+        </MemoryRouter>,
+      );
+    });
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "c", bubbles: true }));
+    });
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    window.removeEventListener(OPEN_CHAT_WIDGET_EVENT, listener);
+  });
+
+  it("ignores 'c' inside editable fields (it's a normal typing character there)", () => {
+    const listener = vi.fn();
+    window.addEventListener(OPEN_CHAT_WIDGET_EVENT, listener);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <Harness />
+        </MemoryRouter>,
+      );
+    });
+
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "c", bubbles: true }));
+    });
+
+    expect(listener).toHaveBeenCalledTimes(0);
+    input.remove();
+    window.removeEventListener(OPEN_CHAT_WIDGET_EVENT, listener);
+  });
+
+  it("does not open chat when 'c' completes a pending g-chord (g then c → contacts)", () => {
+    const listener = vi.fn();
+    window.addEventListener(OPEN_CHAT_WIDGET_EVENT, listener);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <Harness />
+        </MemoryRouter>,
+      );
+    });
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "g", bubbles: true }));
+    });
+    expect(window.__pendingGNav).toBe(true);
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "c", bubbles: true }));
+    });
+
+    expect(listener).toHaveBeenCalledTimes(0);
+    expect(window.__pendingGNav).toBe(false);
+    window.removeEventListener(OPEN_CHAT_WIDGET_EVENT, listener);
+  });
+
+  it("defers to a page that already claims bare 'c' (Calendar's Create event)", () => {
+    const listener = vi.fn();
+    window.addEventListener(OPEN_CHAT_WIDGET_EVENT, listener);
+
+    function PageClaimingC() {
+      useRegisterShortcut([
+        { key: "c", display: ["c"], description: "Create event", handler: () => {} },
+      ]);
+      return null;
+    }
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <ShortcutRegistryProvider>
+            <Harness />
+            <PageClaimingC />
+          </ShortcutRegistryProvider>
+        </MemoryRouter>,
+      );
+    });
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "c", bubbles: true }));
+    });
+
+    expect(listener).toHaveBeenCalledTimes(0);
+    window.removeEventListener(OPEN_CHAT_WIDGET_EVENT, listener);
   });
 
   it("g+h routes to /health, not the pre-redesign /health/measurements (bu-86c4c.7 drift fix)", () => {

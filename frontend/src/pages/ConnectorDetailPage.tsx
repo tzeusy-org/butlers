@@ -50,6 +50,7 @@ import {
   resolveConnectorRecovery,
 } from '@/components/ingestion/connectors/connector-auth'
 import { Page, type Breadcrumb } from '@/components/ui/page'
+import { usePageSubject } from '@/lib/page-context.tsx'
 
 /** Map backend ConnectorScopeEntry[] to the OAuthScope[] shape ScopeList consumes. */
 function _toOAuthScopes(scopes: ConnectorScopeEntry[] | null | undefined): OAuthScope[] | null {
@@ -81,6 +82,18 @@ export default function ConnectorDetailPage() {
   }>()
   const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
+
+  // Page-context enrichment (bu-0ynlk.4): identifies which connector the
+  // owner is looking at so a chat message sent from here (e.g. "this
+  // connector keeps failing") is grounded without repeating its identity.
+  const setPageSubject = usePageSubject().set
+  useEffect(() => {
+    if (!connectorType || !endpointIdentity) return
+    setPageSubject({
+      visible_resource: { kind: 'connector', id: `${connectorType}:${endpointIdentity}` },
+      visible_summary: `Connector ${connectorType} (${endpointIdentity})`,
+    })
+  }, [connectorType, endpointIdentity, setPageSubject])
 
   const {
     data: detailResp,

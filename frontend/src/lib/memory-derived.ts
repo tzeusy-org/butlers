@@ -357,6 +357,7 @@ export function inspectResultToRule(result: MemoryInspectResult): MemoryRule {
     last_evaluated_at: null,
     tags: [],
     metadata: meta,
+    retired_at: null,
   }
 }
 

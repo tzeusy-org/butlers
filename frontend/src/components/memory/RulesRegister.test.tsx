@@ -56,6 +56,7 @@ function makeRule(overrides: Partial<MemoryRule> = {}): MemoryRule {
     last_evaluated_at: null,
     tags: [],
     metadata: {},
+    retired_at: null,
     ...overrides,
   };
 }
@@ -286,6 +287,25 @@ describe("RulesRegister — standing orders", () => {
     setRules([], { total: 0 });
     mounted = renderRegister(["/memory?maturity=anti_pattern"]);
     expect(mounted.container.textContent).toContain("Nothing of this maturity.");
+  });
+
+  it("dims a retired row and labels it, while a live row stays undimmed (bu-rjdihn)", () => {
+    setRules([
+      makeRule({ id: "live", retired_at: null }),
+      makeRule({ id: "gone", retired_at: "2026-09-01T00:00:00Z" }),
+    ]);
+    mounted = renderRegister();
+    const rows = Array.from(
+      mounted.container.querySelectorAll<HTMLDivElement>('[role="link"]'),
+    );
+    expect(rows[0]!.className).not.toContain("opacity-60");
+    expect(rows[1]!.className).toContain("opacity-60");
+    expect(
+      mounted.container.querySelector('[data-testid="rule-retired-gone"]'),
+    ).not.toBeNull();
+    expect(
+      mounted.container.querySelector('[data-testid="rule-retired-live"]'),
+    ).toBeNull();
   });
 
   it("renders an error state (not 'No standing orders yet.') on load failure", () => {

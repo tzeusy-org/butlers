@@ -21,9 +21,9 @@ honest:
   the happy path visibly changes -- and
   :func:`test_the_unchanged_row_assertion_can_fail` drives that happy path to
   prove the comparison has something to catch.
-* :func:`test_userinfo_is_not_called_before_validation` would pass trivially if
-  the callback never called userinfo at all, so its sibling asserts the valid
-  payload does reach it.
+* the malformed-payload test's no-userinfo assertion would pass trivially if
+  the callback never called userinfo at all, so a positive-control sibling
+  asserts the valid payload does reach it.
 
 All token material is synthetic and generated in this file.  The redaction tests
 assert absence and never reproduce a rejected value into a message.
@@ -281,14 +281,17 @@ def _error_code(rendered: str) -> str:
 
 @pytest.mark.parametrize("case", list(_MALFORMED), ids=list(_MALFORMED))
 @pytest.mark.parametrize("site", ["oauth_google_callback", "_google_callback_from_state"])
-async def test_malformed_payload_is_rejected_and_persists_nothing(case: str, site: str) -> None:
+async def test_malformed_payload_is_rejected_without_side_effects_or_leaks(
+    case: str, site: str, caplog: pytest.LogCaptureFixture
+) -> None:
     payload = _MALFORMED[case]
     row = _AccountRow()
     before = row.snapshot()
     harness = _Harness(row, account_exists=True)
 
     driver = _call_site_one if site == "oauth_google_callback" else _call_site_two
-    response = await driver(payload, harness)
+    with caplog.at_level("DEBUG", logger="butlers.api.routers.oauth"):
+        response = await driver(payload, harness)
 
     # The security property leads: a failure here is the bug itself, and reading
     # it first means the diagnostic names what was written rather than what
@@ -303,24 +306,28 @@ async def test_malformed_payload_is_rejected_and_persists_nothing(case: str, sit
     status, rendered = _body_of(response)
     assert status == 502, rendered
     assert _error_code(rendered) == "invalid_token_payload"
-
-
-@pytest.mark.parametrize("case", list(_MALFORMED), ids=list(_MALFORMED))
-@pytest.mark.parametrize("site", ["oauth_google_callback", "_google_callback_from_state"])
-async def test_userinfo_is_not_called_before_validation(case: str, site: str) -> None:
-    """The access token never reaches a Bearer header unvalidated (AC1).
-
-    This assertion could pass for the wrong reason -- a callback that never
-    calls userinfo at all would satisfy it -- so
-    :func:`test_a_valid_payload_does_reach_userinfo` pins the other side.
-    """
-    row = _AccountRow()
-    harness = _Harness(row, account_exists=True)
-    driver = _call_site_one if site == "oauth_google_callback" else _call_site_two
-
-    await driver(_MALFORMED[case], harness)
-
     harness.userinfo.assert_not_awaited()
+
+    values = payload.values() if isinstance(payload, dict) else payload
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+    for value in values:
+        if isinstance(value, str) and not value.strip():
+            continue
+        assert str(value) not in rendered, (
+            f"a provider-supplied value from the {case!r} payload was echoed back"
+        )
+        assert str(value) not in logged, (
+            f"a provider-supplied value from the {case!r} payload reached a log line"
+        )
+
+    if site == "_google_callback_from_state":
+        assert [c.kwargs.get("action") for c in harness.audit.call_args_list] == ["failed"]
+        assert [c.kwargs.get("note") for c in harness.audit.call_args_list] == [
+            "Invalid token payload"
+        ]
+        assert [c.kwargs.get("failure_category") for c in harness.audit.call_args_list] == [
+            "malformed"
+        ]
 
 
 @pytest.mark.parametrize("site", ["oauth_google_callback", "_google_callback_from_state"])
@@ -430,65 +437,3 @@ async def test_existing_account_without_a_refresh_token_keeps_the_stored_one(
         "A callback carrying no refresh token overwrote the stored one. "
         "Preserving it is the whole point of this branch."
     )
-
-
-# ---------------------------------------------------------------------------
-# AC3: nothing the provider sent reaches an error surface
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("case", list(_MALFORMED), ids=list(_MALFORMED))
-@pytest.mark.parametrize("site", ["oauth_google_callback", "_google_callback_from_state"])
-async def test_no_provider_value_reaches_the_response_body(case: str, site: str) -> None:
-    payload = _MALFORMED[case]
-    row = _AccountRow()
-    harness = _Harness(row, account_exists=True)
-    driver = _call_site_one if site == "oauth_google_callback" else _call_site_two
-
-    response = await driver(payload, harness)
-    _status, rendered = _body_of(response)
-
-    values = payload.values() if isinstance(payload, dict) else payload
-    for value in values:
-        if isinstance(value, str) and not value.strip():
-            continue
-        assert str(value) not in rendered, (
-            f"a provider-supplied value from the {case!r} payload was echoed back"
-        )
-
-
-@pytest.mark.parametrize("case", list(_MALFORMED), ids=list(_MALFORMED))
-async def test_no_provider_value_reaches_the_audit_note(case: str) -> None:
-    """Only ``_google_callback_from_state`` audits; the older callback does not."""
-    payload = _MALFORMED[case]
-    row = _AccountRow()
-    harness = _Harness(row, account_exists=True)
-
-    await _call_site_two(payload, harness)
-
-    assert [c.kwargs.get("action") for c in harness.audit.call_args_list] == ["failed"]
-    assert [c.kwargs.get("note") for c in harness.audit.call_args_list] == ["Invalid token payload"]
-    assert [c.kwargs.get("failure_category") for c in harness.audit.call_args_list] == ["malformed"]
-
-
-@pytest.mark.parametrize("case", list(_MALFORMED), ids=list(_MALFORMED))
-@pytest.mark.parametrize("site", ["oauth_google_callback", "_google_callback_from_state"])
-async def test_no_provider_value_reaches_a_log_line(
-    case: str, site: str, caplog: pytest.LogCaptureFixture
-) -> None:
-    payload = _MALFORMED[case]
-    row = _AccountRow()
-    harness = _Harness(row, account_exists=True)
-    driver = _call_site_one if site == "oauth_google_callback" else _call_site_two
-
-    with caplog.at_level("DEBUG", logger="butlers.api.routers.oauth"):
-        await driver(payload, harness)
-
-    logged = "\n".join(record.getMessage() for record in caplog.records)
-    values = payload.values() if isinstance(payload, dict) else payload
-    for value in values:
-        if isinstance(value, str) and not value.strip():
-            continue
-        assert str(value) not in logged, (
-            f"a provider-supplied value from the {case!r} payload reached a log line"
-        )

@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from butlers.core.corrections import CORRECT_TOOL_DESCRIPTION
 from butlers.core_tools._base import ToolContext
 from butlers.core_tools._infra import register_infra_tools
 
@@ -102,6 +103,15 @@ def _register_and_grab_correct(
     )
     register_infra_tools(ctx, mcp, _core_tool)
     return tools["correct"], own_pool
+
+
+def test_correct_tool_exposes_non_empty_docstring(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The registered ``correct`` tool must carry a real MCP-facing docstring
+    (regression: it used to be empty because ``__doc__ = ...`` inside the
+    function body is a no-op local assignment, not a docstring)."""
+    correct, _own_pool = _register_and_grab_correct(monkeypatch)
+
+    assert correct.__doc__ == CORRECT_TOOL_DESCRIPTION
 
 
 async def test_cross_schema_data_correction_uses_target_butlers_pool(

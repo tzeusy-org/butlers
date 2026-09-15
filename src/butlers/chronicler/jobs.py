@@ -150,11 +150,16 @@ async def _run_adapter(
             result.point_events,
             result.episodes_opened,
             result.episodes_closed,
+            result.episodes_promoted,
         )
     ):
         # ``adapter.run`` has completed its durable episode, point-event, and
         # checkpoint writes by this point. Publish aggregate freshness only;
         # raw projection evidence never leaves Chronicler on the event bus.
+        # A promotion-only tick (rows/points/opens/closes all zero, but spans
+        # flipped layer=evidence -> layer=activity) counts as material too:
+        # dashboard caches keyed on layer must not go stale for a full
+        # adapter interval after a promotion has already landed (bu-yvqh9).
         await publish_fleet_event(
             db_pool,
             "chronicles",
@@ -164,6 +169,7 @@ async def _run_adapter(
                 "point_events": result.point_events,
                 "episodes_opened": result.episodes_opened,
                 "episodes_closed": result.episodes_closed,
+                "episodes_promoted": result.episodes_promoted,
             },
         )
     return _adapter_result_to_dict(result)

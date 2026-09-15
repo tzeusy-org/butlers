@@ -93,6 +93,7 @@ const SNAPSHOT_STATUS = {
   domains: { light: 10, sensor: 20, switch: 12 },
   oldest_captured_at: "2026-05-10T06:00:00Z",
   newest_captured_at: "2026-05-10T07:55:00Z",
+  ha_source_available: true,
 };
 
 const OFFLINE_DEVICES_RESP = {
@@ -107,7 +108,13 @@ const OFFLINE_DEVICES_RESP = {
       health_status: "offline" as const,
     },
   ],
-  meta: { page: 1, page_size: 1, total_count: 1, total_pages: 1 },
+  meta: {
+    page: 1,
+    page_size: 1,
+    total_count: 1,
+    total_pages: 1,
+    ha_source_available: true,
+  },
 };
 
 const ALL_DEVICES_RESP = {
@@ -131,7 +138,13 @@ const ALL_DEVICES_RESP = {
       health_status: "offline" as const,
     },
   ],
-  meta: { page: 1, page_size: 50, total_count: 2, total_pages: 1 },
+  meta: {
+    page: 1,
+    page_size: 50,
+    total_count: 2,
+    total_pages: 1,
+    ha_source_available: true,
+  },
 };
 
 const OVERDUE_MAINTENANCE = [
@@ -338,13 +351,23 @@ function setupEmpty() {
       domains: {},
       oldest_captured_at: null,
       newest_captured_at: null,
+      ha_source_available: true,
     },
     isLoading: false,
     isError: false,
   } as ReturnType<typeof useHomeSnapshotStatus>);
 
   vi.mocked(useHomeDevices).mockReturnValue({
-    data: { data: [], meta: { page: 1, page_size: 50, total_count: 0, total_pages: 0 } },
+    data: {
+      data: [],
+      meta: {
+        page: 1,
+        page_size: 50,
+        total_count: 0,
+        total_pages: 0,
+        ha_source_available: true,
+      },
+    },
     isLoading: false,
     isError: false,
   } as unknown as ReturnType<typeof useHomeDevices>);
@@ -965,5 +988,94 @@ describe("ButlerHomeDevicesTab — KPI strip error states", () => {
     expect(kpiStrip).not.toBeNull();
     // Total devices count (42) should not appear in the KPI strip when snapshot errors
     expect(kpiStrip!.textContent).not.toContain("42");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: ha_source_available degraded-source note (bu-8t4sc)
+// ---------------------------------------------------------------------------
+
+describe("ButlerHomeDevicesTab — HA source degraded note", () => {
+  afterEach(() => cleanup());
+
+  it("shows a degraded-source note when snapshot-status reports HA unavailable", () => {
+    vi.resetAllMocks();
+    setupWithData();
+    vi.mocked(useHomeSnapshotStatus).mockReturnValue({
+      data: { ...SNAPSHOT_STATUS, ha_source_available: false },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useHomeSnapshotStatus>);
+
+    const { container } = renderTab();
+    expect(
+      container.querySelector('[data-testid="ha-source-degraded-note"]'),
+    ).not.toBeNull();
+  });
+
+  it("shows a degraded-source note when either device query reports HA unavailable", () => {
+    vi.resetAllMocks();
+    setupWithData();
+    vi.mocked(useHomeDevices).mockImplementation((params) => {
+      if (params?.health === "offline") {
+        return {
+          data: {
+            ...OFFLINE_DEVICES_RESP,
+            meta: { ...OFFLINE_DEVICES_RESP.meta, ha_source_available: false },
+          },
+          isLoading: false,
+          isError: false,
+        } as ReturnType<typeof useHomeDevices>;
+      }
+      return {
+        data: ALL_DEVICES_RESP,
+        isLoading: false,
+        isError: false,
+      } as ReturnType<typeof useHomeDevices>;
+    });
+
+    const first = renderTab();
+    expect(
+      first.container.querySelector('[data-testid="ha-source-degraded-note"]'),
+    ).not.toBeNull();
+    first.unmount();
+
+    vi.resetAllMocks();
+    setupWithData();
+    vi.mocked(useHomeDevices).mockImplementation((params) => {
+      if (params?.health === "offline") {
+        return {
+          data: OFFLINE_DEVICES_RESP,
+          isLoading: false,
+          isError: false,
+        } as ReturnType<typeof useHomeDevices>;
+      }
+      return {
+        data: {
+          ...ALL_DEVICES_RESP,
+          meta: { ...ALL_DEVICES_RESP.meta, ha_source_available: false },
+        },
+        isLoading: false,
+        isError: false,
+      } as ReturnType<typeof useHomeDevices>;
+    });
+
+    const { container } = renderTab();
+    expect(
+      container.querySelector('[data-testid="ha-source-degraded-note"]'),
+    ).not.toBeNull();
+  });
+
+  it("does not show a degraded-source note when HA source is available", () => {
+    vi.resetAllMocks();
+    setupWithData();
+    vi.mocked(useHomeSnapshotStatus).mockReturnValue({
+      data: { ...SNAPSHOT_STATUS, ha_source_available: true },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useHomeSnapshotStatus>);
+
+    const { container } = renderTab();
+    expect(container.querySelector('[data-testid="ha-source-degraded-note"]')).toBeNull();
   });
 });

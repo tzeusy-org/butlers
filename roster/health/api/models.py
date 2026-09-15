@@ -72,6 +72,12 @@ class Medication(BaseModel):
     schedule: list = []  # JSONB
     active: bool = True
     notes: str | None = None
+    # Real supply count and when it was last set (initial fill or logged
+    # refill). Both are None until a caller records a genuine quantity; the
+    # insight-scan refill job (bu-dtmbn) will not estimate depletion without
+    # them rather than assume a fabricated standard supply size.
+    quantity: int | None = None
+    quantity_updated_at: str | None = None
     created_at: str
     updated_at: str
 
@@ -90,6 +96,7 @@ class MedicationCreateRequest(BaseModel):
     frequency: str = Field(..., min_length=1)
     schedule: list[str] = []
     notes: str | None = None
+    quantity: int | None = Field(default=None, gt=0)
 
 
 class MedicationUpdateRequest(BaseModel):
@@ -97,7 +104,8 @@ class MedicationUpdateRequest(BaseModel):
 
     All fields are optional; only the supplied (non-null) fields are merged into
     the existing medication fact via the superseding ``medication_update`` path.
-    At least one field must be provided.
+    At least one field must be provided. Supplying ``quantity`` doubles as
+    logging a refill: it stamps ``quantity_updated_at`` to now.
     """
 
     name: str | None = Field(default=None, min_length=1)
@@ -106,6 +114,7 @@ class MedicationUpdateRequest(BaseModel):
     schedule: list[str] | None = None
     active: bool | None = None
     notes: str | None = None
+    quantity: int | None = Field(default=None, gt=0)
 
 
 class Dose(BaseModel):

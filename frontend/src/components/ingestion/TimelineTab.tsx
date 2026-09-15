@@ -852,7 +852,9 @@ function BulkActionBar({
 
 function ConnectorAttentionStrip({ isActive }: { isActive: boolean }) {
   const { data: connectorsResp } = useConnectorSummaries({ enabled: isActive });
-  const connectors = connectorsResp?.data ?? [];
+  const connectors = (connectorsResp?.data?.connectors ?? []).filter(
+    (connector) => !connector.archived,
+  );
 
   return <AttentionStrip connectors={connectors} />;
 }
@@ -1066,9 +1068,6 @@ function LedgerRow({
         data-event-id={event.id}
         aria-keyshortcuts="ArrowUp ArrowDown"
         onKeyDown={onRowNavigationKeyDown}
-        // The drawer is URL-backed as /ingestion?event=<id>; this maps to
-        // useIngestionEventDetail's exact cache key via the shared registry.
-        prefetchTo={`/ingestion?event=${encodeURIComponent(event.id)}`}
       >
         <span
           className="truncate font-serif text-[13px] leading-[1.5] shrink-0 max-w-[55%]"
@@ -2101,13 +2100,16 @@ export function TimelineTab({
     setActiveViewId("all");
   }, []);
 
-  // Connector summaries — already fetched for the attention strip; reused
-  // (same query key, no extra request) to build the "+ channel" adder's
-  // option list so it stays cheap (no per-chip requests).
+  // Canonical role-aware connector summaries are already fetched for the
+  // attention strip and reused (same query key, no extra request) to build
+  // the "+ channel" adder's option list. Archived identities are historical,
+  // not live channels, so they must not become picker choices.
   const { data: connectorsResp } = useConnectorSummaries({ enabled: isActive });
 
   const channelOptions = useMemo((): ChannelOption[] => {
-    const connectors: ConnectorSummary[] = connectorsResp?.data ?? [];
+    const connectors: ConnectorSummary[] = (connectorsResp?.data?.connectors ?? []).filter(
+      (connector) => !connector.archived,
+    );
     const counts = new Map<string, number | null>();
     for (const c of connectors) {
       const today = c.today?.messages_ingested ?? null;
@@ -2123,7 +2125,7 @@ export function TimelineTab({
     return Array.from(counts.entries())
       .map(([channel, count]) => ({ channel, count }))
       .sort((a, b) => a.channel.localeCompare(b.channel));
-  }, [connectorsResp?.data]);
+  }, [connectorsResp?.data?.connectors]);
 
   // Compute ISO-8601 bounds from the range picker selection.
   // The rollup band uses these to scope its aggregate; the events list is
@@ -2197,6 +2199,11 @@ export function TimelineTab({
     hasNextPage,
     isFetchingNextPage,
     fetchNextPage,
+    isFetchNextPageError,
+    newCount,
+    isFollowingLive,
+    latestReceivedAt: headLatestReceivedAt,
+    showNewEvents,
     refetch,
   } = useIngestionEvents(eventsFilters, { enabled: isActive });
 
@@ -2289,7 +2296,9 @@ export function TimelineTab({
   // Report the most-recent event's received_at to the parent for live-status.
   // We use the first page's first event (newest-first ordering) so the badge
   // reflects true pipeline freshness rather than the client-side filter view.
-  const latestReceivedAt = infiniteData?.pages[0]?.data[0]?.received_at ?? null;
+  const latestReceivedAt = headLatestReceivedAt === undefined
+    ? (infiniteData?.pages[0]?.data[0]?.received_at ?? null)
+    : headLatestReceivedAt;
   useEffect(() => {
     if (!isLoading && onFreshnessChange) {
       // `isError` stays true while React Query retains the last successful
@@ -2575,6 +2584,11 @@ export function TimelineTab({
       )}
 
       {/* Ledger */}
+      {isFollowingLive === false && (
+        <Button variant="outline" size="sm" onClick={showNewEvents}>
+          {newCount > 0 ? `Show ${newCount} new events` : "Return to latest events"}
+        </Button>
+      )}
       <FetchingDim
         isFetching={
           isFetching && isPlaceholderData && !isLoading && !isError && !isFetchingNextPage
@@ -2667,7 +2681,7 @@ export function TimelineTab({
               className="font-mono text-[11px]"
             >
               {isFetchingNextPage ? <Loader2 className="size-3 animate-spin mr-1" /> : null}
-              Load more
+              {isFetchNextPageError ? "Retry loading older events" : "Load more"}
             </Button>
           )}
         </div>

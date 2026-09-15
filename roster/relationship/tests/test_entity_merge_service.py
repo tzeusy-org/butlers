@@ -14,7 +14,11 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from butlers.testing.schema_standins import CONTACT_ENTITY_MAP, ENTITY_PREDICATE_REGISTRY
+from butlers.testing.schema_standins import (
+    CONTACT_ENTITY_MAP,
+    ENTITY_GRAPH_EDGES,
+    ENTITY_PREDICATE_REGISTRY,
+)
 from butlers.tools.relationship.entity_merge import (
     AuditEntityOrderError,
     LockedGuardRejected,
@@ -242,6 +246,7 @@ async def merge_pool(provisioned_postgres_pool):
             )
         """)
         await pool.execute(CONTACT_ENTITY_MAP.ddl())
+        await pool.execute(ENTITY_GRAPH_EDGES.ddl())
         await pool.execute("""
             CREATE TABLE relationship.merge_reviews (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -328,6 +333,125 @@ async def test_conflicts_rewire_tombstone_and_audit_commit_atomically(merge_pool
         "entity_b": source_id,
         "outcome": "merged",
     }
+
+
+async def _insert_fact_with_edge(
+    pool,
+    *,
+    subject: UUID,
+    predicate: str,
+    object_entity_id: UUID,
+) -> UUID:
+    """Insert an active entity-kind fact and project its edge, like the real writer does."""
+    fact_id = await pool.fetchval(
+        """
+        INSERT INTO relationship.entity_facts
+            (subject, predicate, object, object_kind, src)
+        VALUES ($1, $2, $3, 'entity', 'test')
+        RETURNING id
+        """,
+        subject,
+        predicate,
+        str(object_entity_id),
+    )
+    await pool.execute(
+        """
+        INSERT INTO public.entity_graph_edges
+            (source_schema, source_table, source_id, subject_entity_id, predicate, object_entity_id)
+        VALUES ('relationship', 'entity_facts', $1, $2, $3, $4)
+        """,
+        fact_id,
+        subject,
+        predicate,
+        object_entity_id,
+    )
+    return fact_id
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_merge_repoints_projected_edges_for_rewired_facts_only(merge_pool) -> None:
+    """bu-8478w: rewiring entity_facts.subject/object must repoint their live
+    entity_graph_edges rows in the same transaction, but a fact that is
+    SUPERSEDED (not rewired) by the merge's dedup step must keep its stale
+    edge untouched -- it is retired by the next backfill sweep, not by the
+    merge itself.
+    """
+    pool = merge_pool
+    target_id = await _insert_entity(pool, "Target")
+    source_id = await _insert_entity(pool, "Source")
+    bystander_id = await _insert_entity(pool, "Bystander")
+    other_id = await _insert_entity(pool, "Other")
+    second_other_id = await _insert_entity(pool, "Second other")
+
+    # Subject-side rewire candidate: source is the subject, no conflicting
+    # target-side fact exists, so this survives the dedup passes and its
+    # subject gets rewired from source -> target.
+    subject_rewired_fact_id = await _insert_fact_with_edge(
+        pool, subject=source_id, predicate="knows", object_entity_id=bystander_id
+    )
+
+    # Object-side SUPERSEDED candidate: other_id already knows target_id, so
+    # other_id knowing source_id is a duplicate the merge's object-side dedup
+    # UPDATE marks 'superseded' rather than rewires.
+    await _insert_fact_with_edge(
+        pool, subject=other_id, predicate="knows", object_entity_id=target_id
+    )
+    superseded_fact_id = await _insert_fact_with_edge(
+        pool, subject=other_id, predicate="knows", object_entity_id=source_id
+    )
+
+    # Object-side rewire candidate: second_other_id has no conflicting fact
+    # about target_id, so this one survives dedup and its object gets
+    # rewired from source -> target.
+    object_rewired_fact_id = await _insert_fact_with_edge(
+        pool, subject=second_other_id, predicate="knows", object_entity_id=source_id
+    )
+
+    result = await merge_entity_pair(
+        pool,
+        source_entity_id=source_id,
+        target_entity_id=target_id,
+    )
+
+    assert result.subject_facts_rewired == 1
+    assert result.object_facts_rewired == 1
+
+    subject_edge = await pool.fetchrow(
+        "SELECT subject_entity_id, object_entity_id FROM public.entity_graph_edges"
+        " WHERE source_schema = 'relationship' AND source_table = 'entity_facts'"
+        " AND source_id = $1",
+        subject_rewired_fact_id,
+    )
+    assert subject_edge["subject_entity_id"] == target_id
+    assert subject_edge["object_entity_id"] == bystander_id
+
+    object_edge = await pool.fetchrow(
+        "SELECT subject_entity_id, object_entity_id FROM public.entity_graph_edges"
+        " WHERE source_schema = 'relationship' AND source_table = 'entity_facts'"
+        " AND source_id = $1",
+        object_rewired_fact_id,
+    )
+    assert object_edge["subject_entity_id"] == second_other_id
+    assert object_edge["object_entity_id"] == target_id
+
+    # The superseded (not rewired) fact's edge must be left exactly as it was
+    # -- still pointing at source_id -- not touched by the rewire's edge update.
+    superseded_edge = await pool.fetchrow(
+        "SELECT subject_entity_id, object_entity_id FROM public.entity_graph_edges"
+        " WHERE source_schema = 'relationship' AND source_table = 'entity_facts'"
+        " AND source_id = $1",
+        superseded_fact_id,
+    )
+    assert superseded_edge["subject_entity_id"] == other_id
+    assert superseded_edge["object_entity_id"] == source_id
+
+    superseded_fact_validity = await pool.fetchval(
+        "SELECT validity FROM relationship.entity_facts WHERE id = $1",
+        superseded_fact_id,
+    )
+    assert superseded_fact_validity == "superseded"
 
 
 @pytest.mark.integration

@@ -14,6 +14,7 @@ fan-out is a 404, but a miss while one or more pools were unreachable is a 503
 
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -51,6 +52,55 @@ def _make_detail_row(session_id) -> dict:
         "parent_session_id": None,
         "complexity": None,
         "resolution_source": None,
+        "purpose_lane": "private_content",
+    }
+
+
+def _make_prompt_row(session_id) -> dict:
+    base_prompt = "# Synthetic system prompt"
+    effective_prompt = f"{base_prompt}\n\nTimezone: UTC"
+    return {
+        "id": session_id,
+        "effective_system_prompt": effective_prompt,
+        "prompt_digest": hashlib.sha256(effective_prompt.encode("utf-8")).hexdigest(),
+        "prompt_provenance": [
+            {
+                "source": "roster:synthetic/CLAUDE.md",
+                "status": "present",
+                "bytes": len(base_prompt.encode("utf-8")),
+                "sha": "b" * 64,
+            },
+            {
+                "source": "general_settings",
+                "status": "present",
+                "bytes": len(b"Timezone: UTC"),
+                "sha": "c" * 64,
+            },
+            {
+                "source": "situational_context",
+                "status": "unavailable",
+                "bytes": 0,
+                "sha": None,
+            },
+            {
+                "source": "blind_spot_disclosure",
+                "status": "unavailable",
+                "bytes": 0,
+                "sha": None,
+            },
+            {
+                "source": "switchboard_routing_instructions",
+                "status": "unavailable",
+                "bytes": 0,
+                "sha": None,
+            },
+            {
+                "source": "memory_context",
+                "status": "unavailable",
+                "bytes": 0,
+                "sha": None,
+            },
+        ],
     }
 
 
@@ -108,6 +158,56 @@ async def test_global_session_detail_resolves_across_schemas() -> None:
     assert data["input_tokens"] == 1234
     assert data["output_tokens"] == 567
     assert data["prompt"] == "test prompt"
+    assert data["purpose_lane"] == "private_content"
+    assert "effective_prompt" not in data
+    assert "prompt_provenance" not in data
+
+
+async def test_global_session_detail_includes_linked_message_when_present() -> None:
+    """bu-0ynlk.5: a session invoked from dashboard chat carries the reverse
+    link — the conversation/message it was asked in."""
+    session_id = uuid4()
+    row = _make_detail_row(session_id)
+    app = _make_app(owning_butler="general", row=row)
+
+    mock_db = app.dependency_overrides[_sessions_get_db]()
+    owning_pool = mock_db.pool.return_value
+    conversation_id = uuid4()
+    message_id = uuid4()
+
+    async def _fetchrow(sql, *_args):
+        if "dashboard_messages" in sql:
+            return {"conversation_id": conversation_id, "id": message_id}
+        return None
+
+    owning_pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/sessions/{session_id}")
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["linked_message"] == {
+        "conversation_id": str(conversation_id),
+        "message_id": str(message_id),
+    }
+
+
+async def test_global_session_detail_omits_linked_message_when_absent() -> None:
+    """A session never invoked from dashboard chat has no linked message —
+    never fabricated."""
+    session_id = uuid4()
+    row = _make_detail_row(session_id)
+    app = _make_app(owning_butler="general", row=row)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/sessions/{session_id}")
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["linked_message"] is None
 
 
 async def test_global_session_detail_ignores_legacy_butler_query_hint() -> None:
@@ -178,3 +278,128 @@ async def test_global_session_detail_rejects_non_uuid() -> None:
         resp = await client.get("/api/sessions/not-a-uuid")
 
     assert resp.status_code == 422
+
+
+async def test_owner_can_fetch_exact_effective_prompt_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The sensitive endpoint returns exact bytes and content-blind provenance."""
+    monkeypatch.setenv("DASHBOARD_API_KEY", "synthetic-owner-key")
+    session_id = uuid4()
+    row = _make_prompt_row(session_id)
+    app = _make_app(owning_butler="general", row=row)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            f"/api/sessions/{session_id}/prompt",
+            headers={"X-API-Key": "synthetic-owner-key"},
+        )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data == {
+        "id": str(session_id),
+        "butler": "general",
+        "status": "captured",
+        "effective_prompt": row["effective_system_prompt"],
+        "prompt_digest": row["prompt_digest"],
+        "prompt_provenance": row["prompt_provenance"],
+        "total_bytes": len(row["effective_system_prompt"].encode("utf-8")),
+    }
+    mock_db = app.dependency_overrides[_sessions_get_db]()
+    sql = mock_db.fan_out_with_status.await_args.args[0]
+    assert "effective_system_prompt" in sql
+
+
+@pytest.mark.parametrize(
+    ("configured_key", "headers", "expected_status"),
+    [
+        (None, {}, 503),
+        ("synthetic-owner-key", {}, 401),
+        ("synthetic-owner-key", {"X-API-Key": "wrong"}, 401),
+    ],
+)
+async def test_prompt_receipt_requires_owner_control_before_fanout(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_key: str | None,
+    headers: dict[str, str],
+    expected_status: int,
+) -> None:
+    """Denied or unavailable owner control observes no session database."""
+    if configured_key is None:
+        monkeypatch.delenv("DASHBOARD_API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("DASHBOARD_API_KEY", configured_key)
+    app = _make_app(owning_butler="general", row=None)
+    mock_db = app.dependency_overrides[_sessions_get_db]()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(f"/api/sessions/{uuid4()}/prompt", headers=headers)
+
+    assert response.status_code == expected_status
+    mock_db.fan_out_with_status.assert_not_awaited()
+
+
+@pytest.mark.parametrize("receipt_status", ["legacy_unavailable", "corrupt"])
+async def test_prompt_receipt_explicitly_reports_legacy_and_corrupt_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    receipt_status: str,
+) -> None:
+    """Uncaptured or unverifiable evidence never returns prompt content."""
+    monkeypatch.setenv("DASHBOARD_API_KEY", "synthetic-owner-key")
+    session_id = uuid4()
+    if receipt_status == "legacy_unavailable":
+        row = {
+            "id": session_id,
+            "effective_system_prompt": None,
+            "prompt_digest": None,
+            "prompt_provenance": None,
+        }
+    else:
+        row = _make_prompt_row(session_id)
+        row["prompt_digest"] = "0" * 64
+    app = _make_app(owning_butler="general", row=row)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            f"/api/sessions/{session_id}/prompt",
+            headers={"X-API-Key": "synthetic-owner-key"},
+        )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["status"] == receipt_status
+    assert data["effective_prompt"] is None
+    assert data["prompt_digest"] is None
+    assert data["prompt_provenance"] == []
+    assert data["total_bytes"] is None
+
+
+@pytest.mark.parametrize(
+    ("degraded", "expected_status"),
+    [([], 404), (["general"], 503)],
+)
+async def test_prompt_receipt_miss_preserves_not_found_vs_degraded_truth(
+    monkeypatch: pytest.MonkeyPatch,
+    degraded: list[str],
+    expected_status: int,
+) -> None:
+    """A partial fan-out miss never masquerades as definitive absence."""
+    monkeypatch.setenv("DASHBOARD_API_KEY", "synthetic-owner-key")
+    app = _make_app(owning_butler="general", row=None, degraded=degraded)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            f"/api/sessions/{uuid4()}/prompt",
+            headers={"X-API-Key": "synthetic-owner-key"},
+        )
+
+    assert response.status_code == expected_status

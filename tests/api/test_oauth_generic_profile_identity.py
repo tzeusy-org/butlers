@@ -52,6 +52,7 @@ from butlers.api.routers.oauth import _clear_state_store, _generate_state, _stor
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
 
 _OAUTH_LOGGER = "butlers.api.routers.oauth"
+_SYNTHETIC_PROVIDER = "test-provider"
 
 # --- Synthetic material.  None of this is, or resembles, a real credential. ---
 _ACCESS_TOKEN = "synthetic-generic-access-token"
@@ -67,7 +68,7 @@ _LEAK_MARKER = "profile-leak-marker-7c31"
 _TOKEN_PAYLOAD: dict[str, Any] = {
     "access_token": _ACCESS_TOKEN,
     "refresh_token": _REFRESH_TOKEN,
-    "scope": "user-read-email user-read-private",
+    "scope": "identity.read activity.read",
     "token_type": "Bearer",
     "expires_in": 3600,
 }
@@ -154,6 +155,14 @@ def stub_off(monkeypatch):
     """The OAuth stub short-circuits the profile fetch before it parses anything."""
     monkeypatch.delenv("TEST_MODE_OAUTH_STUB", raising=False)
     monkeypatch.delenv("ENV", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def synthetic_provider(synthetic_oauth_provider, monkeypatch):
+    """Keep this profile-resolution suite on the test-only provider."""
+    assert synthetic_oauth_provider == _SYNTHETIC_PROVIDER
+    config = oauth_module._PROVIDER_REGISTRY[synthetic_oauth_provider]
+    monkeypatch.setattr(config, "profile_url", "https://oauth.test.invalid/userinfo")
 
 
 # ---------------------------------------------------------------------------
@@ -290,7 +299,7 @@ async def _drive(harness: _Harness) -> httpx.Response:
     app = create_app()
     app.dependency_overrides[oauth_module._get_db_manager] = lambda: MagicMock()
     state = _generate_state()
-    _store_state(state, provider="spotify")
+    _store_state(state, provider=_SYNTHETIC_PROVIDER)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test", follow_redirects=False
@@ -299,7 +308,7 @@ async def _drive(harness: _Harness) -> httpx.Response:
             for patcher in harness.patches():
                 stack.enter_context(patcher)
             return await client.get(
-                "/api/oauth/spotify/callback",
+                f"/api/oauth/{_SYNTHETIC_PROVIDER}/callback",
                 params={"code": "synthetic-auth-code", "state": state},
             )
 
@@ -320,86 +329,33 @@ def _log_text(caplog) -> str:
 
 
 @pytest.mark.parametrize("case", list(_MALFORMED_BODIES), ids=list(_MALFORMED_BODIES))
-async def test_malformed_profile_body_is_recorded_in_the_audit_note(case: str) -> None:
-    """AC: a non-dict profile body produces a recorded outcome rather than silence.
+async def test_malformed_profile_body_is_recorded_safely_and_stays_non_fatal(
+    case: str, caplog
+) -> None:
+    """AC: malformed profile bodies are observable, content-blind, and non-fatal.
 
     ``"OAuth dance complete"`` is what this callback writes when there was no
     profile endpoint to call.  A profile fetch that returned a body the code
-    could not read must not be filed under the same words.
+    could not read must not be filed under the same words or leak provider data.
+    The credential the user just authorized must still be stored.
     """
     harness = _Harness(_ok(_MALFORMED_BODIES[case]))
 
-    await _drive(harness)
+    with caplog.at_level(logging.DEBUG, logger=_OAUTH_LOGGER):
+        response = await _drive(harness)
 
     note = harness.connected_note()
     assert note == _UNRESOLVED_NOTE.format(reason="profile_malformed"), note
-
-
-@pytest.mark.parametrize("case", list(_MALFORMED_BODIES), ids=list(_MALFORMED_BODIES))
-async def test_malformed_profile_body_never_supplies_an_account_identity(case: str) -> None:
-    """AC: a non-string email/id never reaches the audit note as an account identity.
-
-    The truthiness of ``12345`` or ``["a@b"]`` is the whole bug: it satisfies the
-    ``or`` chain and the ``if account_email`` guard, so the note claims an
-    account the code never established.
-    """
-    harness = _Harness(_ok(_MALFORMED_BODIES[case]))
-
-    await _drive(harness)
-
-    note = harness.connected_note()
-    assert note is not None
     assert "account=" not in note, (
         "The audit note asserted an account identity for a profile body that "
         f"could not supply one: {note!r}"
     )
-
-
-@pytest.mark.parametrize("case", list(_MALFORMED_BODIES), ids=list(_MALFORMED_BODIES))
-async def test_malformed_profile_body_leaks_nothing_into_the_record(case: str, caplog) -> None:
-    """The recorded outcome carries fixed local wording and a type name only."""
-    harness = _Harness(_ok(_MALFORMED_BODIES[case]))
-
-    with caplog.at_level(logging.DEBUG, logger=_OAUTH_LOGGER):
-        await _drive(harness)
-
-    note = harness.connected_note()
-    assert note is not None
     assert _LEAK_MARKER not in note, f"a provider-supplied value reached the audit note: {note!r}"
     assert _LEAK_MARKER not in _log_text(caplog), "a provider-supplied value reached a log line"
-
-
-@pytest.mark.parametrize("case", list(_MALFORMED_BODIES), ids=list(_MALFORMED_BODIES))
-async def test_malformed_profile_body_is_logged_above_debug(case: str, caplog) -> None:
-    """Silence is the defect.  A swallowed contract violation gets a WARNING.
-
-    ``logger.debug`` is off in every deployment this runs in, so the pre-change
-    handler recorded nothing anywhere a reader would look.
-    """
-    harness = _Harness(_ok(_MALFORMED_BODIES[case]))
-
-    with caplog.at_level(logging.DEBUG, logger=_OAUTH_LOGGER):
-        await _drive(harness)
-
     warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
     assert warnings, "a profile body the callback could not read was never logged above DEBUG"
-
-
-@pytest.mark.parametrize("case", list(_MALFORMED_BODIES), ids=list(_MALFORMED_BODIES))
-async def test_malformed_profile_body_stays_non_fatal(case: str) -> None:
-    """Profile resolution is best-effort and must remain so.
-
-    The credential the user just authorized is the point of the flow; an
-    unreadable profile body must not cost them it.  Pinned here so the fix
-    cannot buy honesty by turning a swallowed error into a 502.
-    """
-    harness = _Harness(_ok(_MALFORMED_BODIES[case]))
-
-    response = await _drive(harness)
-
     assert response.status_code in (302, 307), response.text
-    assert "SPOTIFY_ACCESS_TOKEN" in harness.stored_keys()
-    assert "SPOTIFY_REFRESH_TOKEN" in harness.stored_keys()
+    assert "oauth_test-provider_refresh_token" in harness.stored_keys()
 
 
 # ---------------------------------------------------------------------------
@@ -407,107 +363,34 @@ async def test_malformed_profile_body_stays_non_fatal(case: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_unreachable_profile_endpoint_is_recorded() -> None:
-    """A transport failure is a distinct outcome from a body we could not read."""
-    harness = _Harness(_transport_error())
-
-    await _drive(harness)
-
-    note = harness.connected_note()
-    assert note == _UNRESOLVED_NOTE.format(reason="profile_unreachable"), note
-
-
-@pytest.mark.parametrize("code", [400, 401, 403, 404, 429, 500, 503])
-async def test_non_200_profile_response_is_recorded(code: int) -> None:
-    """The pre-change code checked ``== 200`` and then did nothing at all else.
-
-    A 401 from the profile endpoint means the token we just persisted may not
-    carry the scope we think it does.  That is worth a row, not a shrug.
-    """
-    harness = _Harness(_status(code))
-
-    await _drive(harness)
-
-    note = harness.connected_note()
-    assert note == _UNRESOLVED_NOTE.format(reason="profile_http_error"), note
+_PROFILE_FAILURES = {
+    "transport_error": (_transport_error, "profile_unreachable"),
+    **{
+        f"http_{code}": (lambda code=code: _status(code), "profile_http_error")
+        for code in (400, 401, 403, 404, 429, 500, 503)
+    },
+    "unparseable": (_unparseable, "profile_unparseable"),
+    "unexpected_error": (_unexpected_error, "profile_unexpected_error"),
+}
 
 
-async def test_unparseable_profile_body_is_recorded() -> None:
-    """A 200 that is not JSON at all is its own outcome, not a malformed object."""
-    harness = _Harness(_unparseable())
-
-    await _drive(harness)
-
-    note = harness.connected_note()
-    assert note == _UNRESOLVED_NOTE.format(reason="profile_unparseable"), note
-
-
-async def test_unexpected_profile_failure_is_recorded_not_swallowed() -> None:
-    """A failure the callback cannot name is the case the bare ``except`` was for.
-
-    Keeping a catch-all here is deliberate -- see the resolver's docstring; the
-    authorization code is already spent by this point, so letting an optional
-    identity lookup escape would cost the user the credential they just granted
-    and force a full re-consent.  What is not acceptable is that the catch-all
-    leaves no trace, so it gets its own reason rather than the bare note.
-    """
-    harness = _Harness(_unexpected_error())
-
-    await _drive(harness)
-
-    note = harness.connected_note()
-    assert note == _UNRESOLVED_NOTE.format(reason="profile_unexpected_error"), note
-
-
-@pytest.mark.parametrize(
-    "responder_factory",
-    [_transport_error, _unparseable, _unexpected_error],
-    ids=["transport_error", "unparseable", "unexpected_error"],
-)
-async def test_transport_and_parse_failures_leak_nothing(responder_factory, caplog) -> None:
-    """Exception text from the transport layer is not fit for a record either."""
+@pytest.mark.parametrize("case", list(_PROFILE_FAILURES), ids=list(_PROFILE_FAILURES))
+async def test_profile_failure_is_recorded_safely_and_stays_non_fatal(case: str, caplog) -> None:
+    """Transport, HTTP, parse, and unknown failures remain distinct and safe."""
+    responder_factory, reason = _PROFILE_FAILURES[case]
     harness = _Harness(responder_factory())
 
     with caplog.at_level(logging.DEBUG, logger=_OAUTH_LOGGER):
-        await _drive(harness)
+        response = await _drive(harness)
 
     note = harness.connected_note()
-    assert note is not None
-    assert _LEAK_MARKER not in note, f"a raw exception value reached the audit note: {note!r}"
-    assert _LEAK_MARKER not in _log_text(caplog), "a raw exception value reached a log line"
-
-
-@pytest.mark.parametrize(
-    "responder_factory",
-    [_transport_error, _unparseable, _unexpected_error],
-    ids=["transport_error", "unparseable", "unexpected_error"],
-)
-async def test_transport_and_parse_failures_are_logged_above_debug(
-    responder_factory, caplog
-) -> None:
-    """Same silence complaint as the malformed-body case, same remedy."""
-    harness = _Harness(responder_factory())
-
-    with caplog.at_level(logging.DEBUG, logger=_OAUTH_LOGGER):
-        await _drive(harness)
-
+    assert note == _UNRESOLVED_NOTE.format(reason=reason), note
+    assert _LEAK_MARKER not in note, f"a raw provider value reached the audit note: {note!r}"
+    assert _LEAK_MARKER not in _log_text(caplog), "a raw provider value reached a log line"
     warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
     assert warnings, "a failed profile fetch was never logged above DEBUG"
-
-
-@pytest.mark.parametrize(
-    "responder_factory",
-    [_transport_error, _unparseable, _unexpected_error],
-    ids=["transport_error", "unparseable", "unexpected_error"],
-)
-async def test_transport_and_parse_failures_stay_non_fatal(responder_factory) -> None:
-    """Same non-fatality guarantee as the malformed-body case."""
-    harness = _Harness(responder_factory())
-
-    response = await _drive(harness)
-
     assert response.status_code in (302, 307), response.text
-    assert "SPOTIFY_ACCESS_TOKEN" in harness.stored_keys()
+    assert "oauth_test-provider_refresh_token" in harness.stored_keys()
 
 
 # ---------------------------------------------------------------------------
@@ -516,7 +399,9 @@ async def test_transport_and_parse_failures_stay_non_fatal(responder_factory) ->
 
 
 @pytest.mark.parametrize("case", list(_IDENTITY_ABSENT_BODIES), ids=list(_IDENTITY_ABSENT_BODIES))
-async def test_identity_absent_profile_is_recorded_distinctly(case: str) -> None:
+async def test_identity_absent_profile_is_recorded_distinctly_and_stays_non_fatal(
+    case: str,
+) -> None:
     """A provider that grants no address is not a provider that answered badly.
 
     Both end with no identity, but only one of them says something is wrong.
@@ -525,21 +410,12 @@ async def test_identity_absent_profile_is_recorded_distinctly(case: str) -> None
     """
     harness = _Harness(_ok(_IDENTITY_ABSENT_BODIES[case]))
 
-    await _drive(harness)
+    response = await _drive(harness)
 
     note = harness.connected_note()
     assert note == _UNRESOLVED_NOTE.format(reason="profile_has_no_identity"), note
-
-
-@pytest.mark.parametrize("case", list(_IDENTITY_ABSENT_BODIES), ids=list(_IDENTITY_ABSENT_BODIES))
-async def test_identity_absent_profile_stays_non_fatal(case: str) -> None:
-    """The flow completes and the credential is stored, exactly as it does today."""
-    harness = _Harness(_ok(_IDENTITY_ABSENT_BODIES[case]))
-
-    response = await _drive(harness)
-
     assert response.status_code in (302, 307), response.text
-    assert "SPOTIFY_ACCESS_TOKEN" in harness.stored_keys()
+    assert "oauth_test-provider_refresh_token" in harness.stored_keys()
 
 
 # ---------------------------------------------------------------------------
@@ -571,7 +447,7 @@ async def test_no_profile_endpoint_keeps_the_bare_note() -> None:
     cleared instead of inventing a provider.
     """
     harness = _Harness(_ok({"email": _EMAIL}))
-    cfg = oauth_module._PROVIDER_REGISTRY["spotify"]
+    cfg = oauth_module._PROVIDER_REGISTRY[_SYNTHETIC_PROVIDER]
 
     with patch.object(cfg, "profile_url", None):
         response = await _drive(harness)

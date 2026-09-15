@@ -19,7 +19,7 @@
  *       specs/dashboard-relationship/spec.md §"Concentration"
  */
 
-import { Fragment, useCallback } from "react";
+import { Fragment, useCallback, useEffect } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
 
 import type { ConcentrationEntry, ConcentrationResponse, PredicateTab } from "@/api/types";
@@ -36,6 +36,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
 import { SubpageTabs } from "@/components/relationship/SubpageTabs";
 import { useEntityConcentration } from "@/hooks/use-entities";
+import { usePageSubject } from "@/lib/page-context.tsx";
 
 /** Tail threshold: entities holding less than 1% of total weight (spec). */
 const TAIL_SHARE_THRESHOLD = 0.01;
@@ -480,6 +481,19 @@ export default function ConcentrationPage() {
   // ?predicate= URL state — the active predicate ID.
   // Absent param → empty string → backend defaults to 'knows'.
   const predicateParam = searchParams.get("predicate") ?? "";
+
+  // Page-context enrichment (bu-0ynlk.4): the active predicate is already
+  // auto-captured via query_params, but a typed visible_resource lets a
+  // routed butler ground a correction ("this doesn't look right") on the
+  // specific concentration lens the owner was viewing.
+  const setPageSubject = usePageSubject().set;
+  useEffect(() => {
+    const predicate = predicateParam || "knows";
+    setPageSubject({
+      visible_resource: { kind: "concentration", filters: { predicate } },
+      visible_summary: `Concentration: ${predicate}`,
+    });
+  }, [predicateParam, setPageSubject]);
 
   const handleOpenEntity = useCallback(
     (entityId: string) => {

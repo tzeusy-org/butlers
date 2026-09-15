@@ -550,6 +550,107 @@ async def test_native_refresh_retains_and_dispatches_overdue_unnotified_instance
     notify.assert_awaited_once()
 
 
+@pytest.mark.pg_clock
+async def test_native_tick_suppresses_cancelled_due_recurring_instance(reminder_pool):
+    """Only a due confirmed sibling dispatches and is marked notified."""
+    pool = reminder_pool
+    mod = _make_module(pool, butler_name="finance")
+    start_at = datetime.now(UTC).replace(microsecond=0) - timedelta(minutes=1)
+    event_id, _ = await mod._insert_reminder_to_calendar_events(
+        title="Overdue renewal review",
+        body=None,
+        starts_at=start_at,
+        ends_at=start_at + timedelta(minutes=15),
+        timezone="UTC",
+        recurrence_rule="RRULE:FREQ=WEEKLY",
+        entity_ids=[],
+    )
+
+    cancelled_instance = await pool.fetchrow(
+        """
+        SELECT id, source_id, starts_at, ends_at
+        FROM calendar_event_instances
+        WHERE event_id = $1
+          AND starts_at <= now()
+          AND metadata->>'notified_at' IS NULL
+        ORDER BY starts_at
+        LIMIT 1
+        """,
+        event_id,
+    )
+    assert cancelled_instance is not None
+    cancelled_instance_id = cancelled_instance["id"]
+    await pool.execute(
+        """
+        UPDATE calendar_event_instances
+        SET status = 'cancelled'
+        WHERE id = $1
+        """,
+        cancelled_instance_id,
+    )
+
+    confirmed_instance_id = uuid.uuid4()
+    confirmed_starts_at = cancelled_instance["starts_at"] - timedelta(minutes=1)
+    confirmed_ends_at = cancelled_instance["ends_at"] - timedelta(minutes=1)
+    await pool.execute(
+        """
+        INSERT INTO calendar_event_instances (
+            id, event_id, source_id, origin_instance_ref, timezone,
+            starts_at, ends_at, status, metadata
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, 'confirmed', '{}'::jsonb)
+        """,
+        confirmed_instance_id,
+        event_id,
+        cancelled_instance["source_id"],
+        f"test:confirmed-sibling:{confirmed_instance_id}",
+        "UTC",
+        confirmed_starts_at,
+        confirmed_ends_at,
+    )
+
+    notify = AsyncMock()
+    assert await mod.tick("finance", notify_fn=notify) == 1
+    notify.assert_awaited_once()
+    envelope = notify.await_args.args[0]
+    assert envelope == {
+        "schema_version": "notify.v1",
+        "origin_butler": "finance",
+        "delivery": {
+            "intent": "send",
+            "message": "Reminder: Overdue renewal review",
+        },
+        "reminder_event_id": str(event_id),
+        "reminder_instance_id": str(confirmed_instance_id),
+        "due_at": confirmed_starts_at.isoformat(),
+    }
+
+    cancelled_state = await pool.fetchrow(
+        """
+        SELECT status, metadata->>'notified_at' AS notified_at
+        FROM calendar_event_instances
+        WHERE id = $1
+        """,
+        cancelled_instance_id,
+    )
+    assert cancelled_state["status"] == "cancelled"
+    assert cancelled_state["notified_at"] is None
+
+    confirmed_state = await pool.fetchrow(
+        """
+        SELECT status, metadata->>'notified_at' AS notified_at
+        FROM calendar_event_instances
+        WHERE id = $1
+        """,
+        confirmed_instance_id,
+    )
+    assert confirmed_state["status"] == "confirmed"
+    assert confirmed_state["notified_at"] is not None
+
+    assert await mod.tick("finance", notify_fn=notify) == 0
+    notify.assert_awaited_once()
+
+
 async def test_native_recurring_update_preserves_cancelled_and_notified_instances(
     reminder_pool,
 ):

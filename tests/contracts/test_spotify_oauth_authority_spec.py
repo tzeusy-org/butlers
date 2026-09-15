@@ -625,7 +625,7 @@ def test_scope_status_converges_to_the_canonical_recovery_state_before_ui_resolu
     """Carrier detail statuses must map into the canonical typed recovery resolver."""
     carrier = _requirement(_read(_CARRIER_SPEC), "Auth status computation")
     connector_base = _requirement(
-        _read(_CONNECTOR_BASE_DELTA), "ConnectorDetail Pydantic auth and scopes blocks"
+        _read(_CONNECTOR_BASE_DELTA), "ConnectorDetailEntry Pydantic auth and scopes blocks"
     )
     ingestion = _requirement(
         _read(_INGESTION_SPEC), "Ingestion-Originated OAuth page_of_origin Contract"

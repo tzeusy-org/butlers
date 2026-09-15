@@ -84,9 +84,11 @@
 
 ## 6. Integration boundaries and verification
 
-- [ ] 6.1 Re-read the latest core migration frontier immediately before the
-  ledger migration and rebase implementation branches on current `origin/main`;
-  stop rather than attach a migration to a stale or multi-head chain.
+- [ ] 6.1 Fetch and re-read the latest core migration frontier immediately
+  before the ledger migration; stop rather than attach a migration to a stale
+  or multi-head chain. Resolve a real migration conflict on the branch when one
+  exists, but do not rebase a clean PR merely to refresh it; the merge queue
+  validates the current combined tree before landing.
 - [ ] 6.2 Run focused lifecycle, producer, QA, supervisor, and connector
   regression tests before the repository quality gates; run lint, format, and
   the right-sized final test gate after targeted failures are resolved.

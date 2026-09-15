@@ -168,6 +168,20 @@ describe("NodeDetailPanel source annotations and concept type (bu-istke.5)", () 
     );
   }
 
+  it("resolves sources against deduped, null-filtered source_ids from source_refs", () => {
+    mockUseEducationSources.mockReturnValue(registryResolved([SOURCE]));
+    mountNode({
+      source_refs: [
+        { source_id: "src-1", location: "chapter 1.2", provenance: "referenced" },
+        { source_id: "src-1", location: "chapter 3", provenance: "referenced" },
+        { source_id: "src-2", location: "chapter 5", provenance: "referenced" },
+        { source_id: null, location: "the standard proof" },
+      ],
+    });
+
+    expect(mockUseEducationSources).toHaveBeenCalledWith(["src-1", "src-2"]);
+  });
+
   it("renders a registered, source-read ref as a citation with its title and link", () => {
     mockUseEducationSources.mockReturnValue(registryResolved([SOURCE]));
     mountNode({

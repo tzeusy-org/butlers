@@ -19,7 +19,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from butlers.config import RuntimeSeedConfig
-from butlers.core.runtime_config import RuntimeConfigAccessor, _row_to_config
+from butlers.core.runtime_config import (
+    RuntimeConfigAccessor,
+    _row_to_config,
+    resolve_effective_core_groups,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -30,6 +34,8 @@ def _make_row(
     catalog_read_sensitivity: str = "normal",
     max_concurrent: int = 3,
     max_queued: int = 10,
+    tool_exposure_policy: str = "eager_filtered",
+    core_groups_narrowing_reason: str | None = None,
     seeded_at: str = "2026-01-01T00:00:00+00:00",
     updated_at: str = "2026-01-01T00:00:00+00:00",
 ) -> dict:
@@ -40,6 +46,8 @@ def _make_row(
         "catalog_read_sensitivity": catalog_read_sensitivity,
         "max_concurrent": max_concurrent,
         "max_queued": max_queued,
+        "tool_exposure_policy": tool_exposure_policy,
+        "core_groups_narrowing_reason": core_groups_narrowing_reason,
         "seeded_at": seeded_at,
         "updated_at": updated_at,
     }
@@ -55,11 +63,13 @@ def _mock_record(row_dict: dict) -> MagicMock:
 
 def _make_seed(
     core_groups: tuple[str, ...] | None = None,
+    tool_exposure_policy: str = "eager_filtered",
 ) -> RuntimeSeedConfig:
     return RuntimeSeedConfig(
         core_groups=core_groups,
         max_concurrent_sessions=3,
         max_queued_sessions=10,
+        tool_exposure_policy=tool_exposure_policy,
     )
 
 
@@ -98,17 +108,25 @@ async def test_cache_miss_after_ttl():
 
 
 async def test_seed_on_empty_table():
-    """seed_if_empty() inserts a row when the table is empty."""
+    """seed_if_empty() inserts a row when the table is empty, including the hot policy."""
     pool = AsyncMock()
-    seed = _make_seed(core_groups=("infra", "state"))
-    seeded_row = _mock_record(_make_row(core_groups=["infra", "state"]))
+    seed = _make_seed(core_groups=("infra", "state"), tool_exposure_policy="auto")
+    seeded_row = _mock_record(
+        _make_row(core_groups=["infra", "state"], tool_exposure_policy="auto")
+    )
     pool.execute = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value=seeded_row)
+    pool.fetchrow = AsyncMock(
+        side_effect=lambda sql, *_args: None if "WITH candidate" in sql else seeded_row
+    )
 
     accessor = RuntimeConfigAccessor(pool, "test")
     result = await accessor.seed_if_empty(seed, "test")
 
     assert result.core_groups == ("infra", "state")
+    assert result.tool_exposure_policy == "auto"
+    insert_sql, *insert_args = pool.execute.await_args_list[0].args
+    assert "tool_exposure_policy" in insert_sql
+    assert "auto" in insert_args
 
 
 async def test_db_failure_with_stale_cache():
@@ -145,7 +163,9 @@ async def test_concurrent_seed_race():
     seed = _make_seed()
     seeded_row = _mock_record(_make_row())
     pool.execute = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value=seeded_row)
+    pool.fetchrow = AsyncMock(
+        side_effect=lambda sql, *_args: None if "WITH candidate" in sql else seeded_row
+    )
 
     accessor1 = RuntimeConfigAccessor(pool, "test")
     accessor2 = RuntimeConfigAccessor(pool, "test")
@@ -162,6 +182,79 @@ async def test_concurrent_seed_race():
     seed_sql = pool.execute.await_args_list[0].args[0]
     assert "ON CONFLICT" in seed_sql
     assert "DO NOTHING" in seed_sql
+
+
+def test_git_core_groups_replace_unexplained_narrow_runtime_groups():
+    resolution = resolve_effective_core_groups(
+        ("infra", "state", "delegation"),
+        ("infra", "state"),
+        narrowing_reason=None,
+    )
+
+    assert resolution.effective == ("infra", "state", "delegation")
+    assert resolution.source == "git"
+    assert resolution.requires_reconciliation is True
+
+
+def test_explicit_reason_preserves_true_runtime_narrowing():
+    resolution = resolve_effective_core_groups(
+        ("infra", "state", "delegation"),
+        ("infra", "state"),
+        narrowing_reason="Temporary incident containment",
+    )
+
+    assert resolution.effective == ("infra", "state")
+    assert resolution.source == "runtime_narrowing"
+    assert resolution.requires_reconciliation is False
+
+
+def test_reason_cannot_authorize_runtime_broadening():
+    resolution = resolve_effective_core_groups(
+        ("infra", "state"),
+        ("infra", "state", "delegation"),
+        narrowing_reason="Not actually a narrowing",
+    )
+
+    assert resolution.effective == ("infra", "state")
+    assert resolution.source == "git"
+    assert resolution.requires_reconciliation is True
+
+
+async def test_seed_reconciles_and_audits_stale_groups_once():
+    pool = AsyncMock()
+    stale = _mock_record(_make_row(core_groups=["infra"]))
+    reconciled = _mock_record(_make_row(core_groups=["infra", "delegation"]))
+    pool.execute = AsyncMock()
+    pool.fetchrow = AsyncMock(side_effect=[stale, {"audited": 1}, reconciled])
+
+    accessor = RuntimeConfigAccessor(pool, "test")
+    result = await accessor.seed_if_empty(_make_seed(core_groups=("infra", "delegation")), "test")
+
+    assert result.core_groups == ("infra", "delegation")
+    reconcile_sql, *args = pool.fetchrow.await_args_list[1].args
+    assert "core_groups_reconciled" in reconcile_sql
+    assert "UPDATE test.runtime_config" in reconcile_sql
+    assert "INSERT INTO public.audit_log" in reconcile_sql
+    assert args[0] == "test"
+    assert args[1] == ["infra", "delegation"]
+
+
+async def test_seed_keeps_explicit_narrowing_without_audit():
+    pool = AsyncMock()
+    narrowed = _mock_record(
+        _make_row(
+            core_groups=["infra"],
+            core_groups_narrowing_reason="Temporary incident containment",
+        )
+    )
+    pool.execute = AsyncMock()
+    pool.fetchrow = AsyncMock(side_effect=[narrowed, None, narrowed])
+
+    accessor = RuntimeConfigAccessor(pool, "test")
+    result = await accessor.seed_if_empty(_make_seed(core_groups=("infra", "delegation")), "test")
+
+    assert result.core_groups == ("infra",)
+    assert pool.fetchrow.await_args_list[1].args[-2] is False
 
 
 async def test_invalidate_cache():
@@ -214,3 +307,74 @@ def test_row_to_config_missing_catalog_authority_fails_closed_normal():
     config = _row_to_config(_mock_record(row_data))
 
     assert config.catalog_read_sensitivity == "normal"
+
+
+def test_row_to_config_preserves_tool_exposure_policy():
+    row = _mock_record(_make_row(tool_exposure_policy="auto"))
+
+    config = _row_to_config(row)
+
+    assert config.tool_exposure_policy == "auto"
+
+
+def test_row_to_config_missing_tool_exposure_policy_fails_closed_eager_filtered():
+    """A rolling pre-core_224 row shape must never opt a butler into native discovery."""
+    row_data = _make_row()
+    del row_data["tool_exposure_policy"]
+
+    config = _row_to_config(_mock_record(row_data))
+
+    assert config.tool_exposure_policy == "eager_filtered"
+
+
+async def test_get_tool_exposure_policy_bypasses_the_ttl_cache():
+    """The per-attempt authoritative read always hits the DB, even within a warm TTL cache.
+
+    This is the mechanism that makes the hot policy correct across process
+    boundaries (bu-ondtw.2 design): a cached get() can be stale for up to
+    ttl_s, but every session-planning caller must see a committed PATCH
+    immediately regardless of which process wrote it.
+    """
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(
+        side_effect=[
+            _mock_record(_make_row(tool_exposure_policy="eager_filtered")),
+            {"tool_exposure_policy": "auto"},
+        ]
+    )
+
+    accessor = RuntimeConfigAccessor(pool, "test", ttl_s=300.0)
+    warm = await accessor.get()
+    assert warm.tool_exposure_policy == "eager_filtered"
+
+    live = await accessor.get_tool_exposure_policy()
+
+    assert live == "auto"
+    assert pool.fetchrow.call_count == 2
+
+
+async def test_get_tool_exposure_policy_falls_back_to_stale_cache_on_db_failure():
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(
+        side_effect=[
+            _mock_record(_make_row(tool_exposure_policy="auto")),
+            Exception("DB unavailable"),
+        ]
+    )
+
+    accessor = RuntimeConfigAccessor(pool, "test")
+    await accessor.get()
+
+    live = await accessor.get_tool_exposure_policy()
+
+    assert live == "auto"
+
+
+async def test_get_tool_exposure_policy_raises_with_no_cache_and_no_row():
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(return_value=None)
+
+    accessor = RuntimeConfigAccessor(pool, "test")
+
+    with pytest.raises(RuntimeError, match="No runtime_config row found"):
+        await accessor.get_tool_exposure_policy()

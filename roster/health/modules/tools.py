@@ -110,10 +110,23 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         frequency: str,
         schedule: list[str] | None = None,
         notes: str | None = None,
+        quantity: int | None = None,
     ) -> dict[str, Any]:
-        """Add a medication with dosage, frequency, optional schedule and notes."""
+        """Add a medication with dosage, frequency, optional schedule and notes.
+
+        ``quantity`` is the real count of doses in the current supply. Provide
+        it (here or later via a dashboard edit) if you want refill-depletion
+        insights: without a genuine quantity, the insight-scan job will not
+        estimate a depletion date rather than assume a fabricated supply size.
+        """
         return await _meds.medication_add(
-            module._get_pool(), name, dosage, frequency, schedule=schedule, notes=notes
+            module._get_pool(),
+            name,
+            dosage,
+            frequency,
+            schedule=schedule,
+            notes=notes,
+            quantity=quantity,
         )
 
     @_tool("medications")

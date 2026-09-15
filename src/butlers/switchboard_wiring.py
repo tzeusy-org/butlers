@@ -427,6 +427,9 @@ async def recover_route_inbox(daemon: Any, pool: asyncpg.Pool) -> None:
         )
         recovery_prompt = _wrap_routed_message(parsed.input.prompt)
         recovered_routing_context: dict[str, Any] = {}
+        recovered_routing_context["request_context"] = {
+            "source_channel": parsed.request_context.source_channel
+        }
         if parsed.request_context.source_sender_entity_id:
             recovered_routing_context["source_entity_id"] = (
                 parsed.request_context.source_sender_entity_id

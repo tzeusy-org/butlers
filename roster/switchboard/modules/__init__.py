@@ -28,12 +28,21 @@ as MCP tools — they are called directly by the daemon or connectors.
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import logging
+import uuid
 from typing import Any
 
 from pydantic import BaseModel
 
+from butlers.credential_store import resolve_owner_telegram_recipient
 from butlers.modules.base import Module, ToolGroupMixin, ToolMeta
+from butlers.tools.switchboard.runtime_attention.outbox import RuntimeAttentionOutbox
+from butlers.tools.switchboard.runtime_attention.worker import (
+    RuntimeAttentionDeliveryWorker,
+    build_messenger_transport,
+)
 
 from .insight_broker import InsightBrokerConfig, InsightBrokerModule  # noqa: F401
 from .owner_conditions_broker import (  # noqa: F401
@@ -42,6 +51,10 @@ from .owner_conditions_broker import (  # noqa: F401
 )
 
 logger = logging.getLogger(__name__)
+
+# Runtime attention is an alerting path (breaker-open, fleet-halt): poll
+# frequently rather than on the calendar-sync scale of minutes.
+_RUNTIME_ATTENTION_POLL_INTERVAL_SECONDS = 10
 
 
 __all__ = [
@@ -78,6 +91,7 @@ class SwitchboardModule(Module):
 
     def __init__(self) -> None:
         self._db: Any = None
+        self._runtime_attention_task: asyncio.Task[None] | None = None
 
     @property
     def name(self) -> str:
@@ -108,12 +122,58 @@ class SwitchboardModule(Module):
     async def on_startup(
         self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
     ) -> None:
-        """Store the Database reference for later pool access."""
+        """Store the Database reference and start the runtime-attention delivery worker.
+
+        Vision Rule 3 / RFC 0003 make Switchboard the sole boundary that may put
+        a runtime-attention episode (breaker-open, fleet-halt) in front of the
+        operator. The worker itself (``RuntimeAttentionDeliveryWorker``) has been
+        buildable since bu-0uqgo.3/.6; this is the construction site that
+        activates it.
+        """
         self._db = db
+        pool = db.pool
+        repository = RuntimeAttentionOutbox(pool, instance_id=str(uuid.uuid4()))
+        transport = build_messenger_transport(
+            pool,
+            resolve_recipient=functools.partial(resolve_owner_telegram_recipient, pool),
+        )
+        worker = RuntimeAttentionDeliveryWorker(repository, transport)
+        self._runtime_attention_task = asyncio.create_task(
+            self._run_runtime_attention_worker(worker),
+            name="switchboard-runtime-attention-delivery",
+        )
+        logger.info(
+            "Runtime-attention delivery worker started (poll_interval=%ds)",
+            _RUNTIME_ATTENTION_POLL_INTERVAL_SECONDS,
+        )
 
     async def on_shutdown(self) -> None:
-        """Clear state references."""
+        """Clear state references and stop the runtime-attention delivery worker."""
+        if self._runtime_attention_task is not None and not self._runtime_attention_task.done():
+            self._runtime_attention_task.cancel()
+            try:
+                await self._runtime_attention_task
+            except asyncio.CancelledError:
+                pass
+        self._runtime_attention_task = None
         self._db = None
+
+    async def _run_runtime_attention_worker(self, worker: RuntimeAttentionDeliveryWorker) -> None:
+        """Background task: drive the runtime-attention outbox at a fixed poll interval.
+
+        Errors are caught and logged rather than left to kill the task: a
+        transient DB or transport failure must not silence attention delivery
+        until the next daemon restart.
+        """
+        while True:
+            try:
+                await worker.run_once()
+            except Exception:
+                logger.exception("Runtime-attention delivery worker pass failed")
+            try:
+                await asyncio.sleep(_RUNTIME_ATTENTION_POLL_INTERVAL_SECONDS)
+            except asyncio.CancelledError:
+                break
 
     def _get_pool(self):
         """Return the asyncpg pool, raising if not initialised."""

@@ -33,6 +33,23 @@ async def replay_dead_letter_request(
     Returns:
         Result dict with replay outcome
     """
+    async with conn.transaction():
+        return await _replay_dead_letter_request_in_transaction(
+            conn,
+            dead_letter_id=dead_letter_id,
+            operator_identity=operator_identity,
+            reason=reason,
+        )
+
+
+async def _replay_dead_letter_request_in_transaction(
+    conn: asyncpg.Connection,
+    *,
+    dead_letter_id: uuid.UUID,
+    operator_identity: str,
+    reason: str,
+) -> dict[str, Any]:
+    """Lock and replay one dead-letter entry inside the caller's transaction."""
     # Fetch dead-letter entry
     dead_letter = await conn.fetchrow(
         """
@@ -46,6 +63,7 @@ async def replay_dead_letter_request(
             replayed_at
         FROM dead_letter_queue
         WHERE id = $1
+        FOR UPDATE
         """,
         dead_letter_id,
     )
@@ -71,115 +89,105 @@ async def replay_dead_letter_request(
             "message": f"This request was already replayed at {dead_letter['replayed_at']}",
         }
 
-    # Re-ingest with original request_id preserved in request_context
     try:
-        # Insert into message_inbox with replay metadata
-        new_request_id = uuid.uuid4()
-        # Parse JSONB fields (asyncpg returns them as strings)
-        request_context_raw = dead_letter["request_context"]
-        original_payload_raw = dead_letter["original_payload"]
+        # A nested asyncpg transaction is a savepoint. Its context exits and
+        # rolls back before failure-state SQL runs in the still-valid outer
+        # transaction, which continues to hold the dead-letter row lock.
+        async with conn.transaction():
+            # Re-ingest with original request_id preserved in request_context.
+            new_request_id = uuid.uuid4()
+            # Parse JSONB fields (asyncpg returns them as strings).
+            request_context_raw = dead_letter["request_context"]
+            original_payload_raw = dead_letter["original_payload"]
 
-        request_context = (
-            json.loads(request_context_raw)
-            if isinstance(request_context_raw, str)
-            else request_context_raw
-        )
-        original_payload = (
-            json.loads(original_payload_raw)
-            if isinstance(original_payload_raw, str)
-            else original_payload_raw
-        )
-
-        request_context = request_context.copy()
-        request_context["replay_metadata"] = {
-            "is_replay": True,
-            "original_request_id": str(dead_letter["original_request_id"]),
-            "dead_letter_id": str(dead_letter_id),
-            "replay_operator": operator_identity,
-            "replay_reason": reason,
-        }
-
-        await conn.execute(
-            """
-            INSERT INTO switchboard.message_inbox (
-                id,
-                request_context,
-                raw_payload,
-                normalized_text,
-                lifecycle_state,
-                processing_metadata
+            request_context = (
+                json.loads(request_context_raw)
+                if isinstance(request_context_raw, str)
+                else request_context_raw
             )
-            VALUES ($1, $2::jsonb, $3::jsonb, $4, 'accepted', $5::jsonb)
-            """,
-            new_request_id,
-            json.dumps(request_context),
-            json.dumps(original_payload),
-            original_payload.get("content", ""),
-            json.dumps(
-                {
-                    "replayed_from_dead_letter": str(dead_letter_id),
-                    "original_request_id": str(dead_letter["original_request_id"]),
-                }
-            ),
-        )
+            original_payload = (
+                json.loads(original_payload_raw)
+                if isinstance(original_payload_raw, str)
+                else original_payload_raw
+            )
 
-        # Update dead-letter entry
-        await conn.execute(
-            """
-            UPDATE dead_letter_queue
-            SET
-                replayed_at = now(),
-                replayed_request_id = $1,
-                replay_outcome = 'success',
-                updated_at = now()
-            WHERE id = $2
-            """,
-            new_request_id,
-            dead_letter_id,
-        )
+            request_context = request_context.copy()
+            request_context["replay_metadata"] = {
+                "is_replay": True,
+                "original_request_id": str(dead_letter["original_request_id"]),
+                "dead_letter_id": str(dead_letter_id),
+                "replay_operator": operator_identity,
+                "replay_reason": reason,
+            }
 
-        # Log in operator audit log
-        await conn.execute(
-            """
-            INSERT INTO switchboard.operator_audit_log (
-                action_type,
-                target_request_id,
-                target_table,
+            await conn.execute(
+                """
+                INSERT INTO switchboard.message_inbox (
+                    id,
+                    request_context,
+                    raw_payload,
+                    normalized_text,
+                    lifecycle_state,
+                    processing_metadata
+                )
+                VALUES ($1, $2::jsonb, $3::jsonb, $4, 'accepted', $5::jsonb)
+                """,
+                new_request_id,
+                json.dumps(request_context),
+                json.dumps(original_payload),
+                original_payload.get("message_text") or original_payload.get("content", ""),
+                json.dumps(
+                    {
+                        "replayed_from_dead_letter": str(dead_letter_id),
+                        "original_request_id": str(dead_letter["original_request_id"]),
+                    }
+                ),
+            )
+
+            await conn.execute(
+                """
+                UPDATE dead_letter_queue
+                SET
+                    replayed_at = now(),
+                    replayed_request_id = $1,
+                    replay_outcome = 'success',
+                    updated_at = now()
+                WHERE id = $2
+                  AND replayed_at IS NULL
+                """,
+                new_request_id,
+                dead_letter_id,
+            )
+
+            await conn.execute(
+                """
+                INSERT INTO switchboard.operator_audit_log (
+                    action_type,
+                    target_request_id,
+                    target_table,
+                    operator_identity,
+                    reason,
+                    action_payload,
+                    outcome,
+                    outcome_details
+                )
+                VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::jsonb)
+                """,
+                "controlled_replay",
+                dead_letter["original_request_id"],
+                "dead_letter_queue",
                 operator_identity,
                 reason,
-                action_payload,
-                outcome,
-                outcome_details
+                json.dumps(
+                    {
+                        "dead_letter_id": str(dead_letter_id),
+                        "new_request_id": str(new_request_id),
+                    }
+                ),
+                "success",
+                json.dumps({"replayed_request_id": str(new_request_id)}),
             )
-            VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::jsonb)
-            """,
-            "controlled_replay",
-            dead_letter["original_request_id"],
-            "dead_letter_queue",
-            operator_identity,
-            reason,
-            json.dumps(
-                {
-                    "dead_letter_id": str(dead_letter_id),
-                    "new_request_id": str(new_request_id),
-                }
-            ),
-            "success",
-            json.dumps(
-                {
-                    "replayed_request_id": str(new_request_id),
-                }
-            ),
-        )
-
-        return {
-            "success": True,
-            "replayed_request_id": str(new_request_id),
-            "original_request_id": str(dead_letter["original_request_id"]),
-            "dead_letter_id": str(dead_letter_id),
-        }
-
-    except Exception as e:
+    except Exception as exc:
         # Log failed replay attempt
         await conn.execute(
             """
@@ -213,14 +221,21 @@ async def replay_dead_letter_request(
             reason,
             json.dumps({"dead_letter_id": str(dead_letter_id)}),
             "failed",
-            json.dumps({"error": str(e)}),
+            json.dumps({"error": str(exc)}),
         )
 
         return {
             "success": False,
             "error": "replay_failed",
-            "message": f"Replay failed: {str(e)}",
+            "message": f"Replay failed: {str(exc)}",
         }
+
+    return {
+        "success": True,
+        "replayed_request_id": str(new_request_id),
+        "original_request_id": str(dead_letter["original_request_id"]),
+        "dead_letter_id": str(dead_letter_id),
+    }
 
 
 async def list_replay_eligible_requests(

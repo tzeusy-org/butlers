@@ -9,6 +9,7 @@ from butlers.core.tool_call_capture import (
     ensure_runtime_session_capture,
     get_current_runtime_butler_name,
     get_current_runtime_session_routing_context,
+    peek_runtime_session_tool_calls,
     reset_current_runtime_butler_name,
     reset_current_runtime_session_id,
     set_current_runtime_butler_name,
@@ -66,6 +67,32 @@ def test_capture_consume_ignored_and_outcome():
             "error": "RuntimeError: routing failed",
         }
     ]
+
+
+def test_peek_does_not_drain_the_buffer_consume_still_does():
+    """bu-0ynlk.5: conversation_reply reads mid-session via peek without
+    disturbing the buffer the Spawner still drains via consume at session
+    finish."""
+    ensure_runtime_session_capture("sess-peek")
+    token = set_current_runtime_session_id("sess-peek")
+    try:
+        capture_tool_call(tool_name="finance.get_budget", input_payload={"month": "2026-09"})
+    finally:
+        reset_current_runtime_session_id(token)
+
+    first_peek = peek_runtime_session_tool_calls("sess-peek")
+    second_peek = peek_runtime_session_tool_calls("sess-peek")
+    assert (
+        first_peek == second_peek == [{"name": "finance.get_budget", "input": {"month": "2026-09"}}]
+    )
+
+    # Only consume drains the buffer.
+    assert consume_runtime_session_tool_calls("sess-peek") == first_peek
+    assert peek_runtime_session_tool_calls("sess-peek") == []
+
+
+def test_peek_returns_empty_list_without_session():
+    assert peek_runtime_session_tool_calls("never-captured") == []
 
 
 def test_runtime_session_routing_context_roundtrip():

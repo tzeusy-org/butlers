@@ -367,11 +367,12 @@ end time back to the state store.
 
 ## 6. Runtime Config Flow (Dashboard to Spawner)
 
-Operational tuning (core_groups, concurrency) follows a seed-and-manage
-pattern. The toml is the seed source; the DB table is the runtime source of
-truth; the dashboard is the mutation interface. Model identity, runtime type,
-per-session timeouts, and CLI args are owned by `public.model_catalog`
-(resolved per spawn), not by `runtime_config`.
+Operational tuning (core_groups, concurrency, catalog read authority, tool
+exposure policy) follows a seed-and-manage pattern. The toml is the seed
+source; the DB table is the runtime source of truth; the dashboard is the
+mutation interface. Model identity, runtime type, per-session timeouts, and
+CLI args are owned by `public.model_catalog` (resolved per spawn), not by
+`runtime_config`.
 
 ```
 butler.toml [butler.runtime_seed]
@@ -383,21 +384,29 @@ butler.toml [butler.runtime_seed]
     |--- GET/PATCH /api/butlers/{name}/runtime-config (dashboard)
     |
     v
-RuntimeConfigAccessor (TTL=30s cache)
+RuntimeConfigAccessor
     |
-    +---> _register_core_tools (startup): core_groups                          [COLD]
-    +---> Spawner constructor: max_concurrent, max_queued                      [COLD]
+    +---> _register_core_tools (startup): core_groups                          [COLD, TTL=30s cache]
+    +---> Spawner constructor: max_concurrent, max_queued                      [COLD, TTL=30s cache]
+    +---> catalog read (call time): catalog_read_sensitivity                   [HOT, TTL=30s cache]
+    +---> per-attempt exposure plan: get_tool_exposure_policy()                [HOT, bypasses cache]
 
 public.model_catalog (resolved per spawn via resolve_model)
     |
     +---> Spawner.trigger(): runtime_type, model, extra_args, session_timeout  [HOT]
 ```
 
-**Write path:** Dashboard PATCH -> DB UPDATE -> accessor cache expires (30s) ->
-next trigger reads updated values.
+**Write path:** Dashboard PATCH -> DB UPDATE. Cold fields become visible to a
+cached reader only after the 30s TTL expires (or a restart). Hot fields are
+visible immediately: `catalog_read_sensitivity` is read fresh at call time by
+the memory-catalog read path, and `tool_exposure_policy` is read fresh per
+attempt via `RuntimeConfigAccessor.get_tool_exposure_policy()`, which never
+consults the TTL cache -- required because the dashboard API and the butler
+daemon can be separate processes with independent in-memory caches.
 
 **Read path:** Spawner.trigger() -> accessor.get() -> cached or DB query ->
-RuntimeConfig dataclass.
+RuntimeConfig dataclass (cold fields). Per-attempt tool exposure planning ->
+accessor.get_tool_exposure_policy() -> always a fresh DB query (hot field).
 
 **Seed path:** Daemon start() -> accessor.seed_if_empty(toml_seed) ->
 INSERT ... ON CONFLICT DO NOTHING -> read back effective row.

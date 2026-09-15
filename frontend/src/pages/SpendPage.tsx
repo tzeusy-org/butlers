@@ -87,7 +87,9 @@ import { SpendVerdictOpener } from "@/components/costs/SpendVerdictOpener";
 import { formatCostUsd } from "@/lib/format-cost";
 import { cn } from "@/lib/utils";
 import { Time } from "@/components/ui/time";
+import { PurposeLaneBadge } from "@/components/sessions/PurposeLaneBadge";
 import { announce } from "@/lib/shell-announcer";
+import { usePageSubject } from "@/lib/page-context.tsx";
 import {
   useRegisterCommands,
   type PaletteCommand,
@@ -1152,6 +1154,9 @@ function TopSessionsSection({
                       <TableHead className="text-left py-2 px-2 font-normal">
                         Model
                       </TableHead>
+                      <TableHead className="text-left py-2 px-2 font-normal">
+                        Purpose
+                      </TableHead>
                       <TableHead className="text-right py-2 px-2 font-normal">
                         Tokens
                       </TableHead>
@@ -1179,6 +1184,9 @@ function TopSessionsSection({
                         </TableCell>
                         <TableCell className="py-2 px-2 text-muted-foreground text-xs">
                           {s.model}
+                        </TableCell>
+                        <TableCell className="py-2 px-2">
+                          <PurposeLaneBadge lane={s.purpose_lane} />
                         </TableCell>
                         <TableCell className="py-2 px-2 text-right tabular-nums text-xs">
                           {s.input_tokens.toLocaleString()} /{" "}
@@ -1354,10 +1362,21 @@ function ByScheduleSection({
                     {schedules.map((s) => (
                       <TableRow
                         key={`${s.butler}-${s.schedule_name}`}
-                        className="border-border/60 hover:bg-muted/30"
+                        className={`border-border/60 hover:bg-muted/30${s.retired ? " opacity-60" : ""}`}
                       >
                         <TableCell className="py-2 px-2 font-mono text-xs">
                           {s.schedule_name}
+                          {/* A retired schedule keeps its measured history but
+                              can never recur -- named so it never reads as a
+                              live future cost (bu-2jtfw.4). */}
+                          {s.retired && (
+                            <span
+                              className="ml-1.5 font-serif italic text-[10px] text-muted-foreground"
+                              data-testid={`schedule-retired-${s.butler}-${s.schedule_name}`}
+                            >
+                              retired
+                            </span>
+                          )}
                         </TableCell>
                         <TableCell className="py-2 px-2">
                           <Link
@@ -1394,7 +1413,7 @@ function ByScheduleSection({
                           className="py-2 px-2 text-right tabular-nums font-medium"
                           data-testid={`schedule-projected-cost-${s.butler}-${s.schedule_name}`}
                         >
-                          {s.projected_monthly_runs > 0
+                          {s.projected_monthly_runs > 0 && s.projected_monthly_usd != null
                             ? formatCostUsd(s.projected_monthly_usd)
                             : "—"}
                         </TableCell>
@@ -2137,6 +2156,7 @@ function CreateRuleForm({ onCancel, onCreated }: CreateRuleFormProps) {
 function SpendRulesSection() {
   const queryClient = useQueryClient();
   const [creating, setCreating] = useState(false);
+  const [searchParams] = useSearchParams();
   // Live path: spendPatch invalidates ["spend-rules"] on every spend call
   // event (bu-01r64.4) -- a reconciliation nudge alongside the direct
   // mutation invalidations below (create/delete/reorder), not their
@@ -2230,6 +2250,43 @@ function SpendRulesSection() {
   });
 
   const rules = data?.data ?? [];
+
+  // Deep-link-and-highlight (bu-lygbct): an audit-log row referencing a spend
+  // rule by id (target scheme "rule:<id>") links here as a ?rule= query
+  // param carrying that same id. Once the rule list has loaded, scroll to
+  // and flash the matching row via its
+  // already-rendered `data-rule-id` anchor -- resolved entirely from data
+  // this section already fetches, no new backend endpoint needed. Mirrors
+  // CalendarWorkspacePage's jump-to-flash and chat's scrollToMessageAnchor.
+  // Attribute-value match (not a CSS.escape'd selector, mirroring
+  // NotificationsPage's identical focus-sync effect) -- a rule id is an
+  // opaque server-issued string, not something safe to interpolate into a
+  // selector.
+  const requestedRuleId = searchParams.get("rule");
+  useEffect(() => {
+    if (!requestedRuleId || isLoading) return;
+    let el: HTMLElement | null = null;
+    for (const node of document.querySelectorAll<HTMLElement>("[data-rule-id]")) {
+      if (node.getAttribute("data-rule-id") === requestedRuleId) {
+        el = node;
+        break;
+      }
+    }
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.classList.add("spend-rule-highlight");
+    const timer = window.setTimeout(() => {
+      el.classList.remove("spend-rule-highlight");
+    }, 2200);
+    return () => {
+      window.clearTimeout(timer);
+      el.classList.remove("spend-rule-highlight");
+    };
+    // `data` (not the derived `rules`) -- `data?.data ?? []` builds a new
+    // array literal on every render, which would re-run this effect
+    // spuriously; `data` itself is only a new reference when the query
+    // actually refetches.
+  }, [requestedRuleId, isLoading, data]);
 
   // Palette verb (bu-t64p2 -- reachability sweep, bu-qvnce.11 slice 5). Reuses
   // this section's own existing "+ Add rule" affordance.
@@ -2735,6 +2792,22 @@ export default function SpendPage() {
   const spendDateKeyTimezone = usesImplicitUtcWindow
     ? SPEND_UTC_DATE_KEY_TIMEZONE
     : undefined;
+
+  // Page-context enrichment (bu-0ynlk.4): the active window is already
+  // auto-captured via query_params for an explicit range, but a typed
+  // visible_resource lets a routed butler ground a correction ("that total
+  // looks wrong") on the exact [from, to] window shown, including the
+  // implicit default.
+  const setPageSubject = usePageSubject().set;
+  useEffect(() => {
+    const windowLabel = `${spendWindow.from.toISOString().slice(0, 10)}..${spendWindow.to
+      .toISOString()
+      .slice(0, 10)}`;
+    setPageSubject({
+      visible_resource: { kind: "spend_window", window: windowLabel },
+      visible_summary: `Spend: ${windowLabel}`,
+    });
+  }, [spendWindow.from, spendWindow.to, setPageSubject]);
 
   // Palette verbs (bu-t64p2 -- reachability sweep, bu-qvnce.11 slice 5).
   // Reuses TimeWindowPicker's own preset setters -- "change window" from the

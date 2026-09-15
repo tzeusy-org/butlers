@@ -103,6 +103,13 @@ The Lifestyle butler SHALL maintain a domain-specific memory taxonomy distinguis
 - **THEN** enduring preferences (genre, artist, cuisine, favorite restaurants, recipes, hobbies, dietary patterns, routines) SHALL default to `stable` permanence
 - **AND** current consumption state (what the user is currently watching, reading, playing, or listening to) SHALL default to `volatile` permanence
 
+#### Scenario: Lifestyle predicates are registry-bound
+
+- **WHEN** a caller attempts to store a fact with `scope='lifestyle'`
+- **THEN** its predicate SHALL already exist in `predicate_registry`
+- **AND** an unregistered predicate SHALL be rejected before the fact is written rather than stored with a fuzzy suggestion
+- **AND** every predicate declared by the Lifestyle memory-taxonomy skill SHALL be seeded in the registry
+
 ### Requirement: Scheduled Task Shape
 
 The Lifestyle butler SHALL run the standard memory maintenance job set shared across butler-typed agents, plus at least one domain-specific periodic task that surfaces taste highlights.
@@ -113,6 +120,20 @@ The Lifestyle butler SHALL run the standard memory maintenance job set shared ac
 - **THEN** it SHALL schedule the standard memory maintenance jobs shared by butler-typed agents
 - **AND** it SHALL schedule at least one domain-specific recurring task whose current shape is a weekly taste digest
 - **AND** the exact cron expressions and dispatch modes live in `roster/lifestyle/butler.toml`
+
+#### Scenario: Connector evidence is projected without an LLM
+
+- **WHEN** Spotify session or closed-play evidence is waiting in the connector ledger
+- **THEN** a deterministic scheduled job SHALL project it into Lifestyle works and taste signals
+- **AND** repeated or concurrent job runs SHALL converge without duplicate signals or orphan works
+- **AND** when a same-endpoint per-play row covers a named track occurrence inside a listening session, the URI-bearing per-play evidence SHALL take precedence and the occurrence SHALL produce exactly one work and one play signal
+- **AND** the projection SHALL NOT depend on an LLM session or operator tool invocation
+
+#### Scenario: Ledger downgrade preserves owner verdicts
+
+- **WHEN** the Lifestyle ledger is downgraded while directly-created owner verdicts exist
+- **THEN** every such verdict SHALL be exported as a backward-readable lifestyle fact before the ledger tables are dropped
+- **AND** the exported fact SHALL preserve the verdict text, predicate, provenance, and linked work metadata
 
 ### Requirement: Cross-Butler Briefing Contribution
 

@@ -28,6 +28,8 @@ from unittest.mock import AsyncMock, patch
 import asyncpg
 import pytest
 
+from butlers.db import register_jsonb_codec
+
 # The roster job module is loaded by conftest.py via _load_roster_jobs and
 # registered in sys.modules as butlers.jobs._roster.relationship_jobs.
 from butlers.jobs._roster.relationship_jobs import (  # type: ignore[import]
@@ -37,7 +39,7 @@ from butlers.jobs._roster.relationship_jobs import (  # type: ignore[import]
     run_entity_dedup_curation,
 )
 from butlers.modules.approvals.retention import RetentionPolicy, cleanup_old_actions
-from butlers.testing.schema_standins import PENDING_ACTIONS
+from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 relationship_jobs = sys.modules["butlers.jobs._roster.relationship_jobs"]
 
@@ -69,8 +71,6 @@ CREATE TABLE IF NOT EXISTS public.entities (
 )
 """
 
-_CREATE_PENDING_ACTIONS_SQL = PENDING_ACTIONS.ddl()
-
 _CREATE_STATE_SQL = """
 CREATE TABLE IF NOT EXISTS state (
     key        TEXT        NOT NULL PRIMARY KEY,
@@ -84,9 +84,12 @@ CREATE TABLE IF NOT EXISTS state (
 async def _setup_schema(pool: asyncpg.Pool) -> None:
     """Create the minimal schema needed by run_entity_dedup_curation tests."""
     await pool.execute(_CREATE_ENTITIES_SQL)
-    # The dedup uniqueness these tests rely on ships with the stand-in itself
-    # (schema_standins.PENDING_ACTIONS.indexes), diffed against approvals_013.
-    await pool.execute(_CREATE_PENDING_ACTIONS_SQL)
+    # The current core entity schema intentionally has no legacy ``name``
+    # alias; this test's local helper writes it for older job compatibility.
+    await pool.execute(
+        "ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT ''"
+    )
+    await pool.execute("DROP INDEX IF EXISTS public.uq_entities_canonical_type_live")
     await pool.execute(_CREATE_STATE_SQL)
 
 
@@ -96,11 +99,20 @@ async def _setup_schema(pool: asyncpg.Pool) -> None:
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """Fresh isolated DB with entity dedup curation schema."""
-    async with provisioned_postgres_pool() as p:
+async def pool(postgres_container):
+    """Fresh DB with the real atomic approval-admission schema."""
+    db_url = await asyncio.to_thread(
+        create_migrated_test_db,
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "approvals"],
+    )
+    p = await asyncpg.create_pool(db_url, min_size=1, max_size=4, init=register_jsonb_codec)
+    try:
         await _setup_schema(p)
         yield p
+    finally:
+        await p.close()
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +133,7 @@ async def _make_entity(
         metadata["merged_into"] = tombstone_into
     return await pool.fetchval(
         "INSERT INTO public.entities (canonical_name, name, entity_type, roles, metadata) "
-        "VALUES ($1, $1, 'person', $2, $3) RETURNING id",
+        "VALUES ($1::text, $1::text, 'person', $2, $3) RETURNING id",
         name,
         roles or [],
         metadata,

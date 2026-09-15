@@ -23,6 +23,7 @@ class EntityStateResponse(BaseModel):
     attributes: dict[str, Any] = {}
     last_updated: str | None = None
     captured_at: str
+    ha_source_available: bool
 
 
 class EntitySummaryResponse(BaseModel):
@@ -46,6 +47,7 @@ class AreaResponse(BaseModel):
 
     area_id: str
     entity_count: int
+    ha_source_available: bool
 
 
 class CommandLogEntry(BaseModel):
@@ -79,6 +81,7 @@ class StatisticsResponse(BaseModel):
     domains: dict[str, int]
     oldest_captured_at: str | None = None
     newest_captured_at: str | None = None
+    ha_source_available: bool
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +107,7 @@ class DevicePaginationMeta(BaseModel):
     page: int
     page_size: int
     total_count: int
+    ha_source_available: bool
 
     @computed_field  # type: ignore[prop-decorator]
     @property

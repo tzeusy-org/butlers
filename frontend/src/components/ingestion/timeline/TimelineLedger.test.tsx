@@ -35,6 +35,7 @@ vi.mock("@/api/index.ts", async (importOriginal) => {
   return {
     ...actual,
     replayIngestionEvent: vi.fn(),
+    getIngestionEvent: vi.fn(),
   };
 });
 
@@ -44,8 +45,7 @@ vi.mock("sonner", () => ({
 
 vi.mock("@/hooks/use-ingestion-events", () => ({
   useIngestionEvents: vi.fn(),
-  useIngestionEventLineage: vi.fn(),
-  useIngestionEventRollup: vi.fn(),
+  useIngestionEventSessions: vi.fn(),
   useIngestionEventSenderContact: vi.fn(),
   useIngestionEventReplays: vi.fn(),
   useIngestionEventPayload: vi.fn(),
@@ -60,8 +60,6 @@ vi.mock("@/hooks/use-ingestion", () => ({
 
 import {
   useIngestionEvents,
-  useIngestionEventLineage,
-  useIngestionEventRollup,
   useIngestionEventSenderContact,
   useIngestionEventReplays,
   useIngestionEventPayload,
@@ -70,6 +68,7 @@ import {
   useIngestionWindowRollup,
   useIngestionEventsHistogram,
 } from "@/hooks/use-ingestion-events";
+import { getIngestionEvent } from "@/api/index.ts";
 import { useConnectorSummaries } from "@/hooks/use-ingestion";
 import { TimelineTab } from "../TimelineTab";
 
@@ -176,11 +175,7 @@ function makeHistogramResult(
 }
 
 function setupDefaultMocks() {
-  vi.mocked(useIngestionEventRollup).mockReturnValue({
-    data: undefined,
-    isLoading: false,
-    isError: false,
-  } as unknown as ReturnType<typeof useIngestionEventRollup>);
+
 
   vi.mocked(useIngestionEventSenderContact).mockReturnValue({
     data: undefined,
@@ -188,18 +183,11 @@ function setupDefaultMocks() {
     isError: false,
   } as unknown as ReturnType<typeof useIngestionEventSenderContact>);
 
-  vi.mocked(useIngestionEventLineage).mockReturnValue({
-    sessions: {
+  vi.mocked(useIngestionEventSessions).mockReturnValue({
       data: { data: [] },
       isLoading: false,
       isError: false,
-    } as unknown as ReturnType<typeof useIngestionEventSessions>,
-    rollup: {
-      data: undefined,
-      isLoading: false,
-      isError: false,
-    } as unknown as ReturnType<typeof useIngestionEventRollup>,
-  });
+    } as unknown as ReturnType<typeof useIngestionEventSessions>);
 
   vi.mocked(useIngestionEventReplays).mockReturnValue({
     data: { data: [] },
@@ -220,7 +208,7 @@ function setupDefaultMocks() {
   } as unknown as ReturnType<typeof useIngestionEventDetail>);
 
   vi.mocked(useConnectorSummaries).mockReturnValue({
-    data: { data: [] },
+    data: { data: { connectors: [] } },
     isLoading: false,
     isError: false,
   } as unknown as ReturnType<typeof useConnectorSummaries>);
@@ -263,6 +251,48 @@ describe("TimelineTab — hour grouping", () => {
     container.remove();
     queryClient.clear();
     vi.clearAllMocks();
+  });
+
+  it("does not audit detail reads on row focus and retains keyboard disclosure", () => {
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult([makeEvent()]) as unknown as ReturnType<typeof useIngestionEvents>,
+    );
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter><TimelineTab isActive={true} defaultStatuses={["ingested"]} /></MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+    const trigger = container.querySelector<HTMLElement>("[data-testid='ledger-row-trigger']")!;
+    act(() => { trigger.focus(); });
+    expect(getIngestionEvent).not.toHaveBeenCalled();
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    act(() => { trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    expect(useIngestionEventSessions).toHaveBeenCalledWith(makeEvent().id, { enabled: true });
+  });
+
+  it("exposes returning to new events and retrying a failed historical page", () => {
+    const showNewEvents = vi.fn();
+    const fetchNextPage = vi.fn();
+    vi.mocked(useIngestionEvents).mockReturnValue({
+      ...makeInfiniteEventsResult([makeEvent()]),
+      newCount: 0, isFollowingLive: false, showNewEvents, fetchNextPage, hasNextPage: true,
+      isFetchNextPageError: true,
+    } as unknown as ReturnType<typeof useIngestionEvents>);
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter><TimelineTab isActive={true} defaultStatuses={["ingested"]} /></MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+    const buttons = [...container.querySelectorAll("button")];
+    act(() => { buttons.find(button => button.textContent === "Return to latest events")!.click(); });
+    act(() => { buttons.find(button => button.textContent === "Retry loading older events")!.click(); });
+    expect(showNewEvents).toHaveBeenCalledOnce();
+    expect(fetchNextPage).toHaveBeenCalledOnce();
   });
 
   it("groups events in the same hour under a single hour-group header", () => {
@@ -784,18 +814,11 @@ describe("TimelineTab — drawer URL state", () => {
   });
 
   it("shows drawer session index when event has sessions", () => {
-    vi.mocked(useIngestionEventLineage).mockReturnValue({
-      sessions: {
+    vi.mocked(useIngestionEventSessions).mockReturnValue({
         data: { data: makeSessions(2) },
         isLoading: false,
         isError: false,
-      } as unknown as ReturnType<typeof useIngestionEventSessions>,
-      rollup: {
-        data: undefined,
-        isLoading: false,
-        isError: false,
-      } as unknown as ReturnType<typeof useIngestionEventRollup>,
-    });
+      } as unknown as ReturnType<typeof useIngestionEventSessions>);
 
     vi.mocked(useIngestionEvents).mockReturnValue(
       makeInfiniteEventsResult([
@@ -953,18 +976,11 @@ describe("EventDrawer — flamegraph in-progress span clamping (bu-rncqs)", () =
       model: "claude-sonnet",
     };
 
-    vi.mocked(useIngestionEventLineage).mockReturnValue({
-      sessions: {
+    vi.mocked(useIngestionEventSessions).mockReturnValue({
         data: { data: [completedSession, inProgressSession] },
         isLoading: false,
         isError: false,
-      } as unknown as ReturnType<typeof useIngestionEventSessions>,
-      rollup: {
-        data: undefined,
-        isLoading: false,
-        isError: false,
-      } as unknown as ReturnType<typeof useIngestionEventRollup>,
-    });
+      } as unknown as ReturnType<typeof useIngestionEventSessions>);
 
     vi.mocked(useIngestionEvents).mockReturnValue(
       makeInfiniteEventsResult([

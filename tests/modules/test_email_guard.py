@@ -6,7 +6,18 @@ import uuid
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from butlers.modules.approvals.email_guard import check_email_recipient, check_recipient
+from butlers.testing.approval_parking_fake import record_pending_action
+
+
+@pytest.fixture(autouse=True)
+def _use_mock_pool_park_recorder(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        "butlers.modules.approvals.email_guard.park_pending_action",
+        record_pending_action,
+    )
 
 
 def _owner_contact():
@@ -50,6 +61,7 @@ _COMMON_KWARGS = {
     "park_tool_name": "notify",
     "park_tool_args": {"recipient": "friend@test.com", "channel": "email"},
     "park_summary": "test park summary",
+    "butler_name": "messenger",
 }
 
 
@@ -57,11 +69,16 @@ class TestCheckEmailRecipient:
     async def test_owner_primary_email_auto_approves(self) -> None:
         """Owner send to primary email address is auto-approved."""
         pool = AsyncMock()
-        # is_primary=True for the targeted address
-        pool.fetchrow = AsyncMock(return_value={"primary": True})
-        with patch(
-            "butlers.identity.resolve_contact_by_channel",
-            new=AsyncMock(return_value=_owner_contact()),
+        owner = _owner_contact()
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=owner),
+            ),
+            patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=(owner, True)),
+            ),
         ):
             decision = await check_email_recipient(pool, **_COMMON_KWARGS)
 
@@ -69,22 +86,19 @@ class TestCheckEmailRecipient:
         assert decision.reason == "owner"
         pool.execute.assert_not_awaited()
 
-    async def test_owner_non_primary_email_parks(self) -> None:
-        """Owner send to a non-primary email address is parked for approval.
-
-        This is the regression test for bu-jwby9: an owner with both a personal
-        (primary) and a work (non-primary) email must NOT auto-approve sends to
-        the work address.  The non-primary address must go through the normal
-        standing-rules / parking flow.
-        """
+    async def test_owner_secondary_email_auto_approves(self) -> None:
+        """Any uniquely resolved active owner email address auto-approves."""
         owner = _owner_contact()
         pool = AsyncMock()
-        # Targeted address is NOT the primary one
-        pool.fetchrow = AsyncMock(return_value={"primary": False})
+        owner_fallback = AsyncMock(return_value=(owner, False))
         with (
             patch(
                 "butlers.identity.resolve_contact_by_channel",
-                new=AsyncMock(return_value=owner),
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=owner_fallback,
             ),
             patch(
                 "butlers.modules.approvals.rules.match_rules",
@@ -93,17 +107,10 @@ class TestCheckEmailRecipient:
         ):
             decision = await check_email_recipient(pool, **_COMMON_KWARGS)
 
-        assert decision.allowed is False
-        assert decision.reason == "parked"
-        assert decision.action_id is not None
-        # contact_desc reflects owner is still recognised as a known contact
-        assert decision.contact_desc == "known non-owner contact"
-        # pending_action INSERT must have been called (alongside the
-        # additive publish_fleet_event() NOTIFY bu-01r64.1 added to the same
-        # pool for the "created" approval bus event).
-        insert_calls = [c for c in pool.execute.call_args_list if "pending_actions" in c.args[0]]
-        assert len(insert_calls) == 1
-        assert "pending_actions" in insert_calls[0].args[0]
+        assert decision.allowed is True
+        assert decision.reason == "owner"
+        owner_fallback.assert_awaited_once_with(pool, "email", _COMMON_KWARGS["email_target"])
+        pool.execute.assert_not_awaited()
 
     async def test_non_owner_with_rule_approves(self) -> None:
         pool = AsyncMock()
@@ -130,10 +137,15 @@ class TestCheckEmailRecipient:
     async def test_non_owner_without_rule_parks(self) -> None:
         pool = AsyncMock()
         session_id = uuid.uuid4()
+        owner_fallback = AsyncMock()
         with (
             patch(
                 "butlers.identity.resolve_contact_by_channel",
                 new=AsyncMock(return_value=_non_owner_contact()),
+            ),
+            patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=owner_fallback,
             ),
             patch(
                 "butlers.modules.approvals.rules.match_rules",
@@ -148,6 +160,7 @@ class TestCheckEmailRecipient:
         assert decision.reason == "parked"
         assert decision.action_id is not None
         assert decision.contact_desc == "known non-owner contact"
+        owner_fallback.assert_not_awaited()
         # pending_action INSERT (alongside the additive publish_fleet_event()
         # NOTIFY bu-01r64.1 added to the same pool for the "created" event).
         insert_calls = [c for c in pool.execute.call_args_list if "pending_actions" in c.args[0]]
@@ -186,6 +199,10 @@ class TestCheckEmailRecipient:
                 new=AsyncMock(return_value=None),
             ),
             patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
                 "butlers.modules.approvals.rules.match_rules",
                 new=AsyncMock(return_value=None),
             ),
@@ -202,6 +219,10 @@ class TestCheckEmailRecipient:
         with (
             patch(
                 "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
                 new=AsyncMock(return_value=None),
             ),
             patch(
@@ -222,6 +243,10 @@ class TestCheckEmailRecipient:
             patch(
                 "butlers.identity.resolve_contact_by_channel",
                 new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=AsyncMock(side_effect=RuntimeError("owner lookup unavailable")),
             ),
             patch(
                 "butlers.modules.approvals.rules.match_rules",
@@ -263,7 +288,9 @@ class TestEmailGuardEmitsCreatedEvent:
                 new=mock_publish,
             ),
         ):
-            decision = await check_email_recipient(pool, butler_name="home", **_COMMON_KWARGS)
+            decision = await check_email_recipient(
+                pool, **{**_COMMON_KWARGS, "butler_name": "home"}
+            )
 
         assert decision.allowed is False
         assert decision.reason == "parked"
@@ -296,9 +323,8 @@ class TestEmailGuardEmitsCreatedEvent:
         ):
             decision = await check_email_recipient(
                 pool,
-                butler_name="home",
                 msg_context="personal",
-                **_COMMON_KWARGS,
+                **{**_COMMON_KWARGS, "butler_name": "home"},
             )
 
         assert decision.allowed is False
@@ -328,7 +354,9 @@ class TestEmailGuardEmitsCreatedEvent:
                 new=AsyncMock(side_effect=RuntimeError("broker down")),
             ),
         ):
-            decision = await check_email_recipient(pool, butler_name="home", **_COMMON_KWARGS)
+            decision = await check_email_recipient(
+                pool, **{**_COMMON_KWARGS, "butler_name": "home"}
+            )
 
         # Guard must still park the action even when publish raises
         assert decision.allowed is False
@@ -344,6 +372,7 @@ _TELEGRAM_KWARGS = {
     "park_tool_name": "notify",
     "park_tool_args": {"recipient": "900800700", "channel": "telegram"},
     "park_summary": "test park summary",
+    "butler_name": "messenger",
 }
 
 
@@ -353,16 +382,49 @@ class TestCheckRecipient:
     async def test_owner_telegram_auto_approves_without_primacy(self) -> None:
         """Owner-role telegram target auto-approves on any active channel (no primacy)."""
         pool = AsyncMock()
-        with patch(
-            "butlers.identity.resolve_contact_by_channel",
-            new=AsyncMock(return_value=_owner_contact()),
+        owner = _owner_contact()
+        owner_fallback = AsyncMock(return_value=(owner, False))
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=owner),
+            ),
+            patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=owner_fallback,
+            ),
         ):
             decision = await check_recipient(pool, **_TELEGRAM_KWARGS)
 
         assert decision.allowed is True
         assert decision.reason == "owner"
+        owner_fallback.assert_awaited_once_with(
+            pool, _TELEGRAM_KWARGS["channel"], _TELEGRAM_KWARGS["target"]
+        )
         # Owner bypass must not park or check standing rules.
         pool.execute.assert_not_awaited()
+
+    async def test_direct_owner_without_unambiguous_corroboration_parks(self) -> None:
+        """An owner-looking normalized form cannot hide an external collision."""
+        pool = AsyncMock()
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=_owner_contact()),
+            ),
+            patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "butlers.modules.approvals.rules.match_rules",
+                new=AsyncMock(return_value=None),
+            ),
+        ):
+            decision = await check_recipient(pool, **_TELEGRAM_KWARGS)
+
+        assert decision.allowed is False
+        assert decision.reason == "parked"
 
     async def test_owner_via_definer_fallback_auto_approves(self) -> None:
         """When direct resolution fails, the SECURITY DEFINER owner fallback still approves."""
@@ -402,6 +464,29 @@ class TestCheckRecipient:
         assert decision.action_id is not None
         pool.execute.assert_awaited()
 
+    async def test_parking_failure_is_not_reported_as_parked(self) -> None:
+        """A failed transaction keeps delivery blocked without a fake action id."""
+        pool = AsyncMock()
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=_non_owner_contact()),
+            ),
+            patch(
+                "butlers.modules.approvals.rules.match_rules",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "butlers.modules.approvals.email_guard.park_pending_action",
+                new=AsyncMock(side_effect=RuntimeError("intent insert failed")),
+            ),
+        ):
+            decision = await check_recipient(pool, **_TELEGRAM_KWARGS)
+
+        assert decision.allowed is False
+        assert decision.reason == "parking_failed"
+        assert decision.action_id is None
+
     async def test_standing_rule_permits_non_owner(self) -> None:
         """A matching standing rule auto-approves a non-owner telegram send."""
         pool = AsyncMock()
@@ -420,9 +505,15 @@ class TestCheckRecipient:
         assert decision.allowed is True
         assert decision.reason == "rule"
 
-    async def test_unresolvable_target_parks(self) -> None:
-        """An unresolvable target (no contact, no owner fallback, no rule) is parked."""
+    @pytest.mark.parametrize("fallback_errors", [False, True])
+    async def test_unresolvable_target_parks(self, fallback_errors: bool) -> None:
+        """Missing or failed owner corroboration remains approval-gated."""
         pool = AsyncMock()
+        owner_fallback = (
+            AsyncMock(side_effect=RuntimeError("owner lookup unavailable"))
+            if fallback_errors
+            else AsyncMock(return_value=None)
+        )
         with (
             patch(
                 "butlers.identity.resolve_contact_by_channel",
@@ -430,7 +521,7 @@ class TestCheckRecipient:
             ),
             patch(
                 "butlers.identity.resolve_owner_channel_via_definer",
-                new=AsyncMock(return_value=None),
+                new=owner_fallback,
             ),
             patch(
                 "butlers.modules.approvals.rules.match_rules",

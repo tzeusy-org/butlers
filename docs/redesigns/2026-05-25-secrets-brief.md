@@ -1,5 +1,9 @@
 # secrets redesign — integration brief
 
+> **Status: Active.** Cited as the "Binding integration brief" (§0 design intent, §3 backend
+> contract, §4 LLM-cost de-scopes, §5 Q8/Q13) by `openspec/specs/butler-secrets/spec.md:405`,
+> a live, unarchived spec.
+
 **Date:** 2026-05-25
 **Version:** v1
 **Bundle path:** `pr/overview/secrets-redesign/`

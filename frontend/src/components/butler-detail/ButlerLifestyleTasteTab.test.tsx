@@ -1,183 +1,68 @@
 // @vitest-environment jsdom
 /**
- * ButlerLifestyleTasteTab — RTL tests.
+ * ButlerLifestyleTasteTab — RTL tests (bu-2jtfw.10).
+ *
+ * Replaces the bu-iuol4.33/bu-h7q85 suite: the tab now reads the taste
+ * ledger (works/taste_signals/verdicts) instead of subject="user" facts.
  *
  * Tests cover:
- *  - Root container renders
- *  - All 4 panels render (KPI strip, taste summary, consumption state, recent additions, digest archive)
- *  - KPI rendering: active preferences count, currently consuming count, recently logged count
- *  - Taste summary chips render from likes_* predicate facts
- *  - Consumption state items render from watches/reads/plays predicate facts
- *  - Recent additions list renders last 10 facts (sorted by created_at desc)
- *  - Empty digest archive renders stub message
- *  - Empty state for each panel when no data
+ *  - Root container + panel presence
+ *  - KPI strip renders totals from meta.total / summary counts, not page length
+ *  - Ledger-degraded note appears when ledger_available=false
+ *  - Taste verdicts chips render from the verdicts list
+ *  - Recent works list renders from the works list
+ *  - Empty states for each panel
  *  - Loading state shows skeletons, no empty-state text
- *  - Error banner appears when any query fails
- *  - Error state shows error line in individual panels
+ *  - Error banner + per-panel error lines when a query fails
  *
- * Consolidation note (bu-h7q85):
- *  - Three panels previously made 3 separate network requests (useMemoryRecall +
- *    2×useMemorySearch). Now a single useButlerFacts hook fetches all facts
- *    once; panel-specific slices are derived via stable `select` predicates so
- *    React Query shares one cache entry across all three subscribers.
- *  - The mock below intercepts useButlerFacts and applies the caller's `select`
- *    function to the fixture data, verifying that the selectors work correctly.
- *
- * bead: bu-iuol4.33 / bu-h7q85
+ * bead: bu-2jtfw.10
  */
 
-import {
-  afterEach,
-  beforeAll,
-  afterAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import ButlerLifestyleTasteTab from "./ButlerLifestyleTasteTab";
 
-// ---------------------------------------------------------------------------
-// Mock hooks
-// ---------------------------------------------------------------------------
-
 vi.mock("@/hooks/use-memory", () => ({
-  useButlerFacts: vi.fn(),
+  useLifestyleTasteSummary: vi.fn(),
+  useLifestyleTasteVerdicts: vi.fn(),
+  useLifestyleTasteWorks: vi.fn(),
 }));
 
-// Stub <Time> to avoid date-formatting complexity
 vi.mock("@/components/ui/time", () => ({
-  Time: ({ value }: { value: string }) => (
-    <time dateTime={value}>{value}</time>
-  ),
+  Time: ({ value }: { value: string }) => <time dateTime={value}>{value}</time>,
 }));
 
-import { useButlerFacts } from "@/hooks/use-memory";
-
-// ---------------------------------------------------------------------------
-// Fixed clock
-// ---------------------------------------------------------------------------
-
-const FIXED_NOW_ISO = "2026-05-11T12:00:00.000Z";
-
-beforeAll(() => {
-  vi.useFakeTimers();
-  vi.setSystemTime(new Date(FIXED_NOW_ISO));
-});
-
-afterAll(() => {
-  vi.useRealTimers();
-});
+import {
+  useLifestyleTasteSummary,
+  useLifestyleTasteVerdicts,
+  useLifestyleTasteWorks,
+} from "@/hooks/use-memory";
 
 // ---------------------------------------------------------------------------
 // Fixture data
 // ---------------------------------------------------------------------------
 
-const NOW = new Date(FIXED_NOW_ISO).getTime();
-const H1_AGO = new Date(NOW - 1 * 60 * 60 * 1000).toISOString();
-const D2_AGO = new Date(NOW - 2 * 24 * 60 * 60 * 1000).toISOString();
-const D10_AGO = new Date(NOW - 10 * 24 * 60 * 60 * 1000).toISOString();
-
-const BASE_FACT = {
-  importance: 0.8,
-  confidence: 0.9,
-  decay_rate: 0.01,
-  permanence: "permanent",
-  source_butler: "lifestyle",
-  source_episode_id: null,
-  session_id: null,
-  supersedes_id: null,
-  entity_id: null,
-  entity_name: null,
-  object_entity_id: null,
-  object_entity_name: null,
-  validity: "active",
-  scope: "lifestyle",
-  reference_count: 1,
-  last_referenced_at: null,
-  last_confirmed_at: null,
-  tags: [],
-  metadata: {},
+const SUMMARY_FIXTURE = {
+  total_works: 220,
+  total_signals: 340,
+  total_verdicts: 61,
+  recent_signals_7d: 12,
+  works_by_kind: { track: 220 },
+  signals_by_kind: { listen_completed: 200, listen_skipped: 140 },
+  ledger_available: true,
 };
 
-const PREFERENCE_FACTS = [
-  {
-    ...BASE_FACT,
-    id: "fact-pref-001",
-    subject: "user",
-    predicate: "likes_genre",
-    content: "jazz",
-    created_at: D2_AGO,
-    updated_at: D2_AGO,
-  },
-  {
-    ...BASE_FACT,
-    id: "fact-pref-002",
-    subject: "user",
-    predicate: "likes_cuisine",
-    content: "Japanese",
-    created_at: D2_AGO,
-    updated_at: D2_AGO,
-  },
-  {
-    ...BASE_FACT,
-    id: "fact-pref-003",
-    subject: "user",
-    predicate: "likes_artist",
-    content: "Miles Davis",
-    created_at: H1_AGO,
-    updated_at: H1_AGO,
-  },
+const VERDICTS_FIXTURE = [
+  { id: "v1", work_id: null, predicate: "likes_genre", verdict_text: "loves jazz", source: "legacy_fact", created_at: "2026-08-01T00:00:00Z" },
+  { id: "v2", work_id: null, predicate: "likes_cuisine", verdict_text: "Japanese", source: "legacy_fact", created_at: "2026-08-01T00:00:00Z" },
 ];
 
-const CONSUMPTION_FACTS = [
-  {
-    ...BASE_FACT,
-    id: "fact-cons-001",
-    subject: "user",
-    predicate: "watches",
-    content: "Succession",
-    created_at: D2_AGO,
-    updated_at: D2_AGO,
-  },
-  {
-    ...BASE_FACT,
-    id: "fact-cons-002",
-    subject: "user",
-    predicate: "reads",
-    content: "The Brothers Karamazov",
-    created_at: D2_AGO,
-    updated_at: D2_AGO,
-  },
-  {
-    ...BASE_FACT,
-    id: "fact-cons-003",
-    subject: "user",
-    predicate: "plays",
-    content: "Elden Ring",
-    created_at: H1_AGO,
-    updated_at: H1_AGO,
-  },
-];
-
-// All facts for recall (preference + consumption, with recent fact within 7d)
-const ALL_RECALL_FACTS = [
-  ...PREFERENCE_FACTS,
-  ...CONSUMPTION_FACTS,
-  {
-    ...BASE_FACT,
-    id: "fact-other-001",
-    subject: "user",
-    predicate: "prefers_music_format",
-    content: "vinyl",
-    created_at: D10_AGO, // older than 7d
-    updated_at: D10_AGO,
-  },
+const WORKS_FIXTURE = [
+  { id: "w1", kind: "track", title: "Song A", external_ids: {}, created_at: "2026-09-01T00:00:00Z" },
+  { id: "w2", kind: "track", title: "Song B", external_ids: {}, created_at: "2026-09-01T00:00:00Z" },
 ];
 
 // ---------------------------------------------------------------------------
@@ -198,55 +83,83 @@ function renderTab() {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Default mock setups
-//
-// useButlerFacts is called 3 times per render — once per panel slice — each
-// with a different `select` function. The mock applies the caller's `select`
-// to the fixture data so that predicate-based filtering is exercised end-to-end,
-// verifying that the selectors work correctly even in the test environment.
-// ---------------------------------------------------------------------------
+function setupWithData({
+  summary = SUMMARY_FIXTURE,
+  verdicts = VERDICTS_FIXTURE,
+  verdictsTotal = 61,
+  works = WORKS_FIXTURE,
+  worksTotal = 250,
+} = {}) {
+  vi.mocked(useLifestyleTasteSummary).mockReturnValue({
+    data: summary,
+    isLoading: false,
+    isError: false,
+  } as unknown as ReturnType<typeof useLifestyleTasteSummary>);
 
-function setupWithData() {
-  vi.mocked(useButlerFacts).mockImplementation(({ select }) => {
-    const selected = select ? select(ALL_RECALL_FACTS) : ALL_RECALL_FACTS;
-    return {
-      data: selected,
-      isLoading: false,
-      isError: false,
-    } as unknown as ReturnType<typeof useButlerFacts>;
-  });
+  vi.mocked(useLifestyleTasteVerdicts).mockReturnValue({
+    data: { data: verdicts, meta: { total: verdictsTotal, offset: 0, limit: 20, has_more: false } },
+    isLoading: false,
+    isError: false,
+  } as unknown as ReturnType<typeof useLifestyleTasteVerdicts>);
+
+  vi.mocked(useLifestyleTasteWorks).mockReturnValue({
+    data: { data: works, meta: { total: worksTotal, offset: 0, limit: 10, has_more: true } },
+    isLoading: false,
+    isError: false,
+  } as unknown as ReturnType<typeof useLifestyleTasteWorks>);
 }
 
 function setupEmpty() {
-  vi.mocked(useButlerFacts).mockReturnValue({
-    data: [],
-    isLoading: false,
-    isError: false,
-  } as unknown as ReturnType<typeof useButlerFacts>);
+  setupWithData({
+    summary: { ...SUMMARY_FIXTURE, total_works: 0, total_verdicts: 0, recent_signals_7d: 0 },
+    verdicts: [],
+    verdictsTotal: 0,
+    works: [],
+    worksTotal: 0,
+  });
 }
 
 function setupLoading() {
-  vi.mocked(useButlerFacts).mockReturnValue({
+  vi.mocked(useLifestyleTasteSummary).mockReturnValue({
     data: undefined,
     isLoading: true,
     isError: false,
-  } as unknown as ReturnType<typeof useButlerFacts>);
+  } as unknown as ReturnType<typeof useLifestyleTasteSummary>);
+  vi.mocked(useLifestyleTasteVerdicts).mockReturnValue({
+    data: undefined,
+    isLoading: true,
+    isError: false,
+  } as unknown as ReturnType<typeof useLifestyleTasteVerdicts>);
+  vi.mocked(useLifestyleTasteWorks).mockReturnValue({
+    data: undefined,
+    isLoading: true,
+    isError: false,
+  } as unknown as ReturnType<typeof useLifestyleTasteWorks>);
 }
 
 function setupError() {
-  vi.mocked(useButlerFacts).mockReturnValue({
+  vi.mocked(useLifestyleTasteSummary).mockReturnValue({
     data: undefined,
     isLoading: false,
     isError: true,
-  } as unknown as ReturnType<typeof useButlerFacts>);
+  } as unknown as ReturnType<typeof useLifestyleTasteSummary>);
+  vi.mocked(useLifestyleTasteVerdicts).mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isError: true,
+  } as unknown as ReturnType<typeof useLifestyleTasteVerdicts>);
+  vi.mocked(useLifestyleTasteWorks).mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isError: true,
+  } as unknown as ReturnType<typeof useLifestyleTasteWorks>);
 }
 
 // ---------------------------------------------------------------------------
 // Tests: Root container + panel presence
 // ---------------------------------------------------------------------------
 
-describe("ButlerLifestyleTasteTab — all panels present", () => {
+describe("ButlerLifestyleTasteTab — panels present", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     setupWithData();
@@ -258,216 +171,125 @@ describe("ButlerLifestyleTasteTab — all panels present", () => {
     expect(screen.getByTestId("lifestyle-taste-tab")).toBeDefined();
   });
 
-  it("renders the KPI strip panel", () => {
+  it("renders the KPI strip, taste verdicts, and recent works cards", () => {
     renderTab();
     expect(screen.getByTestId("kpi-strip")).toBeDefined();
-  });
-
-  it("renders the taste summary card", () => {
-    renderTab();
     expect(screen.getByTestId("taste-summary-card")).toBeDefined();
+    expect(screen.getByTestId("recent-works-card")).toBeDefined();
   });
 
-  it("renders the consumption state card", () => {
+  it("no longer renders a weekly digest archive panel", () => {
     renderTab();
-    expect(screen.getByTestId("consumption-state-card")).toBeDefined();
-  });
-
-  it("renders the recent additions card", () => {
-    renderTab();
-    expect(screen.getByTestId("recent-additions-card")).toBeDefined();
-  });
-
-  it("renders the digest archive card", () => {
-    renderTab();
-    expect(screen.getByTestId("digest-archive-card")).toBeDefined();
+    expect(screen.queryByTestId("digest-archive-card")).toBeNull();
+    expect(screen.queryByText("No weekly digests yet.")).toBeNull();
   });
 });
 
 // ---------------------------------------------------------------------------
-// Tests: KPI rendering
+// Tests: KPI totals — the literal bug this bead fixes
 // ---------------------------------------------------------------------------
 
-describe("ButlerLifestyleTasteTab — KPI rendering", () => {
+describe("ButlerLifestyleTasteTab — KPI totals render from meta.total", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+  afterEach(() => cleanup());
+
+  it("shows total_works from the summary endpoint, not a fetched page length", () => {
+    // Only 2 works are on the fetched page, but the ledger has 220.
+    setupWithData();
+    renderTab();
+    const kpiItems = screen.getAllByTestId("kpi-item");
+    expect(kpiItems[0].textContent).toContain("220");
+    expect(WORKS_FIXTURE.length).toBe(2); // sanity: the page really is smaller than the total
+  });
+
+  it("shows total verdicts from meta.total, exceeding the fetched page length", () => {
+    setupWithData({ verdicts: VERDICTS_FIXTURE.slice(0, 1), verdictsTotal: 61 });
+    renderTab();
+    const kpiItems = screen.getAllByTestId("kpi-item");
+    // Fetched page has 1 verdict; the real total (61) must render, not 1.
+    expect(kpiItems[2].textContent).toContain("61");
+  });
+
+  it("renders the binding four-cell KPI strip including all signals", () => {
+    setupWithData();
+    renderTab();
+    const strip = screen.getByTestId("kpi-strip");
+    const kpiItems = screen.getAllByTestId("kpi-item");
+    expect(kpiItems).toHaveLength(4);
+    expect(kpiItems[1].textContent).toContain("340");
+    expect(strip.querySelector(".sm\\:grid-cols-4")).not.toBeNull();
+    expect(strip.querySelector("[class*='bg-card']")).toBeNull();
+  });
+
+  it("shows recent_signals_7d from the summary", () => {
+    setupWithData();
+    renderTab();
+    const kpiItems = screen.getAllByTestId("kpi-item");
+    expect(kpiItems[3].textContent).toContain("12");
+  });
+
+  it("renders unavailable ledger state as an error instead of confirmed zeros", () => {
+    setupWithData({ summary: { ...SUMMARY_FIXTURE, ledger_available: false } });
+    renderTab();
+    expect(screen.getByText("Could not load taste overview.")).toBeDefined();
+    expect(screen.queryByText("Works tracked")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: Taste verdicts panel
+// ---------------------------------------------------------------------------
+
+describe("ButlerLifestyleTasteTab — taste verdicts panel", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     setupWithData();
   });
   afterEach(() => cleanup());
 
-  it("renders 4 KPI items in the strip", () => {
-    renderTab();
-    const items = screen.getAllByTestId("kpi-item");
-    expect(items.length).toBe(4);
-  });
-
-  it("shows active preferences count from likes_* facts", () => {
-    renderTab();
-    // 3 preference facts — use KPI items to scope text search
-    const kpiItems = screen.getAllByTestId("kpi-item");
-    expect(kpiItems[0].textContent).toContain("3");
-  });
-
-  it("shows consumption count from watches/reads/plays facts", () => {
-    renderTab();
-    // 3 consumption facts — value shows as "3" in the second KPI item
-    expect(screen.getByText("Active preferences")).toBeDefined();
-    expect(screen.getByText("Currently consuming")).toBeDefined();
-    expect(screen.getByText("Recently logged")).toBeDefined();
-    expect(screen.getByText("Weekly digest")).toBeDefined();
-    const kpiItems = screen.getAllByTestId("kpi-item");
-    expect(kpiItems[1].textContent).toContain("3");
-  });
-
-  it("shows recently logged count (facts within 7 days)", () => {
-    renderTab();
-    // ALL_RECALL_FACTS has 7 facts: 3 prefs (D2_AGO/H1_AGO) + 3 consumption (D2_AGO/H1_AGO) +
-    // 1 other (D10_AGO, older than 7d). So 6 facts fall within the 7d window.
-    // The recently-logged KPI is driven by allFacts (recallData), which is ALL_RECALL_FACTS.
-    const kpiItems = screen.getAllByTestId("kpi-item");
-    expect(kpiItems[2].textContent).toContain("6");
-  });
-
-  it("shows dash for weekly digest when no digests exist", () => {
-    renderTab();
-    expect(screen.getByText("—")).toBeDefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Tests: Taste summary chips
-// ---------------------------------------------------------------------------
-
-describe("ButlerLifestyleTasteTab — taste summary chips", () => {
-  beforeEach(() => {
-    vi.resetAllMocks();
-    setupWithData();
-  });
-  afterEach(() => cleanup());
-
-  it("renders taste chip container", () => {
-    renderTab();
-    expect(screen.getByTestId("taste-chips")).toBeDefined();
-  });
-
-  it("renders a chip for each preference fact", () => {
+  it("renders a chip for each verdict", () => {
     renderTab();
     const chips = screen.getAllByTestId("taste-chip");
-    expect(chips.length).toBe(3);
+    expect(chips.length).toBe(2);
   });
 
-  it("renders 'jazz' chip within taste chips container", () => {
+  it("renders verdict text within the chips container", () => {
     renderTab();
     const chipsContainer = screen.getByTestId("taste-chips");
-    expect(chipsContainer.textContent).toContain("jazz");
-  });
-
-  it("renders 'Japanese' chip within taste chips container", () => {
-    renderTab();
-    const chipsContainer = screen.getByTestId("taste-chips");
+    expect(chipsContainer.textContent).toContain("loves jazz");
     expect(chipsContainer.textContent).toContain("Japanese");
   });
-
-  it("renders 'Miles Davis' chip within taste chips container", () => {
-    renderTab();
-    const chipsContainer = screen.getByTestId("taste-chips");
-    expect(chipsContainer.textContent).toContain("Miles Davis");
-  });
 });
 
 // ---------------------------------------------------------------------------
-// Tests: Consumption state
+// Tests: Recent works panel
 // ---------------------------------------------------------------------------
 
-describe("ButlerLifestyleTasteTab — consumption state", () => {
+describe("ButlerLifestyleTasteTab — recent works panel", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     setupWithData();
   });
   afterEach(() => cleanup());
 
-  it("renders consumption list", () => {
+  it("renders the recent works list", () => {
     renderTab();
-    expect(screen.getByTestId("consumption-list")).toBeDefined();
+    expect(screen.getByTestId("recent-works-list")).toBeDefined();
   });
 
-  it("renders 3 consumption items", () => {
+  it("renders an item per fetched work", () => {
     renderTab();
-    const items = screen.getAllByTestId("consumption-item");
-    expect(items.length).toBe(3);
+    const items = screen.getAllByTestId("recent-work-item");
+    expect(items.length).toBe(2);
   });
 
-  it("renders 'Succession' with 'watching' label within consumption list", () => {
+  it("renders work titles within the list", () => {
     renderTab();
-    const list = screen.getByTestId("consumption-list");
-    expect(list.textContent).toContain("Succession");
-    expect(list.textContent).toContain("watching");
-  });
-
-  it("renders 'The Brothers Karamazov' with 'reading' label within consumption list", () => {
-    renderTab();
-    const list = screen.getByTestId("consumption-list");
-    expect(list.textContent).toContain("The Brothers Karamazov");
-    expect(list.textContent).toContain("reading");
-  });
-
-  it("renders 'Elden Ring' with 'playing' label within consumption list", () => {
-    renderTab();
-    const list = screen.getByTestId("consumption-list");
-    expect(list.textContent).toContain("Elden Ring");
-    expect(list.textContent).toContain("playing");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Tests: Recent additions
-// ---------------------------------------------------------------------------
-
-describe("ButlerLifestyleTasteTab — recent additions", () => {
-  beforeEach(() => {
-    vi.resetAllMocks();
-    setupWithData();
-  });
-  afterEach(() => cleanup());
-
-  it("renders recent additions list", () => {
-    renderTab();
-    expect(screen.getByTestId("recent-additions-list")).toBeDefined();
-  });
-
-  it("renders up to 10 items", () => {
-    renderTab();
-    const items = screen.getAllByTestId("recent-addition-item");
-    expect(items.length).toBeLessThanOrEqual(10);
-    expect(items.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it("renders all 7 facts from ALL_RECALL_FACTS (fewer than 10)", () => {
-    renderTab();
-    const items = screen.getAllByTestId("recent-addition-item");
-    expect(items.length).toBe(ALL_RECALL_FACTS.length);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Tests: Weekly digest archive (stub)
-// ---------------------------------------------------------------------------
-
-describe("ButlerLifestyleTasteTab — weekly digest archive stub", () => {
-  beforeEach(() => {
-    vi.resetAllMocks();
-    setupWithData();
-  });
-  afterEach(() => cleanup());
-
-  it("renders the empty-state digest message", () => {
-    renderTab();
-    expect(screen.getByTestId("digest-empty-state")).toBeDefined();
-  });
-
-  it("shows 'No weekly digests yet.' text", () => {
-    renderTab();
-    expect(screen.getByText("No weekly digests yet.")).toBeDefined();
+    const list = screen.getByTestId("recent-works-list");
+    expect(list.textContent).toContain("Song A");
+    expect(list.textContent).toContain("Song B");
   });
 });
 
@@ -482,24 +304,20 @@ describe("ButlerLifestyleTasteTab — empty state", () => {
   });
   afterEach(() => cleanup());
 
-  it("shows empty state message for taste summary", () => {
+  it("shows empty state message for taste verdicts", () => {
     renderTab();
-    expect(screen.getByText("No taste preferences recorded yet.")).toBeDefined();
+    expect(screen.getByText("No taste verdicts recorded yet.")).toBeDefined();
   });
 
-  it("shows empty state message for consumption state", () => {
+  it("shows empty state message for recent works", () => {
     renderTab();
-    expect(screen.getByText("No active consumption tracked.")).toBeDefined();
+    expect(screen.getByText("No works recorded yet.")).toBeDefined();
   });
 
-  it("shows empty state message for recent additions", () => {
+  it("shows zeroed KPI values", () => {
     renderTab();
-    expect(screen.getByText("No facts logged yet.")).toBeDefined();
-  });
-
-  it("still renders digest stub in empty state", () => {
-    renderTab();
-    expect(screen.getByText("No weekly digests yet.")).toBeDefined();
+    const kpiItems = screen.getAllByTestId("kpi-item");
+    expect(kpiItems[0].textContent).toContain("0");
   });
 });
 
@@ -522,9 +340,8 @@ describe("ButlerLifestyleTasteTab — loading state", () => {
 
   it("does not show empty-state text while loading", () => {
     renderTab();
-    expect(screen.queryByText("No taste preferences recorded yet.")).toBeNull();
-    expect(screen.queryByText("No active consumption tracked.")).toBeNull();
-    expect(screen.queryByText("No facts logged yet.")).toBeNull();
+    expect(screen.queryByText("No taste verdicts recorded yet.")).toBeNull();
+    expect(screen.queryByText("No works recorded yet.")).toBeNull();
   });
 
   it("does not show error banner while loading", () => {
@@ -547,22 +364,12 @@ describe("ButlerLifestyleTasteTab — error state", () => {
     expect(screen.getByTestId("taste-load-error")).toBeDefined();
   });
 
-  it("shows error line in KPI strip when all queries fail", () => {
+  it("shows error lines in each panel when all queries fail", () => {
     vi.resetAllMocks();
     setupError();
     renderTab();
     const errorLines = screen.getAllByTestId("error-state-line");
-    expect(errorLines.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it("shows error lines in all data panels when the consolidated fetch fails", () => {
-    vi.resetAllMocks();
-    // All three panel subscribers read from the same cache entry — a single
-    // fetch failure propagates to all panels simultaneously.
-    setupError();
-    renderTab();
-    const errorLines = screen.getAllByTestId("error-state-line");
-    // KPI strip + taste summary + consumption state each render an error line.
+    // KPI strip + taste verdicts + recent works each render an error line.
     expect(errorLines.length).toBeGreaterThanOrEqual(3);
   });
 });

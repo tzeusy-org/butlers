@@ -1,0 +1,191 @@
+---
+name: butler-tool-review
+description: Deep audit of every butler's MCP tool surface — tool count per module, historical usage analysis from session data, docstring quality for LLM explainability, failure mode documentation with actionable error messages, and tool group configuration. Use when asked to review butler tools, audit tool counts, check docstring quality, review error messages, find unused tools, or optimize the tool surface. Also use when onboarding a new module to ensure its tools meet quality standards.
+metadata:
+  owner: tze
+  authors:
+    - tze
+    - Claude
+  status: active
+  last_reviewed: "2026-09-06"
+---
+
+# Butler Tool Review
+
+Comprehensive audit of the MCP tool surface across all butlers. Produces a structured report covering tool inventory, docstring quality, error message quality, and group configuration.
+
+## Support files
+
+- [references/tool-budget.md](references/tool-budget.md) — core registration gates and group-review guidance. Load in Phase 1 (inventory) and Phase 6 (group config review); derive counts from live/configured behavior.
+- [references/quality-patterns.md](references/quality-patterns.md) — before/after fix examples for docstrings and error messages. Load in Phase 2 and Phase 3 when writing up specific issues or fixes.
+- [references/historical-usage-audit.md](references/historical-usage-audit.md) — DB connection details, SQL queries, and result-interpretation rules for Phase 7. Load only when running Phase 7.
+- [references/subagent-prompts.md](references/subagent-prompts.md) — copy-ready dispatch prompts for the Phase 1/2/3/7 subagents. Load when dispatching those subagents.
+
+## Execution Strategy
+
+**Use subagents per butler or module to avoid context bloat.** Each butler has 30-150 tools across multiple modules. Loading all tools into one context is wasteful. Instead:
+
+1. Dispatch one Explore subagent per butler (or per large module) to gather raw data
+2. Collect results, then synthesize the final report in the main context
+3. For docstring/error audits on large modules (>20 tools), use a dedicated subagent per module
+
+## Audit Phases
+
+### Phase 1: Inventory
+
+For each butler in `roster/*/butler.toml`:
+
+1. Read butler.toml — get enabled modules and configured `groups`
+2. For an actual live core inventory, query effective `runtime_config` and/or
+   list the live MCP surface, then use source registration to classify
+   group/direct gates. `runtime_seed` is first-boot input only, not evidence of
+   current groups. If live state is unavailable, report a configured
+   maximum/source inventory explicitly, never as the effective surface — see
+   registration source for gate semantics.
+3. Collect module registrations with the effective module `groups` config;
+   derive counts from that behavior rather than a hand-maintained table.
+4. Produce per-butler inventory table
+
+**Output format:**
+```
+| Butler | Module | Groups | Tools | Total |
+|---|---|---|---:|---:|
+| {butler} | core | {derived groups} | {derived} | |
+| | {module} | {effective groups} | {derived} | |
+```
+
+### Phase 2: Docstring Quality
+
+For each module meeting the review threshold (normally >=10 derived tools), dispatch a subagent to read the tool definitions and assess each docstring:
+
+- **Purpose**: First line clearly states what the tool does
+- **Parameters**: All params documented with types and allowed values
+- **Return value**: Return schema described (keys, types, status codes)
+- **LLM guidance**: Helps an LLM decide WHEN to use this tool vs alternatives
+- **Examples**: Complex params have usage examples
+
+Rate each: `GOOD` / `NEEDS_WORK` / `MISSING`. See [references/quality-patterns.md](references/quality-patterns.md) for before/after fix examples.
+
+**Output format:**
+```
+| Module | Tool | Rating | Issues |
+|---|---|---|---|
+| memory | memory_search | GOOD | — |
+| memory | memory_store_fact | NEEDS_WORK | Missing return schema |
+```
+
+### Phase 3: Error Message Quality
+
+For each module with >=10 tools, dispatch a subagent to find all error return paths and assess:
+
+- **Actionable**: Tells the LLM what to do differently on the next call
+- **Specific**: Names the parameter or value that failed
+- **Retryable**: Indicates whether the operation can be retried
+- **No bare exceptions**: Avoids generic `str(exc)` without context
+
+**Output format:**
+```
+| Module | Tool | Error Path | Quality | Issue |
+|---|---|---|---|---|
+| finance | record_transaction | missing amount | GOOD | — |
+| memory | memory_store_fact | predicate validation | BAD | Generic str(exc), no hint |
+```
+
+### Phase 4: Tool Overlap Detection
+
+Flag tools on the same butler that have overlapping functionality (confuses the model into picking the wrong one). Common patterns:
+
+- Module-specific fact tools vs `memory_store_fact` (e.g., finance SPO tools)
+- Multiple "list" tools with similar signatures across modules
+- `route` vs `route_to_butler` vs `route.execute` on switchboard
+
+For each overlap found, report which tools conflict and recommend consolidation or clearer disambiguation in docstrings.
+
+### Phase 5: Token Cost Estimation
+
+Estimate per-butler token overhead from tool descriptions. Tool schemas get serialized into the model context at discovery time.
+
+- Rule of thumb: 1 tool ≈ 100-400 tokens depending on docstring length and parameter count
+- Sum estimated tokens per butler; flag butlers exceeding ~15k tool tokens
+- Identify the most expensive individual tools (verbose docstrings, many params)
+
+This matters more than raw tool count — 40 terse tools may cost less than 30 verbose ones.
+
+### Phase 6: Group Configuration Review
+
+For each butler, verify:
+
+1. All modules with group support have `groups` configured in butler.toml
+2. Cross-cutting modules pruned appropriately (memory, calendar, approvals, etc.)
+3. Domain modules on their specialist butler keep ALL groups (ownership principle)
+4. Report estimated savings if any module is unconfigured
+
+Derive groups from registration source and effective config; use
+[references/tool-budget.md](references/tool-budget.md) only for principles.
+
+### Phase 7: Historical Usage Audit
+
+Session history is one LLM-use signal and source of candidate evidence. It is
+neither a complete ownership inventory nor primary removal authority. Before
+classifying a zero-session tool as eligible for removal review, search
+repository call sites plus roster config, API, connector, and scheduler use.
+Infrastructure and server-to-server tools often have zero session calls; the
+examples in `references/historical-usage-audit.md` are non-exhaustive.
+
+See [references/historical-usage-audit.md](references/historical-usage-audit.md) for connection details, exact SQL, candidate-evidence rules, and output format.
+
+### Phase 8: MCP Connection Reliability
+
+Query recent session records for MCP connection failures (Codex CLI intermittently fails to discover tools):
+
+```sql
+-- via dashboard API: GET /api/butlers/{name}/sessions?limit=50
+-- then check process_log for mcp_connection_failed
+```
+
+For each butler, report:
+- Total sessions sampled
+- Sessions with `mcp_connection_failed: true`
+- Retry success rate (`retry_succeeded: true` / `retry_attempted: true`)
+- Flag butlers with >10% MCP failure rate
+
+### Phase 9: Report
+
+Synthesize into a single structured report. **Historical usage data (Phase 7)
+is candidate evidence of LLM-facing use, not removal authority.** Each
+eligibility recommendation records the required non-session consumer and
+contract searches plus whether explicit removal authority exists.
+
+```markdown
+## Tool Surface Audit Report
+
+### Summary
+| Butler | Type | Registered Tools | LLM Used (30d) | Eligibility Candidates | Est. Token Overhead |
+
+### Removal Eligibility Candidates (highest impact)
+For each zero-session candidate, record the repository, roster-config, API,
+connector, scheduler, RFC, OpenSpec, manifesto, role-contract, scheduled
+cadence, and rare-recovery evidence. Group evidence-complete candidates by
+module, and report removal authority separately:
+| Module | Evidence-complete Candidates | Removal Authority |
+| email | email_send_message, ... (4) | Not granted — no removal action |
+| memory | memory_confirm, ... (3) | Granted by {decision} — prune named group only |
+
+### Docstring / Error Issues
+(prioritize actively used tools; retain required infrastructure tools even when
+they have no session calls)
+
+### Recommendations
+1. Removal eligibility candidates (evidence matrix plus explicit authority status)
+2. Group-pruning candidates (partial LLM usage plus consumer and authority review)
+3. Core group/configuration recommendations (groups whose registration or
+   role/name gates should be reviewed against actual usage and doctrine)
+4. Docstring/error fixes (for surviving tools only)
+
+### Per-Butler Details
+(full tool listings with usage counts per butler)
+```
+
+## Subagent Prompt Templates
+
+Copy-ready dispatch prompts for the Phase 1 (inventory), Phase 2 (docstring), Phase 3 (error), and Phase 7 (historical usage) subagents live in [references/subagent-prompts.md](references/subagent-prompts.md) — load it when dispatching a subagent for those phases.

@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 from fastmcp import FastMCP as RuntimeFastMCP
 
-from butlers.config import load_config
+from butlers.config import ConfigError, load_config
 from butlers.daemon import ButlerDaemon
 from butlers.modules.approvals.command_contracts import ApprovalCommandContractError
 from butlers.modules.approvals.module import ApprovalsConfig, ApprovalsModule
@@ -56,6 +56,20 @@ class _UnexpectedMetadataModule:
 
     def tool_metadata(self) -> dict[str, ToolMeta]:
         raise AssertionError("ToolMeta must not be collected without an approvals module")
+
+
+def _register_stub_tools(mcp: RuntimeFastMCP, names: list[str]) -> None:
+    """Register no-op tools so validate_approval_config sees them as known.
+
+    Lets tests exercise a single module's gate wiring without registering
+    every module a real roster butler activates.
+    """
+    for name in names:
+
+        async def _stub() -> dict:
+            return {}
+
+        mcp.tool(name=name)(_stub)
 
 
 def _approval_wiring_daemon(
@@ -125,10 +139,12 @@ async def test_enabled_gates_receive_the_deterministic_approval_push_runtime(
     monkeypatch.setattr("butlers.daemon.apply_approval_gates", apply_gates)
 
     warn_if_secret_missing = AsyncMock()
+    mcp = RuntimeFastMCP("test-messenger")
+    _register_stub_tools(mcp, list(config.modules["approvals"]["gated_tools"]))
     daemon = _approval_wiring_daemon(
         "messenger",
         [_MetadataModule(), approvals],
-        mcp=RuntimeFastMCP("test-messenger"),
+        mcp=mcp,
     )
     daemon.config = config
     monkeypatch.setattr(daemon, "_build_approval_push_runtime", lambda: push_runtime)
@@ -156,6 +172,56 @@ async def test_direct_owner_registry_validation_cannot_be_skipped_by_lightweight
     )
 
     with pytest.raises(ApprovalCommandContractError, match="connector_disconnect"):
+        await ButlerDaemon._apply_approval_gates(daemon)
+
+
+async def test_startup_rejects_gated_tool_that_no_module_registered() -> None:
+    """bu-0edh2: real daemon startup fails closed on an unregistered gated tool.
+
+    validate_approval_config() must actually run inside _apply_approval_gates(),
+    not just be exercised by a unit test that calls it directly.
+    """
+    approvals = _ApprovalsModuleProbe()
+    daemon = SimpleNamespace(
+        config=SimpleNamespace(
+            name="home",
+            modules={
+                "approvals": {
+                    "enabled": True,
+                    "gated_tools": {"phantom_delete_everything": {}},
+                }
+            },
+        ),
+        _active_modules=[approvals],
+        mcp=RuntimeFastMCP("home-unregistered-gated-tool"),
+    )
+
+    with pytest.raises(ConfigError, match="phantom_delete_everything"):
+        await ButlerDaemon._apply_approval_gates(daemon)
+
+
+class _DeclaredWriteToolModule:
+    name = "spotify"
+
+    def tool_metadata(self) -> dict[str, ToolMeta]:
+        return {"spotify_play": ToolMeta(arg_sensitivities={"_write": True})}
+
+
+async def test_startup_rejects_chat_reachable_write_tool_missing_gated_entry() -> None:
+    """bu-0edh2: real daemon startup fails closed on an ungated declared write tool."""
+    approvals = _ApprovalsModuleProbe()
+    mcp = RuntimeFastMCP("home-ungated-write-tool")
+    _register_stub_tools(mcp, ["spotify_play"])
+    daemon = SimpleNamespace(
+        config=SimpleNamespace(
+            name="home",
+            modules={"approvals": {"enabled": True, "gated_tools": {}}},
+        ),
+        _active_modules=[_DeclaredWriteToolModule(), approvals],
+        mcp=mcp,
+    )
+
+    with pytest.raises(ConfigError, match="spotify_play"):
         await ButlerDaemon._apply_approval_gates(daemon)
 
 
@@ -243,6 +309,11 @@ async def test_messenger_registered_email_reply_replays_approved_parked_command(
     }
 
     await daemon._register_module_tools()
+    registered = {tool.name for tool in await daemon.mcp.list_tools()}
+    _register_stub_tools(
+        daemon.mcp,
+        [name for name in config.modules["approvals"]["gated_tools"] if name not in registered],
+    )
     reply = AsyncMock(return_value={"status": "sent", "thread_id": "gmail-thread-7"})
     monkeypatch.setattr(email, "_reply_to_thread", reply)
     await daemon._apply_approval_gates()
@@ -316,6 +387,11 @@ async def test_messenger_whatsapp_replay_respects_runtime_send_policy(
     }
 
     await daemon._register_module_tools()
+    registered = {tool.name for tool in await daemon.mcp.list_tools()}
+    _register_stub_tools(
+        daemon.mcp,
+        [name for name in config.modules["approvals"]["gated_tools"] if name not in registered],
+    )
     send = AsyncMock(return_value={"status": "sent", "message_id": "wa-7"})
     monkeypatch.setattr(whatsapp, "_send_message", send)
     await daemon._apply_approval_gates()

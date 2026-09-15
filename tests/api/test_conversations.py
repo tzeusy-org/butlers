@@ -19,7 +19,9 @@ search_path/schema bugs on main).
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
@@ -28,14 +30,18 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
+from butlers.api.chat_stream import chat_stream_channel
 from butlers.api.conversation_envelope import build_dashboard_envelope
 from butlers.api.conversations import (
+    conversation_get_by_id_any_butler,
     conversation_get_or_create_by_thread,
     conversation_reply_create,
     conversation_search,
     conversation_set_routed_butler,
+    message_create,
     message_create_idempotent,
     message_find_reply_since,
+    message_set_session_id_if_null,
     resolve_resume_handle,
 )
 from butlers.api.db import DatabaseManager
@@ -44,6 +50,7 @@ from butlers.api.routers import conversations as conversations_router
 from butlers.api.routers.conversations import (
     _SWITCHBOARD_BUTLER,
     _get_db_manager,
+    _persist_dashboard_user_message,
     _resolve_session_id,
     _stream_conversation_response,
     _submit_to_switchboard,
@@ -129,6 +136,36 @@ async def test_list_conversations_200_and_503(app):
     ) as client:
         resp_503 = await client.get(f"/api/butlers/{_BUTLER}/conversations")
     assert resp_503.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# Cross-butler conversation lookup by id — GET /api/conversations/{id}
+# (bu-0ynlk.11 — /chat/:conversationId, cmdk recall)
+# ---------------------------------------------------------------------------
+
+
+async def test_get_conversation_by_id_returns_thread_for_any_butler_and_404s_when_unknown(
+    app,
+) -> None:
+    row = _make_conversation_row()
+    _app_with_mock_db(app, fetchrow_result=row)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/conversations/{_CONV_ID}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["id"] == str(_CONV_ID)
+    assert body["butler_name"] == _BUTLER
+    # Resolved by id alone -- the caller does not know (or pass) butler_name.
+    assert "latest_assistant_reply_at" not in body
+
+    _app_with_mock_db(app, fetchrow_result=None)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp_404 = await client.get(f"/api/conversations/{uuid4()}")
+    assert resp_404.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -382,6 +419,85 @@ async def test_conversation_reply_create_returns_none_for_missing_conversation()
     pool.execute.assert_not_awaited()
 
 
+async def test_conversation_reply_create_persists_session_id_and_tool_calls():
+    """bu-0ynlk.5: conversation_reply's ambient session id and this turn's
+    tool calls flow through into the persisted message row."""
+    pool = AsyncMock()
+    pool.fetchval = AsyncMock(return_value=1)  # conversation exists
+    session_id = uuid4()
+    tool_calls = [{"name": "finance.get_budget"}]
+
+    await conversation_reply_create(
+        pool,
+        _CONV_ID,
+        message="You spent $312.",
+        session_id=session_id,
+        tool_calls=tool_calls,
+    )
+
+    insert_sql, *insert_args = pool.execute.await_args_list[0].args
+    assert "INSERT INTO public.dashboard_messages" in insert_sql
+    assert session_id in insert_args
+    assert tool_calls in insert_args
+
+
+async def test_conversation_reply_create_defaults_session_id_and_tool_calls_to_none():
+    pool = AsyncMock()
+    pool.fetchval = AsyncMock(return_value=1)
+
+    await conversation_reply_create(pool, _CONV_ID, message="Recorded — correct?")
+
+    _insert_sql, *insert_args = pool.execute.await_args_list[0].args
+    assert None in insert_args  # session_id / tool_calls both absent
+
+
+async def test_conversation_reply_create_publishes_reply_ready_notify_when_request_id_present():
+    """bu-0ynlk.7: a reply tied to a request_id wakes that request's
+    chat-stream SSE listener via NOTIFY instead of leaving it to the
+    fixed-interval safety-net poll alone."""
+    pool = AsyncMock()
+    pool.fetchval = AsyncMock(return_value=1)  # conversation exists
+    request_id = uuid4()
+
+    await conversation_reply_create(
+        pool, _CONV_ID, message="Recorded — correct?", request_id=request_id
+    )
+
+    # message_create()'s INSERT, the count-bump UPDATE, then the NOTIFY.
+    assert pool.execute.await_count == 3
+    notify_sql, notify_channel, notify_payload = pool.execute.await_args_list[2].args
+    assert "pg_notify" in notify_sql
+    assert notify_channel == chat_stream_channel(request_id)
+    payload = json.loads(notify_payload)
+    assert payload["type"] == "reply_ready"
+
+
+async def test_conversation_reply_create_skips_notify_without_a_request_id():
+    """No request_id means no dashboard SSE turn is watching — publishing a
+    NOTIFY would just be channel-name-invalid noise, so it's skipped."""
+    pool = AsyncMock()
+    pool.fetchval = AsyncMock(return_value=1)
+
+    await conversation_reply_create(pool, _CONV_ID, message="Recorded — correct?")
+
+    # Only the INSERT and the count-bump UPDATE — no NOTIFY.
+    assert pool.execute.await_count == 2
+
+
+async def test_message_set_session_id_if_null_updates_only_when_null():
+    pool = AsyncMock()
+    message_id = uuid4()
+    session_id = uuid4()
+
+    await message_set_session_id_if_null(pool, message_id, session_id=session_id)
+
+    pool.execute.assert_awaited_once()
+    sql, *args = pool.execute.await_args.args
+    assert "session_id = $2" in sql
+    assert "session_id IS NULL" in sql
+    assert args == [message_id, session_id]
+
+
 async def test_message_create_idempotent_returns_existing_message_without_incrementing():
     message_id = uuid4()
     existing = {
@@ -413,6 +529,100 @@ async def test_message_create_idempotent_returns_existing_message_without_increm
     assert is_new is False
     assert message == existing
     assert pool.fetchrow.await_count == 2
+
+
+# ---------------------------------------------------------------------------
+# page_context / captured_at persistence (bu-0ynlk.4)
+# ---------------------------------------------------------------------------
+
+
+async def test_message_create_persists_page_context_and_defaults_captured_at():
+    pool = AsyncMock()
+    page_context = {"route": "/spend", "query_params": {"window": "week"}}
+
+    result = await message_create(
+        pool,
+        conversation_id=_CONV_ID,
+        role="user",
+        content="why is this so expensive",
+        page_context=page_context,
+    )
+
+    insert_sql, *insert_args = pool.execute.await_args.args
+    assert "page_context" in insert_sql
+    assert "captured_at" in insert_sql
+    assert page_context in insert_args
+    assert result["page_context"] == page_context
+    assert result["captured_at"] is not None
+
+
+async def test_message_create_leaves_captured_at_null_without_page_context():
+    pool = AsyncMock()
+
+    result = await message_create(pool, conversation_id=_CONV_ID, role="user", content="hello")
+
+    assert result["page_context"] is None
+    assert result["captured_at"] is None
+
+
+async def test_message_create_idempotent_retry_reuses_the_originally_captured_page_context():
+    """A retry must never re-capture: the first (winning) write's page_context
+    is what a later retry sees, even if the retry call itself passes a
+    different one (bu-0ynlk.4 — the router builds the ingest envelope from
+    this returned dict, not from the retry request body)."""
+    message_id = uuid4()
+    original_page_context = {"route": "/spend", "query_params": {"window": "week"}}
+    existing = {
+        "id": message_id,
+        "conversation_id": _CONV_ID,
+        "role": "user",
+        "content": "why is this so expensive",
+        "created_at": _NOW,
+        "session_id": None,
+        "model_name": None,
+        "input_tokens": None,
+        "output_tokens": None,
+        "duration_ms": None,
+        "tool_calls": None,
+        "error": None,
+        "request_id": None,
+        "sources": None,
+        "page_context": original_page_context,
+        "captured_at": _NOW,
+    }
+    pool = AsyncMock()
+    # First fetchrow call is the INSERT ... ON CONFLICT DO NOTHING RETURNING —
+    # simulate a conflict (None), then the fallback SELECT returns the
+    # originally-persisted row regardless of this call's own page_context arg.
+    pool.fetchrow = AsyncMock(side_effect=[None, existing])
+
+    message, is_new = await message_create_idempotent(
+        pool,
+        message_id=message_id,
+        conversation_id=_CONV_ID,
+        role="user",
+        content="why is this so expensive",
+        page_context={"route": "/spend", "query_params": {"window": "different-retry-value"}},
+    )
+
+    assert is_new is False
+    assert message["page_context"] == original_page_context
+
+
+async def test_persist_dashboard_user_message_forwards_page_context_on_first_write():
+    pool = AsyncMock()
+    page_context = {"route": "/entities/concentration", "query_params": {"predicate": "child-of"}}
+
+    message, is_new = await _persist_dashboard_user_message(
+        pool,
+        conversation_id=_CONV_ID,
+        message="Alice is child-of Bob",
+        message_id=None,
+        page_context=page_context,
+    )
+
+    assert is_new is True
+    assert message["page_context"] == page_context
 
 
 async def test_conversation_set_routed_butler_scopes_to_null_column():
@@ -456,6 +666,36 @@ async def test_message_find_reply_since_deserializes_tool_calls_json_string():
     result = await message_find_reply_since(pool, _CONV_ID, since=_NOW)
 
     assert result["tool_calls"] == [{"name": "conversation_reply"}]
+
+
+# ---------------------------------------------------------------------------
+# bu-0ynlk.5: conversation_get_by_id_any_butler (dashboard-channel routing fix)
+# ---------------------------------------------------------------------------
+
+
+async def test_conversation_get_by_id_any_butler_returns_row_regardless_of_owner():
+    """id-only lookup — no butler_name filter, since classification may route
+    a dashboard turn to a different butler than the one the row was created
+    under."""
+    row = _make_conversation_row(butler_name="switchboard")
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(return_value=row)
+
+    result = await conversation_get_by_id_any_butler(pool, _CONV_ID)
+
+    assert result == row
+    sql, *args = pool.fetchrow.await_args.args
+    assert "butler_name" not in sql.split("WHERE")[-1]
+    assert args == [_CONV_ID]
+
+
+async def test_conversation_get_by_id_any_butler_returns_none_when_missing():
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(return_value=None)
+
+    result = await conversation_get_by_id_any_butler(pool, _CONV_ID)
+
+    assert result is None
 
 
 # ---------------------------------------------------------------------------
@@ -728,6 +968,154 @@ async def test_create_conversation_streams_conversation_reply_message(app):
     # model_name/tokens are null — persisted mid-session, before the routed
     # session's own accounting exists.
     assert '"model_name": null' in resp.text
+
+
+async def test_create_conversation_backfills_session_id_when_reply_row_lacks_one(app):
+    """bu-0ynlk.5: conversation_reply best-effort-stamps session_id at write
+    time; when that ambient context was absent, the poller must resolve it
+    via request_id -> sessions.id on the routed butler, persist it, and
+    include it on the emitted message_complete event."""
+    request_id = str(uuid4())
+    resolved_session_id = uuid4()
+    mock_client = MagicMock()
+    mock_client.call_tool = AsyncMock(
+        return_value=_FakeMcpResult(
+            {
+                "request_id": request_id,
+                "status": "accepted",
+                "duplicate": False,
+                "triage_decision": "route_to",
+                "triage_target": "finance",
+            }
+        )
+    )
+    mgr = _make_mcp_manager(mock_client)
+    reply_row = _make_reply_row()  # session_id is None — ambient context absent
+    app, shared_pool = _app_with_mock_db_and_mcp(app, mcp_manager=mgr, reply_row=reply_row)
+
+    mock_db = app.dependency_overrides[_get_db_manager]()
+    butler_pool = AsyncMock()
+    butler_pool.fetchval = AsyncMock(return_value=resolved_session_id)
+    mock_db.pool = MagicMock(return_value=butler_pool)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/butlers/finance/conversations",
+            json={"message": "Alice is Bob's sister"},
+        )
+
+    assert resp.status_code == 200
+    assert f'"session_id": "{resolved_session_id}"' in resp.text
+    butler_pool.fetchval.assert_awaited_once()
+    backfill_calls = [
+        call
+        for call in shared_pool.execute.await_args_list
+        if "dashboard_messages" in call.args[0] and "session_id = $2" in call.args[0]
+    ]
+    assert len(backfill_calls) == 1
+    assert backfill_calls[0].args[1:] == (reply_row["id"], resolved_session_id)
+
+
+async def test_create_conversation_keeps_ambient_session_id_without_resolving(app):
+    """When conversation_reply already stamped session_id, the poller must
+    not attempt the request_id -> sessions.id fallback resolution at all."""
+    request_id = str(uuid4())
+    ambient_session_id = uuid4()
+    mock_client = MagicMock()
+    mock_client.call_tool = AsyncMock(
+        return_value=_FakeMcpResult(
+            {
+                "request_id": request_id,
+                "status": "accepted",
+                "duplicate": False,
+                "triage_decision": "route_to",
+                "triage_target": "finance",
+            }
+        )
+    )
+    mgr = _make_mcp_manager(mock_client)
+    reply_row = _make_reply_row(session_id=ambient_session_id)
+    app, shared_pool = _app_with_mock_db_and_mcp(app, mcp_manager=mgr, reply_row=reply_row)
+
+    mock_db = app.dependency_overrides[_get_db_manager]()
+    mock_db.pool = MagicMock(side_effect=AssertionError("must not resolve when already stamped"))
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/butlers/finance/conversations",
+            json={"message": "Alice is Bob's sister"},
+        )
+
+    assert resp.status_code == 200
+    assert f'"session_id": "{ambient_session_id}"' in resp.text
+
+
+async def test_create_conversation_streams_sources_on_the_message_complete_event(app):
+    request_id = str(uuid4())
+    mock_client = MagicMock()
+    mock_client.call_tool = AsyncMock(
+        return_value=_FakeMcpResult(
+            {
+                "request_id": request_id,
+                "status": "accepted",
+                "duplicate": False,
+                "triage_decision": "route_to",
+                "triage_target": "finance",
+            }
+        )
+    )
+    mgr = _make_mcp_manager(mock_client)
+    reply_row = _make_reply_row(
+        content="You spent $412 on groceries this month.",
+        sources=["finance:transactions (category=groceries, month=2026-09)"],
+    )
+    app, shared_pool = _app_with_mock_db_and_mcp(app, mcp_manager=mgr, reply_row=reply_row)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/butlers/finance/conversations",
+            json={"message": "how much did I spend on groceries this month?"},
+        )
+
+    assert resp.status_code == 200
+    assert "event: message_complete" in resp.text
+    assert '"sources": ["finance:transactions (category=groceries, month=2026-09)"]' in resp.text
+
+
+async def test_create_conversation_defaults_sources_to_empty_list_when_absent(app):
+    request_id = str(uuid4())
+    mock_client = MagicMock()
+    mock_client.call_tool = AsyncMock(
+        return_value=_FakeMcpResult(
+            {
+                "request_id": request_id,
+                "status": "accepted",
+                "duplicate": False,
+                "triage_decision": "route_to",
+                "triage_target": "finance",
+            }
+        )
+    )
+    mgr = _make_mcp_manager(mock_client)
+    reply_row = _make_reply_row()
+    app, shared_pool = _app_with_mock_db_and_mcp(app, mcp_manager=mgr, reply_row=reply_row)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/butlers/finance/conversations",
+            json={"message": "Alice is Bob's sister"},
+        )
+
+    assert resp.status_code == 200
+    assert '"sources": []' in resp.text
 
 
 async def test_create_conversation_retry_reuses_original_conversation_for_message_id(app):
@@ -1812,6 +2200,221 @@ async def test_stream_conversation_response_emits_keepalives_then_late_reply(mon
 
 
 # ---------------------------------------------------------------------------
+# Chat-stream NOTIFY plumbing (bu-0ynlk.7): token/phase forwarding, the
+# single-shot fallback, and NOTIFY-wake vs. safety-net-poll latency.
+# ---------------------------------------------------------------------------
+
+
+class _FakeChatStreamListener:
+    """Test double for ``ChatStreamListener`` — replays pre-queued envelopes.
+
+    Stands in for a real ``open_chat_stream_listener`` connection: a real
+    streaming-capable producer (or ``conversation_reply_create``'s
+    ``reply_ready`` wake) would publish these onto the request's NOTIFY
+    channel; this double lets a test drive that path without a real
+    Postgres LISTEN connection.
+    """
+
+    def __init__(self, envelopes: list[dict[str, object]]) -> None:
+        self._queue: asyncio.Queue = asyncio.Queue()
+        for envelope in envelopes:
+            self._queue.put_nowait(envelope)
+        self.closed = False
+
+    async def get(self, timeout: float) -> dict[str, object] | None:
+        try:
+            return await asyncio.wait_for(self._queue.get(), timeout=timeout)
+        except TimeoutError:
+            return None
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+def _token_events(events: list[str]) -> list[dict[str, object]]:
+    return [
+        json.loads(event.split("data: ", 1)[1])
+        for event in events
+        if event.startswith("event: token")
+    ]
+
+
+async def test_stream_forwards_token_deltas_from_a_streaming_publisher(monkeypatch):
+    """A streaming-capable producer's token deltas are forwarded live as they
+    arrive, and the client's accumulated content still ends up byte-for-byte
+    identical to the persisted reply row content (bu-0ynlk.7 AC1) — no
+    runtime adapter does this today (see butlers.api.chat_stream), so this
+    fakes the producer at the NOTIFY-listener seam."""
+    monkeypatch.setattr(conversations_router, "_POLL_INTERVAL_S", 0.01)
+
+    request_id = str(uuid4())
+    mock_client = MagicMock()
+    mock_client.call_tool = AsyncMock(
+        return_value=_FakeMcpResult(
+            {
+                "request_id": request_id,
+                "status": "accepted",
+                "triage_decision": "route_to",
+                "triage_target": "finance",
+            }
+        )
+    )
+    mgr = _make_mcp_manager(mock_client)
+
+    deltas = ["Hello ", "there, ", "this is streamed."]
+    full_text = "".join(deltas)
+    reply_row = _make_reply_row(content=full_text)
+
+    shared_pool = AsyncMock()
+    shared_pool.fetchrow = AsyncMock(side_effect=[None, None, None, reply_row])
+    shared_pool.execute = AsyncMock(return_value=None)
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.credential_shared_pool.return_value = shared_pool
+
+    fake_listener = _FakeChatStreamListener(
+        [{"type": "token", "data": {"content": delta}} for delta in deltas]
+    )
+    monkeypatch.setattr(
+        conversations_router, "open_chat_stream_listener", AsyncMock(return_value=fake_listener)
+    )
+
+    envelope = build_dashboard_envelope(
+        conversation_id=_CONV_ID, message_id=uuid4(), message_text="hi", pinned_target=None
+    )
+
+    events: list[str] = []
+    async for chunk in _stream_conversation_response(
+        request=_FakeRequest(),
+        butler_name=_SWITCHBOARD_BUTLER,
+        conversation_id=_CONV_ID,
+        message_created_at=_NOW - timedelta(seconds=1),
+        envelope=envelope,
+        db=mock_db,
+        mcp_mgr=mgr,
+    ):
+        events.append(chunk)
+
+    full_stream = "".join(events)
+    token_payloads = _token_events(events)
+    assert len(token_payloads) >= 3
+    assert "".join(t["content"] for t in token_payloads) == full_text
+    assert "event: message_complete" in full_stream
+    assert full_stream.index("event: token") < full_stream.index("event: message_complete")
+    assert fake_listener.closed
+
+
+async def test_stream_fallback_emits_exactly_one_token_event_without_a_producer(monkeypatch):
+    """Regression: when nothing publishes deltas — today's only real-world
+    case, since no runtime adapter streams incremental output — exactly one
+    token event carries the full reply, then message_complete, matching the
+    pre-bu-0ynlk.7 contract (AC2)."""
+    monkeypatch.setattr(conversations_router, "_POLL_INTERVAL_S", 0.01)
+
+    request_id = str(uuid4())
+    mock_client = MagicMock()
+    mock_client.call_tool = AsyncMock(
+        return_value=_FakeMcpResult(
+            {
+                "request_id": request_id,
+                "status": "accepted",
+                "triage_decision": "route_to",
+                "triage_target": "finance",
+            }
+        )
+    )
+    mgr = _make_mcp_manager(mock_client)
+    reply_row = _make_reply_row()
+    shared_pool = AsyncMock()
+    shared_pool.fetchrow = AsyncMock(return_value=reply_row)
+    shared_pool.execute = AsyncMock(return_value=None)
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.credential_shared_pool.return_value = shared_pool
+
+    envelope = build_dashboard_envelope(
+        conversation_id=_CONV_ID, message_id=uuid4(), message_text="hi", pinned_target=None
+    )
+
+    events: list[str] = []
+    async for chunk in _stream_conversation_response(
+        request=_FakeRequest(),
+        butler_name=_SWITCHBOARD_BUTLER,
+        conversation_id=_CONV_ID,
+        message_created_at=_NOW - timedelta(seconds=1),
+        envelope=envelope,
+        db=mock_db,
+        mcp_mgr=mgr,
+    ):
+        events.append(chunk)
+
+    token_payloads = _token_events(events)
+    assert len(token_payloads) == 1
+    assert token_payloads[0]["content"] == reply_row["content"]
+    full_stream = "".join(events)
+    assert full_stream.index("event: token") < full_stream.index("event: message_complete")
+
+
+async def test_stream_notify_wake_beats_the_safety_net_poll_interval(monkeypatch):
+    """A chat-stream NOTIFY wake (conversation_reply_create's reply_ready,
+    here faked at the listener seam) delivers message_complete far faster
+    than the fixed poll interval; with NOTIFY suppressed (no listener), the
+    safety-net poll still delivers it within that same configured window
+    (bu-0ynlk.7 AC3)."""
+    monkeypatch.setattr(conversations_router, "_POLL_INTERVAL_S", 0.2)
+
+    async def _run(*, use_listener: bool) -> float:
+        request_id = str(uuid4())
+        mock_client = MagicMock()
+        mock_client.call_tool = AsyncMock(
+            return_value=_FakeMcpResult(
+                {
+                    "request_id": request_id,
+                    "status": "accepted",
+                    "triage_decision": "route_to",
+                    "triage_target": "finance",
+                }
+            )
+        )
+        mgr = _make_mcp_manager(mock_client)
+        reply_row = _make_reply_row()
+        shared_pool = AsyncMock()
+        shared_pool.fetchrow = AsyncMock(side_effect=[None, reply_row])
+        shared_pool.execute = AsyncMock(return_value=None)
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.return_value = shared_pool
+
+        listener = (
+            _FakeChatStreamListener([{"type": "reply_ready", "data": {}}]) if use_listener else None
+        )
+        monkeypatch.setattr(
+            conversations_router, "open_chat_stream_listener", AsyncMock(return_value=listener)
+        )
+
+        envelope = build_dashboard_envelope(
+            conversation_id=_CONV_ID, message_id=uuid4(), message_text="hi", pinned_target=None
+        )
+
+        start = time.monotonic()
+        async for _ in _stream_conversation_response(
+            request=_FakeRequest(),
+            butler_name=_SWITCHBOARD_BUTLER,
+            conversation_id=_CONV_ID,
+            message_created_at=_NOW - timedelta(seconds=1),
+            envelope=envelope,
+            db=mock_db,
+            mcp_mgr=mgr,
+        ):
+            pass
+        return time.monotonic() - start
+
+    notify_elapsed = await _run(use_listener=True)
+    poll_elapsed = await _run(use_listener=False)
+
+    poll_interval = conversations_router._POLL_INTERVAL_S
+    assert notify_elapsed < poll_interval / 2
+    assert poll_interval <= poll_elapsed < poll_interval * 3
+
+
+# ---------------------------------------------------------------------------
 # _ACTIVE_TURNS registration lifecycle + POST .../cancel (bu-ep4ks.2)
 # ---------------------------------------------------------------------------
 
@@ -1822,6 +2425,19 @@ def _clear_active_turns():
     conversations_router._ACTIVE_TURNS.clear()
     yield
     conversations_router._ACTIVE_TURNS.clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_real_chat_stream_listener(monkeypatch):
+    """Never let this mocked-pool-only unit-test file attempt a real Postgres
+    LISTEN connection (bu-0ynlk.7) -- ``open_chat_stream_listener`` degrades
+    to poll-only (``None``) by default, exactly like an unreachable/absent
+    dedicated connection would in production. Tests exercising the NOTIFY
+    path override this per-test with a fake listener (see
+    ``_FakeChatStreamListener`` below)."""
+    monkeypatch.setattr(
+        conversations_router, "open_chat_stream_listener", AsyncMock(return_value=None)
+    )
 
 
 async def test_stream_conversation_response_registers_and_clears_active_turn():
@@ -1861,7 +2477,12 @@ async def test_stream_conversation_response_registers_and_clears_active_turn():
         db=mock_db,
         mcp_mgr=mgr,
     )
-    await anext(gen)  # advance past the Switchboard submission step
+    # Advance past the Switchboard submission step -- now several phase
+    # events (classifying/routed) precede _ACTIVE_TURNS registration
+    # (bu-0ynlk.7), so drain until it lands rather than assuming a fixed
+    # yield count.
+    while _CONV_ID not in conversations_router._ACTIVE_TURNS:
+        await anext(gen)
     assert conversations_router._ACTIVE_TURNS[_CONV_ID] == {
         "routed_butler": "finance",
         "request_id": request_id,
@@ -1907,7 +2528,8 @@ async def test_stream_conversation_response_registers_switchboard_for_pass_throu
         mcp_mgr=mgr,
     )
 
-    await anext(gen)
+    while _CONV_ID not in conversations_router._ACTIVE_TURNS:
+        await anext(gen)
 
     assert conversations_router._ACTIVE_TURNS[_CONV_ID] == {
         "routed_butler": _SWITCHBOARD_BUTLER,

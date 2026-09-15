@@ -3,7 +3,7 @@
  *
  * Rendered on ConnectorDetailPage for connector types in BATCH_CONNECTOR_TYPES
  * (telegram_user_client, whatsapp_user_client). Changes are submitted via
- * PATCH /connectors/:type/:identity/settings and take effect on the
+ * PATCH /api/ingestion/connectors/:type/:identity/settings and take effect on the
  * connector's next flush scanner cycle (no restart required).
  */
 

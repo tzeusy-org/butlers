@@ -1,13 +1,24 @@
+import { useEffect } from "react";
+
 import MemoryOverture from "@/components/memory/MemoryOverture";
 import MemoryBrowser from "@/components/memory/MemoryBrowser";
 import AttentionRail from "@/components/memory/AttentionRail";
 import HousekeepingBand from "@/components/memory/HousekeepingBand";
+import { usePageSubject } from "@/lib/page-context.tsx";
 
 // ---------------------------------------------------------------------------
 // MemoryPage
 // ---------------------------------------------------------------------------
 
 export default function MemoryPage() {
+  // Page-context enrichment (bu-0ynlk.4): a typed marker so a chat message
+  // sent from here (e.g. "that fact is wrong") is grounded to Memory even
+  // before a specific fact/rule/episode detail page is opened.
+  const setPageSubject = usePageSubject().set;
+  useEffect(() => {
+    setPageSubject({ visible_resource: { kind: "memory" }, visible_summary: "Memory" });
+  }, [setPageSubject]);
+
   return (
     <div className="space-y-6">
       {/* Overture (Bands 1 & 2): headline, Voice, KPI strip, pipeline band.

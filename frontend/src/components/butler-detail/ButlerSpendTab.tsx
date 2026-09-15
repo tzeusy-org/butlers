@@ -280,8 +280,14 @@ export default function ButlerSpendTab({ butlerName }: ButlerSpendTabProps) {
         ? formatCurrency(costPerSession)
         : "—";
 
-  // KPI 4: Tokens today in / out — per-butler via butler-scoped today summary
-  const inputTokens = todaySourceError ? 0 : (todaySummary?.data?.total_input_tokens ?? 0);
+  // KPI 4: Tokens today in / out — per-butler via butler-scoped today summary.
+  // "in" is uncached + cached input tokens -- total_input_tokens alone is the
+  // uncached bucket only, which previously understated true tokens bought on
+  // a heavily-cached model (bu-2jtfw.4).
+  const inputTokens = todaySourceError
+    ? 0
+    : (todaySummary?.data?.total_input_tokens ?? 0) +
+      (todaySummary?.data?.total_cached_input_tokens ?? 0);
   const outputTokens = todaySourceError ? 0 : (todaySummary?.data?.total_output_tokens ?? 0);
   const tokenValue = todayLoading
     ? "..."

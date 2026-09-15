@@ -81,6 +81,7 @@ function makeRule(overrides: Partial<MemoryRule> = {}): MemoryRule {
     last_evaluated_at: null,
     tags: [],
     metadata: {},
+    retired_at: null,
     ...overrides,
   }
 }

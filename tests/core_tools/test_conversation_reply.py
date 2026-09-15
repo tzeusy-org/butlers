@@ -139,6 +139,61 @@ async def test_conversation_reply_errors_when_persistence_raises(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# sources — answer-lane citation requirement (bu-0ynlk.2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("sources", [[], [""], ["   "]])
+async def test_empty_or_blank_sources_are_rejected_with_guidance(sources):
+    """An answer-lane reply claiming sources but providing none must error —
+    an unsourced 'answer' is indistinguishable from a fabricated one."""
+    tool = _register_and_grab(pool=AsyncMock())
+
+    result = await tool(conversation_id=str(uuid4()), message="The answer is 42", sources=sources)
+
+    assert result["status"] == "error"
+    assert "sources must contain only non-empty names" in result["error"]
+    assert "decline" in result["error"]
+
+
+async def test_omitted_sources_is_unaffected(monkeypatch):
+    """Confirm-loop/action-proposal replies never pass sources — the default
+    None must not trigger the answer-lane citation requirement."""
+    fake_create = AsyncMock(return_value={"id": uuid4(), "role": "assistant"})
+    monkeypatch.setattr("butlers.api.conversations.conversation_reply_create", fake_create)
+
+    tool = _register_and_grab(pool=AsyncMock())
+
+    result = await tool(conversation_id=str(uuid4()), message="Recorded — correct?")
+
+    assert result["status"] == "ok"
+    assert fake_create.await_args.kwargs["sources"] is None
+
+
+async def test_non_empty_sources_persists(monkeypatch):
+    conv_id = uuid4()
+    message_id = uuid4()
+    fake_create = AsyncMock(return_value={"id": message_id, "role": "assistant"})
+    monkeypatch.setattr("butlers.api.conversations.conversation_reply_create", fake_create)
+
+    tool = _register_and_grab(pool=AsyncMock())
+
+    result = await tool(
+        conversation_id=str(conv_id),
+        message="You spent $312 on groceries this month.",
+        sources=["finance.get_budget", "transaction#a1b2c3"],
+    )
+
+    assert result == {
+        "status": "ok",
+        "message_id": str(message_id),
+        "conversation_id": str(conv_id),
+    }
+    fake_create.assert_awaited_once()
+    assert fake_create.await_args.kwargs["sources"] == ["finance.get_budget", "transaction#a1b2c3"]
+
+
+# ---------------------------------------------------------------------------
 # _best_effort_request_id — ambient routing-context recovery, best-effort only
 # ---------------------------------------------------------------------------
 
@@ -175,3 +230,65 @@ async def test_best_effort_request_id_degrades_on_malformed_value(monkeypatch):
     )
 
     assert _best_effort_request_id() is None
+
+
+# ---------------------------------------------------------------------------
+# session_id / tool_calls stamping (bu-0ynlk.5)
+# ---------------------------------------------------------------------------
+
+
+async def test_conversation_reply_stamps_session_id_and_tool_calls(monkeypatch):
+    """With a runtime session context set, the persisted call must carry the
+    ambient session id and this turn's executed tool calls so far, reshaped
+    into the dashboard chat widget's MessageToolCall shape
+    ({id, name, arguments, result}) that ToolCallDetails.tsx renders."""
+    session_id = uuid4()
+    fake_create = AsyncMock(return_value={"id": uuid4(), "role": "assistant"})
+    monkeypatch.setattr("butlers.api.conversations.conversation_reply_create", fake_create)
+    monkeypatch.setattr(
+        "butlers.core_tools._conversation_reply.get_current_runtime_session_id",
+        lambda: str(session_id),
+    )
+    monkeypatch.setattr(
+        "butlers.core_tools._conversation_reply.peek_runtime_session_tool_calls",
+        lambda sid: (
+            [{"name": "finance.get_budget", "input": {"month": "2026-09"}, "result": {"ok": True}}]
+            if sid == str(session_id)
+            else []
+        ),
+    )
+
+    tool = _register_and_grab(pool=AsyncMock())
+
+    result = await tool(conversation_id=str(uuid4()), message="Recorded — correct?")
+
+    assert result["status"] == "ok"
+    fake_create.assert_awaited_once()
+    assert fake_create.await_args.kwargs["session_id"] == session_id
+    assert fake_create.await_args.kwargs["tool_calls"] == [
+        {
+            "id": None,
+            "name": "finance.get_budget",
+            "arguments": {"month": "2026-09"},
+            "result": {"ok": True},
+        }
+    ]
+
+
+async def test_conversation_reply_omits_session_id_and_tool_calls_without_context(monkeypatch):
+    """No ambient runtime session id -> both fields degrade to None, never
+    fabricated, and the tool call succeeds regardless."""
+    fake_create = AsyncMock(return_value={"id": uuid4(), "role": "assistant"})
+    monkeypatch.setattr("butlers.api.conversations.conversation_reply_create", fake_create)
+    monkeypatch.setattr(
+        "butlers.core_tools._conversation_reply.get_current_runtime_session_id",
+        lambda: None,
+    )
+
+    tool = _register_and_grab(pool=AsyncMock())
+
+    result = await tool(conversation_id=str(uuid4()), message="Recorded — correct?")
+
+    assert result["status"] == "ok"
+    assert fake_create.await_args.kwargs["session_id"] is None
+    assert fake_create.await_args.kwargs["tool_calls"] is None

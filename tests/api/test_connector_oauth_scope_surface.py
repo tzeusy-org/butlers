@@ -9,12 +9,12 @@ Covers:
 - Scope row construction (required/optional/sensitive/extra)
 - Per-connector applicability matrix completeness
 - Credential masking (no token values in scope/auth response fields)
-- Cross-module consistency: registry required ⊆ default OAuth flow scopes (catches drift)
+- Cross-module consistency: registry required ⊆ generic OAuth flow scopes, while Spotify's
+  connector-owned PKCE scope authority exactly matches its connector requirements
 """
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -32,30 +32,20 @@ from butlers.api.oauth_scope_registry import (
 
 
 def test_spotify_rotation_needed_is_normalized_to_interactive_reauth() -> None:
-    from butlers.api.router_discovery import _load_router_module
+    from butlers.api.routers import ingestion_connectors
 
-    module = _load_router_module(Path("roster/switchboard/api/router.py"), "switchboard_api_router")
-
-    with patch(
-        "switchboard_api_router.compute_auth_status",
-        return_value="rotation-needed",
-    ):
-        auth, _ = module._build_connector_auth_blocks("spotify", [], 1)
+    with patch.object(ingestion_connectors, "compute_auth_status", return_value="rotation-needed"):
+        auth, _ = ingestion_connectors._build_connector_auth_blocks("spotify", [], 1)
 
     assert auth.status == "needs_reauth"
     assert auth.recovery_reason == "rotation-needed"
 
 
 def test_generic_oauth_rotation_needed_is_unchanged() -> None:
-    from butlers.api.router_discovery import _load_router_module
+    from butlers.api.routers import ingestion_connectors
 
-    module = _load_router_module(Path("roster/switchboard/api/router.py"), "switchboard_api_router")
-
-    with patch(
-        "switchboard_api_router.compute_auth_status",
-        return_value="rotation-needed",
-    ):
-        auth, _ = module._build_connector_auth_blocks("gmail", [], 1)
+    with patch.object(ingestion_connectors, "compute_auth_status", return_value="rotation-needed"):
+        auth, _ = ingestion_connectors._build_connector_auth_blocks("gmail", [], 1)
 
     assert auth.status == "rotation-needed"
     assert auth.recovery_reason is None
@@ -281,6 +271,25 @@ class TestBuildScopeRows:
         assert extra[0].category == "extra"
         assert "harmless" in extra[0].serif_note
 
+    def test_opaque_observed_values_are_withheld_but_safe_extras_remain(
+        self, simple_manifest: ScopeManifest
+    ) -> None:
+        """Registry corruption cannot reflect an opaque credential as an extra scope."""
+        opaque_value = "scope_" + "x" * 48
+        rows = build_scope_rows(
+            simple_manifest,
+            [
+                "scope-required-a",
+                "scope-required-b",
+                "scope-undeclared-x",
+                opaque_value,
+            ],
+        )
+
+        names = {row.name for row in rows}
+        assert "scope-undeclared-x" in names
+        assert opaque_value not in names
+
     def test_ordering_required_optional_sensitive_extra(
         self, simple_manifest: ScopeManifest
     ) -> None:
@@ -468,11 +477,12 @@ class TestCredentialMasking:
 
 
 class TestRegistryOAuthFlowConsistency:
-    """Guard against future drift between oauth_scope_registry and oauth.py.
+    """Guard against future drift between scope manifests and authorization authorities.
 
-    Invariant: for every OAuth provider in the scope registry, the manifest's
-    required scope set must be a subset of (or equal to) the scopes that the
-    default OAuth flow requests when no butler.toml override is present.
+    Generic OAuth connectors use oauth.py, where the manifest's required scope
+    set must be a subset of the default authorization scopes. Spotify is not a
+    generic OAuth provider: its exact authorization scope set is owned by the
+    connector PKCE flow in spotify.py.
 
     Violation means a freshly-authorized connector would immediately show
     scope drift — the surface would report required scopes as missing even
@@ -491,7 +501,6 @@ class TestRegistryOAuthFlowConsistency:
     #
     # Connectors absent from this map have no oauth.py provider config and are skipped.
     _CONNECTOR_OAUTH_CONFIG: dict[str, tuple[str, list[str] | None]] = {
-        "spotify": ("spotify", None),
         "gmail": ("google", None),
         "google_calendar": ("google", None),
         "google_drive": ("google", None),
@@ -590,31 +599,30 @@ class TestRegistryOAuthFlowConsistency:
             + (f"\n\n(Skipped — no oauth.py provider config: {skipped})" if skipped else "")
         )
 
-    def test_spotify_required_exactly_equals_default_oauth_scopes(self) -> None:
-        """Spotify registry required set equals the default OAuth flow scopes exactly.
+    def test_spotify_pkce_scopes_exactly_match_connector_requirements(self) -> None:
+        """Spotify's connector-owned PKCE flow requests exactly its required API scopes."""
+        from butlers.api.routers.spotify import _DEFAULT_SCOPES
 
-        This is a tighter invariant than the subset check — for Spotify we know
-        the exact required set and can assert equality, not just subset.  If this
-        fails it means either:
-          (a) oauth.py requests extra scopes the registry doesn't declare, or
-          (b) the registry declares required scopes the flow doesn't request.
-        Both are bugs: (a) means unexpected grants, (b) means false drift reports.
-        """
-        from butlers.api.oauth_scope_registry import get_scope_manifest
+        required = {
+            "user-read-playback-state",
+            "user-read-recently-played",
+            "user-top-read",
+            "playlist-read-private",
+            "playlist-read-collaborative",
+            "user-library-read",
+            "playlist-modify-public",
+            "playlist-modify-private",
+            "user-modify-playback-state",
+            "user-library-modify",
+        }
 
-        manifest = get_scope_manifest("spotify")
-        assert manifest is not None
-
-        authorized_scopes = self._authorized_oauth_scopes("spotify")
-        assert authorized_scopes, "Spotify must have a registered OAuth provider config"
-
-        required = manifest.required_names()
-        assert required == authorized_scopes, (
-            f"Spotify required scopes in registry do not match default OAuth flow scopes.\n"
-            f"Registry required : {sorted(required)}\n"
-            f"Default OAuth flow: {sorted(authorized_scopes)}\n"
-            f"In required but not flow: {sorted(required - authorized_scopes)}\n"
-            f"In flow but not required: {sorted(authorized_scopes - required)}"
+        authorized_scopes = set(_DEFAULT_SCOPES.split())
+        assert authorized_scopes == required, (
+            "Spotify connector PKCE scopes do not match the connector requirements.\n"
+            f"Connector required: {sorted(required)}\n"
+            f"PKCE flow scopes  : {sorted(authorized_scopes)}\n"
+            f"Missing from flow : {sorted(required - authorized_scopes)}\n"
+            f"Unexpected in flow: {sorted(authorized_scopes - required)}"
         )
 
     def test_google_drive_required_matches_module_write_scope(self) -> None:

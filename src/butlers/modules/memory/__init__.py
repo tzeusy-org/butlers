@@ -1211,6 +1211,7 @@ class MemoryModule(Module):
               "limit": 10
             }
             """
+            read_policy = await module._catalog_read_policy()
             return await _reading.memory_search(
                 module._get_pool(),
                 module._get_embedding_engine(),
@@ -1221,6 +1222,7 @@ class MemoryModule(Module):
                 limit=limit,
                 min_confidence=min_confidence,
                 filters=filters,
+                read_policy=read_policy,
             )
 
         @_tool("core")
@@ -1251,6 +1253,7 @@ class MemoryModule(Module):
             ] = None,
         ) -> list[dict[str, Any]]:
             """High-level composite-scored retrieval of relevant facts and rules."""
+            read_policy = await module._catalog_read_policy()
             return await _reading.memory_recall(
                 module._get_pool(),
                 module._get_embedding_engine(),
@@ -1259,6 +1262,7 @@ class MemoryModule(Module):
                 limit=limit,
                 filters=filters,
                 request_context=request_context,
+                read_policy=read_policy,
             )
 
         @_tool("core")
@@ -1267,10 +1271,12 @@ class MemoryModule(Module):
             memory_id: str,
         ) -> dict[str, Any] | None:
             """Retrieve a specific memory by type and ID."""
+            read_policy = await module._catalog_read_policy()
             return await _reading.memory_get(
                 module._get_pool(),
                 memory_type,
                 memory_id,
+                read_policy=read_policy,
             )
 
         # --- Feedback tools ---
@@ -1469,7 +1475,7 @@ class MemoryModule(Module):
             """Build a deterministic, sectioned memory context block for CC system prompt injection.
 
             Sections (in order, empty sections omitted):
-            - ## Profile Facts (30% of budget): owner entity facts sorted by importance
+            - ## Profile Facts (20% of budget): owner entity facts sorted by importance
             - ## Task-Relevant Facts (35% of budget): recall matches excluding profile facts
             - ## Active Rules (20% of budget): sorted by maturity rank then effectiveness
             - ## Recent Episodes (15% of budget): opt-in via include_recent_episodes=True
@@ -1478,9 +1484,10 @@ class MemoryModule(Module):
 
             Same inputs always produce identical output (deterministic section compiler).
             """
-            catalog_read_policy = None
-            if include_fleet_knowledge:
-                catalog_read_policy = await module._catalog_read_policy()
+            # Loaded unconditionally: the read ceiling now governs Profile
+            # Facts and Task-Relevant Facts (recall) in every assembly, not
+            # only the opt-in Fleet Knowledge section.
+            catalog_read_policy = await module._catalog_read_policy()
             return await _context.memory_context(
                 module._get_pool(),
                 module._get_embedding_engine(),

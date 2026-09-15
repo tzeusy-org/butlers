@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from inspect import getsource
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -37,6 +38,9 @@ from butlers.core.runtimes.opencode import (
 pytestmark = pytest.mark.unit
 
 _EXEC = "butlers.core.runtimes.opencode.asyncio.create_subprocess_exec"
+# `model.split("/", 1)[1]` (any quote style/whitespace) is an equivalent
+# prefix-stripping mapper in disguise for `.removeprefix(`.
+_SPLIT_PREFIX_STRIP_RE = re.compile(r"""\.split\(\s*['"]/['"]\s*,\s*1\s*\)\[1\]""")
 
 
 @pytest.mark.parametrize(
@@ -67,14 +71,24 @@ def test_generated_config_has_no_selected_model_field(tmp_path: Path):
 
 def test_selected_model_translation_has_one_named_boundary_mapper():
     """REQ-runtime-opencode-001: adapter and health paths converge on one mapper."""
-    from butlers.api.routers.cli_auth import _run_provider_test
+    from butlers.api.routers.cli_auth import (
+        _run_provider_test,
+        _substitute_opencode_go_test_model,
+    )
 
     adapter_source = getsource(OpenCodeAdapter.invoke)
-    health_source = getsource(_run_provider_test)
+    health_source = (
+        getsource(_run_provider_test) + "\n" + getsource(_substitute_opencode_go_test_model)
+    )
     assert "canonical_to_execution_model(" in adapter_source
     assert "canonical_to_execution_model(" in health_source
-    assert ".removeprefix(" not in adapter_source
-    assert ".removeprefix(" not in health_source
+    for source in (adapter_source, health_source):
+        assert ".removeprefix(" not in source
+        assert not _SPLIT_PREFIX_STRIP_RE.search(source), (
+            "split('/', 1)[1] is an equivalent prefix-stripping mapper in disguise; "
+            "it must not creep back in as a second boundary mapper alongside "
+            "canonical_to_execution_model"
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from butlers.testing.approval_parking_fake import record_pending_action
 from butlers.tools.relationship.fact_evidence import EvidencePacket
 from butlers.tools.relationship.relationship_assert_fact import (
     AssertOutcome,
@@ -47,19 +48,18 @@ _PRED_HAS_EMAIL = "has-email"
 
 @contextmanager
 def _registered_approval_hooks(pool: AsyncMock):
-    """Register the real approvals runtime for exactly one mocked pool."""
+    """Register a narrow park recorder for exactly one mocked pool."""
     import butlers.core.approvals_hooks as approval_hooks
     from butlers.modules.approvals.email_guard import (
         check_email_recipient,
         check_recipient,
     )
-    from butlers.modules.approvals.park import park_pending_action
 
     runtime = approval_hooks.register_approval_hooks(
         pool,
         email_guard=check_email_recipient,
         recipient_guard=check_recipient,
-        park_pending_action=park_pending_action,
+        park_pending_action=record_pending_action,
     )
     try:
         yield

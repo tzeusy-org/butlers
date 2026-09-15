@@ -14,17 +14,17 @@ Detail belongs in the destinations below — add it there, not here.
 | Beads workflow in depth: worktrees, session protocol, commands | `AGENTS.md` (§ Beads Workflow Integration), `bd prime` |
 | WHY (scope, non-negotiables) · WHAT (specs) · HOW (RFCs) · WHERE (topology) · engineering bar | `doctrine` skill — routes to one pillar navigator under `about/` or `openspec/` |
 | Architecture / runtime / modules / connectors reference | `docs/index.md` |
-| Adding a butler, module, or connector | `adding-butlers-to-roster`, `adding-connectors-and-modules` skills |
+| Adding a butler, module, or connector | `butlers-development` skill → `adding-butlers-to-roster` / `adding-connectors-and-modules` subskills |
 | Dashboard API conventions (mount boundary, cursor pagination, degraded envelopes) | `docs/api_and_protocols/response-conventions.md` |
 | Model / runtime / session-timeout config ownership (catalog vs `runtime_config`) | `docs/runtime/model-routing.md` |
 | Identity & entity resolution (`public.entities`, `relationship.entity_facts`, `notify()`) | `docs/concepts/identity-model.md` |
 | Butler daemon internals, runtime config seeding | `docs/architecture/butler-daemon.md`, `docs/concepts/butler-lifecycle.md` |
 | Memory subsystem design | `docs/modules/memory.md` |
-| Debugging a dev-stack session/routing failure | `butler-dev-debug` skill |
+| Debugging a dev-stack session/routing failure | `butlers-tooling` skill → `butler-dev-debug` subskill |
 
 ## Repo Root Discipline (NON-NEGOTIABLE)
 
-**Never move HEAD in the main repo root (`~/gt/butlers`) off `main`** — no `git checkout -b`,
+**Never move HEAD in the main repo root (`~/GitHub/butlers`) off `main`** — no `git checkout -b`,
 `git switch`, or `git checkout <branch>`. Agents and humans rely on the root staying on `main`. If
 you find it on another branch, put it back before starting work.
 
@@ -34,11 +34,11 @@ Do branch work in a dedicated worktree outside the repo:
 git worktree add /home/tze/.butlers-worktrees/<branch-name> -b <branch-name> origin/main
 ```
 
-Commit, push, and open PRs from the worktree; `git worktree remove <path>` when done. Use the
-worktree + PR flow for anything sizeable or risky (features, migrations, broad refactors,
-architectural work). **Small, low-regression-risk changes may be committed directly to `main`** from
-the root (still without moving HEAD), after a format/lint pass on the touched files. When in doubt,
-use a worktree.
+Commit, push, and open PRs from the worktree; every tracked change goes through this worktree + PR
+flow, including small documentation fixes. After review and the PR-head gates complete, add the PR
+to the sole merge route with `gh pr merge <n> --squash --auto`. The non-strict queue validates the
+current `merge_group` tree, so do not rebase a clean PR merely to refresh it. Remove the worktree
+before using `--delete-branch`.
 
 ## Project Overview
 

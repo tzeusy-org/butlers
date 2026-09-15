@@ -14,7 +14,7 @@ The dashboard SHALL have a top-level page at `/settings` rendered in the Dispatc
 - **THEN** the page renders, in vertical order:
   - **Page header**: title "Settings", mono eyebrow "system · console", clock (mono, `HH:MM` 24h, tabular nums).
   - **AttentionStrip**: a rule-separated list of `{id, tone: red|amber, kind, text, action_route}` items. It initially renders the capped `attention[]` view from `GET /api/settings/console`; each row uses the attention-tint pattern: 4–7% alpha background in `tone` color, paired with a 2px left rail in the same color. Rows are clickable; click navigates to `action_route`.
-  - **Panel grid**: one summary panel per sub-route (`/settings/models`, `/settings/spend`, `/settings/permissions`). Each panel fetches its own summary endpoint in parallel; a slow fetch in one MUST NOT block others.
+  - **Panel grid**: one summary panel per destination (`/settings/models`, `/spend`, `/settings/permissions`). Each panel fetches its own summary endpoint in parallel; a slow fetch in one MUST NOT block others.
 - **AND** the page uses Inter Tight (sans), JetBrains Mono (mono), Source Serif 4 (serif), and the OKLCH palette tokens already shipped in `frontend/src/index.css`; no new tokens are introduced.
 - **AND** the page contains no card chrome, no drop shadows, no gradients.
 
@@ -67,7 +67,7 @@ The dashboard SHALL expose `GET /api/settings/console` returning aggregated head
   - Open approvals waiting for the owner (kind `open_approvals`, route `/approvals`).
   - Models with `state ∈ {error, rate-limited}` (kind `model_error`, route `/settings/models`).
   - Auth-renewal required for any CLI provider (kind `auth_renewal`, route `/secrets?focus=c:cli-auth/<provider>` with the dynamic provider segment URL-encoded as needed). Each provider has its own stable `auth_renewal:<provider>` identity.
-  - Spend within 10% of the monthly ceiling (kind `spend_ceiling`, route `/settings/spend`).
+  - Spend within 10% of the monthly ceiling (kind `spend_ceiling`, route `/spend`).
   - Failed webhook deliveries in the last 24h (kind `webhook_failure`, route `/settings/permissions`).
 - **AND** items are ordered with `tone="red"` first, then `tone="amber"`; `attention[]` is the five-item prefix of that order.
 

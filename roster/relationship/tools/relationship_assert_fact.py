@@ -52,6 +52,7 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core import entity_graph_edges
 from butlers.core.approvals_hooks import park_pending_action
 from butlers.core.tool_call_capture import (
     get_current_approval_push_runtime,
@@ -360,12 +361,9 @@ async def validate_fact_fields_or_raise(
     Callers that assert a BATCH of facts inside one outer transaction (e.g.
     ``POST /entities``'s ``initial_facts`` loop) MUST pre-validate every fact
     in the batch with this function *before* starting that transaction.
-    Reason (bu-g27ib): :func:`park_pending_action` (the owner-push choke
-    point every parking fact routes through, bu-mda0r) writes its
-    ``pending_actions`` row -- and fires the owner push -- on its own
-    connection acquired from *pool*, independent of any caller-supplied
-    ``conn``/transaction, because the push path needs real ``pool.acquire()``
-    semantics. If an EARLIER fact in a batch parks (committing that row) and
+    Reason (bu-g27ib): :func:`park_pending_action` writes its action and
+    delivery intent in an independent transaction acquired from *pool*. If an
+    EARLIER fact in a batch parks (committing those rows) and
     a LATER fact in the same batch then raises ``ValueError`` (e.g. an
     unregistered predicate), rolling back the outer transaction does NOT
     undo the earlier park: the result is an orphaned ``pending_actions`` row
@@ -413,9 +411,8 @@ async def _create_pending_action(
 
     Takes *pool* (not a caller-supplied ``conn``) because the actual insert
     routes through :func:`butlers.core.approvals_hooks.park_pending_action`,
-    the single choke point for PENDING inserts (bu-mda0r): it writes the row
-    AND attempts the owner-facing push in one call, and the push path needs
-    to acquire its own connection from a real pool (bu-g27ib). The dedup read
+    the single atomic admission point for PENDING inserts. It acquires its own
+    connection from a real pool (bu-g27ib). The dedup read
     has no transactional dependency on the caller's in-flight entity_facts
     write, so reading it from *pool* instead of the caller's ``conn`` is safe.
 
@@ -782,6 +779,18 @@ async def _upsert_fact(
                 # Re-read and start over so we supersede the current active row.
                 continue
 
+            if object_kind == "entity":
+                # RFC 0031 (bu-8cdl1.8 Slice 2): the superseded row is no
+                # longer current -- its projected edge must go with it in the
+                # same transaction, or a supersession would leave two live
+                # edges for the same conceptual relationship.
+                await entity_graph_edges.delete_entity_graph_edge(
+                    conn,
+                    source_schema="relationship",
+                    source_table="entity_facts",
+                    source_id=old_id,
+                )
+
             new_id = await _insert_active_fact(
                 conn,
                 subject=subject,
@@ -805,6 +814,16 @@ async def _upsert_fact(
                 continue
             await carry_evidence_forward(conn, from_fact_id=old_id, to_fact_id=new_id)
             await persist_evidence(conn, fact_id=new_id, packet=packet)
+            if object_kind == "entity":
+                await entity_graph_edges.project_entity_graph_edge(
+                    conn,
+                    source_schema="relationship",
+                    source_table="entity_facts",
+                    source_id=new_id,
+                    subject_entity_id=subject,
+                    predicate=predicate,
+                    object_entity_id=uuid.UUID(object),
+                )
             return AssertResult(outcome=AssertOutcome.superseded, fact_id=new_id)
 
         # 4. No existing active row → insert. DO NOTHING (never DO UPDATE) so a
@@ -830,6 +849,20 @@ async def _upsert_fact(
             # report `unchanged` (identical provenance) or supersede it.
             continue
         await persist_evidence(conn, fact_id=new_id, packet=packet)
+        if object_kind == "entity":
+            # RFC 0031 (bu-8cdl1.8 Slice 2): project the entity-to-entity edge
+            # in the same transaction as the fact write -- a projection
+            # failure here fails this whole write, so the graph can never
+            # silently diverge from relationship.entity_facts.
+            await entity_graph_edges.project_entity_graph_edge(
+                conn,
+                source_schema="relationship",
+                source_table="entity_facts",
+                source_id=new_id,
+                subject_entity_id=subject,
+                predicate=predicate,
+                object_entity_id=uuid.UUID(object),
+            )
         return AssertResult(outcome=AssertOutcome.inserted, fact_id=new_id)
 
     raise RuntimeError(

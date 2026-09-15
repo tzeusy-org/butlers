@@ -2,24 +2,9 @@
 
 ## Purpose
 
-The `/settings/spend` page is the operator's view into system cost: total spend, breakdowns by butler/model/feature/purpose, a hand-rolled SVG forecast chart projecting month-end land, store-and-evaluate routing rules with per-rule 7-day savings, a monthly ceiling, and a live per-call spend stream. It is part of the Console-direction redesign of `/settings` and is rendered in the Dispatch design language already shipped on `/overview`, `/butlers`, and `/qa`. It is backed by the spend endpoints (`/api/spend/*`) served by `spend.py` (the renamed `costs.py` router), including rules CRUD and the monthly ceiling; the live per-call ticker is delivered over the unified fleet event bus (`WS /api/events/stream`), not a dedicated socket. No charting library is loaded for this page.
+The `/spend` page is the operator's view into system cost: total spend, breakdowns by butler/model/feature/purpose, a hand-rolled SVG forecast chart projecting month-end land, store-and-evaluate routing rules with per-rule 7-day savings, a monthly ceiling, and a live per-call spend stream. It is linked from the Settings Console and rendered in the Dispatch design language already shipped on `/overview`, `/butlers`, and `/qa`. The legacy `/costs` and `/settings/spend` routes replace-navigate to this canonical surface. It is backed by the spend endpoints (`/api/spend/*`) served by `spend.py` (the renamed `costs.py` router), including rules CRUD and the monthly ceiling; the live per-call ticker is delivered over the unified fleet event bus (`WS /api/events/stream`), not a dedicated socket. No charting library is loaded for this page.
 
 ## Requirements
-
-### Requirement: Spend Dashboard Page
-The dashboard SHALL have a page at `/settings/spend` rendered in the Dispatch design language showing total spend, breakdowns, a forecast chart, routing rules, and a monthly ceiling.
-
-#### Scenario: Spend page layout
-- **WHEN** a user navigates to `/settings/spend`
-- **THEN** the page renders, in vertical order:
-  - **Page header**: title "Spend" rendered via the shared `Page` overview shell. The page does not render a mono eyebrow "system · cost" or a clock.
-  - **4-cell KPI strip**: `MTD Spend`, `Projected EOM`, `Monthly Ceiling`, `Days in Month`. Mega-number in sans 500 tabular-nums, mono sub-label. There is no `today` cell, and sub-labels show context such as days elapsed/remaining, not a delta vs. prior period.
-  - **Forecast chart**: hand-rolled SVG. Solid line for MTD daily series, dashed line for projection from today to month end, hairline horizontal at the ceiling. No charting library.
-  - **Breakdown section**: bars by `butler`, `model`, `feature`, `purpose` via tabbed picker. Each bar is plain CSS (≤ 8 lines per bar), no library.
-  - **By Schedule table**: per-cron rows under two visually separated column groups — "Measured · selected range" (`Runs`, `Cost`, `Avg/run`) and "Forecast · per month" (`Runs`, `Cost`) — with the API's `forecast_basis` stated once beneath the table. A projection is never rendered in the same undifferentiated run of columns as measured history, and a schedule whose cadence could not be computed renders both forecast cells as an em dash rather than `$0.00`.
-  - **Routing rules table**: rule rows in evaluation order with drag-to-reorder; columns `condition · action · saved 7d`. Order is top-to-bottom; first match wins at runtime. Removal is gated by the confirmation and restore contract in "Requirement: Routing Rule Deletion Safety" — a rule is never deleted on a single activation.
-  - **Anomaly section**: deferred. The page carries only a source-code TODO comment in the forecast section; no anomaly copy is rendered to the user.
-- **AND** no recharts or other chart library is loaded for this page.
 
 ### Requirement: Spend API
 The dashboard SHALL expose the spend endpoints.
@@ -369,6 +354,21 @@ Attempt Provenance).
 - **THEN** the Spend page SHALL render a degraded-source note for the fleet-halt
   state (per the fleet degraded-source convention) instead of silently omitting
   the banner, which would read as a false "the fleet is not halted"
+
+### Requirement: Canonical Spend Dashboard Page
+The dashboard SHALL have a page at `/spend` rendered in the Dispatch design language showing total spend, breakdowns, a forecast chart, routing rules, and a monthly ceiling.
+
+#### Scenario: Spend page layout
+- **WHEN** a user navigates to `/spend`
+- **THEN** the page renders, in vertical order:
+  - **Page header**: title "Spend" rendered via the shared `Page` overview shell. The page does not render a mono eyebrow "system · cost" or a clock.
+  - **4-cell KPI strip**: `MTD Spend`, `Projected EOM`, `Monthly Ceiling`, `Days in Month`. Mega-number in sans 500 tabular-nums, mono sub-label. There is no `today` cell, and sub-labels show context such as days elapsed/remaining, not a delta vs. prior period.
+  - **Forecast chart**: hand-rolled SVG. Solid line for MTD daily series, dashed line for projection from today to month end, hairline horizontal at the ceiling. No charting library.
+  - **Breakdown section**: bars by `butler`, `model`, `feature`, `purpose` via tabbed picker. Each bar is plain CSS (≤ 8 lines per bar), no library.
+  - **By Schedule table**: per-cron rows under two visually separated column groups — "Measured · selected range" (`Runs`, `Cost`, `Avg/run`) and "Forecast · per month" (`Runs`, `Cost`) — with the API's `forecast_basis` stated once beneath the table. A projection is never rendered in the same undifferentiated run of columns as measured history, and a schedule whose cadence could not be computed renders both forecast cells as an em dash rather than `$0.00`.
+  - **Routing rules table**: rule rows in evaluation order with drag-to-reorder; columns `condition · action · saved 7d`. Order is top-to-bottom; first match wins at runtime. Removal is gated by the confirmation and restore contract in "Requirement: Routing Rule Deletion Safety" — a rule is never deleted on a single activation.
+  - **Anomaly section**: deferred. The page carries only a source-code TODO comment in the forecast section; no anomaly copy is rendered to the user.
+- **AND** no recharts or other chart library is loaded for this page.
 
 ## Source References
 - PLAN.md §5 `/settings/spend` API surface and §6 Phase 3 implementation order.

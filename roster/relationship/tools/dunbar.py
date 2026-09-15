@@ -845,11 +845,18 @@ async def dunbar_tier_set(
 
     entity_id_str = str(entity_id)
 
+    from butlers.modules.memory.storage import cascade_fact_retraction
+
     # Retract any existing active overrides and optionally insert a new one atomically.
     async with pool.acquire() as conn:
         async with conn.transaction():
-            # Bulk-retract all active overrides for this entity in one statement.
-            await conn.execute(
+            # Bulk-retract all active overrides for this entity in one statement,
+            # then cascade the memory_catalog disownment + entity_graph_edges
+            # deletion forget_memory() would perform, on this same connection/
+            # transaction (bu-9ltqm) -- forget_memory() operates one fact at a
+            # time and manages its own transaction, which doesn't compose with
+            # this bulk retraction's already-open one.
+            retracted = await conn.fetch(
                 """
                 UPDATE facts
                 SET validity = 'retracted'
@@ -857,9 +864,12 @@ async def dunbar_tier_set(
                   AND scope = 'relationship'
                   AND validity = 'active'
                   AND entity_id = $1::uuid
+                RETURNING id
                 """,
                 entity_id_str,
             )
+            if retracted:
+                await cascade_fact_retraction(conn, [r["id"] for r in retracted])
 
             if tier is None:
                 return {

@@ -61,6 +61,7 @@ import butlers.background as _background
 from butlers.config import (
     ButlerConfig,
     parse_approval_config,
+    validate_approval_config,
 )
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import Complexity
@@ -113,102 +114,6 @@ class _SchedulerRuntimeContext:
     prompt_hooks: dict[str, Any] | None
     completion_hooks: dict[str, Any] | None
 
-
-# Tool surface is now controlled by the core_groups mechanism in the
-# runtime_config table (see RFC 0002 §Core Tool Gating via core_groups).
-# These constants are retained for backward compatibility with contract tests
-# that verify the complete tool surface. They are NOT used for gating logic.
-UNIVERSAL_CORE_TOOL_NAMES: frozenset[str] = frozenset(
-    {
-        "status",
-        "trigger",
-        "route.execute",
-        "tick",
-        "state_get",
-        "state_set",
-        "state_delete",
-        "state_list",
-        "schedule_list",
-        "schedule_create",
-        "schedule_update",
-        "schedule_delete",
-        "schedule_trigger",
-        "sessions_list",
-        "sessions_get",
-        "sessions_summary",
-        "sessions_daily",
-        "top_sessions",
-        # bu-ep4ks.2: dashboard chat Stop button — infrastructure endpoint the
-        # API calls server-to-server, always registered like route.execute.
-        "cancel_session",
-        "schedule_costs",
-        "notify",
-        "remind",
-        "get_attachment",
-        "module.states",
-        "module.set_enabled",
-        "correct",
-        # Added in #1712 and #1714 respectively; always registered on every butler.
-        "memory_access",
-        "memory_catalog_fetch",
-        "shutdown",
-        # bu-p6ey8.1: dashboard chat confirm-loop reply channel; always
-        # registered on every butler — any butler can be the classification
-        # or pinned-target destination of a dashboard conversation.
-        "conversation_reply",
-        # bu-gxmfx: cross-butler delegation ledger; non-STAFFER only, same
-        # gate as notify/remind above.
-        "delegate_ask",
-        "delegate_receive",
-        "delegate_answer",
-        "delegate_wake",
-        # bu-ep4ks.10: domain-event bus (standing pub/sub); non-STAFFER only,
-        # same gate as delegate_* above.
-        "publish_event",
-        "subscribe_to_event",
-        "unsubscribe_from_event",
-        "list_my_subscriptions",
-        "receive_domain_event",
-        # bu-6jv4m.8: the subscriber's own reaction receipt. Same gate as the
-        # rest of the bus -- only a butler that can receive an event can close
-        # the loop on one.
-        "report_event_reaction",
-    }
-)
-
-MESSENGER_CORE_TOOL_NAMES: frozenset[str] = frozenset(
-    {
-        "delivery_preferences_set",
-        "delivery_preferences_get",
-        "deferred_notifications_list",
-        "deferred_notification_cancel",
-        "scheduling_preferences_set",
-        "scheduling_preferences_get",
-    }
-)
-
-DOMAIN_CORE_TOOL_NAMES: frozenset[str] = frozenset(
-    {
-        "deadline_create",
-        "deadline_update",
-        "deadline_list",
-        "deadline_delete",
-        "event_chain_create",
-        "event_chain_update",
-        "event_chain_list",
-        "event_chain_delete",
-        "seasonal_period_create",
-        "seasonal_period_update",
-        "seasonal_period_list",
-        "seasonal_period_delete",
-        "seasonal_period_create_preset",
-    }
-)
-
-# Backwards-compatible alias: all core tools across all butler types.
-CORE_TOOL_NAMES: frozenset[str] = (
-    UNIVERSAL_CORE_TOOL_NAMES | MESSENGER_CORE_TOOL_NAMES | DOMAIN_CORE_TOOL_NAMES
-)
 
 _DEFAULT_TELEGRAM_CHAT_CONTACT_INFO_TYPE = "telegram_chat_id"
 _NO_TELEGRAM_CHAT_CONFIGURED_ERROR = (
@@ -312,6 +217,10 @@ class ButlerDaemon:
         self._gated_tool_originals: dict[str, Any] = {}
         # Maps registered tool name → module name for gating and introspection.
         self._tool_module_map: dict[str, str] = {}
+        self._declared_tool_names: set[str] = set()
+        self._effective_tool_names: set[str] = set()
+        self._registered_tool_names: set[str] = set()
+        self._tool_registration_failures: dict[str, dict[str, str]] = {}
         self._started_at: float | None = None
         self._accepting_connections = False
         self._server: uvicorn.Server | None = None
@@ -336,6 +245,11 @@ class ButlerDaemon:
         # gate wrapper, the email/recipient guards (via approvals_hooks), the
         # calendar overlap-approval enqueuer, and notify()'s own park sites.
         self._approval_push_runtime: Any | None = None
+        # RFC 0023 recovery remains dormant until the authenticated Messenger
+        # boundary supplies this narrow runtime in a later rollout slice.
+        self._approval_delivery_runtime: Any | None = None
+        self._approval_delivery_task: asyncio.Task | None = None
+        self._approval_delivery_stop: asyncio.Event | None = None
         self.blob_store: S3BlobStore | None = None
         # Background tasks spawned by route.execute accept phase (non-messenger butlers)
         self._route_inbox_tasks: set[asyncio.Task] = set()
@@ -538,6 +452,16 @@ class ButlerDaemon:
         else:
             # Clear the disabled_by marker on re-enable.
             await _state_set(pool, disabled_by_key, None)
+        if name == "approvals":
+            from butlers.core.approval_delivery_worker import (
+                start_approval_delivery_worker,
+                stop_approval_delivery_worker,
+            )
+
+            if enabled:
+                await start_approval_delivery_worker(self)
+            else:
+                await stop_approval_delivery_worker(self)
         logger.info("Module %r enabled=%s (persisted to state store)", name, enabled)
         return True
 
@@ -1337,6 +1261,15 @@ class ButlerDaemon:
         """
         from butlers.core_tools import ToolContext, register_all_core_tools
 
+        # Registration owns this snapshot state. Some focused integration
+        # seams construct a daemon without calling __init__, so initialise it
+        # at the boundary instead of requiring callers to reproduce private
+        # constructor internals.
+        self._declared_tool_names = getattr(self, "_declared_tool_names", set())
+        self._effective_tool_names = getattr(self, "_effective_tool_names", set())
+        self._registered_tool_names = getattr(self, "_registered_tool_names", set())
+        self._tool_registration_failures = getattr(self, "_tool_registration_failures", {})
+
         butler_name = self.config.name
         butler_type = self.config.type
         mcp = _ToolCallLoggingMCP(self.mcp, butler_name, module_name="core")
@@ -1345,7 +1278,7 @@ class ButlerDaemon:
         # Group-aware core tool decorator — mirrors the module _tool(group) pattern.
         # When core_groups is None (default), all groups are enabled (backward compat).
         # When set, only tools in the listed groups are registered on the MCP server.
-        # Read from the RuntimeConfigAccessor (DB-backed, seeded from toml on first boot).
+        # Read the accessor's reconciled Git authority / reasoned runtime narrowing.
         _accessor = getattr(self, "_runtime_config_accessor", None)
         if _accessor is not None and _accessor._cache is not None:
             _core_groups = _accessor._cache.core_groups
@@ -1371,10 +1304,21 @@ class ButlerDaemon:
                         required_name,
                     )
 
+        _declared_groups = self.config.runtime_seed.core_groups
+        _declared_core_names: set[str] = set()
+        _effective_core_names: set[str] = set()
+
         def _core_tool(group: str, **tool_kwargs):
-            if _core_groups is None or group in _core_groups:
-                return mcp.tool(**tool_kwargs)
-            return lambda fn: fn
+            def register(fn):
+                tool_name = tool_kwargs.get("name", fn.__name__)
+                if _declared_groups is None or group in _declared_groups:
+                    _declared_core_names.add(tool_name)
+                if _core_groups is None or group in _core_groups:
+                    _effective_core_names.add(tool_name)
+                    return mcp.tool(**tool_kwargs)(fn)
+                return fn
+
+            return register
 
         ctx = ToolContext(
             daemon=self,
@@ -1387,6 +1331,10 @@ class ButlerDaemon:
             route_metrics=_route_metrics,
         )
         register_all_core_tools(ctx, mcp, _core_tool)
+        direct_names = mcp._registered_tool_names - _effective_core_names
+        self._declared_tool_names.update(_declared_core_names | direct_names)
+        self._effective_tool_names.update(_effective_core_names | direct_names)
+        self._registered_tool_names.update(mcp._registered_tool_names)
 
     def _validate_module_configs(self) -> dict[str, Any]:
         """Validate each module's raw config dict against its config_schema.
@@ -1447,26 +1395,28 @@ class ButlerDaemon:
         automatically wraps each tool handler with a ``butler.tool.<name>``
         span carrying the ``butler.name`` attribute.
         """
+        self._declared_tool_names = getattr(self, "_declared_tool_names", set())
+        self._effective_tool_names = getattr(self, "_effective_tool_names", set())
+        self._registered_tool_names = getattr(self, "_registered_tool_names", set())
+        self._tool_registration_failures = getattr(self, "_tool_registration_failures", {})
+
         for mod in self._modules:
             mod_status = self._module_statuses.get(mod.name)
             if mod_status is not None and mod_status.status != "active":
                 continue
 
+            wrapped_mcp = _SpanWrappingMCP(
+                self.mcp,
+                self.config.name,
+                module_name=mod.name,
+                module_runtime_states=self._module_runtime_states,
+                is_messenger=self.config.name == "messenger",
+            )
             try:
-                wrapped_mcp = _SpanWrappingMCP(
-                    self.mcp,
-                    self.config.name,
-                    module_name=mod.name,
-                    module_runtime_states=self._module_runtime_states,
-                    is_messenger=self.config.name == "messenger",
-                )
                 validated_config = self._module_configs.get(mod.name)
                 await mod.register_tools(
                     wrapped_mcp, validated_config, self.db, butler_name=self.config.name
                 )
-                # Record tool → module mapping for introspection and gating.
-                for tool_name in wrapped_mcp._registered_tool_names:
-                    self._tool_module_map[tool_name] = mod.name
             except ChannelEgressOwnershipError:
                 # Security guard: a non-messenger butler tried to grab channel
                 # egress. Fail loud — do not silently disable and continue.
@@ -1478,6 +1428,20 @@ class ButlerDaemon:
                 )
                 logger.warning(
                     "Module '%s' disabled: tool registration failed: %s", mod.name, error_msg
+                )
+            finally:
+                # Preserve partial registration evidence when a module fails
+                # after installing only some of its handlers.
+                for tool_name in wrapped_mcp._registered_tool_names:
+                    self._tool_module_map[tool_name] = mod.name
+                self._declared_tool_names.update(wrapped_mcp._declared_tool_names)
+                self._effective_tool_names.update(wrapped_mcp._declared_tool_names)
+                self._registered_tool_names.update(wrapped_mcp._registered_tool_names)
+                self._tool_registration_failures.update(
+                    {
+                        tool_name: {"module_name": mod.name, "error_type": error_type}
+                        for tool_name, error_type in wrapped_mcp._registration_failures.items()
+                    }
                 )
 
         # Allow modules to cross-wire after all tools are registered.
@@ -1595,6 +1559,19 @@ class ButlerDaemon:
                     return raw_result
 
                 set_executor(_execute_approved_tool)
+
+        # Fail closed before any gate wrapping happens: reject startup if the
+        # approval config names a tool no module registered, or (when modules
+        # declare arg_sensitivities={"_write": True}) leaves a chat-reachable
+        # write tool ungated. All module tools are already registered on
+        # self.mcp by this point (lifecycle.py registers modules before
+        # calling this method). Only butlers with approvals enabled pay for
+        # listing the registered tool set, and this runs after the direct
+        # owner-command registry check above so that check's more specific
+        # handler-drift diagnostics surface first.
+        if approval_config is not None and approval_config.enabled:
+            registered_tools = {tool.name for tool in await self.mcp.list_tools()}
+            validate_approval_config(approval_config, registered_tools, tool_metadata)
 
         if approval_config is None or not approval_config.enabled:
             return originals
@@ -1807,10 +1784,8 @@ class ButlerDaemon:
             # instead of an OBJECT (bu-cymc4/bu-bstqu; mirrors gate.py's fix).
             safe_tool_args = json.loads(json.dumps(tool_args, default=str))
 
-            # park_pending_action is the single choke point for PENDING
-            # inserts: it writes the row AND attempts the owner-facing push
-            # in one call, so this park path cannot silently skip notifying
-            # the owner (bu-mda0r).
+            # Atomic action + delivery-intent admission; provider delivery is
+            # intentionally outside this calendar callback.
             await park_pending_action(
                 pool,
                 action_id=action_id,

@@ -29,14 +29,25 @@ function Harness({
   onSelect,
   verbs,
   onHints,
+  unselectedEntry,
+  resolveSelectedId,
 }: {
   ids: string[];
   selectedId: string | null;
   onSelect: (id: string) => void;
   verbs?: ListTriageVerb[];
   onHints?: (descriptions: string[]) => void;
+  unselectedEntry?: "first" | "directional";
+  resolveSelectedId?: () => string | null;
 }) {
-  const { hints } = useListTriage({ ids, selectedId, onSelect, verbs });
+  const { hints } = useListTriage({
+    ids,
+    selectedId,
+    onSelect,
+    verbs,
+    unselectedEntry,
+    resolveSelectedId,
+  });
   onHints?.(hints.map((h) => h.description));
   return null;
 }
@@ -125,13 +136,28 @@ describe("useListTriage", () => {
     expect(onSelect).not.toHaveBeenCalled();
   });
 
-  it("defaults to the first id when nothing is selected yet", () => {
+  it("defaults to the first id, with an opt-in directional edge for real-focus lists", () => {
     const onSelect = vi.fn();
     act(() => {
       root.render(<Harness ids={["a", "b"]} selectedId={null} onSelect={onSelect} />);
     });
     act(() => press("j"));
     expect(onSelect).toHaveBeenCalledWith("a");
+
+    onSelect.mockClear();
+    act(() => {
+      root.render(
+        <Harness
+          ids={["a", "b"]}
+          selectedId="a"
+          onSelect={onSelect}
+          unselectedEntry="directional"
+          resolveSelectedId={() => null}
+        />,
+      );
+    });
+    act(() => press("k"));
+    expect(onSelect).toHaveBeenCalledWith("b");
   });
 
   it("wires a verb's key to its handler only while its row is selected", () => {

@@ -67,6 +67,8 @@ def _summary_record(**overrides) -> dict:
         "complexity": "simple",
         "input_tokens": 100,
         "output_tokens": 50,
+        "cached_input_tokens": 25,
+        "cache_creation_tokens": 10,
         "cancelled_by_owner": False,
     }
     base.update(overrides)
@@ -138,6 +140,8 @@ def test_row_to_summary_maps_all_fields():
     assert dto.complexity == "simple"
     assert dto.input_tokens == 100
     assert dto.output_tokens == 50
+    assert dto.cached_input_tokens == 25
+    assert dto.cache_creation_tokens == 10
     assert dto.cancelled_by_owner is False
 
 
@@ -690,6 +694,8 @@ def test_summary_columns_is_non_empty_string():
     # Must include the key columns the DTO expects
     assert "started_at" in SUMMARY_COLUMNS
     assert "input_tokens" in SUMMARY_COLUMNS
+    assert "cached_input_tokens" in SUMMARY_COLUMNS
+    assert "cache_creation_tokens" in SUMMARY_COLUMNS
 
 
 def test_detail_columns_is_non_empty_string():

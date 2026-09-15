@@ -29,11 +29,9 @@ import {
   createEntityGift,
   createEntityInteraction,
   createEntityNote,
-  createEntityReachOutDraft,
   getEntityGifts,
   getEntityLinkedContacts,
   getEntityLoans,
-  getEntityReachOutDrafts,
   getEntityMessageThreads,
   getEntityNeighbours,
   getPlexHalo,
@@ -55,7 +53,6 @@ import type {
   CreateEntityGiftRequest,
   CreateEntityInteractionRequest,
   CreateEntityNoteRequest,
-  CreateEntityReachOutDraftRequest,
   DismissEntityPairRequest,
   UpdateEntityContactRequest,
   EntityFactsParams,
@@ -93,15 +90,6 @@ export function useEntityGifts(entityId: string | undefined) {
   return useQuery({
     queryKey: ["entity-gifts", entityId],
     queryFn: () => getEntityGifts(entityId!),
-    enabled: !!entityId,
-  });
-}
-
-/** Fetch reach-out drafts for a relationship entity (drafted, never sent). */
-export function useEntityReachOutDrafts(entityId: string | undefined) {
-  return useQuery({
-    queryKey: ["entity-reach-out-drafts", entityId],
-    queryFn: () => getEntityReachOutDrafts(entityId!),
     enabled: !!entityId,
   });
 }
@@ -946,10 +934,12 @@ export function useClearPreferredChannel() {
 }
 
 // ---------------------------------------------------------------------------
-// Entity tab write mutations — the log-interaction, gift-idea, and
-// draft-reach-out operator verbs (bu-6t8ix.4)
+// Entity tab write mutations — the log-interaction and gift-idea operator
+// verbs (bu-6t8ix.4). A third verb, draft-reach-out
+// (useCreateEntityReachOutDraft), shipped alongside these and was retired in
+// bu-2jtfw.11, replaced by the prepared-action mechanism.
 //
-// All four are HONEST-PENDING, not optimistic: each writes a real fact into
+// Both are HONEST-PENDING, not optimistic: each writes a real fact into
 // the relationship butler's store, so the affordance stays in its pending
 // state until the server confirms rather than pretending the record exists.
 // Each invalidates the unified timeline, which is what actually renders these
@@ -1006,25 +996,3 @@ export function useCreateEntityGift() {
   });
 }
 
-/**
- * Draft a reach-out message for an entity.
- *
- * Drafts only: nothing is sent, so no message-thread or interaction query is
- * invalidated here. A draft becomes a real touch only if the owner separately
- * sends it and logs that.
- */
-export function useCreateEntityReachOutDraft() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({
-      entityId,
-      request,
-    }: {
-      entityId: string;
-      request: CreateEntityReachOutDraftRequest;
-    }) => createEntityReachOutDraft(entityId, request),
-    onSuccess: (_, { entityId }) => {
-      void queryClient.invalidateQueries({ queryKey: ["entity-reach-out-drafts", entityId] });
-    },
-  });
-}

@@ -359,13 +359,13 @@ describe("resolveApiHref", () => {
     // /butlers-api/api or /butlers-dev-api/api behind the path mounts), so the
     // expectation is derived from the configured base rather than hardcoded.
     const apiBase = import.meta.env.VITE_API_URL ?? "/api";
-    expect(resolveApiHref("/oauth/spotify/start?page_of_origin=secrets")).toBe(
-      `${apiBase}/oauth/spotify/start?page_of_origin=secrets`,
+    expect(resolveApiHref("/oauth/example-provider/start?page_of_origin=secrets")).toBe(
+      `${apiBase}/oauth/example-provider/start?page_of_origin=secrets`,
     );
   });
 
   it("passes an absolute provider URL through untouched", () => {
-    const url = "https://accounts.spotify.com/authorize?client_id=test";
+    const url = "https://oauth.test.invalid/authorize?client_id=test";
     expect(resolveApiHref(url)).toBe(url);
   });
 });

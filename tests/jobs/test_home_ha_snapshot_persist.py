@@ -18,7 +18,10 @@ This test exercises the REAL write+read path against a migrated Postgres:
    last_updated, captured_at`` with ``attributes->>'area_id'``) also resolves.
 
 It also proves a subsequent state update overwrites in place (one row per
-entity, not unbounded growth).
+entity, not unbounded growth), and that a recorded ``ha_source_health``
+outage renders the read unmeasurable even when ``ha_entity_snapshot`` still
+has rows with a fresh ``captured_at`` (bu-8cdl1.12 slice 1 — the trust-fix
+defect this table exists to close).
 """
 
 from __future__ import annotations
@@ -83,6 +86,10 @@ def _module_with_pool(pool: asyncpg.Pool) -> HomeAssistantModule:
 async def test_persist_then_read_returns_live_state(pool: asyncpg.Pool) -> None:
     """A persisted entity cache is readable through the job read path."""
     module = _module_with_pool(pool)
+    # The reader guard (bu-8cdl1.12 slice 1) requires a healthy ha_source_health
+    # row before it will trust ha_entity_snapshot at all; simulate the successful
+    # contact that would normally record this.
+    await module._record_ha_source_success()
     module._area_cache = {"area_lr": CachedArea(area_id="area_lr", name="Living Room")}
     module._entity_cache = {
         "sensor.living_room_temperature": CachedEntity(
@@ -144,6 +151,7 @@ async def test_persist_then_read_returns_live_state(pool: asyncpg.Pool) -> None:
 async def test_state_update_overwrites_in_place(pool: asyncpg.Pool) -> None:
     """A later state update supersedes the prior row (one row per entity)."""
     module = _module_with_pool(pool)
+    await module._record_ha_source_success()
     module._entity_cache = {
         "sensor.living_room_temperature": CachedEntity(
             entity_id="sensor.living_room_temperature",
@@ -164,3 +172,36 @@ async def test_state_update_overwrites_in_place(pool: asyncpg.Pool) -> None:
     rows = await _read_entity_snapshot(pool)
     assert len(rows) == 1
     assert rows[0]["state"] == "25.0"
+
+
+async def test_read_unmeasurable_during_outage_despite_stale_rows(pool: asyncpg.Pool) -> None:
+    """A recorded HA source outage renders reads unmeasurable even with rows present.
+
+    This is the trust-fix defect itself: ``_persist_entity_snapshot`` always
+    stamps ``captured_at = now()``, so a stale snapshot from before an outage
+    looks identical to a fresh one. The health guard must reject it anyway.
+    """
+    from butlers.jobs.home import HASourceUnmeasurableError
+
+    module = _module_with_pool(pool)
+    await module._record_ha_source_success()
+    module._entity_cache = {
+        "sensor.living_room_temperature": CachedEntity(
+            entity_id="sensor.living_room_temperature",
+            state="22.5",
+            attributes={},
+            last_updated="2026-06-27T10:00:00+00:00",
+        )
+    }
+    await module._persist_entity_snapshot()
+
+    # Snapshot has rows and a fresh captured_at, but HA contact just failed.
+    await module._record_ha_source_error("simulated outage")
+
+    with pytest.raises(HASourceUnmeasurableError):
+        await _read_entity_snapshot(pool)
+
+    # Health recovers -> reads succeed again with the last-known state.
+    await module._record_ha_source_success()
+    rows = await _read_entity_snapshot(pool)
+    assert rows[0]["state"] == "22.5"

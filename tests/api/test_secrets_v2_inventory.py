@@ -3697,3 +3697,90 @@ def test_inventory_system_and_cli_rows_omit_every_probe_and_audit_sentinel():
     # Operator-authored labels are outside the owner decision and still ship.
     assert system_entry["description"] == "sentinel-system-description"
     assert cli_entry["description"] == "sentinel-cli-description"
+
+
+# ---------------------------------------------------------------------------
+# bu-y5uq4: partial metadata minimization for system/CLI inventory rows
+# ---------------------------------------------------------------------------
+# bu-yk2hb (owner ruling, Choice B) decided the open policy question the test
+# above documents: a system/CLI inventory row keeps its raw `key` for operator
+# identification but withholds `description` and `category`, because an
+# operator-authored description ("Stripe live secret for billing webhooks")
+# can itself be reconnaissance-useful even though the operator, not a
+# credential provider, authored it. This is deliberately narrower than the
+# `user[]` family's content-blind projection — `key` remains a raw,
+# purpose-revealing string on the wire, so it is metadata minimization, not
+# content-blind identity.
+#
+# The exact contract is drafted in
+# openspec/changes/amend-secrets-inventory-label-minimization and awaits
+# separate owner approval before any handler change (bu-y5uq4 AC7). This test
+# proves the target contract against TODAY's handler and is expected to fail
+# until that spec is approved and `_content_blind_system` /
+# `_content_blind_cli` are updated to stop projecting `category` and
+# `description`. Do not remove the `xfail` marker as part of implementing the
+# approved spec without also removing the superseded positive assertions in
+# `test_inventory_system_and_cli_rows_omit_every_probe_and_audit_sentinel`.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.xfail(
+    reason=(
+        "pending owner approval of the bu-y5uq4 spec delta "
+        "(openspec/changes/amend-secrets-inventory-label-minimization) and the "
+        "matching handler change; today's inventory still publishes system/CLI "
+        "description and category (bu-yk2hb Choice B not yet implemented)"
+    ),
+    strict=True,
+)
+def test_inventory_system_and_cli_rows_omit_description_and_category_but_retain_key():
+    """Target contract: system/CLI inventory rows keep `key`, drop `description`
+    and `category`. Each withheld field is planted with a distinct sentinel value
+    that must not appear anywhere in the response bytes; `key` must survive so an
+    operator can still identify the row.
+    """
+    system_row = _make_system_row(
+        key="SENTINEL_MINIMIZATION_SYSTEM_KEY",
+        value="fake-system-value",
+        category="sentinel-system-category",
+        description="sentinel-system-minimization-description",
+        last_test_ok=True,
+    )
+    cli_row = _make_system_row(
+        key="sentinel-minimization-cli-key",
+        value="fake-cli-value",
+        category="sentinel-cli-category",
+        description="sentinel-cli-minimization-description",
+        last_test_ok=True,
+    )
+    mock_db = _make_db_manager(
+        butler_names=["switchboard"],
+        system_rows=[system_row],
+        cli_rows=[cli_row],
+    )
+
+    resp = _build_app(mock_db).get("/api/secrets/inventory")
+
+    assert resp.status_code == 200, resp.text
+    for sentinel in (
+        "sentinel-system-category",
+        "sentinel-system-minimization-description",
+        "sentinel-cli-category",
+        "sentinel-cli-minimization-description",
+    ):
+        assert sentinel not in resp.text, f"{sentinel} leaked into the inventory response"
+
+    body = resp.json()["data"]
+    system_entry = next(
+        row for row in body["system"] if row["key"] == "SENTINEL_MINIMIZATION_SYSTEM_KEY"
+    )
+    cli_entry = next(row for row in body["cli"] if row["key"] == "sentinel-minimization-cli-key")
+
+    assert "description" not in system_entry
+    assert "category" not in system_entry
+    assert "description" not in cli_entry
+    assert "category" not in cli_entry
+
+    # The raw key survives so the row remains operator-identifiable.
+    assert system_entry["key"] == "SENTINEL_MINIMIZATION_SYSTEM_KEY"
+    assert cli_entry["key"] == "sentinel-minimization-cli-key"

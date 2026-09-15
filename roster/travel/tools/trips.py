@@ -9,6 +9,7 @@ from typing import Any
 import asyncpg
 
 from butlers.tools.travel._helpers import _build_timeline, _row_to_dict
+from butlers.tools.travel.connections import connection_reason
 
 logger = logging.getLogger(__name__)
 
@@ -210,6 +211,19 @@ async def trip_summary(
     # Generate alerts for pre-trip action items
     alerts = _compute_trip_alerts(trip, legs, accommodations, reservations, documents)
 
+    connections_rows = await pool.fetch(
+        "SELECT inbound_leg_id, outbound_leg_id, verdict, available_minutes, evidence, computed_at"
+        " FROM travel.connections WHERE trip_id = $1::uuid ORDER BY computed_at ASC",
+        trip_id,
+    )
+    connections = [_row_to_dict(r) for r in connections_rows]
+    party_rows = await pool.fetch(
+        "SELECT id, entity_id, display_name FROM travel.travellers "
+        "WHERE trip_id = $1::uuid ORDER BY display_name NULLS LAST, id",
+        trip_id,
+    )
+    party = [_row_to_dict(r) for r in party_rows]
+
     return {
         "trip": trip,
         "legs": legs,
@@ -218,6 +232,11 @@ async def trip_summary(
         "documents": documents,
         "timeline": timeline,
         "alerts": alerts,
+        "party": party,
+        "connections": connections,
+        "connection_reason": connection_reason(
+            trip.get("metadata"), has_connections=bool(connections)
+        ),
     }
 
 

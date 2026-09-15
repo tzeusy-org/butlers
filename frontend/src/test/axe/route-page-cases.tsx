@@ -26,6 +26,7 @@ import SettingsModelsPage from "@/pages/SettingsModelsPage";
 import { EntitiesIndexPage } from "@/components/relationship/EntitiesIndexPage";
 import ConcentrationPage from "@/components/relationship/ConcentrationPage";
 import CirclesPage from "@/components/relationship/CirclesPage";
+import ChatPage from "@/pages/ChatPage";
 
 /** Real page components exercised by route-pages.a11y.test.tsx. */
 export const ROUTE_AXE_CASES = [
@@ -39,6 +40,7 @@ export const ROUTE_AXE_CASES = [
   ["/health/research", ResearchPage], ["/settings/permissions", SettingsPermissionsPage], ["/settings/models", SettingsModelsPage],
   ["/entities/index", EntitiesIndexPage], ["/entities/concentration", ConcentrationPage], ["/entities/circles", CirclesPage],
   ["/entities/index?has=contact", EntitiesIndexPage],
+  ["/chat", ChatPage],
 ] as const;
 
 /** Paths with real page-level axe rendering, derived from ROUTE_AXE_CASES. */

@@ -50,6 +50,7 @@ function healthyStats(overrides: Partial<MemoryStats> = {}): MemoryStats {
     established_rules: 30,
     proven_rules: 10,
     anti_pattern_rules: 0,
+    retired_rules: 0,
     // Recent run — not overdue.
     last_consolidation_at: "2026-06-12T18:00:00Z",
     last_consolidation_facts_produced: 12,

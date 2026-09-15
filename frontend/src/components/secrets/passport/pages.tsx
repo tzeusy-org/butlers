@@ -3156,11 +3156,8 @@ const DRAWER_PROVIDER_SLUGS = new Set([
 // Spotify is deliberately NOT here. It has its own complete OAuth
 // implementation — the connector PKCE flow at /api/connectors/spotify/oauth/*,
 // client_id only, no client secret — and that is the flow the registered
-// Spotify app's redirect URIs point at. The generalized router's `spotify`
-// registry entry is a confidential-client flow needing
-// SPOTIFY_OAUTH_CLIENT_ID/SECRET, which were never provisioned; routing this
-// pill there (bu-5gliy) gave Spotify a connect button that could only fail.
-// SpotifyDrawer owns the control, on this panel and on PageUser.
+// Spotify app's redirect URIs point at. Spotify has no generalized provider
+// registry entry; SpotifyDrawer owns the control on this panel and on PageUser.
 const OAUTH_PROVIDERS = [{ slug: "google", label: "Google" }];
 
 const STUB_PROVIDERS = [

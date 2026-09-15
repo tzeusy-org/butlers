@@ -81,13 +81,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import unicodedata
+import uuid
 from datetime import datetime
 from typing import Any
 
 import asyncpg
 
-from butlers.core import owner_conditions
+from butlers.core import entity_graph_edges, owner_conditions
 from butlers.core.condition_ledger import (
     ConditionTransition,
     Observation,
@@ -98,6 +100,8 @@ from butlers.core.condition_ledger import (
     # decoder rather than a local copy free to drift from the writes.
     row_to_dict,
 )
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "COMMITMENT_DIRECTIONS",
@@ -254,6 +258,105 @@ def _require_deadline(caller: str, deadline: datetime | str | None) -> str | Non
 
 
 # ---------------------------------------------------------------------------
+# Entity-graph projection (RFC 0031, bu-8cdl1.8 Slice 2)
+# ---------------------------------------------------------------------------
+#
+# A directed commitment (``owner_to_other``/``other_to_owner``) with a
+# counterparty is an entity-to-entity relationship exactly like a
+# relationship.entity_facts triple or a memory edge-fact: "the owner
+# committed to this person". ``self`` commitments have no counterparty to
+# link and are never projected. Runs as ``reconcile_snapshot``'s
+# ``post_write`` hook, inside the SAME transaction as the ledger write (RFC
+# 0031 write-behind contract) -- a real projection failure (FK violation,
+# connection loss) propagates and rolls back the commitment write with it.
+#
+# Resolution (``resolve_commitment``) deliberately does NOT retract the
+# projected edge: a satisfied/cancelled/expired commitment is still a true
+# historical fact ("the owner committed to Sam"), not a source-row deletion
+# -- unlike a superseded fact or a retracted entity_facts triple, the
+# owner_conditions row itself is never deleted or corrected on resolution.
+
+
+async def _project_commitment_edge(
+    conn: asyncpg.Connection,
+    condition_id: uuid.UUID,
+    *,
+    direction: str,
+    counterparty_entity_id: str | None,
+) -> None:
+    """Project one commitment's counterparty onto ``public.entity_graph_edges``.
+
+    A no-op when there is no counterparty, the direction is ``self``, or no
+    owner entity exists yet (e.g. an unbootstrapped test pool) -- none of
+    these are projection FAILURES, there is simply nothing graphable yet.
+    A malformed (non-UUID) ``counterparty_entity_id`` is a pre-existing
+    caller data-quality issue unrelated to this projection's own
+    correctness; it is logged and skipped rather than failing the
+    commitment write.
+    """
+    if counterparty_entity_id is None or direction not in (
+        "owner_to_other",
+        "other_to_owner",
+    ):
+        return
+    try:
+        counterparty_id = uuid.UUID(counterparty_entity_id)
+    except ValueError:
+        logger.warning(
+            "commitments: counterparty_entity_id %r is not a UUID; "
+            "skipping entity-graph projection for condition %s",
+            counterparty_entity_id,
+            condition_id,
+        )
+        return
+
+    owner_id = await conn.fetchval(
+        "SELECT id FROM public.entities WHERE 'owner' = ANY(roles) LIMIT 1"
+    )
+    if owner_id is None:
+        return
+
+    if direction == "owner_to_other":
+        subject_entity_id, object_entity_id = owner_id, counterparty_id
+    else:
+        subject_entity_id, object_entity_id = counterparty_id, owner_id
+
+    await entity_graph_edges.project_entity_graph_edge(
+        conn,
+        source_schema="public",
+        source_table="owner_conditions",
+        source_id=condition_id,
+        subject_entity_id=subject_entity_id,
+        predicate="committed-to",
+        object_entity_id=object_entity_id,
+    )
+
+
+async def _post_write_commitment_edges(
+    conn: asyncpg.Connection,
+    transitions: list[ConditionTransition],
+    *,
+    direction: str,
+    counterparty_entity_id: str | None,
+) -> None:
+    """``reconcile_snapshot`` ``post_write`` hook for a single-observation call.
+
+    ``create_commitment`` always reconciles exactly one observation, so
+    *transitions* has exactly one entry regardless of transition kind
+    (opened/reopened/confirmed/escalation_due) -- the natural key is the
+    condition row's own id, which is stable across all of them, so
+    re-projecting on every confirm is a harmless idempotent upsert.
+    """
+    for transition in transitions:
+        await _project_commitment_edge(
+            conn,
+            transition.condition_id,
+            direction=direction,
+            counterparty_entity_id=counterparty_entity_id,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Lifecycle
 # ---------------------------------------------------------------------------
 
@@ -344,12 +447,21 @@ async def create_commitment(
     # snapshot_complete=False is not an optimization: a commitment has no
     # producer that can survey the world, so this call must be structurally
     # incapable of resolving any commitment it did not observe.
+    async def _post_write(conn: asyncpg.Connection, transitions: list[ConditionTransition]) -> None:
+        await _post_write_commitment_edges(
+            conn,
+            transitions,
+            direction=direction,
+            counterparty_entity_id=counterparty_entity_id,
+        )
+
     transitions = await owner_conditions.reconcile_snapshot(
         pool,
         source=source,
         observations=[observation],
         snapshot_complete=False,
         initial_grace_seconds=initial_grace_seconds,
+        post_write=_post_write,
     )
     return transitions[0] if transitions else None
 

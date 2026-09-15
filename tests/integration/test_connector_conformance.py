@@ -116,7 +116,7 @@ class TestTelegramConnectorConformance:
             new_callable=AsyncMock,
             return_value=mock_result,
         ):
-            envelope = telegram_connector._normalize_to_ingest_v1(telegram_update)
+            envelope = await telegram_connector._normalize_to_ingest_v1(telegram_update)
             await telegram_connector._submit_to_ingest(envelope)
 
             # Verify envelope conforms to ingest.v1 contract
@@ -157,7 +157,7 @@ class TestTelegramConnectorConformance:
             new_callable=AsyncMock,
             side_effect=[first_result, second_result],
         ):
-            envelope = telegram_connector._normalize_to_ingest_v1(telegram_update)
+            envelope = await telegram_connector._normalize_to_ingest_v1(telegram_update)
 
             # First submission
             await telegram_connector._submit_to_ingest(envelope)
@@ -180,7 +180,7 @@ class TestTelegramConnectorConformance:
             },
         }
 
-        envelope = telegram_connector._normalize_to_ingest_v1(telegram_update)
+        envelope = await telegram_connector._normalize_to_ingest_v1(telegram_update)
 
         # Verify envelope has all required routing handoff fields
         assert "source" in envelope
@@ -440,7 +440,7 @@ class TestCrossConnectorConformance:
             new_callable=AsyncMock,
             side_effect=RuntimeError("Ingest tool error: Internal error"),
         ):
-            envelope = telegram_connector._normalize_to_ingest_v1(telegram_update)
+            envelope = await telegram_connector._normalize_to_ingest_v1(telegram_update)
 
             # Should raise the error (caller is responsible for retry logic)
             with pytest.raises(RuntimeError, match="Ingest tool error"):

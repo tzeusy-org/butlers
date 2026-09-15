@@ -49,4 +49,6 @@ Then explore by topic as needed:
 
 ### Reference
 - [Diagrams](diagrams/) — source files for all documentation diagrams
-- [Archive](archive/) — superseded, draft, and historical documents
+- [Working plans](plans/README.md) — retained design dependencies and approval packets
+- [Redesigns](redesigns/README.md) — binding briefs and dated audit evidence
+- [Archive and successors](archive/README.md) — retained research and successor map for retired plans

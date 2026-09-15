@@ -93,6 +93,18 @@ available as history and SHALL NOT make the list or briefing imply that the syst
 currently unhealthy. The list is a rule-separated attention surface, not a card grid or
 table.
 
+#### Scenario: Unknown latest QA patrol status surfaces as attention
+
+- **WHEN** `GET /api/qa/summary` reports `staffer_status = "unknown_patrol_status"`
+  for a latest completed patrol and its circuit breaker is not tripped
+- **THEN** the attention list renders a high-severity `QA patrol status unknown` row
+  linking to `/qa`
+- **AND** the row explains that the latest patrol reported an unrecognized status
+  without rendering the raw stored value as UI copy
+- **AND** the same condition appears in the Overview's `Now` list and SHALL NOT be
+  omitted as healthy, calm, or no QA attention
+- **AND** a tripped breaker continues to take precedence over this row
+
 #### Scenario: Attention rows are derived from current issues
 
 - **WHEN** `GET /api/issues` returns one or more `Issue` objects whose parseable
@@ -421,6 +433,87 @@ is no longer future-tense; it is the current implementation contract.
   outermost container
 - **AND** the cockpit surfaces SHALL be direct children of `<Page>`, not
   wrapped in a raw `<div className="space-y-6">`
+
+### Requirement: Internal maintenance rollup in Dashboard Now
+
+Dashboard Now SHALL remain owner-focused by default and SHALL not use
+maintenance runs whose `data.success` is exactly `true` as ordinary recent
+activity. A `false` value is a failure, while `null`, missing, and nonboolean
+values are running or unknown and SHALL remain ordinary activity while the
+lens is disabled. It SHALL provide the same accessible, URL-backed Internal
+lens as the Timeline. When enabled, Dashboard Now SHALL render compact
+per-butler maintenance rollups from the Timeline event machine class and link
+them to the Timeline with its Internal lens enabled. Failed maintenance
+sessions SHALL remain visible as error activity while the lens is disabled.
+Dashboard Now SHALL render a confirmed failure with a textual `failed` marker
+and destructive error treatment rather than leaving its status only in
+non-rendered row detail. An Internal rollup with failed runs SHALL visibly
+include its exact failed-run count.
+
+#### Scenario: Dashboard Now defaults to owner activity
+
+- **WHEN** Dashboard Now receives successful maintenance Timeline events and
+  the URL does not include `internal=1`
+- **THEN** it does not render those events as ordinary activity rows
+- **AND** it continues to render owner activity and error rows
+
+#### Scenario: Dashboard Now keeps running and unknown maintenance visible
+
+- **WHEN** Dashboard Now receives a maintenance Timeline event whose
+  `data.success` is `null`, absent, or nonboolean and the URL does not include
+  `internal=1`
+- **THEN** it renders that event as ordinary recent activity
+
+#### Scenario: Dashboard Now renders failed maintenance as a visible failure
+
+- **WHEN** Dashboard Now receives a maintenance Timeline event whose
+  `data.success` is exactly `false` and the URL does not include `internal=1`
+- **THEN** it renders the event with a textual `failed` marker and destructive
+  error treatment, rather than only an ordinary `activity` marker
+- **AND** it continues to treat `null`, missing, and nonboolean success values
+  as visible running or unknown activity rather than failures
+
+#### Scenario: Internal Dashboard Now lens groups maintenance by butler
+
+- **WHEN** the operator enables the Internal lens and multiple loaded
+  maintenance events belong to the same butler
+- **THEN** Dashboard Now renders one maintenance rollup with the exact loaded
+  event count for that butler
+- **AND** when the rollup contains failed runs, it visibly includes the exact
+  failed-run count and failure treatment
+- **AND** its link opens the Timeline with `internal=1`
+
+### Requirement: Overview does not derive approval all-clear signals from partial metrics
+
+The dashboard overview model SHALL derive aggregate pending-approval attention
+and Now signals only from a complete pending-actions metric family. When
+`meta.pending_actions_sources_degraded` is non-empty, it SHALL surface a named
+approval-source-unavailable signal instead of a zero or empty-derived
+all-clear. Independently successful individual approval rows remain usable.
+
+#### Scenario: Partial aggregate with no individual rows
+
+- **WHEN** approval metrics return `total_pending = 0` with non-empty
+  `meta.pending_actions_sources_degraded` and no individual pending rows are
+  available
+- **THEN** the overview does not render a `0 pending approvals` result or
+  conclude that nothing needs attention from that aggregate
+- **AND** it renders a named unavailable approval source signal.
+
+#### Scenario: Healthy individual rows remain actionable
+
+- **WHEN** the pending-actions metrics aggregate is partial but the individual
+  pending-approvals query returns healthy rows
+- **THEN** the overview continues to render those individual rows and their
+  existing action affordances
+- **AND** it keeps the named aggregate-unavailable signal visible.
+
+#### Scenario: A complete zero remains calm
+
+- **WHEN** the approval metrics response has an empty or absent
+  `pending_actions_sources_degraded` list and `total_pending = 0`
+- **THEN** the overview renders no approval-unavailable signal
+- **AND** it preserves its normal calm zero behavior.
 
 ## Source References
 

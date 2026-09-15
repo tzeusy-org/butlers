@@ -58,9 +58,3 @@ Scope: v1-mandatory
 - **WHEN** process-log TTL cleanup deletes the owning row
 - **THEN** every tool-surface attempt receipt in that row is deleted in the same operation
 - **AND** no separate discovery-history record remains
-
-## Source References
-
-- Non-Negotiable Rule 4 (deterministic daemon and ephemeral intelligence)
-- RFC 0005 (observability and telemetry)
-- RFC 0027 (runtime tool surface discovery and exposure)

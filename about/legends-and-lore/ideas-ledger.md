@@ -10,7 +10,7 @@ instead of evaporating into closed dossiers that nobody re-reads.
 ## Provenance
 
 Every entry below is sourced from the **JARVIS relentless pursuit** dossiers
-under `docs/redesigns/` (skill: `.claude/skills/butler-relentless-jarvis-pursuit/`),
+under `docs/redesigns/` (skill: `.claude/skills/butlers-development/subskills/butler-relentless-jarvis-pursuit/`),
 a recurring generative audit of the Butlers ecosystem against
 `about/heart-and-soul/vision.md`:
 

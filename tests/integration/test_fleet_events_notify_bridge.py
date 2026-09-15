@@ -319,6 +319,7 @@ async def test_calendar_and_chronicler_child_processes_reach_websocket(
         "point_events": 1,
         "episodes_opened": 0,
         "episodes_closed": 0,
+        "episodes_promoted": 0,
     }
 
 

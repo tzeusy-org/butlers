@@ -42,8 +42,9 @@ before dispatch so a live path that settled it in the interim is skipped.
 ``failed_permanent`` status -- distinct from the retryable ``failed`` --
 once a route error is classified permanent (e.g. the subscriber lacks the
 ``domain_events`` core group) or the retry bound is reached, so a delivery
-that can never succeed is surfaced honestly instead of retried forever or
-silently dropped.
+that cannot currently succeed is surfaced honestly instead of retried forever
+or silently dropped. An explicit owner replay may atomically return it to the
+pending queue after the underlying fault is repaired.
 """
 
 from __future__ import annotations
@@ -326,6 +327,43 @@ async def get_delivery_status(pool: asyncpg.Pool, delivery_id: uuid.UUID | str) 
         uuid.UUID(str(delivery_id)),
     )
     return str(observed_status) if observed_status is not None else None
+
+
+async def requeue_failed_delivery(
+    pool: asyncpg.Pool | asyncpg.Connection,
+    delivery_id: uuid.UUID | str,
+) -> str:
+    """Atomically requeue one terminal delivery for the reconciliation worker.
+
+    The status predicate is the idempotence boundary: exactly one caller can
+    move ``failed_permanent`` back to ``pending``. A repeated or concurrent
+    request observes no updated row and must be reported as a conflict/no-op,
+    never enqueue a second delivery. The original event/subscriber identity
+    and unique constraint remain unchanged.
+    """
+    outcome = await pool.fetchval(
+        """
+        WITH candidate AS MATERIALIZED (
+            SELECT id
+            FROM public.domain_event_deliveries
+            WHERE id = $1
+        ), requeued AS (
+            UPDATE public.domain_event_deliveries
+            SET status = 'pending', attempt_count = 0, error_message = NULL,
+                task_id = NULL, task_name = NULL, delivered_at = NULL,
+                updated_at = now()
+            WHERE id = $1 AND status = 'failed_permanent'
+            RETURNING 1
+        )
+        SELECT CASE
+            WHEN EXISTS (SELECT 1 FROM requeued) THEN 'pending'
+            WHEN EXISTS (SELECT 1 FROM candidate) THEN 'conflict'
+            ELSE 'not_found'
+        END
+        """,
+        uuid.UUID(str(delivery_id)),
+    )
+    return str(outcome)
 
 
 async def mark_delivery_delivered(
