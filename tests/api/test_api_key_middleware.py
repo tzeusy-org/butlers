@@ -10,7 +10,9 @@ import pytest
 from fastapi import FastAPI, Request
 
 from butlers.api.app import create_app
+from butlers.api.audit_emit import authenticated_principal
 from butlers.api.owner_auth.config import OwnerAuthConfig
+from butlers.api.owner_auth.context import in_http_request, verified_http_principal
 from butlers.api.owner_auth.http import OwnerAuthMiddleware
 from butlers.api.owner_auth.service import AuthError
 from butlers.api.owner_control import require_dashboard_owner_control
@@ -67,6 +69,7 @@ def app_with_boundary():
     @app.api_route("/api/private", methods=["GET", "POST", "OPTIONS"])
     async def private(request: Request):
         require_dashboard_owner_control(request)
+        assert authenticated_principal() == "owner"
         return {"private": "domain-sentinel"}
 
     return app, service
@@ -85,14 +88,26 @@ async def test_no_configuration_or_store_never_disables_auth():
 
 
 async def test_header_cookie_and_csrf_precedence():
-    app, _ = app_with_boundary()
+    app, service = app_with_boundary()
+    authorize = service.authorize.side_effect
+
+    async def verify_unproven_principal(**kwargs):
+        with pytest.raises(PermissionError, match="Authenticated owner principal is required"):
+            authenticated_principal()
+        return await authorize(**kwargs)
+
+    service.authorize.side_effect = verify_unproven_principal
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=ORIGIN) as client:
         assert (await client.get("/api/private")).status_code == 401
+        assert in_http_request.get() is False
+        assert verified_http_principal.get() is None
         for key in ("wrong", ""):
             assert (
                 await client.get("/api/private", headers={"Cookie": COOKIE, "X-API-Key": key})
             ).status_code == 401
         assert (await client.get("/api/private", headers={"Cookie": COOKIE})).status_code == 200
+        assert in_http_request.get() is False
+        assert verified_http_principal.get() is None
         assert (
             await client.post("/api/private", headers={"Cookie": COOKIE, "Origin": ORIGIN})
         ).status_code == 403

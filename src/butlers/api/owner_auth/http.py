@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
-from contextvars import ContextVar
 
 import anyio
 from starlette.requests import ClientDisconnect, HTTPConnection, Request
@@ -17,10 +16,8 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from butlers.api.owner_auth.config import OwnerAuthConfig
+from butlers.api.owner_auth.context import in_http_request, verified_http_principal
 from butlers.api.owner_auth.service import AuthError
-
-verified_http_principal: ContextVar[str | None] = ContextVar("owner_http_principal", default=None)
-in_http_request: ContextVar[bool] = ContextVar("owner_http_request", default=False)
 
 PREFIX = "/api/auth/owner"
 CEREMONY_ROUTES = {
