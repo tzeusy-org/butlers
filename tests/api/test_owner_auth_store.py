@@ -747,3 +747,119 @@ async def test_consumed_receipts_remain_for_full_day_before_payload_cleanup(stor
     await store.cleanup()
     assert await store.pool.fetchval("SELECT count(*) FROM dashboard_auth.intents") == 1
     assert await store.pool.fetchval("SELECT count(*) FROM dashboard_auth.ceremonies") == 1
+
+
+async def _run_auth_revision(pool, postgres_container, operation, *, schema=None):
+    """Exercise the actual Alembic revision through its synchronous driver path."""
+    import importlib.util
+
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.engine import URL
+
+    database = await pool.fetchval("SELECT current_database()")
+    url = URL.create(
+        "postgresql+psycopg2",
+        username=postgres_container.username,
+        password=postgres_container.password,
+        host=postgres_container.get_container_host_ip(),
+        port=int(postgres_container.get_exposed_port(5432)),
+        database=database,
+    )
+
+    def migrate():
+        module_spec = importlib.util.spec_from_file_location(
+            "auth_revision_under_test", SQL.with_suffix(".py")
+        )
+        module = importlib.util.module_from_spec(module_spec)
+        module_spec.loader.exec_module(module)
+        engine = create_engine(url)
+        try:
+            with engine.begin() as connection:
+                if schema:
+                    quoted = connection.dialect.identifier_preparer.quote(schema)
+                    connection.execute(text(f"SET search_path TO {quoted},public"))
+                with Operations.context(MigrationContext.configure(connection)):
+                    getattr(module, operation)()
+        finally:
+            engine.dispose()
+
+    await asyncio.to_thread(migrate)
+
+
+async def test_global_migration_pristine_roundtrip_and_sibling_chains_preserve_identity(
+    provisioned_postgres_pool,
+    postgres_container,
+):
+    async with provisioned_postgres_pool() as pool:
+        await pool.execute("CREATE SCHEMA first_butler; CREATE SCHEMA second_butler")
+        await _run_auth_revision(pool, postgres_container, "upgrade", schema="first_butler")
+        identity = await pool.fetchrow("SELECT * FROM dashboard_auth.instance")
+        await _run_auth_revision(pool, postgres_container, "upgrade", schema="second_butler")
+        await _run_auth_revision(pool, postgres_container, "downgrade", schema="first_butler")
+        await _run_auth_revision(pool, postgres_container, "upgrade", schema="first_butler")
+        assert await pool.fetchrow("SELECT * FROM dashboard_auth.instance") == identity
+        assert await pool.fetchval("SELECT count(*) FROM dashboard_auth.audit") == 0
+        assert await pool.fetchval("SELECT count(*) FROM dashboard_auth.credentials") == 0
+
+
+async def test_global_migration_retains_enrolled_history_and_refuses_corrupt_state(
+    store,
+    postgres_container,
+):
+    with pytest.raises(RuntimeError, match="revocation plan"):
+        await _run_auth_revision(store.pool, postgres_container, "downgrade")
+    _, _, issued = await enrolled(store)
+    before = await store.pool.fetchrow("SELECT * FROM dashboard_auth.instance")
+    await _run_auth_revision(store.pool, postgres_container, "upgrade")
+    assert (await store.status(issued.token))["authenticated"]
+    with pytest.raises(RuntimeError, match="revocation plan"):
+        await _run_auth_revision(store.pool, postgres_container, "downgrade")
+    assert await store.pool.fetchrow("SELECT * FROM dashboard_auth.instance") == before
+    await store.pool.execute(
+        "ALTER TABLE dashboard_auth.contexts RENAME csrf_digest TO damaged_csrf"
+    )
+    with pytest.raises(RuntimeError, match="intact, owned"):
+        await _run_auth_revision(store.pool, postgres_container, "upgrade")
+    assert (
+        await store.pool.fetchval(
+            "SELECT count(*) FROM information_schema.columns WHERE table_schema='dashboard_auth' "
+            "AND table_name='contexts' AND column_name='csrf_digest'"
+        )
+        == 0
+    )
+    await store.pool.execute(
+        "ALTER TABLE dashboard_auth.contexts RENAME damaged_csrf TO csrf_digest"
+    )
+    await store.pool.execute("DELETE FROM dashboard_auth.instance")
+    for action in ("upgrade", "downgrade"):
+        with pytest.raises(RuntimeError, match="intact, owned"):
+            await _run_auth_revision(store.pool, postgres_container, action)
+    assert await store.pool.fetchval("SELECT count(*) FROM dashboard_auth.instance") == 0
+
+
+async def test_global_migration_refuses_foreign_namespace_and_missing_installed_namespace(
+    provisioned_postgres_pool,
+    postgres_container,
+):
+    async with provisioned_postgres_pool() as pool:
+        await pool.execute("CREATE SCHEMA dashboard_auth")
+        with pytest.raises(RuntimeError, match="intact, owned"):
+            await _run_auth_revision(pool, postgres_container, "upgrade")
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM information_schema.tables WHERE table_schema='dashboard_auth'"
+            )
+            == 0
+        )
+        await pool.execute("DROP SCHEMA dashboard_auth")
+        await _run_auth_revision(pool, postgres_container, "upgrade")
+        # schema-standin-exempt: Alembic bookkeeping receipt, not a domain query stand-in.
+        await pool.execute(
+            "CREATE SCHEMA sibling; CREATE TABLE sibling.alembic_version(version_num varchar(32) PRIMARY KEY); INSERT INTO sibling.alembic_version VALUES('core_239')"
+        )
+        await pool.execute("DROP SCHEMA dashboard_auth CASCADE")
+        with pytest.raises(RuntimeError, match="intact, owned"):
+            await _run_auth_revision(pool, postgres_container, "upgrade")
+        assert await pool.fetchval("SELECT to_regnamespace('dashboard_auth')") is None

@@ -257,3 +257,13 @@ CSRF values, key digests, vault screenshots, raw HTTP bodies and command argumen
 The API keeps public verification material and digest-only browser credentials
 in dedicated authentication state; generic Secrets and butler runtime roles do
 not access it. The owner entity/contact remains a separate domain record.
+
+### Global migration bookkeeping
+
+The auth schema is database-global even when individual butler schemas track
+separate core migration heads. Repeated `core_239` applications validate and
+reuse its existing identity and authority; missing/corrupt state is never
+reinitialized. A never-host-initialized, empty store permits only a no-op
+revision downgrade that retains the global schema and marker. Initialized or
+historical state refuses that downgrade. This bookkeeping exception neither
+removes authentication data nor authorizes an old image or live rollback.

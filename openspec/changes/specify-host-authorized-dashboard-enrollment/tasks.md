@@ -40,8 +40,8 @@ remains explicitly unchecked under 4.2. The uncompleted 3.6 item includes
 independent final-head approval and hosted merge-group evidence.
 
 Measured Python test-definition delta against the governing baseline:
-`Tests: +42 ~29 -6`. Existing domain test imports now explicitly install a
+`Tests: +45 ~33 -6`. Existing domain test imports now explicitly install a
 synthetic authenticated transport; they are not counted as new tests or
 credited as authentication proof. New frontend coverage adds 18 focused unit
 cases and two real isolated HTTPS scenarios. The Python lane budgets were not
-raised (16,856 unit and 4,600 integration cases at the final budget check).
+raised (16,856 unit and 4,603 integration cases at the final budget check).
