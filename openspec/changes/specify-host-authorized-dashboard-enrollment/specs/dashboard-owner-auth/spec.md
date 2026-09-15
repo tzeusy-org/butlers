@@ -525,6 +525,12 @@ Scope: v1-mandatory
 - **THEN** protected requests SHALL fail unavailable until explicit host-only reconciliation atomically commits the transition and epoch revocation
 - **AND** repeated reconciliation of unchanged configuration SHALL not revoke sessions or advance epochs
 
+#### Scenario: Stale workers cannot accept a retired configured key
+
+- **WHEN** host reconciliation commits a new mode or key generation while an old API worker remains running
+- **THEN** that worker SHALL reject header-authenticated requests as unavailable by comparing against current authoritative generation on every request
+- **AND** configured-key session issuance SHALL repeat the comparison under its commit lock and SHALL issue no session for a retired generation
+
 #### Scenario: Host identity changes require deliberate recovery
 
 - **WHEN** configured origin or RP differs from persisted identity
