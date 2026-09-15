@@ -1,4 +1,4 @@
-import { ownerAuthUrl, rememberOwnerCsrf } from "./owner-session";
+import { ownerAuthUrl, ownerSessionSignal, rememberOwnerCsrf } from "./owner-session";
 
 export type OwnerState = "keyless_unenrolled" | "keyless_enrolled" | "configured_key" | "recovery_pending" | "unavailable";
 export interface OwnerStatus { state: OwnerState; authenticated: boolean; session_expires_at: string | null }
@@ -46,9 +46,13 @@ export async function ownerStatus(signal?: AbortSignal): Promise<OwnerStatus> {
 }
 
 export async function restoreOwnerSession(signal?: AbortSignal): Promise<OwnerStatus> {
-  const status = await ownerStatus(signal);
+  const current = AbortSignal.any([ownerSessionSignal(), ...(signal ? [signal] : [])]);
+  const status = await ownerStatus(current);
+  current.throwIfAborted();
   if (status.authenticated) {
-    rememberOwnerCsrf(await authRequest<SessionTuple>("/csrf", undefined, undefined, signal));
+    const tuple = await authRequest<SessionTuple>("/csrf", undefined, undefined, current);
+    current.throwIfAborted();
+    rememberOwnerCsrf(tuple);
   }
   return status;
 }

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { clearOwnerSession, onOwnerSessionLost, ownerFetch, rememberOwnerCsrf } from "./owner-session";
+import { clearOwnerSession, logoutOwner, onOwnerSessionLost, ownerFetch, rememberOwnerCsrf } from "./owner-session";
 
 const fetchMock = vi.fn();
 const tuple = () => ({ csrf_token: "independent-synthetic-csrf", csrf_expires_at: new Date(Date.now() + 1_800_000).toISOString() });
@@ -45,4 +45,32 @@ describe("owner cookie request boundary", () => {
     await expect(pending).rejects.toThrow("Sign in again");
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
+  it("recovers an evicted CSRF token on explicit logout retry without replaying the failed action", async () => {
+    rememberOwnerCsrf(tuple());
+    fetchMock.mockResolvedValueOnce(response({}, 403));
+    await expect(logoutOwner()).rejects.toThrow("Sign out could not be confirmed");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const fresh = { ...tuple(), csrf_token: "fresh-synthetic-csrf" };
+    fetchMock.mockResolvedValueOnce(response(fresh)).mockResolvedValueOnce(response({}));
+    await logoutOwner();
+    expect(fetchMock.mock.calls.map(call => call[0])).toEqual([
+      "/api/auth/owner/session", "/api/auth/owner/csrf", "/api/auth/owner/session",
+    ]);
+    expect(new Headers(fetchMock.mock.calls[2][1].headers).get("X-CSRF-Token")).toBe(fresh.csrf_token);
+  });
+  it("does not discard a newer CSRF token when an older mutation is denied", async () => {
+    rememberOwnerCsrf(tuple());
+    let resolve!: (value: Response) => void;
+    fetchMock.mockImplementationOnce(() => new Promise<Response>(done => { resolve = done; }));
+    const pending = ownerFetch("/api/private", { method: "POST" });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    const fresh = { ...tuple(), csrf_token: "newer-synthetic-csrf" };
+    rememberOwnerCsrf(fresh);
+    resolve(response({}, 403)); await pending;
+    fetchMock.mockResolvedValueOnce(response({}));
+    await ownerFetch("/api/private", { method: "POST" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(new Headers(fetchMock.mock.calls[1][1].headers).get("X-CSRF-Token")).toBe(fresh.csrf_token);
+  });
+
 });
