@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from butlers.api.app import create_app
 from butlers.credential_store import CredentialStore
 from butlers.google_credentials import (
     KEY_CLIENT_ID,
@@ -18,6 +17,7 @@ from butlers.google_credentials import (
     resolve_google_credentials,
     store_app_credentials,
 )
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 
