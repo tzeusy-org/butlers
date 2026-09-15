@@ -21,6 +21,7 @@ import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import SettingsPermissionsPage from "@/pages/SettingsPermissionsPage";
+import { clearOwnerSession, rememberOwnerCsrf } from "@/api/owner-session";
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -38,7 +39,7 @@ vi.mock("@/hooks/use-audit-log", () => ({
 }));
 
 const apiFetchMock = vi.hoisted(() => vi.fn());
-const resolveApiHrefMock = vi.hoisted(() => vi.fn((path: string) => path));
+const resolveApiHrefMock = vi.hoisted(() => vi.fn((path: string) => `/api${path}`));
 vi.mock("@/api/client", () => ({
   apiFetch: apiFetchMock,
   resolveApiHref: resolveApiHrefMock,
@@ -49,6 +50,20 @@ vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() },
   Toaster: () => null,
 }));
+
+// Exercise the real owner transport with the session established by the shell.
+// Authentication lifecycle coverage lives in owner-session.test.ts.
+beforeEach(() => {
+  resolveApiHrefMock.mockReset();
+  resolveApiHrefMock.mockImplementation((path: string) => `/api${path}`);
+  clearOwnerSession();
+  rememberOwnerCsrf({
+    csrf_token: "permissions-page-test-csrf",
+    csrf_expires_at: new Date(Date.now() + 60_000).toISOString(),
+  });
+});
+
+afterEach(() => clearOwnerSession());
 
 // Baseline fetch mock — returns empty data for all API calls
 const fetchMock = vi.fn();
@@ -237,7 +252,9 @@ describe("SettingsPermissionsPage — export section [bu-9q1dx.1]", () => {
     apiFetchMock.mockResolvedValueOnce({
       data: { signed_url: signedUrl, expires_at: "2026-08-02T01:00:00Z" },
     });
-    resolveApiHrefMock.mockReturnValueOnce(resolvedUrl);
+    resolveApiHrefMock.mockImplementation((path: string) =>
+      path === signedUrl ? resolvedUrl : `/api${path}`,
+    );
 
     await act(async () => {
       renderPage();
