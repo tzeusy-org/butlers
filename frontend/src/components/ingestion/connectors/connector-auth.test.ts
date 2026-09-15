@@ -64,6 +64,46 @@ describe('deriveConnectorDispatchInfo — healthy connector', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Runtime state must be explicitly healthy before it can present as green
+// ---------------------------------------------------------------------------
+
+describe('deriveConnectorDispatchInfo — paused and unrecognized runtime states', () => {
+  it.each([
+    ['paused', 'connector paused · resume when ready', 'paused'],
+    ['a_future_runtime_state', 'connector state unrecognized · check connector', 'degraded'],
+  ] as const)(
+    'keeps online state=%s visible as degraded attention instead of green authorization',
+    (state, authNote, verdict) => {
+      const connector = { ...BASE, state }
+      const info = deriveConnectorDispatchInfo(connector)
+
+      expect(info).toEqual({
+        authStatus: 'ok',
+        health: 'degraded',
+        needsAttention: true,
+        authNote,
+      })
+      expect(healthVerdictWord(connector, info)).toBe(verdict)
+      expect(authStatusPresentation(info)).toEqual({
+        label: authNote,
+        colorClass: 'text-[var(--amber-text)]',
+      })
+    },
+  )
+
+  it('does not let stale liveness mask an unrecognized runtime state', () => {
+    const connector = { ...BASE, liveness: 'stale', state: 'a_future_runtime_state' }
+
+    expect(deriveConnectorDispatchInfo(connector)).toEqual({
+      authStatus: 'ok',
+      health: 'degraded',
+      needsAttention: true,
+      authNote: 'connector state unrecognized · check connector',
+    })
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Auth presentation must not impersonate healthy runtime state
 // ---------------------------------------------------------------------------
 
@@ -98,13 +138,13 @@ describe('authStatusPresentation', () => {
 
     expect(authStatusPresentation(info)).toEqual({
       label: 'authorized',
-      colorClass: 'text-[color:var(--green,oklch(0.72_0.17_150))]',
+      colorClass: 'text-[var(--green)]',
     })
   })
 
   it.each([
-    ['reauth', 'needs_reauth', 'error', 'session expired', '--red'],
-    ['no primary', 'needs_primary_account', 'degraded', 'primary account missing', '--amber'],
+    ['reauth', 'needs_reauth', 'error', 'session expired', '--red-text'],
+    ['no primary', 'needs_primary_account', 'degraded', 'primary account missing', '--amber-text'],
   ] as const)(
     'preserves the actionable %s label when health is also unhealthy',
     (expectedLabel, authStatus, health, authNote, expectedTone) => {
