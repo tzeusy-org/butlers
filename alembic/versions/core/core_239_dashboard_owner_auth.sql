@@ -5,6 +5,12 @@ DO $$ BEGIN
  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='dashboard_auth_api') THEN
   CREATE ROLE dashboard_auth_api NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
  END IF;
+ IF EXISTS (SELECT FROM pg_roles WHERE rolname='dashboard_auth_api'
+  AND (rolsuper OR rolcreaterole OR rolcreatedb OR rolbypassrls OR rolcanlogin))
+  OR EXISTS (SELECT FROM pg_auth_members m JOIN pg_roles r ON r.oid=m.member
+   WHERE r.rolname='dashboard_auth_api') THEN
+  RAISE EXCEPTION 'dashboard authentication role must be restricted';
+ END IF;
 END $$;
 CREATE TABLE dashboard_auth.instance (
  singleton boolean PRIMARY KEY DEFAULT true CHECK(singleton),
@@ -60,7 +66,7 @@ CREATE TABLE dashboard_auth.rate_buckets (
 CREATE TABLE dashboard_auth.audit (
  ts timestamptz NOT NULL DEFAULT clock_timestamp(),
  action text NOT NULL CHECK(action IN ('registration','login','session','logout','revoke',
- 'authorize_registration','authorize_recovery','reconcile_mode','rebind_origin','cleanup')),
+ 'authorize_registration','authorize_recovery','reconcile_mode','rebind_origin','revoke_sessions','cleanup')),
  outcome text NOT NULL CHECK(outcome IN ('success','denied','counter_anomaly')),
  actor text NOT NULL CHECK(actor IN ('owner','host_operator','unauthenticated'))
 );
@@ -164,7 +170,8 @@ BEGIN
  END IF;
  IF action<>'key_session' THEN
   SELECT * INTO c FROM dashboard_auth.contexts WHERE digest=p->>'context_digest' FOR UPDATE;
-  IF NOT FOUND OR c.revoked OR c.expires_at<=t THEN RETURN '{"error":"UNAUTHORIZED"}'; END IF;
+  IF NOT FOUND THEN RETURN '{"error":"UNAUTHORIZED"}'; END IF;
+  IF c.revoked OR c.expires_at<=t THEN RETURN '{"error":"AUTH_RESTART_REQUIRED"}'; END IF;
   IF c.csrf_digest IS DISTINCT FROM p->>'csrf_digest' THEN RETURN '{"error":"FORBIDDEN"}'; END IF;
   IF c.credential_epoch<>s.credential_epoch THEN RETURN '{"error":"AUTH_RESTART_REQUIRED"}'; END IF;
   IF action IN ('snapshot_registration','snapshot_login') THEN
@@ -294,6 +301,15 @@ DECLARE s dashboard_auth.instance%ROWTYPE; i dashboard_auth.intents%ROWTYPE;
 BEGIN
  SELECT * INTO s FROM dashboard_auth.instance WHERE singleton FOR UPDATE;
  IF NOT FOUND THEN RETURN '{"error":"AUTH_UNAVAILABLE"}'; END IF;
+ IF action='revoke_sessions' THEN
+  IF NOT COALESCE((p->>'confirm_revoke')::boolean,false) THEN RETURN '{"error":"FORBIDDEN"}'; END IF;
+  IF s.key_generation IS DISTINCT FROM p->>'key_generation' THEN RETURN '{"error":"AUTH_UNAVAILABLE"}'; END IF;
+  UPDATE dashboard_auth.instance SET session_epoch=session_epoch+1 WHERE singleton;
+  UPDATE dashboard_auth.sessions SET revoked=true WHERE NOT revoked;
+  UPDATE dashboard_auth.ceremonies SET consumed=true WHERE operation='login' AND NOT consumed;
+  INSERT INTO dashboard_auth.audit(action,outcome,actor) VALUES(action,'success','host_operator');
+  RETURN jsonb_build_object('operation',action,'canonical_origin',s.origin,'changed',true);
+ END IF;
  IF action IN ('reconcile_mode','rebind_origin') THEN
   IF NOT COALESCE((p->>'confirm_revoke')::boolean,false) THEN RETURN '{"error":"FORBIDDEN"}'; END IF;
   IF action='reconcile_mode' THEN
@@ -361,8 +377,9 @@ BEGIN
  DELETE FROM dashboard_auth.sessions WHERE digest IN (SELECT digest FROM dashboard_auth.sessions WHERE expires_at<t-interval '23 hours' LIMIT 1000);
  DELETE FROM dashboard_auth.csrf WHERE (session_digest,digest) IN (SELECT session_digest,digest FROM dashboard_auth.csrf WHERE expires_at<t-interval '23 hours' LIMIT 1000);
  UPDATE dashboard_auth.credentials SET credential_id=NULL,credential_data=NULL,user_handle=NULL
-  WHERE NOT active AND retired_at<t-interval '23 hours' AND credential_id IS NOT NULL;
- DELETE FROM dashboard_auth.audit WHERE ctid IN (SELECT ctid FROM dashboard_auth.audit WHERE ts<t-interval '30 days' LIMIT 1000);
+  WHERE credential_epoch IN (SELECT credential_epoch FROM dashboard_auth.credentials
+   WHERE NOT active AND retired_at<t-interval '23 hours' AND credential_id IS NOT NULL LIMIT 1000);
+ DELETE FROM dashboard_auth.audit WHERE ctid IN (SELECT ctid FROM dashboard_auth.audit WHERE ts<t-interval '30 days' LIMIT 2000);
 END $$;
 REVOKE ALL ON FUNCTION dashboard_auth.cleanup() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION dashboard_auth.cleanup() TO dashboard_auth_api;
