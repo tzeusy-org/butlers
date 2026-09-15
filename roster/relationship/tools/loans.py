@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -52,7 +53,7 @@ def _fact_to_loan(row: dict[str, Any]) -> dict[str, Any]:
         meta = json.loads(meta)
 
     amount_cents = meta.get("amount_cents")
-    currency = meta.get("currency", "USD")
+    currency = meta.get("currency")
 
     result: dict[str, Any] = {
         "id": row["id"],
@@ -93,12 +94,15 @@ async def loan_create(
     lender_contact_id: uuid.UUID | None = None,
     borrower_contact_id: uuid.UUID | None = None,
     amount_cents: int | None = None,
-    currency: str = "USD",
+    currency: str,
 ) -> dict[str, Any]:
     """Create a loan record with legacy + spec-compatible fields."""
     from butlers.modules.memory.storage import store_fact
 
     effective_description = description or "Loan"
+    currency = currency.strip().upper()
+    if len(currency) != 3 or not currency.isalpha():
+        raise ValueError("currency is required and must be an ISO-4217 three-letter code")
 
     if amount_cents is None and amount is not None:
         amount_cents = int((amount * 100).quantize(Decimal("1")))
@@ -157,6 +161,36 @@ async def loan_create(
             metadata=fact_metadata,
         )
     )["id"]
+
+    # The fact is canonical. The shared claim is deliberately best-effort so
+    # an unavailable projection can never erase or reject the Relationship
+    # record; the idempotent backfill repairs it on the next sweep.
+    if amount is not None and direction in {"lent", "borrowed"} and contact_entity_id is not None:
+        try:
+            from butlers.core.cost_claims import assert_claim
+
+            entity_label = await pool.fetchval(
+                "SELECT canonical_name FROM public.entities WHERE id = $1", contact_entity_id
+            )
+            await assert_claim(
+                pool,
+                claim_key=f"loan:{fact_id}",
+                asserted_by="relationship",
+                kind="receivable" if direction == "lent" else "payable",
+                direction="inbound" if direction == "lent" else "outbound",
+                amount=amount,
+                currency=currency,
+                counterparty_entity_id=contact_entity_id,
+                counterparty_label=entity_label,
+                expected_on=None,
+                description=effective_description,
+                evidence_kind="fact",
+                evidence_ref=str(fact_id),
+            )
+        except Exception:
+            logger.warning(
+                "Loan claim projection failed; a later backfill will retry", exc_info=True
+            )
     result: dict[str, Any] = {
         "id": fact_id,
         "description": effective_description,
@@ -183,55 +217,69 @@ async def loan_settle(pool: asyncpg.Pool, loan_id: uuid.UUID) -> dict[str, Any]:
     """Settle a loan."""
     from butlers.modules.memory.storage import store_fact
 
-    row = await pool.fetchrow(
-        "SELECT id, subject, content, metadata, entity_id FROM facts"
-        " WHERE id = $1 AND scope = 'relationship'",
-        loan_id,
-    )
-    if row is None:
-        raise ValueError(f"Loan {loan_id} not found")
-
-    meta = row["metadata"] or {}
-    if isinstance(meta, str):
-        meta = json.loads(meta)
-
-    now = datetime.now(UTC)
-    new_metadata = dict(meta)
-    new_metadata["settled"] = True
-    new_metadata["settled_at"] = now.isoformat()
-
-    embedding_engine = _get_embedding_engine()
-
-    # Supersede the old fact directly before inserting the settled snapshot.
-    # We do NOT rely on store_fact's entity-keyed supersession because that would
-    # collapse all loans for the same entity+predicate into one row.
-    await pool.execute(
-        "UPDATE facts SET validity = 'superseded', invalid_at = $2 WHERE id = $1",
-        loan_id,
-        now,
-    )
-
-    # Insert the settled snapshot as a temporal fact (coexists independently).
-    new_fact_id = (
-        await store_fact(
-            pool,
-            subject=row["subject"],
-            predicate="loan",
-            content=row["content"],
-            embedding_engine=embedding_engine,
-            permanence="stable",
-            scope="relationship",
-            entity_id=row["entity_id"],
-            valid_at=now,
-            metadata=new_metadata,
+    async with pool.acquire() as conn, conn.transaction():
+        row = await conn.fetchrow(
+            "SELECT id, subject, content, metadata, entity_id FROM facts"
+            " WHERE id = $1 AND scope = 'relationship' AND validity = 'active' FOR UPDATE",
+            loan_id,
         )
-    )["id"]
+        if row is None:
+            raise ValueError(f"Loan {loan_id} not found")
+
+        meta = row["metadata"] or {}
+        if isinstance(meta, str):
+            meta = json.loads(meta)
+
+        now = datetime.now(UTC)
+        new_metadata = dict(meta)
+        new_metadata["settled"] = True
+        new_metadata["settled_at"] = now.isoformat()
+        embedding_engine = _get_embedding_engine()
+
+        await conn.execute(
+            "UPDATE facts SET validity = 'superseded', invalid_at = $2 WHERE id = $1",
+            loan_id,
+            now,
+        )
+        new_fact_id = (
+            await store_fact(
+                _BoundConnectionPool(conn),
+                subject=row["subject"],
+                predicate="loan",
+                content=row["content"],
+                embedding_engine=embedding_engine,
+                permanence="stable",
+                scope="relationship",
+                entity_id=row["entity_id"],
+                valid_at=now,
+                metadata=new_metadata,
+            )
+        )["id"]
+
+        try:
+            from butlers.core.cost_claims import retract_claim
+
+            # Savepoint isolates the optional projection from the canonical
+            # fact transition. A missing pre-deploy table must not abort the
+            # outer transaction after the successor fact was stored.
+            async with conn.transaction():
+                claim_id = await conn.fetchval(
+                    "SELECT id FROM public.cost_claims WHERE asserted_by = 'relationship' "
+                    "AND claim_key = $1 AND superseded_at IS NULL AND retracted_at IS NULL",
+                    f"loan:{loan_id}",
+                )
+                if claim_id is not None:
+                    await retract_claim(
+                        _BoundConnectionPool(conn), claim_id, "asserter_marked_settled"
+                    )
+        except Exception:
+            logger.warning("Cost-claim projection unavailable while settling loan", exc_info=True)
 
     result: dict[str, Any] = {
         "id": new_fact_id,
         "description": row["content"],
         "amount_cents": new_metadata.get("amount_cents"),
-        "currency": new_metadata.get("currency", "USD"),
+        "currency": new_metadata.get("currency"),
         "direction": new_metadata.get("direction"),
         "settled": True,
         "settled_at": now,
@@ -286,6 +334,66 @@ async def loan_list(
             r["amount"] = (Decimal(r["amount_cents"]) / Decimal(100)).quantize(Decimal("0.01"))
         if "amount_cents" not in r and r.get("amount") is not None:
             r["amount_cents"] = int((Decimal(r["amount"]) * 100).quantize(Decimal("1")))
-        if "currency" not in r:
-            r["currency"] = "USD"
     return results
+
+
+class _BoundConnectionPool:
+    """Pool-shaped adapter that keeps memory writes inside an outer transaction."""
+
+    def __init__(self, conn: asyncpg.Connection) -> None:
+        self._conn = conn
+
+    @asynccontextmanager
+    async def acquire(self):
+        yield self._conn
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._conn, name)
+
+
+async def backfill_loan_cost_claims(pool: asyncpg.Pool) -> dict[str, int]:
+    """Idempotently project active loan facts, honestly skipping legacy unknown currency."""
+    from butlers.core.cost_claims import assert_claim
+
+    rows = await pool.fetch(
+        """
+        SELECT f.id, f.content, f.metadata, f.entity_id, e.canonical_name
+        FROM facts f
+        LEFT JOIN public.entities e ON e.id = f.entity_id
+        WHERE f.predicate = 'loan' AND f.scope = 'relationship'
+          AND f.validity = 'active' AND f.valid_at IS NOT NULL
+        """
+    )
+    counts = {"asserted": 0, "skipped_missing_currency": 0, "skipped_invalid": 0}
+    for row in rows:
+        meta = row["metadata"] or {}
+        currency = meta.get("currency")
+        amount_cents = meta.get("amount_cents")
+        direction = meta.get("direction")
+        if not currency:
+            counts["skipped_missing_currency"] += 1
+            continue
+        if (
+            amount_cents is None
+            or direction not in {"lent", "borrowed"}
+            or row["entity_id"] is None
+        ):
+            counts["skipped_invalid"] += 1
+            continue
+        await assert_claim(
+            pool,
+            claim_key=f"loan:{row['id']}",
+            asserted_by="relationship",
+            kind="receivable" if direction == "lent" else "payable",
+            direction="inbound" if direction == "lent" else "outbound",
+            amount=(Decimal(amount_cents) / Decimal(100)),
+            currency=currency,
+            counterparty_entity_id=row["entity_id"],
+            counterparty_label=row["canonical_name"],
+            expected_on=None,
+            description=row["content"],
+            evidence_kind="fact",
+            evidence_ref=str(row["id"]),
+        )
+        counts["asserted"] += 1
+    return counts

@@ -4,9 +4,10 @@ The nightly backup dumps as ``$POSTGRES_USER`` — the shared migration/runtime
 login that ``scripts/init-db.sql`` deliberately fences away from the
 trusted-bootstrap control plane.  ``pg_dump`` takes ``LOCK TABLE`` over every
 relation in scope before writing a byte, so one unreadable relation aborts the
-whole dump; because the script pipes through gzip under ``set -o pipefail`` with
-a cleanup trap, a failing run leaves *no file at all*.  Absence, not corruption,
-is the failure shape — and absence is the one that goes unnoticed.
+whole dump. The script captures the producer status explicitly and keeps a
+partial gzip behind a temporary name, so a failing run leaves *no file at all*.
+Absence, not corruption, is the failure shape — and absence is the one that
+goes unnoticed.
 
 Three things are pinned here:
 
@@ -36,6 +37,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -54,11 +56,95 @@ _SCRIPT = _REPO_ROOT / "deploy" / "backup" / "pg_dump.sh"
 #: host's client version is irrelevant and often too old for a PG17 server.
 _BACKUP_IMAGE = "postgres:17-alpine"
 
+
+_FAKE_PSQL_SNAPSHOT_HOLDER = """#!/bin/sh
+set -eu
+
+output_file=""
+while IFS= read -r line; do
+  case "${line}" in
+    "\\\\o "*)
+      output_file=${line#"\\\\o "}
+      ;;
+    "\\\\o")
+      case "${output_file}" in
+        */id) printf 'ABCDEF-012345\\n' > "${output_file}" ;;
+        */policy-count) printf '3\\n' > "${output_file}" ;;
+      esac
+      output_file=""
+      ;;
+  esac
+done
+"""
+
+
+_PSQL_SNAPSHOT_BARRIER = """#!/bin/sh
+set -eu
+
+real_psql=/usr/local/bin/psql
+has_command=0
+for arg in "$@"; do
+  if [ "${arg}" = "-c" ]; then
+    has_command=1
+    break
+  fi
+done
+if [ "${has_command}" -eq 1 ] \
+  || [ -z "${BACKUP_TEST_SNAPSHOT_READY:-}" ] \
+  || [ -z "${BACKUP_TEST_SNAPSHOT_RELEASE:-}" ]; then
+  exec "${real_psql}" "$@"
+fi
+
+proxy_dir="$(mktemp -d)"
+proxy_fifo="${proxy_dir}/input"
+psql_pid=""
+cleanup() {
+  exec 3>&- 2>/dev/null || true
+  if [ -n "${psql_pid}" ]; then
+    kill "${psql_pid}" 2>/dev/null || true
+    wait "${psql_pid}" 2>/dev/null || true
+  fi
+  rm -rf "${proxy_dir}"
+}
+trap cleanup EXIT
+
+mkfifo "${proxy_fifo}"
+"${real_psql}" "$@" < "${proxy_fifo}" &
+psql_pid=$!
+exec 3>"${proxy_fifo}"
+while IFS= read -r line; do
+  case "${line}" in
+    *"SELECT pg_export_snapshot();"*)
+      : > "${BACKUP_TEST_SNAPSHOT_READY}"
+      while [ ! -e "${BACKUP_TEST_SNAPSHOT_RELEASE}" ]; do
+        sleep 0.01
+      done
+      ;;
+  esac
+  printf '%s\\n' "${line}" >&3
+done
+exec 3>&-
+if wait "${psql_pid}"; then
+  psql_pid=""
+  exit 0
+fi
+wait_status=$?
+psql_pid=""
+exit "${wait_status}"
+"""
+
 docker_available = shutil.which("docker") is not None
 
 
-def _read_exclusion_set() -> tuple[set[str], set[str]]:
-    """Parse the schema/table exclusion sets declared in the backup script."""
+_EXPECTED_SCOPED_DATA_TABLES = {
+    "public.cost_claims",
+    "public.cost_claim_resolutions",
+    "public.cost_claim_events",
+}
+
+
+def _read_backup_sets() -> tuple[set[str], set[str], set[str]]:
+    """Parse the exclusion and included-RLS sets declared in the backup script."""
     source = _SCRIPT.read_text(encoding="utf-8")
 
     def _one(name: str) -> set[str]:
@@ -66,7 +152,11 @@ def _read_exclusion_set() -> tuple[set[str], set[str]]:
         assert match is not None, f"{name} assignment not found in {_SCRIPT}"
         return set(match.group(1).split())
 
-    return _one("BACKUP_EXCLUDE_SCHEMAS"), _one("BACKUP_EXCLUDE_TABLES")
+    return (
+        _one("BACKUP_EXCLUDE_SCHEMAS"),
+        _one("BACKUP_EXCLUDE_TABLES"),
+        _one("BACKUP_SCOPED_DATA_TABLES"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -75,20 +165,19 @@ def _read_exclusion_set() -> tuple[set[str], set[str]]:
 
 
 @pytest.mark.unit
-def test_script_never_enables_row_security() -> None:
-    """``--enable-row-security`` would trade a loud failure for a silent one.
-
-    With row security left off (the pg_dump default), a table whose policies
-    hide rows from the dump role raises an error and the run fails visibly.
-    Turning it on makes that same dump succeed while quietly omitting exactly
-    those rows — a backup that lies about its own completeness.
-    """
+def test_script_keeps_pg_dump_fail_loud_and_scopes_the_rls_data_path() -> None:
+    """The ordinary dump never opts globally into policy-filtered output."""
     code = [
         line
         for line in _SCRIPT.read_text(encoding="utf-8").splitlines()
         if not line.lstrip().startswith("#")
     ]
     assert not [line for line in code if "--enable-row-security" in line]
+    _excluded_schemas, _excluded_tables, scoped_data_tables = _read_backup_sets()
+    assert scoped_data_tables == _EXPECTED_SCOPED_DATA_TABLES
+    assert any('--snapshot="${BACKUP_SNAPSHOT}"' in line for line in code)
+    for table in scoped_data_tables:
+        assert any('"--exclude-table-data=${table}"' in line for line in code)
 
 
 @pytest.mark.unit
@@ -97,15 +186,19 @@ def test_failed_run_says_so_and_publishes_nothing(tmp_path: Path) -> None:
 
     This is the whole point of bu-e1410: the failing run publishes nothing, so
     its log line has to be unmistakable -- and of bu-xrqyu: a log line nobody
-    reads is not a signal, so the run also records its outcome on disk.  A stub ``pg_dump`` on PATH
-    stands in for any dump-time failure (permission denied, unreachable host,
-    a killed process) — the script's behaviour afterwards is what is pinned.
+    reads is not a signal, so the run also records its outcome on disk.  The
+    DB-free stubs complete the snapshot handshake, then make ``pg_dump`` fail
+    as any dump-time error could (permission denied, unreachable host, killed
+    process) — the script's behaviour afterwards is what is pinned.
     """
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     stub = fake_bin / "pg_dump"
     stub.write_text('#!/bin/sh\necho "stub failure" >&2\nexit 1\n', encoding="utf-8")
     stub.chmod(0o755)
+    psql_stub = fake_bin / "psql"
+    psql_stub.write_text(_FAKE_PSQL_SNAPSHOT_HOLDER, encoding="utf-8")
+    psql_stub.chmod(0o755)
 
     backup_dir = tmp_path / "backups"
     env = {
@@ -191,6 +284,15 @@ def _fetch(db_url: str, sql: str) -> set[str]:
         engine.dispose()
 
 
+def _fetch_rows(db_url: str, sql: str) -> list[tuple]:
+    engine = create_engine(db_url)
+    try:
+        with engine.connect() as conn:
+            return [tuple(row) for row in conn.execute(text(sql))]
+    finally:
+        engine.dispose()
+
+
 @pytest.mark.db
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
@@ -202,7 +304,7 @@ def test_exclusion_set_matches_the_fenced_objects_exactly(bootstrapped_db_url: s
     does it silently.  Deciding either way is a backup-completeness decision
     that belongs in the script's header, not in a quiet edit here.
     """
-    excluded_schemas, excluded_tables = _read_exclusion_set()
+    excluded_schemas, excluded_tables, scoped_data_tables = _read_backup_sets()
     fenced = _fetch(bootstrapped_db_url, _FENCED_RELATIONS_SQL)
     everything = _fetch(bootstrapped_db_url, _ALL_RELATIONS_SQL)
 
@@ -210,7 +312,9 @@ def test_exclusion_set_matches_the_fenced_objects_exactly(bootstrapped_db_url: s
         schema, _, _table = qualified.partition(".")
         return schema in excluded_schemas or qualified in excluded_tables
 
-    missed = sorted(rel for rel in fenced if not _is_excluded(rel))
+    missed = sorted(
+        rel for rel in fenced if not _is_excluded(rel) and rel not in scoped_data_tables
+    )
     assert not missed, (
         "These relations are fenced away from the backup role but are not "
         "excluded, so the nightly pg_dump aborts and publishes no file at all: "
@@ -234,23 +338,60 @@ def test_exclusion_set_matches_the_fenced_objects_exactly(bootstrapped_db_url: s
         f"only hiding data: schemas={unused_schemas} tables={unused_tables}."
     )
 
+    assert scoped_data_tables <= fenced
+    policy_rows = _fetch_rows(
+        bootstrapped_db_url,
+        """
+        SELECT n.nspname || '.' || c.relname,
+               p.polpermissive,
+               p.polcmd,
+               p.polroles = ARRAY[0::oid],
+               pg_get_expr(p.polqual, p.polrelid)
+        FROM pg_policy AS p
+        JOIN pg_class AS c ON c.oid = p.polrelid
+        JOIN pg_namespace AS n ON n.oid = c.relnamespace
+        WHERE n.nspname || '.' || c.relname IN (
+            'public.cost_claims',
+            'public.cost_claim_resolutions',
+            'public.cost_claim_events'
+        )
+          AND p.polcmd IN ('r', '*')
+        ORDER BY 1
+        """,
+    )
+    assert policy_rows == [
+        (table, True, "r", True, "true") for table in sorted(_EXPECTED_SCOPED_DATA_TABLES)
+    ], (
+        "Every RLS table admitted to the backup must expose every row through one "
+        f"permissive PUBLIC SELECT policy; got {policy_rows}."
+    )
 
-def _run_backup_script(
-    db_url: str, backup_dir: Path, host_port: str
-) -> subprocess.CompletedProcess:
-    """Run the real script in the real sidecar image against *db_url*."""
+
+def _backup_command(
+    db_url: str,
+    backup_dir: Path,
+    host_port: str,
+    *,
+    extra_env: dict[str, str] | None = None,
+    extra_mounts: list[tuple[Path, str]] | None = None,
+) -> tuple[list[str], dict[str, str]]:
+    """Build the isolated sidecar command used by both foreground and race tests."""
     parsed = urlparse(db_url)
     env = {**os.environ, "PGPASSWORD_FOR_TEST": parsed.password or ""}
-    return subprocess.run(
+    command = [
+        "docker",
+        "run",
+        "--rm",
+        "--add-host=host.docker.internal:host-gateway",
+        "-v",
+        f"{_SCRIPT}:/backup/pg_dump.sh:ro",
+        "-v",
+        f"{backup_dir}:/backups",
+    ]
+    for host_path, container_path in extra_mounts or []:
+        command.extend(["-v", f"{host_path}:{container_path}:ro"])
+    command.extend(
         [
-            "docker",
-            "run",
-            "--rm",
-            "--add-host=host.docker.internal:host-gateway",
-            "-v",
-            f"{_SCRIPT}:/backup/pg_dump.sh:ro",
-            "-v",
-            f"{backup_dir}:/backups",
             "-e",
             "POSTGRES_HOST=host.docker.internal",
             "-e",
@@ -265,16 +406,27 @@ def _run_backup_script(
             f"POSTGRES_DB={(parsed.path or '').lstrip('/')}",
             "-e",
             "BACKUP_DIR=/backups",
+        ]
+    )
+    for name, value in (extra_env or {}).items():
+        command.extend(["-e", f"{name}={value}"])
+    command.extend(
+        [
             _BACKUP_IMAGE,
             "sh",
             "-c",
             'POSTGRES_PASSWORD="$PGPASSWORD_FOR_TEST" sh /backup/pg_dump.sh',
-        ],
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
+        ]
     )
+    return command, env
+
+
+def _run_backup_script(
+    db_url: str, backup_dir: Path, host_port: str
+) -> subprocess.CompletedProcess[str]:
+    """Run the real script in the real sidecar image against *db_url*."""
+    command, env = _backup_command(db_url, backup_dir, host_port)
+    return subprocess.run(command, env=env, capture_output=True, text=True, check=False)
 
 
 @pytest.mark.db
@@ -290,6 +442,31 @@ def test_script_produces_a_verifiable_artifact(
     published but has quietly lost the application tables is no better than the
     absent file this bead is about.
     """
+    engine = create_engine(bootstrapped_db_url)
+    try:
+        with engine.begin() as conn:
+            conn.exec_driver_sql("SET ROLE butler_relationship_rw")
+            claim_id = conn.exec_driver_sql(
+                """
+                INSERT INTO public.cost_claims
+                    (claim_key, asserted_by, kind, direction, amount, currency,
+                     counterparty_label, description)
+                VALUES
+                    ('backup-contract-claim', 'relationship', 'receivable', 'inbound',
+                     25, 'SGD', 'Backup fixture', 'Durable backup contract evidence')
+                RETURNING id
+                """
+            ).scalar_one()
+            conn.exec_driver_sql("SET ROLE butler_finance_rw")
+            conn.exec_driver_sql(
+                "INSERT INTO public.cost_claim_resolutions "
+                "(claim_id, state, unverifiable_reason) "
+                "VALUES (%s, 'unverifiable', 'no_account')",
+                (claim_id,),
+            )
+    finally:
+        engine.dispose()
+
     backup_dir = tmp_path / "backups"
     backup_dir.mkdir()
 
@@ -309,11 +486,139 @@ def test_script_produces_a_verifiable_artifact(
     assert "CREATE TABLE public.entities" in dump
     assert "CREATE TABLE public.sessions" in dump
     # ... and every fenced object stayed out.
-    excluded_schemas, excluded_tables = _read_exclusion_set()
+    excluded_schemas, excluded_tables, scoped_data_tables = _read_backup_sets()
     for schema in excluded_schemas:
         assert f"CREATE SCHEMA {schema};" not in dump
     for qualified in excluded_tables:
         assert f"CREATE TABLE {qualified} " not in dump
+    for qualified in scoped_data_tables:
+        assert f"CREATE TABLE {qualified} " in dump
+        assert f"COPY {qualified} " not in dump
+    assert "-- Butlers scoped cost-claim ledger data" in dump
+    assert "SELECT public.cost_claim_restore_row(" in dump
+    staged_payloads = [
+        bytes.fromhex(line.split("\t", 2)[2]).decode("utf-8")
+        for line in dump.splitlines()
+        if line.startswith(
+            ("1\tcost_claims\t", "2\tcost_claim_resolutions\t", "3\tcost_claim_events\t")
+        )
+    ]
+    assert any("backup-contract-claim" in payload for payload in staged_payloads)
+    assert any(str(claim_id) in payload for payload in staged_payloads)
+
+
+@pytest.mark.db
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+def test_scoped_export_fails_before_publish_when_read_policy_can_filter(
+    bootstrapped_db_url: str, postgres_container, tmp_path: Path
+) -> None:
+    """A new restrictive policy cannot silently narrow the scoped export."""
+    engine = create_engine(bootstrapped_db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            conn.exec_driver_sql(
+                "CREATE POLICY cost_claims_backup_regression "
+                "ON public.cost_claims AS RESTRICTIVE FOR SELECT USING (false)"
+            )
+        result = _run_backup_script(
+            bootstrapped_db_url,
+            tmp_path,
+            str(postgres_container.get_exposed_port(5432)),
+        )
+        assert result.returncode != 0
+        assert "policy is not the exact full-row contract" in result.stderr
+        assert not list(tmp_path.glob("butlers_*.sql.gz"))
+    finally:
+        with engine.connect() as conn:
+            conn.exec_driver_sql(
+                "DROP POLICY IF EXISTS cost_claims_backup_regression ON public.cost_claims"
+            )
+        engine.dispose()
+
+
+@pytest.mark.db
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+def test_scoped_export_rejects_a_policy_changed_between_precheck_and_snapshot(
+    bootstrapped_db_url: str, postgres_container, tmp_path: Path
+) -> None:
+    """A policy change cannot turn a precheck into a filtered published ledger."""
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    barrier_bin = tmp_path / "snapshot-barrier-bin"
+    barrier_bin.mkdir()
+    wrapper = barrier_bin / "psql"
+    wrapper.write_text(_PSQL_SNAPSHOT_BARRIER, encoding="utf-8")
+    wrapper.chmod(0o755)
+
+    ready = backup_dir / "snapshot-ready"
+    release = backup_dir / "snapshot-release"
+    command, env = _backup_command(
+        bootstrapped_db_url,
+        backup_dir,
+        str(postgres_container.get_exposed_port(5432)),
+        extra_env={
+            "BACKUP_TEST_SNAPSHOT_READY": "/backups/snapshot-ready",
+            "BACKUP_TEST_SNAPSHOT_RELEASE": "/backups/snapshot-release",
+            "PATH": "/backup-test-bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        },
+        extra_mounts=[(barrier_bin, "/backup-test-bin")],
+    )
+
+    engine = create_engine(bootstrapped_db_url, isolation_level="AUTOCOMMIT")
+    with engine.connect() as conn:
+        conn.exec_driver_sql("SET ROLE butler_relationship_rw")
+        try:
+            conn.exec_driver_sql(
+                """
+                INSERT INTO public.cost_claims
+                    (claim_key, asserted_by, kind, direction, amount, currency,
+                     counterparty_label, description)
+                VALUES
+                    ('snapshot-drift-regression', 'relationship', 'receivable', 'inbound',
+                     25, 'SGD', 'Snapshot fixture', 'Must not be silently filtered')
+                """
+            )
+        finally:
+            conn.exec_driver_sql("RESET ROLE")
+    process = subprocess.Popen(
+        command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+    )
+    try:
+        deadline = time.monotonic() + 30
+        while not ready.exists():
+            if process.poll() is not None:
+                stdout, stderr = process.communicate()
+                pytest.fail(
+                    "backup exited before the snapshot barrier: "
+                    f"stdout={stdout!r} stderr={stderr!r}"
+                )
+            if time.monotonic() >= deadline:
+                pytest.fail("backup did not reach the deterministic pre-snapshot barrier")
+            time.sleep(0.05)
+
+        with engine.connect() as conn:
+            conn.exec_driver_sql(
+                "CREATE POLICY cost_claims_snapshot_drift_regression "
+                "ON public.cost_claims AS RESTRICTIVE FOR ALL USING (false)"
+            )
+        release.touch()
+
+        stdout, stderr = process.communicate(timeout=60)
+        assert process.returncode != 0, f"backup unexpectedly published: {stdout}\n{stderr}"
+        assert "policy is not the exact full-row contract" in stderr
+        assert not list(backup_dir.glob("butlers_*.sql.gz"))
+    finally:
+        release.touch(exist_ok=True)
+        if process.poll() is None:
+            process.terminate()
+            process.communicate(timeout=30)
+        with engine.connect() as conn:
+            conn.exec_driver_sql(
+                "DROP POLICY IF EXISTS cost_claims_snapshot_drift_regression ON public.cost_claims"
+            )
+        engine.dispose()
 
 
 @pytest.mark.db

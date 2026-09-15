@@ -19,6 +19,7 @@ core_groups = [
     "delegation",     # delegate_ask/receive/answer/wake — cross-butler questions
     "domain_events",  # publish/subscribe/receive_domain_event — standing pub/sub
     "fleet_cases",    # find_open_case/open_case/contribute_case_evidence/propose_case_posture/close_case/read_case
+    "cost_claims",    # reconcile shared typed money claims; writes fenced by runtime role
 ]
 
 [butler.db]
@@ -67,6 +68,12 @@ name = "bill-reconciliation-sweep"
 cron = "15 21 * * 0"
 dispatch_mode = "job"
 job_name = "bill_reconciliation_sweep"
+
+[[butler.schedule]]
+name = "cost-claim-reconciliation-sweep"
+cron = "40 4 * * *"
+dispatch_mode = "job"
+job_name = "cost_claim_reconciliation_sweep"
 
 [[butler.schedule]]
 name = "anomaly-insight-scan"

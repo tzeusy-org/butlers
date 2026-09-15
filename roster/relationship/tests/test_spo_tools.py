@@ -637,7 +637,12 @@ async def test_loan_settle_updates_fact(pool):
     cid = contact["id"]
 
     loan = await loan_create(
-        pool, contact_id=cid, amount=Decimal("100.00"), direction="borrowed", description="Taxi"
+        pool,
+        contact_id=cid,
+        amount=Decimal("100.00"),
+        direction="borrowed",
+        description="Taxi",
+        currency="USD",
     )
     loan_id = loan["id"]
 
@@ -670,6 +675,7 @@ async def test_loan_list_returns_loans(pool):
         amount=Decimal("20.00"),
         direction="lent",
         description="Lunch",
+        currency="USD",
     )
     await loan_create(
         pool,
@@ -677,10 +683,53 @@ async def test_loan_list_returns_loans(pool):
         amount=Decimal("30.00"),
         direction="lent",
         description="Dinner",
+        currency="USD",
     )
 
     loans = await loan_list(pool, cid)
     assert len(loans) == 2
+
+
+async def test_loan_settle_rolls_back_if_replacement_fact_fails(pool, monkeypatch):
+    """The original obligation remains active after a mid-flight storage failure."""
+    from butlers.modules.memory import storage
+    from butlers.tools.relationship.loans import loan_create, loan_list, loan_settle
+
+    contact = await _make_contact(pool, "Atomic Loan")
+    loan = await loan_create(
+        pool,
+        contact_id=contact["id"],
+        amount=Decimal("12.00"),
+        direction="lent",
+        description="Atomicity",
+        currency="SGD",
+    )
+
+    async def fail_store(*args, **kwargs):
+        raise RuntimeError("injected storage failure")
+
+    monkeypatch.setattr(storage, "store_fact", fail_store)
+    with pytest.raises(RuntimeError, match="injected storage failure"):
+        await loan_settle(pool, loan["id"])
+
+    remaining = await loan_list(pool, contact["id"])
+    assert [item["id"] for item in remaining] == [loan["id"]]
+
+
+async def test_loan_backfill_counts_currency_less_rows_without_inventing_currency(pool):
+    from butlers.tools.relationship.loans import backfill_loan_cost_claims
+
+    await pool.execute(
+        """
+        INSERT INTO facts
+            (subject, predicate, content, metadata, scope, validity, valid_at)
+        VALUES ('loan:legacy-no-currency', 'loan', 'Legacy',
+                '{"amount_cents": 1200, "direction": "lent"}'::jsonb,
+                'relationship', 'active', now())
+        """
+    )
+    result = await backfill_loan_cost_claims(pool)
+    assert result["skipped_missing_currency"] == 1
 
 
 # ===========================================================================
