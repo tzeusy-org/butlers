@@ -22,13 +22,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from butlers.api.app import create_app
+from butlers.api.app import create_app as create_guarded_app
 from butlers.api.audit_emit import authenticated_principal
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import ButlerConnectionInfo, get_butler_configs
 from butlers.api.routers.butler_management import _get_db_manager
 from butlers.core.skills import read_system_prompt_with_sources
 from butlers.core.spawner_context import compose_effective_system_prompt_receipt
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 
@@ -114,7 +115,7 @@ def _stub_configs(names: list[str] = None) -> list[ButlerConnectionInfo]:
 
 @pytest.fixture(scope="module")
 def app():
-    return create_app(api_key="")
+    return create_app(api_key="synthetic-owner-key")
 
 
 @pytest.fixture(autouse=True)
@@ -333,11 +334,10 @@ async def test_effective_prompt_verified_absence_remains_a_roster_preview(
 
 
 async def test_effective_prompt_requires_owner_control_before_prompt_access(
-    app,
     monkeypatch: pytest.MonkeyPatch,
 ):
     """Absent owner control refuses before a prompt pool or roster read."""
-    monkeypatch.delenv("DASHBOARD_API_KEY", raising=False)
+    app = create_guarded_app(api_key="")
     pool = _make_pool()
     db = _make_db(pool)
     app.dependency_overrides[_get_db_manager] = lambda: db
