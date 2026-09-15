@@ -34,6 +34,8 @@ The OTLP endpoint is configured identically for all butler processes. The tracin
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DASHBOARD_API_KEY` | (none) | Configured-key mode: non-browser `X-API-Key` or HTTPS key-to-session login. An absent key selects protected passkey enrollment/login. No query-parameter credential is accepted. Host reconciliation is required for mode/key changes. |
+| `DASHBOARD_AUTH_DB_USER` | (none) | Dedicated restricted LOGIN for the authentication store; no fallback to the administrative `POSTGRES_USER`. |
+| `DASHBOARD_AUTH_DB_PASSWORD` | (none) | Tier 0 password for that restricted login, supplied only to the dashboard API through deployment secrets; never to browser/runtime children. |
 | `DASHBOARD_AUTH_ORIGIN` | (none) | Exact canonical `https://<dns-host>` origin on port 443; no path, wildcard, alias or HTTP fallback. |
 | `DASHBOARD_AUTH_RP_ID` | (none) | The same exact DNS hostname, without scheme or path. |
 | `DASHBOARD_AUTH_DEPLOYMENT` | `default` | Stable deployment suffix, unique on the origin: lowercase ASCII letters/digits with interior hyphens, at most 32 characters. Scopes cookie names, not browser trust. |
