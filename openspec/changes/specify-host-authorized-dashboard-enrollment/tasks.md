@@ -39,9 +39,11 @@ revocation and pending-query cancellation. Actual Serve/Bitwarden evidence
 remains explicitly unchecked under 4.2. The uncompleted 3.6 item includes
 independent final-head approval and hosted merge-group evidence.
 
-Measured Python test-definition delta against the governing baseline:
-`Tests: +45 ~33 -6`. Existing domain test imports now explicitly install a
+Measured feature-authored Python test-definition delta against governing
+baseline `5221178fbcfe60edeec0b7af31b71c7d55f0639e`, captured before merging
+concurrent main changes (those upstream changes are excluded):
+`Tests: +45 ~32 -6`. Existing domain test imports now explicitly install a
 synthetic authenticated transport; they are not counted as new tests or
 credited as authentication proof. New frontend coverage adds 18 focused unit
 cases and two real isolated HTTPS scenarios. The Python lane budgets were not
-raised (16,856 unit and 4,603 integration cases at the final budget check).
+raised (16,861 unit and 4,624 integration cases at the final budget check).
