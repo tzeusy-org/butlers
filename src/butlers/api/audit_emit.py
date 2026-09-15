@@ -73,7 +73,7 @@ def authenticated_principal() -> str:
     contract. Inside an HTTP request, caller fields and network reachability
     cannot manufacture an owner actor.
     """
-    from butlers.api.owner_auth.http import in_http_request, verified_http_principal
+    from butlers.api.owner_auth.context import in_http_request, verified_http_principal
 
     if in_http_request.get() and verified_http_principal.get() != _OWNER_PRINCIPAL:
         raise PermissionError("Authenticated owner principal is required")
