@@ -3,7 +3,7 @@
 - [x] 1.1 Preserve September 15 owner directions, PR4164 source, existing author/reviewer/Models ownership and unrelated root changes; refresh source, decisions, dependencies and PR identities.
 - [x] 1.2 Define complete design D1-D9, exact host/browser protocol, verifier policy, durable authority, all UX flows and bounded runbook.
 - [x] 1.3 Reconcile all whole owner-only requirements in route-reconciliation.md, preserving scenario names and unrelated clauses; verify strict OpenSpec, trace, overwrite, countable-task and repository guards.
-- [ ] 1.4 Obtain independent security/spec/UX review on exact candidate bytes, correct findings and re-review every changed artifact.
+- [x] 1.4 Obtain independent security/spec/UX review on exact candidate bytes, correct findings and re-review every changed artifact.
 - [ ] 1.5 Obtain owner adoption naming the exact reviewed successor artifact. Earlier direction and old review do not satisfy this gate; preserve all separate live-operation boundaries.
 
 ## 2. Cohesive vertical delivery after adoption
