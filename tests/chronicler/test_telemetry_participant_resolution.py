@@ -20,10 +20,10 @@ import httpx
 import pytest
 from prometheus_client import REGISTRY
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.chronicler.adapters.calendar import CalendarCompletedAdapter
 from butlers.chronicler.models import Episode
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 

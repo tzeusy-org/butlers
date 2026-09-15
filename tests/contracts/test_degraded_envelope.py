@@ -47,7 +47,6 @@ import httpx
 import pytest
 
 import butlers.api.routers.settings_console as console_mod
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerConnectionInfo,
@@ -62,6 +61,7 @@ from butlers.api.routers.notifications import _get_db_manager as _notifications_
 from butlers.api.routers.search import _get_db_manager as _search_get_db
 from butlers.api.routers.secrets_v2 import _get_db_manager as _secrets_get_db
 from butlers.core.pricing import ModelPricing, PricingConfig
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 from tests.api.test_api_approvals import (
     _app_with_one_healthy_one_raising_butler,
 )
