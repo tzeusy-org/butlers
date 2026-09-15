@@ -6,7 +6,7 @@
 
 ## Overview
 
-The Butlers Dashboard API is a FastAPI application that provides a single-pane-of-glass REST API over the entire butler infrastructure. It serves 80+ endpoints across 18 domain groups, supports real-time SSE streaming for live updates, and auto-discovers butler-specific API routers from the roster directory. The application is created via the `create_app()` factory in `src/butlers/api/app.py`.
+The Butlers Dashboard API is a FastAPI application that provides a single-pane-of-glass REST API over the entire butler infrastructure. It serves the shared and roster-specific dashboard endpoints, supports real-time SSE streaming for live updates, and auto-discovers butler-specific API routers from the roster directory. The application is created via the `create_app()` factory in `src/butlers/api/app.py`.
 
 ## Application Factory
 
@@ -14,7 +14,7 @@ The Butlers Dashboard API is a FastAPI application that provides a single-pane-o
 
 - **`cors_origins`** -- List of allowed CORS origins (defaults to `["http://localhost:41173"]` for the Vite dev server).
 - **`static_dir`** -- Path to the built frontend `dist/` directory for production SPA serving. Falls back to `DASHBOARD_STATIC_DIR` environment variable.
-- **`api_key`** -- When provided, enables `ApiKeyMiddleware`. When `None`, reads `DASHBOARD_API_KEY` from environment. Pass `""` to select keyless mode; this does not disable the central owner boundary. Browser authentication uses the [owner passkey/session contract](../identity_and_secrets/dashboard-owner-auth.md).
+- **`api_key`** -- When provided, selects the configured key for the central owner boundary. When `None`, reads `DASHBOARD_API_KEY` from environment. Pass `""` to select keyless mode; this does not disable the central owner boundary. Browser authentication uses the [owner passkey/session contract](../identity_and_secrets/dashboard-owner-auth.md).
 
 ## Lifespan Management
 
@@ -26,6 +26,10 @@ The `lifespan` async context manager handles startup and shutdown:
 3. Initialize `DatabaseManager` with pools for all discovered butlers.
 4. Wire DB dependencies for both static and dynamically-discovered routers.
 5. Restore CLI auth tokens from the database to the filesystem.
+
+The independent restricted owner-authentication pool is initialized before domain
+resources. Missing or inconsistent auth state remains unavailable and never
+becomes public enrollment authority.
 
 **Shutdown:**
 1. Close all database pools via `shutdown_db_manager()`.
@@ -153,9 +157,9 @@ In production, when `static_dir` or `DASHBOARD_STATIC_DIR` is set, a `StaticFile
 To confirm the dashboard API application is functioning as described:
 
 ```bash
-# 1. Health endpoint always returns 200 (even without API key)
+# 1. Public health reports readiness without an owner credential
 curl -s http://localhost:41200/health | python3 -m json.tool
-# Expected: {"status": "ok"}
+# Expected after startup: status="ok"; before readiness: HTTP503.
 
 # 2. All core router groups are reachable
 for route in butlers sessions schedules costs modules secrets state; do
