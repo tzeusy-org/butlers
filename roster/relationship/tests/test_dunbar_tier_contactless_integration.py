@@ -22,9 +22,9 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.testing.schema_standins import CONTACT_ENTITY_MAP
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark_integration = [
     pytest.mark.integration,

@@ -13,7 +13,6 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.chronicler import editorial
 from butlers.chronicler.editorial import (
@@ -25,6 +24,7 @@ from butlers.chronicler.editorial import (
     Streaks,
     SubqueryAvailability,
 )
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 

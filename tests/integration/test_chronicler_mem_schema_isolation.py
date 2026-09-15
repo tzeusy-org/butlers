@@ -33,13 +33,13 @@ import httpx
 import pytest
 from sqlalchemy import create_engine, text
 
-from butlers.api.app import create_app
 from butlers.api.routers.memory import _get_db_manager
 from butlers.background import dispatch_scheduled_task
 from butlers.db import Database, register_jsonb_codec
 from butlers.modules.memory import MemoryModule, MemoryModuleConfig
 from butlers.modules.memory.storage import store_fact
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 from tests.modules.memory._test_helpers import make_embedding_engine_mock
 
 docker_available = shutil.which("docker") is not None

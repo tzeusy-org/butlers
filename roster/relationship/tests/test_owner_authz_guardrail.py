@@ -10,22 +10,22 @@ Three-part spec:
          resolved to an owner-role entity.
   12b — PII-bearing GET endpoints under /api/relationship/entities/* must
          apply the same owner-only gate.
-  12c — Daemon startup must fail fatally when DASHBOARD_API_KEY is unset and
-         BUTLERS_ENV != 'dev'.
+  12c — After successor cutover, keyless deployments keep public health
+         reachable while private data remains behind the central owner boundary.
 
 All 12a and 12b endpoint tests are real passing assertions; the endpoints and their
 owner-only authorization gates have all shipped (beads 9.4, 9.7, 9.8, 9.9, 9.10,
 9.11).  Tests in these classes lock in the 403/non-403 contract so regressions are
 caught immediately.
 
-The 12c startup test remains xfail: the fatal DASHBOARD_API_KEY check for non-dev
-environments has not yet been implemented in src/butlers/api/app.py (the lifespan
-handler currently only warns on DASHBOARD_EXPORT_SECRET).
+The old missing-key fatal-startup expectation was superseded by adopted owner-auth
+commit3686954. Mounted unavailable-state denial is checked for production and dev;
+real auth persistence/lifecycle evidence lives in the dedicated owner-auth tests.
 
 Architecture notes
 ------------------
 The owner-only check is an endpoint-level authorization layer distinct from the
-ApiKeyMiddleware (which provides 401 on a bad/missing API key).  The endpoint-level
+central owner boundary (which authenticates before domain authorization).  The endpoint-level
 owner check calls ``_get_owner_roles(pool)`` which fetches the first entity whose
 ``roles`` column contains ``'owner'`` and returns the roles list.  Access is denied
 when the list is ``None`` (DB error) or does not include ``'owner'``.
@@ -59,9 +59,10 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from butlers.api.app import create_app
+from butlers.api.app import create_app as create_guarded_app
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_mcp_manager
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 
@@ -335,100 +336,26 @@ class TestClause12bPiiReadsOwner:
 # ---------------------------------------------------------------------------
 
 
-class TestClause12cStartupGate:
-    """Daemon must refuse startup in non-dev environments when DASHBOARD_API_KEY is unset."""
+class TestClause12cStartupGuardrail:
+    """The adopted successor protects keyless deployments without a fatal-key gate."""
 
-    # IMPLEMENTER NOTE (clause 12c) — bu-yv4da
-    # -------------------------------------------------------------------------
-    # If the DASHBOARD_API_KEY guard fires inside the FastAPI *lifespan* handler
-    # (i.e. inside the ``@asynccontextmanager`` passed to ``FastAPI(lifespan=…)``
-    # in src/butlers/api/app.py) rather than directly inside ``create_app()``,
-    # you MUST convert this test to use ``fastapi.testclient.TestClient`` instead
-    # of ``httpx.AsyncClient`` with ``httpx.ASGITransport``.
-    #
-    # Why: ``httpx.AsyncClient(transport=ASGITransport(app=app))`` does NOT
-    # trigger FastAPI lifespan events (startup / shutdown). The lifespan context
-    # manager is only exercised when the ASGI server is started — which
-    # ``TestClient`` (via Starlette's ``TestClient``) does by running the app
-    # in a thread with proper startup/shutdown. An ``AsyncClient`` + ``ASGITransport``
-    # will happily serve requests without ever entering the lifespan block, so the
-    # guard will never fire and ``pytest.raises`` will fail, making the test always
-    # xfail instead of flipping to a real pass once the implementation lands.
-    #
-    # Conversion recipe (remove the xfail decorator too once the guard is live):
-    #
-    #   from fastapi.testclient import TestClient
-    #
-    #   def test_startup_fails_when_api_key_unset_in_production(self, monkeypatch):
-    #       monkeypatch.setenv("BUTLERS_ENV", "production")
-    #       monkeypatch.delenv("DASHBOARD_API_KEY", raising=False)
-    #       app = create_app(api_key=None)
-    #       with pytest.raises((RuntimeError, SystemExit, ValueError)):
-    #           with TestClient(app):  # __enter__ runs lifespan startup
-    #               pass
-    #
-    # If the guard fires in ``create_app()`` itself (before lifespan), the current
-    # async approach is fine — the ``pytest.raises`` block will catch it at
-    # ``create_app(api_key=None)`` and both styles work.
-    # -------------------------------------------------------------------------
-    @pytest.mark.xfail(
-        strict=False,
-        reason=(
-            "Startup DASHBOARD_API_KEY gate not yet implemented in src/butlers/api/app.py. "
-            "The current lifespan handler only warns on DASHBOARD_EXPORT_SECRET; the fatal "
-            "DASHBOARD_API_KEY check for non-dev environments is the deliverable of clause 12c."
-        ),
-    )
-    async def test_startup_fails_when_api_key_unset_in_production(self, monkeypatch):
-        """Daemon refuses startup with a fatal error when BUTLERS_ENV=production
-        and DASHBOARD_API_KEY is not set.
-
-        The expectation is that create_app() or the lifespan handler raises
-        RuntimeError / SystemExit / ValueError so that the process cannot start
-        without a key in non-dev mode.
-
-        Currently this test is xfail because the check does not exist.
-        """
-        monkeypatch.setenv("BUTLERS_ENV", "production")
-        monkeypatch.delenv("DASHBOARD_API_KEY", raising=False)
-
-        # The startup guard should raise before the app can serve requests.
-        # We probe this by constructing the app (api_key=None → reads env).
-        # If the guard is implemented it should raise; if not, create_app()
-        # succeeds and the assertion below fails (→ expected xfail).
-        with pytest.raises((RuntimeError, SystemExit, ValueError)):
-            # Pass api_key=None so create_app reads DASHBOARD_API_KEY from env.
-            # With the env var deleted and BUTLERS_ENV=production, a guard should fire.
-            app = create_app(api_key=None)
-            # If guard fires during app creation, we are done.
-            # If guard fires during lifespan startup, exercise the lifespan.
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app), base_url="http://test"
-            ) as client:
-                await client.get("/api/health")
-
-    async def test_startup_succeeds_in_dev_without_api_key(self, monkeypatch):
-        """Dev environment must start successfully even without DASHBOARD_API_KEY.
-
-        This is a non-xfail guardrail: dev mode must remain permissive (no fatal
-        error on missing key) — both before and after the clause 12c guard lands.
-        """
-        monkeypatch.setenv("BUTLERS_ENV", "dev")
-        monkeypatch.delenv("DASHBOARD_API_KEY", raising=False)
-
-        # Should NOT raise — dev mode is exempt from the fatal key check.
-        app = create_app(api_key=None)
-        # ASGITransport does not trigger the ASGI lifespan (see class-level note).
-        # Simulate a fully-started app so the health endpoint returns 200 instead
-        # of the pre-startup 503.  The core assertion is that create_app() succeeds
-        # without raising — the 200 is just structural confirmation.
+    @pytest.mark.parametrize("environment", ["production", "dev"])
+    async def test_keyless_unavailable_state_protects_data_but_not_health(
+        self, monkeypatch, environment
+    ):
+        # This is a mounted admission test, not an actual production lifespan run.
+        # Spec: REQ-dashboard-owner-auth-004/005 and dashboard-relationship Clause12c.
+        monkeypatch.setenv("BUTLERS_ENV", environment)
+        app = create_guarded_app(api_key="")
         app.state.ready = True
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/health")
-        # Health endpoint is always public; a 200 confirms the app started.
-        assert resp.status_code == 200
+            health = await client.get("/api/health")
+            protected = await client.get("/api/relationship/entities")
+        assert health.status_code == 200
+        assert protected.status_code == 503
+        assert protected.json()["error"]["code"] == "AUTH_UNAVAILABLE"
 
 
 # ---------------------------------------------------------------------------
