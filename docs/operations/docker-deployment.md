@@ -279,3 +279,18 @@ There is no PostgreSQL data volume: the database is external (see
 - [Grafana Monitoring](grafana-monitoring.md) -- Observability setup
 - [Troubleshooting](troubleshooting.md) -- Common deployment issues
 - [Image Bump Procedure](image-bump-procedure.md) -- How to update pinned service image tags
+
+## Dashboard owner access
+
+Use the canonical Tailscale Serve HTTPS browser entry point and the
+[owner authentication runbook](../identity_and_secrets/dashboard-owner-auth.md).
+Starting Compose does not authorize the first browser visitor. A keyless instance
+requires host approval of the exact browser-bound intent before passkey
+registration; later sign-in uses the passkey without another host action.
+
+Keep the fixed origin/RP identity, deployment-specific cookies and restricted
+authentication database role coherent across API workers. Configuration changes
+and restores require the explicit host reconciliation/revocation procedure.
+Never downgrade a reachable instance to an empty-key legacy image. Proxy setup,
+migration, restart and live owner enrollment are separate operational steps,
+not side effects of specification adoption or a successful build.

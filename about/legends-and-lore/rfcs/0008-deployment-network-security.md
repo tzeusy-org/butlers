@@ -186,3 +186,26 @@ sudo iptables -L DOCKER-USER -n --line-numbers | grep butlers
 docker compose -f docker-compose.yml -f docker-compose.dev.yml config \
   | python3 -c "import sys,yaml; d=yaml.safe_load(sys.stdin); [print(f'{k}: {list(v.get(\"networks\",{}).keys())}') for k,v in sorted(d['services'].items())]"
 ```
+
+## Dashboard owner-authentication composition
+
+The owner adopted the exact successor
+`3686954b8477b150e617b555727830a1602b2b17` on 2026-09-15; see
+[adoption](../../../openspec/changes/specify-host-authorized-dashboard-enrollment/adoption.md).
+Its fixed-origin passkey/session contract composes with this RFC's loopback and
+Tailscale boundary. Tailnet membership is network access, not dashboard-owner
+authentication. The server pins one canonical HTTPS origin/RP hostname and
+accepts proxy authority metadata only through the explicitly trusted path.
+No arbitrary forwarded header or localhost HTTP exception widens that identity.
+
+Host commands authorize initial registration and lost-credential recovery in
+dedicated authentication state; no public request, daemon/model tool or first
+visitor can create that authority. Sessions, independent CSRF and domain checks
+remain separate controls. Ordinary passkey login does not require a host command.
+Same-host deployment path prefixes are not browser-origin isolation.
+
+The successor's [design D2-D7](../../../openspec/changes/specify-host-authorized-dashboard-enrollment/design.md)
+owns the exact wire/lifecycle contract; the
+[operator runbook](../../../docs/identity_and_secrets/dashboard-owner-auth.md)
+owns procedures. Its adoption is not a live proxy, credential, migration or
+deployment action. Existing network isolation and egress rules remain binding.
