@@ -22,8 +22,16 @@ import asyncpg
 import httpx
 import pytest
 
+from butlers.api.app import create_app as create_production_app
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.model_settings import _get_db_manager
+from tests.api.auth_helpers import _DomainOwnerState, create_authenticated_domain_app
+
+
+@pytest.fixture(scope="module")
+def app():
+    return create_authenticated_domain_app(api_key="owner-key")
+
 
 pytestmark = pytest.mark.unit
 
@@ -467,10 +475,20 @@ async def test_verify_all_owner_gate_precedes_run(
         monkeypatch.delenv("DASHBOARD_API_KEY", raising=False)
     _, mock_pool = _app_with_pool(app)
     mock_pool.fetch = AsyncMock(return_value=[])
-    headers = {"X-API-Key": header} if header is not None else {}
+    monkeypatch.setenv("DASHBOARD_AUTH_ORIGIN", "https://butlers.example.test")
+    monkeypatch.setenv("DASHBOARD_AUTH_RP_ID", "butlers.example.test")
+    guarded = create_production_app(api_key="owner-key" if configured else "")
+    guarded.dependency_overrides.update(app.dependency_overrides)
+    if configured:
+        guarded.state.owner_auth_service = _DomainOwnerState("owner-key")
+    headers = {"Origin": "https://butlers.example.test"}
+    if header is not None:
+        headers["X-API-Key"] = header
 
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test", headers=headers
+        transport=httpx.ASGITransport(app=guarded),
+        base_url="https://butlers.example.test",
+        headers=headers,
     ) as client:
         response = await client.post("/api/settings/models/verify-all")
 

@@ -5,7 +5,7 @@ indicators:
 
   api_key_auth_enabled
     True  when DASHBOARD_API_KEY is set (ApiKeyMiddleware is active).
-    False when DASHBOARD_API_KEY is absent (network-level boundary only).
+    False when DASHBOARD_API_KEY is absent (passkey sessions still required).
 
   export_secret_insecure_default
     True  when DASHBOARD_EXPORT_SECRET is absent.  In dev the export signer
@@ -60,8 +60,8 @@ async def test_api_key_auth_enabled_when_key_set():
 
 
 async def test_api_key_auth_disabled_when_key_unset():
-    """When api_key is '' (force-disabled), health must report api_key_auth_enabled=False."""
-    app = _make_ready_app(api_key="")  # '' → force-disable
+    """When api_key is '' (keyless), health must report api_key_auth_enabled=False."""
+    app = _make_ready_app(api_key="")  # Empty key selects keyless owner auth
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -69,6 +69,8 @@ async def test_api_key_auth_disabled_when_key_unset():
     assert resp.status_code == 200
     body = resp.json()
     assert body["auth"]["api_key_auth_enabled"] is False
+    assert body["auth"]["owner_auth_enabled"] is True
+    assert body["auth"]["owner_auth_available"] is False
 
 
 # ---------------------------------------------------------------------------

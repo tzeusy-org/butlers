@@ -9,6 +9,7 @@ client's known fixture header are supplied here. No production bypass exists.
 from __future__ import annotations
 
 import hmac
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 from fastapi import FastAPI
@@ -34,7 +35,7 @@ class _DomainOwnerState:
         if not api_key or not hmac.compare_digest(api_key, self._key):
             from butlers.api.owner_auth.service import AuthError
 
-            raise AuthError(401, "UNAUTHORIZED", "Synthetic owner header is required")
+            raise AuthError("UNAUTHORIZED")
         return SimpleNamespace(method="header", expires_at=None)
 
     async def status(self, session_token: str | None = None) -> dict:
@@ -69,6 +70,13 @@ def create_authenticated_domain_app(**kwargs) -> FastAPI:
     """
     key = kwargs.pop("api_key", None) or _DOMAIN_KEY
     app = create_production_app(api_key=key, **kwargs)
+
+    @asynccontextmanager
+    async def synthetic_lifespan(app):
+        # Domain tests never restore credentials, start jobs or connect live pools.
+        yield
+
+    app.router.lifespan_context = synthetic_lifespan
     app.state.owner_auth_service = _DomainOwnerState(key)
     app.add_middleware(_DomainClientHeader, key=key)
     return app

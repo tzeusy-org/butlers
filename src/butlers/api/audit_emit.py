@@ -67,19 +67,16 @@ _REDACT_SENTINEL = "[REDACTED]"
 
 
 def authenticated_principal() -> str:
-    """Return the principal behind an authenticated dashboard API request.
+    """Attribute HTTP mutations only after central proof; keep internal callers.
 
-    Butlers is a single-user deployment guarded by network isolation plus the
-    optional ``DASHBOARD_API_KEY`` (``about/heart-and-soul/security.md``,
-    RFC-0008), so the API layer has no per-request identity finer than "the
-    owner".  This helper is the single place that fact is written down; adding
-    real multi-principal auth means replacing its body with a session/JWT
-    lookup rather than hunting for hardcoded actor strings.
-
-    Route handlers that persist or audit an actor MUST derive it from here.  An
-    actor a caller supplies in a request body is not attribution — the caller
-    can write anything — so such a field must be ignored, never trusted.
+    Explicit background/internal callers retain the existing single-owner
+    contract. Inside an HTTP request, caller fields and network reachability
+    cannot manufacture an owner actor.
     """
+    from butlers.api.owner_auth.http import in_http_request, verified_http_principal
+
+    if in_http_request.get() and verified_http_principal.get() != _OWNER_PRINCIPAL:
+        raise PermissionError("Authenticated owner principal is required")
     return _OWNER_PRINCIPAL
 
 

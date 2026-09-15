@@ -40,9 +40,17 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
+from butlers.api.app import create_app as create_production_app
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.model_settings import _get_db_manager
 from butlers.core.runtime_probe_control.coordinator import ProbeResult, ProbeStatus
+from tests.api.auth_helpers import _DomainOwnerState, create_authenticated_domain_app
+
+
+@pytest.fixture(scope="module")
+def app():
+    return create_authenticated_domain_app(api_key="owner-key")
+
 
 pytestmark = pytest.mark.unit
 
@@ -144,10 +152,20 @@ async def test_test_route_owner_gate_precedes_probe(
     client = scripted(ProbeResult(ProbeStatus.COMPLETED, ok=True, latency_ms=1))
     pool = _pool()
     _mount(app, pool)
-    headers = {"X-API-Key": header} if header is not None else {}
+    monkeypatch.setenv("DASHBOARD_AUTH_ORIGIN", "https://butlers.example.test")
+    monkeypatch.setenv("DASHBOARD_AUTH_RP_ID", "butlers.example.test")
+    guarded = create_production_app(api_key="owner-key" if configured else "")
+    guarded.dependency_overrides.update(app.dependency_overrides)
+    if configured:
+        guarded.state.owner_auth_service = _DomainOwnerState("owner-key")
+    headers = {"Origin": "https://butlers.example.test"}
+    if header is not None:
+        headers["X-API-Key"] = header
 
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test", headers=headers
+        transport=httpx.ASGITransport(app=guarded),
+        base_url="https://butlers.example.test",
+        headers=headers,
     ) as http:
         response = await http.post(f"/api/settings/models/{uuid.uuid4()}/test")
 

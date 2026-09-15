@@ -1,12 +1,10 @@
-"""Fail-closed authentication for owner-only dashboard control surfaces."""
+"""Additional owner-only checks consume the central verified HTTP authority."""
 
 from __future__ import annotations
 
-import hmac
-import os
-from typing import Annotated, Literal
+from typing import Literal
 
-from fastapi import Header, HTTPException
+from fastapi import HTTPException, Request
 
 from butlers.metrics_registry import get_or_create_counter
 
@@ -17,31 +15,17 @@ dashboard_owner_control_total = get_or_create_counter(
 )
 
 
-def _record(outcome: str) -> None:
-    try:
-        dashboard_owner_control_total.labels(outcome=outcome).inc()
-    except Exception:
-        # Metrics must never change an authorization decision.
-        pass
+def require_dashboard_owner_control(request: Request) -> Literal["owner"]:
+    """Reject a route invoked without the central authenticated owner context.
 
-
-def require_dashboard_owner_control(
-    x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
-) -> Literal["owner"]:
-    """Authenticate the single dashboard owner independently of optional API auth.
-
-    Sensitive observation and recovery routes must not inherit the general
-    middleware's development-mode fail-open behavior.  Configuration absence is
-    operational unavailability (503); a configured boundary with a missing or
-    mismatched credential is unauthorised (401).  Both decisions happen before
-    a route acquires a database pool or observes protected state.
+    This is additive to the middleware boundary: scoped connector callback
+    authority never satisfies this dependency, and no header is reinterpreted.
     """
-    expected = os.environ.get("DASHBOARD_API_KEY", "")
-    if not expected:
-        _record("unavailable")
-        raise HTTPException(status_code=503, detail="Dashboard owner control is unavailable")
-    if not x_api_key or not hmac.compare_digest(x_api_key, expected):
-        _record("denied")
-        raise HTTPException(status_code=401, detail="Missing or invalid dashboard owner key")
-    _record("allowed")
+    allowed = getattr(request.state, "owner_authority", None) is not None
+    try:
+        dashboard_owner_control_total.labels(outcome="allowed" if allowed else "denied").inc()
+    except Exception:
+        pass
+    if not allowed:
+        raise HTTPException(status_code=401, detail="Dashboard owner authentication is required")
     return "owner"

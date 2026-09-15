@@ -253,6 +253,12 @@ services:
       BUTLERS_API_DB_POOL_MIN_SIZE: ${BUTLERS_API_DB_POOL_MIN_SIZE:-0}
       BUTLERS_API_DB_POOL_MAX_SIZE: ${BUTLERS_API_DB_POOL_MAX_SIZE:-2}
       DASHBOARD_API_KEY: ${DASHBOARD_API_KEY:-}
+      DASHBOARD_AUTH_DB_USER: ${DASHBOARD_AUTH_DB_USER:-}
+      DASHBOARD_AUTH_DB_PASSWORD: ${DASHBOARD_AUTH_DB_PASSWORD:-}
+      DASHBOARD_AUTH_ORIGIN: ${DASHBOARD_AUTH_ORIGIN:-}
+      DASHBOARD_AUTH_RP_ID: ${DASHBOARD_AUTH_RP_ID:-}
+      DASHBOARD_AUTH_DEPLOYMENT: ${DASHBOARD_AUTH_DEPLOYMENT:-default}
+      DASHBOARD_AUTH_TRUSTED_PROXY_PEERS: ${DASHBOARD_AUTH_TRUSTED_PROXY_PEERS:-}
       # bu-g4jg1: butlers.jobs.external_deadman runs in THIS container and reads
       # this from os.environ. Unset/empty leaves the loop disabled (by design).
       # Without this passthrough, setting it in .env has no effect at all --
@@ -846,6 +852,12 @@ services:
       BUTLERS_API_DB_POOL_MIN_SIZE: ${BUTLERS_API_DB_POOL_MIN_SIZE:-0}
       BUTLERS_API_DB_POOL_MAX_SIZE: ${BUTLERS_API_DB_POOL_MAX_SIZE:-2}
       DASHBOARD_API_KEY: ${DASHBOARD_API_KEY:-}
+      DASHBOARD_AUTH_DB_USER: ${DASHBOARD_AUTH_DB_USER:-}
+      DASHBOARD_AUTH_DB_PASSWORD: ${DASHBOARD_AUTH_DB_PASSWORD:-}
+      DASHBOARD_AUTH_ORIGIN: ${DASHBOARD_AUTH_ORIGIN:-}
+      DASHBOARD_AUTH_RP_ID: ${DASHBOARD_AUTH_RP_ID:-}
+      DASHBOARD_AUTH_DEPLOYMENT: ${DASHBOARD_AUTH_DEPLOYMENT:-default}
+      DASHBOARD_AUTH_TRUSTED_PROXY_PEERS: ${DASHBOARD_AUTH_TRUSTED_PROXY_PEERS:-}
       # bu-g4jg1: see the dashboard-api service above for why this passthrough
       # is required for butlers.jobs.external_deadman to see the URL at all.
       EXTERNAL_DEADMAN_URL: ${EXTERNAL_DEADMAN_URL:-}
