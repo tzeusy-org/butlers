@@ -2,6 +2,8 @@ import { useDarkMode } from "@/hooks/useDarkMode";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
+import { Eyebrow } from "@/components/ui/Eyebrow";
+import { Title } from "@/components/ui/Title";
 import { Input } from "@/components/ui/input";
 import { authRequest, credentialWire, loginOptions, ownerStatus, OwnerAuthError, registrationOptions, restoreOwnerSession, type Ceremony, type Intent, type OwnerStatus, type SessionTuple } from "@/api/owner-auth";
 import { clearOwnerSession, onOwnerSessionLost, rememberOwnerCsrf } from "@/api/owner-session";
@@ -13,15 +15,22 @@ export function OwnerGate({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<OwnerStatus | null>(null);
   const [message, setMessage] = useState("Checking access…");
   const mounted = useRef(true);
+  const refreshFlight = useRef<AbortController | null>(null);
   const refresh = useCallback(async (signal?: AbortSignal) => {
+    refreshFlight.current?.abort();
+    const attempt = new AbortController();
+    refreshFlight.current = attempt;
+    const current = AbortSignal.any([attempt.signal, ...(signal ? [signal] : [])]);
     try {
-      const next = await restoreOwnerSession(signal);
-      if (signal?.aborted || !mounted.current) return;
+      const next = await restoreOwnerSession(current);
+      if (current.aborted || !mounted.current) return;
       setStatus(next); setMessage("");
     } catch {
-      if (signal?.aborted || !mounted.current) return;
+      if (current.aborted || !mounted.current) return;
       setStatus({ state: "unavailable", authenticated: false, session_expires_at: null });
       setMessage("Authentication is unavailable. Check the connection and try again.");
+    } finally {
+      if (refreshFlight.current === attempt) refreshFlight.current = null;
     }
   }, []);
   useEffect(() => {
@@ -34,7 +43,7 @@ export function OwnerGate({ children }: { children: ReactNode }) {
       void refresh(controller.signal);
     });
     queueMicrotask(() => { if (!controller.signal.aborted) void refresh(controller.signal); });
-    return () => { mounted.current = false; controller.abort(); unsubscribe(); };
+    return () => { mounted.current = false; controller.abort(); refreshFlight.current?.abort(); unsubscribe(); };
   }, [cache, refresh]);
   useEffect(() => {
     if (!status?.authenticated || !status.session_expires_at) return;
@@ -163,8 +172,8 @@ function OwnerAccess({ status, initialMessage, onAuthenticated }: {
   return <div className="min-h-dvh bg-background text-foreground">
     <header className="flex h-14 items-center border-b border-border px-6 font-semibold">Butlers</header>
     <main className="mx-auto max-w-xl space-y-6 px-6 py-12" aria-labelledby="owner-access-title">
-      <div className="space-y-2"><p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">Owner access</p>
-        <h1 id="owner-access-title" className="text-2xl font-bold tracking-tight">{configured || enrolled ? "Sign in to Butlers" : "Set up your passkey"}</h1>
+      <div className="space-y-2"><Eyebrow as="p">Owner access</Eyebrow>
+        <Title as="h1" id="owner-access-title">{configured || enrolled ? "Sign in to Butlers" : "Set up your passkey"}</Title>
         <p className="text-sm text-muted-foreground">{configured ? "Use the dashboard key to start a secure browser session." : enrolled ? "Use your saved passkey, including from a new browser with Bitwarden sync." : "Authorize this browser on your Butlers host, then choose Bitwarden to save your passkey."}</p>
       </div>
       {!secure && <p role="alert" className="text-sm">Open the canonical Tailscale Serve HTTPS address on port 443. Browser sign-in is unavailable on this address.</p>}

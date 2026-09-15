@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { OwnerGate } from "./OwnerGate";
 import { clearOwnerSession, ownerFetch } from "@/api/owner-session";
@@ -120,4 +120,34 @@ describe("owner access user flows", () => {
     await screen.findByRole("button", { name: "Restart host recovery" });
     expect(screen.queryByRole("button", { name: "Sign in with passkey" })).toBeNull();
   });
+  it("cannot restore private content or CSRF from an older refresh after session loss", async () => {
+    authenticated = true;
+    const normal = fetchMock.getMockImplementation()!;
+    let resolveOldCsrf!: (value: Response) => void;
+    let firstCsrf = true;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.endsWith("/csrf") && firstCsrf) {
+        firstCsrf = false;
+        return new Promise<Response>(resolve => { resolveOldCsrf = resolve; });
+      }
+      return normal(url, init);
+    });
+    const cache = mount();
+    await waitFor(() => expect(resolveOldCsrf).toBeDefined());
+    authenticated = false; act(() => clearOwnerSession());
+    await screen.findByRole("button", { name: "Sign in with passkey" });
+    await act(async () => {
+      resolveOldCsrf(new Response(JSON.stringify({ data: tuple() }), { status: 200 }));
+    });
+    expect(screen.queryByText("Protected dashboard")).toBeNull();
+    expect(cache.getQueryData(["private"])).toBeUndefined();
+    const fresh = { ...tuple(), csrf_token: "fresh-after-teardown" };
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ data: fresh }), { status: 200 }))
+      .mockResolvedValueOnce(new Response("{}", { status: 200 }));
+    await ownerFetch("/api/private", { method: "POST" });
+    const requests = fetchMock.mock.calls;
+    expect(requests.filter(call => call[0].endsWith("/csrf"))).toHaveLength(2);
+    expect(new Headers(requests.at(-1)![1].headers).get("X-CSRF-Token")).toBe(fresh.csrf_token);
+  });
+
 });

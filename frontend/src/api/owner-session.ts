@@ -20,6 +20,11 @@ export function clearOwnerSession(): void {
   for (const listener of listeners) listener();
 }
 
+/** Capturing this signal binds asynchronous restoration to one authority generation. */
+export function ownerSessionSignal(): AbortSignal {
+  return authority.signal;
+}
+
 export function rememberOwnerCsrf(tuple: { csrf_token: string; csrf_expires_at: string }): void {
   const expires = Date.parse(tuple.csrf_expires_at);
   if (typeof tuple.csrf_token !== "string" || !tuple.csrf_token || !Number.isFinite(expires) || expires <= Date.now()) {
@@ -51,7 +56,7 @@ async function ownerCsrf(): Promise<string> {
       mode: "cors", signal: AbortSignal.any([authority.signal, AbortSignal.timeout(15_000)]),
       headers: { Accept: "application/json" },
     });
-    if (response.status === 401) clearOwnerSession();
+    if (response.status === 401 && epoch === generation) clearOwnerSession();
     if (!response.ok || epoch !== generation) throw new Error("Sign in again before continuing.");
     const { data } = await response.json().catch(() => { throw new Error("Authentication response could not be read."); });
     if (epoch !== generation) throw new Error("Sign in again before continuing.");
@@ -80,7 +85,12 @@ export async function ownerFetch(url: string, options: RequestInit = {}): Promis
     ...options, headers: Object.fromEntries(headers), credentials: "same-origin", mode: "same-origin",
     cache: "no-store", redirect: "error", signal: AbortSignal.any(signals),
   });
-  if (response.status === 401) clearOwnerSession();
+  if (response.status === 401 && epoch === generation) clearOwnerSession();
+  if (response.status === 403 && epoch === generation
+    && csrf?.token === headers.get("X-CSRF-Token")) {
+    // Another tab can evict this digest. Rehydrate only on the next explicit action.
+    csrf = null;
+  }
   return response;
 }
 
