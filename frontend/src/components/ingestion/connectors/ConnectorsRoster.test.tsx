@@ -329,6 +329,13 @@ describe('AC2: auth issues appear consistently in attention strip and row', () =
     // Both should contain 'reauth' (the consistent label for needs_reauth status)
     expect(rowText).toContain('reauth')
     expect(stripText).toContain('reauth')
+    // The connector is unhealthy (state=error), but its genuine auth failure
+    // must keep the actionable reauth label and its auth severity tone.
+    expect(rowAuthLabel?.className).toContain('var(--red')
+    const stripAuthLabel = Array.from(stripItem?.querySelectorAll('span') ?? []).find((span) =>
+      span.textContent?.toLowerCase().includes('reauth'),
+    )
+    expect(stripAuthLabel?.className).toContain('var(--red')
   })
 
   it('uses the registered Google OAuth route for Gmail reauth', () => {
@@ -528,14 +535,34 @@ describe('bu-14gso: offline connector with frozen error state', () => {
   })
   afterEach(() => cleanup(root, container))
 
-  it('does not render the reauth pill for an offline connector with a frozen error label', () => {
+  it('ConnectorRosterRow uses the offline health note, not green authorization, for a frozen error label', () => {
     mockHooks([OFFLINE_FROZEN_ERROR_CONNECTOR])
     renderRoster(container, root)
 
     const status = container.querySelector('[data-testid="auth-status-spotify"]')
-    // Not a reauth link — plain-text 'authorized'/ok rendering, same as a healthy connector.
+    // A frozen error is not a live auth diagnosis, but offline runtime health
+    // must still not be presented as an all-clear authorization state.
     expect(status?.tagName).not.toBe('A')
     expect(status?.textContent?.toLowerCase()).not.toContain('reauth')
+    expect(status?.textContent?.toLowerCase()).toContain('connector offline')
+    expect(status?.textContent?.toLowerCase()).not.toContain('authorized')
+    expect(status?.className).toContain('var(--red')
+    expect(status?.className).not.toContain('--green')
+  })
+
+  it('AttentionStrip uses the offline auth note in the health tone, not a green authorization label', () => {
+    mockHooks([OFFLINE_FROZEN_ERROR_CONNECTOR])
+    renderRoster(container, root)
+
+    const item = container.querySelector('[data-testid="attention-item-spotify"]')
+    expect(item?.textContent?.toLowerCase()).toContain('connector offline')
+    expect(item?.textContent?.toLowerCase()).not.toContain('authorized')
+
+    const healthNote = Array.from(item?.querySelectorAll('span') ?? []).find((span) =>
+      span.textContent?.toLowerCase().includes('connector offline'),
+    )
+    expect(healthNote?.className).toContain('var(--red')
+    expect(healthNote?.className).not.toContain('--green')
   })
 
   it('still reports the "offline" verdict word (connectivity), not "error"', () => {
@@ -626,6 +653,8 @@ describe('reauth pill is the reauth action', () => {
 
     const pill = container.querySelector('[data-testid="auth-status-gmail"]')
     expect(pill?.tagName).not.toBe('A')
+    expect(pill?.textContent?.toLowerCase()).toBe('authorized')
+    expect(pill?.className).toContain('var(--green')
   })
 })
 

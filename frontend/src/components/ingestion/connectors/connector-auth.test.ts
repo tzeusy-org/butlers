@@ -17,7 +17,9 @@
 
 import { describe, it, expect } from 'vitest'
 import {
+  authStatusPresentation,
   deriveConnectorDispatchInfo,
+  healthTextColor,
   healthVerdictWord,
   resolveConnectorRecovery,
 } from './connector-auth'
@@ -59,6 +61,64 @@ describe('deriveConnectorDispatchInfo — healthy connector', () => {
     expect(result.health).toBe('ok')
     expect(result.needsAttention).toBe(false)
   })
+})
+
+// ---------------------------------------------------------------------------
+// Auth presentation must not impersonate healthy runtime state
+// ---------------------------------------------------------------------------
+
+describe('authStatusPresentation', () => {
+  const healthyAuthButUnhealthyCases: Array<[string, ConnectorSummary, string]> = [
+    ['offline', { ...BASE, liveness: 'offline' }, 'error'],
+    ['stale', { ...BASE, liveness: 'stale' }, 'degraded'],
+    ['degraded', { ...BASE, state: 'degraded' }, 'degraded'],
+    ['unknown', { ...BASE, state: 'unknown' }, 'degraded'],
+  ]
+
+  it.each(healthyAuthButUnhealthyCases)(
+    'uses the health note and tone, not green authorization, for %s health with otherwise-ok auth',
+    (_healthName, connector, expectedHealth) => {
+      const info = deriveConnectorDispatchInfo(connector)
+
+      expect(info.authStatus).toBe('ok')
+      expect(info.health).toBe(expectedHealth)
+
+      const presentation = authStatusPresentation(info)
+      expect(presentation).toEqual({
+        label: info.authNote,
+        colorClass: healthTextColor(info.health),
+      })
+      expect(presentation.label).not.toBe('authorized')
+      expect(presentation.colorClass).not.toContain('--green')
+    },
+  )
+
+  it('keeps green authorization when both auth and health are ok', () => {
+    const info = deriveConnectorDispatchInfo(BASE)
+
+    expect(authStatusPresentation(info)).toEqual({
+      label: 'authorized',
+      colorClass: 'text-[color:var(--green,oklch(0.72_0.17_150))]',
+    })
+  })
+
+  it.each([
+    ['reauth', 'needs_reauth', 'error', 'session expired', '--red'],
+    ['no primary', 'needs_primary_account', 'degraded', 'primary account missing', '--amber'],
+  ] as const)(
+    'preserves the actionable %s label when health is also unhealthy',
+    (expectedLabel, authStatus, health, authNote, expectedTone) => {
+      const presentation = authStatusPresentation({
+        authStatus,
+        health,
+        needsAttention: true,
+        authNote,
+      })
+
+      expect(presentation.label).toBe(expectedLabel)
+      expect(presentation.colorClass).toContain(expectedTone)
+    },
+  )
 })
 
 // ---------------------------------------------------------------------------

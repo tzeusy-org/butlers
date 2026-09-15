@@ -25,6 +25,7 @@
  * - liveness "unclassified" (operational_role unknown)            → auth "unconfigured",        health "unclassified"
  * - liveness "online"  + state "healthy"                          → auth "ok",                  health "ok"
  * - liveness "online"  + state "degraded" (no auth error_message) → auth "ok",                  health "degraded"
+ * - liveness "online"  + state "unknown"                       → auth "ok",                  health "degraded"
  * - liveness "online"  + state "degraded" + "api_forbidden"       → auth "needs_reauth",         health "degraded"
  * - liveness "online"  + state "degraded" + "no_primary_account"  → auth "needs_primary_account",health "degraded"
  * - liveness "stale"   + state "healthy"                          → auth "ok",                  health "degraded"
@@ -171,6 +172,18 @@ export function deriveConnectorDispatchInfo(c: ConnectorSummary): ConnectorDispa
     }
   }
 
+  // An online heartbeat alone cannot make an unknown runtime state healthy.
+  // Keep the established degraded health vocabulary and make the uncertainty
+  // explicit in the note rather than granting a green authorization signal.
+  if (c.state === 'unknown') {
+    return {
+      authStatus: 'ok',
+      health: 'degraded',
+      needsAttention: true,
+      authNote: 'connector state unknown · check connector',
+    }
+  }
+
   // Healthy and online, but check for stale sibling devices (bu-e16to). The
   // connector-level heartbeat only ever reflects ONE device on a multi-device
   // connector_type (e.g. OwnTracks), so a stale device here is the only signal
@@ -259,6 +272,34 @@ export function healthTextColor(health: DerivedHealth): string {
       return 'text-muted-foreground/40'
     case 'unclassified':
       return 'text-[color:var(--amber,oklch(0.72_0.12_70))]'
+  }
+}
+
+/** The visible auth label and semantic foreground tone for roster surfaces. */
+export interface AuthStatusPresentation {
+  label: string
+  colorClass: string
+}
+
+/**
+ * Resolve the auth representation shown alongside connector health.
+ *
+ * A valid credential is not an all-clear when the runtime is offline, stale,
+ * degraded, or otherwise unhealthy. In that case the health note and health
+ * tone replace the green authorization label. Actionable auth failures retain
+ * their own label and tone even when health is unhealthy.
+ */
+export function authStatusPresentation(info: ConnectorDispatchInfo): AuthStatusPresentation {
+  if (info.authStatus === 'ok' && info.health !== 'ok') {
+    return {
+      label: info.authNote,
+      colorClass: healthTextColor(info.health),
+    }
+  }
+
+  return {
+    label: authStatusLabel(info.authStatus),
+    colorClass: authStatusColor(info.authStatus),
   }
 }
 
