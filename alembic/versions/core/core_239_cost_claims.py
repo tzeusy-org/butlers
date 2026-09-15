@@ -268,8 +268,22 @@ def upgrade() -> None:
         """
         DO $$
         DECLARE
-            v_owner name := current_user;
+            v_owner name;
         BEGIN
+            SELECT pg_get_userbyid(c.relowner)
+              INTO v_owner
+              FROM pg_class AS c
+             WHERE c.oid = 'public.cost_claims'::regclass;
+
+            IF v_owner IS NULL THEN
+                RAISE EXCEPTION 'cost_claims table owner is unavailable';
+            END IF;
+
+            DROP POLICY IF EXISTS cost_claims_restore_owner ON public.cost_claims;
+            DROP POLICY IF EXISTS cost_claim_resolutions_restore_owner
+                ON public.cost_claim_resolutions;
+            DROP POLICY IF EXISTS cost_claim_events_restore_owner ON public.cost_claim_events;
+
             EXECUTE format(
                 'CREATE POLICY cost_claims_restore_owner ON public.cost_claims '
                 'FOR INSERT WITH CHECK (current_user = %L)',

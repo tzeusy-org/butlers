@@ -37,9 +37,10 @@ nightly backup. The ordinary `pg_dump` never enables row-security: it carries th
 tables' schema, ownership, policies, triggers, and fixed restore function, but omits
 their table data. A separately scoped `psql` query, bound to the same exported
 snapshot, then appends all three ledgers as hex-wrapped JSON staging rows. Before
-either producer writes an artifact, a live
-catalogue check requires each named table to retain FORCE RLS and exactly one
-permissive, non-restrictive `PUBLIC USING (true)` SELECT policy. Any other included
+either producer writes an artifact, a catalogue check in that same snapshot
+requires each named table to retain FORCE RLS and exactly one
+permissive, non-restrictive `PUBLIC USING (true)` `FOR SELECT` policy, with no
+other policy that applies to SELECT (including `FOR ALL`). Any other included
 forced-RLS relation still aborts ordinary `pg_dump`, and any changed claim read
 policy aborts the scoped export, so neither path can silently publish filtered data.
 

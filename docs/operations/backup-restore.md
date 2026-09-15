@@ -159,10 +159,11 @@ The producer therefore keeps ordinary `pg_dump` in its fail-loud
 `row_security=off` posture and excludes only these three tables' **data**, not their
 schema. It then appends a narrowly scoped staging block containing their rows as
 hex-wrapped JSON from the same exported PostgreSQL snapshot as the ordinary dump.
-Before writing either stream, it reads the live catalogue and
+Before writing either stream, it reads the catalogue in that same snapshot and
 requires the exact three tables to retain FORCE RLS plus exactly one permissive,
-non-restrictive `PUBLIC USING (true)` SELECT policy each. A missing table, an extra
-restrictive read policy, or any narrower expression fails the run before publication.
+non-restrictive `PUBLIC USING (true)` `FOR SELECT` policy each, with no other policy
+that applies to SELECT (including `FOR ALL`). A missing table, an extra restrictive
+read policy, or any narrower expression fails the run before publication.
 Every other unexcluded fenced relation still makes ordinary `pg_dump` fail.
 
 During restore, the staged rows pass through

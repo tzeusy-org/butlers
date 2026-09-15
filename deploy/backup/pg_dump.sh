@@ -99,9 +99,9 @@
 # policies, triggers, and definer function remain in the ordinary dump, while
 # their rows travel through an explicit hex-wrapped JSON staging block. The ordinary dump
 # still runs with row_security=off, so every other unexcluded fenced relation
-# remains a loud failure. The staging query is admitted only after a live
-# catalogue check proves the exact three-table set still has one permissive,
-# non-restrictive PUBLIC SELECT policy with USING (true).
+# remains a loud failure. The staging query is admitted only after a catalogue
+# check in the same exported snapshot proves the exact three-table set still
+# has one permissive, non-restrictive PUBLIC SELECT policy with USING (true).
 #
 # On restore, the staged rows pass through cost_claim_restore_row() under the
 # table owner's existing membership precondition. That fixed SECURITY DEFINER
@@ -245,64 +245,15 @@ for table in ${BACKUP_SCOPED_DATA_TABLES}; do
   set -- "$@" "--exclude-table-data=${table}"
 done
 
-# The psql export below intentionally evaluates RLS for three named tables. Do
-# not rely on that evaluation alone: a restrictive or narrowed policy could
-# silently filter rows. Prove the exact full-row posture from the catalogue on
-# every run before either producer writes a byte.
-if ! COST_CLAIM_BACKUP_POLICY_COUNT="$(
-  PGPASSWORD="${POSTGRES_PASSWORD:-}" psql \
-    --host="${POSTGRES_HOST}" \
-    --port="${POSTGRES_PORT}" \
-    --username="${POSTGRES_USER}" \
-    --dbname="${POSTGRES_DB}" \
-    --no-password \
-    --quiet \
-    --no-align \
-    --tuples-only \
-    --set=ON_ERROR_STOP=1 \
-    -c "SELECT count(*)
-          FROM pg_class AS c
-          JOIN pg_namespace AS n ON n.oid = c.relnamespace
-         WHERE n.nspname || '.' || c.relname IN (
-                   'public.cost_claims',
-                   'public.cost_claim_resolutions',
-                   'public.cost_claim_events'
-               )
-           AND c.relrowsecurity
-           AND c.relforcerowsecurity
-           AND (
-               SELECT count(*) = 1
-                 FROM pg_policy AS p
-                WHERE p.polrelid = c.oid
-                  AND p.polcmd = 'r'
-           )
-           AND EXISTS (
-               SELECT 1
-                 FROM pg_policy AS p
-                WHERE p.polrelid = c.oid
-                  AND p.polcmd = 'r'
-                  AND p.polpermissive
-                  AND p.polroles = ARRAY[0::oid]
-                  AND pg_get_expr(p.polqual, p.polrelid) = 'true'
-           )" 2>/dev/null
-)"; then
-  FAILURE_REASON="pg_dump_failed"
-  echo "[backup] FAILED: cost-claim backup policy could not be verified; not publishing" >&2
-  exit 1
-fi
-if [ "${COST_CLAIM_BACKUP_POLICY_COUNT}" != "3" ]; then
-  FAILURE_REASON="pg_dump_failed"
-  echo "[backup] FAILED: cost-claim backup policy is not the exact full-row contract; not publishing" >&2
-  exit 1
-fi
-
 # pg_dump and the scoped ledger query must see one database instant. Keep a
 # read-only repeatable-read transaction open, export its snapshot, and bind
-# both producers to it. The FIFO writer stays open until both are finished, so
-# psql waits for the final COMMIT without a sleep-based transaction lifetime.
+# both producers and the exact RLS-policy proof to it. The FIFO writer stays
+# open until both are finished, so psql waits for the final COMMIT without a
+# sleep-based transaction lifetime.
 SNAPSHOT_DIR="$(mktemp -d)"
 SNAPSHOT_CONTROL="${SNAPSHOT_DIR}/control"
 SNAPSHOT_ID_FILE="${SNAPSHOT_DIR}/id"
+SNAPSHOT_POLICY_COUNT_FILE="${SNAPSHOT_DIR}/policy-count"
 SNAPSHOT_LOG="${SNAPSHOT_DIR}/holder.log"
 mkfifo "${SNAPSHOT_CONTROL}"
 PGPASSWORD="${POSTGRES_PASSWORD:-}" psql \
@@ -319,18 +270,49 @@ SNAPSHOT_HOLDER_PID=$!
 exec 9>"${SNAPSHOT_CONTROL}"
 printf 'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;\n' >&9
 printf '\\o %s\nSELECT pg_export_snapshot();\n\\o\n' "${SNAPSHOT_ID_FILE}" >&9
+# A FOR ALL policy also applies to SELECT. Count every SELECT-applying policy,
+# then require the one admitted policy to be the exact explicit PUBLIC SELECT
+# policy below; otherwise a restrictive FOR ALL policy could silently filter
+# the scoped export.
+printf '\\o %s\nSELECT count(*)
+      FROM pg_class AS c
+      JOIN pg_namespace AS n ON n.oid = c.relnamespace
+     WHERE n.nspname || '\''.'\'' || c.relname IN (
+               '\''public.cost_claims'\'',
+               '\''public.cost_claim_resolutions'\'',
+               '\''public.cost_claim_events'\''
+           )
+       AND c.relrowsecurity
+       AND c.relforcerowsecurity
+       AND (
+           SELECT count(*) = 1
+             FROM pg_policy AS p
+            WHERE p.polrelid = c.oid
+              AND p.polcmd IN ('\''r'\'', '\''*'\'')
+       )
+       AND EXISTS (
+           SELECT 1
+             FROM pg_policy AS p
+            WHERE p.polrelid = c.oid
+              AND p.polcmd = '\''r'\''
+              AND p.polpermissive
+              AND p.polroles = ARRAY[0::oid]
+              AND pg_get_expr(p.polqual, p.polrelid) = '\''true'\''
+       );
+\\o\n' "${SNAPSHOT_POLICY_COUNT_FILE}" >&9
 
 SNAPSHOT_WAIT=0
-while [ ! -s "${SNAPSHOT_ID_FILE}" ] && kill -0 "${SNAPSHOT_HOLDER_PID}" 2>/dev/null; do
+while { [ ! -s "${SNAPSHOT_ID_FILE}" ] || [ ! -s "${SNAPSHOT_POLICY_COUNT_FILE}" ]; } \
+  && kill -0 "${SNAPSHOT_HOLDER_PID}" 2>/dev/null; do
   SNAPSHOT_WAIT=$((SNAPSHOT_WAIT + 1))
   if [ "${SNAPSHOT_WAIT}" -ge 100 ]; then
     break
   fi
   sleep 0.05
 done
-if [ ! -s "${SNAPSHOT_ID_FILE}" ]; then
+if [ ! -s "${SNAPSHOT_ID_FILE}" ] || [ ! -s "${SNAPSHOT_POLICY_COUNT_FILE}" ]; then
   FAILURE_REASON="pg_dump_failed"
-  echo "[backup] FAILED: could not establish a shared backup snapshot; not publishing" >&2
+  echo "[backup] FAILED: could not establish a shared backup snapshot and policy proof; not publishing" >&2
   exit 1
 fi
 BACKUP_SNAPSHOT="$(tr -d '\r\n' < "${SNAPSHOT_ID_FILE}")"
@@ -341,6 +323,12 @@ case "${BACKUP_SNAPSHOT}" in
     exit 1
     ;;
 esac
+COST_CLAIM_BACKUP_POLICY_COUNT="$(tr -d '\r\n' < "${SNAPSHOT_POLICY_COUNT_FILE}")"
+if [ "${COST_CLAIM_BACKUP_POLICY_COUNT}" != "3" ]; then
+  FAILURE_REASON="pg_dump_failed"
+  echo "[backup] FAILED: cost-claim backup policy is not the exact full-row contract; not publishing" >&2
+  exit 1
+fi
 
 # pg_dump writes to stdout; we pipe through gzip into a .tmp file so the
 # directory scanner in get_backup_facts() never sees a partial dump.  gzip's

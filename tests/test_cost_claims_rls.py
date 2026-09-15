@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import shutil
 import uuid
 from decimal import Decimal
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 from urllib.parse import urlparse
 
 import asyncpg
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.exc import ProgrammingError
 
 from alembic import command
@@ -27,6 +30,36 @@ pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(shutil.which("docker") is None, reason="Docker not available"),
 ]
+
+_CORE_239_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "alembic"
+    / "versions"
+    / "core"
+    / "core_239_cost_claims.py"
+)
+
+
+def _replay_core_239(db_url: str) -> None:
+    """Execute the migration's actual upgrade SQL against an existing schema."""
+    spec = importlib.util.spec_from_file_location("core_239_replay", _CORE_239_PATH)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    statements: list[str] = []
+    fake_op = MagicMock()
+    fake_op.execute.side_effect = statements.append
+    with patch.object(migration, "op", fake_op):
+        migration.upgrade()
+
+    engine = create_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            for statement in statements:
+                conn.execute(text(statement))
+    finally:
+        engine.dispose()
 
 
 @pytest.fixture(scope="module")
@@ -144,6 +177,134 @@ def test_init_db_replay_twice_preserves_forced_rls(
                 )
         finally:
             runtime_engine.dispose()
+    finally:
+        engine.dispose()
+
+
+def test_core_239_replay_reconciles_restore_policies_without_widening_finance_authority(
+    postgres_container, db_name: str, db_url: str
+) -> None:
+    """A schema replay converges on one owner policy per ledger without opening writes."""
+    bootstrap_db_url = migration_bootstrap_db_url(postgres_container, db_name)
+    migration_owner = urlparse(db_url).username
+    bootstrap_owner = urlparse(bootstrap_db_url).username
+    assert migration_owner is not None
+    assert bootstrap_owner is not None
+
+    _replay_core_239(bootstrap_db_url)
+    _replay_core_239(bootstrap_db_url)
+
+    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    claim_id = uuid.uuid4()
+    try:
+        with engine.connect() as conn:
+            policy_rows = conn.exec_driver_sql(
+                """
+                SELECT c.relname,
+                       p.polname,
+                       p.polcmd,
+                       p.polpermissive,
+                       p.polroles = ARRAY[0::oid],
+                       c.relforcerowsecurity,
+                       pg_get_expr(p.polwithcheck, p.polrelid),
+                       pg_get_userbyid(c.relowner)
+                FROM pg_policy AS p
+                JOIN pg_class AS c ON c.oid = p.polrelid
+                WHERE p.polname IN (
+                    'cost_claims_restore_owner',
+                    'cost_claim_resolutions_restore_owner',
+                    'cost_claim_events_restore_owner'
+                )
+                ORDER BY c.relname
+                """
+            ).all()
+            assert [(row[0], row[1], *row[2:6], row[7]) for row in policy_rows] == [
+                (
+                    "cost_claim_events",
+                    "cost_claim_events_restore_owner",
+                    "a",
+                    True,
+                    True,
+                    True,
+                    migration_owner,
+                ),
+                (
+                    "cost_claim_resolutions",
+                    "cost_claim_resolutions_restore_owner",
+                    "a",
+                    True,
+                    True,
+                    True,
+                    migration_owner,
+                ),
+                (
+                    "cost_claims",
+                    "cost_claims_restore_owner",
+                    "a",
+                    True,
+                    True,
+                    True,
+                    migration_owner,
+                ),
+            ]
+            expected_restore_check = f"(CURRENT_USER = '{migration_owner}'::name)"
+            assert all(row[6] == expected_restore_check for row in policy_rows)
+            assert all(
+                row[6] != f"(CURRENT_USER = '{bootstrap_owner}'::name)" for row in policy_rows
+            )
+
+            restore_function = conn.exec_driver_sql(
+                """
+                SELECT p.prosecdef,
+                       pg_get_userbyid(p.proowner),
+                       p.proconfig,
+                       NOT EXISTS (
+                           SELECT 1
+                           FROM aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) AS acl
+                           WHERE acl.grantee = 0
+                             AND acl.privilege_type = 'EXECUTE'
+                       )
+                FROM pg_proc AS p
+                WHERE p.oid = 'public.cost_claim_restore_row(text,jsonb)'::regprocedure
+                """
+            ).one()
+            assert restore_function == (
+                True,
+                migration_owner,
+                ["search_path=pg_catalog, public", "row_security=on"],
+                True,
+            )
+
+            conn.exec_driver_sql("SET ROLE butler_relationship_rw")
+            try:
+                conn.exec_driver_sql(
+                    """
+                    INSERT INTO public.cost_claims
+                        (id, claim_key, asserted_by, kind, direction, amount, currency,
+                         counterparty_label, description)
+                    VALUES (%s, %s, 'relationship', 'receivable', 'inbound', 25, 'SGD',
+                            'Replay fixture', 'Verify Finance authority')
+                    """,
+                    (claim_id, f"test:core-239-replay:{uuid.uuid4()}"),
+                )
+                with pytest.raises(ProgrammingError, match="row-level security policy"):
+                    conn.exec_driver_sql(
+                        "INSERT INTO public.cost_claim_resolutions (claim_id, state) "
+                        "VALUES (%s, 'settled')",
+                        (claim_id,),
+                    )
+            finally:
+                conn.exec_driver_sql("RESET ROLE")
+
+            conn.exec_driver_sql("SET ROLE butler_finance_rw")
+            try:
+                conn.exec_driver_sql(
+                    "INSERT INTO public.cost_claim_resolutions (claim_id, state) "
+                    "VALUES (%s, 'settled')",
+                    (claim_id,),
+                )
+            finally:
+                conn.exec_driver_sql("RESET ROLE")
     finally:
         engine.dispose()
 
