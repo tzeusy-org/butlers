@@ -4,7 +4,7 @@ The health endpoints (/api/health, /health) report two boolean security-posture
 indicators:
 
   api_key_auth_enabled
-    True  when DASHBOARD_API_KEY is set (ApiKeyMiddleware is active).
+    True  when DASHBOARD_API_KEY is set (configured-key mode).
     False when DASHBOARD_API_KEY is absent (passkey sessions still required).
 
   export_secret_insecure_default

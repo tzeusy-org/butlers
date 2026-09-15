@@ -46,8 +46,10 @@ async def test_malformed_configured_key_is_fixed_denial():
     from butlers.api.owner_auth.config import OwnerAuthConfig
 
     service = OwnerAuthService(None, OwnerAuthConfig(None, None, "synthetic key"))
+    service._call = AsyncMock(return_value={})
     for malformed in ("", "wrong", "\ud800", None, 42):
         with pytest.raises(AuthError) as caught:
             await service.key_session(malformed)
         assert caught.value.status_code == 401
         assert caught.value.message == "Owner authentication required"
+    assert all(call.args == ("key_session_attempt",) for call in service._call.await_args_list)

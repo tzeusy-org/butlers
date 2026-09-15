@@ -15,7 +15,10 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.execute(Path(__file__).with_suffix(".sql").read_text())
+    # JSON colons are not bind parameters; psycopg requires literal percent
+    # signs escaped when SQLAlchemy passes its empty DBAPI parameter mapping.
+    sql = Path(__file__).with_suffix(".sql").read_text()
+    op.get_bind().exec_driver_sql(sql.replace("%", "%%"))
 
 
 def downgrade() -> None:

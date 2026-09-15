@@ -325,6 +325,9 @@ class OwnerAuthService:
             raise AuthError("UNAUTHORIZED")
 
     async def key_session(self, api_key: str) -> IssuedSession:
+        # Charge all bounded attempts across workers before the key comparison.
+        # The attempt operation cannot create a session or grant authority.
+        await self._call("key_session_attempt")
         self._check_key(api_key)
         token, csrf = _token(), _token()
         data = await self._call(
@@ -420,7 +423,8 @@ async def _initialize_auth_connection(connection: asyncpg.Connection) -> None:
               AND pg_has_role(session_user, 'dashboard_auth_api', 'MEMBER')
               AND NOT EXISTS (
                 SELECT FROM reachable JOIN pg_roles r USING(oid)
-                WHERE r.rolsuper OR r.rolcreaterole OR r.rolcreatedb OR r.rolbypassrls
+                WHERE r.rolsuper OR r.rolcreaterole OR r.rolcreatedb
+                   OR r.rolbypassrls OR r.rolreplication
                    OR has_function_privilege(r.oid,
                         (SELECT oid FROM host_function), 'EXECUTE')
               )
