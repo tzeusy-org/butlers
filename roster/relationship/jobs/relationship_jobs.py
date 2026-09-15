@@ -2764,12 +2764,8 @@ async def run_fact_retraction_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
                         f"content_preview={content[:120]}",
                     )
                 ]
-                # park_pending_action is the single choke point for PENDING
-                # inserts: it writes the row AND attempts the owner-facing
-                # push in one call (bu-mda0r/bu-g27ib). Routed through *pool*
-                # (not *conn*) because the push path needs real pool
-                # semantics; the dedup read above has no transactional
-                # dependency on it.
+                # Atomic action + delivery-intent admission. The dedup read
+                # above has no transactional dependency on it.
                 await park_pending_action(
                     db_pool,
                     action_id=action_id,
@@ -3305,11 +3301,10 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 )
             ]
 
-            # The durable key closes the check-then-insert interval without
-            # holding a connection across the owner-push path. The approvals
-            # writer attempts a push only after a successful INSERT.
+            # The atomic admission helper owns the semantic-key race and
+            # returns the durable winner's action/intent pair.
             try:
-                await park_pending_action(
+                admission = await park_pending_action(
                     db_pool,
                     action_id=action_id,
                     tool_name="memory_entity_merge",
@@ -3330,10 +3325,13 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
                     approval_push_runtime=get_current_approval_push_runtime(),
                     deduplication_key=deduplication_key,
                 )
+                if admission.duplicate:
+                    existing = await _existing_action()
+                    if existing is not None:
+                        return _existing_outcome(existing)
+                    raise RuntimeError("duplicate approval admission has no active action")
             except asyncpg.UniqueViolationError:
-                # A concurrent curation run won the unique-key race. Resolve
-                # the durable winner rather than treating its benign conflict
-                # as an operator-visible job error.
+                # Compatibility fallback for a pre-approvals_015 schema.
                 existing = await _existing_action()
                 if existing is not None:
                     return _existing_outcome(existing)
@@ -3804,9 +3802,7 @@ async def run_email_identity_enrichment(db_pool: asyncpg.Pool) -> dict[str, Any]
                 )
             ]
 
-            # park_pending_action is the single choke point for PENDING
-            # inserts: it writes the row AND attempts the owner-facing push
-            # in one call (bu-mda0r/bu-g27ib).
+            # Atomic action + delivery-intent admission.
             await park_pending_action(
                 db_pool,
                 action_id=action_id,
@@ -4153,12 +4149,8 @@ async def run_episodic_predicate_curation(db_pool: asyncpg.Pool) -> dict[str, An
                     }
                 )
 
-                # park_pending_action is the single choke point for PENDING
-                # inserts: it writes the row AND attempts the owner-facing
-                # push in one call (bu-mda0r/bu-g27ib). Routed through *pool*
-                # (not *conn*) because the push path needs real pool
-                # semantics; the dedup read above has no transactional
-                # dependency on it.
+                # Atomic action + delivery-intent admission. The dedup read
+                # above has no transactional dependency on it.
                 await park_pending_action(
                     db_pool,
                     action_id=action_id,

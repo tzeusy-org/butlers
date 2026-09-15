@@ -45,13 +45,14 @@ from butlers.core.model_capabilities import (
     ModelFeature,
     Support,
 )
+from butlers.core.purpose_lane import PURPOSE_LANE_STANDARD, PurposeLane
 
 logger = logging.getLogger(__name__)
 
 #: Bumped whenever the derivation table or the fit rules below change meaning.
 #: Recorded alongside every resolution so a stored receipt can be read against
 #: the policy that actually produced it rather than against today's.
-DISPATCH_POLICY_VERSION = "1"
+DISPATCH_POLICY_VERSION = "2"
 
 
 class Consequence(enum.StrEnum):
@@ -133,6 +134,7 @@ class DispatchIntent:
     #: of an import cycle with ``model_routing``.
     complexity_tier: str
     consequence: Consequence
+    purpose_lane: PurposeLane = PURPOSE_LANE_STANDARD
     #: Features a candidate MUST prove. Unproven (UNSUPPORTED, or UNKNOWN above
     #: ``OBSERVE``) disqualifies -- see :func:`evaluate_fit`.
     required_features: frozenset[ModelFeature] = _NO_FEATURES
@@ -156,6 +158,7 @@ class DispatchIntent:
             "trigger_class": self.trigger_class,
             "complexity_tier": self.complexity_tier,
             "consequence": str(self.consequence),
+            "purpose_lane": self.purpose_lane,
             "required_features": sorted(str(f) for f in self.required_features),
             "preferred_features": sorted(str(f) for f in self.preferred_features),
             "min_context_tokens": self.min_context_tokens,
@@ -172,6 +175,7 @@ def derive_dispatch_intent(
     min_context_tokens: int | None = None,
     max_cost_usd_per_call: float | None = None,
     extra_required_features: Iterable[ModelFeature] = (),
+    purpose_lane: PurposeLane = PURPOSE_LANE_STANDARD,
 ) -> DispatchIntent:
     """Derive the intent for a dispatch from its trigger and caller-known bounds.
 
@@ -190,6 +194,7 @@ def derive_dispatch_intent(
         trigger_class=trigger_class,
         complexity_tier=str(complexity_tier),
         consequence=profile.consequence,
+        purpose_lane=purpose_lane,
         required_features=profile.required | extra,
         preferred_features=profile.preferred - (profile.required | extra),
         min_context_tokens=min_context_tokens,

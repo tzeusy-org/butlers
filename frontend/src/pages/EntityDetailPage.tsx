@@ -3187,40 +3187,44 @@ export default function EntityDetailPage() {
               {practicalDrawer}
 
               {/* Workbench three-rail layout: context · workbench · curation.
-                  No 44px Display here (the identity hero above carries the name). */}
-              <div
-                className="grid grid-cols-1 gap-6 lg:grid-cols-[240px_minmax(0,1fr)_280px]"
-                data-testid="workbench-three-rail"
-              >
-                <WorkbenchContextRail
-                  entityId={entity.id}
-                  duplicatePeers={duplicatePeers}
-                  onOpenMergeReviewWith={openMergeReviewWith}
-                />
+                  Switch on usable content width so a docked chat rail cannot
+                  collapse the middle column. No 44px Display here (the identity
+                  hero above carries the name). */}
+              <div className="@container">
+                <div
+                  className="grid grid-cols-1 gap-6 @3xl:grid-cols-[240px_minmax(0,1fr)_280px]"
+                  data-testid="workbench-three-rail"
+                >
+                  <WorkbenchContextRail
+                    entityId={entity.id}
+                    duplicatePeers={duplicatePeers}
+                    onOpenMergeReviewWith={openMergeReviewWith}
+                  />
 
-                <div className="min-w-0 space-y-5">
-                  <WorkbenchKpiStrip entityId={entity.id} />
-                  {/* Dense sortable provenance grid over BOTH stores. */}
-                  <ProvenanceGrid entityId={entity.id} defaultStoreAll />
+                  <div className="min-w-0 space-y-5">
+                    <WorkbenchKpiStrip entityId={entity.id} />
+                    {/* Dense sortable provenance grid over BOTH stores. */}
+                    <ProvenanceGrid entityId={entity.id} defaultStoreAll />
+                  </div>
+
+                  <WorkbenchActionRail
+                    entityId={entity.id}
+                    isUnidentified={entity.unidentified}
+                    duplicatePeerId={duplicatePeerId}
+                    duplicateEvidence={duplicateEvidence}
+                    onOpenMergeReview={openMergeReview}
+                    onPromote={handlePromoteEntity}
+                    onPromoteTier={() => stepDunbarTier("promote")}
+                    onDemoteTier={() => stepDunbarTier("demote")}
+                    onEditAliases={handleEditAliases}
+                    onEditContacts={handleEditContacts}
+                    onArchive={handleArchiveEntity}
+                    onForget={() => {
+                      setForgetError(null);
+                      setForgetDialogOpen(true);
+                    }}
+                  />
                 </div>
-
-                <WorkbenchActionRail
-                  entityId={entity.id}
-                  isUnidentified={entity.unidentified}
-                  duplicatePeerId={duplicatePeerId}
-                  duplicateEvidence={duplicateEvidence}
-                  onOpenMergeReview={openMergeReview}
-                  onPromote={handlePromoteEntity}
-                  onPromoteTier={() => stepDunbarTier("promote")}
-                  onDemoteTier={() => stepDunbarTier("demote")}
-                  onEditAliases={handleEditAliases}
-                  onEditContacts={handleEditContacts}
-                  onArchive={handleArchiveEntity}
-                  onForget={() => {
-                    setForgetError(null);
-                    setForgetDialogOpen(true);
-                  }}
-                />
               </div>
             </>
           )}

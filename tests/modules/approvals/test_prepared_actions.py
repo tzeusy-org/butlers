@@ -14,7 +14,6 @@ from __future__ import annotations
 import shutil
 import uuid
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, patch
 
 import asyncpg
 import pytest
@@ -74,9 +73,7 @@ def _prepared_kwargs(**overrides: object) -> dict:
 async def test_park_prepared_action_inserts_origin_prepared_and_never_pushes(pool) -> None:
     """The row lands with origin='prepared', status='pending', and no push is attempted."""
     kwargs = _prepared_kwargs()
-    with patch("butlers.modules.approvals.park.emit_approval_push", new=AsyncMock()) as spy_push:
-        await park_prepared_action(pool, **kwargs)
-        spy_push.assert_not_called()
+    await park_prepared_action(pool, **kwargs)
 
     row = await pool.fetchrow(
         "SELECT origin, status, tool_name, expires_at, deduplication_key "
@@ -95,6 +92,10 @@ async def test_park_prepared_action_inserts_origin_prepared_and_never_pushes(poo
         "SELECT 1 FROM approval_push_emissions WHERE action_id = $1", kwargs["action_id"]
     )
     assert emission is None
+    assert not await pool.fetchval(
+        "SELECT EXISTS (SELECT 1 FROM approval_delivery_intents WHERE action_id = $1)",
+        kwargs["action_id"],
+    )
 
 
 async def test_dedup_key_collision_leaves_exactly_one_active_prepared_row(pool) -> None:

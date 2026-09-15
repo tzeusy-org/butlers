@@ -184,6 +184,9 @@ async def approval_pool(migrated_db_url: str):
         "approval_events, pending_actions, approval_rules CASCADE"
     )
     await pool.execute(
+        "UPDATE approval_delivery_rollout SET admission_enabled = true WHERE singleton"
+    )
+    await pool.execute(
         """
         INSERT INTO pending_actions (id, tool_name, tool_args, status, requested_at)
         VALUES ($1, 'send_telegram', $2, 'pending', $3)
@@ -326,6 +329,7 @@ async def test_gate_park_owner_approve_executes_edits_and_preserves_provenance(
     assert {(row["event_type"], row["actor"]) for row in event_rows} == {
         ("action_queued", "system:approval_gate"),
         ("action_approved", "human:owner@telegram"),
+        ("approval_delivery_terminal", "human:owner@telegram"),
         ("action_execution_succeeded", "system:executor"),
     }
     assert [url.rsplit("/", 1)[-1] for url, _ in http_client.telegram_calls] == [

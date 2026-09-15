@@ -2013,10 +2013,8 @@ async def disconnect_connector(
     expires_at = now + timedelta(hours=72)
 
     try:
-        # park_pending_action is the single choke point for PENDING inserts:
-        # it writes the row AND attempts the owner-facing push in one call
-        # (bu-mda0r). This dashboard-API context has no daemon-cached
-        # runtime, so a fresh one is built per request.
+        # Atomically admit the action and durable delivery representation.
+        # The compatibility runtime is not invoked by this storage-only slice.
         await park_pending_action(
             pool,
             action_id=action_id,

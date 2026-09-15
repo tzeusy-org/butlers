@@ -228,6 +228,19 @@ def test_derive_dispatch_intent_is_deterministic() -> None:
 
 
 @pytest.mark.unit
+def test_dispatch_intent_receipts_private_content_lane_without_prompt_data() -> None:
+    intent = derive_dispatch_intent(
+        "route",
+        "workhorse",
+        purpose_lane="private_content",
+    )
+
+    assert intent.purpose_lane == "private_content"
+    assert intent.describe()["purpose_lane"] == "private_content"
+    assert "prompt" not in intent.describe()
+
+
+@pytest.mark.unit
 def test_tool_wired_triggers_require_tool_use() -> None:
     """Every trigger the spawner gives MCP servers must require tool use.
 
@@ -291,13 +304,14 @@ def test_intent_describe_is_json_safe_and_prompt_free() -> None:
         "trigger_class",
         "complexity_tier",
         "consequence",
+        "purpose_lane",
         "required_features",
         "preferred_features",
         "min_context_tokens",
         "deadline_s",
         "max_cost_usd_per_call",
     }
-    assert DISPATCH_POLICY_VERSION == "1"
+    assert DISPATCH_POLICY_VERSION == "2"
 
 
 # ---------------------------------------------------------------------------

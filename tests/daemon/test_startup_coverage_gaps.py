@@ -409,6 +409,7 @@ class TestStep13cCalendarApprovalWiring:
 
         # Build minimal config mock
         config = MagicMock()
+        config.name = "general"
         if approvals_enabled:
             config.modules = {
                 "approvals": {
@@ -538,9 +539,17 @@ class TestStep13cCalendarApprovalWiring:
         # (bu-mda0r) must be set explicitly like every other instance attr.
         daemon._approval_push_runtime = None
 
-        with patch(
-            "butlers.modules.approvals.events.record_approval_event",
-            new_callable=AsyncMock,
+        from butlers.testing.approval_parking_fake import record_pending_action
+
+        with (
+            patch(
+                "butlers.modules.approvals.events.record_approval_event",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "butlers.modules.approvals.park.park_pending_action",
+                new=record_pending_action,
+            ),
         ):
             daemon._wire_calendar_approval_enqueuer()
 

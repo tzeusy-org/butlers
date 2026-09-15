@@ -288,6 +288,8 @@ NEVER file a QA bug report.
 - **WHEN** a dashboard message's classification session calls none of `route_to_butler`, `file_bug_report`, `answer_question`, or `cannot_answer` (e.g. an ambiguous or unclassifiable message), the classification spawn raises an exception, or `route_to_butler` was attempted but no target acknowledged the route because every `route.execute` dispatch failed
 - **THEN** the Switchboard SHALL capture the request to the dead-letter queue (`source_table="message_inbox"`)
 - **AND** SHALL persist an in-thread `conversation_reply` telling the owner a lane decision could not be made, referencing the dead-letter case id
+- **AND** a zero-acknowledgement route attempt SHALL produce typed `route_result.status="unroutable"` and a non-null `routing_error`, never a routed result or routed log claim
+- **AND** the resulting dead letter SHALL be marked replay-eligible for an explicit owner retry
 - **AND** SHALL NOT silently fall back to routing the message to the `general` butler — that fallback is specific to non-dashboard channels
 - **AND** a genuine question with no identifiable owner SHALL always resolve via `cannot_answer` (Lane D) rather than this generic silent path — the classification prompt SHALL NOT instruct a best-guess route or a fallback to `general` for an unowned question
 

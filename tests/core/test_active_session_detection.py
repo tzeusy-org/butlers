@@ -306,6 +306,7 @@ class TestSessionsActive:
             "ingestion_event_id",
             "complexity",
             "resolution_source",
+            "purpose_lane",
             "started_at",
             "completed_at",
         }

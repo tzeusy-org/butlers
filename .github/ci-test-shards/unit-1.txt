@@ -121,6 +121,7 @@ tests/core/healing/test_anonymizer.py
 tests/core/healing/test_label_sanitization_gate.py
 tests/core/qa/test_butler_reports.py
 tests/core/qa/test_journal.py
+tests/core/qa/test_repo_clone.py
 tests/core/qa/test_repo_whitelist.py
 tests/core/qa/test_retention.py
 tests/core/qa/test_session_records.py
@@ -128,6 +129,7 @@ tests/core/qa/test_tool_call_failures.py
 tests/core/qa/test_triage.py
 tests/core/test_active_session_detection.py
 tests/core/test_aes_gcm.py
+tests/core/test_approval_delivery_worker.py
 tests/core/test_approvals_hooks.py
 tests/core/test_attention_ledger.py
 tests/core/test_dashboard_channel_extensions.py

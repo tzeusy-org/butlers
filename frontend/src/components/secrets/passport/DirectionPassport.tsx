@@ -168,7 +168,7 @@ export function DirectionPassport({
   // ── URL state ───────────────────────────────────────────────────────────
   const focusParam = searchParams.get("focus");
   const identityParam = searchParams.get("identity");
-  const sortParam = searchParams.get("sort") as SpineSortMode | null;
+  const sortParam = searchParams.get("sort");
 
   // Active identity: URL param or first identity (owner).
   const defaultIdentity = inventory.identities[0]?.id ?? "";
@@ -201,7 +201,6 @@ export function DirectionPassport({
           provider: "spotify",
           state: spotifyState,
           mono: false,
-          lastTouchOrder: 800,
           subline: "connector-managed",
         });
       }
@@ -228,7 +227,8 @@ export function DirectionPassport({
     return pickDefaultKey(entries);
   }, [focusParam, entries]);
 
-  const sortMode: SpineSortMode = sortParam ?? "severity";
+  const sortMode: SpineSortMode =
+    sortParam === "severity" || sortParam === "alpha" ? sortParam : "severity";
 
   // ── Search ──────────────────────────────────────────────────────────────
   const [search, setSearch] = React.useState("");

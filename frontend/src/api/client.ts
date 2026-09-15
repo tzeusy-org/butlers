@@ -22,6 +22,8 @@ import type {
   ApprovalsFlatListResponse,
   ApprovalsListResponse,
   ApprovalsPolicy,
+  UnroutableAttentionItem,
+  UnroutableRetryResult,
   AutonomySuggestion,
   AutonomySuggestionDismissRequest,
   AutonomySuggestionParams,
@@ -106,6 +108,7 @@ import type {
   SearchResults,
   SessionAggregate,
   SessionDetail,
+  SessionPromptReceipt,
   SessionParams,
   SessionSummary,
   KeysetResponse,
@@ -421,6 +424,7 @@ import type {
   ActivityFeed,
   ActivityFeedParams,
   ButlerMemoryStats,
+  ButlerEffectivePrompt,
   PromptVersion,
   PromptUpdateRequest,
   ButlerTool,
@@ -729,6 +733,13 @@ export function getSessionAggregate(
 /** Fetch a single session by ID (cross-butler). */
 export function getSession(id: string): Promise<ApiResponse<SessionDetail>> {
   return apiFetch<ApiResponse<SessionDetail>>(`/sessions/${encodeURIComponent(id)}`);
+}
+
+/** Fetch the separately protected effective-system-prompt receipt on demand. */
+export function getSessionPrompt(id: string): Promise<ApiResponse<SessionPromptReceipt>> {
+  return apiFetch<ApiResponse<SessionPromptReceipt>>(
+    `/sessions/${encodeURIComponent(id)}/prompt`,
+  );
 }
 
 /** Fetch sessions for a specific butler. */
@@ -3678,6 +3689,19 @@ export function getApprovalsFlat(
   return apiFetch<ApprovalsFlatListResponse>(s ? `/approvals?${s}` : "/approvals");
 }
 
+export function getUnroutableAttention(): Promise<ApiResponse<UnroutableAttentionItem[]>> {
+  return apiFetch<ApiResponse<UnroutableAttentionItem[]>>("/approvals/unroutable");
+}
+
+export function retryUnroutableAttention(
+  deadLetterId: string,
+): Promise<ApiResponse<UnroutableRetryResult>> {
+  return apiFetch<ApiResponse<UnroutableRetryResult>>(
+    `/approvals/unroutable/${encodeURIComponent(deadLetterId)}/retry`,
+    { method: "POST" },
+  );
+}
+
 export function getApprovalDetail(actionId: string): Promise<ApiResponse<ApprovalDetail>> {
   return apiFetch<ApiResponse<ApprovalDetail>>(
     `/approvals/${encodeURIComponent(actionId)}`,
@@ -6272,6 +6296,16 @@ export function listDomainEventDeliveries(
   );
 }
 
+/** Atomically requeue one failed_permanent domain-event delivery. */
+export function replayDomainEventDelivery(
+  deliveryId: string,
+): Promise<ApiResponse<{ delivery_id: string; status: string }>> {
+  return apiFetch<ApiResponse<{ delivery_id: string; status: string }>>(
+    `/domain-events/deliveries/${encodeURIComponent(deliveryId)}/replay`,
+    { method: "POST" },
+  );
+}
+
 /**
  * Fetch the full reaction trace for one domain event from
  * GET /api/domain-events/events/{event_id}/reactions (bu-6jv4m.8), oldest
@@ -6631,6 +6665,15 @@ export function getHomeCommandLog(params?: {
 /** GET /api/butlers/{name}/prompt — current versioned system prompt. */
 export function getButlerPrompt(name: string): Promise<ApiResponse<PromptVersion>> {
   return apiFetch<ApiResponse<PromptVersion>>(`/butlers/${name}/prompt`);
+}
+
+/** GET /api/butlers/{name}/prompt/effective — protected composed prompt + drift truth. */
+export function getButlerEffectivePrompt(
+  name: string,
+): Promise<ApiResponse<ButlerEffectivePrompt>> {
+  return apiFetch<ApiResponse<ButlerEffectivePrompt>>(
+    `/butlers/${encodeURIComponent(name)}/prompt/effective`,
+  );
 }
 
 /** PUT /api/butlers/{name}/prompt — update prompt, snapshots prior version. */

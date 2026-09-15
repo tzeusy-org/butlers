@@ -32,7 +32,13 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/pages/ApprovalsPage.tsx`
 
-- Owner not notified · push failed
+- Delivery evidence
+- Generation
+- Attempts
+- Next eligible
+- Reason
+- Shared digest
+- Legacy push failed
 - Undo
 - loading…
 - failed to load dossier
@@ -990,6 +996,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - No session data available.
 - Butler
 - Model
+- Purpose
 - Tokens
 - Cost
 - When
@@ -1016,7 +1023,6 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - any tier
 - Trigger
 - any trigger
-- Purpose
 - any purpose
 - Action (set at least one effect)
 - Route to model
@@ -1248,6 +1254,15 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Promoted rules
 - Suggestion counts
 
+## `frontend/src/components/approvals/unroutable-attention-panel.tsx`
+
+- Unroutable messages
+- {} unroutable message
+- Retrying
+- Retry
+- Message queued for routing retry
+- Could not retry routing
+
 ## `frontend/src/components/audit/AuditIssuesDoor.tsx`
 
 - Resolving issue group…
@@ -1366,6 +1381,9 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - recent deliveries
 - wake = the subscriber was woken · reaction = what it reported doing
 - Reaction trace
+- {} {} delivery
+- Replaying
+- Replay
 - Subscriptions
 - Deliveries
 - domain events
@@ -1552,7 +1570,8 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 - edit in models →
 - resolved ·
-- No system prompt configured.
+- Composed prompt unavailable.
+- Effective prompt unavailable.
 - edit prompt →
 - Could not load both versions to diff.
 - No tool grants configured for this butler.
@@ -1848,6 +1867,16 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Runtime Config
 - Loading...
 - Updated:
+- Tool surface
+- Git declaration, runtime authority, and live registration
+- intentional narrowing
+- Git tools
+- runtime tools
+- registered tools
+- No core-group drift.
+- Declaration snapshot unavailable.
+- Module health unavailable.
+- Declaration snapshot incomplete; module registration failed partway.
 - Max Concurrent
 - Max Queued
 - Tool Exposure Policy
@@ -1855,6 +1884,9 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Automatic verified discovery uses native tool search only when verified for the resolved runtime and model, falling back to a separately verified eager profile when one is available; otherwise the session is unavailable rather than guaranteed native discovery.
 - Core Groups
 - All groups enabled (no filter set)
+- Narrowing reason
+- Runtime config may narrow Git authority, never add a group Git does not declare.
+- Required when runtime enables fewer groups than Git
 
 ## `frontend/src/components/butler-detail/SiblingButlerNav.tsx`
 
@@ -3747,6 +3779,11 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - credential value
 - human-readable label
 
+## `frontend/src/components/sessions/PurposeLaneBadge.tsx`
+
+- Not recorded
+- Purpose lane: {}
+
 ## `frontend/src/components/sessions/SessionDetailDrawer.tsx`
 
 - Session detail unavailable
@@ -3756,6 +3793,12 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/components/sessions/SessionDossier.tsx`
 
+- Loading effective prompt receipt…
+- Retry
+- Source
+- State
+- Bytes
+- SHA
 - Metadata
 - Prompt
 - Result
@@ -3769,6 +3812,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Copy to clipboard
 - Butler
 - Trigger
+- Purpose
 - Started
 - Completed
 - Elapsed
@@ -3788,6 +3832,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Time
 - Butler
 - Trigger
+- Purpose
 - Request ID
 - Prompt
 - Model
@@ -4257,4 +4302,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3335*
+*Total strings: 3374*
