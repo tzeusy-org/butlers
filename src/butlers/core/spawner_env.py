@@ -17,6 +17,7 @@ import os
 from typing import Any
 
 from butlers.config import ButlerConfig
+from butlers.core.child_env import without_owner_auth
 from butlers.core.telemetry import get_traceparent_env
 from butlers.credential_store import CredentialStore
 
@@ -45,8 +46,9 @@ async def _build_env(
     working in spawned subprocesses without requiring machine-specific paths.
 
     Other than `PATH`, only declared variables are included — undeclared env
-    vars do not leak through.  Includes butler-level required/optional vars
-    and module credential vars.
+    vars do not leak through. Includes butler-level required/optional vars and
+    module credential vars. Dashboard owner-auth variables are always withheld,
+    even if declared.
 
     Runtime authentication is handled by CLI-level OAuth tokens (device-code
     flow via the dashboard), not API keys.
@@ -86,4 +88,4 @@ async def _build_env(
     # Include traceparent for distributed tracing
     env.update(get_traceparent_env())
 
-    return env
+    return without_owner_auth(env)
