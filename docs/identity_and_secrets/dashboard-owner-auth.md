@@ -84,8 +84,12 @@ Host CLI operations continue to use that separate trusted administrative path.
 Prepare the following through the existing authorized database/secret-provisioning
 workflow before live cutover:
 
-1. Apply the additive auth migration, which creates the private schema and the
-   `dashboard_auth_api` capability role.
+1. Provision the `dashboard_auth_api` capability role before migration. Fresh
+   databases receive it through `scripts/init-db.sql`; an existing deployment
+   needs the same narrow role provision through its authorized administrative
+   workflow, not an unreviewed re-run of the entire bootstrap. Then apply the
+   additive auth migration to create the private schema. The normal migration
+   principal remains `NOCREATEROLE`; never widen it to work around this preflight.
 2. Provision a dedicated `LOGIN`, `NOINHERIT`, `NOSUPERUSER`, `NOCREATEDB`,
    `NOCREATEROLE` principal with membership only in the required auth API role.
    It must not own the schema or be able to assume a host/schema-owner role.
