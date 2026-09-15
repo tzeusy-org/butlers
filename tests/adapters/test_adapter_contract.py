@@ -344,6 +344,13 @@ async def test_invoke_cwd_and_tool_calls(
         "DASHBOARD_AUTH_DB_PASSWORD": "synthetic-dashboard-db-password",
         "DASHBOARD_AUTH_DB_USER": "synthetic-dashboard-db-user",
         "DASHBOARD_AUTH_FUTURE_SECRET": "synthetic-future-secret",
+        "DATABASE_URL": "postgresql://synthetic-direct:synthetic-password@invalid.test/test",
+        "POSTGRES_HOST": "synthetic-direct-host",
+        "POSTGRES_PORT": "15432",
+        "POSTGRES_USER": "synthetic-direct-user",
+        "POSTGRES_PASSWORD": "synthetic-direct-password",
+        "POSTGRES_SSLMODE": "verify-full",
+        "POSTGRES_DB": "synthetic-direct-database",
     }
     caller_env = {**owner_env, "PATH": "/synthetic/bin", "ANTHROPIC_API_KEY": "provider-control"}
     with (
@@ -520,6 +527,13 @@ async def test_codex_ambient_prewarm_and_empty_env_launch_exclude_owner_authorit
         "DASHBOARD_API_KEY": "synthetic-ambient-dashboard-key",
         "DASHBOARD_AUTH_DB_PASSWORD": "synthetic-ambient-db-password",
         "DASHBOARD_AUTH_FUTURE_SECRET": "synthetic-ambient-future",
+        "DATABASE_URL": "postgresql://synthetic-ambient:synthetic-password@invalid.test/test",
+        "POSTGRES_HOST": "synthetic-ambient-host",
+        "POSTGRES_PORT": "15432",
+        "POSTGRES_USER": "synthetic-ambient-user",
+        "POSTGRES_PASSWORD": "synthetic-ambient-password",
+        "POSTGRES_SSLMODE": "verify-full",
+        "POSTGRES_DB": "synthetic-ambient-database",
     }
     ambient = {
         **owner_env,
