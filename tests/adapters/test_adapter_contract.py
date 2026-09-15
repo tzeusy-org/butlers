@@ -12,6 +12,7 @@ system-prompt file resolution) remain in the native test files.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -322,8 +323,9 @@ async def test_invoke_cwd_and_tool_calls(
     binary: str,
     binary_kwarg: str,
     exec_patch: str,
+    tmp_path: Path,
 ) -> None:
-    """invoke() passes cwd to subprocess and captures tool_use tool calls."""
+    """The real launch sink keeps cwd/tools/provider env but excludes owner authority."""
     adapter = adapter_class(**{binary_kwarg: binary})
     output_lines = "\n".join(
         [
@@ -337,15 +339,31 @@ async def test_invoke_cwd_and_tool_calls(
     mock_proc.communicate = AsyncMock(return_value=(output_lines.encode(), b""))
     mock_proc.returncode = 0
 
-    with patch(exec_patch, return_value=mock_proc) as mock_sub:
+    owner_env = {
+        "DASHBOARD_API_KEY": "synthetic-dashboard-key",
+        "DASHBOARD_AUTH_DB_PASSWORD": "synthetic-dashboard-db-password",
+        "DASHBOARD_AUTH_DB_USER": "synthetic-dashboard-db-user",
+        "DASHBOARD_AUTH_FUTURE_SECRET": "synthetic-future-secret",
+    }
+    caller_env = {**owner_env, "PATH": "/synthetic/bin", "ANTHROPIC_API_KEY": "provider-control"}
+    with (
+        patch.dict(os.environ, {**caller_env, "HOME": str(tmp_path)}, clear=True),
+        patch(exec_patch, return_value=mock_proc) as mock_sub,
+    ):
         result_text, tool_calls, usage = await adapter.invoke(
             prompt="use tools",
             system_prompt="helpful",
             mcp_servers={},
-            env={},
+            env=caller_env,
             cwd=Path("/tmp/workdir"),
         )
 
+    child_env = mock_sub.call_args.kwargs["env"]
+    assert not owner_env.keys() & child_env.keys()
+    assert not set(owner_env.values()) & set(child_env.values())
+    assert child_env["PATH"] == "/synthetic/bin"
+    assert child_env["ANTHROPIC_API_KEY"] == "provider-control"
+    assert owner_env.items() <= caller_env.items()
     assert mock_sub.call_args[1]["cwd"] == "/tmp/workdir"
     assert result_text == "Done"
     assert len(tool_calls) == 1
@@ -492,3 +510,42 @@ def test_claude_parse_reports_cache_buckets_separately() -> None:
         "cache_read_input_tokens": 950_000,
         "cache_creation_input_tokens": 42_000,
     }
+
+
+async def test_codex_ambient_prewarm_and_empty_env_launch_exclude_owner_authority(tmp_path: Path):
+    """Both inherited-environment Codex paths filter after selecting their env source."""
+    from butlers.core.runtimes.codex import run_codex_pre_warm
+
+    owner_env = {
+        "DASHBOARD_API_KEY": "synthetic-ambient-dashboard-key",
+        "DASHBOARD_AUTH_DB_PASSWORD": "synthetic-ambient-db-password",
+        "DASHBOARD_AUTH_FUTURE_SECRET": "synthetic-ambient-future",
+    }
+    ambient = {
+        **owner_env,
+        "HOME": str(tmp_path),
+        "PATH": "/synthetic/bin",
+        "OPENAI_API_KEY": "provider-control",
+    }
+    process = AsyncMock(returncode=0)
+    process.communicate.return_value = (b"Done", b"")
+    with (
+        patch.dict(os.environ, ambient, clear=True),
+        patch(_CODEX_EXEC, return_value=process) as spawn,
+    ):
+        assert await run_codex_pre_warm(
+            tmp_path / ".codex",
+            "/synthetic/codex",
+            authority_preflight=AsyncMock(return_value=True),
+        )
+        await CodexAdapter(codex_binary="/synthetic/codex")._run_codex_subprocess(
+            ["/synthetic/codex"], {}, None, 30, "synthetic command", {}, "synthetic prompt"
+        )
+    assert spawn.call_count == 2
+    for call in spawn.call_args_list:
+        child_env = call.kwargs["env"]
+        assert child_env is not None
+        assert not owner_env.keys() & child_env.keys()
+        assert not set(owner_env.values()) & set(child_env.values())
+        assert child_env["PATH"] == "/synthetic/bin"
+        assert child_env["OPENAI_API_KEY"] == "provider-control"

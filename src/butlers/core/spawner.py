@@ -50,6 +50,7 @@ from butlers.api.conversations import (
 )
 from butlers.config import ButlerConfig
 from butlers.core.audit import write_audit_entry
+from butlers.core.child_env import without_owner_auth
 from butlers.core.dashboard_turns import (
     acknowledge_cancel,
     claim_invoke,
@@ -2215,6 +2216,10 @@ class Spawner:
                 env = await _build_env(
                     self._config, self._module_credentials_env, self._credential_store
                 )
+
+            # Owner authentication belongs to the dashboard, including when an
+            # explicit caller override or a custom adapter is used.
+            env = without_owner_auth(env)
 
             # Build MCP server config for the adapter.
             # Healing sessions use a minimal env (PATH + GH_TOKEN only) and no MCP servers.

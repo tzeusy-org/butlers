@@ -28,6 +28,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, ClassVar
 
+from butlers.core.child_env import without_owner_auth
 from butlers.core.runtimes.base import RuntimeAdapter, register_adapter
 
 logger = logging.getLogger(__name__)
@@ -60,7 +61,7 @@ def _find_gemini_binary() -> str:
 
 
 def _filter_env(env: dict[str, str]) -> dict[str, str]:
-    """Pass through environment variables for Gemini subprocess.
+    """Pass through runtime variables while withholding dashboard owner authority.
 
     Parameters
     ----------
@@ -72,7 +73,7 @@ def _filter_env(env: dict[str, str]) -> dict[str, str]:
     dict[str, str]
         Environment variables for Gemini.
     """
-    return dict(env)
+    return without_owner_auth(env)
 
 
 def _parse_gemini_output(stdout: str, stderr: str) -> tuple[str | None, list[dict[str, Any]]]:
