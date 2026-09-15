@@ -3,98 +3,21 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
-import secrets
-from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
 import asyncpg
 import pytest
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
-from fido2.cose import ES256, RS256
-from fido2.webauthn import AttestationObject, AttestedCredentialData, AuthenticatorData
 
 from butlers.api.owner_auth.service import AuthError, OwnerAuthService, _digest
 from butlers.api.owner_auth.verifier import encode
+from tests.api.owner_auth_fixtures import ORIGIN, RP, Passkey
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
-ORIGIN = "https://butlers.example.test"
-RP = "butlers.example.test"
 SQL = (
     Path(__file__).resolve().parents[2] / "alembic/versions/core/core_239_dashboard_owner_auth.sql"
 )
-
-
-@dataclass
-class Passkey:
-    key: object
-    credential_id: bytes
-    be: bool = True
-    counter: int = 0
-
-    @classmethod
-    def create(cls, *, rsa_key=False, be=True):
-        key = (
-            rsa.generate_private_key(public_exponent=65537, key_size=2048)
-            if rsa_key
-            else ec.generate_private_key(ec.SECP256R1())
-        )
-        return cls(key, secrets.token_bytes(32), be)
-
-    def response(
-        self, options, *, register, origin=ORIGIN, rp=RP, uv=True, bs=False, user_handle=None
-    ):
-        public = options["publicKey"]
-        client = json.dumps(
-            {
-                "type": "webauthn.create" if register else "webauthn.get",
-                "challenge": public["challenge"],
-                "origin": origin,
-                "crossOrigin": False,
-            }
-        ).encode()
-        flags = 1 | (4 if uv else 0) | (8 if self.be else 0) | (16 if bs else 0)
-        if register:
-            cose = (
-                RS256.from_cryptography_key(self.key.public_key())
-                if isinstance(self.key, rsa.RSAPrivateKey)
-                else ES256.from_cryptography_key(self.key.public_key())
-            )
-            data = AttestedCredentialData.create(b"\0" * 16, self.credential_id, cose)
-            auth = AuthenticatorData.create(
-                hashlib.sha256(rp.encode()).digest(), flags | 64, self.counter, data
-            )
-            response = {
-                "clientDataJSON": encode(client),
-                "attestationObject": encode(AttestationObject.create("none", auth, {})),
-                "transports": ["hybrid"],
-            }
-        else:
-            auth = AuthenticatorData.create(
-                hashlib.sha256(rp.encode()).digest(), flags, self.counter
-            )
-            message = bytes(auth) + hashlib.sha256(client).digest()
-            signature = (
-                self.key.sign(message, padding.PKCS1v15(), hashes.SHA256())
-                if isinstance(self.key, rsa.RSAPrivateKey)
-                else self.key.sign(message, ec.ECDSA(hashes.SHA256()))
-            )
-            response = {
-                "clientDataJSON": encode(client),
-                "authenticatorData": encode(auth),
-                "signature": encode(signature),
-                "userHandle": user_handle,
-            }
-        return {
-            "id": encode(self.credential_id),
-            "rawId": encode(self.credential_id),
-            "type": "public-key",
-            "clientExtensionResults": {},
-            "response": response,
-        }
 
 
 @pytest.fixture
@@ -335,14 +258,17 @@ async def test_synced_and_device_bound_counter_rules_are_rechecked_at_commit(sto
             )
         key.counter = 5
         response = key.response(options, register=False, user_handle=handle)
-        # Simulate a concurrently committed assertion after crypto read.
-        original = store.verifier.verify
+        # Advance the counter after the signature was verified against counter=4.
+        original_call = store._call
 
-        def concurrent(ceremony, credential, stored):
-            return original(ceremony, credential, stored)
+        async def concurrent(action, **values):
+            if action == "finish_login":
+                await store.pool.execute(
+                    "UPDATE dashboard_auth.credentials SET counter=5 WHERE active"
+                )
+            return await original_call(action, **values)
 
-        store.verifier.verify = concurrent
-        await store.pool.execute("UPDATE dashboard_auth.credentials SET counter=5 WHERE active")
+        store._call = concurrent
         with pytest.raises(AuthError):
             await store.finish_login(
                 context.token, context.data["csrf_token"], options["ceremony_id"], response
@@ -404,6 +330,9 @@ async def test_expiry_capacity_cancel_and_missing_singleton_fail_closed(store):
     second = OwnerAuthService(store.pool, store.config)
     for _ in range(29):
         await second.context()
+    await store.pool.execute(
+        "UPDATE dashboard_auth.rate_buckets SET count=30,minute=date_trunc('minute',clock_timestamp()) WHERE kind='context'"
+    )
     with pytest.raises(AuthError, match="rate limit"):
         await store.context()
     await store.pool.execute(
@@ -451,3 +380,206 @@ async def test_both_adopted_algorithms_and_options_retry(store, rsa_key):
     assert await store.finish_login(
         context.token, context.data["csrf_token"], options["ceremony_id"], response
     )
+
+
+async def test_host_session_revoke_and_origin_rebind_preserve_exact_authority_boundaries(store):
+    key, handle, issued = await enrolled(store)
+    context, options, response = await login(store, key, handle)
+    await host(store, "revoke_sessions", confirm_revoke=True)
+    assert not (await store.status(issued.token))["authenticated"]
+    assert (await store.status())["state"] == "keyless_enrolled"
+    with pytest.raises(AuthError):
+        await store.finish_login(
+            context.token, context.data["csrf_token"], options["ceremony_id"], response
+        )
+    fresh, fresh_options, fresh_response = await login(store, key, handle)
+    daily = await store.finish_login(
+        fresh.token, fresh.data["csrf_token"], fresh_options["ceremony_id"], fresh_response
+    )
+    assert (await store.status(daily.token))["authenticated"]
+    store.config = SimpleNamespace(
+        origin="https://replacement.example.test", rp_id="replacement.example.test", api_key=None
+    )
+    assert (await store.status())["state"] == "unavailable"
+    with pytest.raises(AuthError):
+        await host(store, "reconcile_mode", confirm_revoke=True)
+    await host(store, "rebind_origin", confirm_revoke=True)
+    assert (await store.status())["state"] == "recovery_pending"
+    assert not (await store.status(daily.token))["authenticated"]
+    assert not await store.pool.fetchval(
+        "SELECT EXISTS(SELECT FROM dashboard_auth.credentials WHERE active)"
+    )
+
+
+async def test_recovery_wins_between_signature_verification_and_final_commit(store):
+    key, handle, old = await enrolled(store)
+    context, options, response = await login(store, key, handle)
+    recovery = await store.context()
+    intent = await store.intent(recovery.token, recovery.data["csrf_token"], "recover")
+    original_call = store._call
+    verified_then_revoked = False
+
+    async def revoke_at_commit(action, **values):
+        nonlocal verified_then_revoked
+        if action == "finish_login":
+            verified_then_revoked = True
+            await host(
+                store, "authorize_recovery", request_id=intent["request_id"], confirm_revoke=True
+            )
+        return await original_call(action, **values)
+
+    store._call = revoke_at_commit
+    with pytest.raises(AuthError):
+        await store.finish_login(
+            context.token, context.data["csrf_token"], options["ceremony_id"], response
+        )
+    assert verified_then_revoked
+    assert await store.pool.fetchval("SELECT count(*) FROM dashboard_auth.sessions") == 1
+    assert not (await store.status(old.token))["authenticated"]
+
+
+async def test_capacity_limits_remain_global_and_host_control_works_while_saturated(store):
+    context = await store.context()
+    intent = await store.intent(context.token, context.data["csrf_token"], "enroll")
+    await store.pool.execute(
+        "INSERT INTO dashboard_auth.contexts(digest,csrf_digest,expires_at,credential_epoch) SELECT 'capacity-'||n,'csrf-'||n,clock_timestamp()+interval '5 minutes',credential_epoch FROM dashboard_auth.instance,generate_series(1,63) n"
+    )
+    with pytest.raises(AuthError) as limited:
+        await OwnerAuthService(store.pool, store.config).context()
+    assert limited.value.status_code == 429
+    await host(store, "authorize_registration", request_id=intent["request_id"])
+    assert (
+        await store.registration_options(
+            context.token, context.data["csrf_token"], intent["request_id"]
+        )
+    ).status_code == 200
+    await store.pool.execute("UPDATE dashboard_auth.rate_buckets SET count=60 WHERE kind='options'")
+    with pytest.raises(AuthError) as limited:
+        await store.registration_options(
+            context.token, context.data["csrf_token"], intent["request_id"]
+        )
+    assert limited.value.status_code == 429
+    await host(store, "revoke_sessions", confirm_revoke=True)
+
+
+async def test_failed_finishes_consume_durable_rate_budget_without_consuming_proof(store):
+    key, handle, _ = await enrolled(store)
+    context, options, response = await login(store, key, handle)
+    response["response"]["signature"] = encode(b"wrong-signature")
+    for _ in range(10):
+        with pytest.raises(AuthError) as denied:
+            await store.finish_login(
+                context.token, context.data["csrf_token"], options["ceremony_id"], response
+            )
+        assert denied.value.status_code == 401
+    assert await store.pool.fetchval(
+        "SELECT finish_count>0 FROM dashboard_auth.contexts WHERE digest=$1", _digest(context.token)
+    )
+    await store.pool.execute(
+        "UPDATE dashboard_auth.contexts SET finish_count=10,finish_minute=date_trunc('minute',clock_timestamp()) WHERE digest=$1",
+        _digest(context.token),
+    )
+    with pytest.raises(AuthError) as limited:
+        await OwnerAuthService(store.pool, store.config).finish_login(
+            context.token, context.data["csrf_token"], options["ceremony_id"], response
+        )
+    assert limited.value.status_code == 429
+    assert not await store.pool.fetchval(
+        "SELECT consumed FROM dashboard_auth.ceremonies WHERE id=$1", options["ceremony_id"]
+    )
+
+
+async def test_migration_refuses_preexisting_privileged_auth_role_without_repairing_it(
+    provisioned_postgres_pool,
+):
+    async with provisioned_postgres_pool() as pool:
+        await pool.execute(
+            "DO $$ BEGIN IF NOT EXISTS(SELECT FROM pg_roles WHERE rolname='dashboard_auth_api') THEN CREATE ROLE dashboard_auth_api NOLOGIN; END IF; END $$"
+        )
+        await pool.execute(
+            "CREATE ROLE synthetic_host_owner NOLOGIN; GRANT synthetic_host_owner TO dashboard_auth_api"
+        )
+        try:
+            with pytest.raises(asyncpg.RaiseError, match="role must be restricted"):
+                await pool.execute(SQL.read_text())
+            assert await pool.fetchval(
+                "SELECT pg_has_role('dashboard_auth_api','synthetic_host_owner','MEMBER')"
+            )
+            assert not await pool.fetchval(
+                "SELECT EXISTS(SELECT FROM pg_namespace WHERE nspname='dashboard_auth')"
+            )
+        finally:
+            await pool.execute(
+                "REVOKE synthetic_host_owner FROM dashboard_auth_api; DROP ROLE synthetic_host_owner"
+            )
+        await pool.execute("ALTER ROLE dashboard_auth_api BYPASSRLS")
+        try:
+            with pytest.raises(asyncpg.RaiseError, match="role must be restricted"):
+                await pool.execute(SQL.read_text())
+            assert await pool.fetchval(
+                "SELECT rolbypassrls FROM pg_roles WHERE rolname='dashboard_auth_api'"
+            )
+        finally:
+            await pool.execute("ALTER ROLE dashboard_auth_api NOBYPASSRLS")
+        await pool.execute(SQL.read_text())
+        assert await pool.fetchval("SELECT count(*) FROM dashboard_auth.instance") == 1
+
+
+async def test_factory_requires_real_restricted_login_and_reset_role_cannot_restore_host(
+    store, postgres_container, monkeypatch
+):
+    from butlers.api.owner_auth.service import close_owner_auth_service, create_owner_auth_service
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    for name, value in {
+        "POSTGRES_HOST": postgres_container.get_container_host_ip(),
+        "POSTGRES_PORT": str(postgres_container.get_exposed_port(5432)),
+        "POSTGRES_DB": await store.pool.fetchval("SELECT current_database()"),
+        "POSTGRES_USER": postgres_container.username,
+        "POSTGRES_PASSWORD": postgres_container.password,
+    }.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("DASHBOARD_AUTH_DB_USER", raising=False)
+    monkeypatch.delenv("DASHBOARD_AUTH_DB_PASSWORD", raising=False)
+    absent = await create_owner_auth_service(store.config)
+    assert absent.pool is None
+    await close_owner_auth_service(absent)
+    # Even explicitly supplying the admin login cannot turn an API connection into host authority.
+    monkeypatch.setenv("DASHBOARD_AUTH_DB_USER", postgres_container.username)
+    monkeypatch.setenv("DASHBOARD_AUTH_DB_PASSWORD", postgres_container.password)
+    admin = await create_owner_auth_service(store.config)
+    assert admin.pool is None
+    await close_owner_auth_service(admin)
+    await store.pool.execute(
+        "CREATE ROLE synthetic_dashboard_login LOGIN NOINHERIT PASSWORD 'disposable-synthetic-password'; GRANT dashboard_auth_api TO synthetic_dashboard_login"
+    )
+    monkeypatch.setenv("DASHBOARD_AUTH_DB_USER", "synthetic_dashboard_login")
+    monkeypatch.setenv("DASHBOARD_AUTH_DB_PASSWORD", "disposable-synthetic-password")
+    restricted = None
+    try:
+        restricted = await create_owner_auth_service(store.config)
+        assert restricted.pool is not None
+        assert (await restricted.status())["state"] == "keyless_unenrolled"
+        async with restricted.pool.acquire() as connection:
+            await connection.execute("RESET ROLE")
+            assert await connection.fetchval("SELECT session_user") == "synthetic_dashboard_login"
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await connection.execute("SELECT dashboard_auth.host('revoke_sessions','{}')")
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await connection.execute(f"SET ROLE {postgres_container.username}")
+        await close_owner_auth_service(restricted)
+        restricted = None
+        # NOINHERIT does not help: a SET ROLE-capable ancestor still grants host authority.
+        await store.pool.execute(
+            "CREATE ROLE synthetic_host_login_capability NOLOGIN; GRANT EXECUTE ON FUNCTION dashboard_auth.host(text,jsonb) TO synthetic_host_login_capability; GRANT synthetic_host_login_capability TO synthetic_dashboard_login"
+        )
+        unsafe = await create_owner_auth_service(store.config)
+        assert unsafe.pool is None
+        await close_owner_auth_service(unsafe)
+        await store.pool.execute(
+            "REVOKE synthetic_host_login_capability FROM synthetic_dashboard_login; REVOKE EXECUTE ON FUNCTION dashboard_auth.host(text,jsonb) FROM synthetic_host_login_capability; DROP ROLE synthetic_host_login_capability"
+        )
+    finally:
+        if restricted:
+            await close_owner_auth_service(restricted)
+        await store.pool.execute("DROP ROLE synthetic_dashboard_login")

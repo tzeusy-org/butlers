@@ -38,7 +38,12 @@ class TestDashboardCommand:
         assert result.exit_code == 0
         assert "Starting Butlers dashboard on 0.0.0.0:41200" in result.output
         mock_uvicorn_run.assert_called_with(
-            "butlers.api.app:create_app", host="0.0.0.0", port=41200, factory=True
+            "butlers.api.app:create_app",
+            host="0.0.0.0",
+            port=41200,
+            factory=True,
+            proxy_headers=False,
+            access_log=False,
         )
 
         # Custom host
@@ -46,7 +51,12 @@ class TestDashboardCommand:
         result2 = runner.invoke(cli, ["dashboard", "--host", "127.0.0.1"])
         assert "127.0.0.1:41200" in result2.output
         mock_uvicorn_run.assert_called_with(
-            "butlers.api.app:create_app", host="127.0.0.1", port=41200, factory=True
+            "butlers.api.app:create_app",
+            host="127.0.0.1",
+            port=41200,
+            factory=True,
+            proxy_headers=False,
+            access_log=False,
         )
 
         # Custom port
@@ -54,7 +64,12 @@ class TestDashboardCommand:
         result3 = runner.invoke(cli, ["dashboard", "--port", "9999"])
         assert "0.0.0.0:9999" in result3.output
         mock_uvicorn_run.assert_called_with(
-            "butlers.api.app:create_app", host="0.0.0.0", port=9999, factory=True
+            "butlers.api.app:create_app",
+            host="0.0.0.0",
+            port=9999,
+            factory=True,
+            proxy_headers=False,
+            access_log=False,
         )
 
     def test_dashboard_invalid_port(self, runner):
