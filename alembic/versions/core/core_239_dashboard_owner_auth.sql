@@ -82,8 +82,8 @@ BEGIN
  SELECT * INTO s FROM dashboard_auth.instance WHERE singleton FOR UPDATE;
  IF NOT FOUND THEN RETURN '{"error":"AUTH_UNAVAILABLE"}'; END IF;
  mode_ok := s.key_generation IS NOT DISTINCT FROM p->>'key_generation';
- browser_ok := mode_ok AND s.origin IS NOT NULL AND s.origin=p->>'origin'
-                    AND s.rp_id=p->>'rp_id';
+ browser_ok := COALESCE(mode_ok AND s.origin IS NOT NULL AND s.origin=p->>'origin'
+                    AND s.rp_id=p->>'rp_id', false);
  IF s.state='keyless_enrolled' AND NOT EXISTS (
   SELECT FROM dashboard_auth.credentials WHERE active AND credential_epoch=s.credential_epoch
    AND credential_id IS NOT NULL AND credential_data IS NOT NULL AND user_handle IS NOT NULL
