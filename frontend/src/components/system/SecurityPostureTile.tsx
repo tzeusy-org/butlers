@@ -3,7 +3,7 @@
 // (bu-dl98i.1.4, bu-dl98i.6.3, bu-zxxyo)
 //
 // Data source: useHealthPosture -> GET /api/health
-// Fields used: auth.api_key_auth_enabled, auth.export_secret_insecure_default
+// Fields used: auth.owner_auth_enabled, auth.owner_auth_available, auth.export_secret_insecure_default
 //              security.insecure_infra_defaults
 //              security.role_enforcement_disabled
 //
@@ -97,7 +97,7 @@ function PostureRow({ label, secure, secureLabel, insecureLabel, testId }: Postu
  * Displays security-posture booleans from the health endpoint.
  *
  * Indicators:
- *   - API key auth: whether the dashboard requires an X-API-Key header
+ *   - Owner authentication: whether the mandatory boundary is enabled and available
  *   - Export secret: whether DASHBOARD_EXPORT_SECRET is explicitly configured
  *   - Infra defaults: whether any infra credential is at its known default or
  *     Grafana anonymous access is enabled outside dev posture
@@ -124,11 +124,11 @@ export function SecurityPostureTile() {
       <CardContent data-testid="security-posture-tile-content">
         <dl className="divide-y divide-border">
           <PostureRow
-            label="API key auth"
-            secure={posture?.api_key_auth_enabled ?? false}
+            label="Owner authentication"
+            secure={Boolean(posture?.owner_auth_enabled && posture?.owner_auth_available)}
             secureLabel="Enabled"
-            insecureLabel="Disabled (network-only)"
-            testId="posture-api-key-auth"
+            insecureLabel="Unavailable"
+            testId="posture-owner-auth"
           />
           <PostureRow
             label="Export secret"

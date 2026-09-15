@@ -22,3 +22,14 @@ bu-7y7z2 remains the cohesive implementation lane, preserving its earlier Models
 enforcement work and historical assignee. bu-azqfpk and bu-eeqmwt retain the
 specification and independent-review provenance. Requirement completion is
 recorded from implementation evidence, never inferred from this adoption.
+
+## Implementation clarification
+
+The specific exclusive configured-key rule governs origin rebinding when a key
+is configured: both credential/session epochs advance and all historical browser
+authority is revoked, while configured-key mode remains available for automation
+and fresh sessions at the new origin. Keyless mode enters `recovery_pending` and
+requires host-authorized passkey replacement. The design/runbook now state this
+intersection explicitly; the owner adoption identity above remains unchanged.
+The host-only `clear-pending` command realizes D4's already-adopted requirement
+to release pending context capacity without revealing visitors.

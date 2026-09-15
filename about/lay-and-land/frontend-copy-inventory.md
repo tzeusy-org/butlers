@@ -4086,7 +4086,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Auth and secrets configuration
 - Could not load security posture.
 - if (isError) return
-- API key auth
+- Owner authentication
 - Export secret
 - Infra credentials
 - DB role enforcement

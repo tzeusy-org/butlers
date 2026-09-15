@@ -86,8 +86,10 @@ in a frontend environment variable, URL, persistent browser storage or runbook.
 
 A hostname/RP change requires planned canonical HTTPS configuration, then
 `butlers auth rebind-origin --confirm-revoke` on the host. It retires old
-credentials/sessions and enters recovery_pending. Enroll a replacement for the
-new origin through explicit host recovery. Existing credentials cannot be
+credentials/sessions. Keyless mode enters recovery_pending and needs replacement
+registration for the new origin through explicit host recovery. Configured-key
+mode remains exclusive: automate with the matching key or establish a new
+key-backed browser session at the new origin. Existing credentials cannot be
 ported by changing their stored RP ID. Missing/corrupt auth storage requires
 host repair and epoch invalidation, never deletion to reopen public enrollment.
 
@@ -114,3 +116,13 @@ return, HttpOnly absence from JS, CSRF reload/mutation, real passkey registratio
 and returning login, cancellation, expiry and recovery outcomes. Report each
 named seam independently; tests, PR merge, deployment and owner-vault success
 are different facts. A blocked live operation leaves that evidence outstanding.
+
+## Runtime authority ordering
+
+Before introducing auth storage or exposing enrollment, apply the reviewed
+runtime/Spawner environment filters everywhere and terminate legacy children
+that may retain administrative database credentials. Keep exposure closed when
+any old child/writer remains unaccounted for. Runtime filters remain mandatory
+while the auth schema exists, including an API/frontend rollback. See the
+operator guide's runtime-ordering and rollback sections for the complete
+prepared procedure; no live operation is authorized by this document.

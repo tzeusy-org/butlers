@@ -1,13 +1,14 @@
 # Owner passkeys and server-managed sessions
 
-Status: proposed successor; exact owner adoption required before implementation.
+Status: implementing the exact adopted successor; see [adoption.md](adoption.md)
+for original artifact identity and bounded implementation clarifications.
 Baseline: `5221178fbcfe60edeec0b7af31b71c7d55f0639e`.
 Reuses PR4164 `285687c987b7c340b58b2fb6adafdaabbeb9c984`, bu-azqfpk
 (author), bu-eeqmwt (review), and bu-7y7z2 (vertical delivery).
 The September 15 owner records approve passkeys stored in Bitwarden, host-local
-first enrollment/recovery, and canonical Tailscale Serve HTTPS. They do not
-adopt this successor. Old E1/E2 questions are resolved direction, not pending
-preferences. The host-to-ceremony protocol below is an engineering decision.
+first enrollment/recovery, and canonical Tailscale Serve HTTPS. Those direction
+records alone did not adopt this successor; the subsequent exact adoption is
+recorded in adoption.md. Old E1/E2 questions are resolved direction. The host-to-ceremony protocol below is an engineering decision.
 
 ## D1. Motif, doctrine and placement
 
@@ -95,8 +96,11 @@ Ordinary restarts with unchanged configuration preserve unexpired sessions,
 credentials, receipts and original deadlines. A changed origin/RP makes browser
 auth unavailable until explicit host `auth rebind-origin --confirm-revoke`
 validates the configured identity, advances both epochs, retires credentials,
-revokes sessions/ceremonies and enters recovery_pending. It never accepts both
-origins or migrates a credential to a different RP. Restore from older database
+revokes sessions/ceremonies and enters recovery_pending in keyless mode.
+The specific exclusive configured-key contract continues to govern when a key
+is configured: that mode remains configured_key, old browser authority is
+revoked, and a fresh key-to-session login uses the new canonical origin.
+Rebind never accepts both origins or migrates a credential to a different RP. Restore from older database
 state is an operational recovery event requiring host epoch invalidation before
 exposure; a database rollback cannot be detected from that database alone.
 
@@ -220,7 +224,9 @@ finish at 120/minute, plus 10/minute per context. Fixed 429 + Retry-After 60
 when capped; bounded buckets, never attacker-controlled labels/IP maps.
 Pending options polling is at most once per two seconds, stops at expiry, and
 pauses when hidden. Host operations remain available during public saturation
-and can invalidate pending contexts without revealing them. No guarantee of
+and can invalidate pending contexts without revealing them through
+`butlers auth clear-pending --confirm-revoke`; this consumes pending intents
+and ceremonies while preserving the active credential and established sessions. No guarantee of
 availability against an authenticated-network denial-of-service attacker.
 
 Errors use fixed `{error:{code,message,butler:null}}`: malformed/oversize 400/413,

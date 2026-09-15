@@ -52,6 +52,8 @@ function makeHealthResponse(
     status: "ok",
     auth: {
       api_key_auth_enabled: true,
+      owner_auth_enabled: true,
+      owner_auth_available: true,
       export_secret_insecure_default: false,
       ...authOverrides,
     },
@@ -117,7 +119,7 @@ describe("SecurityPostureTile -- both fields secure", () => {
     expect(render()).toContain("security-posture-tile-content")
   })
 
-  it("shows 'Enabled' for api key auth when enabled", () => {
+  it("shows 'Enabled' for available owner authentication", () => {
     mockResult = {
       isPending: false,
       data: makeHealthResponse({ api_key_auth_enabled: true, export_secret_insecure_default: false }),
@@ -139,13 +141,13 @@ describe("SecurityPostureTile -- both fields secure", () => {
 // ---------------------------------------------------------------------------
 
 describe("SecurityPostureTile -- both fields insecure", () => {
-  it("shows 'Disabled' label when api key auth is disabled", () => {
+  it("shows 'Unavailable' when owner authentication cannot reach authoritative state", () => {
     mockResult = {
       isPending: false,
-      data: makeHealthResponse({ api_key_auth_enabled: false, export_secret_insecure_default: true }),
+      data: makeHealthResponse({ owner_auth_available: false, api_key_auth_enabled: false, export_secret_insecure_default: true }),
     }
     const html = render()
-    expect(html).toContain("Disabled")
+    expect(html).toContain("Unavailable")
   })
 
   it("shows 'Insecure default' when export secret is missing", () => {
@@ -172,13 +174,15 @@ describe("SecurityPostureTile -- mixed states", () => {
     expect(html).toContain("Insecure default")
   })
 
-  it("shows 'Disabled' and 'Configured' when key unset but export set", () => {
+  it("shows passkey protection as enabled when the optional API key is absent", () => {
     mockResult = {
       isPending: false,
       data: makeHealthResponse({ api_key_auth_enabled: false, export_secret_insecure_default: false }),
     }
     const html = render()
-    expect(html).toContain("Disabled")
+    expect(html).toContain("Owner authentication")
+    expect(html).toContain("Enabled")
+    expect(html).not.toContain("network-only")
     expect(html).toContain("Configured")
   })
 })
@@ -277,11 +281,14 @@ describe("SecurityPostureTile -- no secret material", () => {
       data: {
         status: "ok",
         // auth and security fields are booleans; no path for the canary to sneak in
-        auth: { api_key_auth_enabled: true, export_secret_insecure_default: false },
+        auth: { api_key_auth_enabled: true, export_secret_insecure_default: false,
+          ...{ api_key: CANARY_SECRET } },
         security: { insecure_infra_defaults: false, role_enforcement_disabled: false },
       },
     }
+    expect(JSON.stringify(mockResult.data)).toContain(CANARY_SECRET)
     const html = render()
+    expect(html).toContain("Unavailable")
     expect(html).not.toContain(CANARY_SECRET)
   })
 })

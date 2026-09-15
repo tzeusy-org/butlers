@@ -204,6 +204,14 @@ class OwnerAuthMiddleware:
                     verified_http_principal.set("owner")
                     await self.app(scope, receive, send)
                     return
+                if method == "GET" and path == "/api/connectors/spotify/oauth/callback":
+                    from butlers.api.routers.spotify import has_valid_callback_state
+
+                    states = connection.query_params.getlist("state")
+                    if len(states) == 1 and has_valid_callback_state(states[0]):
+                        scope.setdefault("state", {})["oauth_callback_authenticated"] = True
+                        await self.app(scope, receive, send)
+                        return
                 parts = path.split("/")
                 if (
                     method == "GET"

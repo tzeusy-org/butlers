@@ -73,6 +73,22 @@ header/body/query capture for authentication; verify absence using synthetic
 sentinels before any real ceremony. These public source facts do not certify a
 particular live proxy configuration.
 
+## Runtime ordering before authority is exposed
+
+Keep dashboard exposure closed while preparing the cutover. Install the patched
+Spawner/runtime-adapter environment filters in every runtime and probe image,
+terminate legacy runtime children, and verify that no old child or writer still
+holds administrative `POSTGRES_*` or `DATABASE_URL` authority before introducing
+the auth schema or accepting owner enrollment. A source patch or new parent
+process does not revoke credentials inherited by an older child. If any legacy
+child/writer cannot be accounted for, keep exposure closed and defer enrollment.
+
+Retain these runtime filters during rollback for as long as the auth schema
+exists. Rolling back API/frontend code requires the safeguard below: retain a configured
+key or remove exposure. An older runtime image must not inherit host database
+credentials again. These are deployment prerequisites,
+not commands authorized by specification adoption or synthetic tests.
+
 ## Provision the restricted authentication connection
 
 The authentication pool uses `DASHBOARD_AUTH_DB_USER` and
@@ -92,7 +108,8 @@ workflow before live cutover:
    principal remains `NOCREATEROLE`; never widen it to work around this preflight.
 2. Provision a dedicated `LOGIN`, `NOINHERIT`, `NOSUPERUSER`, `NOCREATEDB`,
    `NOCREATEROLE` principal with membership only in the required auth API role.
-   It must not own the schema or be able to assume a host/schema-owner role.
+   It must not own the database/schema or hold schema CREATE, direct table or
+   column privileges, replication, bypass-RLS, or a host/schema-owner role.
 3. Supply its password through deployment secrets only to the dashboard API.
    Never put password values in SQL files, shell history, process arguments,
    diagnostic output, the frontend or runtime-child configuration.
@@ -100,6 +117,21 @@ workflow before live cutover:
    work, direct table/host-function access fails, and `RESET ROLE` cannot regain
    administrative authority. A connection logged in as an administrator and
    subsequently restricted with `SET ROLE` does not satisfy this isolation.
+
+The connection preflight permits only the login itself and `dashboard_auth_api`
+in its complete reachable role ancestry. This also excludes privileged built-in
+roles such as `pg_execute_server_program`, without relying on a privilege-name
+denylist. It additionally checks column grants that do not appear as whole-table
+privileges:
+
+| Capability | Authentication runtime connection |
+| --- | --- |
+| Schema USAGE through `dashboard_auth_api` | Allowed |
+| Execute `dashboard_auth.api(text,jsonb)` and `dashboard_auth.cleanup()` | Allowed |
+| Execute `dashboard_auth.host(text,jsonb)` | Denied |
+| Direct table/column read or mutation | Denied |
+| Schema CREATE/ownership or database ownership | Denied |
+| Superuser, role/database creation, replication or bypass-RLS authority | Denied |
 
 No role/password provisioning follows automatically from adoption, tests or
 merge. Record only the operation category and pass/fail outcome in the live
@@ -164,6 +196,13 @@ retires the old passkey and revokes every browser session**, before replacement.
 For emergency session revocation without replacing the passkey, use
 `butlers auth revoke-sessions --confirm-revoke` on the trusted host.
 
+If unauthenticated visitors occupy pending ceremony capacity, use
+`butlers auth clear-pending --confirm-revoke`. This invalidates pending contexts,
+intents and ceremonies without listing visitors, replacing the active passkey,
+or revoking already established sessions. Existing per-minute limits still
+apply; wait for their cooldown before retrying. Pending registrations need a
+fresh browser intent and fresh host approval.
+
 ## Configured-key automation and mode changes
 
 A configured `DASHBOARD_API_KEY` retains non-browser `X-API-Key` authentication
@@ -180,8 +219,9 @@ with a retired key generation fails unavailable immediately; restart with the
 matching configuration restores its ability to authenticate.
 
 Changing origin/RP requires deliberate host
-`butlers auth rebind-origin --confirm-revoke`, followed by host-authorized
-recovery for the new identity. An existing credential cannot be moved to a new
+`butlers auth rebind-origin --confirm-revoke`. Keyless mode then needs
+host-authorized replacement registration; configured-key mode keeps its
+exclusive header path and permits a fresh key-backed session at the new origin. An existing credential cannot be moved to a new
 RP by editing a stored hostname. Never delete auth rows to reopen enrollment.
 
 ## Failure, restore and rollback

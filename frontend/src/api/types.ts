@@ -368,7 +368,10 @@ export interface NotificationSummary {
 /** Health-check response. */
 /** Security-posture booleans from GET /api/health. Values are NEVER secret material. */
 export interface HealthAuthPosture {
-  /** True when ApiKeyMiddleware is active (DASHBOARD_API_KEY is configured). */
+  /** Missing legacy fields are treated as unavailable, never as verified protection. */
+  owner_auth_enabled?: boolean;
+  owner_auth_available?: boolean;
+  /** True when configured-key automation mode is selected. */
   api_key_auth_enabled: boolean;
   /** True when DASHBOARD_EXPORT_SECRET is absent (export signer uses insecure fallback or refuses). */
   export_secret_insecure_default: boolean;
