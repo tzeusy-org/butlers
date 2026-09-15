@@ -1,3 +1,4 @@
+import { ownerFetch } from "@/api/owner-session";
 /**
  * Settings Permissions Page — /settings/permissions
  *
@@ -128,7 +129,7 @@ function Section({
 // ---------------------------------------------------------------------------
 
 async function fetchPermissions(): Promise<PermissionsMatrix> {
-  const resp = await fetch("/api/permissions");
+  const resp = await ownerFetch(resolveApiHref("/permissions"));
   if (!resp.ok) throw new Error(`GET /api/permissions failed: ${resp.status}`);
   const body = await resp.json();
   return body.data as PermissionsMatrix;
@@ -140,7 +141,7 @@ async function putPermission(
   granted: boolean,
   reason: string,
 ): Promise<void> {
-  const resp = await fetch(`/api/permissions/${encodeURIComponent(butler)}/${encodeURIComponent(perm)}`, {
+  const resp = await ownerFetch(resolveApiHref(`/permissions/${encodeURIComponent(butler)}/${encodeURIComponent(perm)}`), {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ granted, reason }),
@@ -152,19 +153,19 @@ async function putPermission(
 }
 
 async function fetchWebhooks(): Promise<WebhookRow[]> {
-  const resp = await fetch("/api/webhooks");
+  const resp = await ownerFetch(resolveApiHref("/webhooks"));
   if (!resp.ok) throw new Error(`GET /api/webhooks failed: ${resp.status}`);
   const body = await resp.json();
   return body.data as WebhookRow[];
 }
 
 async function deleteWebhook(id: string): Promise<void> {
-  const resp = await fetch(`/api/webhooks/${id}`, { method: "DELETE" });
+  const resp = await ownerFetch(resolveApiHref(`/webhooks/${id}`), { method: "DELETE" });
   if (!resp.ok) throw new Error(`DELETE /api/webhooks/${id} failed: ${resp.status}`);
 }
 
 async function testWebhook(id: string): Promise<{ ok: boolean; status_code: number | null; latency_ms: number | null }> {
-  const resp = await fetch(`/api/webhooks/${id}/test`, { method: "POST" });
+  const resp = await ownerFetch(resolveApiHref(`/webhooks/${id}/test`), { method: "POST" });
   if (!resp.ok) throw new Error(`POST /api/webhooks/${id}/test failed: ${resp.status}`);
   const body = await resp.json();
   return body.data;
@@ -186,7 +187,7 @@ async function createWebhook(
   events: string[],
 ): Promise<WebhookWithSecret> {
   // The signing secret is generated server-side and returned ONCE here.
-  const resp = await fetch("/api/webhooks", {
+  const resp = await ownerFetch(resolveApiHref("/webhooks"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ endpoint, events }),
@@ -211,7 +212,7 @@ async function updateWebhook(
   id: string,
   payload: WebhookUpdatePayload,
 ): Promise<WebhookWithSecret> {
-  const resp = await fetch(`/api/webhooks/${id}`, {
+  const resp = await ownerFetch(resolveApiHref(`/webhooks/${id}`), {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),

@@ -179,6 +179,7 @@ const FIXTURE_CONNECTOR_SUMMARY = {
 async function installCommonMocks(page: Page) {
   // 1. Catch-all — absorbs sidebar requests (/api/butlers, /api/spend, etc.)
   await page.route("**/api/**", (route) => {
+    if (new URL(route.request().url()).pathname.startsWith("/api/auth/owner/")) return route.fallback();
     route.fulfill({
       status: 200,
       contentType: "application/json",

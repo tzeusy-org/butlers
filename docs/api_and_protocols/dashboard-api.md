@@ -6,7 +6,7 @@
 
 ## Overview
 
-The Butlers Dashboard API is a FastAPI application that provides a single-pane-of-glass REST API over the entire butler infrastructure. It serves 80+ endpoints across 18 domain groups, supports real-time SSE streaming for live updates, and auto-discovers butler-specific API routers from the roster directory. The application is created via the `create_app()` factory in `src/butlers/api/app.py`.
+The Butlers Dashboard API is a FastAPI application that provides a single-pane-of-glass REST API over the entire butler infrastructure. It serves the shared and roster-specific dashboard endpoints, supports real-time SSE streaming for live updates, and auto-discovers butler-specific API routers from the roster directory. The application is created via the `create_app()` factory in `src/butlers/api/app.py`.
 
 ## Application Factory
 
@@ -14,7 +14,7 @@ The Butlers Dashboard API is a FastAPI application that provides a single-pane-o
 
 - **`cors_origins`** -- List of allowed CORS origins (defaults to `["http://localhost:41173"]` for the Vite dev server).
 - **`static_dir`** -- Path to the built frontend `dist/` directory for production SPA serving. Falls back to `DASHBOARD_STATIC_DIR` environment variable.
-- **`api_key`** -- When provided, enables `ApiKeyMiddleware`. When `None`, reads `DASHBOARD_API_KEY` from environment. Pass `""` to explicitly disable auth.
+- **`api_key`** -- When provided, selects the configured key for the central owner boundary. When `None`, reads `DASHBOARD_API_KEY` from environment. Pass `""` to select keyless mode; this does not disable the central owner boundary. Browser authentication uses the [owner passkey/session contract](../identity_and_secrets/dashboard-owner-auth.md).
 
 ## Lifespan Management
 
@@ -27,6 +27,10 @@ The `lifespan` async context manager handles startup and shutdown:
 4. Wire DB dependencies for both static and dynamically-discovered routers.
 5. Restore CLI auth tokens from the database to the filesystem.
 
+The independent restricted owner-authentication pool is initialized before domain
+resources. Missing or inconsistent auth state remains unavailable and never
+becomes public enrollment authority.
+
 **Shutdown:**
 1. Close all database pools via `shutdown_db_manager()`.
 2. Clean up shared dependencies.
@@ -36,9 +40,31 @@ The `lifespan` async context manager handles startup and shutdown:
 | Middleware | Purpose |
 |-----------|---------|
 | `CORSMiddleware` | Cross-origin requests from the frontend (all methods and headers allowed for configured origins) |
-| `ApiKeyMiddleware` | Optional API key authentication on `/api/*` routes (health endpoints always public) |
+| Owner authentication boundary | Configured-key or server-session admission before protected request bodies and domain access; exact public health and bounded ceremony exceptions |
 
 Error handlers convert domain exceptions into standardized JSON responses (502 for unreachable butlers, 404 for unknown butlers, 400 for validation errors, 500 for unhandled exceptions).
+
+## Owner authentication
+
+The central boundary authenticates the server-controlled owner principal before
+protected body reads, domain-pool acquisition, caches and owner-entity assertions.
+A configured header key and an opaque browser session are supported credentials;
+Tailnet reachability and the existence of an owner entity are not caller proof.
+An absent key selects protected keyless enrollment/login, never pass-through.
+
+The bounded `/api/auth/owner` router owns status, preauth context, registration,
+login, session, CSRF and cancellation. Its exact body limits and positive output
+allowlists are defined in the adopted
+[design D4](../../openspec/changes/specify-host-authorized-dashboard-enrollment/design.md).
+Only exact `GET /health` and `GET /api/health` are public probes; the Health
+briefing remains protected. Scoped service callbacks retain their own verified
+authority and cannot create an owner session.
+
+Unsafe cookie-backed requests require independent synchronizer CSRF and exact
+Origin validation. Missing auth returns a fixed denial, unavailable authoritative
+state fails closed, and successful login never bypasses domain authorization.
+See [owner authentication](../identity_and_secrets/dashboard-owner-auth.md) for
+setup, mode transitions, expiry and recovery.
 
 ## Core Routers
 
@@ -131,30 +157,31 @@ In production, when `static_dir` or `DASHBOARD_STATIC_DIR` is set, a `StaticFile
 To confirm the dashboard API application is functioning as described:
 
 ```bash
-# 1. Health endpoint always returns 200 (even without API key)
+# 1. Public health reports readiness without an owner credential
 curl -s http://localhost:41200/health | python3 -m json.tool
-# Expected: {"status": "ok"}
+# Expected after startup: status="ok"; before readiness: HTTP503.
 
 # 2. All core router groups are reachable
 for route in butlers sessions schedules costs modules secrets state; do
   status=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:41200/api/$route")
   echo "$route: $status"
 done
-# Expected: 200 for all routes (or 401 if API key auth is enabled and key is missing)
+# Expected without credentials: 401, or 503 when authoritative auth is unavailable.
+# Use the authenticated browser to verify protected routes; never put keys in URLs.
 
 # 3. Auto-discovered butler routers are mounted
 # Butler-specific routers from roster/{butler}/api/router.py should be accessible
 curl -s http://localhost:41200/api/switchboard/ | python3 -m json.tool
-# Expected: switchboard-specific endpoints respond (404 = no route, not a 500)
+# Expected without owner credentials: denial before domain access.
 
 # 4. SSE events stream connects and emits events
 curl -s -N --max-time 5 http://localhost:41200/api/events 2>&1 | head -5
-# Expected: SSE stream connects; "data:" lines appear as butler activity occurs
+# Expected without owner credentials: denial; authenticated browser streams use the session cookie.
 
 # 5. Butler-specific DB pools are wired correctly
 # Verify each butler's data is accessible via the API (not just global data)
 curl -s "http://localhost:41200/api/butlers/general/sessions?limit=1" | python3 -m json.tool
-# Expected: session data for the general butler; no "butler pool not initialized" errors
+# Expected without owner credentials: denial, without session-data disclosure.
 ```
 
 ## Related Pages

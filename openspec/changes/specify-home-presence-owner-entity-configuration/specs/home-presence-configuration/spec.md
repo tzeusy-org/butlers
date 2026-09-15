@@ -8,41 +8,43 @@ under this capability: `GET /api/home/settings/presence/owner-entities` and
 path or query parameter. Neither route SHALL be registered as an MCP/runtime
 tool or be callable from an LLM session, CLI, connector, scheduled job,
 background retry, or direct-SQL operator workflow.
-
 Before any component reads or buffers the request body, acquires a database
 pool, or observes protected state, both routes SHALL pass the existing
-fail-closed `require_dashboard_owner_control` contract or a separately
-owner-approved successor with equivalent guarantees. Absent owner-control
-configuration SHALL return `503`; a missing or mismatched owner credential
-SHALL return `401`. The optional fail-open `ApiKeyMiddleware` is insufficient
+fail-closed central `dashboard-owner-auth` configured-key-or-owner-session
+contract through `require_dashboard_owner_control`. Unavailable authoritative
+auth state SHALL return `503`; missing or invalid caller authority SHALL return
+`401`. An absent API key alone does not disable healthy keyless owner sessions.
+Cookie-backed PUT requires synchronizer CSRF and exact Origin. The optional fail-open `ApiKeyMiddleware` is insufficient
 for either route.
-
 After authentication, the audit actor SHALL be derived server-side through
 `authenticated_principal()`. Neither request SHALL expose a caller-asserted
 actor field. `authenticated_principal()` is attribution only and SHALL NOT be
 treated as an authentication check.
+The dashboard UI SHALL remain blocked until the exact `dashboard-owner-auth`
+successor is adopted and its browser-session contract is implemented. The
+configured-key choice recorded by `bu-pb6oy` remains preserved; passkeys issue
+the same server-managed session. This capability adds no alternate transport,
+JavaScript-persisted key, build-time credential or same-origin bypass.
 
-The dashboard UI SHALL remain blocked until `bu-pb6oy` supplies a separately
-approved and implemented browser credential-transport contract. This
-requirement SHALL NOT choose or imply a cookie, JavaScript-held credential,
-build-time credential, same-origin bypass, or any other new browser
-authentication mechanism.
+ID: REQ-home-presence-configuration-001
+Source: dashboard-owner-auth successor design D1-D9; existing home-presence-configuration behavior preserved except explicit owner-auth supersession
+Scope: v1-mandatory
 
 #### Scenario: Unconfigured owner control fails before body or pool access
 
-- **WHEN** `DASHBOARD_API_KEY` is unavailable and a caller invokes either
+- **WHEN** authoritative owner-auth state is unavailable and a caller invokes either
   route
 - **THEN** the API SHALL return `503` with a fixed content-blind error
-- **AND** no layer SHALL read or buffer the request body, acquire a database
+- **AND** no layer SHALL read or buffer the request body, acquire a domain database
   pool, read `home:presence:owner_entities` or `ha_entity_snapshot`, or write
   audit state
 
 #### Scenario: Wrong credential is denied before body or pool access
 
 - **WHEN** owner control is configured but the credential is missing or wrong
-- **THEN** the API SHALL return `401` after constant-time comparison
+- **THEN** the API SHALL return `401` after central key-or-session verification
 - **AND** no layer SHALL read or buffer the body or perform a database
-  operation
+  domain operation; dedicated auth-store verification is permitted
 
 #### Scenario: Authenticated actor is server-derived
 
@@ -53,8 +55,8 @@ authentication mechanism.
 
 #### Scenario: Browser workflow waits for its authentication prerequisite
 
-- **WHEN** `bu-pb6oy` has not produced an approved and implemented
-  browser-auth contract that can satisfy the owner-control boundary
+- **WHEN** the exact `dashboard-owner-auth` successor lacks adoption or its
+  working browser-session implementation cannot satisfy the owner-control boundary
 - **THEN** the settings UI SHALL NOT ship or be described as usable
 - **AND** no alternate credential transport or same-origin bypass SHALL be
   introduced by this capability
@@ -341,23 +343,29 @@ The generic per-butler state surface
 (`GET/PUT/DELETE /api/butlers/{name}/state[/{key}]`) and the
 `state_get`/`state_set`/`state_list`/`state_delete` MCP tools remain able to
 read and unconditionally overwrite `home:presence:owner_entities` without
-passing through this capability's authentication, validation, or version-CAS
-logic. This capability's write-serialization guarantee SHALL apply only
+passing through this capability's validation or version-CAS logic. Dashboard
+HTTP paths still require the central `dashboard-owner-auth` key-or-session
+boundary; MCP tools retain their separate tool authority and cannot create a
+dashboard owner session. This capability's write-serialization guarantee SHALL apply only
 among callers of its own two routes.
-
 No response body, audit event, log line, or accompanying documentation
 produced by this capability SHALL state or imply that these two routes are
 the only way `home:presence:owner_entities` can change, or that this
 capability's version-CAS guarantee extends to writes made through the
 generic state API or the state MCP tools.
 
+ID: REQ-home-presence-configuration-002
+Source: dashboard-owner-auth successor design D1-D9; existing home-presence-configuration behavior preserved except explicit owner-auth supersession
+Scope: v1-mandatory
+
 #### Scenario: Generic state routes remain unrestricted by this capability
 
 - **WHEN** a caller reads or writes `home:presence:owner_entities` through
   `GET/PUT /api/butlers/home/state/home:presence:owner_entities` or the
   `state_get`/`state_set` MCP tools
-- **THEN** this capability's owner-control, validation, and version-CAS
-  logic SHALL NOT apply to that call
+- **THEN** this capability's validation and version-CAS logic SHALL NOT apply
+  to that call; dashboard HTTP still requires central owner authentication,
+  while MCP retains its distinct tool authority
 - **AND** such a write SHALL change the row's version outside this
   capability's advisory lock, independent of any PUT this capability's
   routes have serialized
@@ -374,9 +382,8 @@ generic state API or the state MCP tools.
 This specification is authority to review the contract only. Implementation
 SHALL remain blocked until independent privacy/security review passes on the
 exact artifact, the owner separately approves that exact reviewed artifact,
-and `bu-pb6oy` supplies an approved browser authentication path. Any semantic
+and the exact `dashboard-owner-auth` successor supplies the adopted browser authentication path (preserving `bu-pb6oy`). Any semantic
 edit invalidates prior review and approval.
-
 Implementation SHALL then require real-PostgreSQL tests at the migrated Home
 schema, API tests proving denial before body/pool access, advisory-lock
 concurrency tests, transaction-rollback tests, and positive-field plus
@@ -385,6 +392,10 @@ canonical list is what `run_home_presence_context_producer` actually
 consumes. Merge, queue, deployment/environment availability, real HA
 identifier submission, restart, replay, and later natural at_home/in_space
 transition verification remain separate acts requiring their own authority.
+
+ID: REQ-home-presence-configuration-003
+Source: dashboard-owner-auth successor design D1-D9; existing home-presence-configuration behavior preserved except explicit owner-auth supersession
+Scope: v1-mandatory
 
 #### Scenario: Review and owner approval precede implementation
 

@@ -32,9 +32,9 @@ from fastapi import FastAPI
 import butlers.tools.relationship.gifts as gifts_tools
 import butlers.tools.relationship.interactions as interactions_tools
 import butlers.tools.relationship.notes as notes_tools
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_mcp_manager
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 

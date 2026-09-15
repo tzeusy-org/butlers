@@ -18,7 +18,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.routers.whatsapp import _get_bridge_socket_path, _get_db_manager
 from butlers.connectors.bridge_manager import DEFAULT_INVALIDATED_SESSION_THRESHOLD_S
 from butlers.connectors.whatsapp_user_client import (
@@ -27,6 +26,7 @@ from butlers.connectors.whatsapp_user_client import (
     normalize_message_text,
 )
 from butlers.modules.whatsapp import WhatsAppModule
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.integration
 

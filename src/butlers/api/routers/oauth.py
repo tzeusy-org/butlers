@@ -826,6 +826,18 @@ def _store_state(
     _evict_expired_states()
 
 
+def has_valid_callback_state(state: str, provider: str) -> bool:
+    """Admit only a known provider-bound callback; the handler consumes it.
+
+    This narrowly scoped authority never authenticates a dashboard session.
+    Lookup is bounded and does not expose any state or account metadata.
+    """
+    if len(state) > 256:
+        return False
+    entry = _state_store.get(state)
+    return bool(entry and entry.provider == provider and time.monotonic() < entry.expiry)
+
+
 def _validate_and_consume_state(state: str) -> _StateEntry | None:
     """Validate a state token and consume it (one-time-use).
 

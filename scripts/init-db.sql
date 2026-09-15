@@ -4903,3 +4903,15 @@ END;
 $$;
 
 RESET ROLE;
+
+-- Owner-auth migration runs as a normal migration login. Provision its isolated
+-- capability role here, under bootstrap authority; never grant CREATEROLE to
+-- the migrator. Login credentials/membership remain explicit host provisioning.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'dashboard_auth_api') THEN
+        CREATE ROLE dashboard_auth_api NOLOGIN NOINHERIT NOSUPERUSER NOCREATEROLE
+            NOCREATEDB NOREPLICATION NOBYPASSRLS;
+    END IF;
+END;
+$$;

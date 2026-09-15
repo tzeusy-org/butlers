@@ -605,8 +605,16 @@ class TestAC3RuntimeFailureRetry:
         fallback = _SuccessAdapter(result_text="fallback-succeeded")
         fallback_envs: list[dict[str, str]] = []
         expected_env = {"PATH": "/test/bin", "PRESERVE_ME": "value"}
+        caller_env = {
+            **expected_env,
+            "DASHBOARD_API_KEY": "synthetic-key",
+            "DASHBOARD_AUTH_DB_PASSWORD": "synthetic-password",
+            "DATABASE_URL": "postgresql://synthetic:synthetic@invalid.test/test",
+            "POSTGRES_PASSWORD": "synthetic-host-password",
+        }
 
         async def _mutate_then_fail(**kwargs: Any) -> tuple[str | None, list[dict[str, Any]], None]:
+            assert kwargs["env"] == expected_env
             kwargs["env"]["HOME"] = "/tmp/stale-codex-home"
             raise RuntimeError("connection refused: provider unavailable")
 
@@ -647,7 +655,7 @@ class TestAC3RuntimeFailureRetry:
         ):
             mock_create.return_value = _SESSION_ID
             spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=primary)
-            result = await spawner.trigger("hello", "tick", env_override=expected_env)
+            result = await spawner.trigger("hello", "tick", env_override=caller_env)
 
         assert result.success is True
         assert fallback_envs == [expected_env]

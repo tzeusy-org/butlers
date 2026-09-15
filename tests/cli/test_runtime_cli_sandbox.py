@@ -2138,6 +2138,7 @@ async def test_bubblewrap_info_reader_accepts_a_fragmented_receipt() -> None:
 
 async def test_bubblewrap_launcher_opens_pidfd_before_releasing_payload_or_reading_shim(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """REQ-core-credentials-002: PID1 receipt precedes payload release and CLI output."""
     from butlers.cli_auth.sandbox_platform import (
@@ -2147,6 +2148,9 @@ async def test_bubblewrap_launcher_opens_pidfd_before_releasing_payload_or_readi
         SandboxStage,
     )
 
+    monkeypatch.setenv("DASHBOARD_API_KEY", "synthetic-dashboard-key")
+    monkeypatch.setenv("DASHBOARD_AUTH_DB_PASSWORD", "synthetic-dashboard-password")
+
     events: list[str] = []
     process = _HandshakeProcess(events)
     captured_block_fd: list[int] = []
@@ -2154,6 +2158,11 @@ async def test_bubblewrap_launcher_opens_pidfd_before_releasing_payload_or_readi
 
     async def _spawn(*argv: str, **kwargs: object) -> _HandshakeProcess:
         events.append("spawn")
+        child_env = kwargs["env"]
+        assert isinstance(child_env, dict) and child_env["PATH"] == "/usr/local/bin:/usr/bin"
+        assert "DASHBOARD_API_KEY" not in child_env
+        assert "DASHBOARD_AUTH_DB_PASSWORD" not in child_env
+        assert not any("synthetic-dashboard" in argument for argument in argv)
         assert kwargs["close_fds"] is True
         assert kwargs["stdin"] is asyncio.subprocess.DEVNULL
         assert kwargs["stderr"] is asyncio.subprocess.STDOUT

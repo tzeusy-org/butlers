@@ -19,7 +19,6 @@ from uuid import uuid4
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.chronicler.adapters.sessions import (
     EPISODE_TYPE_WORK,
@@ -61,6 +60,7 @@ from butlers.chronicler.storage import (
     upsert_episode,
     upsert_point_event,
 )
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 _inline_ddl_spec = _importlib_util.spec_from_file_location(
     "_inline_ddl",

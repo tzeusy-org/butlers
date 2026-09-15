@@ -20,6 +20,7 @@ roster/switchboard/tests/test_identity_notification_claim_integration.py
 roster/switchboard/tests/test_ingest_api.py
 roster/switchboard/tests/test_ingest_tier.py
 tests/api/test_audit_grouping_credential_blind_db.py
+tests/api/test_owner_auth_store.py
 tests/api/test_relationship_entities_search_db.py
 tests/cli/test_runtime_cli_sandbox.py
 tests/config/test_dashboard_turn_cancellation_migration.py

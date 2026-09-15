@@ -166,6 +166,16 @@ may have exactly one owner-resolution record: a repeat request with the same
 normalized assessment and note SHALL return that immutable record, while a
 different repeat SHALL fail with a conflict and SHALL not overwrite, append, or
 resume recovery.
+The central `dashboard-owner-auth` boundary SHALL admit a valid configured
+`X-API-Key` or a valid server-managed owner session before protected body reads,
+domain-pool acquisition, caches or handlers. Passkey verification issues a session;
+it is not a new per-route credential. Cookie-backed unsafe actions additionally
+require independent synchronizer CSRF and exact Origin validation. Unavailable
+authoritative auth state returns safe `503`; missing, expired, revoked or invalid
+caller authority returns `401`. An absent API key alone is not unavailability when
+healthy keyless session authority exists. Domain checks remain mandatory after
+central authentication; auth-store reads necessary for verification are distinct
+from forbidden pre-authentication domain access.
 
 ID: REQ-dashboard-terminal-action-recovery-005
 Source: heart-and-soul/vision.md § What Butlers Is Not (Not an experiment); dashboard-conversations § Conversation Messages List; design.md Decision 5

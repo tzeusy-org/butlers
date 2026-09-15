@@ -36,8 +36,8 @@ from contextlib import asynccontextmanager
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.routers.memory import _get_db_manager
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [

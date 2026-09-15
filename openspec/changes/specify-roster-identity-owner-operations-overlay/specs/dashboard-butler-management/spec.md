@@ -1,12 +1,13 @@
 ## MODIFIED Requirements
 
 ### Requirement: System Prompt Versioning API
+
 The dashboard SHALL expose owner-only read, compare-and-swap update, and version-history operations
 for a butler's owner-operations overlay at the existing prompt route paths. The surface SHALL
 distinguish immutable git-roster identity from mutable overlay content and SHALL never label an
 overlay or legacy full-replacement row as the complete current system prompt.
 All prompt routes SHALL pass fail-closed dashboard owner control before body buffering, database-pool
-acquisition, roster-content reads, or protected-state observation. Unconfigured owner control SHALL
+acquisition, roster-content reads, or protected-state observation. Unavailable authoritative owner-auth state SHALL
 return 503; a missing or mismatched credential SHALL return 401. `authenticated_principal()` SHALL
 provide attribution only after admission. Unknown roster names SHALL return 404 before prompt-pool
 acquisition.
@@ -42,6 +43,16 @@ generic API route SHALL open or extend the window. The migration-seeded
 `precutover_legacy_hold` SHALL be a distinct read-only compatibility state: it SHALL NOT require or
 claim owner selection, SHALL NOT be accepted as a mode PUT target, and SHALL NOT be re-enterable
 after an agent leaves it.
+The central `dashboard-owner-auth` boundary SHALL admit a valid configured
+`X-API-Key` or a valid server-managed owner session before protected body reads,
+domain-pool acquisition, caches or handlers. Passkey verification issues a session;
+it is not a new per-route credential. Cookie-backed unsafe actions additionally
+require independent synchronizer CSRF and exact Origin validation. Unavailable
+authoritative auth state returns safe `503`; missing, expired, revoked or invalid
+caller authority returns `401`. An absent API key alone is not unavailability when
+healthy keyless session authority exists. Domain checks remain mandatory after
+central authentication; auth-store reads necessary for verification are distinct
+from forbidden pre-authentication domain access.
 
 ID: REQ-dashboard-butler-management-001
 Source: specify-roster-identity-owner-operations-overlay design D4 and D7; heart-and-soul/security.md Dashboard and API Authentication
@@ -67,12 +78,12 @@ Scope: v1-mandatory
 - **AND** no legacy row is relabeled as an owner-operations overlay
 
 #### Scenario: Owner control is unconfigured
-- **WHEN** owner control is not configured and any prompt route is called
+- **WHEN** authoritative owner-auth state is unavailable and any prompt route is called
 - **THEN** the API returns 503 before body buffering, pool acquisition, roster reads, or protected-state access
 - **AND** no audit row claims an authenticated action
 
 #### Scenario: Missing or wrong owner credential is denied
-- **WHEN** owner control is configured but the caller omits or mismatches the credential
+- **WHEN** authoritative auth state is healthy but the caller lacks valid central key-or-session authority
 - **THEN** the API returns 401 before body buffering, pool acquisition, roster reads, or protected-state access
 - **AND** the error contains no roster, overlay, digest, or history content
 

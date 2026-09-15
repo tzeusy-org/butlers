@@ -1,3 +1,4 @@
+import { OwnerGate } from "@/components/auth/OwnerGate"
 import { QueryClientProvider } from '@tanstack/react-query'
 import { ReactQueryDevtools } from '@tanstack/react-query-devtools'
 import { RouterProvider } from 'react-router'
@@ -29,7 +30,7 @@ function AppWithTimezone() {
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <AppWithTimezone />
+      <OwnerGate><AppWithTimezone /></OwnerGate>
     </QueryClientProvider>
   )
 }

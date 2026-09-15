@@ -16,7 +16,8 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from butlers.api.middleware import ApiKeyMiddleware
+from butlers.api.owner_auth.config import OwnerAuthConfig
+from butlers.api.owner_auth.http import OwnerAuthMiddleware
 from butlers.api.routers import approvals as approvals_router
 from butlers.config import ApprovalRiskTier
 from butlers.connectors import telegram_bot as telegram_bot_module
@@ -30,6 +31,7 @@ from butlers.modules.approvals import gate as approvals_gate_module
 from butlers.modules.approvals.gate import _make_gate_wrapper
 from butlers.modules.approvals.module import ApprovalsModule
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from tests.api.auth_helpers import _DomainOwnerState
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -151,7 +153,9 @@ def _protected_approvals_app(pool: Any, *, mcp_mgr: Any | None = None) -> FastAP
     """Build the real API-key gate with only the callback service credential."""
     app = FastAPI()
     app.state.approval_callback_connector_token = _CALLBACK_CONNECTOR_TOKEN
-    app.add_middleware(ApiKeyMiddleware, api_key=_DASHBOARD_API_KEY)
+    # Domain lifecycle/connector proof is real; owner-store crypto has its own lane.
+    app.state.owner_auth_service = _DomainOwnerState(_DASHBOARD_API_KEY)
+    app.add_middleware(OwnerAuthMiddleware, config=OwnerAuthConfig.from_env(_DASHBOARD_API_KEY))
     app.include_router(approvals_router.router)
     app.dependency_overrides[approvals_router._get_db_manager] = lambda: _DbManager(pool)
     app.dependency_overrides[approvals_router.get_mcp_manager] = lambda: (

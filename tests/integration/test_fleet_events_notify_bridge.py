@@ -272,17 +272,24 @@ async def test_calendar_and_chronicler_child_processes_reach_websocket(
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
+    from butlers.api.owner_auth.config import OwnerAuthConfig
+    from butlers.api.owner_auth.http import OwnerAuthMiddleware
     from butlers.api.routers.events import router
+    from tests.api.auth_helpers import _DomainOwnerState
 
     dashboard_app = FastAPI(lifespan=_dashboard_events_lifespan(shared_db_url))
     dashboard_app.include_router(router)
     dashboard_process_id = os.getpid()
     dashboard_api_key = "fleet-events-test-api-key"
     monkeypatch.setenv("DASHBOARD_API_KEY", dashboard_api_key)
+    dashboard_app.state.owner_auth_service = _DomainOwnerState(dashboard_api_key)
+    dashboard_app.add_middleware(
+        OwnerAuthMiddleware, config=OwnerAuthConfig(None, None, dashboard_api_key)
+    )
 
     with TestClient(dashboard_app) as client:
         with client.websocket_connect(
-            f"/api/events/stream?api_key={dashboard_api_key}"
+            "/api/events/stream", headers={"X-API-Key": dashboard_api_key}
         ) as websocket:
             snapshot = json.loads(websocket.receive_text())
             assert snapshot["type"] == "snapshot"

@@ -33,7 +33,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.audit import AuditTableNotAvailableError
 from butlers.api.routers.data_ops import (
@@ -47,6 +46,7 @@ from butlers.api.routers.data_ops import (
     _get_db_manager,
     _sign_token,
 )
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 
@@ -647,7 +647,16 @@ async def test_wipe_missing_phrase_returns_422(app):
 # ---------------------------------------------------------------------------
 
 
-async def test_startup_warns_when_dashboard_export_secret_unset_in_dev(caplog):
+@pytest.fixture
+def isolated_owner_auth_lifespan(monkeypatch):
+    """Export-warning tests do not connect the independent auth database service."""
+    monkeypatch.setattr("butlers.api.app.create_owner_auth_service", AsyncMock(return_value=None))
+    monkeypatch.setattr("butlers.api.app.close_owner_auth_service", AsyncMock())
+
+
+async def test_startup_warns_when_dashboard_export_secret_unset_in_dev(
+    caplog, isolated_owner_auth_lifespan
+):
     """Startup logs WARNING (not ERROR) when DASHBOARD_EXPORT_SECRET is unset in dev mode."""
     import os
 
@@ -670,7 +679,9 @@ async def test_startup_warns_when_dashboard_export_secret_unset_in_dev(caplog):
     assert not any("dev-secret" in record.message for record in caplog.records)
 
 
-async def test_startup_logs_error_when_dashboard_export_secret_unset_in_production(caplog):
+async def test_startup_logs_error_when_dashboard_export_secret_unset_in_production(
+    caplog, isolated_owner_auth_lifespan
+):
     """Startup logs ERROR (not just WARNING) when DASHBOARD_EXPORT_SECRET is unset in production."""
     import os
 
@@ -691,7 +702,9 @@ async def test_startup_logs_error_when_dashboard_export_secret_unset_in_producti
     assert any("REFUSED" in record.message for record in caplog.records)
 
 
-async def test_startup_no_warning_when_dashboard_export_secret_is_set(caplog):
+async def test_startup_no_warning_when_dashboard_export_secret_is_set(
+    caplog, isolated_owner_auth_lifespan
+):
     """Startup does NOT log warning when DASHBOARD_EXPORT_SECRET is set."""
     from butlers.api.app import lifespan
 

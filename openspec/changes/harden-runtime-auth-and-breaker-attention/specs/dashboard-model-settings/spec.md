@@ -3,6 +3,20 @@
 ### Requirement: Catalog Verify-All API
 
 The dashboard SHALL expose `POST /api/settings/models/verify-all` to re-verify every enabled model in parallel. The verification core is shared (`butlers.api.routers.model_settings.run_verify_all_models`) between this manual endpoint and the hourly automated sweep (see Hourly Automated Verification Sweep) so the two can never disagree about what "verified" means or how the result is persisted. The core requests each probe through the signed Switchboard runtime-probe control client; the dashboard process neither constructs a runtime adapter nor writes model verification evidence. Switchboard owns runtime construction and completed-probe persistence.
+The central `dashboard-owner-auth` boundary SHALL admit a valid configured
+`X-API-Key` or a valid server-managed owner session before protected body reads,
+domain-pool acquisition, caches or handlers. Passkey verification issues a session;
+it is not a new per-route credential. Cookie-backed unsafe actions additionally
+require independent synchronizer CSRF and exact Origin validation. Unavailable
+authoritative auth state returns safe `503`; missing, expired, revoked or invalid
+caller authority returns `401`. An absent API key alone is not unavailability when
+healthy keyless session authority exists. Domain checks remain mandatory after
+central authentication; auth-store reads necessary for verification are distinct
+from forbidden pre-authentication domain access.
+
+ID: REQ-dashboard-model-settings-003
+Source: dashboard-owner-auth successor design D1-D9; existing dashboard-model-settings behavior preserved except explicit owner-auth supersession
+Scope: v1-mandatory
 
 #### Scenario: Verify-all parallel execution
 - **WHEN** `POST /api/settings/models/verify-all` is accepted
@@ -92,9 +106,10 @@ dispatch provenance. It SHALL be reached only through an authenticated
 dashboard-to-Switchboard control-plane command that is not registered in the
 generic MCP/LLM tool surface. Dashboard-triggered Test and Verify requests
 SHALL first pass the fail-closed `require_dashboard_owner_control` dependency:
-a configured non-empty `DASHBOARD_API_KEY` and constant-time matching
-`X-API-Key` header are required, with absent configuration reported as safe
-unavailability. The dashboard server SHALL then call Switchboard through a
+the central `dashboard-owner-auth` configured-key-or-owner-session contract
+is required, including CSRF and exact Origin for cookie mutations. Only
+unavailable authoritative auth state is configuration unavailability; an absent
+key does not disable a healthy enrolled passkey session. The dashboard server SHALL then call Switchboard through a
 dedicated `runtime_probe_control` client using a separately scoped system
 signed capability produced by `RUNTIME_PROBE_CONTROL_SIGNING_KEY` from a
 dedicated Dashboard-only deployment-secret mount, never from `CredentialStore`
@@ -162,8 +177,8 @@ Scope: v1-mandatory
 
 #### Scenario: Dashboard-triggered probe requires owner control before Switchboard work
 
-- **WHEN** the dashboard owner-control key is absent from configuration, or a
-  dashboard caller omits or supplies a wrong `X-API-Key` for Test or Verify
+- **WHEN** authoritative owner-auth state is unavailable, or a dashboard caller
+  lacks valid central key-or-session authority for Test or Verify
 - **THEN** the API returns its safe unavailable or `401` response before it
   contacts Switchboard
 - **AND** it launches no runtime and writes no verification evidence
@@ -229,10 +244,10 @@ it presents a confirmation-gated `Send a new alert` control, disables it while
 the request is pending or a successor exists, and immediately reports the new
 episode result. Every Models endpoint that exposes attention episode data or
 permits reissue SHALL use a fail-closed `require_dashboard_owner_control`
-server dependency. That dependency SHALL require a configured non-empty
-`DASHBOARD_API_KEY` and a constant-time matching `X-API-Key` header, treating a
-valid key as the single dashboard-owner principal; it SHALL not inherit the
-dashboard's optional general API-auth behavior. No UI visibility rule is an
+server dependency. That dependency SHALL require central `dashboard-owner-auth`
+configured-key-or-owner-session authority, treating either valid method as the
+single dashboard-owner principal, with CSRF and exact Origin on cookie-backed
+reissue. It SHALL not inherit the dashboard's optional general API-auth behavior. No UI visibility rule is an
 authorization substitute. No other attention state offers an automatic resend
 control.
 
@@ -259,15 +274,15 @@ Scope: v1-mandatory
 
 #### Scenario: Owner-control configuration and credentials are required before observation or delivery
 
-- **WHEN** the owner-control key is absent from server configuration and a
+- **WHEN** authoritative owner-auth state is unavailable and a
   caller requests attention detail or `Send a new alert`
 - **THEN** the API returns a safe `503` owner-control-unavailable response
   without exposing the episode, creating a successor, or invoking delivery
-- **WHEN** the configured key is present but a caller omits or supplies a wrong
-  `X-API-Key`
+- **WHEN** auth state is healthy but a caller lacks a valid configured key or
+  owner session (including a malformed supplied header despite a valid cookie)
 - **THEN** the API returns `401` without exposing the episode, creating a
   successor, or invoking delivery
-- **WHEN** a caller supplies the matching configured `X-API-Key`
+- **WHEN** a caller supplies the matching configured `X-API-Key` or a valid owner session (with CSRF and exact Origin for cookie-backed reissue)
 - **THEN** it is the authenticated dashboard-owner principal eligible for the
   existing observation/reissue state checks
 

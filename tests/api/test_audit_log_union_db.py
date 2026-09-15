@@ -43,7 +43,6 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.routers import audit as audit_module
 from butlers.api.routers import model_settings as model_settings_module
@@ -51,6 +50,7 @@ from butlers.api.routers.audit import AuditTableNotAvailableError, log_audit_ent
 from butlers.core.state import state_set
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [

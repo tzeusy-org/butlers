@@ -71,7 +71,7 @@ def _make_app(
     db_client_secret: str = "test-client-secret",
     db_refresh_token: str | None = "1//fake-refresh-token",
 ):
-    from butlers.api.app import create_app
+    from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
     app = create_app()
     secrets = {
@@ -416,7 +416,7 @@ class TestOAuthCallbackResponseRedaction:
         self,
     ) -> None:
         """Unknown Google error codes are sanitized — never echoed back to client."""
-        from butlers.api.app import create_app
+        from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
         app = create_app()
 
