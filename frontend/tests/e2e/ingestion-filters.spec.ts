@@ -21,6 +21,7 @@ test.describe("ingestion filters pipeline", () => {
   }) => {
     // --- Catch-all API mock (register FIRST per LIFO rule) ---
     await page.route("**/api/**", async (route) => {
+    if (new URL(route.request().url()).pathname.startsWith("/api/auth/owner/")) return route.fallback();
       const url = route.request().url();
 
       // Pipeline stats
@@ -97,6 +98,7 @@ test.describe("ingestion filters pipeline", () => {
   test("filters pipeline shows gate sections", async ({ page }) => {
     // Catch-all mock (FIRST)
     await page.route("**/api/**", async (route) => {
+    if (new URL(route.request().url()).pathname.startsWith("/api/auth/owner/")) return route.fallback();
       if (route.request().url().includes("/ingestion/pipeline")) {
         await route.fulfill({
           status: 200,

@@ -79,6 +79,7 @@ async function mockIngestion(page: Page, events: unknown[] | 500) {
   // Catch-all FIRST (lowest LIFO precedence) — absorbs sidebar/histogram/rollup
   // requests (/api/butlers, /api/ingestion/events/histogram, etc.).
   await page.route("**/api/**", (route) => {
+    if (new URL(route.request().url()).pathname.startsWith("/api/auth/owner/")) return route.fallback();
     route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -208,6 +209,7 @@ const TIMELINE_HISTOGRAM = {
  */
 async function mockTimeline(page: Page, events: unknown[] | 500) {
   await page.route("**/api/**", (route) => {
+    if (new URL(route.request().url()).pathname.startsWith("/api/auth/owner/")) return route.fallback();
     route.fulfill({
       status: 200,
       contentType: "application/json",

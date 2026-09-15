@@ -1,3 +1,4 @@
+import { OwnerSessionMenu } from "@/components/auth/OwnerSessionMenu"
 import { useLocation, Link } from 'react-router'
 import { Search } from 'lucide-react'
 import { SiblingButlerNav } from '@/components/butler-detail/SiblingButlerNav'
@@ -169,6 +170,7 @@ export default function PageHeader({
           <Kbd>Ctrl K</Kbd>
         </Button>
 
+        <OwnerSessionMenu />
         {/* Dark mode toggle */}
         <Button
           variant="ghost"

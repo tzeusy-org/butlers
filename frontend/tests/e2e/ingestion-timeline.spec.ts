@@ -79,6 +79,7 @@ async function mockIngestionApis(
   // Catch-all FIRST (lowest priority in LIFO matching) — absorbs sidebar
   // requests for /api/butlers, /api/spend, etc. that are not explicitly mocked.
   await page.route("**/api/**", (route) => {
+    if (new URL(route.request().url()).pathname.startsWith("/api/auth/owner/")) return route.fallback();
     route.fulfill({
       status: 200,
       contentType: "application/json",
