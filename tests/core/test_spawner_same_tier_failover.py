@@ -609,6 +609,8 @@ class TestAC3RuntimeFailureRetry:
             **expected_env,
             "DASHBOARD_API_KEY": "synthetic-key",
             "DASHBOARD_AUTH_DB_PASSWORD": "synthetic-password",
+            "DATABASE_URL": "postgresql://synthetic:synthetic@invalid.test/test",
+            "POSTGRES_PASSWORD": "synthetic-host-password",
         }
 
         async def _mutate_then_fail(**kwargs: Any) -> tuple[str | None, list[dict[str, Any]], None]:

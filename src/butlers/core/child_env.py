@@ -6,14 +6,17 @@ from collections.abc import Mapping
 
 
 def without_owner_auth(env: Mapping[str, str]) -> dict[str, str]:
-    """Copy a child environment without dashboard-only keys or auth configuration.
+    """Copy a child environment without owner auth or administrative DB authority.
 
-    The prefix also covers future owner-auth credentials. This narrow boundary
+    Database variables can authorize the host enrollment CLI just as directly
+    as dashboard credentials. The prefixes cover their complete config families.
+    This narrow boundary
     preserves provider credentials and each caller's existing environment policy.
     It deliberately neither reads the host environment nor imports the API layer.
     """
     return {
         key: value
         for key, value in env.items()
-        if key != "DASHBOARD_API_KEY" and not key.startswith("DASHBOARD_AUTH_")
+        if key not in {"DASHBOARD_API_KEY", "DATABASE_URL"}
+        and not key.startswith(("DASHBOARD_AUTH_", "POSTGRES_"))
     }

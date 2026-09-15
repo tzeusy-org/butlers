@@ -1098,8 +1098,8 @@ class TestCredentialPassthrough:
         """PATH and declared required/optional vars passed; undeclared not leaked;
         optional absent → excluded; module credentials included."""
         config = _make_config(
-            env_required=["MY_SECRET", "DASHBOARD_API_KEY"],
-            env_optional=["OPT_VAR", "DASHBOARD_AUTH_DB_PASSWORD"],
+            env_required=["MY_SECRET", "DASHBOARD_API_KEY", "DATABASE_URL"],
+            env_optional=["OPT_VAR", "DASHBOARD_AUTH_DB_PASSWORD", "POSTGRES_PASSWORD"],
         )
         with patch.dict(
             os.environ,
@@ -1108,6 +1108,8 @@ class TestCredentialPassthrough:
                 "MY_SECRET": "s3cret",
                 "DASHBOARD_API_KEY": "synthetic-dashboard-key",
                 "DASHBOARD_AUTH_DB_PASSWORD": "synthetic-auth-db-password",
+                "DATABASE_URL": "postgresql://synthetic:synthetic@invalid.test/test",
+                "POSTGRES_PASSWORD": "synthetic-host-password",
                 "OPT_VAR": "opt-val",
                 "UNDECLARED_SECRET": "should-not-leak",
             },
@@ -1120,6 +1122,8 @@ class TestCredentialPassthrough:
             assert "UNDECLARED_SECRET" not in env
             assert "DASHBOARD_API_KEY" not in env
             assert "DASHBOARD_AUTH_DB_PASSWORD" not in env
+            assert "DATABASE_URL" not in env
+            assert "POSTGRES_PASSWORD" not in env
 
         # Optional absent → excluded
         config2 = _make_config(env_optional=["MISSING_OPT"])
@@ -1140,7 +1144,7 @@ class TestCredentialPassthrough:
 
     async def test_db_credential_resolution(self):
         """DB-first path: module and butler creds resolved; missing key excluded."""
-        config = _make_config(env_required=["MY_SECRET", "DASHBOARD_API_KEY"])
+        config = _make_config(env_required=["MY_SECRET", "DASHBOARD_API_KEY", "DATABASE_URL"])
         store = AsyncMock()
         resolved = {
             "SMTP_PASSWORD": "db-smtp-pw",
@@ -1148,12 +1152,19 @@ class TestCredentialPassthrough:
             "MY_SECRET": "db-secret-value",
             "DASHBOARD_API_KEY": "synthetic-db-dashboard-key",
             "DASHBOARD_AUTH_DB_PASSWORD": "synthetic-db-auth-password",
+            "DATABASE_URL": "postgresql://synthetic:synthetic@invalid.test/test",
+            "POSTGRES_PASSWORD": "synthetic-db-host-password",
         }
         store.resolve = AsyncMock(side_effect=lambda key: resolved.get(key))
         env = await _build_env(
             config,
             module_credentials_env={
-                "email": ["SMTP_PASSWORD", "IMAP_TOKEN", "DASHBOARD_AUTH_DB_PASSWORD"]
+                "email": [
+                    "SMTP_PASSWORD",
+                    "IMAP_TOKEN",
+                    "DASHBOARD_AUTH_DB_PASSWORD",
+                    "POSTGRES_PASSWORD",
+                ]
             },
             credential_store=store,
         )
@@ -1162,6 +1173,8 @@ class TestCredentialPassthrough:
         assert env["MY_SECRET"] == "db-secret-value"
         assert "DASHBOARD_API_KEY" not in env
         assert "DASHBOARD_AUTH_DB_PASSWORD" not in env
+        assert "DATABASE_URL" not in env
+        assert "POSTGRES_PASSWORD" not in env
 
         # Missing key excluded
         config2 = _make_config(env_required=["MISSING_KEY"])
