@@ -36,8 +36,7 @@ import { ConnectorDeviceBadges } from './ConnectorDeviceBadges'
 import { Sparkline } from './Sparkline'
 import {
   deriveConnectorDispatchInfo,
-  authStatusLabel,
-  authStatusColor,
+  authStatusPresentation,
   healthDotColor,
   healthTextColor,
   healthVerdictWord,
@@ -98,8 +97,8 @@ export function ConnectorRosterRow({
   // today.messages_ingested is already the 24h sum on the backend (derived from hourly_events).
   const eventsCount = events24h ?? c.today?.messages_ingested ?? 0
 
-  const authLabel = authStatusLabel(info.authStatus)
-  const authColorClass = authStatusColor(info.authStatus)
+  const authPresentation = authStatusPresentation(info)
+  const authColorClass = authPresentation.colorClass
   const verdictWord = healthVerdictWord(c, info)
   const verdictDotClass = healthDotColor(info.health)
   const verdictTextClass = healthTextColor(info.health)
@@ -128,7 +127,7 @@ export function ConnectorRosterRow({
       ? 'pair'
       : recovery?.kind === 'unsupported'
         ? 'unavailable'
-        : authLabel
+        : authPresentation.label
   const authNote = recovery?.kind === 'unsupported' ? recovery.reason : info.authNote
 
   return (
@@ -250,9 +249,11 @@ export function ConnectorRosterRow({
             {authDisplayLabel}
           </span>
         )}
-        <div className="font-mono text-[10px] text-muted-foreground/50 mt-0.5 block truncate max-w-[110px]">
-          {authNote}
-        </div>
+        {authNote !== authDisplayLabel && (
+          <div className="font-mono text-[10px] text-muted-foreground/50 mt-0.5 block truncate max-w-[110px]">
+            {authNote}
+          </div>
+        )}
       </div>
 
       {/* Events (last 24h) */}
