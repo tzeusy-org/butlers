@@ -12,7 +12,11 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { usePatchRuntimeConfig, useRuntimeConfig } from "@/hooks/use-butlers";
+import {
+  useButlerModules,
+  usePatchRuntimeConfig,
+  useRuntimeConfig,
+} from "@/hooks/use-butlers";
 import type { RuntimeConfigPatch } from "@/api/index.ts";
 
 // Tool exposure policy choices for the single-select editor.
@@ -53,6 +57,7 @@ function FieldTierBadge({ tier }: { tier: "hot" | "cold" }) {
 
 export default function RuntimeConfigCard({ butlerName }: RuntimeConfigCardProps) {
   const { data, isLoading, isError, error } = useRuntimeConfig(butlerName);
+  const moduleHealth = useButlerModules(butlerName);
   const patchMutation = usePatchRuntimeConfig(butlerName);
   const [editState, setEditState] = useState<RuntimeConfigPatch>({});
   const [restartFields, setRestartFields] = useState<string[]>([]);
@@ -113,8 +118,42 @@ export default function RuntimeConfigCard({ butlerName }: RuntimeConfigCardProps
   const currentCoreGroups = editState.core_groups ?? config.core_groups ?? [];
   const currentToolExposurePolicy =
     editState.tool_exposure_policy ?? config.tool_exposure_policy ?? "eager_filtered";
+  const currentNarrowingReason =
+    "core_groups_narrowing_reason" in editState
+      ? (editState.core_groups_narrowing_reason ?? "")
+      : (config.core_groups_narrowing_reason ?? "");
 
   const hasChanges = Object.keys(editState).length > 0;
+  const declaredGroups = config.declared_core_groups ?? config.core_groups;
+  const runtimeGroups = config.core_groups;
+  const onlyInGit = (declaredGroups ?? []).filter(
+    (group) => runtimeGroups !== null && !runtimeGroups.includes(group),
+  );
+  const onlyInRuntime = (runtimeGroups ?? []).filter(
+    (group) => declaredGroups !== null && !declaredGroups.includes(group),
+  );
+  const moduleRows = moduleHealth.isError ? null : moduleHealth.data?.data;
+  const failedModules = moduleRows ? moduleRows.filter((module) => module.status === "error") : [];
+  const declaredToolNames = config.declared_tool_names;
+  const effectiveToolNames = config.effective_tool_names;
+  const registeredNames = config.registered_tool_names;
+  const registrationFailures = config.tool_registration_failures ?? [];
+  const failedRegistrationNames = new Set(
+    registrationFailures.map((failure) => failure.tool_name),
+  );
+  const toolSnapshotUnavailable = config.tool_snapshot_status === "unavailable";
+  const declaredNotRegistered =
+    declaredToolNames && registeredNames
+      ? declaredToolNames.filter((name) => !registeredNames.includes(name))
+      : [];
+  const effectiveNotRegistered =
+    effectiveToolNames && registeredNames
+      ? effectiveToolNames.filter((name) => !registeredNames.includes(name))
+      : [];
+  const registeredNotDeclared =
+    registeredNames && declaredToolNames
+      ? registeredNames.filter((name) => !declaredToolNames.includes(name))
+      : [];
 
   return (
     <Card>
@@ -136,6 +175,102 @@ export default function RuntimeConfigCard({ butlerName }: RuntimeConfigCardProps
         </CardAction>
       </CardHeader>
       <CardContent className="space-y-4">
+        <div className="rounded-md border border-border p-3" data-testid="tool-surface-card">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-medium">Tool surface</p>
+              <p className="text-xs text-muted-foreground">
+                Git declaration, runtime authority, and live registration
+              </p>
+            </div>
+            {config.core_groups_source === "runtime_narrowing" && (
+              <Badge variant="secondary">intentional narrowing</Badge>
+            )}
+          </div>
+          <div className="mt-3 grid grid-cols-3 gap-2 text-center">
+            <div className="rounded bg-muted/40 p-2">
+              <p className="text-lg font-semibold">{declaredToolNames?.length ?? "—"}</p>
+              <p className="text-[10px] uppercase text-muted-foreground">Git tools</p>
+            </div>
+            <div className="rounded bg-muted/40 p-2">
+              <p className="text-lg font-semibold">{effectiveToolNames?.length ?? "—"}</p>
+              <p className="text-[10px] uppercase text-muted-foreground">runtime tools</p>
+            </div>
+            <div className="rounded bg-muted/40 p-2">
+              <p className="text-lg font-semibold">
+                {registeredNames?.length ?? "—"}
+              </p>
+              <p className="text-[10px] uppercase text-muted-foreground">registered tools</p>
+            </div>
+          </div>
+          <div className="mt-3 space-y-1 font-mono text-[11px]">
+            {onlyInGit.length === 0 && onlyInRuntime.length === 0 ? (
+              <p className="text-muted-foreground">No core-group drift.</p>
+            ) : (
+              <>
+                {onlyInGit.map((group) => (
+                  <p key={`git-${group}`} className="text-[var(--amber-text)]">
+                    Git only: {group}
+                  </p>
+                ))}
+                {onlyInRuntime.map((group) => (
+                  <p key={`runtime-${group}`} className="text-destructive">
+                    Runtime only (invalid broadening): {group}
+                  </p>
+                ))}
+              </>
+            )}
+            {toolSnapshotUnavailable && (
+              <p className="text-destructive">Declaration snapshot unavailable.</p>
+            )}
+            {moduleHealth.isError && (
+              <p className="text-destructive">Module health unavailable.</p>
+            )}
+            {config.tool_declaration_complete === false && (
+              <p className="text-[var(--amber-text)]">
+                Declaration snapshot incomplete; module registration failed partway.
+              </p>
+            )}
+            {declaredNotRegistered
+              .filter((name) => !failedRegistrationNames.has(name))
+              .map((name) => (
+              <p key={`declared-missing-${name}`} className="text-destructive">
+                Declared, not registered: {name}
+              </p>
+              ))}
+            {registrationFailures.map((failure) => (
+              <p key={`registration-failed-${failure.tool_name}`} className="text-destructive">
+                Declared, not registered: {failure.tool_name} ({failure.module_name};{" "}
+                {failure.error_type})
+              </p>
+            ))}
+            {effectiveNotRegistered
+              .filter((name) => !declaredNotRegistered.includes(name))
+              .map((name) => (
+                <p key={`effective-missing-${name}`} className="text-destructive">
+                  Runtime effective, not registered: {name}
+                </p>
+              ))}
+            {registeredNotDeclared.map((name) => (
+              <p key={`registered-extra-${name}`} className="text-destructive">
+                Registered, not Git-declared: {name}
+              </p>
+            ))}
+            {failedModules.map((module) => (
+              <p key={module.name} className="text-destructive">
+                Declared, not registered: {module.name}
+                {module.phase ? ` (${module.phase})` : ""}
+                {module.error ? ` — ${module.error}` : ""}
+              </p>
+            ))}
+          </div>
+          {config.core_groups_narrowing_reason && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              Reason: {config.core_groups_narrowing_reason}
+            </p>
+          )}
+        </div>
+
         {restartFields.length > 0 && (
           <div className="rounded-md bg-[var(--amber)]/10 border border-[var(--amber)]/40 p-3 text-sm">
             Restart required for: {restartFields.join(", ")}
@@ -229,6 +364,24 @@ export default function RuntimeConfigCard({ butlerName }: RuntimeConfigCardProps
               All groups enabled (no filter set)
             </p>
           )}
+          <Label className="mt-3 block text-xs" htmlFor="core-groups-narrowing-reason">
+            Narrowing reason
+          </Label>
+          <Input
+            id="core-groups-narrowing-reason"
+            value={currentNarrowingReason}
+            onChange={(event) =>
+              updateField(
+                "core_groups_narrowing_reason",
+                event.target.value.trim().length > 0 ? event.target.value : null,
+              )
+            }
+            placeholder="Required when runtime enables fewer groups than Git"
+            className="mt-1"
+          />
+          <p className="mt-1 text-xs text-muted-foreground">
+            Runtime config may narrow Git authority, never add a group Git does not declare.
+          </p>
         </div>
       </CardContent>
     </Card>

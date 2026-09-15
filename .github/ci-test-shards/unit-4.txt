@@ -187,6 +187,7 @@ tests/migrations/test_entities_listed_flag_migration.py
 tests/migrations/test_memory_catalog_migration.py
 tests/migrations/test_model_catalog_session_timeout_migration.py
 tests/migrations/test_pending_actions_why_evidence_repair.py
+tests/migrations/test_qa_repo_org_rename_migration.py
 tests/migrations/test_retire_legacy_permission_seeds_migration.py
 tests/migrations/test_secrets_be6_migration.py
 tests/migrations/test_whatsapp_session_rotation_migration.py

@@ -4,13 +4,15 @@
  * domain-event-bus visibility panel.
  */
 
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 
 import {
   listDomainEventSubscriptions,
   listDomainEventDeliveries,
   listDomainEventReactions,
   listDomainEventContracts,
+  replayDomainEventDelivery,
   type DomainEventSubscriptionsParams,
   type DomainEventDeliveriesParams,
   type DomainEventContractsParams,
@@ -46,6 +48,18 @@ export function useDomainEventDeliveries(params: DomainEventDeliveriesParams = {
     queryKey: ["domain-event-deliveries", params],
     queryFn: () => listDomainEventDeliveries(params),
     refetchInterval,
+  });
+}
+
+export function useReplayDomainEventDelivery() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: replayDomainEventDelivery,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["domain-event-deliveries"] });
+      toast.success("Delivery queued for replay");
+    },
+    onError: (error: Error) => toast.error(error.message || "Could not replay delivery"),
   });
 }
 

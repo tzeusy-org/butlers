@@ -434,13 +434,18 @@ class TestQuietHoursLedgerRecording:
         patches = _patch_infra(mock_pool)
         daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
         daemon.switchboard_client = _make_mock_client()
-        owner_resolver = AsyncMock(return_value=MagicMock(roles=["owner"]))
+        owner_contact = MagicMock(roles=["owner"])
+        owner_resolver = AsyncMock(return_value=owner_contact)
 
         with (
             _registered_approval_hooks(mock_pool),
             patch(
                 "butlers.identity.resolve_contact_by_channel",
                 new=owner_resolver,
+            ),
+            patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=(owner_contact, False)),
             ),
         ):
             result = await notify_fn(
@@ -468,7 +473,8 @@ class TestQuietHoursLedgerRecording:
         daemon.switchboard_client = _make_mock_client()
         entity_id = uuid.UUID("00000000-0000-0000-0000-000000000042")
         entity_resolver = AsyncMock(return_value="entity-owner-chat")
-        owner_resolver = AsyncMock(return_value=MagicMock(roles=["owner"]))
+        owner_contact = MagicMock(roles=["owner"])
+        owner_resolver = AsyncMock(return_value=owner_contact)
 
         with (
             _registered_approval_hooks(mock_pool),
@@ -480,6 +486,10 @@ class TestQuietHoursLedgerRecording:
             patch(
                 "butlers.identity.resolve_contact_by_channel",
                 new=owner_resolver,
+            ),
+            patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=(owner_contact, False)),
             ),
         ):
             result = await notify_fn(

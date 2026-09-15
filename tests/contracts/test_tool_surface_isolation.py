@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
-from butlers.config import ButlerType
+from butlers.config import ButlerType, load_config
 from butlers.core_tools import ToolContext, register_all_core_tools
 
 pytestmark = pytest.mark.contract
@@ -141,6 +143,27 @@ class TestEphemeralMcpConfig:
         }.isdisjoint(domain_tools)
         assert {"deadline_create", "delegate_wake", "notify"}.isdisjoint(switchboard_tools)
         assert {"deadline_create", "delegate_wake", "notify"}.isdisjoint(messenger_tools)
+
+    async def test_roster_authority_registers_cross_butler_and_fleet_case_tools(self):
+        """The three affected roster declarations reach the real dispatcher seam."""
+        roster = Path(__file__).resolve().parents[2] / "roster"
+        for butler_name in ("finance", "relationship"):
+            config = load_config(roster / butler_name)
+            registrations = await _record_core_registrations(
+                butler_name,
+                ButlerType.BUTLER,
+                core_groups=frozenset(config.runtime_seed.core_groups or ()),
+            )
+            names = {name for name, _group in registrations}
+            assert {"delegate_ask", "delegate_receive", "open_case"} <= names
+
+        switchboard = load_config(roster / "switchboard")
+        registrations = await _record_core_registrations(
+            "switchboard",
+            ButlerType.STAFFER,
+            core_groups=frozenset(switchboard.runtime_seed.core_groups or ()),
+        )
+        assert "open_case" in {name for name, _group in registrations}
 
     def test_spawner_generates_single_butler_mcp_url(self):
         """RFC 0002: runtime_mcp_url generates a URL for exactly one butler.
@@ -280,6 +303,74 @@ class TestEphemeralMcpConfig:
         assert "get_events" in proxy._registered_tool_names, (
             "_SpanWrappingMCP must track registered tool names (RFC 0002)"
         )
+
+    @pytest.mark.parametrize("proxy_name", ["span", "logging"])
+    def test_failed_fastmcp_decorator_is_not_recorded_as_registered(self, proxy_name):
+        """A rejected FastMCP registration must not appear in the live snapshot."""
+        from unittest.mock import MagicMock
+
+        from butlers.daemon import _SpanWrappingMCP, _ToolCallLoggingMCP
+
+        mock_mcp = MagicMock()
+
+        def rejecting_tool(*args, **kwargs):  # noqa: ARG001
+            def decorator(fn):  # noqa: ARG001
+                raise RuntimeError("duplicate tool")
+
+            return decorator
+
+        mock_mcp.tool = rejecting_tool
+        proxy_type = _SpanWrappingMCP if proxy_name == "span" else _ToolCallLoggingMCP
+        proxy = proxy_type(mock_mcp, "health", module_name="calendar")
+
+        with pytest.raises(RuntimeError, match="duplicate tool"):
+
+            @proxy.tool(name="get_events")
+            async def get_events() -> list:
+                return []
+
+        assert proxy._registered_tool_names == set()
+        assert proxy._declared_tool_names == {"get_events"}
+        assert proxy._registration_failures == {"get_events": "RuntimeError"}
+
+    async def test_daemon_preserves_failed_decorator_as_declared_not_registered(self):
+        """A module decorator failure remains named in daemon surface evidence."""
+        from butlers.daemon import ButlerDaemon
+
+        class FailingModule:
+            name = "calendar"
+
+            async def register_tools(self, mcp, config, db, butler_name):  # noqa: ANN001, ARG002
+                @mcp.tool(name="get_events")
+                async def get_events() -> list:
+                    return []
+
+        def rejecting_tool(*args, **kwargs):  # noqa: ARG001
+            def decorator(fn):  # noqa: ARG001
+                raise RuntimeError("duplicate tool")
+
+            return decorator
+
+        daemon = SimpleNamespace(
+            _modules=[FailingModule()],
+            _module_statuses={},
+            _module_configs={},
+            _module_runtime_states={},
+            _tool_module_map={},
+            mcp=SimpleNamespace(tool=rejecting_tool),
+            db=None,
+            config=SimpleNamespace(name="health"),
+        )
+
+        await ButlerDaemon._register_module_tools(daemon)
+
+        assert daemon._declared_tool_names == {"get_events"}
+        assert daemon._effective_tool_names == {"get_events"}
+        assert daemon._registered_tool_names == set()
+        assert daemon._tool_registration_failures == {
+            "get_events": {"module_name": "calendar", "error_type": "RuntimeError"}
+        }
+        assert daemon._module_statuses["calendar"].status == "failed"
 
     def test_tool_meta_arg_sensitivities_is_dict(self):
         """RFC 0002: ToolMeta.arg_sensitivities is a dict mapping arg name to bool.

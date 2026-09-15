@@ -257,6 +257,13 @@ async def test_fifth_failure_opens_once_and_success_closes(
         )
         assert isinstance(success_id, int)
         assert (await get_breaker_state(admin_pool, entry_id)).open is False
+        assert (
+            await observer_pool.fetchval(
+                "SELECT purpose_lane FROM public.model_dispatch_attempts WHERE id = $1",
+                success_id,
+            )
+            == "standard"
+        )
 
 
 @pytest.mark.pg_clock

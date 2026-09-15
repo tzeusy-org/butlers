@@ -123,8 +123,8 @@ async def dispatch_scheduled_task(
         ``butlers.core.tool_call_capture`` contextvar as ``switchboard_client``
         for the duration of the deterministic handler call, so a job that parks
         a PENDING action (via ``butlers.core.approvals_hooks.park_pending_action``)
-        can trigger the owner-facing push without widening every job handler's
-        signature (bu-g27ib). Unused for prompt-mode dispatch.
+        can carry admission compatibility context without widening every job
+        handler's signature (bu-g27ib). Unused for prompt-mode dispatch.
     """
     resolved_job_name = _resolve_deterministic_schedule_job_name(
         butler_name=butler_name,

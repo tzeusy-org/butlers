@@ -48,7 +48,7 @@ Module migration chains run next. The daemon builds a DB-first `CredentialStore`
 
 ### Phase 9: Resolve Runtime Config
 
-The daemon seeds and reads the DB-backed runtime configuration from `[butler.runtime_seed]` when necessary. The resulting operational limits are the source of truth for core-tool registration and the Spawner.
+The daemon seeds DB-owned operational tuning from `[butler.runtime_seed]` when necessary. Git remains authoritative for declared `core_groups`: an existing DB subset is effective only when it carries a non-empty `core_groups_narrowing_reason`; otherwise startup reconciles the row to Git and appends one digest-keyed audit record for a non-empty diff. Concurrency, queue, catalog-read, and other operational values remain DB-owned. The resolved config feeds core-tool registration and the Spawner.
 
 ### Phase 10: Sync TOML Schedules
 
@@ -68,7 +68,7 @@ A `FastMCP` server is created and core MCP tools are registered: `status`, `trig
 
 ### Phase 14: Register Module Tools and Gates
 
-Healthy modules register tools through `register_tools(mcp, config, db)`. Approval gates and module-runtime wiring are then applied; a module-tool failure remains isolated to that module.
+Healthy modules register tools through `register_tools(mcp, config, db)`. Approval gates and module-runtime wiring are then applied; a module-tool failure remains isolated to that module and is retained in the tool-surface diff so the console does not confuse a partial surface with the Git declaration.
 
 ### Phase 15: Start the FastMCP Server
 
@@ -94,11 +94,11 @@ Cron-driven task dispatch. The scheduler maintains a `scheduled_tasks` table wit
 
 ### Session Log
 
-An append-only record of LLM CLI invocations. Each session row is created before the runtime is invoked and completed when it returns. Fields include prompt, trigger source, model, duration, token counts, tool calls, and outcome. The only mutation after creation is `session_complete`. See [Session Lifecycle](../runtime/session-lifecycle.md).
+An append-only record of LLM CLI invocations. Each session row is created before the runtime is invoked and completed when it returns. Fields include prompt, trigger source, purpose lane, model, duration, token counts, tool calls, and outcome. New rows also carry an immutable effective-system-prompt receipt: the exact bytes sent to the runtime, their SHA-256 digest, and an ordered content-free provenance list. The effective prompt is available only through its dedicated session-detail door and is not added to list, metric, audit, or telemetry payloads. The only mutation after creation is `session_complete`. See [Session Lifecycle](../runtime/session-lifecycle.md).
 
 ### Spawner
 
-The component that invokes ephemeral AI runtime instances. Controlled by an `asyncio.Semaphore` for per-butler concurrency limiting (default 1 = serial dispatch) and a process-wide global semaphore (default 3 max concurrent sessions across all butlers). See [Spawner](../runtime/spawner.md).
+The component that invokes ephemeral AI runtime instances. Controlled by an `asyncio.Semaphore` for per-butler concurrency limiting (default 1 = serial dispatch) and a process-wide global semaphore (default 3 max concurrent sessions across all butlers). Before invoking an adapter it composes and receipts the effective system prompt, and it enforces the content-blind private-content model lane before provider setup. See [Spawner](../runtime/spawner.md).
 
 ## Module Loading
 

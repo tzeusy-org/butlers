@@ -230,6 +230,7 @@ export interface SessionSummary {
   cancelled_by_owner: boolean;
   model?: string | null;
   complexity?: string | null;
+  purpose_lane?: "standard" | "private_content" | null;
   /**
    * Best-effort per-session USD cost, estimated server-side from model +
    * token counts (bu-ptaub — sessions pinning + dollar column). Optional so
@@ -261,6 +262,7 @@ export interface SessionDetail {
   parent_session_id: string | null;
   complexity?: string | null;
   resolution_source?: string | null;
+  purpose_lane?: "standard" | "private_content" | null;
   /** The dashboard chat message this session was invoked from, if any. */
   linked_message?: {
     conversation_id: string;
@@ -275,6 +277,23 @@ export interface SessionDetail {
     created_at?: string | null;
     expires_at?: string | null;
   } | null;
+}
+
+export interface PromptProvenanceEntry {
+  source: string;
+  status: "present" | "shadowed" | "unavailable";
+  bytes: number;
+  sha: string | null;
+}
+
+export interface SessionPromptReceipt {
+  id: string;
+  butler: string;
+  status: "captured" | "legacy_unavailable" | "corrupt";
+  effective_prompt: string | null;
+  prompt_digest: string | null;
+  prompt_provenance: PromptProvenanceEntry[];
+  total_bytes: number | null;
 }
 
 /** One per-butler count bucket in a session aggregate, sorted by count desc. */
@@ -859,6 +878,7 @@ export interface TopSession {
   output_tokens: number;
   model: string;
   started_at: string;
+  purpose_lane?: "standard" | "private_content" | null;
 }
 
 /**
@@ -3335,6 +3355,41 @@ export type ApprovalReversibility =
 export type ApprovalPushOutcome =
   "delivered" | "deferred" | "collapsed" | "duplicate" | "failed";
 
+export type ApprovalDeliveryState =
+  | "ready"
+  | "claimed"
+  | "handoff_started"
+  | "retry_wait"
+  | "delivered"
+  | "collapsed"
+  | "cancelled"
+  | "superseded"
+  | "ambiguous";
+
+export interface ApprovalDeliveryCohort {
+  eligible: boolean;
+  state: ApprovalDeliveryState | null;
+  generation: number | null;
+  attempt_count: number;
+  next_eligible_at: string | null;
+  stuck: boolean;
+  ambiguous: boolean;
+}
+
+export interface ApprovalDeliveryTruth {
+  source: "durable" | "legacy" | "unknown";
+  state: ApprovalDeliveryState | null;
+  mode: "single" | "burst_digest" | "collapsed" | null;
+  generation: number | null;
+  last_reason_code: string | null;
+  attempt_count: number;
+  next_eligible_at: string | null;
+  stuck: boolean;
+  ambiguous: boolean;
+  legacy_outcome: ApprovalPushOutcome | null;
+  cohort: ApprovalDeliveryCohort | null;
+}
+
 export interface ApprovalAction {
   id: string;
   butler: string;
@@ -3374,6 +3429,7 @@ export interface ApprovalAction {
    * action (bu-mda0r, bu-p5sg6).
    */
   push_failed?: boolean;
+  delivery?: ApprovalDeliveryTruth | null;
 }
 
 /**
@@ -3414,6 +3470,21 @@ export interface ApprovalSummary {
    * notified. Never fabricate calm (bu-mda0r, bu-p5sg6).
    */
   push_failed?: boolean;
+  delivery?: ApprovalDeliveryTruth | null;
+}
+
+/** Replayable dashboard routing failure shown on the Approvals/Command surface. */
+export interface UnroutableAttentionItem {
+  id: string;
+  question: string;
+  failure_reason: string;
+  created_at: string;
+}
+
+export interface UnroutableRetryResult {
+  dead_letter_id: string;
+  replayed_request_id: string;
+  status: "queued";
 }
 
 /**
@@ -3497,6 +3568,7 @@ export interface ApprovalDetail {
    * notified. Never fabricate calm (bu-mda0r, bu-p5sg6).
    */
   push_failed?: boolean;
+  delivery?: ApprovalDeliveryTruth | null;
 }
 
 export interface ApprovalAbandonRequest {
@@ -3568,8 +3640,17 @@ export interface ApprovalMetrics {
    * attempt will resolve "failed") until it is provisioned. Null when this
    * could not be determined (e.g. no approvals pool available) -- never
    * treat null as a false all-clear.
-   */
+  */
   callback_secret_configured?: boolean | null;
+  delivery_due_count?: number;
+  delivery_retry_wait_count?: number;
+  delivery_expired_lease_count?: number;
+  delivery_ambiguous_count?: number;
+  delivery_stuck_count?: number;
+  delivery_oldest_due_age_seconds?: number | null;
+  delivery_by_state?: Record<string, number>;
+  delivery_by_reason?: Record<string, number>;
+  delivery_sources_complete?: boolean;
 }
 
 /** Availability metadata for the independently aggregated approvals metric families. */
@@ -6259,6 +6340,21 @@ export type ToolExposurePolicy = "eager_filtered" | "auto";
 export interface RuntimeConfigResponse {
   butler_name: string;
   core_groups: string[] | null;
+  declared_core_groups: string[] | null;
+  effective_core_groups: string[] | null;
+  core_groups_source: "git" | "runtime_narrowing";
+  core_groups_narrowing_reason: string | null;
+  declared_tool_names: string[] | null;
+  effective_tool_names: string[] | null;
+  registered_tool_names: string[] | null;
+  tool_registration_failures: Array<{
+    tool_name: string;
+    module_name: string;
+    error_type: string;
+  }> | null;
+  tool_declaration_complete: boolean | null;
+  tool_snapshot_status: "available" | "unavailable";
+  catalog_read_sensitivity: "normal" | "internal" | "confidential";
   max_concurrent: number;
   max_queued: number;
   tool_exposure_policy: ToolExposurePolicy;
@@ -6270,6 +6366,8 @@ export interface RuntimeConfigResponse {
 /** Request body for PATCH /api/butlers/{name}/runtime-config. */
 export interface RuntimeConfigPatch {
   core_groups?: string[] | null;
+  core_groups_narrowing_reason?: string | null;
+  catalog_read_sensitivity?: "normal" | "internal" | "confidential";
   max_concurrent?: number;
   max_queued?: number;
   tool_exposure_policy?: ToolExposurePolicy;
@@ -8541,6 +8639,19 @@ export interface PromptVersion {
   version: number;
   updated_at: string;
   updated_by: string | null;
+}
+
+export interface ButlerEffectivePrompt {
+  butler_name: string;
+  status: "captured" | "preview" | "legacy_unavailable" | "unavailable" | "corrupt";
+  effective_prompt: string | null;
+  prompt_digest: string | null;
+  prompt_provenance: PromptProvenanceEntry[];
+  total_bytes: number | null;
+  roster_digest: string | null;
+  drift_status: "matches_git" | "drifted" | "unknown";
+  drifted_since: string | null;
+  changed_sources: string[];
 }
 
 /**

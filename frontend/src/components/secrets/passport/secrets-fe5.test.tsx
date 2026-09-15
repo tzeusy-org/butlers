@@ -19,7 +19,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { renderToStaticMarkup } from "react-dom/server";
 import { render, fireEvent, waitFor, cleanup } from "@testing-library/react";
 import * as React from "react";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, useLocation } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 // ---------------------------------------------------------------------------
@@ -157,6 +157,11 @@ function renderInRouter(element: React.ReactElement, initialEntries: string[] = 
       <MemoryRouter initialEntries={initialEntries}>{element}</MemoryRouter>
     </QueryClientProvider>,
   );
+}
+
+function LocationProbe() {
+  const location = useLocation();
+  return <output data-router-location={`${location.pathname}${location.search}`} />;
 }
 
 /** All-ok inventory: every credential has state "ok". */
@@ -408,10 +413,30 @@ describe("DirectionPassport: snapshot (full page with rich mock data)", () => {
     // Structural assertions before snapshotting
     expect(html).toContain('data-direction-passport="true"');
     expect(html).toContain("data-spine-row");
-    expect(html).toContain("data-spine-group");
+    expect(html).toContain('data-spine-group="needs-hand"');
+    expect(html).toContain('data-spine-group="ready"');
+    expect(html).toContain('data-spine-group="not-set"');
+    expect(html).not.toContain('data-spine-group="cli runtimes');
+    expect(html).not.toContain('data-spine-group="system');
+    expect(html).not.toContain('data-spine-group="integrations');
 
     // Snapshot the HTML to catch structural regressions
     expect(html).toMatchSnapshot();
+  });
+
+  it("renders legacy and unknown sort values as severity without rewriting the URL", () => {
+    for (const sort of ["recency", "future-mode"]) {
+      const html = renderInRouter(
+        <>
+          <DirectionPassport inventory={MOCK_INVENTORY} />
+          <LocationProbe />
+        </>,
+        [`/secrets?sort=${sort}`],
+      );
+
+      expect(html).toContain('aria-pressed="true" data-sort-mode="severity"');
+      expect(html).toContain(`data-router-location="/secrets?sort=${sort}"`);
+    }
   });
 
   it("matches snapshot: focus=u:google", () => {

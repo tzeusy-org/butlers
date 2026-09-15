@@ -10,7 +10,8 @@ by-schedule contract + zero-div guard.
 from __future__ import annotations
 
 import json
-from datetime import UTC, date, datetime
+import uuid
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -2225,6 +2226,108 @@ async def test_forecast_divergence_source_error_is_independent_of_ceiling_source
 # ---------------------------------------------------------------------------
 # §5.2 Spend rules — position reshuffle on insert/delete [bu-dvb7i]
 # ---------------------------------------------------------------------------
+
+
+def _mock_spend_rule_mutation_db(
+    *,
+    fetchrow_results: list[dict],
+    max_position: int = -1,
+) -> tuple[MagicMock, MagicMock]:
+    """Return a dashboard DB mock with a transaction-capable shared connection."""
+    connection = AsyncMock()
+    connection.fetchval = AsyncMock(return_value=max_position)
+    connection.fetchrow = AsyncMock(side_effect=fetchrow_results)
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock(return_value=None)
+    transaction.__aexit__ = AsyncMock(return_value=None)
+    connection.transaction = MagicMock(return_value=transaction)
+
+    pool = MagicMock()
+    acquired = MagicMock()
+    acquired.__aenter__ = AsyncMock(return_value=connection)
+    acquired.__aexit__ = AsyncMock(return_value=None)
+    pool.acquire = MagicMock(return_value=acquired)
+    return _mock_db({"switchboard": pool}), pool
+
+
+async def test_spend_rule_create_emits_successful_server_owner_audit(app, monkeypatch):
+    """The dashboard create path emits the evidence remote authorization consumes."""
+    rule_id = uuid.uuid4()
+    now = datetime.now(tz=UTC)
+    row = {
+        "id": rule_id,
+        "position": 0,
+        "condition": {"purpose": "private_content"},
+        "action": {"model": "remote-model"},
+        "saved_7d": None,
+        "created_at": now,
+        "updated_at": now,
+    }
+    db, pool = _mock_spend_rule_mutation_db(fetchrow_results=[row])
+    _wire_db(app, db)
+    audit = AsyncMock()
+    monkeypatch.setattr("butlers.api.routers.spend.audit_append", audit)
+    monkeypatch.setattr("butlers.api.routers.spend.authenticated_principal", lambda: "server-owner")
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/spend/rules",
+            json={
+                "condition": {"purpose": "private_content"},
+                "action": {"model": "remote-model"},
+            },
+        )
+
+    assert response.status_code == 201
+    audit.assert_awaited_once()
+    assert audit.await_args.args == (pool,)
+    assert audit.await_args.kwargs["actor"] == "server-owner"
+    assert audit.await_args.kwargs["action"] == "spend.rule.create"
+    assert audit.await_args.kwargs["target"] == f"rule:{rule_id}"
+    assert audit.await_args.kwargs["result"] == "success"
+
+
+async def test_spend_rule_update_emits_successful_server_owner_audit(app, monkeypatch):
+    """The dashboard update path emits fresh successful owner evidence for its revision."""
+    rule_id = uuid.uuid4()
+    created_at = datetime.now(tz=UTC)
+    existing = {
+        "id": rule_id,
+        "position": 0,
+        "condition": {"purpose": "private_content"},
+        "action": {"model": "remote-model"},
+        "saved_7d": None,
+        "created_at": created_at,
+        "updated_at": created_at,
+    }
+    updated = {
+        **existing,
+        "action": {"model": "remote-model-v2"},
+        "updated_at": created_at + timedelta(seconds=1),
+    }
+    db, pool = _mock_spend_rule_mutation_db(fetchrow_results=[existing, updated])
+    _wire_db(app, db)
+    audit = AsyncMock()
+    monkeypatch.setattr("butlers.api.routers.spend.audit_append", audit)
+    monkeypatch.setattr("butlers.api.routers.spend.authenticated_principal", lambda: "server-owner")
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.put(
+            f"/api/spend/rules/{rule_id}",
+            json={"action": {"model": "remote-model-v2"}},
+        )
+
+    assert response.status_code == 200
+    audit.assert_awaited_once()
+    assert audit.await_args.args == (pool,)
+    assert audit.await_args.kwargs["actor"] == "server-owner"
+    assert audit.await_args.kwargs["action"] == "spend.rule.update"
+    assert audit.await_args.kwargs["target"] == f"rule:{rule_id}"
+    assert audit.await_args.kwargs["result"] == "success"
 
 
 async def test_spend_rules_list_returns_empty_when_no_db(app):

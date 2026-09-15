@@ -19,8 +19,11 @@ re-exports so existing import paths and test patches remain valid.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import uuid
+from collections.abc import Sequence
+from dataclasses import dataclass
 
 import asyncpg
 
@@ -46,6 +49,57 @@ _missing_context_table_logged: set[str] = set()
 
 _ROUTING_INSTRUCTIONS_TABLE = "routing_instructions"
 _missing_routing_instructions_warnings: set[str] = set()
+
+
+@dataclass(frozen=True, slots=True)
+class PromptProvenanceEntry:
+    """Content-blind receipt for one named system-prompt source."""
+
+    source: str
+    status: str
+    bytes: int
+    sha: str | None
+
+    def as_dict(self) -> dict[str, str | int | None]:
+        """Return the JSON-safe persistence representation."""
+        return {
+            "source": self.source,
+            "status": self.status,
+            "bytes": self.bytes,
+            "sha": self.sha,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class EffectiveSystemPromptReceipt:
+    """Exact effective system prompt plus deterministic provenance evidence."""
+
+    prompt: str
+    digest: str
+    total_bytes: int
+    provenance: tuple[PromptProvenanceEntry, ...]
+
+
+def _source_receipt(
+    source: str,
+    content: str | None,
+    status: str | None = None,
+) -> PromptProvenanceEntry:
+    """Build a receipt without retaining source content or filesystem paths."""
+    if content is None:
+        return PromptProvenanceEntry(
+            source=source,
+            status=status or "unavailable",
+            bytes=0,
+            sha=None,
+        )
+    encoded = content.encode("utf-8")
+    return PromptProvenanceEntry(
+        source=source,
+        status=status or "present",
+        bytes=len(encoded),
+        sha=hashlib.sha256(encoded).hexdigest(),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -113,6 +167,57 @@ def _memory_context_token_budget(config: ButlerConfig) -> int:
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class ComposedPrompt:
+    """Per-layer token digest for a composed system prompt (bu-hz0g0).
+
+    Records the five ledger-supported layers of ``_compose_system_prompt``.
+    Persisted onto ``public.token_usage_ledger`` alongside a spawn's token
+    counts so a query can compare their contribution instead of only seeing
+    the merged total. The separately governed blind-spot preamble is not part
+    of this ledger schema.
+    """
+
+    base_prompt_tokens: int
+    timezone_instruction_tokens: int
+    context_preamble_tokens: int
+    routing_instructions_tokens: int
+    memory_context_tokens: int
+
+
+def _estimate_layer_tokens(text: str | None) -> int:
+    """Estimate a prompt layer's token count at chars/4.
+
+    Same heuristic as ``butlers.modules.pipeline._load_email_history`` --
+    no tokenizer is wired into the spawn hot path, and an estimate is enough
+    to answer relative "which layer dominates" questions.
+    """
+    if not text:
+        return 0
+    return len(text) // 4
+
+
+def compose_prompt_digest(
+    base_system_prompt: str,
+    memory_context: str | None,
+    general_timezone_instruction: str | None = None,
+    routing_instructions: str | None = None,
+    context_preamble: str | None = None,
+) -> ComposedPrompt:
+    """Compute the per-layer token digest for a composed system prompt.
+
+    Takes the five inputs represented by the ledger columns. Call it at the
+    spawn seam before composition overwrites the base prompt variable.
+    """
+    return ComposedPrompt(
+        base_prompt_tokens=_estimate_layer_tokens(base_system_prompt),
+        timezone_instruction_tokens=_estimate_layer_tokens(general_timezone_instruction),
+        context_preamble_tokens=_estimate_layer_tokens(context_preamble),
+        routing_instructions_tokens=_estimate_layer_tokens(routing_instructions),
+        memory_context_tokens=_estimate_layer_tokens(memory_context),
+    )
+
+
 def _compose_system_prompt(
     base_system_prompt: str,
     memory_context: str | None,
@@ -149,6 +254,48 @@ def _compose_system_prompt(
     if memory_context:
         prompt = f"{prompt}\n\n{memory_context}"
     return prompt
+
+
+def compose_effective_system_prompt_receipt(
+    base_system_prompt: str,
+    memory_context: str | None,
+    *,
+    base_sources: Sequence[tuple[str, str, str | None]],
+    general_timezone_instruction: str | None = None,
+    routing_instructions: str | None = None,
+    context_preamble: str | None = None,
+    blind_spot_preamble: str | None = None,
+) -> EffectiveSystemPromptReceipt:
+    """Compose today's prompt bytes and attach stable, content-blind provenance.
+
+    The actual composition delegates to :func:`_compose_system_prompt`, keeping
+    its ordering and separators as the single behavioral authority. The
+    receipt always names every current layer; optional unavailable layers are
+    represented explicitly rather than disappearing from provenance.
+    """
+    prompt = _compose_system_prompt(
+        base_system_prompt,
+        memory_context,
+        general_timezone_instruction=general_timezone_instruction,
+        routing_instructions=routing_instructions,
+        context_preamble=context_preamble,
+        blind_spot_preamble=blind_spot_preamble,
+    )
+    encoded = prompt.encode("utf-8")
+    provenance = (
+        *(_source_receipt(source, content, status) for source, status, content in base_sources),
+        _source_receipt("general_settings", general_timezone_instruction),
+        _source_receipt("situational_context", context_preamble),
+        _source_receipt("blind_spot_disclosure", blind_spot_preamble),
+        _source_receipt("switchboard_routing_instructions", routing_instructions),
+        _source_receipt("memory_context", memory_context),
+    )
+    return EffectiveSystemPromptReceipt(
+        prompt=prompt,
+        digest=hashlib.sha256(encoded).hexdigest(),
+        total_bytes=len(encoded),
+        provenance=provenance,
+    )
 
 
 # ---------------------------------------------------------------------------

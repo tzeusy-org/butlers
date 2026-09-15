@@ -74,22 +74,31 @@ from butlers.core.model_routing import (
     BREAKER_OPEN_RULE_OVERRIDE_REASON_PREFIX,
     CEILING_DENIAL_REASON_PREFIX,
     Complexity,
+    PrivateContentModelUnavailable,
+    SpendRoutingResult,
     TierQuotaExhausted,
     apply_spend_routing_rules,
     check_monthly_ceiling,
     check_token_quota,
+    enforce_private_content_selection,
     next_same_tier_candidate,
     record_token_usage,
     resolve_model_with_effective_tier,
 )
 from butlers.core.permissions import SPAWN_PERMISSION, check_permission
+from butlers.core.purpose_lane import (
+    PURPOSE_LANE_PRIVATE_CONTENT,
+    PURPOSE_LANE_STANDARD,
+    PurposeLane,
+    purpose_lane_from_routing_context,
+)
 from butlers.core.route_inbox import RouteInboxLeaseLost
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter, validated_session_timeout_overhead_s
 from butlers.core.runtimes.codex import MCPToolDiscoveryError
 from butlers.core.session_process_logs import write as session_process_log_write
 from butlers.core.sessions import session_complete, session_create
-from butlers.core.skills import read_system_prompt
+from butlers.core.skills import read_system_prompt_with_sources
 
 # ---------------------------------------------------------------------------
 # Seam imports — functions extracted to focused sub-modules.
@@ -97,11 +106,13 @@ from butlers.core.skills import read_system_prompt
 # ``butlers.core.spawner.<name>`` continue to resolve correctly.
 # ---------------------------------------------------------------------------
 from butlers.core.spawner_context import (
-    _compose_system_prompt,
+    ComposedPrompt,
     _is_missing_memory_table_error,  # noqa: F401 — re-export for test patches
     _log_missing_memory_table_once,  # noqa: F401 — re-export for test patches
     _memory_context_token_budget,
     _memory_module_enabled,
+    compose_effective_system_prompt_receipt,
+    compose_prompt_digest,
     fetch_blind_spot_preamble,
     fetch_general_timezone_instruction,
     fetch_memory_context,
@@ -123,6 +134,7 @@ from butlers.core.spawner_guardrails import (
 from butlers.core.spawner_provider import (
     _derive_llm_provider,  # noqa: F401 — re-export for test patches
     resolve_provider_config,  # noqa: F401 — re-export for test patches
+    retarget_ollama_provider_config,
 )
 from butlers.core.spawner_tool_calls import (
     _dedup_tool_calls_by_id,  # noqa: F401 — re-export for test patches
@@ -275,6 +287,30 @@ class SpawnerResult:
     output_tokens: int | None = None
 
 
+def _composed_prompt_ledger_kwargs(digest: ComposedPrompt | None) -> dict[str, int | None]:
+    """Expand a composed-prompt digest into record_token_usage()'s per-layer kwargs.
+
+    ``None`` (no composition happened this dispatch, e.g. the guardrail
+    early-write before a resume outcome is known) maps every column to
+    ``None`` rather than a fabricated 0.
+    """
+    if digest is None:
+        return {
+            "base_prompt_tokens": None,
+            "timezone_instruction_tokens": None,
+            "context_preamble_tokens": None,
+            "routing_instructions_tokens": None,
+            "memory_context_tokens": None,
+        }
+    return {
+        "base_prompt_tokens": digest.base_prompt_tokens,
+        "timezone_instruction_tokens": digest.timezone_instruction_tokens,
+        "context_preamble_tokens": digest.context_preamble_tokens,
+        "routing_instructions_tokens": digest.routing_instructions_tokens,
+        "memory_context_tokens": digest.memory_context_tokens,
+    }
+
+
 def _append_runtime_session_query(
     url: str,
     runtime_session_id: str | None,
@@ -336,6 +372,29 @@ def _estimate_worst_case_call_cost(
     return cost
 
 
+async def _refuse_unregistered_private_runtime(
+    pool: asyncpg.Pool | None,
+    *,
+    effective_tier: str,
+) -> None:
+    """Record a content-blind refusal and stop before the remote compatibility fallback."""
+    await write_audit_entry(
+        pool,
+        "system:model_router",
+        "model.private_content_remote_refused",
+        {
+            "purpose_lane": PURPOSE_LANE_PRIVATE_CONTENT,
+            "effective_tier": effective_tier,
+            "reason": "unregistered_private_runtime",
+        },
+        result="error",
+        error="private_content_remote_refused",
+    )
+    raise PrivateContentModelUnavailable(
+        "private_content_remote_refused: local runtime unavailable"
+    )
+
+
 async def _write_dispatch_attempt(
     pool: asyncpg.Pool,
     *,
@@ -350,6 +409,7 @@ async def _write_dispatch_attempt(
     tool_call_count: int | None = None,
     logical_session_id: str | None = None,
     duration_ms: int | None = None,
+    purpose_lane: PurposeLane = PURPOSE_LANE_STANDARD,
     produce_fleet_halt: bool = False,
 ) -> int | None:
     """Write one attempt row to public.model_dispatch_attempts (best-effort).
@@ -386,6 +446,7 @@ async def _write_dispatch_attempt(
         tool_call_count=tool_call_count,
         logical_session_id=logical_session_id,
         duration_ms=duration_ms,
+        purpose_lane=purpose_lane,
         produce_fleet_halt=produce_fleet_halt,
     )
 
@@ -1260,6 +1321,7 @@ class Spawner:
         # block skips classification for exceptions that are already classified.
         _failover_already_classified: bool = False
         routing_context = _capture_pipeline_routing_context()
+        purpose_lane = purpose_lane_from_routing_context(routing_context)
         # Ledger token tracking: set as soon as the adapter reports usage so that
         # ledger recording in the finally block captures tokens even when post-invoke
         # processing fails (e.g. session_complete raises). Tokens are consumed by the
@@ -1268,6 +1330,13 @@ class Spawner:
         _ledger_output_tokens: int | None = None
         _ledger_cached_input_tokens: int = 0
         _ledger_cache_creation_tokens: int = 0
+        # Resume-outcome tracking (bu-hz0g0): set only when a conversational
+        # (trigger_source == "route") turn on a resume-capable adapter actually
+        # attempts a provider-native session resume. Stays None for every
+        # other dispatch -- see record_token_usage()'s resume_outcome docstring
+        # for the exact vocabulary.
+        _resume_outcome: str | None = None
+        _composed_prompt_digest: ComposedPrompt | None = None
 
         # Prepend context to prompt if provided
         final_prompt = prompt
@@ -1322,6 +1391,7 @@ class Spawner:
             complexity,
             deadline_s=timeout_override,
             extra_required_features=_vision_required,
+            purpose_lane=purpose_lane,
         )
         if self._pool is not None:
             try:
@@ -1441,6 +1511,7 @@ class Spawner:
         # -- exactly the pre-fold behavior, since the old code always quota-checked
         # whatever apply_spend_routing_rules produced.
         _pre_rule_catalog_entry_id = catalog_entry_id
+        _routing_result: SpendRoutingResult | None = None
         if catalog_entry_id is not None and self._pool is not None:
             try:
                 _routing_result = await apply_spend_routing_rules(
@@ -1454,7 +1525,11 @@ class Spawner:
                         catalog_entry_id,
                         catalog_timeout_s,
                     ),
-                    trigger_source=trigger_source,
+                    trigger_source=(
+                        purpose_lane
+                        if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
+                        else trigger_source
+                    ),
                 )
                 (
                     resolved_runtime_type,
@@ -1474,6 +1549,105 @@ class Spawner:
                     exc_info=True,
                 )
         _spend_rule_fired = catalog_entry_id != _pre_rule_catalog_entry_id
+
+        # Private message content is local by default. This gate is deliberately
+        # after operator-rule evaluation but before prewarm/provider setup: only
+        # a rule explicitly scoped to this lane with current audit evidence may
+        # authorize the selected remote model.
+        _private_provider_config: dict[str, dict[str, Any]] | None = None
+        _private_local_failover_allowed = False
+        if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT:
+            if catalog_entry_id is None or self._pool is None:
+                exc = PrivateContentModelUnavailable(
+                    "private_content_remote_refused: local model unavailable"
+                )
+                await write_audit_entry(
+                    self._pool,
+                    "system:model_router",
+                    "model.private_content_remote_refused",
+                    {
+                        "purpose_lane": purpose_lane,
+                        "effective_tier": _failover_effective_tier or str(complexity),
+                        "reason": "no_catalog_local_selection",
+                    },
+                    result="error",
+                    error="private_content_remote_refused",
+                )
+                if dashboard_turn_id is not None:
+                    return await self._dashboard_preflight_failure(
+                        dashboard_turn_id=dashboard_turn_id,
+                        error=str(exc),
+                        model=model,
+                    )
+                raise exc
+
+            assert self._pool is not None
+            assert catalog_entry_id is not None
+            lane_result = _routing_result or SpendRoutingResult(
+                resolved=(
+                    resolved_runtime_type,
+                    model,
+                    catalog_extra_args,
+                    catalog_entry_id,
+                    catalog_timeout_s or 1800,
+                )
+            )
+            try:
+                (
+                    lane_selection,
+                    audited_remote_override,
+                    _private_provider_config,
+                    _private_local_failover_allowed,
+                ) = await enforce_private_content_selection(
+                    self._pool,
+                    butler_name=self._config.name,
+                    effective_tier=_failover_effective_tier or str(complexity),
+                    routing_result=lane_result,
+                )
+            except PrivateContentModelUnavailable as exc:
+                await write_audit_entry(
+                    self._pool,
+                    "system:model_router",
+                    "model.private_content_remote_refused",
+                    {
+                        "purpose_lane": purpose_lane,
+                        "effective_tier": _failover_effective_tier or str(complexity),
+                        "reason": "local_model_unavailable",
+                    },
+                    result="error",
+                    error="private_content_remote_refused",
+                )
+                if dashboard_turn_id is not None:
+                    return await self._dashboard_preflight_failure(
+                        dashboard_turn_id=dashboard_turn_id,
+                        error=str(exc),
+                        model=model,
+                    )
+                raise
+            (
+                resolved_runtime_type,
+                model,
+                catalog_extra_args,
+                catalog_entry_id,
+                catalog_timeout_s,
+            ) = lane_selection
+            if audited_remote_override:
+                await write_audit_entry(
+                    self._pool,
+                    "system:model_router",
+                    "model.private_content_remote_override",
+                    {
+                        "purpose_lane": purpose_lane,
+                        "rule_id": str(lane_result.matched_rule_id),
+                        "model_id": model[:256],
+                    },
+                )
+            else:
+                # The initial quota-aware receipt belongs to the displaced
+                # remote entry, so the local candidate must run the ordinary
+                # quota check below.
+                _spend_rule_fired = True
+                _spend_rule_breaker_open = None
 
         # Speculative prewarm (bu-ep4ks.13 follow-up / bu-k9te9, slice 4): the runtime_type
         # this dispatch will use is now fully settled (post spend-rule override), regardless
@@ -1526,6 +1700,7 @@ class Spawner:
                 ),
                 tool_call_count=0,
                 logical_session_id=effective_request_id,
+                purpose_lane=purpose_lane,
             )
 
         _attempted_ids: list[uuid.UUID] = []
@@ -1566,6 +1741,7 @@ class Spawner:
                     failure_reason=perm_msg,
                     tool_call_count=0,
                     logical_session_id=effective_request_id,
+                    purpose_lane=purpose_lane,
                 )
                 return await self._dashboard_preflight_failure(
                     dashboard_turn_id=dashboard_turn_id,
@@ -1618,6 +1794,7 @@ class Spawner:
                     failure_reason=quota_msg,
                     tool_call_count=0,
                     logical_session_id=effective_request_id,
+                    purpose_lane=purpose_lane,
                 )
 
                 if _failover_effective_tier is None:
@@ -1628,11 +1805,21 @@ class Spawner:
                         model=model,
                     )
 
-                next_candidate = await next_same_tier_candidate(
-                    self._pool,
-                    self._config.name,
-                    _failover_effective_tier,
-                    _attempted_ids,
+                next_candidate = (
+                    None
+                    if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
+                    and not _private_local_failover_allowed
+                    else await next_same_tier_candidate(
+                        self._pool,
+                        self._config.name,
+                        _failover_effective_tier,
+                        _attempted_ids,
+                        **(
+                            {"local_only": True}
+                            if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
+                            else {}
+                        ),
+                    )
                 )
                 if next_candidate is None:
                     # No candidates remain: hard block.
@@ -1710,6 +1897,7 @@ class Spawner:
                     failure_reason=ceiling_msg,
                     tool_call_count=0,
                     logical_session_id=effective_request_id,
+                    purpose_lane=purpose_lane,
                     produce_fleet_halt=True,
                 )
                 return await self._dashboard_preflight_failure(
@@ -1771,6 +1959,7 @@ class Spawner:
                     failure_reason=cap_msg,
                     tool_call_count=0,
                     logical_session_id=effective_request_id,
+                    purpose_lane=purpose_lane,
                 )
                 return await self._dashboard_preflight_failure(
                     dashboard_turn_id=dashboard_turn_id,
@@ -1780,7 +1969,11 @@ class Spawner:
 
         # Resolve provider config (e.g. Ollama base URL) for the model
         try:
-            provider_config = await self._resolve_provider_config(model)
+            provider_config = (
+                _private_provider_config
+                if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT and model.startswith("ollama/")
+                else await self._resolve_provider_config(model)
+            )
 
             # Select adapter for the resolved runtime type (lazy instantiation on demand).
             # Fall back to the default adapter if the catalog resolved an unregistered runtime type.
@@ -1789,6 +1982,11 @@ class Spawner:
                     resolved_runtime_type, provider_config
                 ).create_worker()
             except ValueError:
+                if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT:
+                    await _refuse_unregistered_private_runtime(
+                        self._pool,
+                        effective_tier=_failover_effective_tier or str(complexity),
+                    )
                 logger.warning(
                     "Catalog resolved unregistered runtime_type=%s for butler=%s; "
                     "falling back to default runtime_type=%s",
@@ -1832,87 +2030,6 @@ class Spawner:
             if span.is_recording():
                 trace_id = format(span.get_span_context().trace_id, "032x")
 
-            # effective_request_id was minted before the quota-skip loop above
-            # (non-null for both connector-sourced and internal triggers).
-
-            # Create session record with trace_id and request_id
-            if self._pool is not None:
-                session_id = await session_create(
-                    self._pool,
-                    final_prompt,
-                    trigger_source,
-                    trace_id,
-                    model=model,
-                    request_id=effective_request_id,
-                    ingestion_event_id=ingestion_event_id,
-                    complexity=str(complexity),
-                    resolution_source=resolution_source,
-                    butler_name=self._config.name,
-                )
-                logger.debug(
-                    "Session created with model=%s runtime_type=%s complexity=%s source=%s "
-                    "session_id=%s",
-                    model,
-                    resolved_runtime_type,
-                    complexity,
-                    resolution_source,
-                    session_id,
-                )
-                # Set session_id on span
-                span.set_attribute("session_id", str(session_id))
-                runtime_session_id = str(session_id)
-                ensure_runtime_session_capture(runtime_session_id)
-                set_runtime_session_routing_context(runtime_session_id, routing_context)
-                # Mark the session as real-but-not-yet-invoked so a Stop
-                # click landing in the pre-invocation window below (system-
-                # prompt/context/memory fetches, MCP warmup) is recognized by
-                # cancel_session() instead of falsely reporting "already
-                # finished". Discarded once the invoke_task is registered
-                # (or, defensively, in this method's finally block).
-                self._pending_invoke_sessions.add(runtime_session_id)
-
-                if dashboard_turn_id is not None:
-                    dashboard_cancel_settled_event = asyncio.Event()
-                    self._dashboard_cancel_settled_events[runtime_session_id] = (
-                        dashboard_cancel_settled_event
-                    )
-                    try:
-                        dashboard_request_id = uuid.UUID(str(effective_request_id))
-                    except (TypeError, ValueError) as exc:
-                        raise DashboardTurnControlError(
-                            "Dashboard turn has no valid request id for runtime registration."
-                        ) from exc
-
-                    dashboard_phase = (
-                        "classification" if self._config.name == "switchboard" else "route"
-                    )
-                    try:
-                        dashboard_gate = await register_session_and_check_cancel(
-                            self._pool,
-                            message_id=dashboard_turn_id,
-                            session_id=session_id,
-                            request_id=dashboard_request_id,
-                            butler_name=self._config.name,
-                            phase=dashboard_phase,
-                        )
-                    except Exception as exc:
-                        raise DashboardTurnControlError(
-                            "Could not register this dashboard runtime with its Stop control."
-                        ) from exc
-
-                    if dashboard_gate.outcome not in {"active", "cancelled"}:
-                        raise DashboardTurnControlError(
-                            "Dashboard runtime registration was not authorized: "
-                            f"{dashboard_gate.outcome}"
-                        )
-                    dashboard_turn_session_registered = True
-                    if dashboard_gate.outcome == "cancelled":
-                        # The durable Stop bit won before this process reached
-                        # runtime.invoke. Reuse the owner-cancel path so the
-                        # local session row remains honest and no adapter starts.
-                        self._owner_cancelled_sessions.add(runtime_session_id)
-                        raise asyncio.CancelledError()
-
             # Read system prompt. The live override (HEAD of
             # public.system_prompt_history, set via the dashboard prompt editor)
             # takes precedence over the on-disk CLAUDE.md seed when present.
@@ -1922,9 +2039,10 @@ class Spawner:
             prompt_override = await fetch_system_prompt_override(
                 shared_pool or self._pool, self._config.name
             )
-            system_prompt = read_system_prompt(
+            resolved_system_prompt = read_system_prompt_with_sources(
                 self._config_dir, self._config.name, db_override=prompt_override
             )
+            system_prompt = resolved_system_prompt.prompt
 
             # Fetch situational context preamble (fail-open)
             context_preamble_ctx = await fetch_situational_context_preamble(
@@ -1972,14 +2090,104 @@ class Spawner:
                 enabled=blind_spot_preamble_enabled,
             )
 
-            system_prompt = _compose_system_prompt(
+            _composed_prompt_digest = compose_prompt_digest(
                 system_prompt,
                 memory_ctx,
                 general_timezone_instruction=general_timezone_instruction,
                 routing_instructions=routing_ctx,
                 context_preamble=context_preamble_ctx,
+            )
+            prompt_receipt = compose_effective_system_prompt_receipt(
+                system_prompt,
+                memory_ctx,
+                base_sources=[
+                    (source.source, source.status, source.content)
+                    for source in resolved_system_prompt.sources
+                ],
+                general_timezone_instruction=general_timezone_instruction,
+                routing_instructions=routing_ctx,
+                context_preamble=context_preamble_ctx,
                 blind_spot_preamble=blind_spot_preamble,
             )
+            system_prompt = prompt_receipt.prompt
+
+            # effective_request_id was minted before the quota-skip loop above
+            # (non-null for both connector-sourced and internal triggers).
+            # Prompt composition intentionally completes before the row is
+            # created: every new runtime session is born with an exact receipt,
+            # and no adapter can start between composition and persistence.
+            if self._pool is not None:
+                session_id = await session_create(
+                    self._pool,
+                    final_prompt,
+                    trigger_source,
+                    trace_id,
+                    model=model,
+                    request_id=effective_request_id,
+                    ingestion_event_id=ingestion_event_id,
+                    complexity=str(complexity),
+                    resolution_source=resolution_source,
+                    butler_name=self._config.name,
+                    effective_system_prompt=prompt_receipt.prompt,
+                    prompt_digest=prompt_receipt.digest,
+                    prompt_provenance=[entry.as_dict() for entry in prompt_receipt.provenance],
+                    purpose_lane=purpose_lane,
+                )
+                logger.debug(
+                    "Session created with model=%s runtime_type=%s complexity=%s source=%s "
+                    "session_id=%s",
+                    model,
+                    resolved_runtime_type,
+                    complexity,
+                    resolution_source,
+                    session_id,
+                )
+                span.set_attribute("session_id", str(session_id))
+                runtime_session_id = str(session_id)
+                ensure_runtime_session_capture(runtime_session_id)
+                set_runtime_session_routing_context(runtime_session_id, routing_context)
+                # Mark the session as real-but-not-yet-invoked so a Stop click
+                # in the remaining setup window is recognized honestly.
+                self._pending_invoke_sessions.add(runtime_session_id)
+
+                if dashboard_turn_id is not None:
+                    dashboard_cancel_settled_event = asyncio.Event()
+                    self._dashboard_cancel_settled_events[runtime_session_id] = (
+                        dashboard_cancel_settled_event
+                    )
+                    try:
+                        dashboard_request_id = uuid.UUID(str(effective_request_id))
+                    except (TypeError, ValueError) as exc:
+                        raise DashboardTurnControlError(
+                            "Dashboard turn has no valid request id for runtime registration."
+                        ) from exc
+
+                    dashboard_phase = (
+                        "classification" if self._config.name == "switchboard" else "route"
+                    )
+                    try:
+                        dashboard_gate = await register_session_and_check_cancel(
+                            self._pool,
+                            message_id=dashboard_turn_id,
+                            session_id=session_id,
+                            request_id=dashboard_request_id,
+                            butler_name=self._config.name,
+                            phase=dashboard_phase,
+                        )
+                    except Exception as exc:
+                        raise DashboardTurnControlError(
+                            "Could not register this dashboard runtime with its Stop control."
+                        ) from exc
+
+                    if dashboard_gate.outcome not in {"active", "cancelled"}:
+                        raise DashboardTurnControlError(
+                            "Dashboard runtime registration was not authorized: "
+                            f"{dashboard_gate.outcome}"
+                        )
+                    dashboard_turn_session_registered = True
+                    if dashboard_gate.outcome == "cancelled":
+                        self._owner_cancelled_sessions.add(runtime_session_id)
+                        raise asyncio.CancelledError()
 
             # Build credential env.
             # Caller-supplied env_override replaces the default env entirely (used by
@@ -2124,6 +2332,7 @@ class Spawner:
 
                 _attempt_exc: BaseException | None = None
                 _attempt_tool_calls: list[dict[str, Any]] = []
+                _empty_response_usage: dict[str, Any] | None = None
                 dashboard_invoke_claimed = False
                 dashboard_release_event: asyncio.Event | None = None
                 dashboard_cancel_acknowledged_event: asyncio.Event | None = None
@@ -2333,19 +2542,7 @@ class Spawner:
                             and catalog_entry_id is not None
                             and usage.get("input_tokens") is not None
                         ):
-                            await record_token_usage(
-                                self._pool,
-                                catalog_entry_id=catalog_entry_id,
-                                butler_name=self._config.name,
-                                session_id=session_id,
-                                input_tokens=usage["input_tokens"],
-                                output_tokens=usage.get("output_tokens") or 0,
-                                cached_input_tokens=usage.get("cache_read_input_tokens") or 0,
-                                cache_creation_tokens=(
-                                    usage.get("cache_creation_input_tokens") or 0
-                                ),
-                                purpose=trigger_source,
-                            )
+                            _empty_response_usage = usage
                         _attempt_exc = RuntimeError(
                             "Runtime returned no response: no result text or MCP tool calls"
                         )
@@ -2356,6 +2553,8 @@ class Spawner:
                 # ------------------------------------------------------------------
                 if _attempt_exc is None:
                     # Invocation succeeded — exit the failover loop.
+                    if _attempt_count == 1 and invoke_kwargs.get("resume_session_id"):
+                        _resume_outcome = "resumed"
                     break
 
                 # Invocation failed: classify for failover eligibility.
@@ -2366,6 +2565,43 @@ class Spawner:
                         process_info=runtime.last_process_info,
                     )
                 )
+
+                attempted_resume = _attempt_count == 1 and bool(
+                    invoke_kwargs.get("resume_session_id")
+                )
+                if attempted_resume:
+                    _resume_outcome = (
+                        "resume_failed_retried_cold"
+                        if _failover_decision.eligible
+                        else "resume_failed_terminal"
+                    )
+
+                # An empty response can still carry provider-reported usage.
+                # Persist it only after classifying the failed attempt so a
+                # resume attempt never lands as an ambiguous NULL outcome.
+                if _empty_response_usage is not None:
+                    await record_token_usage(
+                        self._pool,
+                        catalog_entry_id=catalog_entry_id,
+                        butler_name=self._config.name,
+                        session_id=session_id,
+                        input_tokens=_empty_response_usage["input_tokens"],
+                        output_tokens=_empty_response_usage.get("output_tokens") or 0,
+                        cached_input_tokens=(
+                            _empty_response_usage.get("cache_read_input_tokens") or 0
+                        ),
+                        cache_creation_tokens=(
+                            _empty_response_usage.get("cache_creation_input_tokens") or 0
+                        ),
+                        purpose=(
+                            purpose_lane
+                            if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
+                            else trigger_source
+                        ),
+                        purpose_lane=purpose_lane,
+                        resume_outcome=_resume_outcome,
+                        **_composed_prompt_ledger_kwargs(_composed_prompt_digest),
+                    )
 
                 if not _failover_decision.eligible:
                     # Failover suppressed — emit metric and re-raise to the outer handler.
@@ -2389,6 +2625,7 @@ class Spawner:
                             error_message=str(_attempt_exc),
                             tool_call_count=len(_attempt_tool_calls),
                             logical_session_id=effective_request_id,
+                            purpose_lane=purpose_lane,
                             duration_ms=int((time.monotonic() - _attempt_t0) * 1000),
                         )
                     # Mark as already classified so the outer except handler does not
@@ -2451,6 +2688,7 @@ class Spawner:
                         error_message=str(_attempt_exc),
                         tool_call_count=len(_attempt_tool_calls),
                         logical_session_id=effective_request_id,
+                        purpose_lane=purpose_lane,
                         duration_ms=_failed_attempt_duration_ms,
                     )
 
@@ -2467,11 +2705,21 @@ class Spawner:
                     preconsumed_runtime_tool_calls = _attempt_tool_calls
                     raise _attempt_exc
 
-                next_candidate = await next_same_tier_candidate(
-                    self._pool,
-                    self._config.name,
-                    _failover_effective_tier,
-                    _attempted_ids,
+                next_candidate = (
+                    None
+                    if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
+                    and not _private_local_failover_allowed
+                    else await next_same_tier_candidate(
+                        self._pool,
+                        self._config.name,
+                        _failover_effective_tier,
+                        _attempted_ids,
+                        **(
+                            {"local_only": True}
+                            if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
+                            else {}
+                        ),
+                    )
                 )
                 if next_candidate is None:
                     # All same-tier candidates exhausted — terminal failure.
@@ -2504,6 +2752,7 @@ class Spawner:
                             error_message=str(_attempt_exc),
                             tool_call_count=len(_attempt_tool_calls),
                             logical_session_id=effective_request_id,
+                            purpose_lane=purpose_lane,
                             duration_ms=_failed_attempt_duration_ms,
                         )
                     preconsumed_runtime_tool_calls = _attempt_tool_calls
@@ -2532,12 +2781,23 @@ class Spawner:
                 catalog_timeout_s = next_timeout_s
 
                 # Re-create the runtime adapter for the new model's runtime type.
-                next_provider_config = await self._resolve_provider_config(model)
+                next_provider_config = (
+                    retarget_ollama_provider_config(_private_provider_config, model)
+                    if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
+                    and model.startswith("ollama/")
+                    and _private_provider_config is not None
+                    else await self._resolve_provider_config(model)
+                )
                 try:
                     runtime = self._get_or_create_adapter(
                         resolved_runtime_type, next_provider_config
                     ).create_worker()
                 except ValueError:
+                    if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT:
+                        await _refuse_unregistered_private_runtime(
+                            self._pool,
+                            effective_tier=_failover_effective_tier,
+                        )
                     logger.warning(
                         "Failover candidate resolved unregistered runtime_type=%s for "
                         "butler=%s; falling back to default runtime_type=%s",
@@ -2695,6 +2955,7 @@ class Spawner:
                         session_id=session_id,
                         tool_call_count=len(tool_calls) if tool_calls else 0,
                         logical_session_id=effective_request_id,
+                        purpose_lane=purpose_lane,
                         duration_ms=int((time.monotonic() - _attempt_t0) * 1000),
                     )
 
@@ -3299,7 +3560,14 @@ class Spawner:
                     output_tokens=_ledger_output_tokens or 0,
                     cached_input_tokens=_ledger_cached_input_tokens,
                     cache_creation_tokens=_ledger_cache_creation_tokens,
-                    purpose=trigger_source,
+                    purpose=(
+                        purpose_lane
+                        if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
+                        else trigger_source
+                    ),
+                    purpose_lane=purpose_lane,
+                    resume_outcome=_resume_outcome,
+                    **_composed_prompt_ledger_kwargs(_composed_prompt_digest),
                 )
             # Emit per-call cost event onto the multiplexed fleet event bus via
             # Postgres LISTEN/NOTIFY (RFC 0022, bu-01r64.1). Uses the same

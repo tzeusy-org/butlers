@@ -1244,11 +1244,10 @@ async def resolve_owner_telegram_recipient(pool: asyncpg.Pool) -> str | None:
     which is the only form the Telegram send path can deliver to. Falls back to
     the ``'telegram'`` handle (a ``@username``) only when no chat id is stored.
 
-    Sending to a bare ``@username`` fails both at the Telegram API (private
-    users are addressable only by numeric id) and at the approval gate's
-    owner-primacy check (the canonical primary handle in
-    ``relationship.entity_facts`` is the numeric chat id), so the chat id must
-    win when both are present.
+    Sending to a bare ``@username`` fails at the Telegram API because private
+    users are addressable only by numeric id, so the chat id must win when both
+    are present. Approval authorization independently accepts any uniquely
+    verified active owner identifier.
 
     Returns the resolved identifier, or ``None`` when neither is configured.
     """

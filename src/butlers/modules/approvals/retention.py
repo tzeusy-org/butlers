@@ -101,9 +101,50 @@ async def cleanup_old_actions(
         Counts of actions deleted by status.
     """
     cutoff = datetime.now(UTC) - timedelta(days=policy.pending_actions_retention_days)
+    try:
+        delivery_tables_available = bool(
+            await pool.fetchval(
+                "SELECT to_regclass('approval_delivery_intents') IS NOT NULL "
+                "AND to_regclass('approval_delivery_presentations') IS NOT NULL "
+                "AND to_regclass('approval_delivery_attempts') IS NOT NULL"
+            )
+        )
+    except Exception:
+        delivery_tables_available = False
+    delivery_guard = (
+        """
+          AND (
+              NOT EXISTS (
+                  SELECT 1 FROM approval_delivery_intents AS delivery_intent
+                   WHERE delivery_intent.action_id = pending_actions.id
+              )
+              OR (
+                  EXISTS (
+                      SELECT 1 FROM approval_events AS delivery_event
+                       WHERE delivery_event.action_id = pending_actions.id
+                         AND delivery_event.event_type = 'approval_delivery_terminal'
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1
+                        FROM approval_delivery_intents AS delivery_intent
+                        JOIN approval_delivery_presentations AS delivery_presentation
+                          ON delivery_presentation.intent_id = delivery_intent.id
+                       WHERE delivery_intent.action_id = pending_actions.id
+                         AND delivery_presentation.state IN (
+                             'ready', 'claimed', 'handoff_started',
+                             'retry_wait', 'ambiguous'
+                         )
+                  )
+              )
+          )
+        """
+        if delivery_tables_available
+        else ""
+    )
 
     # Count eligible actions
-    count_query = """
+    count_query = (
+        """
         SELECT status, COUNT(*) as count
         FROM pending_actions
         WHERE status = ANY($1::text[])
@@ -120,8 +161,12 @@ async def cleanup_old_actions(
               AND (tool_args ->> 'source_entity_id') <> (tool_args ->> 'target_entity_id'),
               FALSE
           )
+    """
+        + delivery_guard
+        + """
         GROUP BY status
     """
+    )
     rows = await pool.fetch(
         count_query,
         TERMINAL_ACTION_STATUSES,
@@ -153,7 +198,8 @@ async def cleanup_old_actions(
 
     # Delete old actions. approval_events retains its immutable action_id as
     # historical provenance until the longer event-retention window expires.
-    delete_query = """
+    delete_query = (
+        """
         DELETE FROM pending_actions
         WHERE status = ANY($1::text[])
           AND decided_at IS NOT NULL
@@ -170,6 +216,8 @@ async def cleanup_old_actions(
               FALSE
           )
     """
+        + delivery_guard
+    )
     await pool.execute(
         delete_query,
         TERMINAL_ACTION_STATUSES,

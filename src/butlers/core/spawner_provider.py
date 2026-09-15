@@ -40,7 +40,7 @@ async def resolve_provider_config(
     ``public.provider_config`` for the Ollama provider's configured base
     URL and returns a config dict that OpenCode can consume, including the
     ``npm`` adapter package, ``/v1``-suffixed base URL, and explicit model
-    registration.  See https://docs.ollama.com/integrations/opencode
+    registration. See the Ollama OpenCode integration documentation.
 
     Returns ``None`` when no provider is configured, the model doesn't
     use a provider prefix, or no DB pool is available.
@@ -79,6 +79,26 @@ async def resolve_provider_config(
         provider_type: {
             "npm": "@ai-sdk/openai-compatible",
             "options": {"baseURL": base_url},
+            "models": {ollama_model: {"name": ollama_model}},
+        }
+    }
+
+
+def retarget_ollama_provider_config(
+    provider_config: dict[str, dict[str, Any]], model_id: str
+) -> dict[str, dict[str, Any]]:
+    """Reuse a captured Ollama origin for another canonical Ollama model."""
+    ollama = provider_config.get("ollama")
+    if not isinstance(ollama, dict) or not model_id.startswith("ollama/"):
+        raise ValueError("captured Ollama provider config cannot serve this model")
+    options = ollama.get("options")
+    if not isinstance(options, dict) or not isinstance(options.get("baseURL"), str):
+        raise ValueError("captured Ollama provider config has no usable origin")
+    ollama_model = model_id.removeprefix("ollama/")
+    return {
+        "ollama": {
+            "npm": "@ai-sdk/openai-compatible",
+            "options": dict(options),
             "models": {ollama_model: {"name": ollama_model}},
         }
     }

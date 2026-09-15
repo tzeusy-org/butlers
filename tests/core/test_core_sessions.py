@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import re
 import shutil
 import uuid
@@ -53,12 +54,26 @@ async def test_session_create_and_get(pool):
     from butlers.core.sessions import session_create, sessions_get
 
     req_id = str(uuid.uuid4())
+    effective_prompt = "# Exact synthetic system prompt"
+    prompt_digest = hashlib.sha256(effective_prompt.encode("utf-8")).hexdigest()
+    provenance = [
+        {
+            "source": "roster:synthetic/CLAUDE.md",
+            "status": "present",
+            "bytes": len(effective_prompt.encode("utf-8")),
+            "sha": prompt_digest,
+        }
+    ]
     session_id = await session_create(
         pool,
         prompt="Run daily report",
         trigger_source="tick",
         trace_id="abc-123",
         request_id=req_id,
+        effective_system_prompt=effective_prompt,
+        prompt_digest=prompt_digest,
+        prompt_provenance=provenance,
+        purpose_lane="private_content",
     )
     assert isinstance(session_id, uuid.UUID)
 
@@ -70,6 +85,15 @@ async def test_session_create_and_get(pool):
     assert session["result"] is None
     assert session["success"] is None
     assert session["completed_at"] is None
+    assert session["purpose_lane"] == "private_content"
+    receipt = await pool.fetchrow(
+        "SELECT effective_system_prompt, prompt_digest, prompt_provenance "
+        "FROM sessions WHERE id = $1",
+        session_id,
+    )
+    assert receipt["effective_system_prompt"] == effective_prompt
+    assert receipt["prompt_digest"] == prompt_digest
+    assert receipt["prompt_provenance"] == provenance
 
     # Missing key returns None
     assert await sessions_get(pool, uuid.uuid4()) is None
@@ -650,7 +674,11 @@ async def test_top_sessions_date_range_filters_by_started_at(pool):
     from butlers.core.sessions import session_complete, session_create, top_sessions
 
     in_range = await session_create(
-        pool, prompt="in-range", trigger_source="tick", request_id=str(uuid.uuid4())
+        pool,
+        prompt="in-range",
+        trigger_source="tick",
+        request_id=str(uuid.uuid4()),
+        purpose_lane="private_content",
     )
     await pool.execute(
         "UPDATE sessions SET started_at = $2 WHERE id = $1",
@@ -691,6 +719,12 @@ async def test_top_sessions_date_range_filters_by_started_at(pool):
     scoped_ids = {s["session_id"] for s in scoped["sessions"]}
     assert str(in_range) in scoped_ids
     assert str(out_of_range) not in scoped_ids
+    assert (
+        next(
+            row["purpose_lane"] for row in scoped["sessions"] if row["session_id"] == str(in_range)
+        )
+        == "private_content"
+    )
 
     # Omitting both from_date/to_date preserves all-time behavior (back-compat).
     all_time = await top_sessions(pool, limit=10)

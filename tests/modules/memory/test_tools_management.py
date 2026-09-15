@@ -160,6 +160,11 @@ async def _call_context(
 
     pool.fetch = _fake_fetch
     pool.execute = AsyncMock()
+    # No runtime_config row / no withheld facts in this mocked pool -- both
+    # load_catalog_read_policy and the profile-facts withheld-count query
+    # call pool.fetchval, so it must return a real falsy value rather than
+    # AsyncMock's default (a MagicMock, whose __int__ defaults to 1).
+    pool.fetchval = AsyncMock(return_value=None)
 
     with patch(
         "butlers.modules.memory.tools.context._search.recall",

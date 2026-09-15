@@ -20,7 +20,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from butlers.core.dashboard_turns import DashboardTurnResult
-from butlers.core.model_routing import Complexity, coerce_complexity_tier
+from butlers.core.model_routing import (
+    Complexity,
+    coerce_complexity_tier,
+)
+from butlers.core.spawner import Spawner
 from butlers.daemon import ButlerDaemon
 from butlers.tools.switchboard.routing.contracts import parse_route_envelope
 
@@ -296,6 +300,66 @@ async def test_accept_phase_and_background_dispatch(tmp_path: Path) -> None:
     call_kwargs = trigger_mock.call_args.kwargs
     assert call_kwargs["trigger_source"] == "route"
     assert call_kwargs["request_id"] == "018f6f4e-5b3b-7b2d-9c2f-7b7b6b6b6b6b"
+
+
+async def test_real_route_worker_preserves_private_channel_into_spawner_gate(
+    tmp_path: Path,
+) -> None:
+    """A production WhatsApp route cannot reach the remote static fallback."""
+    patches = _patch_infra("health")
+    butler_dir = _make_butler_toml(tmp_path, butler_name="health")
+    daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
+    assert route_execute_fn is not None
+
+    actual_spawner = Spawner(
+        config=daemon.config,
+        config_dir=butler_dir,
+        pool=patches["mock_pool"],
+        runtime=MagicMock(),
+    )
+    daemon.spawner.trigger = actual_spawner.trigger
+    errored = AsyncMock(return_value=True)
+    processed = AsyncMock(return_value=True)
+
+    with (
+        patch(
+            "butlers.core_tools._routing.route_inbox_insert",
+            new_callable=AsyncMock,
+            return_value=uuid.uuid4(),
+        ),
+        patch(
+            "butlers.core_tools._routing.route_inbox_claim_processing",
+            new_callable=AsyncMock,
+            return_value=uuid.uuid4(),
+        ),
+        patch(
+            "butlers.core.route_inbox.route_inbox_renew_processing_claim",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch("butlers.core_tools._routing.route_inbox_mark_errored", errored),
+        patch("butlers.core_tools._routing.route_inbox_mark_processed", processed),
+        patch(
+            "butlers.core.spawner.resolve_model_with_effective_tier",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch("butlers.core.spawner.write_audit_entry", new_callable=AsyncMock),
+        patch.object(actual_spawner, "_get_or_create_adapter") as adapter_setup,
+    ):
+        result = await route_execute_fn(
+            schema_version="route.v1",
+            request_context=_route_request_context(source_channel="whatsapp_user_client"),
+            input={"prompt": "Private synthetic fixture."},
+        )
+        assert result["status"] == "accepted"
+        while daemon._route_inbox_tasks:
+            await asyncio.gather(*tuple(daemon._route_inbox_tasks))
+
+    adapter_setup.assert_not_called()
+    processed.assert_not_awaited()
+    errored.assert_awaited_once()
+    assert "PrivateContentModelUnavailable" in errored.await_args.args[2]
 
 
 async def test_dashboard_route_acceptance_atomically_claims_and_enqueues_before_spawning(
@@ -617,10 +681,73 @@ async def test_recovery_restores_structured_conceptual_message_context() -> None
     ):
         await recover_route_inbox(daemon, pool)
 
-    assert captured_context == [{"conceptual_message": conceptual_message}]
+    assert captured_context == [
+        {
+            "request_context": {"source_channel": "whatsapp_user_client"},
+            "conceptual_message": conceptual_message,
+        }
+    ]
     observability = repr(recovery_span.set_attribute.call_args_list)
     assert envelope["request_context"]["request_id"] not in observability
     assert str(row_id) not in observability
+
+
+async def test_recovery_preserves_private_channel_into_real_spawner_gate(tmp_path: Path) -> None:
+    """Crash recovery cannot replay a private route through the remote fallback."""
+    from butlers.switchboard_wiring import recover_route_inbox
+
+    patches = _patch_infra("health")
+    butler_dir = _make_butler_toml(tmp_path, butler_name="health")
+    daemon, _route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
+    actual_spawner = Spawner(
+        config=daemon.config,
+        config_dir=butler_dir,
+        pool=patches["mock_pool"],
+        runtime=MagicMock(),
+    )
+    daemon.spawner = actual_spawner
+    row_id = uuid.uuid4()
+    processing_claim_id = uuid.uuid4()
+    envelope = {
+        "schema_version": "route.v1",
+        "request_context": _route_request_context(source_channel="telegram_user_client"),
+        "input": {"prompt": "Private recovery fixture."},
+    }
+
+    async def _recover_once(*_args, dispatch_fn, **_kwargs):
+        await dispatch_fn(
+            row_id=row_id,
+            route_envelope=envelope,
+            processing_claim_id=processing_claim_id,
+            recovery_from_processing=False,
+        )
+        return 1
+
+    errored = AsyncMock(return_value=True)
+    processed = AsyncMock(return_value=True)
+    with (
+        patch("butlers.switchboard_wiring.route_inbox_recovery_sweep", _recover_once),
+        patch(
+            "butlers.core.route_inbox.route_inbox_renew_processing_claim",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch("butlers.switchboard_wiring.route_inbox_mark_errored", errored),
+        patch("butlers.switchboard_wiring.route_inbox_mark_processed", processed),
+        patch(
+            "butlers.core.spawner.resolve_model_with_effective_tier",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch("butlers.core.spawner.write_audit_entry", new_callable=AsyncMock),
+        patch.object(actual_spawner, "_get_or_create_adapter") as adapter_setup,
+    ):
+        await recover_route_inbox(daemon, patches["mock_pool"])
+
+    adapter_setup.assert_not_called()
+    processed.assert_not_awaited()
+    errored.assert_awaited_once()
+    assert "PrivateContentModelUnavailable" in errored.await_args.args[2]
 
 
 async def test_malformed_conceptual_recovery_log_omits_row_and_request_uuids() -> None:

@@ -27,7 +27,7 @@ The daemon executes these phases in strict order. A failure at a fatal phase abo
 | 6 | Provision or receive the database pool and assign `db.owner_butler` from configured identity | Fatal |
 | 7 | Run core and butler-specific Alembic migrations | Fatal |
 | 8 | Run module migrations; build CredentialStore; validate module credentials; initialize storage and bootstrap state | Module migration/credential failures are non-fatal; storage/bootstrap work is best-effort |
-| 9 | Resolve runtime config from DB (seed from `[butler.runtime_seed]` on first boot) | Fatal -- cannot operate without runtime config |
+| 9 | Resolve runtime config: seed DB-owned tuning fields and reconcile Git-owned `core_groups`; preserve a DB narrowing only with an explicit reason | Fatal -- cannot operate without runtime config |
 | 10 | Sync TOML schedules to DB **before module startup** | Fatal -- establishes schedule provenance before recovery is evaluated |
 | 11 | Call module `on_startup()` in topological order | Non-fatal (degraded -- failed module + dependents marked unavailable) |
 | 12 | Create Spawner, audit/runtime wiring, and Switchboard client connection | Runtime setup is fatal; connection retry is non-fatal |
