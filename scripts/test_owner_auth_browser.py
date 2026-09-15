@@ -36,7 +36,7 @@ async def initialize(env: dict[str, str]) -> None:
     )
     try:
         await connection.execute(
-            (ROOT / "alembic/versions/core/core_239_dashboard_owner_auth.sql").read_text()
+            (ROOT / "alembic/versions/core/core_240_dashboard_owner_auth.sql").read_text()
         )
         await connection.execute("CREATE ROLE owner_auth_browser_runtime LOGIN NOINHERIT")
         # PostgreSQL identifiers are fixed; only this synthetic secret is quoted.

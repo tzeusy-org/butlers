@@ -18,6 +18,7 @@ core_groups = [
     "temporal",       # deadlines, event_chains, seasonal_periods
     "delegation",     # delegate_ask/receive/answer/wake — cross-butler questions
     "fleet_cases",    # find_open_case/open_case/contribute_case_evidence/propose_case_posture/close_case/read_case
+    "cost_claims",    # typed cross-butler money claims; writes fenced by runtime role
 ]
 
 [butler.db]
@@ -98,6 +99,12 @@ name = "interaction-sync"
 cron = "30 6 * * *"
 dispatch_mode = "job"
 job_name = "interaction_sync"
+
+[[butler.schedule]]
+name = "loan-cost-claim-backfill"
+cron = "35 4 * * *"
+dispatch_mode = "job"
+job_name = "loan_cost_claim_backfill"
 
 [[butler.schedule]]
 name = "memory-curation"

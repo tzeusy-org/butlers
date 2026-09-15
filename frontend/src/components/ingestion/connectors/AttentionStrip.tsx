@@ -29,8 +29,7 @@ import { Link } from 'react-router'
 import type { ConnectorSummary } from '@/api/types'
 import {
   deriveConnectorDispatchInfo,
-  authStatusLabel,
-  authStatusColor,
+  authStatusPresentation,
 } from './connector-auth'
 
 interface AttentionStripProps {
@@ -66,7 +65,7 @@ export function AttentionStrip({ connectors }: AttentionStripProps) {
         </span>
         <span
           data-testid="attention-count"
-          className="font-mono text-[10px] tabular-nums text-[color:var(--red,oklch(0.62_0.20_25))] leading-none"
+          className="font-mono text-[10px] tabular-nums text-[var(--red-text)] leading-none"
         >
           {issues.length}
         </span>
@@ -80,12 +79,13 @@ export function AttentionStrip({ connectors }: AttentionStripProps) {
           // the full operational warning remains visible on the roster row.
           const hasOperationalWarning =
             !info.needsAttention && Boolean(c.operational_warnings?.length)
+          const authPresentation = authStatusPresentation(info)
           const label = hasOperationalWarning
             ? 'cadence sparse'
-            : authStatusLabel(info.authStatus)
+            : authPresentation.label
           const colorClass = hasOperationalWarning
             ? 'text-[var(--amber-text)]'
-            : authStatusColor(info.authStatus)
+            : authPresentation.colorClass
           const displayName = formatConnectorName(c)
 
           return (

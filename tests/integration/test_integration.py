@@ -395,7 +395,14 @@ class TestButlerStartupIntegration:
 
         # Exercise the actual daemon dispatcher rather than comparing it with
         # another mutable production catalog.
-        assert len(set(registered_tools)) == 66
+        assert len(set(registered_tools)) == 71
+        assert {
+            "cost_claim_assert",
+            "cost_claim_amend",
+            "cost_claim_retract",
+            "cost_claim_list_mine",
+            "cost_claim_resolve",
+        } <= set(registered_tools)
         assert {"state_list", "notify", "seasonal_period_create", "route.execute"} <= set(
             registered_tools
         )

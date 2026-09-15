@@ -1,6 +1,6 @@
 -- Private, host-owned authentication state. No raw browser secret is persisted.
 CREATE SCHEMA dashboard_auth;
-COMMENT ON SCHEMA dashboard_auth IS 'butlers:dashboard-owner-auth:core_239';
+COMMENT ON SCHEMA dashboard_auth IS 'butlers:dashboard-owner-auth:core_240';
 REVOKE ALL ON SCHEMA dashboard_auth FROM PUBLIC;
 DO $$ BEGIN
  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='dashboard_auth_api') THEN

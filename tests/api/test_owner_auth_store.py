@@ -16,7 +16,7 @@ from tests.api.owner_auth_fixtures import ORIGIN, RP, Passkey
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 SQL = (
-    Path(__file__).resolve().parents[2] / "alembic/versions/core/core_239_dashboard_owner_auth.sql"
+    Path(__file__).resolve().parents[2] / "alembic/versions/core/core_240_dashboard_owner_auth.sql"
 )
 
 
@@ -857,7 +857,7 @@ async def test_global_migration_refuses_foreign_namespace_and_missing_installed_
         await _run_auth_revision(pool, postgres_container, "upgrade")
         # schema-standin-exempt: Alembic bookkeeping receipt, not a domain query stand-in.
         await pool.execute(
-            "CREATE SCHEMA sibling; CREATE TABLE sibling.alembic_version(version_num varchar(32) PRIMARY KEY); INSERT INTO sibling.alembic_version VALUES('core_239')"
+            "CREATE SCHEMA sibling; CREATE TABLE sibling.alembic_version(version_num varchar(32) PRIMARY KEY); INSERT INTO sibling.alembic_version VALUES('core_240')"
         )
         await pool.execute("DROP SCHEMA dashboard_auth CASCADE")
         with pytest.raises(RuntimeError, match="intact, owned"):
