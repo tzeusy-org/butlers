@@ -25,7 +25,6 @@ import pytest
 from asyncpg.exceptions import UndefinedTableError
 from fastapi.testclient import TestClient
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.models.audit import AuditLogEntry
 from butlers.api.routers import audit as audit_module
@@ -36,6 +35,7 @@ from butlers.api.routers.audit import (
     audit_log_appended_total,
 )
 from butlers.core.credential_keys import normalize_credential_key
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 

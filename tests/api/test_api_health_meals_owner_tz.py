@@ -26,8 +26,8 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.core.general_settings import save_general_settings
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [

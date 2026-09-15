@@ -39,7 +39,6 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from butlers.api.app import create_app
 from butlers.api.audit_grouping import (
     build_audit_group_occurrences_query,
     build_audit_group_query,
@@ -52,6 +51,7 @@ from butlers.api.routers import audit as audit_router
 from butlers.api.routers import issues as issues_module
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [

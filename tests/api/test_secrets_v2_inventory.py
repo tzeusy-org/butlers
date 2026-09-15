@@ -41,7 +41,6 @@ import pytest
 from asyncpg.exceptions import UndefinedColumnError, UndefinedTableError
 from fastapi.testclient import TestClient
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
 from butlers.api.routers.secrets_v2 import (
@@ -77,6 +76,7 @@ from butlers.api.routers.secrets_v2 import (
     get_inventory,
     resolve_staleness_window_s,
 )
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 
