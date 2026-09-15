@@ -244,6 +244,133 @@ async def test_include_bug_report_offers_both_tools() -> None:
     assert names == {"route_to_butler", "file_bug_report"}
 
 
+async def test_include_question_lane_offers_four_tools() -> None:
+    pool = MagicMock()
+    captured_tools = {}
+
+    async def _invoke_structured(*, tools, **kwargs):
+        captured_tools["tools"] = tools
+        return ([_route_call("health")], None, {"input_tokens": 1, "output_tokens": 1})
+
+    adapter = MagicMock()
+    adapter.invoke_structured = AsyncMock(side_effect=_invoke_structured)
+    mcp = _make_mcp_server({})
+
+    with (
+        patch(f"{_MODULE}.resolve_model_with_effective_tier", AsyncMock(return_value=_catalog())),
+        patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
+        patch(f"{_MODULE}.create_adapter", return_value=adapter),
+        patch(f"{_MODULE}.record_token_usage", AsyncMock()),
+    ):
+        await sc.try_structured_classification(
+            pool,
+            mcp_server=mcp,
+            prompt="hi",
+            include_bug_report=True,
+            include_question_lane=True,
+        )
+
+    names = {t["name"] for t in captured_tools["tools"]}
+    assert names == {"route_to_butler", "file_bug_report", "answer_question", "cannot_answer"}
+
+
+async def test_question_fixture_selects_answer_question_with_scope_and_target() -> None:
+    """A question with an identifiable owning butler validates and executes
+    answer_question(scope="domain", target=...) — not a route_to_butler guess."""
+    pool = MagicMock()
+    adapter = _make_adapter(
+        side_effect=[
+            (
+                [
+                    {
+                        "id": "tu_1",
+                        "name": "answer_question",
+                        "input": {
+                            "scope": "domain",
+                            "question": "How much did I spend on groceries this month?",
+                            "target": "finance",
+                        },
+                    }
+                ],
+                "answering from finance",
+                {"input_tokens": 10, "output_tokens": 5},
+            )
+        ]
+    )
+    mcp = _make_mcp_server({"answer_question": {"status": "accepted", "butler": "finance"}})
+
+    with (
+        patch(f"{_MODULE}.resolve_model_with_effective_tier", AsyncMock(return_value=_catalog())),
+        patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
+        patch(f"{_MODULE}.create_adapter", return_value=adapter),
+        patch(f"{_MODULE}.record_token_usage", AsyncMock()),
+    ):
+        result = await sc.try_structured_classification(
+            pool,
+            mcp_server=mcp,
+            prompt="How much did I spend on groceries this month?",
+            include_bug_report=True,
+            include_question_lane=True,
+            butler_name="switchboard",
+        )
+
+    assert result is not None
+    assert result.tool_calls == [
+        {
+            "id": "tu_1",
+            "name": "answer_question",
+            "input": {
+                "scope": "domain",
+                "question": "How much did I spend on groceries this month?",
+                "target": "finance",
+            },
+            "result": {"status": "accepted", "butler": "finance"},
+        }
+    ]
+
+
+async def test_cannot_answer_call_validates_and_executes() -> None:
+    pool = MagicMock()
+    adapter = _make_adapter(
+        side_effect=[
+            (
+                [
+                    {
+                        "id": "tu_1",
+                        "name": "cannot_answer",
+                        "input": {
+                            "question_summary": "What is the meaning of life?",
+                            "scope_checked": ["finance", "health", "system"],
+                            "reason": "No butler owns this question.",
+                        },
+                    }
+                ],
+                None,
+                {"input_tokens": 3, "output_tokens": 2},
+            )
+        ]
+    )
+    mcp = _make_mcp_server({"cannot_answer": {"status": "dead_lettered", "dead_letter_id": "dl-1"}})
+
+    with (
+        patch(f"{_MODULE}.resolve_model_with_effective_tier", AsyncMock(return_value=_catalog())),
+        patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
+        patch(f"{_MODULE}.create_adapter", return_value=adapter),
+        patch(f"{_MODULE}.record_token_usage", AsyncMock()),
+    ):
+        result = await sc.try_structured_classification(
+            pool,
+            mcp_server=mcp,
+            prompt="What is the meaning of life?",
+            include_bug_report=True,
+            include_question_lane=True,
+        )
+
+    assert result is not None
+    assert result.tool_calls[0]["name"] == "cannot_answer"
+    assert result.tool_calls[0]["result"] == {"status": "dead_lettered", "dead_letter_id": "dl-1"}
+
+
 async def test_schema_invalid_retries_once_then_falls_back_to_none() -> None:
     pool = MagicMock()
     # Both attempts return schema-invalid output (missing "prompt").

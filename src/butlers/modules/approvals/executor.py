@@ -160,6 +160,7 @@ async def execute_approved_action(
     tool_fn: Any,
     approval_rule_id: uuid.UUID | None = None,
     decision_memory_writer: DecisionMemoryWriter | None = None,
+    origin_butler: str | None = None,
 ) -> ExecutionResult:
     """Execute an approved action and persist the result.
 
@@ -185,6 +186,11 @@ async def execute_approved_action(
     decision_memory_writer:
         Optional owning-memory writer invoked after the execution outcome is
         committed and audited. Its failures are intentionally non-blocking.
+    origin_butler:
+        The butler owning this action's schema. Required to attribute an
+        ``attention_ledger`` row when a ``origin='prepared'`` action fails
+        execution (bu-2jtfw.11) -- ``None`` skips that best-effort write
+        rather than recording a row with no attributable butler.
 
     Returns
     -------
@@ -201,11 +207,12 @@ async def execute_approved_action(
         # update waits here instead of marking the row terminal while a handler
         # is already allowed to perform its side effect.
         failed_execution: ExecutionResult | None = None
+        action_origin: str | None = None
         now = datetime.now(UTC)
         try:
             async with _approval_write_transaction(pool) as write_target:
                 existing_row = await write_target.fetchrow(
-                    "SELECT status, execution_result, session_id, decided_by "
+                    "SELECT status, execution_result, session_id, decided_by, origin "
                     "FROM pending_actions WHERE id = $1 FOR UPDATE",
                     action_id,
                 )
@@ -224,6 +231,8 @@ async def execute_approved_action(
                         success=False,
                         error=f"Action {action_id} already executed without a replayable result",
                     )
+
+                action_origin = existing_row.get("origin")
 
                 if existing_status != ActionStatus.APPROVED.value:
                     return ExecutionResult(
@@ -358,6 +367,30 @@ async def execute_approved_action(
                     action_id,
                     exc_info=True,
                 )
+
+            if action_origin == "prepared" and origin_butler is not None:
+                # A prepared action is never pushed to the owner, so it has no
+                # notify()/insight egress attempt of its own to record its
+                # failure against. This is the analogous attention-ledger hook
+                # for that origin (bu-2jtfw.11) -- best-effort, never blocking.
+                try:
+                    from butlers.core.attention_ledger import record_attention_event
+
+                    await record_attention_event(
+                        pool,
+                        origin_butler=origin_butler,
+                        source="approvals",
+                        outcome="failed",
+                        intent="prepared_action_execution",
+                        reason=failed_execution.error,
+                        notification_ref=str(action_id),
+                    )
+                except Exception:  # noqa: BLE001 -- ledger write is best-effort
+                    logger.warning(
+                        "Could not record attention-ledger row for failed prepared action %s",
+                        action_id,
+                        exc_info=True,
+                    )
 
             if approval_rule_id is not None:
                 try:

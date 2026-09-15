@@ -844,23 +844,93 @@ async def test_model_attempts_422_on_bad_since(app):
 
 
 async def test_model_attempts_returns_real_rows(app):
-    """GET /api/settings/models/{id}/attempts returns provenance rows."""
+    """Private runtime failures stay content-blind through dispatch evidence and its API."""
     from datetime import UTC, datetime
+
+    from butlers.connectors.discretion_dispatcher import (
+        PURPOSE_LANE_PRIVATE_CONTENT,
+        DiscretionDispatcher,
+    )
+    from butlers.core.model_routing import QuotaStatus, SpendRoutingResult
 
     entry_id = uuid.uuid4()
     attempt_ts = datetime(2026, 5, 24, 10, 0, 0, tzinfo=UTC)
 
+    private_provider_config = {
+        "ollama": {
+            "npm": "@ai-sdk/openai-compatible",
+            "options": {"baseURL": "http://ollama:11434/v1"},
+            "models": {"qwen3.5:9b": {"name": "qwen3.5:9b"}},
+        }
+    }
+    local_candidate = ("opencode", "ollama/qwen3.5:9b", [], entry_id, 30)
+    resolved = (*local_candidate, "specialty")
+    sentinel = (
+        "Connection error: SENSITIVE_PROVIDER response_body=private prompt_fragment=do-not-publish"
+    )
+    adapter = MagicMock()
+    adapter.invoke = AsyncMock(side_effect=RuntimeError(sentinel))
+    adapter.last_process_info = None
+    dispatcher = DiscretionDispatcher(
+        pool=MagicMock(),
+        purpose_lane=PURPOSE_LANE_PRIVATE_CONTENT,
+    )
+
+    with (
+        patch(
+            "butlers.connectors.discretion_dispatcher.resolve_model_with_effective_tier",
+            AsyncMock(return_value=resolved),
+        ),
+        patch(
+            "butlers.connectors.discretion_dispatcher.apply_spend_routing_rules",
+            AsyncMock(return_value=SpendRoutingResult(resolved=local_candidate)),
+        ),
+        patch(
+            "butlers.connectors.discretion_dispatcher.enforce_private_content_selection",
+            AsyncMock(return_value=(local_candidate, False, private_provider_config, False)),
+        ),
+        patch(
+            "butlers.connectors.discretion_dispatcher.check_token_quota",
+            AsyncMock(
+                return_value=QuotaStatus(
+                    allowed=True,
+                    usage_24h=0,
+                    limit_24h=None,
+                    usage_30d=0,
+                    limit_30d=None,
+                )
+            ),
+        ),
+        patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
+        patch(
+            "butlers.connectors.discretion_dispatcher.record_dispatch_attempt",
+            AsyncMock(),
+        ) as record_attempt,
+    ):
+        with pytest.raises(RuntimeError, match="same_tier_failover_exhausted"):
+            await dispatcher.call("synthetic private input")
+
+    evidence = record_attempt.await_args.kwargs
+    assert evidence["outcome"] == "runtime_failure"
+    assert evidence["purpose_lane"] == PURPOSE_LANE_PRIVATE_CONTENT
+    assert evidence["failure_reason"] == "private_content_runtime_failure"
+    assert evidence["error_code"] is None
+    assert evidence["error_message"] is None
+    assert sentinel not in repr(evidence)
+
     attempt_row = {
         "ts": attempt_ts,
-        "butler": "general",
-        "outcome": "quota_skip",
-        "attempt_index": 0,
-        "failure_reason": "Token quota exhausted for catalog entry 'claude-sonnet': 24h",
-        "error_code": None,
-        "error_message": None,
+        "butler": evidence["butler"],
+        "outcome": evidence["outcome"],
+        "attempt_index": evidence["attempt_index"],
+        "failure_reason": evidence["failure_reason"],
+        "error_code": evidence["error_code"],
+        "error_message": evidence["error_message"],
         "tool_call_count": 0,
         "session_id": None,
         "logical_session_id": "req-abc-123",
+        "duration_ms": evidence["duration_ms"],
+        "purpose_lane": evidence["purpose_lane"],
     }
 
     _, mock_pool = _app_with_pool(app)
@@ -877,12 +947,17 @@ async def test_model_attempts_returns_real_rows(app):
     assert body["meta"]["total"] == 1
     rows = body["data"]
     assert len(rows) == 1
-    assert rows[0]["outcome"] == "quota_skip"
+    assert rows[0]["outcome"] == "runtime_failure"
     assert rows[0]["attempt_index"] == 0
-    assert rows[0]["butler"] == "general"
+    assert rows[0]["butler"] == "__discretion__"
     assert rows[0]["logical_session_id"] == "req-abc-123"
     assert rows[0]["tool_call_count"] == 0
     assert rows[0]["session_id"] is None
+    assert rows[0]["purpose_lane"] == "private_content"
+    assert rows[0]["failure_reason"] == "private_content_runtime_failure"
+    assert rows[0]["error_code"] is None
+    assert rows[0]["error_message"] is None
+    assert sentinel not in resp.text
     assert "ORDER BY ts DESC, id DESC" in mock_pool.fetch.call_args.args[0]
 
 

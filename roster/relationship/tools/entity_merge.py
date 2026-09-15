@@ -210,21 +210,19 @@ async def merge_entity_pair(
                 target_entity_id,
             )
 
-            subject_facts_rewired = await conn.fetchval(
+            subject_rewired_ids = await conn.fetch(
                 """
-                WITH updated AS (
-                    UPDATE relationship.entity_facts
-                    SET subject = $2,
-                        updated_at = now()
-                    WHERE subject = $1
-                      AND validity = 'active'
-                    RETURNING id
-                )
-                SELECT count(*) FROM updated
+                UPDATE relationship.entity_facts
+                SET subject = $2,
+                    updated_at = now()
+                WHERE subject = $1
+                  AND validity = 'active'
+                RETURNING id
                 """,
                 source_entity_id,
                 target_entity_id,
             )
+            subject_facts_rewired = len(subject_rewired_ids)
 
             source_text = str(source_entity_id)
             target_text = str(target_entity_id)
@@ -249,22 +247,56 @@ async def merge_entity_pair(
                 target_text,
             )
 
-            object_facts_rewired = await conn.fetchval(
+            object_rewired_ids = await conn.fetch(
                 """
-                WITH updated AS (
-                    UPDATE relationship.entity_facts
-                    SET object = $2,
-                        updated_at = now()
-                    WHERE object_kind = 'entity'
-                      AND object = $1
-                      AND validity = 'active'
-                    RETURNING id
-                )
-                SELECT count(*) FROM updated
+                UPDATE relationship.entity_facts
+                SET object = $2,
+                    updated_at = now()
+                WHERE object_kind = 'entity'
+                  AND object = $1
+                  AND validity = 'active'
+                RETURNING id
                 """,
                 source_text,
                 target_text,
             )
+            object_facts_rewired = len(object_rewired_ids)
+
+            # RFC 0031 write-behind contract: the two rewires above just moved
+            # entity_facts.subject/object off the source entity, but the
+            # already-projected public.entity_graph_edges rows for those exact
+            # facts (keyed on source_id=entity_facts.id) still point at the old
+            # id until the next backfill sweep. Scope the edge update to the
+            # RETURNED ids from the rewires above -- never a blanket
+            # subject_entity_id/object_entity_id = source_entity_id filter --
+            # so a stale edge belonging to a fact that was SUPERSEDED (not
+            # rewired) by the dedup UPDATEs above is left untouched.
+            if subject_rewired_ids:
+                await conn.execute(
+                    """
+                    UPDATE public.entity_graph_edges
+                    SET subject_entity_id = $2,
+                        updated_at = now()
+                    WHERE source_schema = 'relationship'
+                      AND source_table = 'entity_facts'
+                      AND source_id = ANY($1::uuid[])
+                    """,
+                    [row["id"] for row in subject_rewired_ids],
+                    target_entity_id,
+                )
+            if object_rewired_ids:
+                await conn.execute(
+                    """
+                    UPDATE public.entity_graph_edges
+                    SET object_entity_id = $2,
+                        updated_at = now()
+                    WHERE source_schema = 'relationship'
+                      AND source_table = 'entity_facts'
+                      AND source_id = ANY($1::uuid[])
+                    """,
+                    [row["id"] for row in object_rewired_ids],
+                    target_entity_id,
+                )
 
             await repoint_facts_on_conn(conn, source_entity_id, target_entity_id)
 

@@ -504,43 +504,16 @@ class EntityTimelineItem(BaseModel):
     primary: bool = False
 
 
-class EntityReachOutDraft(BaseModel):
-    """A drafted reach-out message for an entity (predicate='reach_out_draft').
-
-    A draft is exactly that: text the owner has composed but NOT sent.  Nothing
-    in the create path contacts a channel or queues delivery, so ``status`` is
-    always ``'draft'`` today (see ``tools/reach_out.py``).
-
-    ``message`` maps to ``fact.content``; ``channel`` is sparse metadata
-    recording the channel the owner had in mind, not a delivery attempt.
-
-    Provenance fields are always present per the Provenance contract.
-    The legacy ``facts`` table does not carry these columns; they are explicit
-    nulls / defaults.  ``src`` is ``'memory_module_legacy'``.
-    """
-
-    id: UUID
-    message: str | None = None
-    channel: str | None = None
-    status: str = "draft"
-    created_at: datetime | None = None
-    # Provenance contract fields (spec §"Provenance contract").
-    src: str = "memory_module_legacy"
-    conf: float | None = None
-    last_seen: datetime | None = None
-    weight: float | None = None
-    verified: bool = False
-    primary: bool = False
-
-
 # ---------------------------------------------------------------------------
 # Entity-level tab WRITE models (bu-6t8ix.4)
 #
-# The tab GETs above were read-only, which left the log-interaction,
-# gift-idea, and draft-reach-out operator verbs with nowhere to write.  These
-# request bodies feed the POST siblings, which persist through the butler's own
-# fact-store tools so a dashboard-authored record is indistinguishable from a
-# butler-authored one.
+# The tab GETs above were read-only, which left the log-interaction and
+# gift-idea operator verbs with nowhere to write. These request bodies feed
+# the POST siblings, which persist through the butler's own fact-store tools
+# so a dashboard-authored record is indistinguishable from a butler-authored
+# one. (A third verb, draft-reach-out, shipped alongside these and its model
+# EntityReachOutDraft/CreateEntityReachOutDraftRequest were later retired in
+# bu-2jtfw.11, replaced by the prepared-action mechanism.)
 # ---------------------------------------------------------------------------
 
 
@@ -590,19 +563,6 @@ class CreateEntityGiftRequest(BaseModel):
     occasion: str | None = None
 
     _strip_description = field_validator("description")(_require_non_blank)
-
-
-class CreateEntityReachOutDraftRequest(BaseModel):
-    """Request body for POST /entities/{id}/reach-out-drafts — the draft-reach-out verb.
-
-    ``channel`` records the channel the owner has in mind.  It is intent only:
-    the endpoint never sends, and there is no send path behind it.
-    """
-
-    message: str
-    channel: str | None = None
-
-    _strip_message = field_validator("message")(_require_non_blank)
 
 
 class LinkedContactSummary(BaseModel):

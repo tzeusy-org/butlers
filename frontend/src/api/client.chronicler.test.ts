@@ -2,7 +2,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { getChroniclerDayClose, postChroniclerDayCloseRefresh } from "./client.ts";
+import { ApiError, getChroniclerDayClose, postChroniclerDayCloseRefresh } from "./client.ts";
 import type {
   ChroniclerDayCloseRefreshResult,
   ChroniclerDayCloseResponse,
@@ -77,6 +77,58 @@ describe("Chronicler day-close refresh response contract", () => {
     );
     expect(requestInit).toMatchObject({ method: "POST" });
     expect(JSON.parse(requestInit.body)).toEqual({ date: "2026-03-15", tz: "US/Pacific" });
+  });
+
+  it("allows a reasoning-tier refresh to complete after the generic request timeout", async () => {
+    vi.useFakeTimers();
+    mockFetch.mockImplementationOnce((_url, init: RequestInit) =>
+      new Promise((resolve, reject) => {
+        const responseTimer = setTimeout(
+          () =>
+            resolve({
+              ok: true,
+              status: 200,
+              json: async () => QUIET_DAY_CLOSE_REFRESH_RESPONSE,
+              headers: { get: () => "application/json" },
+            }),
+          119_999,
+        );
+        init.signal?.addEventListener("abort", () => {
+          clearTimeout(responseTimer);
+          reject(new DOMException("Aborted", "AbortError"));
+        });
+      }),
+    );
+
+    try {
+      const request = postChroniclerDayCloseRefresh({
+        date: "2026-03-15",
+        tz: "Asia/Singapore",
+      });
+      const expectation = expect(request).resolves.toEqual(QUIET_DAY_CLOSE_REFRESH_RESPONSE);
+      await vi.advanceTimersByTimeAsync(119_999);
+      await expectation;
+
+      mockFetch.mockImplementationOnce((_url, init: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () => {
+            reject(new DOMException("Aborted", "AbortError"));
+          });
+        }),
+      );
+      const timeoutRequest = postChroniclerDayCloseRefresh({
+        date: "2026-03-15",
+        tz: "Asia/Singapore",
+      });
+      const timeoutExpectation = expect(timeoutRequest).rejects.toMatchObject({
+        name: ApiError.name,
+        code: "TIMEOUT",
+      });
+      await vi.advanceTimersByTimeAsync(120_000);
+      await timeoutExpectation;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps a quiet close distinct from a cached response", () => {

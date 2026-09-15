@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The Email module provides email MCP tools for inbox search, message reading, sending, and replying using IMAP and SMTP, with classification pipeline integration for incoming message routing.
+The Email module provides email MCP tools for inbox search, message reading, sending, and replying using IMAP and SMTP. Incoming message classification and routing are handled by `GmailConnector` via the connector-based ingestion pipeline, not by this module.
 
 ## Requirements
 

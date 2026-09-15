@@ -153,7 +153,7 @@ path; the user-token automation path was rejected for the same ban risk that gat
 
 | Connector | Priority | Reason deferred |
 |---|---|---|
-| YouTube | P3 | Low standalone value; shares Google OAuth but watch-history context is marginal. Transcript extraction is a content pipeline, not a connector. |
+| YouTube | P3 | Confirmed (2026-09-09, live YouTube Data API v3 docs) rather than assumed: `activities.list` exposes no watch-history, like, favorite, subscription, or bulletinPost signal — Google has removed those activity types entirely, and `playlistItems.list` explicitly cannot read Watch History or Watch Later. The only owner-authored signal the current API supports at all is explicit addition to one of the owner's own non-Watch-Later playlists. `openspec/changes/specify-youtube-playlist-learning-signal/` specifies that narrower substitute as a principled cut of the original "learning intent" ask, pending explicit owner approval (see that change's `tasks.md` §3) before any promotion out of P3 or implementation. Transcript extraction remains a content pipeline, not a connector, and is out of scope regardless. |
 | Podcast apps | P3 | Fragmented ecosystem with **no dominant API**; OPML export is one-time and lacks listening history. |
 
 (Spotify *is* in v1 — v1.md:94-95 — as the one media-consumption connector; the others above
@@ -242,3 +242,6 @@ The practical decision rule that falls out of this catalogue:
   approval and resolver layers, in lieu of a connector-level privacy-tier abstraction.
 - `docs/plans/connector-gaps.md` (deleted) — the planning catalogue this RFC supersedes as the
   durable home for connector scope and deferral rationale.
+- `openspec/changes/specify-youtube-playlist-learning-signal/` — 2026-09-09 re-verification of the
+  YouTube deferral against live API documentation, with a narrower owner-gated substitute signal
+  specified pending approval.

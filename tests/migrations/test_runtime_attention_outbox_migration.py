@@ -31,7 +31,7 @@ from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.exc import DBAPIError
 
 from alembic import command
-from butlers.migrations import _build_alembic_config, run_migrations
+from butlers.migrations import _build_alembic_config, get_chain_head, run_migrations
 from butlers.testing.migration import (
     assert_at_chain_head,
     create_migration_db,
@@ -682,10 +682,19 @@ async def test_core_only_database_has_guarded_outbox_without_specialist_schema(
 
 
 @pytest.mark.asyncio(loop_scope="module")
-async def test_core_only_outbox_stages_bounded_delivery_evidence_without_worker_access(
+async def test_core_only_outbox_stages_bounded_delivery_evidence_with_switchboard_write_access(
     core_only_admin_pool: asyncpg.Pool,
 ) -> None:
-    """REQ-runtime-attention-outbox-001: dormant delivery data stays safe and inert."""
+    """REQ-runtime-attention-outbox-001 and REQ-database-security-007.
+
+    Delivery data stays bounded to the closed CHECK-constraint vocabulary --
+    that half of "safe and inert" is unconditional. But the delivery worker is
+    now activated (roster/switchboard/modules/__init__.py schedules it at
+    startup), so the earlier "unavailable for runtime-role updates" carve-out
+    is lifted: Switchboard's UPDATE grant covers these columns so a proven
+    terminal delivery outcome can actually reach the CHECK constraint, the API
+    safe-reason projection, and the UI.
+    """
     staged_columns = await core_only_admin_pool.fetch(
         """
         SELECT attribute.attname
@@ -799,19 +808,19 @@ async def test_core_only_outbox_stages_bounded_delivery_evidence_without_worker_
     assert await core_only_admin_pool.fetchval(
         """
         SELECT
-            NOT has_column_privilege(
+            has_column_privilege(
                 'butler_switchboard_rw'::regrole,
                 'public.runtime_attention_outbox'::regclass,
                 'delivery_error_class',
                 'UPDATE'
             )
-            AND NOT has_column_privilege(
+            AND has_column_privilege(
                 'butler_switchboard_rw'::regrole,
                 'public.runtime_attention_outbox'::regclass,
                 'delivery_error_detail',
                 'UPDATE'
             )
-            AND NOT has_column_privilege(
+            AND has_column_privilege(
                 'butler_switchboard_rw'::regrole,
                 'public.runtime_attention_outbox'::regclass,
                 'notification_ref',
@@ -819,6 +828,65 @@ async def test_core_only_outbox_stages_bounded_delivery_evidence_without_worker_
             )
         """
     )
+
+    # The grant is real, not just catalog-visible: Switchboard can write a
+    # vocabulary-valid terminal evidence pair to a row it currently claims ...
+    async def _seed_claimed_row(month: str) -> uuid.UUID:
+        return await core_only_admin_pool.fetchval(
+            f"""
+            INSERT INTO {_OUTBOX} (
+                source, fleet_halt_month, source_snapshot, payload,
+                lifecycle_state, claim_token, claim_epoch, delivery_lease_epoch,
+                claimed_by_instance, claimed_at, claim_expires_at
+            )
+            VALUES (
+                'fleet_halt', date '{month}',
+                jsonb_build_object('month', '{month}', 'denied_count', 1, 'first_denied_at', NULL),
+                jsonb_build_object('classification', 'monthly_spend_ceiling', 'door', '/spend'),
+                'sending', gen_random_uuid(), 1, 1,
+                'migration-contract-test', now(), now() + interval '30 seconds'
+            )
+            RETURNING id
+            """
+        )
+
+    valid_id = await _seed_claimed_row("2099-04-01")
+    invalid_id = await _seed_claimed_row("2099-04-02")
+    async with core_only_admin_pool.acquire() as connection:
+        await connection.execute('SET ROLE "butler_switchboard_rw"')
+        try:
+            written = await connection.fetchrow(
+                f"""
+                UPDATE {_OUTBOX}
+                SET lifecycle_state = 'uncertain',
+                    delivery_error_class = 'transport_uncertain',
+                    delivery_error_detail = 'transport_timeout',
+                    notification_ref = gen_random_uuid()
+                WHERE id = $1
+                RETURNING delivery_error_class, delivery_error_detail, notification_ref
+                """,
+                valid_id,
+            )
+            # ... but a class/detail pair outside the closed vocabulary is
+            # still rejected by the CHECK constraint on the same sending ->
+            # uncertain transition, not merely by the grant.
+            with pytest.raises(asyncpg.CheckViolationError, match="delivery_evidence"):
+                await connection.execute(
+                    f"""
+                    UPDATE {_OUTBOX}
+                    SET lifecycle_state = 'uncertain',
+                        delivery_error_class = 'transport_uncertain',
+                        delivery_error_detail = 'provider_secret=leak'
+                    WHERE id = $1
+                    """,
+                    invalid_id,
+                )
+        finally:
+            await connection.execute("RESET ROLE")
+    assert written is not None
+    assert written["delivery_error_class"] == "transport_uncertain"
+    assert written["delivery_error_detail"] == "transport_timeout"
+    assert isinstance(written["notification_ref"], uuid.UUID)
 
 
 @pytest.mark.asyncio(loop_scope="module")
@@ -1454,7 +1522,7 @@ def test_core_chain_serializes_global_runtime_attention_downgrade_and_reapply_ac
     }
     assert set(failed_downgrades) == set(target_schemas)
     assert all(
-        "core_198 downgrade requires trusted bootstrap rollback interface" in stderr
+        "protected core_198 rollback preflight failed" in stderr
         for stderr in failed_downgrades.values()
     )
 
@@ -1462,7 +1530,13 @@ def test_core_chain_serializes_global_runtime_attention_downgrade_and_reapply_ac
     try:
         with engine.connect() as conn:
             for target_schema in target_schemas:
-                assert_at_chain_head(conn, target_schema)
+                # The current-head preflight must refuse before core_231's
+                # autocommit downgrade can commit any newer migration or stamp.
+                # Derive the head so a later serial migration does not turn this
+                # rollback-safety assertion into a stale revision literal.
+                assert conn.execute(
+                    text(f"SELECT version_num FROM {_quote_ident(target_schema)}.alembic_version")
+                ).scalar_one() == get_chain_head("core")
             for relation in (
                 "public.runtime_attention_outbox",
                 "public.runtime_attention_delivery_lease",
@@ -1472,6 +1546,23 @@ def test_core_chain_serializes_global_runtime_attention_downgrade_and_reapply_ac
                 assert conn.execute(
                     text(f"SELECT to_regclass('{relation}') IS NOT NULL")
                 ).scalar_one()
+    finally:
+        engine.dispose()
+    assert _has_bootstrap_finalized_runtime_attention_interface(bootstrap_url)
+
+    reapply_results = _run_concurrent_core_head_upgrades(db_url, target_schemas)
+    failed_reapplications = {
+        target_schema: stderr
+        for target_schema, (returncode, _stdout, stderr) in reapply_results.items()
+        if returncode != 0
+    }
+    assert not failed_reapplications, "\n".join(failed_reapplications.values())
+
+    engine = create_engine(bootstrap_url)
+    try:
+        with engine.connect() as conn:
+            for target_schema in target_schemas:
+                assert_at_chain_head(conn, target_schema)
     finally:
         engine.dispose()
     assert _has_bootstrap_finalized_runtime_attention_interface(bootstrap_url)
@@ -2035,14 +2126,24 @@ def test_nonempty_outbox_survives_a_refused_core_197_downgrade(
         engine.dispose()
 
     config = _build_alembic_config(bootstrap_url, chains=["core"])
-    with pytest.raises(DBAPIError, match="trusted bootstrap rollback interface"):
+    with pytest.raises(RuntimeError, match="protected core_198 rollback preflight failed"):
         command.downgrade(config, "core_197")
 
-    _upgrade_to_core_head(db_url)
     engine = create_engine(bootstrap_url)
     try:
         with engine.connect() as conn:
+            assert_at_chain_head(conn)
             assert conn.execute(text(f"SELECT count(*) FROM {_OUTBOX}")).scalar_one() == 1
+            assert conn.execute(
+                text(
+                    "SELECT EXISTS ("
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_schema = current_schema() "
+                    "AND table_name = 'runtime_config' "
+                    "AND column_name = 'core_groups_narrowing_reason'"
+                    ")"
+                )
+            ).scalar_one()
     finally:
         engine.dispose()
 

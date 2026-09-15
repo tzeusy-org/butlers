@@ -9,6 +9,7 @@
  * - Search with debounce
  */
 
+import type { ReactNode } from "react";
 import { useState } from "react";
 import { PlusIcon, PanelLeftCloseIcon, PanelLeftOpenIcon, SearchIcon, XIcon } from "lucide-react";
 import { Time } from "@/components/ui/time";
@@ -19,9 +20,11 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Tip } from "@/components/ui/tip";
-import { useConversations, useConversationSearch } from "@/hooks/use-conversations.ts";
+import { Row } from "@/components/ui/Row";
+import { ButlerMark } from "@/components/ui/ButlerMark";
+import { useConversations, useConversationSearch, useMessageSearch } from "@/hooks/use-conversations.ts";
 import { useDebounce } from "@/hooks/use-debounce.ts";
-import type { ConversationSummary } from "@/api/types.ts";
+import type { ConversationSummary, MessageSearchResult } from "@/api/types.ts";
 import { ConversationReadError } from "./ConversationReadError.tsx";
 
 // ---------------------------------------------------------------------------
@@ -105,13 +108,106 @@ function ConversationItem({
 }
 
 // ---------------------------------------------------------------------------
+// MessageSearchResultRow — owner-scoped cross-butler message hit (bu-0ynlk.9)
+// ---------------------------------------------------------------------------
+
+/** Render `snippet` with each `highlight_ranges` pair wrapped in a `<mark>`. */
+function HighlightedSnippet({
+  snippet,
+  ranges,
+}: {
+  snippet: string;
+  ranges: MessageSearchResult["highlight_ranges"];
+}) {
+  if (ranges.length === 0) return <>{snippet}</>;
+
+  const nodes: ReactNode[] = [];
+  let cursor = 0;
+  ranges.forEach(([start, end], index) => {
+    if (start > cursor) nodes.push(snippet.slice(cursor, start));
+    nodes.push(
+      <mark key={index} className="bg-accent text-accent-foreground rounded-sm px-0.5">
+        {snippet.slice(start, end)}
+      </mark>,
+    );
+    cursor = end;
+  });
+  if (cursor < snippet.length) nodes.push(snippet.slice(cursor));
+  return <>{nodes}</>;
+}
+
+interface MessageSearchResultRowProps {
+  result: MessageSearchResult;
+  /** The panel's own fixed butler context (e.g. the widget's WIDGET_BUTLER). */
+  panelButlerName: string;
+  /** Called for a same-butler hit — the panel can open it and jump in-place. */
+  onJumpToMessage: (conversationId: string, messageId: string) => void;
+}
+
+function MessageSearchResultRow({
+  result,
+  panelButlerName,
+  onJumpToMessage,
+}: MessageSearchResultRowProps) {
+  const content = (
+    <Row
+      mark={<ButlerMark name={result.butler_name} size={16} />}
+      meta={<Time value={result.created_at} mode="relative" />}
+      interactive
+      density="scan"
+    >
+      <p className="text-sm line-clamp-2 leading-tight">
+        <HighlightedSnippet snippet={result.snippet} ranges={result.highlight_ranges} />
+      </p>
+    </Row>
+  );
+
+  // Same-butler hit: this panel already shows that butler's conversations,
+  // so jump in place (select + scroll/focus the anchor message). A
+  // different-butler hit has no shared history view yet (the full /chat page
+  // is bu-0ynlk.11), so it opens the message's own deep_link route instead —
+  // same "open elsewhere" convention as the session/lineage links in
+  // MessageThread.tsx.
+  if (result.butler_name === panelButlerName) {
+    return (
+      <button
+        type="button"
+        className="w-full text-left"
+        data-testid="message-search-result"
+        onClick={() => onJumpToMessage(result.conversation_id, result.message_id)}
+      >
+        {content}
+      </button>
+    );
+  }
+
+  return (
+    <a
+      href={result.deep_link}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="block"
+      data-testid="message-search-result"
+    >
+      {content}
+    </a>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // ConversationList
 // ---------------------------------------------------------------------------
 
 export interface ConversationListProps {
   butlerName: string;
   activeConversationId: string | null;
-  onSelectConversation: (id: string) => void;
+  /**
+   * `messageId` is passed for a jump-to-message message-search result
+   * (bu-0ynlk.9) — a caller that wants scroll/focus-anchor behavior should
+   * pass it through to `scrollToMessageAnchor` (`./message-id.ts`) once that
+   * conversation's messages have rendered.
+   */
+  onSelectConversation: (conversationId: string, messageId?: string) => void;
   onNewConversation: () => void;
   /**
    * When `false`, the collapse toggle is hidden and the list always renders
@@ -156,6 +252,12 @@ export function ConversationList({
     isError: isSearchError,
     refetch: refetchSearch,
   } = useConversationSearch(butlerName, debouncedQuery);
+  const {
+    data: messageSearchData,
+    isLoading: isMessageSearching,
+    isError: isMessageSearchError,
+    refetch: refetchMessageSearch,
+  } = useMessageSearch(debouncedQuery);
 
   function toggleCollapse() {
     const next = !collapsed;
@@ -175,6 +277,7 @@ export function ConversationList({
   const readError = isSearchActive ? isSearchError : isConversationsError;
   const retryRead = isSearchActive ? refetchSearch : refetchConversations;
   const errorLabel = isSearchActive ? "conversation search results" : "conversations";
+  const messageSearchResults: MessageSearchResult[] = messageSearchData?.data ?? [];
 
   // Collapse strategy: width switches INSTANTLY (no width transition) so no
   // layout property is animated. Expandable content (search, list labels) is
@@ -312,6 +415,40 @@ export function ConversationList({
             />
           ))
         )}
+
+        {/* Owner-scoped cross-butler message search (bu-0ynlk.9) — separate
+            from the conversation-level results above: one row per matching
+            message, across every butler the owner has talked to. */}
+        {!collapsed &&
+          isSearchActive &&
+          (isMessageSearching || isMessageSearchError || messageSearchResults.length > 0) && (
+            <div className="mt-2 pt-2 border-t">
+              <p className="px-1 pb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                Messages
+              </p>
+              {isMessageSearchError ? (
+                <ConversationReadError
+                  label="message search results"
+                  onRetry={() => void refetchMessageSearch()}
+                />
+              ) : isMessageSearching ? (
+                <div className="space-y-1 px-1">
+                  {Array.from({ length: 2 }, (_, i) => (
+                    <Skeleton key={i} className="h-10 w-full rounded-lg" />
+                  ))}
+                </div>
+              ) : (
+                messageSearchResults.map((result) => (
+                  <MessageSearchResultRow
+                    key={result.message_id}
+                    result={result}
+                    panelButlerName={butlerName}
+                    onJumpToMessage={onSelectConversation}
+                  />
+                ))
+              )}
+            </div>
+          )}
       </div>
     </div>
   );

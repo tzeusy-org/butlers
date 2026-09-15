@@ -1,9 +1,3 @@
-## Purpose
-
-Defines how each ephemeral runtime receives an LLM-eligible, cross-CLI MCP
-tool surface without loading every registered tool schema into model context or
-weakening existing butler, module, approval, and infrastructure boundaries.
-
 ## ADDED Requirements
 
 ### Requirement: Layered Butler Tool Surface
@@ -13,6 +7,10 @@ set, the set eligible for LLM presentation, the set discoverable by that LLM,
 and the subset initially loaded into model context. Each later set SHALL be a subset
 of the preceding set, and no discovery mode SHALL present a tool excluded by the
 butler's effective core groups, module groups, module state, type, or name.
+Each attempt SHALL materialize the latter sets as an immutable adapter artifact
+before the runtime host serializes definitions into model context or native
+search. The artifact SHALL distinguish the bounded searchable corpus from the
+potentially smaller set of full definitions loaded initially.
 
 ID: REQ-core-tool-discovery-001
 Source: RFC 0027 §Layered Surface Model; heart-and-soul/architecture.md §Why Tool Surface Discipline Matters
@@ -45,23 +43,26 @@ Scope: v1-mandatory
 ### Requirement: LLM Visibility Preserves Existing Handler Authority
 
 The system SHALL classify registered tools by whether they belong in an LLM's
-presentation surface. Infrastructure-only handlers SHALL remain callable
-through their existing MCP endpoints while remaining absent from LLM discovery.
-Visibility classification SHALL not replace or weaken any handler-specific
-caller validation, approval, module-state, or other call-time authority check;
-omission from a list SHALL not be represented as a server security boundary.
-Projection filtering SHALL occur before pagination, and every opaque cursor
-SHALL be bound to the attempt plan's catalog-generation digest,
-enabled-module-snapshot digest, exposure policy, and resolved compatibility-key
-digest.
+presentation surface. FastMCP `tools/list` SHALL remain the complete registered
+protocol surface over streamable HTTP and SSE. Infrastructure-only handlers
+SHALL remain callable through that endpoint while the per-attempt adapter
+artifact omits them from model serialization and native search. The artifact
+SHALL contain an exact canonical-name allowlist bound to attempt identity,
+catalog-generation digest, enabled-module-snapshot digest, exposure policy, and
+resolved compatibility-key digest. Visibility classification SHALL not replace
+or weaken any handler-specific caller validation, approval, module-state, or
+other call-time authority check; model-visible omission SHALL not be
+represented as a server security boundary. Host-internal enumeration and
+pagination SHALL remain invocation-local and SHALL NOT be represented as a
+Butlers-owned presentation cursor.
 
 ID: REQ-core-tool-discovery-002
-Source: RFC 0027 §LLM Visibility Classification; heart-and-soul/security.md §Session Sandboxing
+Source: RFC 0027 §LLM Visibility Classification, §Adapter-Owned Search Corpus and Model Presentation; heart-and-soul/security.md §Session Sandboxing
 Scope: v1-mandatory
 
 #### Scenario: Infrastructure handler is hidden from an LLM session
 
-- **WHEN** an LLM runtime requests its tool list
+- **WHEN** an adapter prepares model-visible tools for an LLM runtime
 - **THEN** infrastructure-only handlers such as routed-request admission are absent
 - **AND** the discovery receipt treats the omission as presentation filtering rather than new invocation authority
 
@@ -85,21 +86,35 @@ Scope: v1-mandatory
 
 #### Scenario: Multi-page projection reveals no hidden metadata
 
-- **WHEN** the LLM-presentable tool list spans multiple pages
-- **THEN** every page contains only definitions from the same attempt projection
-- **AND** page totals, cursors, and terminal pagination state reveal no infrastructure-only name, schema, or hidden count
+- **WHEN** a runtime host internally pages a complete canonical list containing hidden sentinels
+- **THEN** its model-visible eager input or native search index contains only definitions from the immutable attempt allowlist
+- **AND** no page, terminal state, or host artifact reveals an infrastructure-only name, schema, description, parameter, or hidden count to the model
 
 #### Scenario: Projection changes invalidate old cursors
 
-- **WHEN** a cursor's catalog-generation digest, enabled-module-snapshot digest, exposure policy, or resolved compatibility-key digest differs from the active plan digest
-- **THEN** the list request rejects the cursor as invalid instead of continuing with mixed or complete-surface results
-- **AND** the client can restart listing from the first page of its current projection
+- **WHEN** a host has internal pagination state from an earlier attempt or the catalog generation, module snapshot, policy, or compatibility key changes
+- **THEN** the spawner creates a fresh adapter artifact and does not reuse the earlier host state or allowlist
+- **AND** the new attempt cannot continue with mixed-plan or complete-surface model input
+- **AND** any observed cross-attempt cursor/cache continuation fails conformance and makes the tuple ineligible
 
 #### Scenario: Supported transports expose the same projection
 
-- **WHEN** equivalent runtime sessions list tools through streamable HTTP and legacy SSE
-- **THEN** both transports return the same canonical LLM-presentable names for the same plan digest
-- **AND** neither transport changes `tools/call` behavior
+- **WHEN** equivalent runtime sessions connect through streamable HTTP and legacy SSE
+- **THEN** both transports return the same complete canonical FastMCP names
+- **AND** equivalent adapter plans produce the same model-visible names and schemas regardless of transport
+- **AND** neither transport nor adapter changes `tools/call` behavior
+
+#### Scenario: Canonical MCP listing remains complete
+
+- **WHEN** any MCP client calls canonical `tools/list`
+- **THEN** it receives the complete registered list allowed by startup registration and transport semantics
+- **AND** LLM visibility metadata does not alter that protocol response
+
+#### Scenario: Complete MCP listing is not a presentation fallback
+
+- **WHEN** an adapter cannot prove a supported public host filter for the resolved tuple
+- **THEN** the tuple is ineligible for tool-bearing work
+- **AND** the complete canonical list is not serialized to the model as a fallback
 
 ### Requirement: Per-Invocation Exposure Policy
 
@@ -116,15 +131,17 @@ Scope: v1-mandatory
 #### Scenario: Conservative policy preserves eager behavior
 
 - **WHEN** the effective exposure policy is `eager_filtered`
-- **THEN** the runtime receives the LLM-eligible tool definitions directly
+- **THEN** an eager-capable adapter renders the complete LLM-eligible definitions directly into model context
 - **AND** no native deferred feature is enabled
+- **AND** a tuple whose host mandates native deferral is ineligible under this policy
 
 #### Scenario: Auto policy selects only a verified mode
 
 - **WHEN** the effective exposure policy is `auto`
 - **THEN** the system selects the highest-preference discovery mode verified for the resolved runtime, CLI version, and model/provider tuple
 - **AND** it records the selected mode in the invocation receipt
-- **AND** it selects native deferred mode only when every registered tool has an explicit presentation classification for that butler
+- **AND** it selects native deferred mode only when every registered tool has an explicit presentation classification and the profile can represent every allowed tool's load posture
+- **AND** otherwise it selects a separately verified eager profile/candidate or treats the tuple as ineligible
 
 #### Scenario: QA and healing retain no live MCP surface
 
@@ -142,9 +159,18 @@ Scope: v1-mandatory
 
 The system SHALL treat native discovery support as proven only for a specific
 runtime, CLI version, configuration dialect, and model/provider tuple. Unknown,
-unsupported, malformed, or stale capability evidence SHALL select
-`eager_filtered` rather than silently dropping tools, emitting unsupported
-configuration, or blocking an otherwise compatible invocation.
+unsupported, malformed, or stale native evidence SHALL select a separately
+verified `eager_filtered` profile/candidate when one is available, otherwise
+make the tuple ineligible, rather than silently dropping tools or emitting
+unsupported configuration. Unknown or missing model-presentation
+filter evidence SHALL make the tuple ineligible rather than expose the complete
+MCP list. The compatibility profile
+SHALL describe the public allowlist dialect, canonical-to-host name mapping,
+whether filtering changes model availability or only permission, eager/native
+controllability, native granularity, invocation-local host-pagination behavior,
+native search result-limit/ordering behavior, and parser/receipt support. A
+tuple without a verified model-presentation boundary SHALL be ineligible for
+tool-bearing work.
 
 ID: REQ-core-tool-discovery-004
 Source: RFC 0027 §Capability Negotiation and Adapter Contract; craft-and-care/interfaces-and-dependencies.md §Compatibility Rules
@@ -153,14 +179,14 @@ Scope: v1-mandatory
 #### Scenario: Unknown CLI version falls back safely
 
 - **WHEN** the selected runtime binary version has no verified native-discovery profile
-- **THEN** the invocation uses `eager_filtered`
+- **THEN** the invocation uses a separately verified `eager_filtered` profile/candidate when one exists, otherwise the tuple is ineligible
 - **AND** the receipt identifies unverified runtime capability as the fallback reason
 
 #### Scenario: Model or provider lacks required host capability
 
 - **WHEN** the CLI supports a native discovery mechanism but the resolved model/provider tuple does not
 - **THEN** the native mechanism is not enabled
-- **AND** the tool-capable eager-filtered path remains available
+- **AND** a separately verified eager-filtered profile/candidate is used when available, otherwise the tuple is ineligible
 
 #### Scenario: Configuration dialect drift does not reach the subprocess
 
@@ -174,15 +200,42 @@ Scope: v1-mandatory
 - **THEN** the candidate is ineligible for a tool-bearing butler invocation
 - **AND** discovery fallback does not misrepresent that candidate as tool-capable
 
-### Requirement: Deferred Discovery Preserves Typed MCP Execution
+#### Scenario: Adapter without a verified presentation boundary is ineligible
 
-When `native_deferred` is selected, the runtime SHALL initially receive bounded
-namespace or server summaries instead of every deferred tool's full schema,
-SHALL load only LLM-eligible matches, and SHALL ultimately invoke the original
-typed MCP handler using its canonical schema and name.
+- **WHEN** an adapter/host tuple cannot prove that its public configuration keeps non-plan definitions out of model context and native search
+- **THEN** the tuple is ineligible for tool-bearing work
+- **AND** the complete canonical MCP list is not used as a presentation fallback
+
+#### Scenario: Eager adapter presentation is structurally verified
+
+- **WHEN** a tuple claims `eager_filtered` compatibility
+- **THEN** conformance proves its public host filter serializes every allowed definition eagerly and no hidden definition
+- **AND** a host that mandates native deferral does not claim eager compatibility
+
+#### Scenario: Native granularity represents every load posture
+
+- **WHEN** a tuple claims native-deferred compatibility
+- **THEN** its exact profile proves the host can preserve every allowed tool's eager or deferred load posture
+- **AND** an `all_deferred` host is ineligible when any presentable tool requires eager loading
+- **AND** the planner uses a separately verified eager candidate or treats the tuple as ineligible
+
+### Requirement: Native Tool Search Loads Typed MCP Definitions on Demand
+
+When `native_deferred` is selected, the adapter SHALL render a plan-bound host
+artifact whose native search index contains only the canonical corpus. The
+runtime SHALL initially receive bounded namespace or server summaries instead
+of every deferred tool's full schema. For fixed manifest queries, search SHALL
+return every intended eligible tool within the profile-declared result limit,
+return no tool outside the immutable corpus, exclude infrastructure-only tools,
+permit query refinement after a miss without widening the corpus, load the
+selected full typed definition on demand, and ultimately invoke the original
+MCP handler using its canonical schema and name. Extra eligible matches and
+precision SHALL be reported diagnostics unless a separate threshold is
+approved. Host-internal MCP pagination SHALL remain invocation-local and outside
+the model-visible contract.
 
 ID: REQ-core-tool-discovery-005
-Source: RFC 0027 §Native Deferred Contract; RFC 0002 §Tool Call Logging Proxy
+Source: RFC 0027 §Native Tool Search and Deferred Loading Contract; RFC 0002 §Tool Call Logging Proxy
 Scope: v1-mandatory
 
 #### Scenario: Deferred tool is loaded before direct invocation
@@ -196,6 +249,12 @@ Scope: v1-mandatory
 - **WHEN** a discovery query would lexically match both LLM-visible and infrastructure-only tools
 - **THEN** only LLM-visible matches are returned
 - **AND** the response does not reveal hidden tool names, descriptions, parameter names, or counts
+
+#### Scenario: Search miss can be refined without widening the corpus
+
+- **WHEN** an initial discovery query does not return the required eligible tool
+- **THEN** the runtime may refine the query within the same immutable corpus
+- **AND** refinement does not expose the complete MCP list or any tool outside that corpus
 
 #### Scenario: Approval-sensitive actions keep their normal path
 
@@ -213,11 +272,14 @@ Scope: v1-mandatory
 
 The system SHALL fall back or retry a failed native-discovery invocation only
 when a closed adapter failure category explicitly identifies native transport
-or native discovery protocol failure and complete effect evidence proves that
-no MCP tool or non-MCP side-effect-capable host action occurred. Missing,
-unknown, or parser-ambiguous effect evidence SHALL block replay. Once any effect
-is observed, the logical session SHALL not be automatically replayed through an
-eager or alternate discovery mode.
+or native discovery protocol failure, the same candidate has a separately
+verified eager-capable profile, and complete effect evidence proves that no MCP
+tool or non-MCP side-effect-capable host action occurred. `preparation_failed`
+MAY render eager assets without process replay only when that same profile
+exists. Missing, unknown, or parser-ambiguous effect evidence SHALL block
+replay. Without the verified eager-capable profile, no presentation fallback
+occurs. Once any effect is observed, the logical session SHALL not be
+automatically replayed through an eager or alternate discovery mode.
 
 ID: REQ-core-tool-discovery-006
 Source: RFC 0027 §Failure and Replay Safety; core-spawner Runtime Failure Classification
@@ -226,8 +288,11 @@ Scope: v1-mandatory
 #### Scenario: Pre-tool discovery initialization failure may fall back
 
 - **WHEN** native discovery fails before any MCP or other side-effect-capable call is observed
-- **THEN** the system can retry once with the verified eager-filtered plan
-- **AND** both attempts remain part of one logical session receipt
+- **THEN** the system can retry at most once with the same candidate's
+  separately verified eager-filtered plan only when complete zero-effect
+  evidence exists, otherwise no presentation replay occurs
+- **AND** if a retry occurs, both attempts remain part of one logical session
+  receipt
 
 #### Scenario: Partial tool execution blocks automatic replay
 
@@ -318,7 +383,7 @@ Scope: v1-mandatory
 
 #### Scenario: Fallback reason is durable
 
-- **WHEN** `auto` policy selects `eager_filtered` because native support is unavailable or failed before execution
+- **WHEN** `auto` policy selects a verified `eager_filtered` profile/candidate because native support is unavailable or failed before execution
 - **THEN** the receipt records a closed-category fallback reason
 - **AND** it does not persist provider error text or discovery search text
 
@@ -334,15 +399,18 @@ Scope: v1-mandatory
 - **THEN** the receipt preserves ordered candidate-attempt and presentation-subattempt identities
 - **AND** no later upsert overwrites an earlier presentation outcome
 
-### Requirement: Native Mode Verification Gate
+### Requirement: Native Tool Search Verification Gate
 
-The system SHALL keep a runtime tuple on `eager_filtered` until both a
+The system SHALL keep a runtime tuple out of `native_deferred` until both a
 credential-free structural suite and an authorized representative-runtime
 evaluation have passed a versioned, repo-owned conformance manifest covering
 discovery protocol, canonical invocation, infrastructure-tool omission from
-model-visible schemas, approval preservation, receipt parsing, and fallback
-behavior. Enabling native
-mode SHALL require an immutable compatibility record tied to the tested CLI
+model-visible schemas, complete canonical HTTP/SSE listing, public host-filter
+behavior, invocation-local host pagination, approval preservation, receipt
+parsing, and fallback behavior. Under `auto`, an unadmitted native tuple SHALL
+select a separately verified eager-filtered profile/candidate when one is
+available, otherwise it is ineligible. Admitting native Tool Search SHALL
+require an immutable compatibility record tied to the tested CLI
 runtime type, executable artifact digest/identity/exact version, adapter-profile
 revision, configuration dialect and normalized digest, transport/protocol
 version, and exact provider/model IDs. The record SHALL add
@@ -350,26 +418,34 @@ conformance-manifest, fixture, and result digests plus verification time as
 evidence fields outside that compatibility key.
 
 ID: REQ-core-tool-discovery-009
-Source: RFC 0027 §Conformance and Rollout Gate; craft-and-care/performance-discipline.md §Core Rules
+Source: RFC 0027 §Tool Search Conformance and Rollout Gate; craft-and-care/performance-discipline.md §Core Rules
 Scope: v1-mandatory
 
 #### Scenario: Unverified runtimes use the compatible fallback
 
 - **WHEN** no passing compatibility record exists for the resolved runtime tuple
-- **THEN** `auto` policy selects `eager_filtered`
+- **THEN** `auto` selects a separately verified eager profile/candidate when one exists, otherwise the tuple is ineligible
 - **AND** experimental feature presence or a matching version prefix is insufficient by itself
 
 #### Scenario: Infrastructure definitions remain absent from LLM presentation
 
 - **WHEN** a runtime tuple is evaluated against the synthetic large-tool server
-- **THEN** the evaluation proves an LLM-visible tool can be found and invoked
+- **THEN** canonical HTTP/SSE listing remains complete while the adapter's eager/native host artifact omits every infrastructure-only hidden sentinel
+- **AND** the evaluation proves an LLM-visible tool can be found and invoked
 - **AND** it proves infrastructure-only names and schemas remain absent from deferred discovery without claiming direct-call denial
 
-#### Scenario: Deferred presentation materially reduces initial schema load
+#### Scenario: Native search materially reduces initial schema load
 
-- **WHEN** a runtime tuple is proposed for native-mode enablement
+- **WHEN** a runtime tuple is proposed for native Tool Search admission
 - **THEN** its synthetic large-surface evaluation shows at least a 50 percent reduction in initially serialized tool-definition bytes relative to its eager-filtered baseline
 - **AND** every required behavioral and safety scenario remains passing
+
+#### Scenario: Native search finds intended tools within its bounded result set
+
+- **WHEN** a runtime tuple runs the manifest's representative discovery queries and miss-refinement cases
+- **THEN** every required intended tool appears within the profile-declared result limit and is loadable through its typed definition
+- **AND** every result belongs to the immutable corpus and infrastructure-only matches remain absent
+- **AND** extra eligible matches and precision are reported diagnostics unless a separate threshold is approved
 
 #### Scenario: Native presentation introduces no behavioral regression
 
@@ -386,7 +462,7 @@ Scope: v1-mandatory
 #### Scenario: Runtime changes invalidate prior compatibility proof
 
 - **WHEN** the runtime binary or configuration dialect changes from the tested compatibility record
-- **THEN** `auto` policy returns that tuple to `eager_filtered`
+- **THEN** `auto` invalidates native and selects a separately verified eager profile/candidate when one exists, otherwise the tuple is ineligible
 - **AND** native mode remains disabled until the new tuple passes the verification gate
 
 #### Scenario: Every compatibility key field is binding
@@ -400,14 +476,3 @@ Scope: v1-mandatory
 - **WHEN** the implementation and one native compatibility record satisfy this changeset
 - **THEN** the system is ready for a separately authorized live canary but does not change a live butler's policy automatically
 - **AND** canary execution, rollback ownership, and production expansion remain operator-controlled actions
-
-## Source References
-
-- Non-Negotiable Rule 2 (modules only add tools)
-- Non-Negotiable Rule 3 (MCP-only inter-butler communication)
-- Non-Negotiable Rule 4 (deterministic daemon and ephemeral intelligence)
-- Non-Negotiable Rule 5 (operational tuning is DB-backed)
-- Non-Negotiable Rule 6 (manifesto-governed scope)
-- RFC 0002 (MCP tool surface and modules)
-- RFC 0005 (observability and telemetry)
-- RFC 0027 (runtime tool surface discovery and exposure)

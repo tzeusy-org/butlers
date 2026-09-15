@@ -195,8 +195,115 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift() -> No
     integration_jobs = [jobs[f"check-integration-{index}"] for index in range(1, 6)]
     check_job = jobs["check"]
 
-    assert "needs" not in preflight  # Verify/smoke and shards overlap to protect the budget.
+    # Merge-queue topology (bu-r5mnn): the queue's merge_group run is the terminal
+    # broad gate, so the workflow must accept that event.
+    assert set(workflow[True]) == {"push", "pull_request", "merge_group"}
+
+    # `changes` classifies the PR diff fail-closed; `guards` runs every
+    # dependency-free guard script in one job with nothing upstream of it.
+    changes = jobs["changes"]
+    assert "needs" not in changes and "if" not in changes
+    assert set(changes["outputs"]) == {"backend", "frontend"}
+    path_filter = _workflow_step(job=changes, name="Filter changed paths")
+    assert path_filter["uses"].startswith("dorny/paths-filter@")
+    assert path_filter["if"] == "github.event_name == 'pull_request'"
+    assert path_filter["with"]["list-files"] == "json"
+    classify = _workflow_step(job=changes, name="Classify the diff (fail closed)")
+    assert classify["id"] == "classify"
+    guards = jobs["guards"]
+    assert "needs" not in guards and "if" not in guards
+    guard_outcomes = _workflow_step(job=guards, name="Fail if any guard failed")["env"][
+        "GUARD_OUTCOMES"
+    ]
+    for guard_id in (
+        "session_links",
+        "em_dashes",
+        "spec_overwrites",
+        "openspec_strict",
+        "archived_requirements",
+        "countable_tasks",
+        "cited_requirements",
+        "frontend_copy_regenerate",
+        "frontend_copy",
+        "duplicate_names",
+    ):
+        guard_step = next(step for step in guards["steps"] if step.get("id") == guard_id)
+        assert "!cancelled()" in guard_step["if"]  # One failing guard never hides another.
+        assert f"{guard_id}=${{{{ steps.{guard_id}.outcome }}}}" in guard_outcomes
+
+    # Preflight and the shards depend only on the path classification: they
+    # still overlap with each other to protect the budget, and they run on
+    # every merge_group and on backend-touching pull requests only.
+    backend_condition = (
+        "github.event_name == 'merge_group' || "
+        "(github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')"
+    )
+    assert preflight["needs"] == ["changes"]
+    assert preflight["if"] == backend_condition
+
+    # The ten shards additionally depend on the affected-test planner
+    # (bu-v28ho): on a pull_request they only run when the plan did not
+    # select a scoped mode -- a scoped plan means `check-affected` is that
+    # shard's evidence instead. merge_group is unaffected: `plan` never runs
+    # there, so `needs.plan.outputs.mode` is empty and the OR's first branch
+    # (always true for merge_group) still wins -- PROVIDED the job's `if:`
+    # actually gets evaluated. `plan` is a conditionally-skipped dependency,
+    # and GitHub Actions auto-skips a job whose `needs` include a
+    # skipped/failed job UNLESS its own `if:` starts with `always()`; without
+    # that, this shard's `if:` above would never be reached on merge_group
+    # (where `plan` is always skipped) and the job would silently skip
+    # instead of running -- exactly the incident this assertion guards
+    # against (bu-v28ho merge_group eviction, 2026-09-04).
+    shard_condition = (
+        "always() && needs.changes.result == 'success' && "
+        "(github.event_name == 'merge_group' || "
+        "(github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' "
+        "&& needs.plan.outputs.mode != 'scoped'))"
+    )
+    for job in [*unit_jobs, *integration_jobs]:
+        assert job["needs"] == ["changes", "plan"]
+        assert job["if"] == shard_condition
+
+    plan_job = jobs["plan"]
+    assert plan_job["needs"] == ["changes"]
+    assert plan_job["if"] == (
+        "github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true'"
+    )
+    assert set(plan_job["outputs"]) == {"mode", "test_paths"}
+
+    check_affected = jobs["check-affected"]
+    assert check_affected["needs"] == ["changes", "plan"]
+    assert check_affected["if"] == (
+        "always() && needs.changes.result == 'success' && "
+        "github.event_name == 'pull_request' && needs.plan.outputs.mode == 'scoped'"
+    )
+
+    # Regression guard (bu-v28ho): every job that lists `plan` as a
+    # dependency must opt out of GitHub Actions' implicit
+    # skip-if-a-needed-job-was-skipped-or-failed behavior with `always()` at
+    # the front of its `if:`. A job that adds `plan` to `needs` later without
+    # this prefix will silently never run whenever `plan` is skipped (every
+    # merge_group event, every docs-only or non-backend pull_request).
+    for job_name, job in jobs.items():
+        if "plan" in job.get("needs", []):
+            condition = job["if"].removeprefix("${{").strip()
+            assert condition.startswith("always()"), (
+                f"{job_name}: needs `plan` but its `if:` does not start with always(), "
+                "so it will silently skip whenever `plan` is skipped (e.g. every "
+                "merge_group event)"
+            )
+
+    frontend_condition = (
+        "github.event_name == 'merge_group' || github.event_name == 'push' || "
+        "(github.event_name == 'pull_request' && needs.changes.outputs.frontend == 'true')"
+    )
+    for name in ("frontend", "frontend-e2e"):
+        assert jobs[name]["needs"] == ["changes"]
+        assert jobs[name]["if"] == frontend_condition
+
     assert check_job["needs"] == [
+        "changes",
+        "plan",
         "check-preflight",
         "check-unit-1",
         "check-unit-2",
@@ -208,6 +315,7 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift() -> No
         "check-integration-3",
         "check-integration-4",
         "check-integration-5",
+        "check-affected",
     ]
     assert check_job["if"] == "${{ always() }}"
     assert "cancelled" not in check_job["if"]
@@ -314,13 +422,54 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift() -> No
             "path": "${{ runner.temp }}/" + directory,
         }
 
-    gate = _workflow_step(job=check_job, name="Require preflight and every test shard to pass")
+    gate = _workflow_step(
+        job=check_job,
+        name="Require preflight and every test shard to pass (or be skipped by the path filter)",
+    )
+    assert gate["id"] == "gate"
     for result_name in (
-        "CHECK_PREFLIGHT_RESULT",
+        "EVENT_NAME",
+        "CHANGES_RESULT",
+        "CHANGES_BACKEND",
+        "PLAN_MODE",
         *[f"CHECK_UNIT_{index}_RESULT" for index in range(1, 6)],
         *[f"CHECK_INTEGRATION_{index}_RESULT" for index in range(1, 6)],
+        "CHECK_AFFECTED_RESULT",
     ):
         assert result_name in gate["run"]
+    # Regression guard (bu-tt97y): check-preflight must NOT appear in the
+    # gate's shard-classification env/loop. It is not one of the ten heavy
+    # shards gated by the scoped/full plan decision -- it always runs and
+    # always succeeds when reached -- so counting it there falsely fails
+    # every scoped-mode PR. Its own success/failure is already enforced via
+    # the hard `needs:` dependency asserted above (check_job["needs"]).
+    assert "CHECK_PREFLIGHT_RESULT" not in gate["run"]
+    assert "CHECK_PREFLIGHT_RESULT" not in gate["env"]
+    assert "needs.check-preflight" not in str(gate["env"])
+    # Fail closed: a skipped shard passes only for a docs-only PR that the
+    # `changes` job classified successfully, on push to main (the queue
+    # already validated that tree), or a pull_request where the affected-test
+    # planner (bu-v28ho) selected a scoped mode -- in which case
+    # `check-affected` must be the shards' evidence instead. Anything else,
+    # and any ran/skipped mix, fails.
+    assert (
+        '[ "$EVENT_NAME" = "pull_request" ] && [ "$CHANGES_RESULT" = "success" ] '
+        '&& [ "$CHANGES_BACKEND" = "false" ]'
+    ) in gate["run"]
+    assert '[ "$EVENT_NAME" = "push" ]' in gate["run"]
+    assert (
+        '[ "$EVENT_NAME" = "pull_request" ] && [ "$CHANGES_BACKEND" = "true" ] '
+        '&& [ "$PLAN_MODE" = "scoped" ]'
+    ) in gate["run"]
+    assert "skipped, but this event requires the shards to run" in gate["run"]
+    assert "inconsistent shard state" in gate["run"]
+    assert (
+        "check-affected=success but this event/plan did not select the scoped lane" in gate["run"]
+    )
+    assert "check-affected=skipped but the plan selected a scoped mode" in gate["run"]
+    assert 'echo "shards_ran=true" >> "$GITHUB_OUTPUT"' in gate["run"]
+    for step in check_job["steps"][1:]:
+        assert "steps.gate.outputs.shards_ran == 'true'" in step["if"]
 
     combine = _workflow_step(
         job=check_job, name="Combine coverage from all independent test shards"
@@ -339,4 +488,6 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift() -> No
     assert smoke_artifact["with"]["path"].endswith("smoke/release-evidence.json")
 
     badge = _workflow_step(job=check_job, name="Update coverage badge")
-    assert badge["if"] == "github.ref == 'refs/heads/main' && github.event_name == 'push'"
+    assert badge["if"] == (
+        "${{ steps.gate.outputs.shards_ran == 'true' && github.event_name == 'merge_group' }}"
+    )

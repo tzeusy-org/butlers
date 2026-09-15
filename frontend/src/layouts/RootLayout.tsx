@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Outlet } from 'react-router'
 import Shell from '../components/layout/Shell'
 import PageHeader from '../components/layout/PageHeader'
@@ -14,8 +14,18 @@ import { useKeyboardShortcuts } from '../hooks/use-keyboard-shortcuts'
 import { ShortcutHints } from '../components/ui/shortcut-hints'
 import { type EventBusHealth } from '../hooks/use-event-stream'
 import { EventBusProvider, useEventBus } from '../lib/event-bus'
+import { type ClientLinkStatus, useClientLink } from '../hooks/use-client-link'
 import { FloatingChatWidget } from '../components/chat/FloatingChatWidget'
+import { ChatDock } from '../components/chat/ChatDock'
+import { ChatRecallCommands } from '../components/chat/ChatRecallCommands'
+import { useMediaQuery } from '../hooks/use-media-query'
+import { readBooleanSetting, writeBooleanSetting } from '../lib/local-settings'
 import { announce, useShellAnnouncement } from '../lib/shell-announcer'
+
+// Tailwind's default `xl` breakpoint (1280px) — the docked chat rail's
+// default posture threshold (bu-0ynlk.11 behavior matrix).
+const CHAT_DOCK_MEDIA_QUERY = '(min-width: 1280px)'
+const CHAT_DOCK_OPEN_KEY = 'butlers.chat-dock-open'
 
 // Same connected/reconnecting/down grouping LiveIndicator renders, so the
 // shell's sr-only announcement always says the same thing sighted users see.
@@ -65,7 +75,28 @@ function RootLayoutInner() {
 
   // `status` is threaded down into PageHeader so the shell's Live indicator
   // reflects actual socket health.
-  const { health: eventBusHealth } = useEventBus()
+  const { health: eventBusHealth, lastEventAt } = useEventBus()
+
+  // Chat posture host (bu-0ynlk.11): the docked rail is the default at
+  // >= xl, persisted-closable back to the popover. Below xl, the popover
+  // (FloatingChatWidget) is the only posture regardless of the persisted
+  // preference -- the dock never renders where it wouldn't fit.
+  const isXlViewport = useMediaQuery(CHAT_DOCK_MEDIA_QUERY)
+  const [dockOpen, setDockOpen] = useState(() => readBooleanSetting(CHAT_DOCK_OPEN_KEY, true))
+  const showDock = isXlViewport && dockOpen
+  function closeDock() {
+    writeBooleanSetting(CHAT_DOCK_OPEN_KEY, false)
+    setDockOpen(false)
+  }
+  function reopenDock() {
+    writeBooleanSetting(CHAT_DOCK_OPEN_KEY, true)
+    setDockOpen(true)
+  }
+
+  // This browser's own network link (bu-8cdl1.13), separate from fleet
+  // health above -- lets the shell tell a client-side connection drop apart
+  // from an actual fleet outage instead of reporting both as "offline".
+  const { status: clientLinkStatus } = useClientLink()
 
   // Announce stream-state edges only after the first valid envelope has made
   // the stream healthy. Before then, down -> late is the ordinary cold-start
@@ -79,11 +110,32 @@ function RootLayoutInner() {
       prevEdgeRef.current !== null &&
       prevEdgeRef.current !== edge
     ) {
-      announce(STREAM_EDGE_LABEL[edge])
+      // A client-side network loss drops this socket exactly like a real
+      // fleet outage does. Blaming the fleet for the owner's own dropped
+      // LTE link would be dishonest -- the dedicated client-link effect
+      // below announces that edge instead (bu-8cdl1.13).
+      const isClientCaused = edge === 'down' && clientLinkStatus !== 'online'
+      if (!isClientCaused) announce(STREAM_EDGE_LABEL[edge])
     }
     if (edge === 'connected') hasEstablishedStreamRef.current = true
     prevEdgeRef.current = edge
-  }, [eventBusHealth])
+  }, [eventBusHealth, clientLinkStatus])
+
+  // Client-link edges get their own honest announcement. Only the drop is
+  // announced -- "reconnect: silent recovery" (bu-8cdl1.13) means the return
+  // to "online" stays quiet, matching how the fleet-edge effect above never
+  // announced the ordinary cold-start handshake either.
+  const prevClientLinkRef = useRef<ClientLinkStatus | null>(null)
+  useEffect(() => {
+    if (
+      prevClientLinkRef.current !== null &&
+      prevClientLinkRef.current !== clientLinkStatus &&
+      clientLinkStatus === 'offline'
+    ) {
+      announce('Your connection is offline')
+    }
+    prevClientLinkRef.current = clientLinkStatus
+  }, [clientLinkStatus])
 
   return (
     <BreadcrumbsControlProvider>
@@ -94,10 +146,11 @@ function RootLayoutInner() {
             routed underneath — same one-registry-many-scopes shape as
             CommandRegistryProvider above. */}
         <ShortcutRegistryProvider>
-          {/* PageContextProvider (bu-p6ey8.4): wraps both the routed page
-              content (which may enrich via usePageContext().set(...)) and the
-              floating chat widget (which snapshots route/query/entity_ref at
-              send time via usePageContextCapture()). */}
+          {/* PageContextProvider (bu-p6ey8.4, typed by bu-0ynlk.4): wraps both
+              the routed page content (which may enrich via
+              usePageSubject().set(...)) and the chat surfaces (which snapshot
+              route/query/visible_resource at send time via
+              usePageContextCapture()). */}
           <PageContextProvider>
             <a
               href="#main-content"
@@ -105,7 +158,16 @@ function RootLayoutInner() {
             >
               Skip to main content
             </a>
-            <Shell header={<PageHeader liveStatus={eventBusHealth} />}>
+            <Shell
+              header={
+                <PageHeader
+                  liveStatus={eventBusHealth}
+                  clientLink={clientLinkStatus}
+                  lastEventAt={lastEventAt}
+                />
+              }
+              chatDock={showDock ? <ChatDock onClose={closeDock} /> : undefined}
+            >
               <ErrorBoundary>
                 <Outlet />
               </ErrorBoundary>
@@ -116,14 +178,22 @@ function RootLayoutInner() {
             <EntityFinder />
             {/* Registers the always-available "Run <butler>" actions. */}
             <GlobalActionsRegistrar />
+            {/* Recent-thread cmdk recall (bu-0ynlk.11) — mounted regardless of
+                chat posture so recall works the same whether the dock or the
+                popover is currently showing. */}
+            <ChatRecallCommands />
             <ShortcutHints />
             <Toaster />
             {/* Floating chat widget (bu-p6ey8.3) — bottom-right button on every
                 route, opening a compact popover chat panel routed through the
                 Switchboard butler. Also registers the "Talk to Butlers" cmdk
                 command. Mounted here (not inside Shell.tsx) since Shell has no
-                floating layer. */}
-            <FloatingChatWidget />
+                floating layer. The docked rail (bu-0ynlk.11) replaces it at
+                >= xl while open; below that (or while collapsed) the popover
+                is the only posture. */}
+            {!showDock && (
+              <FloatingChatWidget onExpandDock={isXlViewport ? reopenDock : undefined} />
+            )}
             {/* Shell-level sr-only announcer (bu-qvnce.10) — one aria-live
                 region for stream-state edges, page-title changes, and the
                 ingestion ledger's new-event counts. */}

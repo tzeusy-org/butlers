@@ -187,3 +187,147 @@ class TestFailOpen:
             # live-clock: this verifies the documented default-time path against a
             # context signal anchored to the same live clock.
             assert await get_suppressing_context_signal(object()) == "dnd"
+
+
+class TestSuppressingContextSignalDetail:
+    """bu-kqnum.3 slice 3: the broker catch-up cycle needs the winning
+    signal's ``set_at`` (not just its type) to compute the suppression's
+    max-hold end instant."""
+
+    async def _get_detail(self, signals, *, now=_NOW):
+        from butlers.tools.switchboard.insight.broker import (
+            _get_suppressing_context_signal_detail,
+        )
+
+        with patch(
+            "butlers.context_bus.get_active_context",
+            new=AsyncMock(return_value=signals),
+        ):
+            return await _get_suppressing_context_signal_detail(object(), now=now)
+
+    async def test_returns_the_winning_signal_type_and_set_at(self):
+        set_at = _NOW - timedelta(hours=1)
+        result = await self._get_detail([_signal("dnd", set_at=set_at)])
+        assert result == ("dnd", set_at)
+
+    async def test_precedence_still_applies_and_returns_the_winner_set_at(self):
+        dnd_set_at = _NOW - timedelta(minutes=5)
+        result = await self._get_detail(
+            [
+                _signal("traveling", set_at=_NOW - timedelta(hours=1)),
+                _signal("dnd", set_at=dnd_set_at),
+            ]
+        )
+        assert result == ("dnd", dnd_set_at)
+
+    async def test_no_active_signal_returns_none(self):
+        assert await self._get_detail([]) is None
+
+    async def test_beyond_max_hold_returns_none(self):
+        result = await self._get_detail([_signal("meeting", set_at=_NOW - timedelta(hours=3))])
+        assert result is None
+
+    async def test_pool_none_returns_none(self):
+        from butlers.tools.switchboard.insight.broker import (
+            _get_suppressing_context_signal_detail,
+        )
+
+        assert await _get_suppressing_context_signal_detail(None, now=_NOW) is None
+
+    async def test_get_suppressing_context_signal_delegates_to_the_detail_helper(self):
+        """The public str-only function must keep returning exactly the type,
+        even though it's now a thin wrapper over the detail helper."""
+        set_at = _NOW - timedelta(minutes=10)
+        result = await self._get_signal_via_public_fn([_signal("sleeping", set_at=set_at)])
+        assert result == "sleeping"
+
+    async def _get_signal_via_public_fn(self, signals, *, now=_NOW):
+        from butlers.tools.switchboard.insight.broker import get_suppressing_context_signal
+
+        with patch(
+            "butlers.context_bus.get_active_context",
+            new=AsyncMock(return_value=signals),
+        ):
+            return await get_suppressing_context_signal(object(), now=now)
+
+
+class TestComputeCatchupDeliverAt:
+    """Pure-function coverage for the broker catch-up cycle's boundary
+    computation (bu-kqnum.3 slice 3) — the deliver_at wiring into
+    delivery_cycle itself is covered by
+    tests/modules/test_insight_attention_ledger.py::TestBrokerCatchupCycle."""
+
+    def test_quiet_hours_uses_the_policy_end_boundary(self):
+        from butlers.core.approvals_policy import policy_quiet_hours_deliver_at
+        from butlers.tools.switchboard.insight.broker import _compute_catchup_deliver_at
+
+        policy = {"quiet_start_hour": 22, "quiet_end_hour": 8, "timezone": "UTC"}
+        now = datetime(2026, 1, 15, 23, 0, tzinfo=UTC)
+
+        result = _compute_catchup_deliver_at(
+            suppression_signal="quiet_hours",
+            policy=policy,
+            context_signal_set_at=None,
+            now=now,
+        )
+
+        assert result == policy_quiet_hours_deliver_at(policy, now=now)
+        assert result == datetime(2026, 1, 16, 8, 0, tzinfo=UTC)
+
+    def test_quiet_hours_with_no_usable_policy_fails_open_to_none(self):
+        from butlers.tools.switchboard.insight.broker import _compute_catchup_deliver_at
+
+        result = _compute_catchup_deliver_at(
+            suppression_signal="quiet_hours",
+            policy=None,
+            context_signal_set_at=None,
+            now=_NOW,
+        )
+
+        assert result is None
+
+    @pytest.mark.parametrize(
+        "signal,hours",
+        [("dnd", 4), ("meeting", 2), ("sleeping", 10), ("traveling", 6)],
+    )
+    def test_context_signal_uses_set_at_plus_its_own_max_hold(self, signal, hours):
+        from butlers.tools.switchboard.insight.broker import _compute_catchup_deliver_at
+
+        set_at = _NOW - timedelta(minutes=30)
+
+        result = _compute_catchup_deliver_at(
+            suppression_signal=signal,
+            policy=None,
+            context_signal_set_at=set_at,
+            now=_NOW,
+        )
+
+        assert result == set_at + timedelta(hours=hours)
+
+    def test_context_signal_without_a_set_at_fails_open_to_none(self):
+        """The catch-up's own re-resolution of the context signal (see
+        broker._schedule_insight_catchup) can come back empty if the signal
+        cleared between the suppression consult and this second read —
+        no catch-up is scheduled rather than guessing a boundary."""
+        from butlers.tools.switchboard.insight.broker import _compute_catchup_deliver_at
+
+        result = _compute_catchup_deliver_at(
+            suppression_signal="dnd",
+            policy=None,
+            context_signal_set_at=None,
+            now=_NOW,
+        )
+
+        assert result is None
+
+    def test_unknown_suppression_signal_fails_open_to_none(self):
+        from butlers.tools.switchboard.insight.broker import _compute_catchup_deliver_at
+
+        result = _compute_catchup_deliver_at(
+            suppression_signal=None,
+            policy=None,
+            context_signal_set_at=None,
+            now=_NOW,
+        )
+
+        assert result is None

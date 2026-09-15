@@ -1,10 +1,12 @@
 # Butlers — Design Language (graduated)
 
+> **Status: Superseded-by -> `openspec/specs/dashboard-design-language/spec.md`.**
+
 This copy graduated on 2026-07-03. The canonical, binding Dispatch design language is now the
 spec: **`openspec/specs/dashboard-design-language/spec.md`**.
 
 Execution material (JSX patterns, page recipes, tokens, pre-merge checklist) lives in
-`.claude/skills/butlers-redesign-prompt/references/dispatch-kit/`.
+`.claude/skills/butlers-development/subskills/butlers-redesign-prompt/references/dispatch-kit/`.
 
 This stub remains only so historical briefs and archived changes that cite
 `docs/redesigns/ingestion-design-language.md` or `docs/redesigns/secrets-design-language.md`

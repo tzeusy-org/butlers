@@ -37,6 +37,7 @@
  */
 
 import { useEffect, useRef, type KeyboardEvent, type RefObject } from "react";
+import { usePrefersReducedMotion } from "./use-prefers-reduced-motion";
 
 export interface UseModalChoreographyOptions {
   /** Called when Escape is pressed. */
@@ -71,6 +72,25 @@ export interface UseModalChoreographyOptions {
    * returned object IS `rootRef` (attach `ref` only once). Default `false`.
    */
   focusRoot?: boolean;
+  /**
+   * WCAG 2.2 2.4.11 (Focus Not Obscured) guard for a non-modal, non-trapping
+   * panel (`trapFocus: false`) that can still visually sit on top of page
+   * content: when a `focusin` elsewhere in the document lands on an element
+   * whose bounding rect intersects the panel's own footprint, scroll that
+   * element into view so the keyboard user can see what they just focused.
+   * Honors `prefers-reduced-motion` (instant scroll instead of smooth).
+   * Meaningless (and ignored) when `trapFocus` is true, since a trapping
+   * modal already prevents focus from ever landing behind it. Default
+   * `false`.
+   */
+  obscureGuard?: boolean;
+  /**
+   * Optional final guard for restoring the trigger when the surface unmounts.
+   * Keep the default for true modal closes. URL-backed inline disclosures can
+   * use this to distinguish an explicit close from unrelated navigation that
+   * removed the surface and already established a newer focus target.
+   */
+  shouldRestoreFocus?: () => boolean;
 }
 
 export interface UseModalChoreographyResult<TFocus extends HTMLElement> {
@@ -106,6 +126,8 @@ export function useModalChoreography<TFocus extends HTMLElement = HTMLElement>({
   trapFocus = true,
   active = true,
   focusRoot = false,
+  obscureGuard = false,
+  shouldRestoreFocus,
 }: UseModalChoreographyOptions): UseModalChoreographyResult<TFocus> {
   const rootRef = useRef<HTMLDivElement>(null);
   // Only ever read/written by this hook — never returned directly when
@@ -115,6 +137,35 @@ export function useModalChoreography<TFocus extends HTMLElement = HTMLElement>({
   // is not allowed").
   const ownFocusRef = useRef<TFocus>(null);
   const previouslyFocusedRef = useRef<HTMLElement | null>(null);
+  const shouldRestoreFocusRef = useRef(shouldRestoreFocus);
+  const prefersReducedMotion = usePrefersReducedMotion();
+
+  useEffect(() => {
+    shouldRestoreFocusRef.current = shouldRestoreFocus;
+  }, [shouldRestoreFocus]);
+
+  useEffect(() => {
+    if (!active || !obscureGuard || trapFocus) return;
+    function handleFocusIn(e: FocusEvent) {
+      const root = rootRef.current;
+      const target = e.target as HTMLElement | null;
+      if (!root || !target || root.contains(target)) return;
+      const panelRect = root.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
+      const obscured =
+        targetRect.bottom > panelRect.top &&
+        targetRect.top < panelRect.bottom &&
+        targetRect.right > panelRect.left &&
+        targetRect.left < panelRect.right;
+      if (!obscured) return;
+      target.scrollIntoView({
+        behavior: prefersReducedMotion ? "auto" : "smooth",
+        block: "nearest",
+      });
+    }
+    document.addEventListener("focusin", handleFocusIn);
+    return () => document.removeEventListener("focusin", handleFocusIn);
+  }, [active, obscureGuard, trapFocus, prefersReducedMotion]);
 
   useEffect(() => {
     if (!active) return;
@@ -130,6 +181,7 @@ export function useModalChoreography<TFocus extends HTMLElement = HTMLElement>({
       ownFocusRef.current?.focus();
     }
     return () => {
+      if (shouldRestoreFocusRef.current && !shouldRestoreFocusRef.current()) return;
       const prev = previouslyFocusedRef.current;
       if (prev && document.contains(prev)) prev.focus();
     };

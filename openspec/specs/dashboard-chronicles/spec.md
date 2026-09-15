@@ -108,10 +108,42 @@ recent settled day (yesterday in the owner timezone).
   `urgent`, `busy`, `mild`, `quiet`, `no_data`, `unavailable`, or `degraded`),
   `headline` (string), `voice_paragraph` (string), `voice_source` (one of
   `llm·cached`, `templated`, `stale`), `kpi` (object), `attention_items`
-  (array), `recent_days` (array), and `earliest_date`
+  (array), `recent_days` (array), `earliest_date`, and additive
+  `subquery_availability`
+- **AND** every `subquery_availability` entry identifies a stable owned
+  briefing concern and a state of `available`, `unavailable`, or
+  `not_requested`
+- **AND** `unavailable` entries SHALL NOT expose SQL, a raw exception,
+  connection detail, credential, or source payload
 - **AND** `earliest_date` is the earliest authoritatively covered local calendar
   day in the owner timezone, or `null` when no such coverage is established
 - **AND** every numeric field is `tabular-nums` safe (integer or fixed decimal)
+
+#### Scenario: Expected optional or cold-boot relation absence remains non-degraded
+
+- **WHEN** a deliberately optional briefing relation is absent during a
+  cold-boot or pre-feature installation path
+- **THEN** its `subquery_availability` entry SHALL be `not_requested` rather
+  than `unavailable`
+- **AND** the response SHALL NOT create a high source-error attention item
+  solely because of that expected absence
+- **AND** a successful empty source-state registry SHALL remain distinct from a
+  failed source-state request
+
+#### Scenario: Owned briefing query failure is named and cache-safe
+
+- **WHEN** an owned coverage, content, or current-source-health briefing query
+  fails for a reason other than an expected optional relation absence
+- **THEN** the response SHALL include a named `subquery_availability` entry in
+  state `unavailable` for every failed concern
+- **AND** it SHALL include high-severity `source_error` attention for the
+  named concern or concerns with safe actionable copy
+- **AND** a failed coverage read SHALL select `unavailable`, while a failed
+  content or current-source-health read SHALL select `degraded`
+- **AND** the response SHALL use deterministic state-specific copy and SHALL
+  NOT read or use fresh or stale day-close cache prose
+- **AND** it SHALL NOT present a calm empty day, a false archive floor, or a
+  complete KPI/recent-day reconstruction
 
 #### Scenario: Local-day coverage requires a durable witness
 
@@ -297,9 +329,8 @@ independently visible and toggleable.
 ### Requirement: Disabled Lane Affordances
 
 The page SHALL render lane controls for every category in the taxonomy,
-adjusting state based on `/api/chronicler/source-state` so that the
-operator can see which categories are unblocked, unavailable, or
-explicitly deferred.
+adjusting state based on `/api/chronicler/source-state` so that the operator
+can see which categories are unblocked, unavailable, or explicitly deferred.
 
 #### Scenario: Supported and active source
 
@@ -333,6 +364,17 @@ explicitly deferred.
 
 - **WHEN** a source's `chronicler_compatibility = not_time_bearing`
 - **THEN** the source SHALL never be rendered as a lane
+
+#### Scenario: Source-state request failure is explicit and retryable
+
+- **WHEN** the source-state request fails with no retained source-state data
+- **THEN** the badge strip SHALL render a named unavailable alert with a
+  semantic retry control rather than render as an empty strip
+- **WHEN** the source-state request fails while retained badges are available
+- **THEN** the strip SHALL label those badges as stale or unavailable and render
+  the same retry control
+- **AND** a completed successful response with zero rows SHALL remain the
+  ordinary cold-boot empty state
 
 ### Requirement: Map Render Privacy Contract
 
@@ -467,9 +509,11 @@ those decisions belong to the implementing change.
 
 ### Requirement: Day-Close Cache Invalidation
 
-Cached `chronicler_day_close` Tier-2 prose SHALL be invalidated and
-visually flagged stale whenever any episode, point event, or override
-in the cached window changes after the cache was built.
+Cached `chronicler_day_close` Tier-2 prose SHALL be invalidated and visually
+flagged stale whenever any episode, point event, or override in the cached
+window changes after the cache was built. The cache SHALL be identified by the
+selected local `(date, timezone)` tuple, and that tuple SHALL define the cached
+window used for invalidation.
 
 #### Scenario: Cache stale on tombstone
 
@@ -501,10 +545,26 @@ in the cached window changes after the cache was built.
 - **WHEN** the user clicks the "regenerate" affordance on a stale
   cache entry
 - **THEN** the page SHALL POST to a re-invocation endpoint that re-runs
-  the existing scheduled `chronicler_day_close` Tier-2 entry point
+  the existing scheduled `chronicler_day_close` Tier-2 entry point for the
+  selected `(date, timezone)` tuple
+- **AND** the POST body SHALL carry that exact selected `{date, tz}` pair
+- **AND** a successful response SHALL re-fetch the same selected briefing
+  tuple, while a failure leaves the stale state visible and reports the failed
+  regeneration without substituting prose
 - **AND** the re-invocation SHALL be rate-limited to 1 per day per
-  window
+  tuple window
 - **AND** no new LLM call path SHALL be introduced
+
+#### Scenario: Client cache identity includes timezone
+
+- **WHEN** the dashboard addresses a selected local day through the day-close
+  cache client or its query key
+- **THEN** it SHALL include the exact owner IANA timezone in the HTTP request
+  and cache/query identity
+- **AND** the same ISO date in two different timezones SHALL not reuse a
+  client cache result
+- **AND** a date-only legacy cache response SHALL not be requested as a
+  compatibility fallback
 
 ### Requirement: Auto-Refresh Adoption
 
@@ -600,6 +660,10 @@ coverage-eligible cache result or deterministic state-specific copy.
 - **AND** the page SHALL disable backward navigation when `earliest_date` is
   `null` because no authoritative coverage is established or coverage is
   unavailable
+- **AND** when `earliest_date` is null because the coverage boundary is
+  unavailable, the disabled control SHALL identify that boundary state in text
+  or its accessible name rather than silently appearing to be a normal archive
+  limit
 - **AND** the page SHALL NOT derive an archive floor from source registry
   seeding, current feeder state or checkpoints, or trailing `daily_rollups`
 
@@ -764,6 +828,45 @@ Scope: v1-mandatory
   post-merge frontend bundle sizes per
   `craft-and-care/performance-discipline.md` measure-before-optimize
 - **AND** any regression SHALL be discussed in the PR description
+
+### Requirement: Missing Day-Close Recovery
+
+The Chronicles archive SHALL offer explicit regeneration for a selected
+settled local day only when it has either an admissible stale cache entry or a
+typed, successfully read missing-witness coverage gap. Regeneration SHALL keep
+the selected date/timezone tuple and truthful pre-action state authoritative
+until the same tuple is successfully re-fetched.
+
+#### Scenario: Proven missing-witness gap is recoverable
+
+- **WHEN** a selected settled briefing resolves `state_class=unavailable`
+- **AND** its availability ledger reports both `coverage_floor` and
+  `coverage_witness` as `available`
+- **AND** no named briefing subquery is `unavailable`
+- **THEN** the page SHALL render an accessible Regenerate action for that
+  selected `(date, timezone)` tuple
+- **AND** activating it SHALL POST the exact selected tuple to the existing
+  day-close refresh endpoint
+- **AND** the unavailable state SHALL remain visible while the request is
+  pending or if it fails
+- **AND** a successful response SHALL re-fetch that same briefing tuple
+
+#### Scenario: Unproven or failed coverage is not offered regeneration
+
+- **WHEN** the selected briefing has no availability ledger, either coverage
+  read is not `available`, any named subquery is `unavailable`, or its state is
+  `no_data`, `degraded`, unknown, or content-bearing without stale cache
+- **THEN** the page SHALL NOT offer day-close regeneration
+- **AND** it SHALL preserve the existing truthful state-specific presentation
+
+#### Scenario: Regeneration control communicates progress and failure
+
+- **WHEN** regeneration is pending for the selected tuple
+- **THEN** its control SHALL be disabled and expose busy state accessibly
+- **WHEN** regeneration fails
+- **THEN** the control SHALL become available again
+- **AND** the page SHALL announce an actionable failure without substituting
+  cached or generated prose
 
 ## Source References
 

@@ -7,6 +7,7 @@
  *   useButlerDailyActivity   — GET /api/butlers/{name}/analytics/daily-activity
  *   useButlerSessionKinds    — GET /api/butlers/{name}/analytics/session-kinds
  *   useButlerLatencyStats    — GET /api/butlers/{name}/analytics/latency-stats
+ *   useButlerFrictionSummary — GET /api/butlers/{name}/analytics/friction (bu-8cdl1.9 S3)
  *   useButlerActivityFeed    — GET /api/butlers/{name}/activity-feed (bu-y7lo7)
  */
 
@@ -17,6 +18,7 @@ import {
   getButlerDailyActivity,
   getButlerSessionKinds,
   getButlerLatencyStats,
+  getButlerFrictionSummary,
   getButlerActivityFeed,
   getButlerMemoryStats,
 } from "@/api/index.ts";
@@ -100,6 +102,31 @@ export function useButlerLatencyStats(butlerName: string, windowDays: number = 7
   });
 
   return query;
+}
+
+// ---------------------------------------------------------------------------
+// useButlerFrictionSummary (bu-8cdl1.9 S3)
+// ---------------------------------------------------------------------------
+
+export { type FrictionSummary } from "@/api/index.ts";
+
+/**
+ * Fetch typed friction-episode counts and session outcomes for a butler.
+ *
+ * @param butlerName - Butler identifier
+ * @param period     - Summary period: "today" (default), "7d", or "30d"
+ */
+export function useButlerFrictionSummary(
+  butlerName: string,
+  period: "today" | "7d" | "30d" = "today",
+) {
+  return useQuery({
+    queryKey: ["butlers", butlerName, "analytics", "friction", period],
+    queryFn: () => getButlerFrictionSummary(butlerName, { period }),
+    enabled: !!butlerName,
+    staleTime: 60_000,
+    select: (response) => response.data,
+  });
 }
 
 // ---------------------------------------------------------------------------

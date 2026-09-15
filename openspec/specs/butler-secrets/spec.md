@@ -127,6 +127,22 @@ in divergent row chrome.
 - **AND** the authenticated session flow persists a versioned non-secret consent grant and the API ID, API hash, and user session only after successful verification
 - **AND** dismissing the inline setup region returns keyboard focus to its `set up Telegram` trigger
 
+#### Scenario: Telegram session status loading is distinct from setup state
+- **WHEN** the Passport Telegram region is waiting for its session-status probe
+- **THEN** it SHALL render a loading skeleton and SHALL NOT infer that credentials are absent, that setup is required, or that a session is ready
+- **AND** it SHALL NOT expose credential inputs or session-auth actions until a successful status response selects the existing setup path.
+
+#### Scenario: Telegram session status is unavailable
+- **WHEN** the Passport Telegram session-status probe fails
+- **THEN** the region SHALL render a named unavailable state with a retry action that re-queries only the status probe
+- **AND** it MUST NOT render the normal setup flow, infer missing credentials or an unready session, expose credential inputs, or initiate session authentication
+- **AND** it MUST NOT disclose an API ID, API hash, user session, or any other credential value.
+
+#### Scenario: Successful unready Telegram status keeps the guided setup path
+- **WHEN** the Passport Telegram session-status probe succeeds and reports that the session is not ready
+- **THEN** the region SHALL render the existing guided setup trigger and credential-status indicators
+- **AND** it SHALL NOT render the unavailable state or retry action unless a later status probe fails.
+
 ### Requirement: Connector-owned Passport projections
 
 `u:spotify` is a connector-owned Passport projection and SHALL remain
@@ -395,6 +411,23 @@ This requirement defines a scope boundary, not a UI contract; the UI contract fo
 - **WHEN** a Google OAuth token expires at time T
 - **THEN** within the same page-load cycle, both `/secrets` (User row for `u:google`, spine) and `/ingestion/connectors` (the Google connector card) reflect state `expired`
 - **AND** neither surface caches a stale `ok` state past the standard TanStack Query refresh interval
+
+### Requirement: Connector Status Drives Spotify Passport State
+
+The presentation-only `u:spotify` projection SHALL derive its spine state from the closed response of `GET /api/connectors/spotify/status`. It SHALL NOT use generic credential `warn` as a standing state and SHALL NOT expose a generic Secrets probe action.
+
+#### Scenario: Spotify projection maps closed connector status
+
+- **WHEN** Spotify status is loading, connected, unconfigured, authorization-needed, needs-reauth, failed, or unavailable
+- **THEN** the projection renders respectively as checking, healthy, not-set, authorization-needed, authorization-needed, failed, or failed
+- **AND** authorization-needed and failed states appear in `needs hand`
+- **AND** checking never appears in `stale`
+
+#### Scenario: CLI Test refreshes persisted evidence
+
+- **WHEN** a CLI Test request completes with an HTTP success response
+- **THEN** Passport invalidates the Secrets inventory and CLI provider queries
+- **AND** the persisted healthy or failed outcome becomes visible without a page reload
 
 ## Source References
 

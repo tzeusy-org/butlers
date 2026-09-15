@@ -198,22 +198,20 @@ This inventory describes what is implemented today in `frontend/src/**`.
 - Expandable row detail showing request payload, user context, and error body.
 - Pagination.
 
-## Contacts (`/contacts`)
+## Contacts compatibility (`/contacts`)
 
-- Search + label-filterable contacts table.
-- Header action: `Sync From Google` triggers manual incremental Google contacts sync and refreshes the list on success.
-- Pagination.
-- Row click navigation to detail.
+- Replace-navigates to the canonical entity index at `/entities/index?has=contact`.
+- Contact hooks and reusable components remain imported by embedded relationship,
+  ingestion-filter, and entity-detail consumers. The `getContacts`, `getContact`, and
+  `getContactInteractions` readers target absent backend paths and are not live API evidence;
+  `/api/relationship/contacts/overdue` and the groups, labels, and upcoming-dates routes remain
+  backend-supported.
 
-## Contact Detail (`/contacts/:contactId`)
+## Contact Detail compatibility (`/contacts/:contactId`)
 
-- Contact profile header (identity, labels, contact channels, metadata).
-- Sub-tabs:
-  - Notes
-  - Interactions
-  - Gifts
-  - Loans
-  - Activity
+- Replace-navigates to `/entities/index?has=contact`; the retired contact ID cannot be
+  resolved at this compatibility boundary.
+- Canonical detail navigation starts from the entity index and opens `/entities/:entityId`.
 
 ## Circles (`/entities/circles`)
 
@@ -322,22 +320,20 @@ capabilities rather than porting them:
 - Tier-breakdown donut chart.
 - The legacy connector-card inline delete (deregister) button.
 
-## Costs (`/costs`)
+## Spend (`/spend`)
 
-- Period selector (7d/30d/90d).
-- Summary cards:
-  - total cost
-  - session count
-  - input tokens
-  - output tokens
-- Area chart of daily spend.
-- Cost-by-butler breakdown table with percentage bars.
+- Canonical spend posture surface; `/costs` and `/settings/spend` are compatibility redirects.
+- MTD spend, month-end forecast, monthly ceiling, and selected-range daily history.
+- Breakdown by butler, model, feature, and purpose.
+- Most expensive sessions and measured-versus-forecast schedule costs.
+- Routing-rule creation, ordering, deletion safety, and live spend updates.
 
 ## Memory (`/memory`)
 
-- Memory tier health cards.
-- Browser tabs for facts/rules/episodes with search and pagination.
-- Recent memory activity timeline.
+- House-ledger overture and pipeline health bands.
+- URL-backed facts, rules, and episodes registers with search and pagination.
+- Rules maturity filtering, including `maturity=anti_pattern` deep links.
+- Attention rail, including anti-pattern review rows, plus recent memory activity.
 
 ## Settings (`/settings`)
 
@@ -347,8 +343,6 @@ capabilities rather than porting them:
 
 ## Implemented But Not Currently Wired to a Route
 
-- `CostWidget` component.
-- `TopSessionsTable` component and `useTopSessions` hook.
 - `BackfillHistoryTab` and `FiltersTab` (switchboard) — see "Orphaned
   capabilities" under Ingestion above.
 

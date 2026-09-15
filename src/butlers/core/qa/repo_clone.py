@@ -28,7 +28,7 @@ import asyncpg
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_REPO_URL = "https://github.com/Tzeusy/butlers"
+_DEFAULT_REPO_URL = "https://github.com/tzeusy-org/butlers"
 _CLONE_DIR = Path.home() / ".cache" / "butlers" / "qa-repo"
 
 
@@ -111,13 +111,21 @@ class ManagedRepoClone:
             return await self._ensure_cloned_unlocked()
 
     async def _ensure_cloned_unlocked(self) -> Path:
-        """Internal: clone if .git is missing."""
+        """Internal: clone if .git is missing or its origin no longer matches config."""
         repo_url = await self._read_repo_url()
 
         if (self._clone_dir / ".git").is_dir():
-            self._clone_path = self._clone_dir
-            await self._update_clone_path(str(self._clone_dir))
-            return self._clone_dir
+            origin_rc, origin_url, _origin_stderr = await _run_git(
+                "remote", "get-url", "origin", cwd=self._clone_dir
+            )
+            if origin_rc == 0 and origin_url.strip() == repo_url:
+                self._clone_path = self._clone_dir
+                await self._update_clone_path(str(self._clone_dir))
+                return self._clone_dir
+            logger.info(
+                "Managed QA repository origin is unavailable or differs from configuration; "
+                "discarding stale clone"
+            )
 
         # Clone fresh
         self._clone_dir.parent.mkdir(parents=True, exist_ok=True)

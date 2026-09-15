@@ -29,7 +29,7 @@ const archiveMutate = vi.fn()
 const unarchiveMutate = vi.fn()
 
 vi.mock('@/hooks/use-ingestion', () => ({
-  useConnectorSummariesWithAggregates: vi.fn(),
+  useConnectorSummaries: vi.fn(),
   useAvailableConnectors: vi.fn(),
   // ArchiveCandidatesList (bu-u19yv) calls this unconditionally; return a stable
   // idle mutation so the roster mounts without a real QueryClient.
@@ -49,7 +49,7 @@ vi.mock('@/hooks/use-ingestion', () => ({
 }))
 
 import {
-  useConnectorSummariesWithAggregates,
+  useConnectorSummaries,
   useAvailableConnectors,
 } from '@/hooks/use-ingestion'
 import type { ConnectorSummary, ConnectorProfile } from '@/api/types'
@@ -191,10 +191,10 @@ function mockHooks(
 ) {
   // The endpoint returns { connectors: [...] } (all fields DB-sourced),
   // wrapped in ApiResponse<ConnectorSummariesResponse>: { data: { connectors } }
-  vi.mocked(useConnectorSummariesWithAggregates).mockReturnValue(
+  vi.mocked(useConnectorSummaries).mockReturnValue(
     makeResult({
       data: { connectors, ...responseOverrides },
-    }) as ReturnType<typeof useConnectorSummariesWithAggregates>,
+    }) as ReturnType<typeof useConnectorSummaries>,
   )
 
   vi.mocked(useAvailableConnectors).mockReturnValue(
@@ -607,8 +607,7 @@ describe('reauth pill is the reauth action', () => {
 
   it('links the auth pill to the Spotify Passport card when needs_reauth', () => {
     // Spotify recovers through its Passport card (the connector PKCE drawer),
-    // not the generalized /oauth/spotify/start dance — that entry is a
-    // confidential-client flow whose app credentials were never provisioned.
+    // not a generalized OAuth route; Spotify authorization is connector-owned.
     // The pill keeps the "reauth" wording of the attention strip; only
     // WhatsApp's Passport recovery reads "pair".
     mockHooks([REAUTH_CONNECTOR])
@@ -1126,13 +1125,13 @@ describe('connector roster source failures are named and retryable', () => {
 
   it('keeps a successful dormant catalog visible when the active roster reader fails', () => {
     const retryRoster = vi.fn()
-    vi.mocked(useConnectorSummariesWithAggregates).mockReturnValue({
+    vi.mocked(useConnectorSummaries).mockReturnValue({
       data: undefined,
       isLoading: false,
       isError: true,
       error: new Error('connector summaries offline'),
       refetch: retryRoster,
-    } as unknown as ReturnType<typeof useConnectorSummariesWithAggregates>)
+    } as unknown as ReturnType<typeof useConnectorSummaries>)
     vi.mocked(useAvailableConnectors).mockReturnValue(
       makeResult({ data: [DORMANT_PROFILE] }) as ReturnType<typeof useAvailableConnectors>,
     )
@@ -1155,9 +1154,9 @@ describe('connector roster source failures are named and retryable', () => {
 
   it('does not present a failed available-catalog reader as an empty dormant catalog', () => {
     const retryCatalog = vi.fn()
-    vi.mocked(useConnectorSummariesWithAggregates).mockReturnValue(
+    vi.mocked(useConnectorSummaries).mockReturnValue(
       makeResult({ data: { connectors: [HEALTHY_CONNECTOR] } }) as ReturnType<
-        typeof useConnectorSummariesWithAggregates
+        typeof useConnectorSummaries
       >,
     )
     vi.mocked(useAvailableConnectors).mockReturnValue({

@@ -14,6 +14,8 @@ import threading
 from collections import defaultdict
 from typing import Any
 
+MANUAL_DAY_CLOSE_TRIGGER_PREFIX = "api:day_close_refresh:"
+
 _runtime_session_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "_runtime_session_id_var", default=None
 )
@@ -232,6 +234,17 @@ def consume_runtime_session_tool_calls(session_id: str) -> list[dict[str, Any]]:
     """Return and clear captured executed tool calls for session id."""
     with _capture_lock:
         return list(_captured_tool_calls.pop(session_id, []))
+
+
+def peek_runtime_session_tool_calls(session_id: str) -> list[dict[str, Any]]:
+    """Return captured executed tool calls for session id without clearing them.
+
+    Used by mid-session readers (e.g. ``conversation_reply``) that need the
+    calls captured so far without disturbing the buffer the Spawner still
+    drains at session finish via ``consume_runtime_session_tool_calls``.
+    """
+    with _capture_lock:
+        return list(_captured_tool_calls.get(session_id, []))
 
 
 def discard_runtime_session_tool_calls(session_id: str) -> None:

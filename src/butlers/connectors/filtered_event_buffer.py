@@ -502,6 +502,19 @@ class FilteredEventBuffer:
         """
         return "source_poll_error"
 
+    @staticmethod
+    def reason_media_fetch_failed() -> str:
+        """Return filter reason for a failed media attachment fetch (bu-2jtfw.7).
+
+        Distinct from :meth:`reason_source_poll_error`: this is a per-attachment
+        fetch/store failure (getFile 404/expired, blob store unreachable) on a
+        message the connector still ingests with its caption preserved — the
+        row is an audit signal, not evidence the whole update was dropped.
+
+        Status should be ``"error"`` when using this reason.
+        """
+        return "media_fetch_failed"
+
     # ------------------------------------------------------------------
     # Full-payload helper
     # ------------------------------------------------------------------

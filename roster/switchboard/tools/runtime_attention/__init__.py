@@ -5,15 +5,13 @@ runtime-attention episode in front of the operator.  This package holds the two
 halves of that boundary: the fenced-claim repository over
 ``public.runtime_attention_outbox`` and the delivery worker that drives it.
 
-Nothing here is wired into daemon startup.  Activation waits for producers and
-grants (bu-0uqgo.6 and the epic), and the worker is inert until something
-constructs and runs it.
+``SwitchboardModule.on_startup`` constructs and schedules the delivery worker
+at daemon startup (see ``roster/switchboard/modules/__init__.py``).
 """
 
 from butlers.tools.switchboard.runtime_attention.outbox import (
     CLAIM_LEASE_SECONDS,
     DELIVERY_LEASE_NAME,
-    LEASE_HEARTBEAT_SECONDS,
     MAX_TRANSPORT_ATTEMPTS,
     RETRY_BACKOFF_SECONDS,
     SERVICE_LEASE_TTL_SECONDS,
@@ -33,7 +31,6 @@ from butlers.tools.switchboard.runtime_attention.worker import (
 __all__ = [
     "CLAIM_LEASE_SECONDS",
     "DELIVERY_LEASE_NAME",
-    "LEASE_HEARTBEAT_SECONDS",
     "MAX_TRANSPORT_ATTEMPTS",
     "RETRY_BACKOFF_SECONDS",
     "SERVICE_LEASE_TTL_SECONDS",

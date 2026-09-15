@@ -181,6 +181,16 @@ original; it SHALL never overwrite the original state, reset a breaker, or
 cause an automatic replay. A partial unique direct-parent lineage constraint
 and atomic state-checked `INSERT ... ON CONFLICT` operation SHALL create or
 return at most one direct successor for an original episode.
+The central `dashboard-owner-auth` boundary SHALL admit a valid configured
+`X-API-Key` or a valid server-managed owner session before protected body reads,
+domain-pool acquisition, caches or handlers. Passkey verification issues a session;
+it is not a new per-route credential. Cookie-backed unsafe actions additionally
+require independent synchronizer CSRF and exact Origin validation. Unavailable
+authoritative auth state returns safe `503`; missing, expired, revoked or invalid
+caller authority returns `401`. An absent API key alone is not unavailability when
+healthy keyless session authority exists. Domain checks remain mandatory after
+central authentication; auth-store reads necessary for verification are distinct
+from forbidden pre-authentication domain access.
 
 ID: REQ-runtime-attention-outbox-003
 Source: heart-and-soul/vision.md Rule 1 and Rule 4; RFC 0005; design.md Decisions 4 and 6
@@ -204,8 +214,8 @@ Scope: v1-mandatory
 
 #### Scenario: Callers without dashboard-owner control cannot inspect or reissue an episode
 
-- **WHEN** owner-control is not configured, or a caller lacks the configured
-  dashboard owner credential, and it requests protected attention episode
+- **WHEN** authoritative owner-auth state is unavailable, or a caller lacks
+  valid central configured-key-or-owner-session authority, and it requests protected attention episode
   detail or a manual reissue
 - **THEN** the API returns its appropriate unavailable or unauthorized response
   before exposing episode data

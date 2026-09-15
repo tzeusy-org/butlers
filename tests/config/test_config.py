@@ -163,6 +163,7 @@ def test_runtime_seed_config(tmp_path: Path):
     assert RuntimeSeedConfig().max_queued_sessions == 10
     assert RuntimeSeedConfig().core_groups is None
     assert RuntimeSeedConfig().catalog_read_sensitivity == "normal"
+    assert RuntimeSeedConfig().tool_exposure_policy == "eager_filtered"
 
     runtime_toml = (
         '[butler]\nname = "m"\nport = 7010\n[butler.runtime_seed]\nmax_concurrent_sessions = 4\n'
@@ -183,6 +184,19 @@ def test_runtime_seed_config(tmp_path: Path):
             'catalog_read_sensitivity = "caller-invented"\n'
         )
         load_config(_write_toml(tmp_path, invalid_authority_toml))
+
+    policy_toml = (
+        '[butler]\nname = "m"\nport = 7019\n[butler.runtime_seed]\ntool_exposure_policy = "auto"\n'
+    )
+    cfg = load_config(_write_toml(tmp_path, policy_toml))
+    assert cfg.runtime_seed.tool_exposure_policy == "auto"
+
+    with pytest.raises(ConfigError, match="tool_exposure_policy"):
+        invalid_policy_toml = (
+            '[butler]\nname = "m"\nport = 7020\n[butler.runtime_seed]\n'
+            'tool_exposure_policy = "caller-invented"\n'
+        )
+        load_config(_write_toml(tmp_path, invalid_policy_toml))
 
     with pytest.raises(ConfigError, match="max_queued_sessions"):
         mqs_toml = (
@@ -271,11 +285,28 @@ def test_finance_and_relationship_seed_delegation_group():
         core_groups = cfg.runtime_seed.core_groups
         assert core_groups is not None
         assert "delegation" in core_groups
+        assert "fleet_cases" in core_groups
         for existing_group in ("infra", "state", "scheduling", "notifications"):
             assert existing_group in core_groups, (
                 f"{butler}: expected pre-existing group {existing_group!r} preserved, "
                 f"found {core_groups!r}"
             )
+
+
+def test_cross_butler_and_switchboard_fleet_case_registration_is_declared():
+    """Roster authority admits delegation and the Switchboard fleet-case writer."""
+    repo_root = Path(__file__).resolve().parents[2]
+    finance = load_config(repo_root / "roster" / "finance")
+    relationship = load_config(repo_root / "roster" / "relationship")
+    switchboard = load_config(repo_root / "roster" / "switchboard")
+
+    for config in (finance, relationship):
+        assert config.runtime_seed.core_groups is not None
+        assert "delegation" in config.runtime_seed.core_groups
+        assert "fleet_cases" in config.runtime_seed.core_groups
+
+    assert switchboard.runtime_seed.core_groups is not None
+    assert "fleet_cases" in switchboard.runtime_seed.core_groups
 
 
 def test_missing_runtime_seed_section_defaults(tmp_path: Path):
@@ -286,6 +317,7 @@ def test_missing_runtime_seed_section_defaults(tmp_path: Path):
     assert cfg.runtime_seed.max_queued_sessions == 10
     assert cfg.runtime_seed.core_groups is None
     assert cfg.runtime_seed.liveness_ttl_seconds == 300
+    assert cfg.runtime_seed.tool_exposure_policy == "eager_filtered"
     assert cfg.runtime_seed.route_contract_min == 1
     assert cfg.runtime_seed.route_contract_max == 1
 
@@ -387,6 +419,50 @@ def test_approval_config(tmp_path: Path):
         validate_approval_config(ac4, {"email_send"})
 
 
+def test_validate_approval_config_flags_ungated_chat_reachable_write_tool():
+    """bu-0ynlk.1: a declared write tool (arg_sensitivities={"_write": True},
+    the spotify/steam tool_metadata() convention) that is registered but has
+    no gated_tools entry fails validation, naming the tool. A tool that IS
+    gated, and a tool whose owning module never opted into the "_write"
+    declaration at all, are both unaffected."""
+    from butlers.modules.base import ToolMeta
+
+    approval_config = ApprovalConfig(enabled=True, gated_tools={})
+    tool_metadata = {
+        "spotify_play": ToolMeta(arg_sensitivities={"_write": True}),
+        "spotify_search": ToolMeta(arg_sensitivities={"_write": False}),
+        "email_send_message": ToolMeta(arg_sensitivities={"to": True}),
+    }
+
+    with pytest.raises(ConfigError, match="spotify_play"):
+        validate_approval_config(
+            approval_config,
+            {"spotify_play", "spotify_search", "email_send_message"},
+            tool_metadata,
+        )
+
+    gated_approval_config = ApprovalConfig(
+        enabled=True, gated_tools={"spotify_play": GatedToolConfig()}
+    )
+    validate_approval_config(
+        gated_approval_config,
+        {"spotify_play", "spotify_search", "email_send_message"},
+        tool_metadata,
+    )  # no raise: the declared write tool is gated
+
+    validate_approval_config(
+        approval_config,
+        {"spotify_search", "email_send_message"},
+        tool_metadata,
+    )  # no raise: spotify_play isn't registered by this butler
+
+    validate_approval_config(
+        approval_config,
+        {"spotify_play", "spotify_search", "email_send_message"},
+        None,
+    )  # no raise: no tool_metadata supplied, reverse check skipped
+
+
 # ---------------------------------------------------------------------------
 # Messenger config + Switchboard URL + memory module
 # ---------------------------------------------------------------------------
@@ -480,14 +556,14 @@ def test_oauth_section_valid_parsing(tmp_path: Path):
 
     # Multiple providers each parsed into the oauth dict.
     multiple = (
-        '[butler]\nname = "music"\nport = 41101\n\n'
-        "[oauth.spotify]\n"
-        'scopes = ["user-read-recently-played", "user-top-read"]\n\n'
+        '[butler]\nname = "general"\nport = 41101\n\n'
+        "[oauth.example_provider]\n"
+        'scopes = ["profile.read", "activity.read"]\n\n'
         "[oauth.google]\n"
         'scopes = ["https://www.googleapis.com/auth/calendar"]\n'
     )
     cfg = load_config(_write_toml(tmp_path, multiple))
-    assert set(cfg.oauth["spotify"]) == {"user-read-recently-played", "user-top-read"}
+    assert set(cfg.oauth["example_provider"]) == {"profile.read", "activity.read"}
     assert cfg.oauth["google"] == ["https://www.googleapis.com/auth/calendar"]
 
     # scopes = [] is valid and yields an empty list.

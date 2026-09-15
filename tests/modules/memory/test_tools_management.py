@@ -44,6 +44,7 @@ class TestMemoryStats:
             "proven",
             "anti_pattern",
             "forgotten",
+            "retired",
         }
 
     async def test_returns_integer_counts(self, pool: AsyncMock) -> None:
@@ -71,6 +72,30 @@ class TestMemoryStats:
         assert len(maturity_queries) == 4, maturity_queries
         for query in maturity_queries:
             assert "(metadata->>'forgotten')::boolean IS NOT TRUE" in query, query
+
+    async def test_every_maturity_bucket_excludes_retired_rules(self, pool: AsyncMock) -> None:
+        """bu-rjdihn: a retired rule (retired_at set, bu-6t8ix.3) is a deliberate
+        decommission, not a live standing order — every maturity bucket must
+        exclude it the same way it excludes forgotten rules, and the retired
+        count must be reported separately rather than silently dropped.
+        """
+        queries: list[str] = []
+
+        async def _fetchval(query: str, *args: object) -> int:
+            queries.append(query)
+            return 0
+
+        pool.fetchval = AsyncMock(side_effect=_fetchval)
+        result = await memory_stats(pool)
+
+        maturity_queries = [q for q in queries if "FROM rules WHERE maturity" in q]
+        assert len(maturity_queries) == 4, maturity_queries
+        for query in maturity_queries:
+            assert "retired_at IS NULL" in query, query
+
+        retired_queries = [q for q in queries if "retired_at IS NOT NULL" in q]
+        assert len(retired_queries) == 1, queries
+        assert result["rules"]["retired"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +160,11 @@ async def _call_context(
 
     pool.fetch = _fake_fetch
     pool.execute = AsyncMock()
+    # No runtime_config row / no withheld facts in this mocked pool -- both
+    # load_catalog_read_policy and the profile-facts withheld-count query
+    # call pool.fetchval, so it must return a real falsy value rather than
+    # AsyncMock's default (a MagicMock, whose __int__ defaults to 1).
+    pool.fetchval = AsyncMock(return_value=None)
 
     with patch(
         "butlers.modules.memory.tools.context._search.recall",

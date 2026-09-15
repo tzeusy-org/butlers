@@ -23,6 +23,12 @@ _PRODUCERS = [
     ("home", "context_producer_home_presence", "context_producer_home_presence", "*/10 * * * *"),
     ("travel", "context_producer_travel", "context_producer_travel", "*/15 * * * *"),
     ("health", "context_producer_sleep_window", "context_producer_sleep_window", "*/15 * * * *"),
+    (
+        "travel",
+        "context_producer_commuting_eta",
+        "context_producer_commuting_eta",
+        "*/5 * * * *",
+    ),
 ]
 
 

@@ -19,6 +19,13 @@ model-evaluated IGNORE verdicts are legitimate decisions and are NOT recorded
 (classify-before-flagging). See
 ``butlers.connectors.discretion.DiscretionEvaluator``.
 
+bu-2jtfw.11 adds a fourth source, ``source="approvals"``: a prepared action
+(``pending_actions.origin='prepared'``) that fails execution on approve. A
+prepared action is never pushed to the owner (it has no ``notify``/``insight``
+egress attempt of its own -- it surfaces only through the insight digest's
+door), so its execution failure has no other egress path to record it on. See
+``butlers.modules.approvals.executor.execute_approved_action``.
+
 The egress paths are:
 
 - ``notify()`` (``butlers.core_tools._notifications``) — the core MCP tool
@@ -88,7 +95,7 @@ logger = logging.getLogger(__name__)
 # Shared vocabulary
 # ---------------------------------------------------------------------------
 
-Source = Literal["notify", "insight", "discretion"]
+Source = Literal["notify", "insight", "discretion", "approvals"]
 # "deferred" means a benign, chosen hold that resolves on its own (quiet
 # hours, a coalescing window) -- the notification WILL be attempted again.
 # "failed" (bu-hmdqz.3) means a genuine terminal failure at this attempt (no
@@ -100,7 +107,7 @@ Source = Literal["notify", "insight", "discretion"]
 # ledger -- the exact failure mode bu-hmdqz.3 fixed for secrets_lifecycle.
 Outcome = Literal["delivered", "coalesced", "deferred", "suppressed", "failed"]
 
-VALID_SOURCES = frozenset({"notify", "insight", "discretion"})
+VALID_SOURCES = frozenset({"notify", "insight", "discretion", "approvals"})
 VALID_OUTCOMES = frozenset({"delivered", "coalesced", "deferred", "suppressed", "failed"})
 
 # Metadata key carrying the runtime session id that was executing when the
@@ -182,7 +189,7 @@ def is_priority_urgent(priority_score: int | None) -> bool:
 
 
 async def record_attention_event(
-    pool: asyncpg.Pool | None,
+    pool: asyncpg.Pool | asyncpg.Connection | None,
     *,
     origin_butler: str,
     source: Source,
@@ -408,6 +415,43 @@ async def find_notify_dispatch_for_session(
         reason=row["reason"],
         notification_ref=row["notification_ref"],
     )
+
+
+async def attention_event_recorded_since(
+    pool: asyncpg.Pool | asyncpg.Connection | None,
+    *,
+    dedup_key: str,
+    since: datetime,
+) -> bool:
+    """Return whether a ledger row with *dedup_key* exists at/after *since*.
+
+    Lets a caller with a per-situation dedup key (e.g.
+    ``butlers.core.fleet_cases.evaluate_case_attention``'s per-case bypass
+    key) ask "did this already fire in the current window?" without
+    reinventing a cooldown table -- the ledger's existing ``dedup_key`` column
+    is the same primitive :func:`record_attention_event` already writes.
+
+    Fails open (returns ``False``) on any DB error or missing pool, mirroring
+    :func:`count_attention_events_since` -- an attention decision must never
+    block on ledger unavailability (see the module's degraded-honesty
+    contract).
+    """
+    if pool is None:
+        return False
+    try:
+        row = await pool.fetchval(
+            """
+            SELECT 1 FROM public.attention_ledger
+            WHERE dedup_key = $1 AND occurred_at >= $2
+            LIMIT 1
+            """,
+            dedup_key,
+            since,
+        )
+    except Exception:
+        logger.warning("attention_event_recorded_since: query failed; failing open", exc_info=True)
+        return False
+    return row is not None
 
 
 async def count_attention_events_since(

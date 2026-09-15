@@ -223,6 +223,35 @@ describe("SessionDetailPage — content", () => {
     expect(html).toContain(`href="/sessions/sess-parent-1"`);
   });
 
+  // openspec/specs/dashboard-chat-ui/spec.md: Session Linkage Navigation /
+  // Scenario: Session detail links back to the originating chat message
+  it("renders the Asked in chat link to the exact persisted message anchor", () => {
+    setSessionState({
+      ...BASE_SESSION,
+      linked_message: {
+        conversation_id: "11111111-1111-1111-1111-111111111111",
+        message_id: "22222222-2222-2222-2222-222222222222",
+      },
+    });
+    const html = renderPage();
+    expect(html).toContain("Asked in chat");
+    expect(html).toContain(
+      'href="/chat/11111111-1111-1111-1111-111111111111#m-22222222-2222-2222-2222-222222222222"',
+    );
+  });
+
+  it("omits the Asked in chat link when the session has no linked message", () => {
+    setSessionState({ ...BASE_SESSION, linked_message: null });
+    const html = renderPage();
+    expect(html).not.toContain("Asked in chat");
+
+    setSessionState({
+      ...BASE_SESSION,
+      linked_message: { conversation_id: "", message_id: "" },
+    });
+    expect(renderPage()).not.toContain("Asked in chat");
+  });
+
   it("renders process_log stderr/exit_code as root evidence for a failed session", () => {
     setSessionState({
       ...BASE_SESSION,

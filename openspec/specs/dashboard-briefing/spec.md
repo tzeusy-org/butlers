@@ -11,6 +11,7 @@ The headline is classified from the SAME composed attention model the Overview d
 bu-gcz9e.2 pins this cross-surface contract with a consistency test driven from SHARED fixtures: `tests/dashboard/test_briefing_attention_contract.py` (this endpoint's classification) and `frontend/src/components/overview/model.contract.test.ts` (the `dashboard-overview` attention list) both read the same named scenarios from `frontend/src/components/overview/__fixtures__/attention-contract-scenarios.json` and assert each scenario's `state_class` implies matching row-count/severity bounds on the other surface. A tripped QA circuit breaker (`GET /api/qa/summary`'s `circuit_breaker.tripped`) is part of this pinned contract (bu-y2xqi): the QA-derived attention item (the scenario below) checks circuit-breaker state FIRST, before the failed-patrol check, matching the `dashboard-overview` spec's "A tripped QA circuit breaker surfaces as an attention row" scenario -- a breaker trip with no failed patrol / dispatched / novel signal now composes `state_class = "urgent"`, never `"quiet"`.
 
 ## Requirements
+
 ### Requirement: Briefing Response Schema
 
 The endpoint `GET /api/dashboard/briefing` SHALL return a JSON object with exactly six fields: `greet`, `headline`, `elaboration`, `source`, `state_class`, `generated_at`. The schema MUST be stable across implementation changes.
@@ -35,6 +36,19 @@ live state or a time-bounded recent failure; historical aggregates SHALL remain 
 `state.attention_items` and SHALL NOT affect briefing classification, headline, or
 elaboration. Each source is fetched independently and concurrently; a failure in one
 source MUST NOT prevent the others from contributing.
+
+#### Scenario: Unknown recent QA patrol status is attention, not calm
+
+- **WHEN** the QA source reads its latest non-running patrol in the current 24-hour
+  horizon and that persisted `status` is outside the canonical patrol vocabulary,
+  while the circuit breaker is not tripped
+- **THEN** it adds one high-severity `QA patrol status unknown` attention item with
+  `source = "qa"` and a link to `/qa`
+- **AND** the item explains that QA reported an unrecognized patrol status without
+  exposing the raw stored value as display copy
+- **AND** the condition SHALL NOT be classified as quiet, a healthy all-clear, or
+  ordinary no-history state
+- **AND** a tripped breaker continues to take precedence over this item
 
 #### Scenario: Board-derived attention items (butler liveness)
 

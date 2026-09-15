@@ -9,19 +9,51 @@ from typing import Any
 import asyncpg
 
 from butlers.tools.health._helpers import _row_to_dict
+from butlers.tools.health._medication_utils import expected_dose_count, frequency_to_doses_per_day
+from butlers.tools.health.measurements import VALID_MEASUREMENT_TYPES as _LOGGABLE_MEASUREMENT_TYPES
 
 logger = logging.getLogger(__name__)
 
 VALID_TREND_PERIODS = {"week", "month"}
 
-VALID_MEASUREMENT_TYPES = {"weight", "blood_pressure", "heart_rate", "blood_sugar", "temperature"}
+# The set of measurement types `measurement_log` accepts on the write path.
+# Read-path reporting (below) must not be limited to this set: wellness
+# ingestion (Google Health, HA) writes additional measurement_* predicates
+# (e.g. measurement_resting_hr) directly via store_fact, bypassing this gate.
+VALID_MEASUREMENT_TYPES = _LOGGABLE_MEASUREMENT_TYPES
+
+_ABSENT_REASON_TEMPLATE = "no {type} measurements recorded yet"
+
+
+async def _live_measurement_types(pool: asyncpg.Pool) -> list[str]:
+    """Return every measurement type with at least one active fact, live in the store.
+
+    Unlike ``VALID_MEASUREMENT_TYPES`` (the fixed set ``measurement_log`` accepts),
+    this reflects whatever predicates actually exist — including wellness-ingested
+    types like ``measurement_resting_hr`` that never go through the write gate.
+    """
+    rows = await pool.fetch(
+        "SELECT DISTINCT predicate FROM facts"
+        " WHERE predicate LIKE 'measurement~_%' ESCAPE '~'"
+        " AND scope = 'health' AND validity = 'active'"
+        " ORDER BY predicate"
+    )
+    return [row["predicate"].removeprefix("measurement_") for row in rows]
 
 
 async def health_summary(pool: asyncpg.Pool) -> dict[str, Any]:
-    """Get a health overview: latest measurements, active medications, conditions."""
-    # Latest measurement fact per type (most recent valid_at per measurement predicate)
+    """Get a health overview: latest measurements, active medications, conditions.
+
+    Lists every measurement type actually present in the fact store — not just
+    the fixed five ``measurement_log`` accepts — and names any of those five
+    that are absent, with a reason, rather than silently omitting them.
+    """
+    live_types = await _live_measurement_types(pool)
+    all_types = sorted(set(live_types) | VALID_MEASUREMENT_TYPES)
+
     recent_measurements: list[dict[str, Any]] = []
-    for mtype in VALID_MEASUREMENT_TYPES:
+    absent_measurement_types: list[dict[str, Any]] = []
+    for mtype in all_types:
         predicate = f"measurement_{mtype}"
         row = await pool.fetchrow(
             "SELECT id, predicate, content, valid_at, created_at, metadata"
@@ -42,6 +74,10 @@ async def health_summary(pool: asyncpg.Pool) -> dict[str, Any]:
                     "measured_at": row["valid_at"],
                     "created_at": row["created_at"],
                 }
+            )
+        elif mtype in VALID_MEASUREMENT_TYPES:
+            absent_measurement_types.append(
+                {"type": mtype, "reason": _ABSENT_REASON_TEMPLATE.format(type=mtype)}
             )
 
     # Active medications (active=true property facts)
@@ -94,6 +130,7 @@ async def health_summary(pool: asyncpg.Pool) -> dict[str, Any]:
 
     return {
         "recent_measurements": recent_measurements,
+        "absent_measurement_types": absent_measurement_types,
         "active_medications": active_medications,
         "active_conditions": active_conditions,
     }
@@ -117,9 +154,12 @@ async def trend_report(
     now = datetime.now(UTC)
     since = now - timedelta(days=days)
 
-    # Measurement trends grouped by type
+    # Measurement trends grouped by type — the live set found in the fact
+    # store, not just the fixed five measurement_log accepts (mirrors the
+    # health_summary fix above; see _live_measurement_types).
+    live_types = await _live_measurement_types(pool)
     measurement_trends: dict[str, Any] = {}
-    for mtype in VALID_MEASUREMENT_TYPES:
+    for mtype in sorted(set(live_types) | VALID_MEASUREMENT_TYPES):
         predicate = f"measurement_{mtype}"
         meas_rows = await pool.fetch(
             "SELECT id, predicate, content, valid_at, created_at, metadata"
@@ -153,9 +193,13 @@ async def trend_report(
             "last": entries[-1],
         }
 
-    # Medication adherence — based on took_dose facts
+    # Medication adherence — based on took_dose facts. The denominator is the
+    # frequency-expected dose count over the window (capped at the medication's
+    # own age), via the same expected_dose_count helper the adherence route and
+    # the insight-scan job use — not len(dose_rows), which only counts however
+    # many doses happened to be logged and drifted from those two call sites.
     med_rows = await pool.fetch(
-        "SELECT id, metadata FROM facts"
+        "SELECT id, metadata, created_at FROM facts"
         " WHERE predicate = 'medication' AND validity = 'active' AND scope = 'health'"
         " AND (metadata->>'active')::boolean = true"
     )
@@ -165,6 +209,7 @@ async def trend_report(
         meta = med.get("metadata", {})
         med_id_str = str(med["id"])
         med_name = meta.get("name", med_id_str)
+        frequency = meta.get("frequency") or "daily"
 
         dose_rows = await pool.fetch(
             "SELECT metadata->>'skipped' AS skipped"
@@ -179,13 +224,20 @@ async def trend_report(
         )
         total = len(dose_rows)
         taken = sum(1 for d in dose_rows if d["skipped"] not in (True, "true", "True", "1"))
-        rate = round(taken / total * 100, 1) if total > 0 else None
+        expected = expected_dose_count(
+            doses_per_day=frequency_to_doses_per_day(frequency),
+            window_start=since,
+            window_end=now,
+            medication_created_at=med.get("created_at"),
+        )
+        rate = round(taken / expected * 100, 1) if expected > 0 else None
         medication_adherence.append(
             {
                 "medication_id": med["id"],
                 "name": med_name,
                 "total_doses": total,
                 "taken_doses": taken,
+                "expected_doses": expected,
                 "adherence_rate": rate,
             }
         )

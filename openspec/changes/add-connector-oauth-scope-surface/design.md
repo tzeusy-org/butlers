@@ -207,7 +207,7 @@ SCOPES = {
 **Why:**
 
 - The existing `connector_registry` is already the connector-fleet root
-  (`connector-base-spec/spec.md:319-348,381-419`). Adding rollup columns
+  (`connector-base-spec/spec.md:425-443`). Adding rollup columns
   alongside `state`, `last_heartbeat_at`, and `settings` keeps the dashboard
   query simple (one row → all the data the connector-detail page needs for
   the auth panel).
@@ -228,7 +228,7 @@ SCOPES = {
 - **Recompute `auth_status` on read:** rejected for hot paths. Connector list
   pages render many connectors; precomputing the rollup on write (heartbeat,
   reauth, scope observation) keeps reads cheap. The dashboard's existing
-  pattern is "rollup on write" (see `connector-base-spec/spec.md:319-340` for
+  pattern is "rollup on write" (see `connector-base-spec/spec.md:345-360` for
   the `state` rollup precedent).
 
 ### Decision 3 — Scope drift taxonomy, with `extra` as audit-only not drift
@@ -456,7 +456,7 @@ or the spec is out of date.
   scope list for Spotify and Google).
 - A 6h fallback bounds the staleness window without hammering provider APIs.
 - This is the same pattern as `last_heartbeat_at` for connector liveness
-  (`connector-base-spec/spec.md:329-348`) — observation timestamp + freshness
+  (`connector-base-spec/spec.md:392-398`) — observation timestamp + freshness
   TTL.
 
 **Alternatives considered:**
@@ -761,8 +761,9 @@ populated `auth.status` on first introspection after the deploy.
   `openspec/specs/google-account-registry/spec.md:22,150-162`
 - Reference token introspection (`_probe_google_token`) —
   `src/butlers/api/routers/oauth.py:164,1547-1620`
-- Connector base spec (`connector_registry` and `ConnectorDetail` Pydantic) —
-  `openspec/specs/connector-base-spec/spec.md:319-348,381-419`
+- Connector base spec (`connector_registry` and flat `ConnectorDetailEntry`
+  Pydantic wire response) —
+  `openspec/specs/connector-base-spec/spec.md:425-451`
 - Spotify connector OAuth scopes (manifest reference) —
   `openspec/specs/connector-spotify/spec.md:229-247`
 - Spotify dashboard `needs_reauth` pattern —

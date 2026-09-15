@@ -18,6 +18,17 @@ POST /api/butlers/{name}/conversations
 GET  /api/butlers/{name}/conversations/search
     Substring search across conversation messages (case-insensitive ILIKE).
 
+GET  /api/conversations/messages/search
+    Owner-scoped, cursor-paginated full-text search across every butler's
+    dashboard messages (bu-0ynlk.9). One row per matching message with
+    ts_rank ordering and highlight ranges — distinct from the per-butler,
+    per-conversation substring search above.
+
+GET  /api/conversations/{conversation_id}
+    Cross-butler conversation identity lookup by id alone, regardless of
+    owning butler_name (bu-0ynlk.11 — the /chat/:conversationId full-page
+    route and cmdk recent-thread recall). 404 when the id is unknown.
+
 GET  /api/butlers/{name}/conversations/summary
     Aggregate statistics for all conversations of a butler.
 
@@ -55,13 +66,34 @@ SSE event types
     streams without an immutable user-message id and terminal-action states
     do not emit this event.
 ``token``
-    Streamed assistant response token. Data: ``{content}``.
+    Streamed assistant response token. Data: ``{content}``. Delivered as one
+    or more events per turn: when the routed runtime cannot stream (every
+    runtime adapter today — see ``butlers.core.runtimes`` and
+    ``butlers.api.chat_stream``), a single event carries the full reply text;
+    a future streaming-capable producer publishing incremental deltas onto
+    the turn's chat-stream NOTIFY channel would instead surface as several
+    ``token`` events whose concatenated ``content`` always equals the
+    persisted reply row's content byte-for-byte (never fabricated, never
+    diverges from the persisted row).
+``phase``
+    Real-time processing status. Data: ``{phase, target?, tool?}`` where
+    ``phase`` is one of ``classifying`` (Switchboard is triaging), ``routed``
+    (``target`` names the butler handling this turn), ``starting_session``
+    (the routed butler's session is about to run — ``target`` names it),
+    ``thinking`` (``tool`` names the tool call in progress — only emitted by
+    a streaming-capable producer, never fabricated), or ``writing`` (the
+    reply is about to stream). Only the phases a given turn's runtime can
+    truthfully observe are emitted; a phase is never guessed.
 ``message_complete``
     The routed butler's ``conversation_reply`` message, with attribution.
-    Data: ``{message_id, model_name, input_tokens, output_tokens,
-    duration_ms, tool_calls}``. ``model_name``/token/duration fields are
-    ``null`` — the reply is persisted mid-session, before the spawned
+    Data: ``{message_id, session_id, model_name, input_tokens, output_tokens,
+    duration_ms, tool_calls, sources}``. ``model_name``/token/duration fields
+    are ``null`` — the reply is persisted mid-session, before the spawned
     session's own accounting is known (see ``_stream_conversation_response``).
+    ``session_id`` is the ambient id captured at reply time, backfilled via
+    ``request_id`` -> ``sessions.id`` when that ambient context was absent;
+    ``null`` when neither resolves (never fabricated). ``sources`` is ``[]``
+    outside the answer lane.
 ``error``
     Session failure. Data: ``{code, message}`` (``SESSION_TIMEOUT`` also
     carries ``session_id``, non-null when the routed session could be
@@ -109,10 +141,12 @@ from fastmcp.exceptions import ToolError
 from starlette.requests import Request
 from starlette.responses import StreamingResponse
 
+from butlers.api.chat_stream import ChatStreamListener, open_chat_stream_listener
 from butlers.api.conversation_envelope import build_dashboard_envelope
 from butlers.api.conversations import (
     conversation_create,
     conversation_get,
+    conversation_get_by_id_any_butler,
     conversation_list,
     conversation_message_count_increment,
     conversation_search,
@@ -125,19 +159,28 @@ from butlers.api.conversations import (
     message_find_reply_since,
     message_get_by_id,
     message_list,
+    message_search,
+    message_set_session_id_if_null,
 )
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
-from butlers.api.models import PaginatedResponse, PaginationMeta
+from butlers.api.models import (
+    CursorPaginatedResponse,
+    CursorPaginationMeta,
+    PaginatedResponse,
+    PaginationMeta,
+)
 from butlers.api.models.conversation import (
     ConversationCancelResponse,
     ConversationCreateRequest,
+    ConversationDetail,
     ConversationMessage,
     ConversationSearchResult,
     ConversationStats,
     ConversationSummary,
     ConversationUpdateRequest,
     MessageCreateRequest,
+    MessageSearchResult,
 )
 from butlers.core.dashboard_turns import (
     DashboardTurnResult,
@@ -154,6 +197,11 @@ from butlers.core.dashboard_turns import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/butlers", tags=["conversations"])
+
+# Owner-scoped message search — NOT nested under /api/butlers/{name}/, since
+# it searches every butler's dashboard messages at once (bu-0ynlk.9). See
+# `search_messages` below.
+messages_search_router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
 # SSE keepalive interval in seconds
 _KEEPALIVE_INTERVAL_S: float = 15.0
@@ -430,6 +478,15 @@ async def _stream_conversation_response(
             {"conversation_id": str(conversation_id), "title": conversation_title},
         )
 
+    # Phase: classifying/routed. A pinned per-butler conversation's routing
+    # is already deterministic (no Switchboard classification happens for
+    # it), so it goes straight to "routed"; only a Switchboard-addressed
+    # (widget) turn is genuinely being classified yet.
+    if butler_name == _SWITCHBOARD_BUTLER:
+        yield _sse_event("phase", {"phase": "classifying"})
+    else:
+        yield _sse_event("phase", {"phase": "routed", "target": butler_name})
+
     # Step 2: Claim the outbound Switchboard submission immediately before
     # making it. Opening the turn earlier makes Stop addressable before SSE,
     # but only this final claim is the external side-effect boundary.
@@ -628,6 +685,12 @@ async def _stream_conversation_response(
     # turn, otherwise the pinned/addressed butler itself.
     routed_butler = triage_target if routed_this_turn else butler_name
 
+    # Phase: routed. Only for the Switchboard-classified case — a pinned
+    # conversation already emitted "routed" above, before classification
+    # (which never runs for it) could have changed the target.
+    if butler_name == _SWITCHBOARD_BUTLER:
+        yield _sse_event("phase", {"phase": "routed", "target": routed_butler})
+
     # Register this turn as cancellable (POST .../cancel resolves conversation_id
     # -> routed_butler + request_id -> live session, see _resolve_session_id).
     # Cleared in the finally below so a stale entry never outlives the turn it
@@ -646,7 +709,21 @@ async def _stream_conversation_response(
             active_turn["message_id"] = str(message_id)
         _ACTIVE_TURNS[conversation_id] = active_turn
 
+    # Best-effort: open the per-request chat-stream NOTIFY listener (see
+    # butlers.api.chat_stream) so conversation_reply_create's reply_ready
+    # NOTIFY — and any future streaming-capable producer's token/phase
+    # deltas — wake the poll loop below immediately instead of waiting for
+    # the next fixed-interval safety-net check. `None` when the dedicated
+    # LISTEN connection could not be established; the loop degrades to pure
+    # polling in that case, honoring the same fallback contract as a
+    # non-streaming runtime.
+    stream_listener: ChatStreamListener | None = await open_chat_stream_listener(request_id_str)
+    streamed_content_parts: list[str] = []
+    phase_writing_emitted = False
+
     try:
+        yield _sse_event("phase", {"phase": "starting_session", "target": routed_butler})
+
         # A receipt is attributable only to the durable dashboard-turn record,
         # never to an optimistic classification result or sticky conversation
         # history. It is deliberately unavailable for legacy streams that lack
@@ -790,26 +867,93 @@ async def _stream_conversation_response(
                 shared_pool, conversation_id, since=message_created_at
             )
             if reply_row is None:
-                await asyncio.sleep(_POLL_INTERVAL_S)
+                if stream_listener is None:
+                    await asyncio.sleep(_POLL_INTERVAL_S)
+                    continue
+                # Wait for a chat-stream NOTIFY (conversation_reply_create's
+                # reply_ready wake, or a future streaming producer's
+                # token/phase delta) instead of blindly sleeping the full
+                # interval — a wake re-checks message_find_reply_since on the
+                # very next loop iteration, well before the safety-net
+                # timeout below would have fired anyway.
+                envelope = await stream_listener.get(timeout=_POLL_INTERVAL_S)
+                if envelope is None:
+                    continue
+                etype = envelope.get("type")
+                edata = envelope.get("data")
+                edata = edata if isinstance(edata, dict) else {}
+                if etype == "token":
+                    content = edata.get("content")
+                    if isinstance(content, str) and content:
+                        if not phase_writing_emitted:
+                            phase_writing_emitted = True
+                            yield _sse_event("phase", {"phase": "writing"})
+                        yield _sse_event("token", {"content": content})
+                        streamed_content_parts.append(content)
+                elif etype == "phase":
+                    phase_name = edata.get("phase")
+                    if phase_name == "writing":
+                        phase_writing_emitted = True
+                    yield _sse_event("phase", edata)
+                # Any other type (including "reply_ready") is just a wake —
+                # message_find_reply_since on the next iteration is the
+                # authoritative check.
 
         # Step 4: Emit the already-persisted conversation_reply — no DB write
         # happens here; conversation_reply_create() did it inside the routed
         # butler's own session.
-        yield _sse_event("token", {"content": reply_row["content"]})
+        #
+        # session_id backfill: conversation_reply best-effort-stamps the
+        # ambient runtime session id at write time, but that context is not
+        # always bound (bu-0ynlk.5). Resolve it here the same way the
+        # SESSION_TIMEOUT path does (request_id -> sessions.id on the routed
+        # butler) and persist it, so a message that missed the ambient stamp
+        # still ends up with a durable link to its session.
+        reply_session_id = reply_row.get("session_id")
+        if reply_session_id is None:
+            reply_session_id = await _resolve_session_id(
+                db=db, routed_butler=routed_butler, request_id=request_id_str
+            )
+            if reply_session_id is not None:
+                await message_set_session_id_if_null(
+                    shared_pool, reply_row["id"], session_id=reply_session_id
+                )
+
+        # Trust boundary: streamed deltas are display-only — the persisted
+        # row is always the source of truth. Emit only whatever content was
+        # NOT already streamed as deltas, so the client's accumulated
+        # content always ends up byte-for-byte identical to the persisted
+        # row regardless of how much (if any) streaming happened. Today no
+        # runtime adapter streams deltas (see butlers.api.chat_stream), so
+        # streamed_content is always "" here and this is exactly the
+        # original single-shot emission.
+        streamed_content = "".join(streamed_content_parts)
+        remainder = reply_row["content"]
+        if streamed_content and reply_row["content"].startswith(streamed_content):
+            remainder = reply_row["content"][len(streamed_content) :]
+        if remainder:
+            if not phase_writing_emitted:
+                phase_writing_emitted = True
+                yield _sse_event("phase", {"phase": "writing"})
+            yield _sse_event("token", {"content": remainder})
         yield _sse_event(
             "message_complete",
             {
                 "message_id": str(reply_row["id"]),
+                "session_id": str(reply_session_id) if reply_session_id else None,
                 "model_name": reply_row.get("model_name"),
                 "input_tokens": reply_row.get("input_tokens"),
                 "output_tokens": reply_row.get("output_tokens"),
                 "duration_ms": reply_row.get("duration_ms"),
                 "tool_calls": reply_row.get("tool_calls") or [],
+                "sources": reply_row.get("sources") or [],
             },
         )
         yield _sse_done()
     finally:
         _ACTIVE_TURNS.pop(conversation_id, None)
+        if stream_listener is not None:
+            await stream_listener.aclose()
 
 
 async def _persist_dashboard_user_message(
@@ -818,8 +962,17 @@ async def _persist_dashboard_user_message(
     conversation_id: UUID,
     message: str,
     message_id: UUID | None,
+    page_context: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], bool]:
-    """Persist a dashboard user message, reusing a retry's stable identity."""
+    """Persist a dashboard user message, reusing a retry's stable identity.
+
+    ``page_context`` is only captured on the message's first (winning)
+    write; a retry of an already-persisted ``message_id`` reuses the stored
+    snapshot regardless of what this call passes (bu-0ynlk.4) -- callers
+    must build the outgoing ingest envelope from the returned dict's
+    ``page_context``, not from the request body, so a retry never re-sends a
+    stale or since-changed page context.
+    """
     if message_id is None:
         return (
             await message_create(
@@ -827,6 +980,7 @@ async def _persist_dashboard_user_message(
                 conversation_id=conversation_id,
                 role="user",
                 content=message,
+                page_context=page_context,
             ),
             True,
         )
@@ -838,6 +992,7 @@ async def _persist_dashboard_user_message(
             conversation_id=conversation_id,
             role="user",
             content=message,
+            page_context=page_context,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -1352,6 +1507,136 @@ async def search_conversations(
 
 
 # ---------------------------------------------------------------------------
+# GET /api/conversations/messages/search
+# ---------------------------------------------------------------------------
+
+
+@messages_search_router.get(
+    "/messages/search",
+    response_model=CursorPaginatedResponse[MessageSearchResult],
+)
+async def search_messages(
+    q: str = Query(..., min_length=1, max_length=512, description="Full-text search query."),
+    limit: int = Query(20, ge=1, le=100, description="Max records to return"),
+    cursor: str | None = Query(
+        None,
+        description=(
+            "Opaque cursor from the previous page's `next_cursor` field. "
+            "Omit to fetch the first page."
+        ),
+    ),
+    channel: str | None = Query(
+        None, description="Filter to one conversation source_channel (e.g. 'dashboard')."
+    ),
+    butler: str | None = Query(None, description="Filter to one butler's conversations."),
+    from_: str | None = Query(
+        None,
+        alias="from",
+        description="ISO-8601 inclusive lower bound on message created_at.",
+    ),
+    to: str | None = Query(
+        None, description="ISO-8601 exclusive upper bound on message created_at."
+    ),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> CursorPaginatedResponse[MessageSearchResult]:
+    """Owner-scoped full-text search across every butler's dashboard messages.
+
+    Unlike ``GET /api/butlers/{name}/conversations/search`` (per-butler,
+    substring, one row per conversation), this searches every butler's
+    messages at once and returns one row per matching message, ranked by text
+    relevance (``ts_rank``) then recency. Each result carries
+    ``highlight_ranges`` — ``[start, end)`` offsets into ``snippet`` — so the
+    frontend can bold the matched terms without re-implementing the match.
+
+    Uses cursor (keyset) pagination per
+    ``docs/api_and_protocols/response-conventions.md``: no ``total``/``offset``,
+    ``next_cursor`` is ``null`` on the last page, and the cursor remains valid
+    even if a new message is inserted between page fetches.
+
+    Returns:
+        200 — ``{"data": [...], "meta": {"next_cursor", "has_more"}}``
+        422 — malformed ``cursor``, or ``from``/``to`` is not valid ISO-8601
+        503 — shared database pool unavailable
+    """
+    try:
+        pool = db.credential_shared_pool()
+    except (KeyError, RuntimeError) as exc:
+        raise HTTPException(status_code=503, detail=f"Shared database unavailable: {exc}") from exc
+
+    from_dt: datetime | None = None
+    to_dt: datetime | None = None
+    if from_ is not None:
+        try:
+            from_dt = datetime.fromisoformat(from_)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"Invalid 'from' value: {exc}") from exc
+    if to is not None:
+        try:
+            to_dt = datetime.fromisoformat(to)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"Invalid 'to' value: {exc}") from exc
+
+    try:
+        result = await message_search(
+            pool,
+            query=q,
+            since=from_dt,
+            until=to_dt,
+            channel=channel,
+            butler=butler,
+            limit=limit,
+            cursor=cursor,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    return CursorPaginatedResponse[MessageSearchResult](
+        data=[MessageSearchResult(**item) for item in result["items"]],
+        meta=CursorPaginationMeta(next_cursor=result["next_cursor"], has_more=result["has_more"]),
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/conversations/{conversation_id}
+# ---------------------------------------------------------------------------
+
+
+@messages_search_router.get("/{conversation_id}", response_model=ConversationDetail)
+async def get_conversation_by_id(
+    conversation_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ConversationDetail:
+    """Cross-butler conversation lookup by id (bu-0ynlk.11).
+
+    Resolves a conversation regardless of its owning ``butler_name`` — the
+    ``/chat/:conversationId`` full-page route and cmdk recent-thread recall
+    both address a conversation by id alone before they know which butler
+    owns it. ``id`` is a UUID7 primary key on the shared
+    ``public.dashboard_conversations`` table, so this lookup is
+    mount-boundary safe without a butler-scoped filter (see
+    ``conversation_get_by_id_any_butler``). Callers fetch the thread's
+    messages afterward through the existing per-butler
+    ``GET /api/butlers/{name}/conversations/{id}/messages`` route using the
+    ``butler_name`` this response resolves.
+
+    Returns 404 when the id is unknown.
+    """
+    try:
+        pool = db.credential_shared_pool()
+    except (KeyError, RuntimeError) as exc:
+        raise HTTPException(status_code=503, detail=f"Shared database unavailable: {exc}") from exc
+
+    conversation = await conversation_get_by_id_any_butler(pool, conversation_id)
+    if conversation is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "CONVERSATION_NOT_FOUND", "message": "Conversation not found."},
+        )
+
+    return ConversationDetail(**conversation)
+
+
+# ---------------------------------------------------------------------------
 # GET /api/butlers/{name}/conversations/summary
 # ---------------------------------------------------------------------------
 
@@ -1438,6 +1723,7 @@ async def create_conversation(
             conversation_id=conversation_id,
             message=body.message,
             message_id=body.message_id,
+            page_context=body.page_context.model_dump() if body.page_context else None,
         )
 
     if user_message_is_new:
@@ -1449,13 +1735,17 @@ async def create_conversation(
         conversation_id=conversation_id,
     )
 
-    # Build ingest envelope
+    # Build ingest envelope from the persisted message row's own
+    # page_context, not body.page_context directly -- a retry of an
+    # already-persisted message_id must forward the originally-captured
+    # snapshot even if the retried request body carries a different one
+    # (bu-0ynlk.4).
     envelope = build_dashboard_envelope(
         conversation_id=conversation_id,
         message_id=user_msg["id"],
         message_text=body.message,
         conversation_context=None,
-        page_context=body.page_context.model_dump() if body.page_context else None,
+        page_context=user_msg.get("page_context"),
         pinned_target=None if name == _SWITCHBOARD_BUTLER else name,
     )
 
@@ -1582,6 +1872,7 @@ async def send_message(
         conversation_id=conversation_id,
         message=body.message,
         message_id=body.message_id,
+        page_context=body.page_context.model_dump() if body.page_context else None,
     )
 
     if user_message_is_new:
@@ -1602,13 +1893,15 @@ async def send_message(
     else:
         pinned_target = name
 
-    # Build ingest envelope with conversation context
+    # Build ingest envelope with conversation context. As in create_conversation,
+    # the persisted message row's own page_context is the source of truth so a
+    # retry forwards the originally-captured snapshot (bu-0ynlk.4).
     envelope = build_dashboard_envelope(
         conversation_id=conversation_id,
         message_id=user_msg["id"],
         message_text=body.message,
         conversation_context=history_rows,
-        page_context=body.page_context.model_dump() if body.page_context else None,
+        page_context=user_msg.get("page_context"),
         pinned_target=pinned_target,
     )
 

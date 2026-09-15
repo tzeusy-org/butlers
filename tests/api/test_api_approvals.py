@@ -392,6 +392,57 @@ async def test_metrics_keeps_a_configured_but_empty_source_as_a_truthful_zero(ap
     assert "sources_degraded" not in body["meta"]
 
 
+async def test_metrics_projects_safe_delivery_backlog_dimensions(app):
+    """Operator metrics include only aggregate state and closed reason dimensions."""
+    from types import SimpleNamespace
+
+    app, _ = _app_with_mock_db(
+        app,
+        fetchval_return=0,
+        fetchrow_return={"avg_latency": None, "cnt": 0},
+    )
+    snapshot = SimpleNamespace(
+        due_count=3,
+        retry_wait_count=2,
+        expired_lease_count=1,
+        ambiguous_count=1,
+        stuck_count=2,
+        oldest_due_age_seconds=901.0,
+        by_state={"retry_wait": 2, "ambiguous": 1},
+        by_reason={"transport_unavailable": 2, "provider_outcome_unknown": 1},
+    )
+
+    with (
+        patch(
+            "butlers.api.routers.approvals.ApprovalDeliveryRepository.backlog_snapshot",
+            new=AsyncMock(return_value=snapshot),
+        ),
+        patch(
+            "butlers.api.routers.approvals._callback_secret_configured",
+            new=AsyncMock(return_value=None),
+        ),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/approvals/metrics")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["delivery_due_count"] == 3
+    assert data["delivery_retry_wait_count"] == 2
+    assert data["delivery_expired_lease_count"] == 1
+    assert data["delivery_ambiguous_count"] == 1
+    assert data["delivery_stuck_count"] == 2
+    assert data["delivery_oldest_due_age_seconds"] == 901.0
+    assert data["delivery_by_state"] == {"retry_wait": 2, "ambiguous": 1}
+    assert data["delivery_by_reason"] == {
+        "transport_unavailable": 2,
+        "provider_outcome_unknown": 1,
+    }
+    assert data["delivery_sources_complete"] is True
+
+
 # ---------------------------------------------------------------------------
 # GET /api/approvals (flat) and /api/approvals/history --
 # sources_degraded contract (bu-qvnce.1)
@@ -753,6 +804,149 @@ async def test_list_approvals_flat_no_eligible_pools_still_reports_zero_stalled_
 
     assert response.status_code == 200
     assert response.json() == {"data": [], "meta": {"stalled_count": 0}}
+
+
+async def test_unroutable_attention_lists_owner_visible_replayable_rows(app):
+    dead_letter_id = uuid4()
+    row = {
+        "id": dead_letter_id,
+        "failure_reason": "Dashboard message classification produced no lane decision",
+        "original_payload": '{"message_text":"Which butler owns this?"}',
+        "created_at": _NOW,
+        "replayed_at": None,
+    }
+    malformed = {
+        **row,
+        "id": uuid4(),
+        "original_payload": "{not-json",
+    }
+    missing_content = {
+        **row,
+        "id": uuid4(),
+        "original_payload": {"metadata": "no owner-authored content"},
+    }
+    wired_app, conn = _app_with_mock_db(app, fetch_rows=[row, malformed, missing_content])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=wired_app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/approvals/unroutable")
+
+    assert response.status_code == 200
+    items = response.json()["data"]
+    item = items[0]
+    assert item["id"] == str(dead_letter_id)
+    assert item["question"] == "Which butler owns this?"
+    assert item["failure_reason"] == "Dashboard message classification produced no lane decision"
+    assert datetime.fromisoformat(item["created_at"].replace("Z", "+00:00")) == _NOW
+    assert [item["question"] for item in items[1:]] == [
+        "Message content unavailable",
+        "Message content unavailable",
+    ]
+    query = conn.fetch.await_args.args[0]
+    assert "replay_eligible" in query
+    assert "replayed_at IS NULL" in query
+
+
+async def test_retry_unroutable_is_idempotent_and_second_call_conflicts(app):
+    dead_letter_id = uuid4()
+    wired_app, _ = _app_with_mock_db(app, fetchval_return=True)
+    first_result = {
+        "success": True,
+        "replayed_request_id": str(uuid4()),
+        "original_request_id": str(uuid4()),
+        "dead_letter_id": str(dead_letter_id),
+    }
+
+    with patch(
+        "butlers.tools.switchboard.dead_letter.replay_dead_letter_request",
+        new=AsyncMock(side_effect=[first_result, {"success": False, "error": "already_replayed"}]),
+    ) as replay:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=wired_app), base_url="http://test"
+        ) as client:
+            first = await client.post(f"/api/approvals/unroutable/{dead_letter_id}/retry")
+            second = await client.post(f"/api/approvals/unroutable/{dead_letter_id}/retry")
+
+    assert first.status_code == 200
+    assert first.json()["data"]["status"] == "queued"
+    assert second.status_code == 409
+    assert replay.await_count == 2
+    assert replay.await_args_list[0].kwargs["operator_identity"] == "owner"
+
+
+@pytest.mark.parametrize(
+    ("dead_letter_id", "eligible", "replay_result", "expected_status", "expected_calls"),
+    [
+        ("not-a-uuid", True, {"success": True}, 400, 0),
+        ("11111111-1111-4111-8111-111111111111", False, {"success": True}, 404, 0),
+        (
+            "22222222-2222-4222-8222-222222222222",
+            True,
+            {"success": False, "error": "not_replay_eligible"},
+            409,
+            1,
+        ),
+        (
+            "33333333-3333-4333-8333-333333333333",
+            True,
+            {"success": False, "error": "dead_letter_not_found"},
+            404,
+            1,
+        ),
+        (
+            "44444444-4444-4444-8444-444444444444",
+            True,
+            {"success": False, "error": "storage_failure"},
+            500,
+            1,
+        ),
+    ],
+)
+async def test_retry_unroutable_failures_remain_typed_and_fail_closed(
+    app,
+    dead_letter_id,
+    eligible,
+    replay_result,
+    expected_status,
+    expected_calls,
+):
+    wired_app, conn = _app_with_mock_db(app)
+    conn.fetchval = AsyncMock(return_value=eligible)
+    replay = AsyncMock(return_value=replay_result)
+
+    with patch(
+        "butlers.tools.switchboard.dead_letter.replay_dead_letter_request",
+        new=replay,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=wired_app), base_url="http://test"
+        ) as client:
+            response = await client.post(f"/api/approvals/unroutable/{dead_letter_id}/retry")
+
+    assert response.status_code == expected_status
+    assert replay.await_count == expected_calls
+
+
+async def test_unroutable_endpoints_fail_closed_when_switchboard_pool_is_unavailable(app):
+    dead_letter_id = uuid4()
+    wired_app, _ = _app_with_mock_db(app, has_approvals_tables=False)
+    replay = AsyncMock()
+
+    with patch(
+        "butlers.tools.switchboard.dead_letter.replay_dead_letter_request",
+        new=replay,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=wired_app), base_url="http://test"
+        ) as client:
+            listed = await client.get("/api/approvals/unroutable")
+            retried = await client.post(f"/api/approvals/unroutable/{dead_letter_id}/retry")
+
+    for response in (listed, retried):
+        assert response.status_code == 503
+        assert response.json()["detail"] == "Switchboard database is unavailable"
+    replay.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -1169,10 +1363,8 @@ async def test_defer_hours_bounds(app, hours, expected_status, monkeypatch):
     pending_row["id"] = action_id
 
     mock_conn = AsyncMock()
-    mock_conn.fetchrow = AsyncMock(return_value=pending_row)
-    mock_conn.execute = AsyncMock()
-    # audit.append uses fetchval
-    mock_conn.fetchval = AsyncMock(return_value=1)
+    intent_id = uuid4()
+    mock_conn.execute = AsyncMock(return_value="UPDATE 1")
     mock_conn.transaction = MagicMock(return_value=_NullTxCtx())
 
     class _MockAcquire:
@@ -1191,19 +1383,31 @@ async def test_defer_hours_bounds(app, hours, expected_status, monkeypatch):
         sql = args[0] if args else ""
         if "to_regclass" in sql or "EXISTS" in sql:
             return True
+        if "clock_timestamp" in sql:
+            return _NOW
         return 1
 
     mock_conn.fetchval = AsyncMock(side_effect=fetchval_side)
-    # Updated fetchrow to return the action when queried by ID
-    mock_conn.fetchrow = AsyncMock(return_value=pending_row)
-    # fetchrow for the deferred update
     updated_row = dict(pending_row)
-    updated_row["expires_at"] = _NOW
+    updated_row["expires_at"] = _NOW + timedelta(hours=hours)
 
-    async def fetchrow_side(*args, **kwargs):
-        return pending_row if "id" in str(args) else updated_row
+    async def fetchrow_side(query, *args, **kwargs):
+        if "FROM approval_delivery_intents" in query:
+            return {
+                "id": intent_id,
+                "action_key": f"approval-action:{action_id}",
+                "admission_mode": "single",
+            }
+        if "FROM approval_delivery_cohort_members" in query:
+            return None
+        if "ambiguous_count" in query:
+            return {"ambiguous_count": 0, "delivered_count": 0, "attempt_count": 0}
+        if "UPDATE pending_actions SET expires_at" in query:
+            return updated_row
+        return pending_row
 
-    mock_conn.fetchrow = AsyncMock(side_effect=lambda *a, **k: pending_row)
+    mock_conn.fetchrow = AsyncMock(side_effect=fetchrow_side)
+    mock_conn.fetch = AsyncMock(return_value=[])
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["general"]
@@ -1262,6 +1466,8 @@ async def test_defer_expired_pending_action_expires_instead_of_extending(app):
         sql = args[0] if args else ""
         if "to_regclass" in sql or "EXISTS" in sql:
             return True
+        if "clock_timestamp" in sql:
+            return _NOW
         return 1
 
     async def fetchrow_side(query, *args, **kwargs):
@@ -1271,7 +1477,9 @@ async def test_defer_expired_pending_action_expires_instead_of_extending(app):
             return expired_row
         if "SELECT * FROM pending_actions" in query:
             return pending_row
-        return pending_row
+        if "FROM approval_delivery_intents" in query:
+            return None
+        return None
 
     mock_conn.fetchval = AsyncMock(side_effect=fetchval_side)
     mock_conn.fetchrow = AsyncMock(side_effect=fetchrow_side)
@@ -1871,6 +2079,57 @@ async def test_detail_preserves_failed_push_delivery_state(app):
     detail = resp.json()["data"]
     assert detail["push_outcome"] == "failed"
     assert detail["push_failed"] is True
+
+
+async def test_detail_projects_only_safe_durable_delivery_truth(app):
+    """The dossier exposes state, not correlation, recipient, callback, or provider data."""
+    row = {
+        **_make_pending_row(),
+        "legacy_push_action_id": None,
+        "delivery_intent_id": uuid4(),
+        "delivery_admission_mode": "single",
+        "delivery_state": "ambiguous",
+        "delivery_mode": "single",
+        "delivery_generation": 2,
+        "delivery_reason": "provider_outcome_unknown",
+        "delivery_attempt_count": 1,
+        "delivery_next_at": None,
+        "delivery_stuck": True,
+        "delivery_cohort_eligible": None,
+        "delivery_cohort_state": None,
+        "delivery_cohort_generation": None,
+        "delivery_cohort_attempt_count": None,
+        "delivery_cohort_next_at": None,
+        "delivery_cohort_stuck": False,
+    }
+    app, _ = _app_with_mock_db(app, fetchrow_return=row)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/approvals/{row['id']}")
+
+    assert resp.status_code == 200
+    delivery = resp.json()["data"]["delivery"]
+    assert delivery == {
+        "source": "durable",
+        "state": "ambiguous",
+        "mode": "single",
+        "generation": 2,
+        "last_reason_code": "provider_outcome_unknown",
+        "attempt_count": 1,
+        "next_eligible_at": None,
+        "stuck": True,
+        "ambiguous": True,
+        "legacy_outcome": None,
+        "cohort": None,
+    }
+    serialized = resp.text.lower()
+    assert "presentation_key" not in serialized
+    assert "action_key" not in serialized
+    assert "provider_reference" not in serialized
+    assert "callback" not in serialized
+    assert "recipient" not in serialized
 
 
 async def test_detail_includes_originating_session_id(app):
@@ -2767,3 +3026,63 @@ async def test_dispatch_approved_notify_error_payload_stays_retryable():
     assert outcome.kind == "rejected"
     assert outcome.action is None
     mark_executed.assert_not_awaited()
+
+
+async def test_dispatch_approved_action_outcome_notify_passes_origin_butler():
+    """The notify dispatch path must forward ``action_butler`` as ``origin_butler``.
+
+    ``park_prepared_action`` always parks with ``tool_name="notify"``, so this is
+    the real production path a dashboard approval takes for a prepared reach-out.
+    Without ``origin_butler`` reaching ``execute_approved_action``, the
+    attention-ledger-on-failure write for ``origin='prepared'`` actions
+    (bu-2jtfw.11) can never fire for an owner-approved action, even though
+    ``execute_approved_action`` itself supports it. This exercises the router's
+    call site directly rather than ``execute_approved_action`` in isolation, so
+    a regression here cannot hide behind a test that already supplies the
+    parameter.
+    """
+    from unittest.mock import patch
+
+    from butlers.api.routers.approvals import _dispatch_approved_action_outcome
+
+    action_id = uuid4()
+    mock_mcp, mock_db, mock_pool, _ = _build_dispatch_mocks(
+        action_id=action_id,
+        tool_name="notify",
+        tool_args={"channel": "email", "message": "Hello", "recipient": "owner@example.com"},
+        mcp_text_payload='{"ok": true}',
+        mcp_is_error=False,
+    )
+    executed_row = _make_action(tool_name="notify", status="executed")
+    executed_row["id"] = action_id
+
+    async def _mock_acquire_conn():
+        conn = AsyncMock()
+        conn.fetchrow = AsyncMock(return_value=executed_row)
+        return conn
+
+    class _ExecutedAcquire:
+        async def __aenter__(self):
+            return await _mock_acquire_conn()
+
+        async def __aexit__(self, *a):
+            pass
+
+    mock_pool.acquire = lambda: _ExecutedAcquire()
+
+    with patch(
+        "butlers.api.routers.approvals.execute_approved_action", new_callable=AsyncMock
+    ) as mock_execute:
+        mock_execute.return_value = MagicMock(success=True, error=None)
+        outcome = await _dispatch_approved_action_outcome(
+            mock_mcp,
+            mock_db,
+            mock_pool,
+            str(action_id),
+            "notify",
+            {"channel": "email", "message": "Hello", "recipient": "owner@example.com"},
+            "relationship",
+        )
+
+    assert mock_execute.await_args.kwargs["origin_butler"] == "relationship"
+    assert outcome.kind == "executed"

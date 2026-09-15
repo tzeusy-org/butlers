@@ -10,10 +10,18 @@ from butlers.core.sessions import session_complete, session_create
 class _FakePool:
     def __init__(self) -> None:
         self.fetchval_calls: list[tuple[str, tuple[object, ...]]] = []
+        self.fetchrow_calls: list[tuple[str, tuple[object, ...]]] = []
 
     async def fetchval(self, query: str, *args: object) -> object:
         self.fetchval_calls.append((query, args))
         return uuid.uuid4()
+
+    async def fetchrow(self, query: str, *args: object) -> dict[str, object]:
+        self.fetchrow_calls.append((query, args))
+        return {"id": args[0] if args else uuid.uuid4(), "model": None}
+
+    async def execute(self, query: str, *args: object) -> str:
+        return "INSERT 0 0"
 
 
 @pytest.mark.asyncio
@@ -53,8 +61,8 @@ async def test_session_complete_sanitizes_jsonb_and_text_payloads() -> None:
         cost={"raw": "cost\x00\ud83d"},
     )
 
-    assert pool.fetchval_calls
-    _query, args = pool.fetchval_calls[0]
+    assert pool.fetchrow_calls
+    _query, args = pool.fetchrow_calls[0]
     assert args[1] == "done"
     # tool_calls and cost are passed as Python objects (asyncpg JSONB codec handles encoding)
     assert args[2] == [

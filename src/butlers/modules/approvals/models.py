@@ -111,6 +111,11 @@ class PendingAction:
     evidence: list[EvidenceReference] = field(default_factory=list)
     blast_radius: str | None = None
     reversibility: str | None = None
+    # 'prepared' for a proactive draft parked by an insight-scan producer
+    # (bu-2jtfw.11); None for every other park path. A prepared action is
+    # never pushed to the owner -- it surfaces only through the insight
+    # digest's door.
+    origin: str | None = None
     # Terminal outcome of this action's approval_push_emissions reservation
     # (delivered/deferred/collapsed/duplicate/failed), or None. Populated only
     # by queries that join approval_push_emissions -- None here means either
@@ -140,6 +145,7 @@ class PendingAction:
             "evidence": self.evidence,
             "blast_radius": self.blast_radius,
             "reversibility": self.reversibility,
+            "origin": self.origin,
             "push_outcome": self.push_outcome,
         }
         return d
@@ -164,6 +170,7 @@ class PendingAction:
             evidence=list(data.get("evidence") or []),
             blast_radius=data.get("blast_radius"),
             reversibility=data.get("reversibility"),
+            origin=data.get("origin"),
             push_outcome=data.get("push_outcome"),
         )
 
@@ -190,6 +197,7 @@ class PendingAction:
             evidence=_parse_jsonb_list(_get("evidence")),
             blast_radius=_get("blast_radius"),
             reversibility=_get("reversibility"),
+            origin=_get("origin"),
             push_outcome=_get("push_outcome"),
         )
 

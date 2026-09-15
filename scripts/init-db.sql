@@ -78,6 +78,7 @@ DO $$
 DECLARE
     _butler_schemas TEXT[] := ARRAY[
         'chronicler',
+        'concierge',
         'education',
         'finance',
         'general',
@@ -94,6 +95,7 @@ DECLARE
     _switchboard_schema TEXT := 'switchboard';
     _managed_schemas TEXT[] := ARRAY[
         'chronicler',
+        'concierge',
         'education',
         'finance',
         'general',
@@ -109,6 +111,7 @@ DECLARE
     ];
     _butler_roles TEXT[] := ARRAY[
         'butler_chronicler_rw',
+        'butler_concierge_rw',
         'butler_education_rw',
         'butler_finance_rw',
         'butler_general_rw',
@@ -124,6 +127,7 @@ DECLARE
     _connector_role TEXT := 'connector_writer';
     _all_runtime_roles TEXT[] := ARRAY[
         'butler_chronicler_rw',
+        'butler_concierge_rw',
         'butler_education_rw',
         'butler_finance_rw',
         'butler_general_rw',
@@ -1037,6 +1041,7 @@ BEGIN
     );
     FOREACH v_runtime_role IN ARRAY ARRAY[
         'butler_chronicler_rw',
+        'butler_concierge_rw',
         'butler_education_rw',
         'butler_finance_rw',
         'butler_general_rw',
@@ -1754,6 +1759,7 @@ BEGIN
 
     FOREACH v_runtime_role IN ARRAY ARRAY[
         'butler_chronicler_rw',
+        'butler_concierge_rw',
         'butler_education_rw',
         'butler_finance_rw',
         'butler_general_rw',
@@ -3388,10 +3394,10 @@ BEGIN
         v_active_role TEXT := COALESCE(current_setting('role', true), '');
     BEGIN
         IF v_active_role = ANY (ARRAY[
-            'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
-            'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
-            'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
-            'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw'
+            'butler_chronicler_rw', 'butler_concierge_rw', 'butler_education_rw',
+            'butler_finance_rw', 'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+            'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw', 'butler_relationship_rw',
+            'butler_switchboard_rw', 'butler_travel_rw'
         ]) AND COALESCE(
             current_setting('butlers.runtime_attention_producer_abi', true), ''
         ) <> '2' THEN
@@ -3476,10 +3482,10 @@ BEGIN
         v_activated_at TIMESTAMPTZ;
     BEGIN
         IF COALESCE(current_setting('role', true), '') <> ALL (ARRAY[
-            'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
-            'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
-            'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
-            'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw'
+            'butler_chronicler_rw', 'butler_concierge_rw', 'butler_education_rw',
+            'butler_finance_rw', 'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+            'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw', 'butler_relationship_rw',
+            'butler_switchboard_rw', 'butler_travel_rw'
         ]) THEN
             RAISE EXCEPTION 'runtime-attention producer requires an active canonical SET ROLE'
                 USING ERRCODE = '42501';
@@ -3756,8 +3762,8 @@ BEGIN
           AND acl.privilege_type = 'EXECUTE'
           AND role_row.rolname <> ALL (ARRAY[
               'runtime_attention_outbox_owner',
-              'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
-              'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+              'butler_chronicler_rw', 'butler_concierge_rw', 'butler_education_rw',
+              'butler_finance_rw', 'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
               'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
               'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw'
           ]::name[])
@@ -3801,6 +3807,7 @@ BEGIN
     -- insufficient proof of a producer or Switchboard identity.
     FOREACH v_runtime_role IN ARRAY ARRAY[
         'butler_chronicler_rw',
+        'butler_concierge_rw',
         'butler_education_rw',
         'butler_finance_rw',
         'butler_general_rw',
@@ -3842,6 +3849,7 @@ BEGIN
 
     FOREACH v_runtime_role IN ARRAY ARRAY[
         'butler_chronicler_rw',
+        'butler_concierge_rw',
         'butler_education_rw',
         'butler_finance_rw',
         'butler_general_rw',
@@ -3867,7 +3875,16 @@ BEGIN
         );
     END LOOP;
 
-    EXECUTE 'GRANT SELECT, UPDATE (lifecycle_state, claim_token, claim_epoch, delivery_lease_epoch, claimed_by_instance, claimed_at, claim_expires_at, next_attempt_at, delivered_at) '
+    -- The delivery worker is activated (roster/switchboard/modules/__init__.py
+    -- constructs and schedules it at startup), so the REQ-database-security-007
+    -- carve-out that kept the finite terminal-error vocabulary and the optional
+    -- notification reference ungranted no longer applies: Switchboard needs
+    -- write access to record a proven terminal outcome. The
+    -- ck_runtime_attention_outbox_delivery_evidence CHECK constraint remains the
+    -- enforcement boundary -- only the fixed non-secret
+    -- (delivery_error_class, delivery_error_detail) pairs are accepted, and
+    -- notification_ref stays a plain scalar UUID with no cross-schema FK.
+    EXECUTE 'GRANT SELECT, UPDATE (lifecycle_state, claim_token, claim_epoch, delivery_lease_epoch, claimed_by_instance, claimed_at, claim_expires_at, next_attempt_at, delivered_at, delivery_error_class, delivery_error_detail, notification_ref) '
         || 'ON TABLE public.runtime_attention_outbox TO butler_switchboard_rw';
     EXECUTE 'GRANT SELECT, INSERT, UPDATE ON TABLE public.runtime_attention_delivery_lease TO butler_switchboard_rw';
     EXECUTE 'GRANT EXECUTE ON FUNCTION public.runtime_attention_active_switchboard_role() TO butler_switchboard_rw';
@@ -3908,10 +3925,10 @@ BEGIN
         EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE '
             || 'public.runtime_attention_producer_control FROM PUBLIC';
         FOREACH v_runtime_role IN ARRAY ARRAY[
-            'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
-            'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
-            'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
-            'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw',
+            'butler_chronicler_rw', 'butler_concierge_rw', 'butler_education_rw',
+            'butler_finance_rw', 'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+            'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw', 'butler_relationship_rw',
+            'butler_switchboard_rw', 'butler_travel_rw',
             'connector_writer'
         ]::name[] LOOP
             IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_runtime_role) THEN
@@ -4046,9 +4063,10 @@ BEGIN
         claim_expires_at TIMESTAMPTZ,
         next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         delivered_at TIMESTAMPTZ,
-        -- Dormant worker-stage evidence: only fixed, non-secret codes can
-        -- ever be persisted.  Core_198 does not grant these fields to any
-        -- runtime role or activate a producer/worker that writes them.
+        -- Terminal delivery evidence: only fixed, non-secret codes can ever
+        -- be persisted (ck_runtime_attention_outbox_delivery_evidence below).
+        -- Producer functions never write these; only the activated
+        -- Switchboard delivery worker does, via mark_failed/mark_uncertain.
         delivery_error_class TEXT,
         delivery_error_detail TEXT,
         -- Optional scalar linkage only.  Do not add a switchboard-schema FK:
@@ -4371,10 +4389,10 @@ BEGIN
         v_episode_id UUID;
     BEGIN
         IF COALESCE(current_setting('role', true), '') <> ALL (ARRAY[
-            'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
-            'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
-            'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
-            'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw'
+            'butler_chronicler_rw', 'butler_concierge_rw', 'butler_education_rw',
+            'butler_finance_rw', 'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+            'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw', 'butler_relationship_rw',
+            'butler_switchboard_rw', 'butler_travel_rw'
         ]) THEN
             RAISE EXCEPTION 'runtime-attention producer requires an active canonical SET ROLE'
                 USING ERRCODE = '42501';
@@ -4477,10 +4495,10 @@ BEGIN
         v_episode_id UUID;
     BEGIN
         IF COALESCE(current_setting('role', true), '') <> ALL (ARRAY[
-            'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
-            'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
-            'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
-            'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw'
+            'butler_chronicler_rw', 'butler_concierge_rw', 'butler_education_rw',
+            'butler_finance_rw', 'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+            'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw', 'butler_relationship_rw',
+            'butler_switchboard_rw', 'butler_travel_rw'
         ]) THEN
             RAISE EXCEPTION 'runtime-attention producer requires an active canonical SET ROLE'
                 USING ERRCODE = '42501';
@@ -4605,10 +4623,10 @@ BEGIN
         v_enabled BOOLEAN;
     BEGIN
         IF COALESCE(current_setting('role', true), '') <> ALL (ARRAY[
-            'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
-            'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
-            'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
-            'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw'
+            'butler_chronicler_rw', 'butler_concierge_rw', 'butler_education_rw',
+            'butler_finance_rw', 'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+            'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw', 'butler_relationship_rw',
+            'butler_switchboard_rw', 'butler_travel_rw'
         ]) THEN
             RAISE EXCEPTION 'runtime-attention producer requires an active canonical SET ROLE'
                 USING ERRCODE = '42501';

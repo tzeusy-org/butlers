@@ -19,8 +19,11 @@ re-exports so existing import paths and test patches remain valid.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import uuid
+from collections.abc import Sequence
+from dataclasses import dataclass
 
 import asyncpg
 
@@ -46,6 +49,57 @@ _missing_context_table_logged: set[str] = set()
 
 _ROUTING_INSTRUCTIONS_TABLE = "routing_instructions"
 _missing_routing_instructions_warnings: set[str] = set()
+
+
+@dataclass(frozen=True, slots=True)
+class PromptProvenanceEntry:
+    """Content-blind receipt for one named system-prompt source."""
+
+    source: str
+    status: str
+    bytes: int
+    sha: str | None
+
+    def as_dict(self) -> dict[str, str | int | None]:
+        """Return the JSON-safe persistence representation."""
+        return {
+            "source": self.source,
+            "status": self.status,
+            "bytes": self.bytes,
+            "sha": self.sha,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class EffectiveSystemPromptReceipt:
+    """Exact effective system prompt plus deterministic provenance evidence."""
+
+    prompt: str
+    digest: str
+    total_bytes: int
+    provenance: tuple[PromptProvenanceEntry, ...]
+
+
+def _source_receipt(
+    source: str,
+    content: str | None,
+    status: str | None = None,
+) -> PromptProvenanceEntry:
+    """Build a receipt without retaining source content or filesystem paths."""
+    if content is None:
+        return PromptProvenanceEntry(
+            source=source,
+            status=status or "unavailable",
+            bytes=0,
+            sha=None,
+        )
+    encoded = content.encode("utf-8")
+    return PromptProvenanceEntry(
+        source=source,
+        status=status or "present",
+        bytes=len(encoded),
+        sha=hashlib.sha256(encoded).hexdigest(),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -113,20 +167,74 @@ def _memory_context_token_budget(config: ButlerConfig) -> int:
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class ComposedPrompt:
+    """Per-layer token digest for a composed system prompt (bu-hz0g0).
+
+    Records the five ledger-supported layers of ``_compose_system_prompt``.
+    Persisted onto ``public.token_usage_ledger`` alongside a spawn's token
+    counts so a query can compare their contribution instead of only seeing
+    the merged total. The separately governed blind-spot preamble is not part
+    of this ledger schema.
+    """
+
+    base_prompt_tokens: int
+    timezone_instruction_tokens: int
+    context_preamble_tokens: int
+    routing_instructions_tokens: int
+    memory_context_tokens: int
+
+
+def _estimate_layer_tokens(text: str | None) -> int:
+    """Estimate a prompt layer's token count at chars/4.
+
+    Same heuristic as ``butlers.modules.pipeline._load_email_history`` --
+    no tokenizer is wired into the spawn hot path, and an estimate is enough
+    to answer relative "which layer dominates" questions.
+    """
+    if not text:
+        return 0
+    return len(text) // 4
+
+
+def compose_prompt_digest(
+    base_system_prompt: str,
+    memory_context: str | None,
+    general_timezone_instruction: str | None = None,
+    routing_instructions: str | None = None,
+    context_preamble: str | None = None,
+) -> ComposedPrompt:
+    """Compute the per-layer token digest for a composed system prompt.
+
+    Takes the five inputs represented by the ledger columns. Call it at the
+    spawn seam before composition overwrites the base prompt variable.
+    """
+    return ComposedPrompt(
+        base_prompt_tokens=_estimate_layer_tokens(base_system_prompt),
+        timezone_instruction_tokens=_estimate_layer_tokens(general_timezone_instruction),
+        context_preamble_tokens=_estimate_layer_tokens(context_preamble),
+        routing_instructions_tokens=_estimate_layer_tokens(routing_instructions),
+        memory_context_tokens=_estimate_layer_tokens(memory_context),
+    )
+
+
 def _compose_system_prompt(
     base_system_prompt: str,
     memory_context: str | None,
     general_timezone_instruction: str | None = None,
     routing_instructions: str | None = None,
     context_preamble: str | None = None,
+    blind_spot_preamble: str | None = None,
 ) -> str:
     """Compose the runtime system prompt from base instructions, routing instructions, and memory.
 
     Layering order (stable for token-cache efficiency):
     1. Base system prompt (CLAUDE.md — static)
     2. Situational context preamble (dynamic, from context bus)
-    3. Owner routing instructions (semi-static, sorted by priority)
-    4. Memory context (dynamic per-request)
+    3. Blind-spot preamble (dynamic; absent whenever every declared signal is
+       PRESENT, so this layer is byte-identical no-op text in the happy path)
+    4. Owner routing instructions (semi-static, sorted by priority)
+    5. Memory context (dynamic per-request)
 
     Contract:
     - Runtime always receives the raw CLAUDE.md-derived system prompt when no
@@ -139,11 +247,55 @@ def _compose_system_prompt(
         prompt = f"{prompt}\n\n{general_timezone_instruction}"
     if context_preamble:
         prompt = f"{prompt}\n\n{context_preamble}"
+    if blind_spot_preamble:
+        prompt = f"{prompt}\n\n{blind_spot_preamble}"
     if routing_instructions:
         prompt = f"{prompt}\n\n{routing_instructions}"
     if memory_context:
         prompt = f"{prompt}\n\n{memory_context}"
     return prompt
+
+
+def compose_effective_system_prompt_receipt(
+    base_system_prompt: str,
+    memory_context: str | None,
+    *,
+    base_sources: Sequence[tuple[str, str, str | None]],
+    general_timezone_instruction: str | None = None,
+    routing_instructions: str | None = None,
+    context_preamble: str | None = None,
+    blind_spot_preamble: str | None = None,
+) -> EffectiveSystemPromptReceipt:
+    """Compose today's prompt bytes and attach stable, content-blind provenance.
+
+    The actual composition delegates to :func:`_compose_system_prompt`, keeping
+    its ordering and separators as the single behavioral authority. The
+    receipt always names every current layer; optional unavailable layers are
+    represented explicitly rather than disappearing from provenance.
+    """
+    prompt = _compose_system_prompt(
+        base_system_prompt,
+        memory_context,
+        general_timezone_instruction=general_timezone_instruction,
+        routing_instructions=routing_instructions,
+        context_preamble=context_preamble,
+        blind_spot_preamble=blind_spot_preamble,
+    )
+    encoded = prompt.encode("utf-8")
+    provenance = (
+        *(_source_receipt(source, content, status) for source, status, content in base_sources),
+        _source_receipt("general_settings", general_timezone_instruction),
+        _source_receipt("situational_context", context_preamble),
+        _source_receipt("blind_spot_disclosure", blind_spot_preamble),
+        _source_receipt("switchboard_routing_instructions", routing_instructions),
+        _source_receipt("memory_context", memory_context),
+    )
+    return EffectiveSystemPromptReceipt(
+        prompt=prompt,
+        digest=hashlib.sha256(encoded).hexdigest(),
+        total_bytes=len(encoded),
+        provenance=provenance,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -361,6 +513,41 @@ async def fetch_situational_context_preamble(
                 exc_info=True,
             )
         return None
+
+
+async def fetch_blind_spot_preamble(
+    pool: asyncpg.Pool | None,
+    butler_name: str,
+    config: ButlerConfig,
+    *,
+    enabled: bool = True,
+) -> str | None:
+    """Fetch the declared-signal blind-spot preamble for *butler_name*.
+
+    Unlike the other fetchers in this module, this is deliberately
+    **fail-closed**: :func:`butlers.core.expected_signals.evaluate_declared_signals`
+    catches its own DB errors and reports them as a typed "could not be
+    evaluated" block rather than degrading to ``None``. Omitting this layer on
+    error would be indistinguishable from "every declared signal is present",
+    which is the exact honesty failure this preamble exists to prevent.
+
+    *enabled* is the ``runtime_config.blind_spot_preamble_enabled`` kill
+    switch (default on). When ``False``, or when the butler declares no
+    eligible module dependencies, this returns ``None`` -- matching today's
+    prompt exactly (see the design's Rollback contract).
+    """
+    if not enabled or pool is None:
+        return None
+
+    from butlers.core.blind_spot_declarations import declared_signal_patterns
+    from butlers.core.expected_signals import evaluate_declared_signals, format_blind_spot_preamble
+
+    patterns = declared_signal_patterns(config.modules)
+    if not patterns:
+        return None
+
+    snapshot = await evaluate_declared_signals(pool, signal_key_like_patterns=patterns)
+    return format_blind_spot_preamble(snapshot)
 
 
 async def store_session_episode(

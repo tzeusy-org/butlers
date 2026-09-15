@@ -59,11 +59,18 @@ delivery boundary. The dashboard operator surface SHALL receive sanitized read
 data through its API without granting ordinary runtime roles access to other
 producers' episode payloads.
 
-Until the delivery-worker stage is activated, the core migration SHALL keep the
-finite sanitized terminal-error vocabulary and optional scalar notification
-reference nullable and unavailable for runtime-role updates. It SHALL grant no
-cross-schema notification foreign key or broad schema access merely to stage
-that future evidence.
+Before the delivery-worker stage is activated, the core migration SHALL keep
+the finite sanitized terminal-error vocabulary and optional scalar
+notification reference nullable and unavailable for runtime-role updates. Once
+the delivery worker is activated, Switchboard's runtime role SHALL
+additionally receive `UPDATE` authority on those columns so it can record a
+proven terminal delivery outcome; the `ck_runtime_attention_outbox_delivery_evidence`
+CHECK constraint remains the enforcement boundary regardless of grant state --
+only the fixed non-secret `(delivery_error_class, delivery_error_detail)`
+pairs are ever accepted, on a row Switchboard currently claims. Producer
+functions never write these fields themselves, activated or not. The
+migration SHALL grant no cross-schema notification foreign key or broader
+schema access merely to carry the optional scalar `notification_ref`.
 
 The current shared-login plus `SET ROLE` database topology does not provide an
 unforgeable per-runtime principal, so this requirement SHALL NOT claim database
@@ -117,14 +124,20 @@ Scope: v1-mandatory
   durable claim and delivery lifecycle
 - **AND** it gains no read or write grant to a producer's private schema
 
-#### Scenario: Dormant terminal evidence cannot activate a delivery worker
+#### Scenario: Terminal delivery evidence is writable only within the closed vocabulary
 
-- **WHEN** the core-only outbox migration stages sanitized terminal error
-  evidence and an optional notification reference
-- **THEN** producer functions leave those fields `NULL` and the Switchboard
-  runtime role cannot update them
-- **AND** no cross-schema notification reference, worker registration, or
-  external transport action is introduced by the migration
+- **WHEN** the delivery worker is activated and Switchboard's runtime role
+  records a proven terminal delivery outcome for an episode it currently
+  claims
+- **THEN** it can set `delivery_error_class`, `delivery_error_detail`, and
+  `notification_ref` to values within the finite
+  `ck_runtime_attention_outbox_delivery_evidence` vocabulary
+- **AND** an attempt to write a class/detail pair outside that fixed set is
+  rejected by the CHECK constraint regardless of the grant
+- **AND** producer functions never write these fields themselves; they remain
+  `NULL` until the delivery worker records an outcome
+- **AND** no cross-schema notification foreign key, broader schema access, or
+  raw provider text is introduced by the migration
 
 #### Scenario: Versioned producer upgrade authority is one-shot
 

@@ -73,6 +73,7 @@ A fixed vocabulary of context types. New types require a migration to extend the
 | `socializing` | User is at a social event | 1-6 hours | relationship, general |
 | `commuting` | User is commuting | 15 min - 2 hours | travel, general |
 | `at_home` | User is at their home location | 1-24 hours | travel, home, general |
+| `in_space` | Owner-scoped room/area the user is currently in at home | 1-24 hours | home, general |
 | `away` | User is away / unreachable | 1 hour - 30 days | general |
 | `dnd` | Do not disturb (explicit user request) | 1-12 hours | general, switchboard |
 
@@ -89,6 +90,7 @@ class ContextSignal(str, Enum):
     SOCIALIZING = "socializing"
     COMMUTING = "commuting"
     AT_HOME = "at_home"
+    IN_SPACE = "in_space"
     AWAY = "away"
     DND = "dnd"
 ```
@@ -110,6 +112,7 @@ class ContextSignal(str, Enum):
 | `socializing` | relationship, general | Relationship butler detects social events |
 | `commuting` | travel, general | Travel butler detects commute patterns |
 | `at_home` | travel, home, general | Travel butler detects Home geofence entry; home butler detects home network/device presence; general relays user statements |
+| `in_space` | home, general | Home butler resolves the owner's current room/area from HA presence data |
 | `away` | general | General butler handles availability |
 | `dnd` | general, switchboard | User-initiated; switchboard enforces |
 
@@ -151,6 +154,7 @@ When a butler sets a context signal, it MUST provide an `expires_at` timestamp. 
 | `socializing` | 3 hours | 12 hours |
 | `commuting` | 45 minutes | 3 hours |
 | `at_home` | 12 hours | 24 hours |
+| `in_space` | 12 hours | 24 hours |
 | `away` | 12 hours | 30 days |
 | `dnd` | 2 hours | 24 hours |
 

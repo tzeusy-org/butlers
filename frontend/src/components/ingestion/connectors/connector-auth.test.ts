@@ -367,9 +367,8 @@ describe('resolveConnectorRecovery', () => {
   it('routes Spotify to its Passport card, not the generalized OAuth endpoint', () => {
     // Spotify authorizes through the connector PKCE flow the Passport drawer
     // drives (client_id only — what the registered Spotify app's redirect URIs
-    // point at). The generalized router's `spotify` entry is a separate
-    // confidential-client flow whose SPOTIFY_OAUTH_CLIENT_ID/SECRET were never
-    // provisioned, so a recovery link there could only ever fail.
+    // point at). Spotify is absent from the generalized OAuth registry, so a
+    // recovery link must remain on the connector-owned surface.
     expect(resolveConnectorRecovery('spotify', detailContext)).toEqual({
       kind: 'passport',
       to: '/secrets?focus=u:spotify',

@@ -11,6 +11,10 @@ _DASHBOARD_SCAN_ROOTS = (
     _REPO_ROOT / "src" / "butlers" / "cli_auth",
 )
 _DASHBOARD_ALIAS_JOB = _REPO_ROOT / "src" / "butlers" / "jobs" / "secrets_staleness.py"
+# app.py auto-mounts every roster/{butler}/api/router.py into the same FastAPI
+# app that holds the signer (discover_butler_routers), so those files share
+# this scan's trust boundary even though they live outside src/butlers/api.
+_ROSTER_ROUTER_SOURCES = tuple(sorted((_REPO_ROOT / "roster").glob("*/api/router.py")))
 _DIRECT_CHILD_CALLS = {
     "asyncio.create_subprocess_exec",
     "asyncio.create_subprocess_shell",
@@ -74,8 +78,10 @@ def _invoke_calls(source: Path) -> int:
 
 
 def _dashboard_cli_auth_sources() -> tuple[Path, ...]:
-    return tuple(source for root in _DASHBOARD_SCAN_ROOTS for source in root.rglob("*.py")) + (
-        _DASHBOARD_ALIAS_JOB,
+    return (
+        tuple(source for root in _DASHBOARD_SCAN_ROOTS for source in root.rglob("*.py"))
+        + (_DASHBOARD_ALIAS_JOB,)
+        + _ROSTER_ROUTER_SOURCES
     )
 
 

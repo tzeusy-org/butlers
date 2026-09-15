@@ -22,6 +22,11 @@ expect.extend(toHaveNoViolations);
   true;
 
 vi.mock("@/hooks/use-timeline-ledger", () => ({ useTimelineLedger: vi.fn() }));
+vi.mock("@/hooks/use-timeline", () => ({
+  useTimelineAttention: vi.fn(),
+  useTimelineEvent: vi.fn(),
+  useTimelineHistogram: vi.fn(),
+}));
 vi.mock("@/hooks/use-butlers", () => ({ useButlers: vi.fn() }));
 vi.mock("@/hooks/use-timeline-saved-views", () => ({
   useTimelineSavedViews: vi.fn(),
@@ -32,6 +37,7 @@ vi.mock("@/hooks/use-timeline-saved-views", () => ({
 import TimelinePage from "./TimelinePage";
 import { useButlers } from "@/hooks/use-butlers";
 import { useTimelineLedger } from "@/hooks/use-timeline-ledger";
+import { useTimelineAttention, useTimelineEvent, useTimelineHistogram } from "@/hooks/use-timeline";
 import {
   useCreateTimelineSavedView,
   useDeleteTimelineSavedView,
@@ -78,6 +84,51 @@ function setLedger(partial: Partial<UseTimelineLedgerResult>): void {
 }
 
 function setSupportingHookMocks(): void {
+  vi.mocked(useTimelineEvent).mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  } as unknown as ReturnType<typeof useTimelineEvent>);
+  vi.mocked(useTimelineHistogram).mockReturnValue({
+    data: {
+      data: [],
+      meta: {
+        since: "2026-07-04T13:00:00Z",
+        until: "2026-07-04T14:00:00Z",
+        bucket_seconds: 60,
+        availability: "complete",
+        expected_sources: 0,
+        healthy_sources: 0,
+        degraded_sources: [],
+        degraded_butlers: [],
+      },
+    },
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  } as unknown as ReturnType<typeof useTimelineHistogram>);
+  vi.mocked(useTimelineAttention).mockReturnValue({
+    data: {
+      data: [],
+      meta: {
+        since: "2026-07-03T14:00:00Z",
+        until: "2026-07-04T14:00:00Z",
+        failed_sessions: 0,
+        failed_notifications: 0,
+        total: 0,
+        has_more: false,
+        availability: "complete",
+        expected_sources: 0,
+        healthy_sources: 0,
+        degraded_sources: [],
+        degraded_butlers: [],
+      },
+    },
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  } as unknown as ReturnType<typeof useTimelineAttention>);
   vi.mocked(useButlers).mockReturnValue({
     data: { data: [] },
   } as unknown as ReturnType<typeof useButlers>);
@@ -141,7 +192,21 @@ describe("a11y (real page): Timeline empty state", () => {
 
 describe("a11y (real page): Timeline populated state", () => {
   it("has zero axe violations", { timeout: CONTENDED_AXE_TIMEOUT_MS }, async () => {
-    await checkA11y({ events: [makeEvent()] });
+    await checkA11y({
+      events: [
+        makeEvent(),
+        makeEvent({
+          id: "timeline-heartbeat-1",
+          timestamp: "2026-07-16T14:31:00Z",
+          is_heartbeat: true,
+        }),
+        makeEvent({
+          id: "timeline-heartbeat-2",
+          timestamp: "2026-07-16T14:30:00Z",
+          is_heartbeat: true,
+        }),
+      ],
+    });
   });
 });
 

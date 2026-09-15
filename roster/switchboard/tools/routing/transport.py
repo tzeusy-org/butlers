@@ -26,6 +26,7 @@ members of these enums.
 from __future__ import annotations
 
 import errno
+import uuid
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -106,11 +107,20 @@ class TransportUncertain(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class TransportResult:
-    """A closed, non-secret description of one external send attempt."""
+    """A closed, non-secret description of one external send attempt.
+
+    ``notification_ref`` is an optional scalar linkage to a
+    ``switchboard.notifications`` row (attached after the fact by a caller
+    that knows the logged notification id, e.g. the runtime-attention
+    worker) -- it carries no vocabulary constraint of its own and is
+    deliberately excluded from :meth:`as_dict`'s envelope fragment, which
+    stays scoped to the outcome/error vocabulary.
+    """
 
     outcome: TransportOutcome
     error_class: TransportErrorClass | None = None
     error_detail: TransportErrorDetail | None = None
+    notification_ref: uuid.UUID | None = None
 
     def __post_init__(self) -> None:
         if self.outcome is TransportOutcome.CONFIRMED:

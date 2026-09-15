@@ -2047,6 +2047,12 @@
       "scenario": "Tool inventory",
       "digest": "59a299bef53a",
       "excerpt": "- **THEN** it SHALL have access to the existing tools (`measurement_log`, `measurement_history`, `measurement_latest`..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Tool inventory",
+      "digest": "27c8ab68c555",
+      "excerpt": "- **AND** it SHALL additionally have access to: `sleep_latest`, `sleep_history`, `hr_history`, `hrv_history`, `spo2_h..."
     }
   ],
   "2026-04-24-google-health-connector/connector-google-health/Owner Contact Info Registration": [
@@ -3709,50 +3715,6 @@
       "scenario": null,
       "digest": "37806c36ad86",
       "excerpt": "Connector Lifecycle Ceremony — Per-Action Gate Matrix"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/connector-base-spec/Dashboard Connector Page": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "8316a6e4f419",
-      "excerpt": "Dashboard frontend exposes connector fleet monitoring at `/ingestion/connectors` (the first-class sub-route introduce..."
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "12087f110a7f",
-      "excerpt": "Breadcrumb `href` values and back-link targets across the connector detail page header, breadcrumbs, and back-link co..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Connector overview cards",
-      "digest": "0497a8e2d8d8",
-      "excerpt": "- **WHEN** the `/ingestion/connectors` page is loaded"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Legacy URL redirects",
-      "digest": "838d5e781c39",
-      "excerpt": "\"Legacy URL redirects\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Connector detail breadcrumb target",
-      "digest": "2f44ba3f2b49",
-      "excerpt": "\"Connector detail breadcrumb target\" is not in the block"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Volume time series chart",
-      "digest": "191858634170",
-      "excerpt": "- **AND** the underlying data is served from the Prometheus + 60s TTL aggregates path defined in `connector-state-agg..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Fanout distribution matrix",
-      "digest": "fb69093db61c",
-      "excerpt": "- **AND** the underlying data is served from the Prometheus + 60s TTL aggregates path"
     }
   ],
   "2026-05-19-redesign-ingestion-dispatch-console/connector-base-spec/Statistics Pipeline (OTel/Prometheus)": [
@@ -5855,6 +5817,12 @@
       "scenario": "Switchboard unreachable during submission",
       "digest": "7a799e734caa",
       "excerpt": "- **AND** a client retry that resubmits the same message content is deduplicated idempotently at the Switchboard inge..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "SSE stream for new conversation",
+      "digest": "3c47decb94a8",
+      "excerpt": "- **AND** an `event: token` with `data: {\"content\": \"...\"}` carries the full `conversation_reply` message text once i..."
     }
   ],
   "2026-07-10-finance-alerts-category-anomaly-scenario/finance-alerts/Automated Periodic Summaries": [
@@ -6249,6 +6217,14 @@
       "excerpt": "- **THEN** the frontend surfaces the failure message inline in the thread and re-enables the Stop button for another ..."
     }
   ],
+  "2026-09-02-repair-openspec-strict-validation/butler-health/Health Butler Tool Surface": [
+    {
+      "kind": "clause",
+      "scenario": "Tool inventory",
+      "digest": "27c8ab68c555",
+      "excerpt": "- **AND** it SHALL additionally have access to: `sleep_latest`, `sleep_history`, `hr_history`, `hrv_history`, `spo2_h..."
+    }
+  ],
   "add-connectors-schema/ingestion-event-registry/Ingestion Event List (Paginated)": [
     {
       "kind": "clause",
@@ -6507,22 +6483,6 @@
       "scenario": null,
       "digest": "2ea2056d543e",
       "excerpt": "Track Change Event"
-    }
-  ],
-  "connector-spotify/dashboard-spotify-setup/Connection Status Card": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "a2d08ee4ae12",
-      "excerpt": "Connection Status Card"
-    }
-  ],
-  "connector-spotify/dashboard-spotify-setup/Spotify OAuth 2.0 PKCE Authorization Flow": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "e788b29f1db9",
-      "excerpt": "Spotify OAuth 2.0 PKCE Authorization Flow"
     }
   ],
   "cross-butler-daily-briefing/butler-general/General Butler Schedules": [

@@ -16,6 +16,7 @@ Covers:
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -26,6 +27,8 @@ from butlers.api.audit_emit import authenticated_principal
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import ButlerConnectionInfo, get_butler_configs
 from butlers.api.routers.butler_management import _get_db_manager
+from butlers.core.skills import read_system_prompt_with_sources
+from butlers.core.spawner_context import compose_effective_system_prompt_receipt
 
 pytestmark = pytest.mark.unit
 
@@ -179,6 +182,172 @@ async def test_get_prompt_404_unknown_butler(app):
         resp = await client.get("/api/butlers/unknown/prompt")
 
     assert resp.status_code == 404
+
+
+async def test_effective_prompt_preview_detects_changed_roster_source(
+    app,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The protected preview shows what ran, then names a changed roster path."""
+    monkeypatch.setenv("DASHBOARD_API_KEY", "synthetic-owner-key")
+    roster_root = tmp_path / "roster"
+    config_dir = roster_root / "qa"
+    config_dir.mkdir(parents=True)
+    claude_md = config_dir / "CLAUDE.md"
+    claude_md.write_text("Synthetic identity v1", encoding="utf-8")
+
+    resolved = read_system_prompt_with_sources(config_dir, "qa")
+    receipt = compose_effective_system_prompt_receipt(
+        resolved.prompt,
+        None,
+        base_sources=[
+            (source.source, source.status, source.content) for source in resolved.sources
+        ],
+    )
+    latest = _make_record(
+        {
+            "effective_system_prompt": receipt.prompt,
+            "prompt_digest": receipt.digest,
+            "prompt_provenance": [entry.as_dict() for entry in receipt.provenance],
+            "started_at": datetime(2026, 9, 13, 10, 0, tzinfo=UTC),
+        }
+    )
+    shared_pool = _make_pool(fetchval_return=None)
+    session_pool = _make_pool(fetchrow_return=latest)
+    db = _make_db(shared_pool)
+    db.pool = MagicMock(return_value=session_pool)
+    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
+    monkeypatch.setattr(
+        "butlers.api.routers.butler_management._ROSTER_ROOT",
+        roster_root,
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        matched = await client.get(
+            "/api/butlers/qa/prompt/effective",
+            headers={"X-API-Key": "synthetic-owner-key"},
+        )
+        claude_md.write_text("Synthetic identity v2", encoding="utf-8")
+        drifted = await client.get(
+            "/api/butlers/qa/prompt/effective",
+            headers={"X-API-Key": "synthetic-owner-key"},
+        )
+
+    assert matched.status_code == 200
+    assert matched.json()["data"]["drift_status"] == "matches_git"
+    assert matched.json()["data"]["effective_prompt"] == receipt.prompt
+    assert drifted.status_code == 200
+    assert drifted.json()["data"]["drift_status"] == "drifted"
+    assert drifted.json()["data"]["changed_sources"] == ["roster:qa/CLAUDE.md"]
+    assert drifted.json()["data"]["drifted_since"] == "2026-09-13T10:00:00+00:00"
+
+
+async def test_effective_prompt_query_failure_is_unavailable_not_static_preview(
+    app,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A failed receipt read cannot promote mutable prompt layers to runtime truth."""
+    monkeypatch.setenv("DASHBOARD_API_KEY", "synthetic-owner-key")
+    roster_root = tmp_path / "roster"
+    config_dir = roster_root / "qa"
+    config_dir.mkdir(parents=True)
+    (config_dir / "CLAUDE.md").write_text(
+        "Static roster content that must not be returned",
+        encoding="utf-8",
+    )
+    shared_pool = _make_pool(fetchval_return="Mutable override that must not be returned")
+    session_pool = _make_pool()
+    session_pool.fetchrow = AsyncMock(side_effect=RuntimeError("synthetic query failure"))
+    db = _make_db(shared_pool)
+    db.pool = MagicMock(return_value=session_pool)
+    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
+    monkeypatch.setattr(
+        "butlers.api.routers.butler_management._ROSTER_ROOT",
+        roster_root,
+    )
+    roster_reader = MagicMock()
+    monkeypatch.setattr(
+        "butlers.api.routers.butler_management.read_system_prompt_with_sources",
+        roster_reader,
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get(
+            "/api/butlers/qa/prompt/effective",
+            headers={"X-API-Key": "synthetic-owner-key"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {
+        "butler_name": "qa",
+        "status": "unavailable",
+        "effective_prompt": None,
+        "prompt_digest": None,
+        "prompt_provenance": [],
+        "total_bytes": None,
+        "roster_digest": None,
+        "drift_status": "unknown",
+        "drifted_since": None,
+        "changed_sources": [],
+    }
+    shared_pool.fetchval.assert_not_awaited()
+    roster_reader.assert_not_called()
+
+
+async def test_effective_prompt_verified_absence_remains_a_roster_preview(
+    app,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A successful empty receipt query is distinct from query unavailability."""
+    monkeypatch.setenv("DASHBOARD_API_KEY", "synthetic-owner-key")
+    roster_root = tmp_path / "roster"
+    config_dir = roster_root / "qa"
+    config_dir.mkdir(parents=True)
+    (config_dir / "CLAUDE.md").write_text("Synthetic roster preview", encoding="utf-8")
+    shared_pool = _make_pool(fetchval_return=None)
+    session_pool = _make_pool(fetchrow_return=None)
+    db = _make_db(shared_pool)
+    db.pool = MagicMock(return_value=session_pool)
+    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
+    monkeypatch.setattr(
+        "butlers.api.routers.butler_management._ROSTER_ROOT",
+        roster_root,
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get(
+            "/api/butlers/qa/prompt/effective",
+            headers={"X-API-Key": "synthetic-owner-key"},
+        )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["status"] == "preview"
+    assert data["effective_prompt"] == "Synthetic roster preview"
+    assert data["drift_status"] == "unknown"
+
+
+async def test_effective_prompt_requires_owner_control_before_prompt_access(
+    app,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Absent owner control refuses before a prompt pool or roster read."""
+    monkeypatch.delenv("DASHBOARD_API_KEY", raising=False)
+    pool = _make_pool()
+    db = _make_db(pool)
+    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/api/butlers/qa/prompt/effective")
+
+    assert response.status_code == 503
+    db.credential_shared_pool.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

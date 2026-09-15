@@ -1,0 +1,569 @@
+## ADDED Requirements
+
+### Requirement: Server-managed single-owner dashboard authentication
+
+The dashboard SHALL authenticate one owner principal through either a matching
+configured `DASHBOARD_API_KEY` in `X-API-Key` or a valid server-managed owner
+session. Same-origin reachability, source address, request order, Host or
+forwarded headers, frontend asset access, public status data, OAuth state,
+connector callbacks, and the existence of an owner entity SHALL NOT establish
+that principal.
+When `DASHBOARD_API_KEY` is configured, non-browser callers SHALL retain the
+exact header contract and constant-time comparison. A browser MAY submit that
+key once as exact body `{api_key: string}` (`extra="forbid"`, bounded before
+decode) to `POST /api/auth/owner/session` over an approved HTTPS origin to
+establish a session, but the raw key
+SHALL NOT be returned, placed in a URL, bundled, logged, audited, cached, sent
+to telemetry, or stored in JavaScript-readable persistence.
+A server session SHALL use an opaque token with at least 256 bits of entropy.
+The server SHALL retain only its digest and bounded metadata. The cookie SHALL
+use a `__Host-` name and `HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/`, no
+`Domain`, and an absolute non-sliding lifetime no greater than 12 hours. Session
+issuance SHALL rotate any presented session identifier. `X-API-Key` SHALL never
+be derivable from a session or session record.
+
+ID: REQ-dashboard-owner-auth-001
+Source: owner decision owner-auth-keyless-bootstrap Choice A; heart-and-soul/security.md; RFC 0007; RFC 0008; dashboard-admin-gateway Defense-in-Depth API-Key Authentication
+Scope: v1-mandatory
+
+#### Scenario: Configured key establishes a protected browser session
+
+- **WHEN** a browser on an approved HTTPS origin submits the matching configured key to the session-establishment surface
+- **THEN** the server SHALL compare it in constant time and issue an opaque server-managed owner session with the required cookie attributes and absolute expiry
+- **AND** it SHALL clear or replace any caller-supplied session identifier
+- **AND** neither the response nor browser persistence SHALL contain the raw key
+
+#### Scenario: Configured-key header callers remain compatible
+
+- **WHEN** a non-browser caller supplies the matching `X-API-Key`
+- **THEN** the central dashboard and owner-control boundaries SHALL authenticate the same single owner principal without requiring a cookie or CSRF token
+- **AND** missing or mismatched header authority SHALL retain the existing fixed unauthorized result
+
+#### Scenario: Same-origin and first arrival are not authentication
+
+- **WHEN** an unauthenticated request is same-origin, originates from loopback or an allowed network, or is the first request received by an unconfigured instance
+- **THEN** none of those facts SHALL create an owner, session, enrollment authority, or authenticated principal
+- **AND** protected data and actions SHALL remain unavailable
+
+#### Scenario: Browser storage and built assets contain no owner key
+
+- **WHEN** the frontend is built or a browser session is established, refreshed, expired, revoked, or rejected
+- **THEN** no dashboard key SHALL appear in localStorage, sessionStorage, IndexedDB, query/service-worker cache, a URL, source map, built asset, response body, log, audit row, metric, or trace
+
+### Requirement: Host-authorized keyless first-owner enrollment
+
+At first singleton initialization with `DASHBOARD_API_KEY` absent, or after the
+explicit host-reconciled configured-key removal transition, the dashboard SHALL
+enter `keyless_unenrolled` and SHALL issue no owner session until host-authorized
+registration completes. Ordinary restart SHALL preserve durable enrolled or
+recovery-pending state, permitting routine login with an active credential. The concrete host-authority transport SHALL be host-local approval of the exact
+browser-bound registration intent defined in design.md D3-D4, enabled only after
+exact successor adoption and authorized implementation. No HTTP
+visitor SHALL be able to arm or approve its own authority.
+Every adopted mechanism SHALL scope authority to one instance, one current
+enrollment epoch, one registration completion, and an expiry no more than five minutes after
+host authorization and never beyond the original intent deadline. A bearer proof, if selected, SHALL have at least 256 bits
+of randomness and SHALL be stored only as a digest. Authority consumption,
+durable consumed receipt, verified passkey installation, enrolled-state transition, and at most one session
+issuance SHALL commit atomically. The consumed receipt SHALL survive restart and
+proof expiry long enough to reject replay deterministically.
+Malformed, expired, unapproved, wrong-instance, wrong-epoch, unknown, or
+already-consumed authority SHALL create no owner or session and disclose no
+authority detail. Concurrent equal claims SHALL produce at most one enrolled
+transition and one session. Recovery SHALL require a fresh host-local action,
+increment the epoch, and revoke all prior sessions and pending authority before
+one new session can issue.
+
+ID: REQ-dashboard-owner-auth-002
+Source: heart-and-soul/security.md Trust Premise and Deployment Security; RFC 0008 Host Port Binding; design.md D3-D4
+Scope: v1-mandatory
+
+#### Scenario: Host-authorized first enrollment succeeds once
+
+- **WHEN** an operator controlling the trusted host authorizes one fresh first-owner enrollment through the browser-bound intent approval mechanism and the intended browser completes it before expiry
+- **THEN** the server SHALL atomically consume that authority, install the verified passkey, transition the current epoch to `keyless_enrolled`, and issue at most one owner session
+- **AND** no subsequent completion of the same authority SHALL issue a session
+
+#### Scenario: Arbitrary first visitor gains no authority
+
+- **WHEN** an arbitrary visitor loads the frontend, reads public auth status, or submits the first HTTP enrollment-related request
+- **THEN** the instance SHALL remain `keyless_unenrolled` unless a separate host-local operator action authorizes the selected mechanism
+- **AND** the visitor SHALL receive no owner session, proof, approval, or protected data from arrival order or reachability alone
+
+#### Scenario: Concurrent claims have one atomic winner
+
+- **WHEN** two requests race to consume the same valid host authority
+- **THEN** one atomic transaction SHALL create at most one enrolled transition, one consumed receipt, and one owner session
+- **AND** every loser SHALL receive a fixed content-blind already-consumed or unauthorized result and no session
+
+#### Scenario: Replay remains denied after restart
+
+- **WHEN** consumed authority is submitted again before or after a dashboard process restart
+- **THEN** the durable receipt SHALL reject it before owner/session creation
+- **AND** restart SHALL NOT reopen or extend the authority
+
+#### Scenario: Expired or malformed proof changes nothing
+
+- **WHEN** authority is malformed, expired, unapproved, unknown, bound to another instance or epoch, or otherwise unverifiable
+- **THEN** the server SHALL fail closed without changing enrollment/session state
+- **AND** no response or evidence surface SHALL disclose the proof, digest, challenge secret, or validation detail
+
+#### Scenario: Lost-session recovery returns to host authority
+
+- **WHEN** all sessions are lost, expired or revoked and the enrolled passkey remains usable
+- **THEN** ordinary passkey login SHALL establish a new session without host intervention
+- **AND** if the credential itself is lost, fresh host recovery SHALL immediately revoke the credential and sessions, advance epochs, and authorize exactly one browser-bound replacement; no public reset SHALL exist
+
+### Requirement: Cookie-backed mutations require synchronizer CSRF protection
+
+Every unsafe owner request authenticated through the session cookie SHALL
+require an independent synchronizer token in `X-CSRF-Token` and an exact match
+between the request `Origin` and a finite configured HTTPS allowlist. The CSRF
+token SHALL be random, bound to one session, retained by the server only as a
+digest, and held by the frontend only in page memory. It SHALL NOT be the owner
+credential or enter persistent browser storage. Authenticated
+`GET /api/auth/owner/csrf` MAY issue a replacement after page reload, with
+`Cache-Control: no-store`. This endpoint is the sole bounded exception to exact
+`Origin` validation because supported browsers do not reliably attach `Origin`
+to a same-origin GET. It SHALL instead require the valid Strict session cookie,
+an HTTPS request authority exactly matching one configured origin,
+`Sec-Fetch-Site: same-origin`, `Sec-Fetch-Mode: cors`, and
+`Sec-Fetch-Dest: empty`; reject redirects; and emit no permissive CORS header.
+Only explicitly trusted proxy metadata may determine effective scheme and
+authority; arbitrary `Forwarded` or `X-Forwarded-*` values SHALL NOT. Its only
+state effect SHALL be inserting or replacing a bounded CSRF digest; it SHALL
+read no domain data and perform no owner action. Its response SHALL contain
+only the new token and expiry. The server SHALL retain at most four active
+CSRF-token digests per session, each expiring within 30 minutes and never later
+than its session, so bounded concurrent tabs remain usable.
+`SameSite=Strict`, CORS, and content type SHALL be defense in depth and SHALL NOT
+replace token validation. On unsafe methods, a missing, `null`, wildcard, HTTP,
+malformed, or mismatched Origin or a missing/mismatched token SHALL fail before
+body buffering, domain pool access, or mutation. Safe cookie-backed reads require the
+valid session; they require neither `Origin` nor a CSRF token because they
+perform no mutation. The CSRF rehydration GET has the additional bounded
+Fetch-Metadata and effective-HTTPS checks above because it issues a mutation
+capability and updates its digest set. Header-authenticated `X-API-Key` requests
+SHALL not require CSRF. Session establishment uses the matching key or verified passkey ceremony,
+with host approval additionally required for registration, plus exact HTTPS Origin, never same-origin alone. Logout and
+browser revocation SHALL require CSRF.
+
+ID: REQ-dashboard-owner-auth-003
+Source: owner decision owner-auth-keyless-bootstrap Choice A; craft-and-care/security-and-secrets.md; design.md D2
+Scope: v1-mandatory
+
+#### Scenario: Valid cookie mutation carries both CSRF proofs
+
+- **WHEN** an owner session submits an unsafe request with the matching in-memory `X-CSRF-Token` and exact allowed HTTPS Origin
+- **THEN** the central boundary SHALL admit it to the route's ordinary authorization and validation
+- **AND** token success SHALL NOT bypass any route-specific check
+
+#### Scenario: Cross-origin and token failures precede mutation
+
+- **WHEN** a cookie-backed unsafe request has a missing, `null`, wildcard, HTTP, malformed, or mismatched Origin or a missing/mismatched CSRF token
+- **THEN** the request SHALL be rejected before body buffering, domain database access, protected-state observation, owner audit attribution, or domain side effect; bounded authentication-store access is permitted to validate authority
+
+#### Scenario: Header callers do not inherit ambient-cookie CSRF rules
+
+- **WHEN** a non-browser request authenticates with a matching `X-API-Key` and does not rely on a session cookie
+- **THEN** it SHALL not require `X-CSRF-Token`
+- **AND** ordinary route authorization, input validation, and audit rules SHALL still apply
+
+#### Scenario: SameSite and CORS cannot substitute for the token
+
+- **WHEN** a request would pass SameSite cookie handling or CORS policy but lacks the matching synchronizer token for an unsafe cookie-backed method
+- **THEN** it SHALL be rejected without a mutation
+
+#### Scenario: Reload rehydrates CSRF through one bounded GET exception
+
+- **WHEN** a supported browser reloads an authenticated page and fetches `GET /api/auth/owner/csrf` without an `Origin` header
+- **THEN** the request MAY succeed only with the valid Strict session cookie, exact configured HTTPS authority, and `Sec-Fetch-Site: same-origin`, `Sec-Fetch-Mode: cors`, `Sec-Fetch-Dest: empty`
+- **AND** the response SHALL be no-store, contain only the replacement token and expiry, permit no redirect or permissive CORS response, and perform no domain read or owner action
+- **AND** a cross-site navigation/fetch, untrusted forwarded authority, missing/wrong Fetch Metadata, or non-HTTPS request SHALL receive no token
+
+### Requirement: Auth state, expiry, revocation, restart, and recovery fail closed
+
+The server SHALL persist exactly one closed auth state from `configured_key`,
+`keyless_unenrolled`, `keyless_enrolled`, `recovery_pending`, or effective `unavailable`, plus durable monotonic
+credential and session epochs as defined in design.md D2-D5. Unknown values, duplicate active owner state,
+inconsistent epochs, unreadable state, unavailable session storage, or an
+internally contradictory configuration SHALL map to `unavailable`, never to an
+authenticated or pass-through state.
+An ordinary restart SHALL preserve unexpired, unrevoked sessions without
+extending their absolute expiry and SHALL preserve consumed enrollment receipts.
+Host-only configuration reconciliation before restart SHALL commit mode/key changes;
+API startup mismatch SHALL fail closed without authority writes.
+Configured-key rotation SHALL increment the auth epoch and revoke sessions from
+the prior key generation. Removing a configured key SHALL enter
+`keyless_unenrolled` and SHALL NOT reactivate historical keyless sessions or
+proofs. Adding a configured key SHALL revoke keyless sessions and enter
+`configured_key` after restart.
+An authenticated owner SHALL be able to revoke the current or all sessions. The
+selected host-authority mechanism SHALL provide emergency all-session
+revocation without a browser session. Public status MAY expose only the closed
+state, whether the requesting browser is authenticated, and that browser's own
+expiry. It SHALL expose no credential/proof/token/digest, owner/contact identity,
+visitor history, session count, configuration path, or failure tail.
+The browser session surfaces SHALL be `GET /api/auth/owner/status`, `POST` and
+`DELETE /api/auth/owner/session`, `GET /api/auth/owner/csrf`, and
+`DELETE /api/auth/owner/sessions`. The two DELETE routes SHALL accept either a
+valid `X-API-Key` or cookie authority with CSRF; the singular route revokes the
+current session and the plural route revokes all sessions.
+
+ID: REQ-dashboard-owner-auth-004
+Source: heart-and-soul/security.md Credential Management and Deployment Security; RFC 0008; design.md D4
+Scope: v1-mandatory
+
+#### Scenario: Restart preserves only valid bounded state
+
+- **WHEN** the dashboard restarts with readable consistent auth storage
+- **THEN** an unexpired and unrevoked session SHALL remain valid only until its original absolute expiry
+- **AND** consumed enrollment authority SHALL remain consumed
+
+#### Scenario: Corrupt or unavailable state is not an empty default
+
+- **WHEN** auth state is unknown, duplicated, internally inconsistent, unreadable, or its storage is unavailable
+- **THEN** protected requests SHALL return a fixed unavailable response and public status SHALL report only `unavailable`
+- **AND** no path SHALL treat the condition as keyless-unenrolled, authenticated, or pass-through
+
+#### Scenario: Key removal cannot revive prior keyless authority
+
+- **WHEN** a configured key is removed, the host reconciles configuration and the process restarts
+- **THEN** every configured-key session SHALL be revoked and the instance SHALL enter `keyless_unenrolled`
+- **AND** no historical keyless session, proof, challenge, or owner state SHALL reactivate
+
+#### Scenario: Key addition or rotation fences prior sessions
+
+- **WHEN** a key is added or its value changes, the host reconciles configuration and the process restarts
+- **THEN** the authentication epoch SHALL advance and every session from the prior mode or key generation SHALL be rejected
+- **AND** the matching new `X-API-Key` SHALL retain its configured-key contract
+
+#### Scenario: Revocation is immediate and recoverable
+
+- **WHEN** an authenticated owner or trusted host operator revokes the current or all sessions
+- **THEN** affected session digests SHALL be rejected immediately without waiting for cookie expiry
+- **AND** ordinary login with the active passkey SHALL remain available without host authority; lost-credential replacement SHALL require fresh host recovery
+
+#### Scenario: Page reload obtains bounded replacement CSRF authority
+
+- **WHEN** an authenticated browser reloads and requests `GET /api/auth/owner/csrf` through the bounded Fetch-Metadata and exact-HTTPS-authority exception
+- **THEN** the server SHALL return one no-store CSRF token and expiry without returning session or owner identity
+- **AND** it SHALL retain no more than four active CSRF digests for that session, each bounded by 30 minutes and the session expiry
+
+### Requirement: Every owner-gated browser route uses the central boundary
+
+In keyless mode, the dashboard SHALL admit no API request except public health,
+a content-blind owner-auth status read, and the exact bounded ceremony method/path pairs in design.md D4 until a valid owner session exists. Static
+frontend assets MAY load but SHALL confer no data or action authority.
+Every route tagged or specified as owner-only SHALL pass the centralized owner
+authentication boundary before body buffering, domain database-pool acquisition,
+protected-state observation, or a domain owner/contact assertion. The inventory
+in `design.md` SHALL be covered at implementation time, including Models and
+Spend attention, model Test/Verify, Home presence settings, prompt overlay and
+mode, conversation ingress recovery, terminal-action inspection/resolution,
+memory dead-letter requeue, dashboard briefing, System egress, relationship
+entity PII/mutations, Health briefing, and owner-operated credential mutations. In particular,
+the mounted `POST /api/secrets/cli/{credential_id:path}/rotate` SHALL pass the
+central boundary before it reads a body, credential row, or generation state;
+its separately sanctioned one-time response remains governed by
+REQ-dashboard-owner-auth-006. A domain assertion that an owner entity exists
+SHALL remain additive and SHALL not authenticate the HTTP caller.
+`GET /api/health/briefing` SHALL pass the centralized transport boundary before
+it resolves the Health owner, reads or writes the per-owner five-minute cache,
+constructs a template, or invokes an optional LLM. Its canonical owner/cache
+assertion remains additive after transport authentication. A denied transport
+request SHALL return without revealing whether an owner or cache entry exists.
+Mounted route metadata and a route-introspection contract test SHALL make future
+owner-only routes fail when they omit the centralized boundary. Public health,
+connector-scoped callbacks, OAuth state, and private service-control credentials
+SHALL remain narrowly scoped and SHALL not create an owner session.
+
+ID: REQ-dashboard-owner-auth-005
+Source: RFC 0007; dashboard-model-settings REQ-dashboard-model-settings-001/002; runtime-attention-outbox REQ-runtime-attention-outbox-003; dashboard-relationship Clause 12; butler-health Health Voice briefing route; system-overview-page System Page Privacy Contract; active owner-control capability changes inventoried in design.md
+Scope: v1-mandatory
+
+#### Scenario: Every inventoried owner route authenticates before access
+
+- **WHEN** any implemented or already-specified owner-gated browser route receives a request
+- **THEN** the centralized boundary SHALL authenticate the configured-key header or server session before body buffering, domain pool acquisition, protected reads, or domain owner assertions
+- **AND** a missing, expired, revoked, or unavailable authority SHALL expose no protected data and perform no action
+
+#### Scenario: Domain owner existence is not caller identity
+
+- **WHEN** a route can prove that the database contains an owner-role entity or owner contact
+- **THEN** that fact SHALL NOT satisfy or bypass the central HTTP owner-authentication boundary
+- **AND** the route's domain assertion SHALL run only after transport authentication succeeds
+
+#### Scenario: Keyless unenrolled dashboard exposes no API data
+
+- **WHEN** the instance is `keyless_unenrolled`
+- **THEN** only health/readiness, content-blind auth status, and the exact bounded ceremony method/path pairs in design.md D4 SHALL be reachable without a session
+- **AND** loading static assets or being the first visitor SHALL not expose dashboard API data
+
+#### Scenario: Future owner route cannot omit the boundary
+
+- **WHEN** a new mounted route is tagged or specified as owner-only without the centralized dependency
+- **THEN** the route-introspection contract gate SHALL fail before merge
+
+#### Scenario: Health briefing authenticates before owner and cache access
+
+- **WHEN** any caller requests `GET /api/health/briefing`
+- **THEN** the centralized configured-key-or-session boundary SHALL run before the Health owner assertion, per-owner cache read/write, template construction, or optional LLM invocation
+- **AND** a missing, expired, revoked, corrupt, or unavailable transport authority SHALL expose no owner/cache existence and perform none of those downstream operations
+- **AND** route-introspection plus mounted API tests SHALL prove this dependency order rather than accepting a UI visibility rule or dependency override
+
+### Requirement: Owner-auth issuance and absence evidence use exact allowlists
+
+Successful `POST /api/auth/owner/session` and the passkey registration/login
+completion SHALL emit owner-auth material only as: (1) the opaque session token
+in one `Set-Cookie` header carrying every attribute in
+REQ-dashboard-owner-auth-001, and (2) response data containing exactly
+`csrf_token`, `csrf_expires_at`, and `session_expires_at`. Successful
+`GET /api/auth/owner/csrf` SHALL return response data containing exactly
+`csrf_token` and `csrf_expires_at`. All issuance responses SHALL set
+`Cache-Control: no-store`. POST /context separately emits only its preauth cookie
+and preauth CSRF tuple under D4. Status SHALL contain only state, authenticated
+and this browser's session_expires_at (null without a valid session), never a
+token. Denial, conflict, expiry, replay, logout and revocation SHALL contain no
+token or ceremony payload; designated cookie-clearing headers contain no secret.
+Privacy verification SHALL seed distinct non-secret fixture sentinels for the
+submitted dashboard key, host proof or challenge authority, issued session,
+issued CSRF token, stored digests, and owner identity. It SHALL positively prove
+that the issued session and CSRF sentinels appear in only the exact allowlisted
+locations in D4 (including preauth issuance, authorized ceremony options and
+authenticated CSRF rehydration), then prove each sentinel absent outside its
+individual positive allowlist in every
+response, audit event, log, metric, trace, prompt, MCP surface, connector event,
+notification, built frontend asset, source map, and service-worker cache. The
+test SHALL first prove each sink and positive issuance path was exercised, so an
+empty capture cannot satisfy the absence assertion.
+The canonical one-time credential result from
+`POST /api/secrets/cli/{credential_id:path}/rotate` SHALL retain its separate
+successful response allowlist of exactly the already-specified `value` and
+display `fingerprint`. That allowlist SHALL contain no dashboard key, host
+authority, owner session, CSRF token, auth digest, or owner identity. The
+rotated credential SHALL remain absent from every other response and evidence
+sink. No other credential endpoint or status code inherits this exception.
+
+ID: REQ-dashboard-owner-auth-006
+Source: heart-and-soul/security.md credential non-disclosure; dashboard-api Secrets Mutation Endpoints; generation-fenced-codex-auth-rotation-provenance Dashboard Codex Mutations; design.md D7
+Scope: v1-mandatory
+
+#### Scenario: Session issuance emits only the cookie and CSRF tuple
+
+- **WHEN** configured-key or adopted keyless session establishment succeeds
+- **THEN** the session token SHALL appear only in the exact `Set-Cookie` header and response data SHALL contain exactly `csrf_token`, `csrf_expires_at`, and `session_expires_at`
+- **AND** the response SHALL be no-store and SHALL contain no submitted key, host authority, digest, owner identity, or additional auth field
+
+#### Scenario: CSRF rehydration emits only its bounded tuple
+
+- **WHEN** the bounded CSRF rehydration GET succeeds
+- **THEN** response data SHALL contain exactly `csrf_token` and `csrf_expires_at`, with no session token or owner identity
+- **AND** the response SHALL be no-store
+
+#### Scenario: Absence assertions cannot pass vacuously
+
+- **WHEN** privacy verification exercises issuance and every named evidence sink with distinct fixture sentinels
+- **THEN** it SHALL first assert the two allowed token outputs positively
+- **AND** it SHALL assert every key, host-authorization, digest, and domain-identity sentinel absent everywhere; ceremony challenge and opaque-handle sentinels appear only in the exact D4 ceremony allowlists, plus session and CSRF sentinels absent outside their exact allowlists
+
+#### Scenario: CLI rotate keeps only its existing one-time exception
+
+- **WHEN** `POST /api/secrets/cli/{credential_id:path}/rotate` succeeds under its canonical contract
+- **THEN** only that response may contain its newly issued credential `value` and display `fingerprint`
+- **AND** it SHALL contain no owner-auth material, and the rotated credential SHALL be absent from every other response and evidence sink
+
+### Requirement: Implementation, adoption, and real-world effects remain separately gated
+
+This specification SHALL define the already-selected passkey and canonical Tailscale
+HTTPS direction through design.md D1-D9. Exact successor adoption SHALL precede
+implementation; prior mechanism-neutral review SHALL NOT certify these bytes.
+Silence SHALL preserve the current state without implementing or activating the
+new authentication boundary.
+Implementation SHALL then require mounted full-app API tests, real-PostgreSQL
+replay/concurrency/restart tests, exact HTTPS Compose browser tests, CSRF tests,
+route-introspection coverage, rollback rehearsal, and positive-allowlist plus
+absence-sentinel privacy evidence. Mock-only, dependency-override-only,
+source-text-only, or UI-only evidence SHALL not satisfy the contract.
+Review, adoption, implementation, migration, proof/key generation, credential
+access, provisioning, browser enrollment, merge, queue entry, deployment,
+restart, rollback, runtime verification, archive, and release SHALL remain
+distinct authorized acts.
+
+ID: REQ-dashboard-owner-auth-007
+Source: craft-and-care/review-and-documentation.md; craft-and-care/testing-and-verification.md; craft-and-care/security-and-secrets.md; design.md Future verification seams and Adoption boundary
+Scope: v1-mandatory
+
+#### Scenario: No mechanism is selected by this draft
+
+- **WHEN** the successor is reviewed but its exact artifact has not been owner-adopted
+- **THEN** the recorded passkey and HTTPS directions SHALL remain selected but implementation and activation SHALL remain gated
+- **AND** no old mechanism-neutral approval SHALL be credited to the successor
+
+#### Scenario: Future verification exercises real boundaries
+
+- **WHEN** an adopted implementation claims completion
+- **THEN** evidence SHALL exercise the mounted API/middleware stack, real database concurrency and restart, selected HTTPS Compose browser path, CSRF attacks, every owner route, and content-blind outputs
+- **AND** mock-only, source-scan-only, or UI-only checks SHALL not satisfy those claims
+
+#### Scenario: Technical success grants no operational authority
+
+- **WHEN** a future implementation passes review and terminal hosted CI
+- **THEN** that result SHALL NOT authorize credential access, proof generation, provisioning, enrollment, deployment, restart, rollback, runtime exercise, archive, or release
+
+### Requirement: Bounded browser-bound ceremonies and exact public outputs
+
+The server SHALL implement only the exact pre-session methods, paths, input/output
+allowlists, body/deadline limits and capacity rules in design.md D3-D4. Public
+challenge/options and opaque ceremony locators SHALL confer no enrollment or
+owner authority. Preauth cookies SHALL authenticate only ceremony binding, with
+independent CSRF and exact Origin; they SHALL NOT authorize domain access. Public
+ceremony values SHALL be absent from retained evidence and ordinary DTOs.
+
+ID: REQ-dashboard-owner-auth-008
+Source: design.md D3-D4 and D8; heart-and-soul/security.md
+Scope: v1-mandatory
+
+#### Scenario: Unapproved request cannot obtain registration authority
+
+- **WHEN** a browser creates an enrollment intent and requests options before exact host approval
+- **THEN** the server SHALL return only the bounded pending tuple and no registration options or session
+- **AND** another browser knowing the request ID SHALL be unable to retrieve options or complete it
+
+#### Scenario: Exact approved browser receives minimal options
+
+- **WHEN** the intended browser presents its bound context, CSRF and exact Origin after host approval
+- **THEN** registration options SHALL contain exactly the D4 allowlist with required discoverability and user verification
+- **AND** the opaque user handle SHALL contain no domain entity/contact identity or vault account data
+
+#### Scenario: Malformed or excessive requests remain bounded
+
+- **WHEN** a ceremony request has extra fields, invalid encoding, excessive raw bytes, a body deadline breach or exceeds global/context limits
+- **THEN** the server SHALL reject it within D4 bounds without protected access, reflected inputs or an owner cookie
+- **AND** host recovery SHALL remain available without a public request inventory
+
+#### Scenario: Ceremony output exceptions do not expand ordinary disclosure
+
+- **WHEN** options or issuance responses and retained evidence sinks are exercised with distinct fixture sentinels
+- **THEN** challenge, handle, locator, preauth cookie, CSRF and owner cookie SHALL appear only in their exact D4 locations
+- **AND** host authority, stored digests, raw keys and domain identity SHALL be absent from every output
+
+### Requirement: Returning passkey authentication verifies current owner authority
+
+The server SHALL verify registration and authentication with the maintained
+conforming verifier and adapter specified in design.md D5. It SHALL require
+server-held challenge, exact origin/RP, UP/UV, accepted key algorithm and
+server-controlled owner binding. Registration SHALL apply conforming
+none-attestation validation, without inventing an absent attestation signature;
+authentication SHALL verify the assertion signature against a current known
+credential. Synced backup-eligible passkeys
+SHALL remain usable with zero or nonincreasing counters under D5's policy;
+challenge consumption SHALL prevent replay independently of counters.
+
+ID: REQ-dashboard-owner-auth-009
+Source: design.md D5; WebAuthn Level 3 sections 7.1 and 7.2
+Scope: v1-mandatory
+
+#### Scenario: Returning or synced browser signs in without the host
+
+- **WHEN** the owner uses an active passkey in a returning or new synced browser after session expiry or logout
+- **THEN** a fresh verified assertion SHALL atomically consume the challenge and issue one new session without host authorization
+- **AND** a valid backup-eligible assertion with a zero or nonincreasing counter SHALL not be rejected solely for that counter
+
+#### Scenario: Invalid assertion never establishes authority
+
+- **WHEN** challenge, origin, RP, signature, required user verification, owner handle, credential ID, algorithm or backup flags fail validation
+- **THEN** the server SHALL issue no session and return a fixed content-blind failure
+- **AND** invalid library input or exception details SHALL not enter retained logs or responses
+
+#### Scenario: Concurrent or replayed finish has one issuance
+
+- **WHEN** two valid finishes race or a consumed challenge is replayed before or after restart
+- **THEN** at most one session SHALL be issued and all later attempts SHALL require a fresh ceremony
+- **AND** final locked epoch validation SHALL reject a result verified before host recovery or credential revocation won
+
+#### Scenario: Database failure and lost delivery have distinct outcomes
+
+- **WHEN** session creation, audit or credential installation fails before commit
+- **THEN** the entire finish transaction SHALL roll back without a success cookie or partial authority
+- **AND** if commit succeeded but response delivery was lost, replay SHALL not reissue; the browser SHALL check its own session or offer fresh passkey login
+
+### Requirement: Host recovery, durable isolation and origin changes preserve authority
+
+Host recovery SHALL immediately retire the old credential, revoke all sessions,
+advance durable epochs and authorize only the intended replacement ceremony.
+Cancellation SHALL NOT undo revocation. Auth storage and operation grants SHALL
+follow design.md D6, excluding generic credential, public-schema and runtime
+access. Origin/RP changes SHALL require explicit host rebind and replacement,
+never request-header inference or automatic public enrollment.
+
+ID: REQ-dashboard-owner-auth-010
+Source: design.md D2-D6; heart-and-soul/vision.md Rules 1 and 4
+Scope: v1-mandatory
+
+#### Scenario: Recovery revokes old authority before replacement
+
+- **WHEN** the host approves recovery for the exact browser request
+- **THEN** the old credential and sessions SHALL immediately fail subsequent authentication and only that replacement intent SHALL remain authorized
+- **AND** cancellation or expiry SHALL leave recovery_pending until another explicit host recovery completes
+
+#### Scenario: Missing state never reinitializes through HTTP
+
+- **WHEN** previously initialized auth state or its credential record is missing, corrupt, duplicated or unreadable
+- **THEN** protected requests SHALL fail closed and no HTTP path SHALL recreate initial authority
+- **AND** ordinary restart SHALL not extend deadlines or restore consumed authority
+
+#### Scenario: Runtime and generic secrets cannot acquire auth authority
+
+- **WHEN** a butler runtime role, generic Secrets route or API role attempts a host-only authorization or direct privileged state write
+- **THEN** database grants SHALL deny it
+- **AND** ordinary API ceremony operations SHALL still work through their narrow designated operations
+
+#### Scenario: Configuration reconciliation cannot run through the API
+
+- **WHEN** API configuration differs from the committed mode or key generation
+- **THEN** protected requests SHALL fail unavailable until explicit host-only reconciliation atomically commits the transition and epoch revocation
+- **AND** repeated reconciliation of unchanged configuration SHALL not revoke sessions or advance epochs
+
+#### Scenario: Stale workers cannot accept a retired configured key
+
+- **WHEN** host reconciliation commits a new mode or key generation while an old API worker remains running
+- **THEN** that worker SHALL reject header-authenticated requests as unavailable by comparing against current authoritative generation on every request
+- **AND** configured-key session issuance SHALL repeat the comparison under its commit lock and SHALL issue no session for a retired generation
+
+#### Scenario: Host identity changes require deliberate recovery
+
+- **WHEN** configured origin or RP differs from persisted identity
+- **THEN** browser authentication SHALL be unavailable until explicit host rebind revokes historical authority and permits replacement for the new identity
+- **AND** forwarded headers, URL paths and Tailnet membership SHALL not expand the configured identity
+
+### Requirement: Honest accessible registration, login and recovery experience
+
+The browser SHALL implement the complete walkthrough in design.md D8 using
+Dispatch tokens, one primary action, visible keyboard focus, accessible status,
+and immediate pending feedback. It SHALL suppress protected queries until
+authenticated, clear private cached data on lost authority and never replay an
+unsafe action automatically. Bitwarden is a provider selection by the owner,
+not a server-verifiable vault identity.
+
+ID: REQ-dashboard-owner-auth-011
+Source: design.md D8; dashboard-design-language Interface Copy and Interaction Affordances
+Scope: v1-mandatory
+
+#### Scenario: Browser prompt alone is not registration success
+
+- **WHEN** the owner opens, cancels or times out a passkey chooser
+- **THEN** the shell SHALL report pending or cancelled state, restore action focus and offer a fresh safe retry
+- **AND** it SHALL claim registration only after durable verified success, never because a prompt opened
+
+#### Scenario: Expiry removes private content without replaying actions
+
+- **WHEN** an API call reports the browser session expired or revoked
+- **THEN** the shell SHALL remove private query/stream state and show Sign in again
+- **AND** after fresh login it SHALL return only to a safe local route and require an explicit retry of any unsafe action
+
+#### Scenario: Recovery and HTTPS failure have actionable states
+
+- **WHEN** the credential is lost or the canonical HTTPS path is unavailable
+- **THEN** the shell SHALL explain respectively the exact host recovery flow or HTTPS setup requirement without requesting vault secrets or downgrading transport
+- **AND** every action SHALL be keyboard operable with visible focus and status announced within 100 ms

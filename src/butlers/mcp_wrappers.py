@@ -19,7 +19,12 @@ from typing import Any
 from fastmcp import FastMCP
 
 from butlers.core.telemetry import tool_span
-from butlers.core.tool_call_capture import capture_tool_call, fingerprint_tool_call_payload
+from butlers.core.tool_call_capture import (
+    MANUAL_DAY_CLOSE_TRIGGER_PREFIX,
+    capture_tool_call,
+    fingerprint_tool_call_payload,
+    get_current_runtime_trigger_source,
+)
 from butlers.exceptions import ChannelEgressOwnershipError, is_channel_egress_tool
 from butlers.module_state import ModuleRuntimeState
 
@@ -36,6 +41,23 @@ _VISIBLE_CAPTURE_INPUT_FIELDS_BY_TOOL = {
     # evidence payloads, so they are safe to retain in the executed witness.
     "chronicler_day_close_bundle": frozenset(("date_label", "timezone")),
 }
+
+_MANUAL_DAY_CLOSE_ALLOWED_TOOLS = frozenset({"chronicler_day_close_bundle"})
+
+
+def _manual_day_close_tool_policy(*, butler_name: str, tool_name: str) -> dict[str, Any] | None:
+    trigger_source = get_current_runtime_trigger_source() or ""
+    if (
+        butler_name != "chronicler"
+        or not trigger_source.startswith(MANUAL_DAY_CLOSE_TRIGGER_PREFIX)
+        or tool_name in _MANUAL_DAY_CLOSE_ALLOWED_TOOLS
+    ):
+        return None
+    return {
+        "status": "suppressed",
+        "reason": "manual_day_close_refresh_tool_policy",
+        "retryable": False,
+    }
 
 
 def _visible_capture_input(
@@ -173,7 +195,9 @@ class _SpanWrappingMCP:
         # (outbound send/reply) tools. Defaults to ``False`` so the guard fails
         # closed: a butler must be explicitly marked messenger to own egress.
         self._is_messenger = is_messenger
+        self._declared_tool_names: set[str] = set()
         self._registered_tool_names: set[str] = set()
+        self._registration_failures: dict[str, str] = {}
         # Shared reference to the daemon's live runtime states dict.
         # Used for call-time module enabled/disabled gating.
         self._module_runtime_states: dict[str, ModuleRuntimeState] | None = module_runtime_states
@@ -194,6 +218,7 @@ class _SpanWrappingMCP:
 
         def wrapper(fn):  # noqa: ANN001, ANN202
             resolved_tool_name = declared_name or fn.__name__
+            self._declared_tool_names.add(resolved_tool_name)
             # Fail closed: non-messenger butlers may not own channel egress.
             if not self._is_messenger and is_channel_egress_tool(resolved_tool_name):
                 raise ChannelEgressOwnershipError(
@@ -201,8 +226,6 @@ class _SpanWrappingMCP:
                     tool_name=resolved_tool_name,
                     module_name=self._module_name,
                 )
-            self._registered_tool_names.add(resolved_tool_name)
-
             module_name_for_gate = self._module_name
             runtime_states_ref = self._module_runtime_states
 
@@ -216,6 +239,20 @@ class _SpanWrappingMCP:
                     args=args,
                 )
                 input_fingerprint = _tool_input_fingerprint(fn, args, kwargs)
+                policy_result = _manual_day_close_tool_policy(
+                    butler_name=self._butler_name,
+                    tool_name=resolved_tool_name,
+                )
+                if policy_result is not None:
+                    capture_tool_call(
+                        tool_name=resolved_tool_name,
+                        module_name=self._module_name,
+                        input_payload=capture_input,
+                        input_fingerprint=input_fingerprint,
+                        outcome="suppressed",
+                        result_payload=policy_result,
+                    )
+                    return policy_result
                 # Check module enabled state at call time to support live toggling.
                 if runtime_states_ref is not None:
                     state = runtime_states_ref.get(module_name_for_gate)
@@ -268,7 +305,13 @@ class _SpanWrappingMCP:
                 )
                 return result
 
-            return original_decorator(instrumented)
+            try:
+                registered = original_decorator(instrumented)
+            except Exception as exc:
+                self._registration_failures[resolved_tool_name] = type(exc).__name__
+                raise
+            self._registered_tool_names.add(resolved_tool_name)
+            return registered
 
         return wrapper
 
@@ -289,6 +332,9 @@ class _ToolCallLoggingMCP:
         self._mcp = mcp
         self._butler_name = butler_name
         self._module_name = module_name
+        self._declared_tool_names: set[str] = set()
+        self._registered_tool_names: set[str] = set()
+        self._registration_failures: dict[str, str] = {}
 
     def _log_tool_call(self, tool_name: str) -> None:
         logger.info(
@@ -305,12 +351,27 @@ class _ToolCallLoggingMCP:
 
         def wrapper(fn):  # noqa: ANN001, ANN202
             resolved_tool_name = declared_name or fn.__name__
+            self._declared_tool_names.add(resolved_tool_name)
 
             @functools.wraps(fn)
             async def instrumented(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
                 self._log_tool_call(resolved_tool_name)
                 capture_input = _visible_capture_input(kwargs)
                 input_fingerprint = _tool_input_fingerprint(fn, args, kwargs)
+                policy_result = _manual_day_close_tool_policy(
+                    butler_name=self._butler_name,
+                    tool_name=resolved_tool_name,
+                )
+                if policy_result is not None:
+                    capture_tool_call(
+                        tool_name=resolved_tool_name,
+                        module_name=self._module_name,
+                        input_payload=capture_input,
+                        input_fingerprint=input_fingerprint,
+                        outcome="suppressed",
+                        result_payload=policy_result,
+                    )
+                    return policy_result
                 try:
                     result = await fn(*args, **kwargs)
                 except Exception as exc:
@@ -339,7 +400,13 @@ class _ToolCallLoggingMCP:
                 )
                 return result
 
-            return original_decorator(instrumented)
+            try:
+                registered = original_decorator(instrumented)
+            except Exception as exc:
+                self._registration_failures[resolved_tool_name] = type(exc).__name__
+                raise
+            self._registered_tool_names.add(resolved_tool_name)
+            return registered
 
         return wrapper
 

@@ -60,6 +60,7 @@ vi.mock("@/hooks/use-finance", () => ({
   useFinanceUpcomingBills: vi.fn(),
   useFinanceSpendingSummary: vi.fn(),
   useFinanceAccounts: vi.fn(),
+  useFinanceObligations: vi.fn(),
   useFinanceExpectedSignals: vi.fn(),
   useBulkUpdateTransactionMetadata: vi.fn(),
 }));
@@ -75,6 +76,7 @@ import {
   useFinanceUpcomingBills,
   useFinanceSpendingSummary,
   useFinanceAccounts,
+  useFinanceObligations,
   useFinanceExpectedSignals,
   useBulkUpdateTransactionMetadata,
 } from "@/hooks/use-finance";
@@ -176,6 +178,42 @@ const SUBSCRIPTIONS = [
     metadata: {},
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-05-01T00:00:00Z",
+  },
+];
+
+// Forward obligation ledger fixtures (bu-8cdl1.10 slice 3): sub-1 (Netflix)
+// has no cancellation door on file; sub-2 (Spotify) has a complete door plus
+// a pre-charge price-change flag.
+const OBLIGATIONS = [
+  {
+    subscription_id: "sub-1",
+    service: "Netflix",
+    amount: "15.49",
+    currency: "USD",
+    period: "2026-06-07",
+    cancellation_url: null,
+    notice_period_days: null,
+    cancel_by: null,
+    warn_by: null,
+    unknown_door: true,
+    price_change_amount: null,
+    price_change_direction: null,
+    days_remaining_to_act: null,
+  },
+  {
+    subscription_id: "sub-2",
+    service: "Spotify",
+    amount: "9.99",
+    currency: "USD",
+    period: "2026-06-15",
+    cancellation_url: "https://spotify.com/cancel",
+    notice_period_days: 7,
+    cancel_by: "2026-06-08",
+    warn_by: "2026-06-01",
+    unknown_door: false,
+    price_change_amount: "12.99",
+    price_change_direction: "increase" as const,
+    days_remaining_to_act: 2,
   },
 ];
 
@@ -357,6 +395,11 @@ function setupWithData() {
     data: { data: ACCOUNTS, meta: { total: 2, offset: 0, limit: 50 } },
     isLoading: false,
   } as ReturnType<typeof useFinanceAccounts>);
+
+  vi.mocked(useFinanceObligations).mockReturnValue({
+    data: { items: OBLIGATIONS, count: OBLIGATIONS.length, available: true, degraded_reason: null },
+    isLoading: false,
+  } as ReturnType<typeof useFinanceObligations>);
 }
 
 function setupEmpty() {
@@ -401,6 +444,11 @@ function setupEmpty() {
     data: { data: [], meta: { total: 0, offset: 0, limit: 50 } },
     isLoading: false,
   } as unknown as ReturnType<typeof useFinanceAccounts>);
+
+  vi.mocked(useFinanceObligations).mockReturnValue({
+    data: { items: [], count: 0, available: true, degraded_reason: null },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useFinanceObligations>);
 }
 
 function setupLoading() {
@@ -433,6 +481,11 @@ function setupLoading() {
     data: undefined,
     isLoading: true,
   } as ReturnType<typeof useFinanceAccounts>);
+
+  vi.mocked(useFinanceObligations).mockReturnValue({
+    data: undefined,
+    isLoading: true,
+  } as ReturnType<typeof useFinanceObligations>);
 }
 
 // ---------------------------------------------------------------------------
@@ -751,6 +804,11 @@ function setupKpiNoise() {
     data: { data: ACCOUNTS, meta: { total: 2, offset: 0, limit: 50 } },
     isLoading: false,
   } as ReturnType<typeof useFinanceAccounts>);
+
+  vi.mocked(useFinanceObligations).mockReturnValue({
+    data: { items: OBLIGATIONS, count: OBLIGATIONS.length, available: true, degraded_reason: null },
+    isLoading: false,
+  } as ReturnType<typeof useFinanceObligations>);
 }
 
 describe("ButlerFinanceFinancesTab — KPI strip honesty (bu-t5w6w)", () => {
@@ -873,6 +931,47 @@ describe("ButlerFinanceFinancesTab — subscriptions", () => {
   it("renders the subscriptions list", () => {
     renderTab();
     expect(screen.getByTestId("subscriptions-list")).toBeDefined();
+  });
+
+  it("renders an enrichment prompt for a subscription with no cancellation door on file", () => {
+    renderTab();
+    // sub-1 (Netflix) has unknown_door: true in OBLIGATIONS.
+    expect(screen.getAllByTestId("subscription-door-unknown").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText(/No cancellation door on file/)).toBeDefined();
+  });
+
+  it("renders the cancel-by date and days remaining for a known cancellation door", () => {
+    renderTab();
+    // sub-2 (Spotify) has a complete door with cancel_by 2026-06-08 and
+    // days_remaining_to_act: 2 in OBLIGATIONS.
+    const known = screen.getByTestId("subscription-door-known");
+    expect(known.textContent).toContain("Cancel by");
+    expect(known.textContent).toContain("2 days left");
+  });
+
+  it("surfaces a pre-charge price-change flag on the subscription row", () => {
+    renderTab();
+    const flag = screen.getByTestId("subscription-price-change-flag");
+    expect(flag.textContent).toContain("increase");
+    expect(flag.textContent).toContain("$12.99");
+  });
+
+  it("renders subscriptions without a door line when the obligations read is degraded", () => {
+    vi.mocked(useFinanceObligations).mockReturnValue({
+      data: {
+        items: [],
+        count: 0,
+        available: false,
+        degraded_reason: "obligation_ledger_unavailable",
+      },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useFinanceObligations>);
+
+    renderTab();
+
+    expect(screen.getByTestId("subscriptions-list")).toBeDefined();
+    expect(screen.queryByTestId("subscription-door-unknown")).toBeNull();
+    expect(screen.queryByTestId("subscription-door-known")).toBeNull();
   });
 });
 

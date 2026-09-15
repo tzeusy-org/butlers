@@ -331,10 +331,10 @@ async def run_startup(daemon: Any) -> None:
             exc_info=True,
         )
 
-    # 9. Resolve runtime config from DB (seed from toml on first boot).
+    # 9. Resolve runtime config (seed DB operational fields from toml on first boot).
     # Creates the RuntimeConfigAccessor and seeds the runtime_config table
-    # if this is the first boot. The effective RuntimeConfig from DB is used
-    # for tool registration and spawner construction.
+    # if this is the first boot. Git remains authoritative for core_groups;
+    # runtime_config may preserve only an explicitly reasoned strict subset.
     from butlers.core.runtime_config import RuntimeConfigAccessor
 
     schema = daemon.config.db_schema or daemon.config.name
@@ -368,6 +368,7 @@ async def run_startup(daemon: Any) -> None:
             "job_args": s.job_args,
             "max_token_budget": s.max_token_budget,
             "complexity": s.complexity,
+            "continuity": s.continuity,
         }
         for s in daemon.config.schedules
         if not (_is_staffer and s.job_name == "daily_briefing_contribution")
@@ -486,6 +487,12 @@ async def run_startup(daemon: Any) -> None:
 
     # 14e. Initialize module runtime states (enabled/disabled) from state store
     await daemon._init_module_runtime_states(pool)
+
+    # 14f. The fenced approval-delivery worker is daemon-owned but remains
+    # dormant until the trusted recovery-only Messenger runtime is installed.
+    from butlers.core.approval_delivery_worker import start_approval_delivery_worker
+
+    await start_approval_delivery_worker(daemon)
 
     # 15. Start FastMCP SSE server on configured port
     await daemon._start_mcp_server()
@@ -672,6 +679,10 @@ async def run_shutdown(daemon: Any) -> None:
         daemon._liveness_reporter_task = None
 
     # 6. Module shutdown in reverse topological order (active modules only)
+    from butlers.core.approval_delivery_worker import stop_approval_delivery_worker
+
+    await stop_approval_delivery_worker(daemon)
+
     active_set = {m.name for m in daemon._active_modules}
     for mod in reversed(daemon._modules):
         if mod.name not in active_set:

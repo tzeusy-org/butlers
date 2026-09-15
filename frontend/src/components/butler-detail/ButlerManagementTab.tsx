@@ -14,7 +14,15 @@ import { useState } from "react";
 import { Link } from "react-router";
 import { toast } from "sonner";
 
-import { useButlerMemoryAccess, useButlerPrompt, useButlerPromptHistory, useButlerTools, useKillButler, useUpdateButlerPrompt } from "@/hooks/use-butler-management";
+import {
+  useButlerEffectivePrompt,
+  useButlerMemoryAccess,
+  useButlerPrompt,
+  useButlerPromptHistory,
+  useButlerTools,
+  useKillButler,
+  useUpdateButlerPrompt,
+} from "@/hooks/use-butler-management";
 import { useButlerHourlyActivity } from "@/hooks/use-butler-analytics";
 import { useResolveModel } from "@/hooks/use-model-catalog";
 import { useModalChoreography } from "@/hooks/use-modal-choreography";
@@ -230,6 +238,11 @@ function IdentitySection({ butlerName }: { butlerName: string }) {
 
 function SystemPromptSection({ butlerName }: { butlerName: string }) {
   const { data, isLoading } = useButlerPrompt(butlerName);
+  const {
+    data: effectiveData,
+    isLoading: effectiveLoading,
+    isError: effectiveError,
+  } = useButlerEffectivePrompt(butlerName);
   const [showEdit, setShowEdit] = useState(false);
   const [showDiff, setShowDiff] = useState(false);
 
@@ -237,12 +250,33 @@ function SystemPromptSection({ butlerName }: { butlerName: string }) {
   const version = pv?.version ?? 0;
   const prompt = pv?.prompt ?? "";
   const updatedBy = pv?.updated_by ?? "—";
+  const effective = effectiveData?.data;
+  const composedPrompt = effective?.effective_prompt ?? "";
+  let driftHint = "Prompt: receipt pending";
+  if (effectiveError || effective?.status === "unavailable") {
+    driftHint = "Prompt: receipt unavailable";
+  } else if (effective?.status === "corrupt") {
+    driftHint = "Prompt: corrupt receipt";
+  } else if (effective?.drift_status === "matches_git" && effective.roster_digest) {
+    driftHint = `Prompt: matches git @${effective.roster_digest.slice(0, 12)}`;
+  } else if (effective?.drift_status === "drifted") {
+    driftHint = `Prompt: drifted since ${effective.drifted_since ?? "last receipt"}`;
+  }
+  let promptExplanation =
+    "Preview shows composed runtime instructions. The existing editor changes the mutable base prompt; it does not edit roster files or this receipt.";
+  if (effective?.status === "corrupt") {
+    promptExplanation =
+      "Stored receipt verification failed, so runtime prompt content is withheld. The existing authoring prompt remains separately editable.";
+  } else if (effectiveError || !composedPrompt) {
+    promptExplanation =
+      "No verified composed runtime prompt is available. The existing authoring prompt remains separately editable and is not shown as a runtime receipt.";
+  }
 
   return (
     <Section
       n={2}
       title="System prompt"
-      hint={version > 0 ? `version ${version}` : "no prompt set"}
+      hint={driftHint}
       right={
         version > 0 ? (
           <div className="flex gap-3">
@@ -265,17 +299,28 @@ function SystemPromptSection({ butlerName }: { butlerName: string }) {
         ) : null
       }
     >
-      {isLoading ? (
+      {isLoading || effectiveLoading ? (
         <div className="h-20 w-full rounded bg-muted" />
       ) : (
         <>
+          {(effectiveError || effective?.status === "unavailable") && (
+            <p className="mb-2 text-xs text-destructive">Composed prompt unavailable.</p>
+          )}
           <div className="max-w-[72ch] rounded border border-border bg-muted/20 px-4 py-3 font-serif text-sm leading-relaxed text-foreground">
-            {prompt || <span className="italic text-muted-foreground">No system prompt configured.</span>}
+            {composedPrompt || (
+              <span className="italic text-muted-foreground">Effective prompt unavailable.</span>
+            )}
           </div>
           <div className="mt-2.5 flex items-center gap-3 font-mono text-[10px] text-muted-foreground">
-            {prompt && (
+            {composedPrompt && (
               <>
-                <span>tokens · {Math.round(prompt.length / 4)}</span>
+                <span>tokens · {Math.round(composedPrompt.length / 4)}</span>
+                {effective?.total_bytes != null && (
+                  <>
+                    <span>·</span>
+                    <span>{effective.total_bytes.toLocaleString()} bytes</span>
+                  </>
+                )}
                 <span>·</span>
                 <span>last edit · {updatedBy}</span>
               </>
@@ -289,6 +334,14 @@ function SystemPromptSection({ butlerName }: { butlerName: string }) {
               edit prompt →
             </button>
           </div>
+          {effective?.changed_sources && effective.changed_sources.length > 0 && (
+            <p className="mt-2 font-mono text-[10px] text-destructive">
+              changed sources · {effective.changed_sources.join(", ")}
+            </p>
+          )}
+          <p className="mt-2 max-w-[72ch] text-[11px] text-muted-foreground">
+            {promptExplanation}
+          </p>
         </>
       )}
 

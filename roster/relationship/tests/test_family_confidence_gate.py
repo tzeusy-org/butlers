@@ -22,7 +22,11 @@ import uuid
 import asyncpg
 import pytest
 
-from butlers.testing.schema_standins import ENTITY_PREDICATE_REGISTRY, PENDING_ACTIONS
+from butlers.testing.schema_standins import (
+    ENTITY_GRAPH_EDGES,
+    ENTITY_PREDICATE_REGISTRY,
+    PENDING_ACTIONS,
+)
 from butlers.tools.relationship.relationship_assert_fact import (
     _FAMILY_GATE_CONF,
     _FAMILY_GATE_PREDICATES,
@@ -106,6 +110,9 @@ async def pool(provisioned_postgres_pool):
                 WHERE validity = 'active'
         """)
         await p.execute(PENDING_ACTIONS.ddl())
+        # RFC 0031 Slice 2 (bu-8cdl1.8): the central writer projects
+        # entity-kind facts here in the same transaction as the fact write.
+        await p.execute(ENTITY_GRAPH_EDGES.ddl())
         # rel_034: the central writer persists evidence and a coverage receipt in
         # the same transaction as the fact, so this schema is not optional.
         await apply_evidence_schema(p)

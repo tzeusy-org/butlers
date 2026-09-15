@@ -9,6 +9,7 @@ UUID7 generation follows the pattern in the Switchboard ingest module.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import secrets
@@ -19,7 +20,19 @@ from uuid import UUID
 
 import asyncpg
 
+from butlers.api.chat_stream import publish_chat_stream_event
+
 logger = logging.getLogger(__name__)
+
+# ts_headline start/stop markers — control characters unlikely to appear in
+# real message content, stripped out of the returned snippet by
+# ``_parse_headline`` and converted into [start, end) highlight ranges.
+_HL_START = "\x01"
+_HL_STOP = "\x02"
+_HEADLINE_OPTIONS = (
+    f"StartSel={_HL_START},StopSel={_HL_STOP},MaxFragments=1,MaxWords=35,MinWords=15"
+)
+_MESSAGE_SEARCH_MAX_QUERY_LEN = 512
 
 # Provider resume handles are considered fresh for this long after their last
 # refresh. Chosen as a generous same-day window: long enough that a user
@@ -151,6 +164,31 @@ async def conversation_get(
         """,
         conversation_id,
         butler_name,
+    )
+    return dict(row) if row else None
+
+
+async def conversation_get_by_id_any_butler(
+    pool: asyncpg.Pool,
+    conversation_id: UUID,
+) -> dict[str, Any] | None:
+    """Fetch a conversation by id only, regardless of owning ``butler_name``.
+
+    A dashboard-routed turn's ``source_thread_identity`` names the
+    conversation the owner is looking at, not the butler currently
+    processing the turn (classification may route it to a different
+    butler than the one the row was created under). ``id`` is a UUID7
+    primary key -- globally unique -- so this lookup is mount-boundary
+    safe without a butler-scoped filter. Returns ``None`` if not found.
+    """
+    row = await pool.fetchrow(
+        """
+        SELECT id, butler_name, title, status, created_at, updated_at,
+               message_count, routed_butler, source_channel, source_thread_identity
+        FROM public.dashboard_conversations
+        WHERE id = $1
+        """,
+        conversation_id,
     )
     return dict(row) if row else None
 
@@ -566,6 +604,246 @@ async def conversation_search(
     return results, count
 
 
+def _parse_headline(headline: str) -> tuple[str, list[list[int]]]:
+    """Split a ``ts_headline`` string into plain text + highlight ranges.
+
+    ``ts_headline`` wraps each match in ``_HL_START``/``_HL_STOP`` markers.
+    Returns the snippet with markers stripped, plus a list of ``[start, end)``
+    character offsets into that plain snippet, one pair per highlighted match.
+    """
+    snippet_parts: list[str] = []
+    ranges: list[list[int]] = []
+    cursor = 0
+    remaining = headline
+    while True:
+        start_idx = remaining.find(_HL_START)
+        if start_idx == -1:
+            snippet_parts.append(remaining)
+            break
+        snippet_parts.append(remaining[:start_idx])
+        cursor += start_idx
+        remaining = remaining[start_idx + 1 :]
+        stop_idx = remaining.find(_HL_STOP)
+        if stop_idx == -1:
+            # Malformed (unterminated marker) — treat the remainder as plain text.
+            snippet_parts.append(remaining)
+            break
+        highlighted = remaining[:stop_idx]
+        ranges.append([cursor, cursor + len(highlighted)])
+        snippet_parts.append(highlighted)
+        cursor += len(highlighted)
+        remaining = remaining[stop_idx + 1 :]
+    return "".join(snippet_parts), ranges
+
+
+def _message_search_deep_link(*, session_id: UUID | None, butler_name: str) -> str:
+    """Best-effort navigation target for a recalled message.
+
+    No dedicated conversation/message page exists yet (the ``/chat`` page is
+    bu-0ynlk.11) — this reuses the shell's existing allowlisted routes: the
+    message's own session detail page when it has one (``/sessions/:id``,
+    mirroring ``frontend/src/api/types.ts``'s ``source_session_id`` deep-link
+    convention), else the owning butler's detail page.
+    """
+    if session_id is not None:
+        return f"/sessions/{session_id}"
+    return f"/butlers/{butler_name}"
+
+
+def encode_message_search_cursor(rank: float, created_at: datetime, message_id: UUID | str) -> str:
+    """Encode a message-search keyset position into an opaque cursor string."""
+    payload = {"r": rank, "ca": created_at.isoformat(), "id": str(message_id)}
+    return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
+
+
+def decode_message_search_cursor(cursor: str) -> tuple[float, datetime, str]:
+    """Decode a message-search cursor back to ``(rank, created_at, message_id)``.
+
+    Raises:
+        ValueError: If the cursor is malformed or cannot be decoded.
+    """
+    try:
+        raw = base64.urlsafe_b64decode(cursor.encode())
+        payload = json.loads(raw)
+        return float(payload["r"]), datetime.fromisoformat(payload["ca"]), str(payload["id"])
+    except (KeyError, ValueError, TypeError) as exc:
+        raise ValueError(f"Invalid cursor: {exc}") from exc
+
+
+async def message_search(
+    pool: asyncpg.Pool,
+    *,
+    query: str,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    channel: str | None = None,
+    butler: str | None = None,
+    limit: int = 20,
+    cursor: str | None = None,
+) -> dict[str, Any]:
+    """Owner-scoped full-text search over every butler's dashboard messages.
+
+    Backs both the always-on ``conversation_recall`` MCP tool
+    (``core_tools/_conversation_recall.py``) and
+    ``GET /api/conversations/messages/search``. Deliberately not filtered by a
+    single ``butler_name`` unless the caller asks for one via ``butler`` —
+    recall is scoped to the *owner*, who may have asked any butler about
+    anything, not to whichever butler happens to be calling the tool.
+
+    Matches rank via ``ts_rank`` against the generated ``search_vector``
+    column (English text-search config), tie-broken by recency then message
+    id for a stable keyset cursor: a message inserted between two page fetches
+    lands at its own correctly-sorted position rather than shifting already-
+    returned rows, because the cursor seeks from actual returned values, not
+    an offset.
+
+    An empty/blank ``query`` returns an empty page immediately (no DB round
+    trip) rather than raising or matching everything — callers must never
+    treat "no search term" as "return everything" or fabricate a recall.
+
+    Returns ``{"items": [...], "next_cursor": str | None, "has_more": bool}``.
+    Each item: ``message_id``, ``conversation_id``, ``role``, ``created_at``,
+    ``butler_name``, ``session_id``, ``snippet``, ``highlight_ranges``
+    (``[start, end)`` offsets into ``snippet``), ``deep_link``.
+
+    Raises:
+        ValueError: ``query`` exceeds 512 characters, or ``cursor`` is malformed.
+    """
+    if not query or not query.strip():
+        return {"items": [], "next_cursor": None, "has_more": False}
+    if len(query) > _MESSAGE_SEARCH_MAX_QUERY_LEN:
+        raise ValueError(f"query exceeds the {_MESSAGE_SEARCH_MAX_QUERY_LEN}-character limit")
+
+    cursor_rank: float | None = None
+    cursor_created_at: datetime | None = None
+    cursor_message_id: str | None = None
+    if cursor is not None:
+        cursor_rank, cursor_created_at, cursor_message_id = decode_message_search_cursor(cursor)
+
+    fetch_limit = limit + 1
+    rows = await pool.fetch(
+        """
+        WITH q AS (
+            SELECT plainto_tsquery('english', $1) AS tsq
+        ),
+        matches AS (
+            SELECT
+                m.id AS message_id,
+                m.conversation_id,
+                m.role,
+                m.created_at,
+                m.session_id,
+                c.butler_name,
+                c.source_channel,
+                ts_rank(m.search_vector, q.tsq)::float8 AS rank,
+                ts_headline('english', m.content, q.tsq, $6) AS headline
+            FROM public.dashboard_messages m
+            JOIN public.dashboard_conversations c ON c.id = m.conversation_id
+            CROSS JOIN q
+            WHERE m.search_vector @@ q.tsq
+              AND ($2::timestamptz IS NULL OR m.created_at >= $2)
+              AND ($3::timestamptz IS NULL OR m.created_at < $3)
+              AND ($4::text IS NULL OR c.source_channel = $4)
+              AND ($5::text IS NULL OR c.butler_name = $5)
+        )
+        SELECT * FROM matches
+        WHERE $7::float8 IS NULL
+           OR (rank, created_at, message_id) < ($7, $8::timestamptz, $9::uuid)
+        ORDER BY rank DESC, created_at DESC, message_id DESC
+        LIMIT $10
+        """,
+        query,
+        since,
+        until,
+        channel,
+        butler,
+        _HEADLINE_OPTIONS,
+        cursor_rank,
+        cursor_created_at,
+        cursor_message_id,
+        fetch_limit,
+    )
+
+    has_more = len(rows) > limit
+    page_rows = rows[:limit]
+
+    items: list[dict[str, Any]] = []
+    for row in page_rows:
+        snippet, highlight_ranges = _parse_headline(row["headline"])
+        items.append(
+            {
+                "message_id": row["message_id"],
+                "conversation_id": row["conversation_id"],
+                "role": row["role"],
+                "created_at": row["created_at"],
+                "butler_name": row["butler_name"],
+                "session_id": row["session_id"],
+                "snippet": snippet,
+                "highlight_ranges": highlight_ranges,
+                "deep_link": _message_search_deep_link(
+                    session_id=row["session_id"], butler_name=row["butler_name"]
+                ),
+            }
+        )
+
+    next_cursor: str | None = None
+    if has_more and page_rows:
+        last = page_rows[-1]
+        next_cursor = encode_message_search_cursor(
+            last["rank"], last["created_at"], last["message_id"]
+        )
+
+    return {"items": items, "next_cursor": next_cursor, "has_more": has_more}
+
+
+async def message_thread_window(
+    pool: asyncpg.Pool,
+    conversation_id: UUID,
+    *,
+    around_message_id: UUID | None = None,
+    before: int = 5,
+    after: int = 5,
+) -> list[dict[str, Any]]:
+    """Return an ordered window of messages from one conversation.
+
+    Backs the ``conversation_thread_read`` MCP tool — lets a butler read
+    surrounding context for a ``conversation_recall`` hit before the full
+    ``/chat`` page (bu-0ynlk.11) exists.
+
+    Centered on ``around_message_id`` (by creation order) when given;
+    otherwise anchored on the conversation's most recent message. Returns
+    ``[]`` when the conversation has no messages, or when
+    ``around_message_id`` does not belong to this conversation (never falls
+    back to the wrong anchor).
+    """
+    rows = await pool.fetch(
+        """
+        WITH ordered AS (
+            SELECT id, role, content, created_at, session_id, model_name,
+                   ROW_NUMBER() OVER (ORDER BY created_at ASC, id ASC) AS rn
+            FROM public.dashboard_messages
+            WHERE conversation_id = $1
+        ),
+        anchor AS (
+            SELECT CASE
+                WHEN $2::uuid IS NULL THEN (SELECT MAX(rn) FROM ordered)
+                ELSE (SELECT rn FROM ordered WHERE id = $2)
+            END AS anchor_rn
+        )
+        SELECT o.id, o.role, o.content, o.created_at, o.session_id, o.model_name
+        FROM ordered o, anchor
+        WHERE anchor.anchor_rn IS NOT NULL
+          AND o.rn BETWEEN anchor.anchor_rn - $3 AND anchor.anchor_rn + $4
+        ORDER BY o.rn ASC
+        """,
+        conversation_id,
+        around_message_id,
+        before,
+        after,
+    )
+    return [dict(r) for r in rows]
+
+
 async def conversation_summary(
     pool: asyncpg.Pool,
     *,
@@ -613,17 +891,28 @@ async def message_create(
     tool_calls: list[dict[str, Any]] | None = None,
     error: str | None = None,
     request_id: UUID | None = None,
+    sources: list[str] | None = None,
+    page_context: dict[str, Any] | None = None,
+    captured_at: datetime | None = None,
 ) -> dict[str, Any]:
-    """Insert a new message row.  Returns the full message dict."""
+    """Insert a new message row.  Returns the full message dict.
+
+    ``page_context``/``captured_at`` carry the dashboard ContextChip snapshot
+    for a user-role message (bu-0ynlk.4); ``captured_at`` defaults to now()
+    whenever ``page_context`` is supplied and the caller omits it.
+    """
     msg_id = _generate_uuid7()
     now = datetime.now(UTC)
+    if page_context is not None and captured_at is None:
+        captured_at = now
     await pool.execute(
         """
         INSERT INTO public.dashboard_messages
             (id, conversation_id, role, content, created_at,
              session_id, model_name, input_tokens, output_tokens,
-             duration_ms, tool_calls, error, request_id)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+             duration_ms, tool_calls, error, request_id, sources,
+             page_context, captured_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
         """,
         msg_id,
         conversation_id,
@@ -638,6 +927,9 @@ async def message_create(
         tool_calls,
         error,
         request_id,
+        sources,
+        page_context,
+        captured_at,
     )
 
     return {
@@ -654,6 +946,9 @@ async def message_create(
         "tool_calls": tool_calls,
         "error": error,
         "request_id": request_id,
+        "sources": sources,
+        "page_context": page_context,
+        "captured_at": captured_at,
     }
 
 
@@ -664,6 +959,7 @@ async def message_create_idempotent(
     conversation_id: UUID,
     role: str,
     content: str,
+    page_context: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Create a client-identified message once, returning ``(message, is_new)``.
 
@@ -671,25 +967,35 @@ async def message_create_idempotent(
     persists that message and later identical submissions recover the original
     row, so the Switchboard sees the same external event identity rather than
     relying on its content-hash fallback.
+
+    ``page_context`` is only ever written on the first (winning) insert -- a
+    retry's own ``page_context`` argument is ignored on conflict, so a retried
+    message deterministically reuses the originally-captured snapshot rather
+    than re-capturing a possibly-stale one (bu-0ynlk.4).
     """
     now = datetime.now(UTC)
+    captured_at = now if page_context is not None else None
     inserted = await pool.fetchrow(
         """
         INSERT INTO public.dashboard_messages
             (id, conversation_id, role, content, created_at,
              session_id, model_name, input_tokens, output_tokens,
-             duration_ms, tool_calls, error, request_id)
-        VALUES ($1, $2, $3, $4, $5, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
+             duration_ms, tool_calls, error, request_id, sources,
+             page_context, captured_at)
+        VALUES ($1, $2, $3, $4, $5, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, $6, $7)
         ON CONFLICT (id) DO NOTHING
         RETURNING id, conversation_id, role, content, created_at,
                   session_id, model_name, input_tokens, output_tokens,
-                  duration_ms, tool_calls, error, request_id
+                  duration_ms, tool_calls, error, request_id, sources,
+                  page_context, captured_at
         """,
         message_id,
         conversation_id,
         role,
         content,
         now,
+        page_context,
+        captured_at,
     )
     if inserted is not None:
         return dict(inserted), True
@@ -698,7 +1004,8 @@ async def message_create_idempotent(
         """
         SELECT id, conversation_id, role, content, created_at,
                session_id, model_name, input_tokens, output_tokens,
-               duration_ms, tool_calls, error, request_id
+               duration_ms, tool_calls, error, request_id, sources,
+               page_context, captured_at
         FROM public.dashboard_messages
         WHERE id = $1
         """,
@@ -726,7 +1033,8 @@ async def message_get_by_id(
         """
         SELECT id, conversation_id, role, content, created_at,
                session_id, model_name, input_tokens, output_tokens,
-               duration_ms, tool_calls, error, request_id
+               duration_ms, tool_calls, error, request_id, sources,
+               page_context, captured_at
         FROM public.dashboard_messages
         WHERE id = $1
         """,
@@ -735,12 +1043,40 @@ async def message_get_by_id(
     return dict(row) if row else None
 
 
+async def message_set_session_id_if_null(
+    pool: asyncpg.Pool,
+    message_id: UUID,
+    *,
+    session_id: UUID,
+) -> None:
+    """Backfill a message's ``session_id`` when it was absent at write time.
+
+    ``conversation_reply`` best-effort-stamps the ambient runtime session id
+    at write time; when that ambient context was unavailable, the SSE poller
+    resolves the session after the fact (via ``request_id``) and calls this
+    to fill the gap. A no-op if the row already carries a ``session_id`` --
+    never overwrites an existing value.
+    """
+    await pool.execute(
+        """
+        UPDATE public.dashboard_messages
+        SET session_id = $2
+        WHERE id = $1 AND session_id IS NULL
+        """,
+        message_id,
+        session_id,
+    )
+
+
 async def conversation_reply_create(
     pool: asyncpg.Pool,
     conversation_id: UUID,
     *,
     message: str,
     request_id: UUID | None = None,
+    sources: list[str] | None = None,
+    session_id: UUID | None = None,
+    tool_calls: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     """Persist the ``conversation_reply`` confirm-loop message for a conversation.
 
@@ -749,6 +1085,19 @@ async def conversation_reply_create(
     not reference an existing conversation (the caller — the ``conversation_reply``
     MCP tool — surfaces this as an actionable error to the calling model rather
     than raising, since a stale/hallucinated id is a model-correctable mistake).
+
+    ``sources`` carries an answer-lane reply's citations (see the
+    ``conversation_reply`` MCP tool); ``None`` for every other lane.
+
+    ``session_id``/``tool_calls`` are the ambient runtime session id and the
+    executed tool calls captured for this turn (best-effort — ``None`` when
+    the runtime context is unavailable, e.g. a session that never bound one).
+
+    Publishes a best-effort ``reply_ready`` NOTIFY on the request's
+    chat-stream channel (see ``butlers.api.chat_stream``) so an SSE generator
+    watching this turn wakes immediately instead of waiting for its next
+    safety-net poll (bu-0ynlk.7). A dropped/failed NOTIFY never affects this
+    write — the poll remains the source of truth either way.
     """
     exists = await pool.fetchval(
         "SELECT 1 FROM public.dashboard_conversations WHERE id = $1", conversation_id
@@ -762,6 +1111,9 @@ async def conversation_reply_create(
         role="assistant",
         content=message,
         request_id=request_id,
+        sources=sources,
+        session_id=session_id,
+        tool_calls=tool_calls,
     )
     await pool.execute(
         """
@@ -771,6 +1123,8 @@ async def conversation_reply_create(
         """,
         conversation_id,
     )
+    if request_id is not None:
+        await publish_chat_stream_event(pool, request_id, "reply_ready")
     return msg
 
 
@@ -797,7 +1151,8 @@ async def message_list(
         """
         SELECT id, conversation_id, role, content, created_at,
                session_id, model_name, input_tokens, output_tokens,
-               duration_ms, tool_calls, error, request_id
+               duration_ms, tool_calls, error, request_id, sources,
+               page_context, captured_at
         FROM public.dashboard_messages
         WHERE conversation_id = $1
         ORDER BY created_at ASC
@@ -811,12 +1166,19 @@ async def message_list(
     messages = []
     for row in rows:
         d = dict(row)
-        # Deserialize tool_calls JSONB
+        # Deserialize tool_calls/page_context JSONB (defensive: the shared
+        # pool registers a dict<->jsonb codec, but a pool that does not
+        # would otherwise hand back a raw JSON string here).
         if isinstance(d.get("tool_calls"), str):
             try:
                 d["tool_calls"] = json.loads(d["tool_calls"])
             except (json.JSONDecodeError, TypeError):
                 d["tool_calls"] = None
+        if isinstance(d.get("page_context"), str):
+            try:
+                d["page_context"] = json.loads(d["page_context"])
+            except (json.JSONDecodeError, TypeError):
+                d["page_context"] = None
         messages.append(d)
 
     return messages, total
@@ -838,7 +1200,7 @@ async def message_find_reply_since(
     row = await pool.fetchrow(
         """
         SELECT id, content, created_at, session_id, model_name,
-               input_tokens, output_tokens, duration_ms, tool_calls, error, request_id
+               input_tokens, output_tokens, duration_ms, tool_calls, error, request_id, sources
         FROM public.dashboard_messages
         WHERE conversation_id = $1 AND role = 'assistant' AND created_at > $2
         ORDER BY created_at ASC

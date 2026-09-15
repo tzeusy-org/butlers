@@ -15,6 +15,7 @@ import { ENTITY_DETAIL_INITIAL_PARAMS } from "@/lib/entity-detail-query";
 import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
 import { fetchSpendForecast } from "@/lib/spend-forecast";
 import type { NavIconName } from "@/components/layout/NavIcon";
+import { PAGE_CONTEXT_REGISTRY, type ContextPolicy } from "@/lib/page-context-registry";
 
 export type ShellDiscoverability = "global" | "contextual" | "context-only";
 export type ShellFamily =
@@ -50,6 +51,14 @@ export interface ShellCapability {
   loader: ShellPageLoader;
   /** Resolves the exact query cache entry the destination consumes. */
   queryWarmup?: (to: string) => ShellQueryWarmup | null;
+  /**
+   * How much of this route's page context the ContextChip may attach to an
+   * outgoing chat message (bu-0ynlk.4). Sourced from
+   * `page-context-registry.ts`, keyed by `path` — every capability below
+   * must have a matching registry entry, enforced by
+   * `shell-capability.context.test.ts`.
+   */
+  contextPolicy: ContextPolicy;
 }
 
 export interface ShellPlacement {
@@ -117,9 +126,14 @@ const ingestionEventWarmup: ShellCapability["queryWarmup"] = (to) => {
 
 const page = (loader: () => Promise<{ default: ComponentType }>) => loader;
 
-/** One typed source for all shell projections. */
-export const SHELL_CAPABILITIES: readonly ShellCapability[] = [
+type ShellCapabilityInput = Omit<ShellCapability, "contextPolicy">;
+
+const _SHELL_CAPABILITIES_INPUT: readonly ShellCapabilityInput[] = [
   { path: "/", label: "Overview", keywords: ["home", "dashboard"], family: "overview", placement: { section: "Main", order: 0, icon: "overview", end: true }, chord: "o", discoverability: "global", loader: page(() => import("@/pages/DashboardPage.tsx")) },
+  // Full-page chat posture (bu-0ynlk.11) — no sidebar placement: the docked
+  // rail / floating widget is the persistent entry point, this is the
+  // deep-link and cmdk-recall destination. See ChatPage.tsx.
+  { path: "/chat", label: "Chat", keywords: ["chat", "switchboard", "conversation", "talk to butlers"], family: "overview", placement: null, discoverability: "global", loader: page(() => import("@/pages/ChatPage.tsx")) },
   { path: "/butlers", label: "Butlers", keywords: ["staff", "agents"], family: "butler", placement: { section: "Main", order: 1, icon: "butlers" }, chord: "b", discoverability: "global", loader: page(() => import("@/pages/ButlersPage.tsx")) },
   { path: "/qa", label: "QA", keywords: ["quality", "patrol"], family: "operations", placement: { section: "Main", order: 2, butler: "qa", badgeKey: "qa-escalations", badgeVariant: "red", icon: "qa" }, discoverability: "global", loader: page(() => import("@/pages/QaOverviewPage.tsx")) },
   { path: "/ingestion", label: "Ingestion", keywords: ["dispatch", "timeline", "events"], family: "ingestion", placement: { section: "Main", order: 3, icon: "ingestion" }, subnav: { order: 0, end: true, label: "Timeline" }, chord: "e", discoverability: "global", loader: page(() => import("@/pages/IngestionTimelinePage.tsx")), queryWarmup: ingestionEventWarmup },
@@ -176,10 +190,25 @@ export const SHELL_CAPABILITIES: readonly ShellCapability[] = [
   { path: "/memory/episodes/:episodeId", label: "Episode detail", keywords: ["memory", "episode"], family: "detail", placement: null, dynamic: "search-backed", discoverability: "contextual", loader: page(() => import("@/pages/EpisodeDetailPage.tsx")), queryWarmup: dynamic("/memory/episodes/:episodeId", (id) => ({ queryKey: ["memory-episode", id], queryFn: () => api.getEpisode(id), staleTime: DEFAULT_QUERY_STALE_TIME_MS })) },
   { path: "/approvals/:id", label: "Approval detail", keywords: ["approval", "review"], family: "detail", placement: null, dynamic: "search-backed", discoverability: "contextual", loader: page(() => import("@/pages/ApprovalsPage.tsx")), queryWarmup: dynamic("/approvals/:id", (id) => ({ queryKey: ["approvals", "detail", id], queryFn: () => api.getApprovalDetail(id), staleTime: POLL_BUS_RECONCILE_MS })) },
   { path: "/beads/:beadId", label: "Bead detail", keywords: ["bead", "decision", "blocker"], family: "detail", placement: null, dynamic: "context-only", discoverability: "context-only", loader: page(() => import("@/pages/BeadDetailPage.tsx")), queryWarmup: dynamic("/beads/:beadId", (id) => ({ queryKey: ["beads", "detail", id], queryFn: () => api.getBeadDetail(id), staleTime: DEFAULT_QUERY_STALE_TIME_MS })) },
+  // Deep-linked/cmdk-recalled conversation (bu-0ynlk.11) — id resolved
+  // cross-butler via GET /api/conversations/{id}; not surfaced by its own
+  // static search entry, only reached via a copy-link, cmdk recent-thread
+  // command, or the /chat sidebar (mirrors /beads/:beadId's context-only shape).
+  { path: "/chat/:conversationId", label: "Conversation", keywords: ["chat", "conversation"], family: "detail", placement: null, dynamic: "context-only", discoverability: "context-only", loader: page(() => import("@/pages/ChatPage.tsx")), queryWarmup: dynamic("/chat/:conversationId", (id) => ({ queryKey: ["conversations", "by-id", id], queryFn: () => api.getConversationById(id), staleTime: DEFAULT_QUERY_STALE_TIME_MS })) },
   { path: "/ingestion/connectors/:connectorType/:endpointIdentity", label: "Connector detail", keywords: ["ingestion", "connector", "provider"], family: "detail", placement: null, dynamic: "context-only", discoverability: "context-only", loader: page(() => import("@/pages/ConnectorDetailPage.tsx")) },
   { path: "/qa/patrols/:patrolId", label: "QA patrol detail", keywords: ["qa", "patrol"], family: "detail", placement: null, dynamic: "context-only", discoverability: "context-only", loader: page(() => import("@/pages/QaPatrolDetailPage.tsx")) },
   { path: "/qa/investigations/:attemptId", label: "QA investigation detail", keywords: ["qa", "investigation"], family: "detail", placement: null, dynamic: "context-only", discoverability: "context-only", loader: page(() => import("@/pages/QaInvestigationDetailPage.tsx")) },
 ];
+
+/** One typed source for all shell projections. `contextPolicy` is derived
+ * from `page-context-registry.ts` so the two never drift independently —
+ * every entry above must have a matching registry descriptor. */
+export const SHELL_CAPABILITIES: readonly ShellCapability[] = _SHELL_CAPABILITIES_INPUT.map(
+  (capability) => ({
+    ...capability,
+    contextPolicy: PAGE_CONTEXT_REGISTRY[capability.path]?.policy ?? "snapshot",
+  }),
+);
 
 export function getShellCapability(path: string): ShellCapability | undefined {
   return SHELL_CAPABILITIES.find((capability) => capability.path === path);

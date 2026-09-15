@@ -52,6 +52,7 @@ Sidebar sections and entries (`navSections` in `nav-config.ts`):
 - Notifications (`/notifications`)
 - Issues (`/issues`)
 - Sessions (`/sessions`)
+- Spend (`/spend`)
 - Audit Log (`/audit-log`)
 - System (`/system`)
 
@@ -61,8 +62,7 @@ These are reached via the entity finder, `g`-chords, deep links from a parent pa
 direct URL — never orphaned, just not promoted to the rail (`EXTRA_ROUTES` in
 `route-registry.ts`):
 
-- Costs (`/costs`)
-- Settings sub-pages: Spend Settings (`/settings/spend`), Permissions (`/settings/permissions`),
+- Settings sub-pages: Permissions (`/settings/permissions`),
   Models (`/settings/models`)
 - Entities Index (`/entities/index`), Concentration (`/entities/concentration`),
   Circles (`/entities/circles`)
@@ -86,8 +86,9 @@ direct URL — never orphaned, just not promoted to the rail (`EXTRA_ROUTES` in
 | `/calendar` | Calendar workspace | Dual-view shell with user/butler toggle and range controls |
 | `/contacts`, `/contacts/:contactId` | *(compat redirect)* | Forwards to `/entities/index?has=contact` — `public.contacts` was dropped (core_134) |
 | `/health` | Health overview | Voice briefing + vitals KPI strip, plus a right-column ledger index and attention list |
-| `/health/measurements` \| `/medications` \| `/conditions` \| `/symptoms` \| `/meals` \| `/research` | Health sub-pages | Six Dispatch-language CRUD surfaces over the fact store; reachable from the Health ledger index and sidebar children |
-| `/costs` | Costs and usage | Summary stats + chart + butler breakdown |
+| `/health/measurements` \| `/health/medications` \| `/health/conditions` \| `/health/symptoms` \| `/health/meals` \| `/health/research` | Health sub-pages | Six Dispatch-language CRUD surfaces over the fact store; reachable from the Health ledger index and sidebar children |
+| `/spend` | Spend | Canonical spend posture, forecast, breakdown, sessions, schedules, routing rules, and ceiling |
+| `/costs`, `/settings/spend` | *(compat redirects)* | Forward to `/spend` |
 | `/memory`, `/memory/facts/:factId`, `/memory/rules/:ruleId`, `/memory/episodes/:episodeId` | Memory system | Register pills (Facts/Rules/Episodes) + detail deep links |
 | `/entities` | Entities Plex | Force-graph relationship map |
 | `/entities/index` | Entities Index | Tabular entity list with filter chips + curation queue rail |
@@ -96,7 +97,7 @@ direct URL — never orphaned, just not promoted to the rail (`EXTRA_ROUTES` in
 | `/entities/:entityId` | Entity detail | Single activity feed with filter pills (replaced the old Notes/Interactions/Gifts/Loans/Activity tab strip) |
 | `/entities/hop`, `/entities/columns`, `/entities/social-map` | *(compat redirects)* | Absorbed into the Plex; forward to `/entities` |
 | `/groups` | *(compat redirect)* | Forwards to `/entities/circles` (bu-86c4c.19) |
-| `/settings`, `/settings/spend`, `/settings/permissions`, `/settings/models` | Settings console | Local UI preferences, spend posture, permission grants, model routing |
+| `/settings`, `/settings/permissions`, `/settings/models` | Settings console | System posture, permission grants, and model routing; its Spend panel links to `/spend` |
 | `/secrets` | Secrets passport | Severity-sorted spine + per-credential evidence pages (System/User/CLI families) |
 | `/education` | Education | Butler-specific dashboard (only when the `education` butler is present) |
 | `/chronicles` | Chronicles | Retrospective lived-time reconstruction (only when `chronicler` is present) |

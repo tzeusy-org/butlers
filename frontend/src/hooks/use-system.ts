@@ -19,6 +19,7 @@ import {
   getHealth,
   getInsightDeliveryState,
   getInstanceFacts,
+  getStoredFunctionFacts,
   getSystemConditions,
   type SystemConditionsParams,
 } from "@/api/index.ts";
@@ -135,6 +136,20 @@ export function useDriftFacts() {
   return useQuery({
     queryKey: ["system-drift"],
     queryFn: () => getDriftFacts(),
+    refetchInterval: SYSTEM_POLL_MS,
+  });
+}
+
+/**
+ * Fetch the stored-function drift comparison (bu-bi5an).
+ *
+ * Always HTTP 200 -- `data.stored_function_check_available === false` means
+ * the comparison itself failed server-side; render "unknown", never "clean".
+ */
+export function useStoredFunctionFacts() {
+  return useQuery({
+    queryKey: ["system-stored-functions"],
+    queryFn: () => getStoredFunctionFacts(),
     refetchInterval: SYSTEM_POLL_MS,
   });
 }

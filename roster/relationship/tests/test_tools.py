@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from butlers.testing.schema_standins import CONTACT_ENTITY_MAP
+from butlers.testing.schema_standins import CONTACT_ENTITY_MAP, ENTITY_GRAPH_EDGES
 
 pytestmark = [
     pytest.mark.integration,
@@ -449,6 +449,27 @@ async def pool(provisioned_postgres_pool):
                 UNIQUE (source_type, source_id, target_type, target_id)
             )
         """)
+
+        # public.memory_catalog + public.entity_graph_edges (bu-9ltqm) — the
+        # cascade targets forget_memory()'s retraction (via task_delete etc.)
+        # disowns/deletes.
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS public.memory_catalog (
+                id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                source_schema TEXT NOT NULL,
+                source_table  TEXT NOT NULL,
+                source_id     UUID NOT NULL,
+                tenant_id     TEXT NOT NULL DEFAULT 'owner',
+                entity_id     UUID,
+                summary       TEXT NOT NULL DEFAULT '',
+                memory_type   TEXT NOT NULL DEFAULT 'fact',
+                confidence    DOUBLE PRECISION,
+                invalid_at    TIMESTAMPTZ,
+                updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+                UNIQUE (source_schema, source_table, source_id)
+            )
+        """)
+        await p.execute(ENTITY_GRAPH_EDGES.ddl())
 
         yield p
 

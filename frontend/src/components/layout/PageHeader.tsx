@@ -8,6 +8,7 @@ import { useDarkMode } from '../../hooks/useDarkMode'
 import { dispatchOpenEntityFinder } from '../../lib/entity-finder'
 import { LiveIndicator } from './LiveIndicator'
 import type { EventBusHealth, EventStreamStatus } from '@/hooks/use-event-stream'
+import type { ClientLinkStatus } from '@/hooks/use-client-link'
 
 interface Breadcrumb {
   label: string
@@ -22,6 +23,14 @@ interface PageHeaderProps {
    *  shares one socket instead of one per header render. Omitted in tests
    *  that render PageHeader standalone. */
   liveStatus?: EventStreamStatus | EventBusHealth
+  /** This browser's own network link (bu-8cdl1.13), separate from
+   *  `liveStatus` (fleet/backend health) -- overrides the Live indicator's
+   *  display so a client-side connection drop never reads as a fleet
+   *  outage. Omitted in tests that render PageHeader standalone. */
+  clientLink?: ClientLinkStatus
+  /** Wall-clock ms of the last event actually received, threaded through to
+   *  the Live indicator's data-age stamp while the client link is down. */
+  lastEventAt?: number | null
 }
 
 // Known acronyms that should render fully uppercased rather than title-cased.
@@ -73,7 +82,13 @@ function titleizeSegment(value: string): string {
     .join(' ')
 }
 
-export default function PageHeader({ breadcrumbs, hideBreadcrumbs = false, liveStatus }: PageHeaderProps) {
+export default function PageHeader({
+  breadcrumbs,
+  hideBreadcrumbs = false,
+  liveStatus,
+  clientLink,
+  lastEventAt,
+}: PageHeaderProps) {
   const location = useLocation()
   const { theme, setTheme, resolvedTheme } = useDarkMode()
   const { isSupplyingBreadcrumbs } = useBreadcrumbsControl()
@@ -134,7 +149,9 @@ export default function PageHeader({ breadcrumbs, hideBreadcrumbs = false, liveS
       </div>
 
       <div className="flex shrink-0 items-center gap-3">
-        {liveStatus && <LiveIndicator status={liveStatus} />}
+        {liveStatus && (
+          <LiveIndicator status={liveStatus} clientLink={clientLink} lastEventAt={lastEventAt} />
+        )}
         <div className="flex shrink-0 items-center gap-1">
         <Button
           variant="ghost"

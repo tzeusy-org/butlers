@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from asyncpg import Connection, Pool
 
+from butlers.core import entity_graph_edges
 from butlers.core.tool_call_capture import (
     get_current_runtime_butler_name,
     get_current_runtime_session_id,
@@ -583,6 +584,38 @@ async def _cascade_catalog_disownment(
         source_ids=source_ids,
         invalid_at=invalid_at or datetime.now(UTC),
     )
+    # RFC 0031 (bu-8cdl1.8 Slice 2): a disowned fact's projected
+    # entity_graph_edges row must be retracted in the same transaction, or
+    # the graph would keep reporting a relationship whose source fact no
+    # longer exists / is no longer current. A no-op for rules (never
+    # projected — see entity_graph_edges.py) and for facts that were never
+    # edge-facts (no matching row to delete).
+    await entity_graph_edges.delete_entity_graph_edges(
+        conn,
+        source_schema=source_schema,
+        source_table=source_table,
+        source_ids=source_ids,
+    )
+
+
+async def cascade_fact_retraction(
+    conn: Connection,
+    fact_ids: list[uuid.UUID],
+    *,
+    invalid_at: datetime | None = None,
+) -> None:
+    """Public entry point for the catalog/graph-edge cascade on retracted facts.
+
+    For callers outside this module that must retract ``facts`` rows via raw
+    SQL on a connection/transaction they already hold (bu-9ltqm) -- e.g. a
+    bulk retraction that doesn't compose with ``forget_memory``'s own
+    per-memory transaction management, or a call site that needs its own
+    idempotency guard on the retracting ``UPDATE`` -- rather than going
+    through ``forget_memory`` one fact at a time. MUST be called on the same
+    connection/transaction as the retracting UPDATE, or the catalog/graph
+    state can diverge from the canonical retraction on a crash.
+    """
+    await _cascade_catalog_disownment(conn, "facts", fact_ids, invalid_at=invalid_at)
 
 
 async def _backfill_facts_to_catalog(
@@ -1678,6 +1711,13 @@ async def store_fact(
             _fuzzy_suggestions: list[dict] = []
             if _predicate_is_novel:
                 _fuzzy_suggestions = await _fuzzy_match_predicates(conn, predicate)
+                if scope == "lifestyle":
+                    suggested = ", ".join(str(item["predicate"]) for item in _fuzzy_suggestions)
+                    hint = f" Closest registered predicates: {suggested}." if suggested else ""
+                    raise ValueError(
+                        f"Lifestyle predicate {predicate!r} is not registered.{hint} "
+                        "Use the Lifestyle memory taxonomy instead of creating a new predicate."
+                    )
 
             # Guard: reject facts that embed entity UUIDs in content without
             # using object_entity_id.  This catches the common mistake of
@@ -1721,6 +1761,19 @@ async def store_fact(
             # Temporal facts (valid_at IS NOT NULL) always coexist as independent
             # active rows regardless of predicate_registry.is_temporal.
             skip_supersession = fact_valid_at is not None
+
+            # RFC 0031 (bu-8cdl1.8 Slice 2): resolved lazily, once, only when
+            # this call actually touches an edge-fact (entity_id AND
+            # object_entity_id both set) -- the overwhelming majority of
+            # store_fact() calls are non-edge property/temporal facts and
+            # must not pay for an extra round-trip.
+            _graph_schema: str | None = None
+
+            async def _resolve_graph_schema() -> str:
+                nonlocal _graph_schema
+                if _graph_schema is None:
+                    _graph_schema = await conn.fetchval("SELECT current_schema()")
+                return _graph_schema
 
             supersedes_id = None
             if skip_supersession and expected_supersedes_id is not None:
@@ -1790,6 +1843,18 @@ async def store_fact(
                         old_id,
                         now,
                     )
+                    if object_entity_id is not None:
+                        # The superseded row is no longer current -- its
+                        # projected edge must go with it in the same
+                        # transaction (RFC 0031 write-behind contract), or a
+                        # supersession would leave two live edges for the
+                        # same conceptual relationship.
+                        await entity_graph_edges.delete_entity_graph_edge(
+                            conn,
+                            source_schema=await _resolve_graph_schema(),
+                            source_table="facts",
+                            source_id=old_id,
+                        )
 
             # Insert new fact — include idempotency_key and observed_at columns
             # added by migration mem_016.  Falls back gracefully on older schemas
@@ -1822,6 +1887,22 @@ async def store_fact(
                 sensitivity=sensitivity,
                 embedding_model_version=embedding_engine.model_name,
             )
+
+            if entity_id is not None and object_entity_id is not None:
+                # RFC 0031 (bu-8cdl1.8 Slice 2): project the entity-to-entity
+                # edge in the same transaction as the canonical fact write --
+                # a projection failure here fails this whole write, so the
+                # graph can never silently diverge from `facts`.
+                await entity_graph_edges.project_or_withhold_entity_graph_edge(
+                    conn,
+                    source_schema=await _resolve_graph_schema(),
+                    source_table="facts",
+                    source_id=fact_id,
+                    subject_entity_id=entity_id,
+                    predicate=predicate,
+                    object_entity_id=object_entity_id,
+                    sensitivity=sensitivity,
+                )
 
             # Create supersedes link if applicable
             if supersedes_id:
@@ -1898,6 +1979,12 @@ async def store_fact(
                                     _inv_old_id,
                                     now,
                                 )
+                                await entity_graph_edges.delete_entity_graph_edge(
+                                    conn,
+                                    source_schema=await _resolve_graph_schema(),
+                                    source_table="facts",
+                                    source_id=_inv_old_id,
+                                )
 
                         _inv_fact_id = uuid.uuid4()
                         # Inverse subject/content: swap labels.
@@ -1933,6 +2020,20 @@ async def store_fact(
                             retention_class=retention_class,
                             sensitivity=sensitivity,
                             embedding_model_version=embedding_engine.model_name,
+                        )
+                        # The mirrored fact is itself a canonical edge-fact row
+                        # (entity_id/object_entity_id both set by construction
+                        # above) -- it gets its own projected edge under its
+                        # own source_id, same as the forward fact.
+                        await entity_graph_edges.project_or_withhold_entity_graph_edge(
+                            conn,
+                            source_schema=await _resolve_graph_schema(),
+                            source_table="facts",
+                            source_id=_inv_fact_id,
+                            subject_entity_id=object_entity_id,
+                            predicate=_inverse_predicate,
+                            object_entity_id=entity_id,
+                            sensitivity=sensitivity,
                         )
 
                         if _inv_supersedes_id:
@@ -2362,17 +2463,22 @@ async def get_memory(
     pool: Pool,
     memory_type: str,
     memory_id: uuid.UUID,
+    *,
+    allowed_sensitivities: tuple[str, ...] | list[str],
 ) -> dict | None:
-    """Retrieve a single memory by type and UUID, bumping its reference count.
+    """Retrieve one authorized memory by type and UUID, bumping its reference count.
 
     Atomically increments ``reference_count`` by 1 and sets
-    ``last_referenced_at`` to now. Returns the full record as a dict,
-    or ``None`` if not found.
+    ``last_referenced_at`` to now for a row at an allowed sensitivity. Returns
+    the full record as a dict, or ``None`` if the row is absent or not
+    authorized for this server-held policy.
 
     Args:
         pool: asyncpg connection pool.
         memory_type: One of 'episode', 'fact', 'rule'.
         memory_id: The UUID of the memory item.
+        allowed_sensitivities: Persisted sensitivity values allowed by the
+            server-held read policy.
 
     Returns:
         A dict of the full record, or None if not found.
@@ -2387,13 +2493,16 @@ async def get_memory(
 
     table = _TYPE_TABLE[memory_type]
 
-    # Bump reference_count and last_referenced_at, returning the updated row
+    # Filter within the same UPDATE that bumps reference metadata: a denied UUID
+    # must not leak its existence or mutate its row before returning None.
     row = await pool.fetchrow(
         f"UPDATE {table} "
         f"SET reference_count = reference_count + 1, last_referenced_at = now() "
         f"WHERE id = $1 "
+        f"  AND COALESCE(sensitivity, '{_DEFAULT_CATALOG_SENSITIVITY}') = ANY($2) "
         f"RETURNING *",
         memory_id,
+        list(allowed_sensitivities),
     )
 
     if row is None:
@@ -2419,6 +2528,25 @@ class CorrectionGuardError(Exception):
     def __init__(self, reason: str, message: str) -> None:
         super().__init__(message)
         self.reason = reason
+        self.message = message
+
+
+class EpisodeNotDeadLetterError(Exception):
+    """Raised when retry_dead_letter_episode is asked to reset a non-dead_letter episode.
+
+    Attributes:
+        current_status: The episode's actual ``consolidation_status``.
+        message: Human-readable explanation suitable for an API error response.
+    """
+
+    def __init__(self, current_status: str) -> None:
+        message = (
+            "Episode is not in dead_letter state "
+            f"(current consolidation_status: {current_status!r}); only a "
+            "dead-lettered episode can be retried"
+        )
+        super().__init__(message)
+        self.current_status = current_status
         self.message = message
 
 
@@ -2747,6 +2875,138 @@ async def confirm_memory(
         memory_id,
     )
     return result.endswith("1")
+
+
+# ---------------------------------------------------------------------------
+# Retry consolidation (dead_letter -> pending)
+# ---------------------------------------------------------------------------
+
+
+async def retry_dead_letter_episode(
+    pool: Pool,
+    episode_id: uuid.UUID,
+    *,
+    memory_schema: str | None = None,
+) -> dict | None:
+    """Reset a dead-lettered episode so the scheduler reconsolidates it.
+
+    Resetting only the status label would leave the episode's terminal retry
+    state poisoned — ``consolidation_attempts`` already at the ceiling, and a
+    stale ``dead_letter_reason``/lease still set — so a manual retry must also
+    clear those fields.  Once reset, the episode's ``consolidation_status`` of
+    ``'pending'`` is unconditionally eligible for
+    :func:`butlers.modules.memory.consolidation.run_consolidation`'s claim
+    query on the very next scheduled sweep, the same path a freshly-stored
+    episode takes — this is a genuine re-enqueue, not a cosmetic relabel.
+
+    Args:
+        pool: asyncpg connection pool for the memory database.
+        episode_id: UUID of the episode to retry.
+        memory_schema: Explicit owning schema for dashboard callers. Normal
+            daemon and MCP callers omit it and retain search-path behavior.
+
+    Returns:
+        The updated episode row (dict) if the reset succeeded, or ``None`` if
+        no episode with that id exists.
+
+    Raises:
+        EpisodeNotDeadLetterError: If the episode exists but its
+            ``consolidation_status`` is not ``'dead_letter'``.
+    """
+    table = _memory_relation("episode", memory_schema)
+
+    row = await pool.fetchrow(
+        f"SELECT consolidation_status FROM {table} WHERE id = $1",
+        episode_id,
+    )
+    if row is None:
+        return None
+    if row["consolidation_status"] != "dead_letter":
+        raise EpisodeNotDeadLetterError(row["consolidation_status"])
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            updated = await conn.fetchrow(
+                f"""
+                UPDATE {table}
+                SET consolidation_status        = 'pending',
+                    consolidation_attempts      = 0,
+                    dead_letter_reason          = NULL,
+                    last_consolidation_error    = NULL,
+                    next_consolidation_retry_at = NULL,
+                    leased_until                = NULL,
+                    leased_by                   = NULL
+                WHERE id = $1 AND consolidation_status = 'dead_letter'
+                RETURNING id, butler, session_id, content, importance, reference_count,
+                          consolidated, consolidation_status, created_at,
+                          last_referenced_at, expires_at, metadata
+                """,
+                episode_id,
+            )
+            if updated is None:
+                # Raced with a concurrent transition between the pre-check and
+                # this guarded UPDATE — report the current terminal reality.
+                raise EpisodeNotDeadLetterError("dead_letter")
+
+            await conn.execute(
+                """
+                INSERT INTO memory_events
+                    (event_type, actor, memory_type, memory_id, payload)
+                VALUES
+                    ('episode_consolidation_retry_requested', 'dashboard_api',
+                     'episode', $1, $2)
+                """,
+                episode_id,
+                {"outcome": "reset_to_pending"},
+            )
+
+    return dict(updated)
+
+
+# ---------------------------------------------------------------------------
+# Retire (stop a rule from firing, without soft-deleting it)
+# ---------------------------------------------------------------------------
+
+
+async def retire_rule(
+    pool: Pool,
+    rule_id: uuid.UUID,
+    *,
+    memory_schema: str | None = None,
+) -> bool:
+    """Retire a rule: it stops firing, but is kept on the books.
+
+    Sets ``retired_at`` to now(). Distinct from ``forget_memory``: forgetting
+    a rule means it was wrong (soft-deleted, like a fact's retraction);
+    retiring a rule means it may still be correct but the owner has decided
+    it no longer needs to be enforced. ``search.semantic_search`` and
+    ``search.keyword_search`` both exclude ``retired_at IS NOT NULL`` rows —
+    that is the evaluation-path guard that actually stops a retired rule from
+    being surfaced into an agent's context.
+
+    Idempotent: retiring an already-retired rule keeps its original
+    ``retired_at`` (``COALESCE``) rather than bumping it, so "when was this
+    retired" stays accurate across repeat calls.
+
+    The catalog disownment cascade runs in the same transaction as the
+    ``retired_at`` write, mirroring ``forget_memory``'s plain path — a
+    retired rule must stop being served via the cross-butler
+    ``public.memory_catalog`` (Fleet Knowledge) too, not just locally.
+
+    Returns:
+        True if the rule was found and updated, False if not found.
+    """
+    table = _memory_relation("rule", memory_schema)
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            result = await conn.execute(
+                f"UPDATE {table} SET retired_at = COALESCE(retired_at, now()) WHERE id = $1",
+                rule_id,
+            )
+            found = result.endswith("1")
+            if found:
+                await _cascade_catalog_disownment(conn, "rules", [rule_id])
+    return found
 
 
 # ---------------------------------------------------------------------------

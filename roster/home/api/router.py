@@ -28,6 +28,7 @@ from butlers.connectors.home_assistant_statistics import (
     parse_statistics_change_series,
 )
 from butlers.credential_store import upsert_owner_entity_info
+from butlers.jobs.home import HASourceUnmeasurableError, _require_ha_source_healthy
 
 # Dynamically load models module from the same directory
 _models_path = Path(__file__).parent / "models.py"
@@ -76,6 +77,9 @@ _ENERGY_UNAVAILABLE_DETAIL = (
     "Energy statistics unavailable: discovered sensors do not provide "
     "finite cumulative-energy change data"
 )
+_HA_SOURCE_UNAVAILABLE_DETAIL = (
+    "Home Assistant is unavailable; current snapshot state cannot be confirmed"
+)
 _ENERGY_DATA_STATUS_HEADER = "X-Butlers-Energy-Data-Status"
 _ENERGY_OMITTED_SENSORS_HEADER = "X-Butlers-Omitted-Sensors"
 
@@ -99,6 +103,25 @@ def _pool(db: DatabaseManager):
         )
 
 
+async def _ha_source_available(pool) -> bool:
+    """Return whether ``ha_entity_snapshot`` reads can currently be trusted.
+
+    Reuses the home job guard (``_require_ha_source_healthy``,
+    bu-8cdl1.12 slice 1) but degrades to a boolean instead of raising: unlike
+    a scheduled job, a dashboard read still returns its (possibly stale)
+    snapshot rows so the page has something to show, tagged with this flag so
+    the frontend can render a degraded-source indicator per the fleet-wide
+    "never render an unreachable source as a truthful empty/healthy result"
+    convention (docs/api_and_protocols/response-conventions.md) rather than
+    silently treating an HA outage as "no devices, no alerts".
+    """
+    try:
+        await _require_ha_source_healthy(pool)
+    except HASourceUnmeasurableError:
+        return False
+    return True
+
+
 # ---------------------------------------------------------------------------
 # GET /api/home/entities — list entities with optional domain/area filters
 # ---------------------------------------------------------------------------
@@ -118,6 +141,7 @@ async def list_entities(
     and area (derived from ``attributes->>'area_id'``).
     """
     pool = _pool(db)
+    ha_available = await _ha_source_available(pool)
 
     conditions: list[str] = []
     args: list[object] = []
@@ -161,7 +185,9 @@ async def list_entities(
 
     return PaginatedResponse[EntitySummaryResponse](
         data=data,
-        meta=PaginationMeta(total=total, offset=offset, limit=limit),
+        meta=PaginationMeta(
+            total=total, offset=offset, limit=limit, ha_source_available=ha_available
+        ),
     )
 
 
@@ -180,6 +206,7 @@ async def get_entity(
     Returns 404 if the entity is not in the snapshot cache.
     """
     pool = _pool(db)
+    ha_available = await _ha_source_available(pool)
 
     row = await pool.fetchrow(
         "SELECT entity_id, state, attributes, last_updated, captured_at"
@@ -189,6 +216,8 @@ async def get_entity(
     )
 
     if row is None:
+        if not ha_available:
+            raise HTTPException(status_code=503, detail=_HA_SOURCE_UNAVAILABLE_DETAIL)
         raise HTTPException(status_code=404, detail=f"Entity not found: {entity_id}")
 
     return EntityStateResponse(
@@ -197,6 +226,7 @@ async def get_entity(
         attributes=dict(row["attributes"] or {}),
         last_updated=str(row["last_updated"]) if row["last_updated"] else None,
         captured_at=str(row["captured_at"]),
+        ha_source_available=ha_available,
     )
 
 
@@ -215,6 +245,7 @@ async def list_areas(
     Only entities with a non-null ``area_id`` are included.
     """
     pool = _pool(db)
+    ha_available = await _ha_source_available(pool)
 
     rows = await pool.fetch(
         "SELECT attributes->>'area_id' AS area_id, count(*) AS entity_count"
@@ -224,10 +255,14 @@ async def list_areas(
         " ORDER BY attributes->>'area_id'",
     )
 
+    if not rows and not ha_available:
+        raise HTTPException(status_code=503, detail=_HA_SOURCE_UNAVAILABLE_DETAIL)
+
     return [
         AreaResponse(
             area_id=r["area_id"],
             entity_count=int(r["entity_count"]),
+            ha_source_available=ha_available,
         )
         for r in rows
     ]
@@ -341,6 +376,7 @@ async def get_snapshot_status(
     ``captured_at`` timestamps in the snapshot cache.
     """
     pool = _pool(db)
+    ha_available = await _ha_source_available(pool)
 
     total: int = await pool.fetchval("SELECT count(*) FROM ha_entity_snapshot") or 0
 
@@ -366,6 +402,7 @@ async def get_snapshot_status(
         domains=domains,
         oldest_captured_at=oldest,
         newest_captured_at=newest,
+        ha_source_available=ha_available,
     )
 
 
@@ -396,6 +433,7 @@ async def list_devices(
     Uses page-based pagination.
     """
     pool = _pool(db)
+    ha_available = await _ha_source_available(pool)
 
     conditions: list[str] = []
     args: list[object] = []
@@ -467,6 +505,7 @@ async def list_devices(
         page=page,
         page_size=page_size,
         total_count=total_count,
+        ha_source_available=ha_available,
     )
     return DeviceInventoryResponse(data=data, meta=meta)
 
@@ -575,6 +614,9 @@ async def get_energy(
                 status_code=422,
                 detail="Invalid 'end' datetime format. Expected ISO 8601.",
             )
+
+    if not await _ha_source_available(pool):
+        raise HTTPException(status_code=503, detail=_HA_SOURCE_UNAVAILABLE_DETAIL)
 
     ha_url, ha_token = await _get_ha_credentials(pool)
     if not ha_url or not ha_token:
@@ -690,6 +732,9 @@ async def get_energy_top_consumers(
                 status_code=422,
                 detail="Invalid ISO 8601 datetime for 'end'",
             ) from exc
+
+    if not await _ha_source_available(pool):
+        raise HTTPException(status_code=503, detail=_HA_SOURCE_UNAVAILABLE_DETAIL)
 
     ha_url, ha_token = await _get_ha_credentials(pool)
     if not ha_url or not ha_token:

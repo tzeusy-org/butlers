@@ -56,6 +56,7 @@ The `public.dashboard_messages` table SHALL store individual messages within a c
   - `tool_calls` (JSONB, nullable) — array of tool calls made during response; NULL for user messages
   - `error` (TEXT, nullable) — error message if the response failed; NULL on success and for user messages
   - `request_id` (UUID, nullable) — the Switchboard request_id for lineage; NULL for user messages
+  - `sources` (JSONB, nullable) — array of source strings named by an answer-lane `conversation_reply` call (see the Conversation Reply Channel requirement); NULL for user messages and for any assistant reply that did not pass `sources`
 
 #### Scenario: Message table indexes
 
@@ -249,6 +250,39 @@ The dashboard API SHALL search across conversation history for a butler.
 - **WHEN** the `q` parameter is empty or missing
 - **THEN** a 400 response with `code: "VALIDATION_ERROR"` is returned
 
+### Requirement: Message-Level Search
+
+The dashboard API SHALL provide owner-scoped full-text search across every butler's dashboard messages, distinct from the per-butler conversation search above: one row per matching message (not one per conversation), ranked by text relevance, and not restricted to a single butler unless the caller filters to one. This backs both `GET /api/conversations/messages/search` and the always-on `conversation_recall` MCP tool (any butler can recall a turn the owner had with a different butler).
+
+#### Scenario: Search messages across every butler
+
+- **WHEN** `GET /api/conversations/messages/search?q=keyword&limit=20` is called
+- **THEN** messages matching `keyword` across every butler's conversations are returned, ordered by text relevance (`ts_rank`) then recency
+- **AND** each result includes `message_id`, `conversation_id`, `role`, `created_at`, `butler_name`, `session_id`, a `snippet` excerpt, `highlight_ranges` (`[start, end)` offsets into `snippet` for each matched term), and a `deep_link` navigation path
+- **AND** the response follows cursor pagination (`data`/`meta.next_cursor`/`meta.has_more`, no `total`/`offset`) per the dashboard API response conventions
+
+#### Scenario: Cursor stable across a concurrent insert
+
+- **WHEN** a new matching message is inserted after a page has been fetched but before the next page is requested with that page's `next_cursor`
+- **THEN** the next page is neither missing nor duplicating any row from the already-returned page
+
+#### Scenario: Optional filters
+
+- **WHEN** `channel`, `butler`, `from`, or `to` query parameters are supplied
+- **THEN** results are restricted to that source channel, that butler's conversations, and/or that `created_at` time range respectively
+
+#### Scenario: Empty or overlong query
+
+- **WHEN** `q` is empty/blank, or exceeds 512 characters
+- **THEN** an empty/blank `q` returns a `422` (missing required parameter); a `q` over 512 characters returns a `422` with a validation error — neither case infers or fabricates a result
+
+#### Scenario: conversation_recall MCP tool
+
+- **WHEN** any butler calls the always-on `conversation_recall(query, since, until, limit, channel, butler)` tool
+- **THEN** it returns ranked excerpts backed by the same index and search primitive as the router endpoint above, scoped to the owner (not to the calling butler)
+- **AND** a blank `query` or a query with no matches returns `[]` — the tool never infers or fabricates a recollection
+- **AND** the companion `conversation_thread_read(conversation_id, around_message_id)` tool returns a window of messages around a recalled hit for context
+
 ### Requirement: SSE Response Streaming
 
 Assistant responses SHALL be streamed to the dashboard via Server-Sent Events on the conversation creation and message continuation endpoints. The reply text and attribution MUST come from the routed butler's `conversation_reply` call (see the Conversation Reply Channel requirement), not from the raw completion of its spawned session.
@@ -258,8 +292,8 @@ Assistant responses SHALL be streamed to the dashboard via Server-Sent Events on
 - **WHEN** `POST /api/butlers/{name}/conversations` is called
 - **THEN** the response is a `StreamingResponse` with `media_type: "text/event-stream"`
 - **AND** the first event is `event: conversation_created` with `data: {"conversation_id": "...", "title": "..."}`
-- **AND** an `event: token` with `data: {"content": "..."}` carries the full `conversation_reply` message text once it arrives (not incremental generation — token-level streaming is out of scope)
-- **AND** a final `event: message_complete` with `data: {"message_id": "...", "model_name": null, "input_tokens": null, "output_tokens": null, "duration_ms": null, "tool_calls": []}` is sent — attribution fields are `null` because the reply is persisted mid-session, before the routed session's own accounting (tokens/duration/model) is known
+- **AND** one or more `event: token` events with `data: {"content": "..."}` carry the `conversation_reply` message text — a single event carrying the full text when the routed runtime cannot stream incrementally (every runtime adapter today), or several events whose concatenated `content` fields are byte-for-byte identical to the persisted reply row's content when a streaming-capable producer publishes incremental deltas on the turn's chat-stream channel (see the Real-Time Processing Phase Events requirement's Trust boundary)
+- **AND** a final `event: message_complete` with `data: {"message_id": "...", "model_name": null, "input_tokens": null, "output_tokens": null, "duration_ms": null, "tool_calls": [], "sources": []}` is sent — attribution fields are `null` because the reply is persisted mid-session, before the routed session's own accounting (tokens/duration/model) is known; `sources` is the list passed to `conversation_reply` (or `[]` if omitted)
 - **AND** an `event: done` is sent to signal the stream is finished
 
 #### Scenario: SSE stream for follow-up message
@@ -313,6 +347,30 @@ Assistant responses SHALL be streamed to the dashboard via Server-Sent Events on
 - **WHEN** the butler session is processing but no tokens have been emitted for 15 seconds
 - **THEN** a `: keepalive` SSE comment is sent to prevent connection timeout
 
+### Requirement: Real-Time Processing Phase Events
+
+The conversation streaming endpoints SHALL emit `event: phase` with `data: {"phase": "...", "target"?: "...", "tool"?: "..."}` whenever the API can truthfully observe a real-time processing transition for the current turn. A phase is never fabricated or guessed to fill a gap in the sequence — only a phase the backend can actually observe is emitted, and any phase a given turn's runtime cannot observe (e.g. `thinking`, which requires a streaming-capable producer) is simply not emitted for that turn.
+
+Trust boundary: `phase` and `token` events are display-only, sourced from the routed butler's live processing where observable. The persisted `conversation_reply` row (see the Conversation Reply Channel requirement) remains the sole source of truth — `message_complete` is always emitted from that row, and a turn with no streaming producer at all still completes normally via a single `token` event followed by `message_complete`, exactly as before this requirement existed.
+
+#### Scenario: Classifying and routed phases
+
+- **WHEN** a Switchboard-addressed (widget) conversation turn begins
+- **THEN** an `event: phase` with `data: {"phase": "classifying"}` is sent before the classification request is submitted
+- **AND** once classification resolves, an `event: phase` with `data: {"phase": "routed", "target": "<butler_name>"}` is sent naming the butler now handling the turn
+- **WHEN** a pinned per-butler conversation turn begins (no classification occurs)
+- **THEN** an `event: phase` with `data: {"phase": "routed", "target": "<butler_name>"}` is sent immediately, naming the pinned butler
+
+#### Scenario: Starting-session phase
+
+- **WHEN** the API has registered the turn as cancellable and is about to begin polling for the routed butler's `conversation_reply`
+- **THEN** an `event: phase` with `data: {"phase": "starting_session", "target": "<routed_butler>"}` is sent
+
+#### Scenario: Writing phase precedes streamed content
+
+- **WHEN** the first `event: token` of a turn (whether a single full-text event or the first of several incremental deltas) is about to be sent
+- **THEN** an `event: phase` with `data: {"phase": "writing"}` is sent immediately before it, at most once per turn
+
 ### Requirement: Dashboard Ingestion Envelope Construction
 
 Dashboard conversations SHALL construct `ingest.v1` envelopes that flow through the standard Switchboard ingestion pipeline, submitted to the Switchboard's `ingest` MCP tool. RFC 0003 §"ingest.v1 Envelope Format" defines `dashboard` / `internal` as direct owner-dashboard ingress: the dashboard API, rather than a connector startup probe, SHALL assign `dashboard:web:{conversation_id}` as the endpoint identity.
@@ -360,9 +418,19 @@ Dashboard conversations SHALL construct `ingest.v1` envelopes that flow through 
 
 #### Scenario: Optional page context on dashboard messages
 
-- **WHEN** a dashboard message is submitted with a `page_context` object (`route`, `query_params`, optional `entity_ref`) on the request body
-- **THEN** the envelope's `payload.raw.page_context` SHALL carry that object unchanged, grounding the statement for the routed butler
+- **WHEN** a dashboard message is submitted with a `page_context` object (`route`, `query_params`, optional `entity_ref`, optional `visible_resource` {`kind`, `id`, `filters`, `window`}, optional `visible_summary`) on the request body
+- **THEN** the API SHALL strip any query-param key containing a secret-ish marker (`token`, `key`, `secret`, `password`, `authorization`) before persisting or forwarding it, regardless of what the client sent
+- **AND** the API SHALL reject a `visible_resource.kind` outside the closed registry vocabulary
+- **AND** a payload exceeding the size budget SHALL be truncated (dropping `visible_resource.filters`, then `query_params`, then trimming `visible_summary`, in that order) with `truncated=true` set, never silently dropped or rejected outright
+- **AND** the persisted user message row SHALL store the (possibly redacted/truncated) `page_context` plus a `captured_at` timestamp
+- **AND** the envelope's `payload.raw.page_context` SHALL carry that object unchanged, grounding the statement for the routed butler
 - **AND** when no `page_context` is provided, `payload.raw` SHALL NOT contain a `page_context` key
+
+#### Scenario: A retry reuses the originally-captured page context
+
+- **WHEN** a dashboard message is retried with the same client-generated `message_id` (`message_create_idempotent`'s conflict path)
+- **THEN** the API SHALL forward the `page_context` stored on the original write, not a `page_context` on the retry request body, into the ingest envelope
+- **AND** no new capture SHALL occur for the retried message
 
 ### Requirement: Conversation Summary Queries
 
@@ -385,7 +453,8 @@ Conversation endpoint API response models SHALL provide typed response shapes.
 #### Scenario: ConversationMessage model
 
 - **WHEN** a message response is serialized
-- **THEN** each entry includes: `id`, `conversation_id`, `role`, `content`, `created_at`, `session_id`, `model_name`, `input_tokens`, `output_tokens`, `duration_ms`, `tool_calls`, `error`, `request_id`
+- **THEN** each entry includes: `id`, `conversation_id`, `role`, `content`, `created_at`, `session_id`, `model_name`, `input_tokens`, `output_tokens`, `duration_ms`, `tool_calls`, `error`, `request_id`, `page_context`, `captured_at`
+- **AND** `page_context`/`captured_at` are both `null` for assistant-role rows and for any user row sent without a page context
 
 #### Scenario: ConversationSearchResult model
 
@@ -395,11 +464,11 @@ Conversation endpoint API response models SHALL provide typed response shapes.
 ### Requirement: Conversation Reply Channel
 
 A routed butler session SHALL confirm its interpretation of a dashboard
-statement (or acknowledge a filed bug report) by calling the
-`conversation_reply` MCP tool, which persists an assistant-role message
-directly into the conversation it was routed from. The SSE poller MUST watch
-for this message rather than the routed session's raw completion (see the
-SSE Response Streaming requirement).
+statement (or acknowledge a filed bug report, or answer a question) by
+calling the `conversation_reply` MCP tool, which persists an assistant-role
+message directly into the conversation it was routed from. The SSE poller
+MUST watch for this message rather than the routed session's raw completion
+(see the SSE Response Streaming requirement).
 
 #### Scenario: conversation_reply persists the confirm-loop message
 
@@ -418,3 +487,52 @@ SSE Response Streaming requirement).
 
 - **WHEN** any butler's MCP server registers its core tools
 - **THEN** `conversation_reply` SHALL be registered regardless of `core_groups` configuration — any butler can be the classification or pinned-target destination of a dashboard conversation, so the tool cannot be scoped to a subset of butlers
+
+#### Scenario: conversation_reply accepts an optional sources list for an answer-lane reply
+
+- **WHEN** a routed butler session calls `conversation_reply(conversation_id, message, sources=[...])` with a non-empty list of strings
+- **THEN** the inserted message row's `sources` column SHALL persist the given list
+- **AND** the tool's success response SHALL be unaffected in shape otherwise
+
+#### Scenario: conversation_reply is unaffected when sources is omitted
+
+- **WHEN** `conversation_reply` is called without a `sources` argument (the existing confirm-loop, action-proposal, and bug-report call sites)
+- **THEN** the inserted message row's `sources` column SHALL be NULL
+- **AND** behavior SHALL be identical to before `sources` existed
+
+#### Scenario: conversation_reply rejects empty or blank source names
+
+- **WHEN** `conversation_reply` is called with `sources=[]` or with any blank source name
+- **THEN** no message row is inserted
+- **AND** the tool returns `{"status": "error", "error": "..."}` guiding the caller to either name what it consulted or omit `sources` entirely and give an honest decline instead of fabricating a citation
+
+### Requirement: Dashboard Message Intent Lanes
+
+A dashboard chat-widget turn SHALL be classified into exactly one of STATEMENT, ACTION REQUEST, QUESTION, or ambiguous before it produces any effect. Consent MUST precede effect for an ACTION REQUEST (`about/heart-and-soul/security.md`, "Approval gates must never be bypassable by the LLM session"): a dashboard turn that asks the routed butler to DO something with a real-world or hard-to-reverse effect SHALL never apply a write before the owner has approved it, and SHALL never be reported to the owner as already done. A QUESTION turn SHALL never apply a write and SHALL never be reported as an action taken.
+
+#### Scenario: Classifier offers a distinct ACTION lane alongside statement and bug lanes
+
+- **WHEN** the Switchboard's dashboard classification prompt is built for a chat-widget message
+- **THEN** it SHALL present four lanes: LANE A (data statement/correction, routed via `route_to_butler`), LANE B (bug/system report, filed via `file_bug_report`), LANE C (action request, also routed via `route_to_butler` — the classifier's job is only to pick the target butler; the propose-don't-apply contract is enforced by the routed envelope's injected instructions, not by the classifier itself), and LANE D (question, answered via `answer_question` or dead-lettered via `cannot_answer`)
+
+#### Scenario: The routed envelope carries distinct STATEMENT and ACTION-REQUEST instructions
+
+- **WHEN** `route_to_butler` injects the deterministic dashboard confirm-loop block into a routed envelope's `input.context`
+- **THEN** the block SHALL contain a STATEMENT instruction set (interpret, apply the write, then call `conversation_reply` to confirm) and a distinct ACTION-REQUEST instruction set
+- **AND** the ACTION-REQUEST set SHALL instruct the routed session to route the write through its normal approval-gated tool (never an ungated path) so the gate parks it before anything happens, and to call `conversation_reply` describing the action as proposed and awaiting approval — never as already completed
+- **AND** the block SHALL state the failure mode explicitly: applying an action's write before the gate parks it, or claiming completion for a pending action, is never acceptable
+- **WHEN** `answer_question(scope="domain")` injects the deterministic dashboard answer block into a routed envelope's `input.context` instead of the confirm-loop block
+- **THEN** the block SHALL instruct the routed session to answer strictly read-only, from its own tools only, and to call `conversation_reply` citing what it consulted via `sources` when grounded, or to give an honest decline (never fabricate a citation) when it cannot ground the answer
+
+#### Scenario: A parked action request produces zero domain writes and no completion claim
+
+- **WHEN** a routed butler session follows the ACTION-REQUEST instructions for a gated write tool whose target contact is unresolvable or requires review
+- **THEN** exactly one `pending_actions` row is created with `status = 'pending'`
+- **AND** the underlying domain tool function is not invoked
+- **AND** the `conversation_reply` text describes the action as proposed/queued, not completed
+
+#### Scenario: An ambiguous dashboard turn yields a clarifying reply, never a best-guess route
+
+- **WHEN** the dashboard classification session cannot confidently place a message into LANE A, B, C, or D
+- **THEN** it SHALL call neither `route_to_butler` nor `file_bug_report` rather than guessing a target butler, and SHALL likewise not call `answer_question` or `cannot_answer` while the turn remains ambiguous
+- **AND** the pipeline's existing dashboard dead-letter path (see the Durable Dashboard Turn Control requirement's failure handling) SHALL capture the turn and reply in-thread asking the owner to clarify, with no route to any domain butler

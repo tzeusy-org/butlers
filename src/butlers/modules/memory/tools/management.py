@@ -158,29 +158,40 @@ async def memory_stats(
     if scope is not None:
         scope_filter_rules = " AND scope IN ('global', $1)"
 
+    # Retired rules (retired_at, bu-6t8ix.3) are a deliberate decommission —
+    # distinct from forgotten — and are excluded from every maturity bucket
+    # the same way, then reported separately below.
     rules_candidate = await pool.fetchval(
         "SELECT COUNT(*) FROM rules WHERE maturity = 'candidate'"
-        " AND (metadata->>'forgotten')::boolean IS NOT TRUE" + scope_filter_rules,
+        " AND (metadata->>'forgotten')::boolean IS NOT TRUE"
+        " AND retired_at IS NULL" + scope_filter_rules,
         *scope_params,
     )
     rules_established = await pool.fetchval(
         "SELECT COUNT(*) FROM rules WHERE maturity = 'established'"
-        " AND (metadata->>'forgotten')::boolean IS NOT TRUE" + scope_filter_rules,
+        " AND (metadata->>'forgotten')::boolean IS NOT TRUE"
+        " AND retired_at IS NULL" + scope_filter_rules,
         *scope_params,
     )
     rules_proven = await pool.fetchval(
         "SELECT COUNT(*) FROM rules WHERE maturity = 'proven'"
-        " AND (metadata->>'forgotten')::boolean IS NOT TRUE" + scope_filter_rules,
+        " AND (metadata->>'forgotten')::boolean IS NOT TRUE"
+        " AND retired_at IS NULL" + scope_filter_rules,
         *scope_params,
     )
     rules_anti_pattern = await pool.fetchval(
         "SELECT COUNT(*) FROM rules WHERE maturity = 'anti_pattern'"
-        " AND (metadata->>'forgotten')::boolean IS NOT TRUE" + scope_filter_rules,
+        " AND (metadata->>'forgotten')::boolean IS NOT TRUE"
+        " AND retired_at IS NULL" + scope_filter_rules,
         *scope_params,
     )
     rules_forgotten = await pool.fetchval(
         "SELECT COUNT(*) FROM rules WHERE (metadata->>'forgotten')::boolean IS TRUE"
         + scope_filter_rules,
+        *scope_params,
+    )
+    rules_retired = await pool.fetchval(
+        "SELECT COUNT(*) FROM rules WHERE retired_at IS NOT NULL" + scope_filter_rules,
         *scope_params,
     )
 
@@ -202,6 +213,7 @@ async def memory_stats(
             "proven": rules_proven,
             "anti_pattern": rules_anti_pattern,
             "forgotten": rules_forgotten,
+            "retired": rules_retired,
         },
     }
 

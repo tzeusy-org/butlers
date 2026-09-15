@@ -2,9 +2,8 @@
  * Tests for connector statistics API client functions.
  *
  * Verifies:
- * - Correct /switchboard/* path prefixes (no direct /api/connectors/* calls)
- * - Backend-to-frontend type transformations (liveness derivation, stats
- *   summary aggregation)
+ * - Canonical /ingestion/connectors path prefixes
+ * - Backend-to-frontend detail and stats transformations
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -36,9 +35,10 @@ function mockResponse(data: unknown, status = 200) {
 // ---------------------------------------------------------------------------
 
 import {
-  listConnectorSummaries,
   getConnectorDetail,
+  getConnectorSummaries,
   getConnectorStats,
+  updateConnectorSettings,
 } from "./client.ts";
 
 // ---------------------------------------------------------------------------
@@ -46,19 +46,15 @@ import {
 // ---------------------------------------------------------------------------
 
 describe("connector API path prefixes", () => {
-  it("listConnectorSummaries calls /api/switchboard/connectors", async () => {
-    mockResponse({ data: [] });
-    await listConnectorSummaries();
-    expect(mockFetch).toHaveBeenCalledWith(
-      expect.stringContaining("/api/switchboard/connectors"),
-      expect.anything(),
-    );
+  it("getConnectorSummaries calls /api/ingestion/connectors/summaries", async () => {
+    mockResponse({ data: { connectors: [] } });
+    await getConnectorSummaries();
     const url: string = mockFetch.mock.calls[0][0];
-    // Must not be the bare /api/connectors path
-    expect(url).not.toMatch(/\/api\/connectors(?!.*switchboard)/);
+    expect(url).toContain("/api/ingestion/connectors/summaries");
+    expect(url).not.toContain("/api/switchboard/connectors");
   });
 
-  it("getConnectorDetail calls /api/switchboard/connectors/:type/:id", async () => {
+  it("getConnectorDetail calls /api/ingestion/connectors/:type/:id", async () => {
     mockResponse({ data: {
       connector_type: "gmail",
       endpoint_identity: "user@example.com",
@@ -80,82 +76,26 @@ describe("connector API path prefixes", () => {
     }});
     await getConnectorDetail("gmail", "user@example.com");
     const url: string = mockFetch.mock.calls[0][0];
-    expect(url).toContain("/api/switchboard/connectors/gmail/user%40example.com");
+    expect(url).toContain("/api/ingestion/connectors/gmail/user%40example.com");
+    expect(url).not.toContain("/api/switchboard/connectors");
   });
 
-  it("getConnectorStats calls /api/switchboard/connectors/:type/:id/stats", async () => {
+  it("getConnectorStats calls /api/ingestion/connectors/:type/:id/stats", async () => {
     mockResponse({ data: [] });
     await getConnectorStats("gmail", "user@example.com", "24h");
     const url: string = mockFetch.mock.calls[0][0];
-    expect(url).toContain("/api/switchboard/connectors/gmail/user%40example.com/stats");
+    expect(url).toContain("/api/ingestion/connectors/gmail/user%40example.com/stats");
+    expect(url).not.toContain("/api/switchboard/connectors");
   });
 
-});
-
-// ---------------------------------------------------------------------------
-// Liveness derivation
-// ---------------------------------------------------------------------------
-
-describe("listConnectorSummaries liveness derivation", () => {
-  function makeEntry(overrides: Partial<{ last_heartbeat_at: string | null; state: string }> = {}) {
-    return {
-      connector_type: "gmail",
-      endpoint_identity: "u@example.com",
-      instance_id: null,
-      version: "1.0",
-      state: "healthy",
-      error_message: null,
-      uptime_s: null,
-      last_heartbeat_at: null,
-      first_seen_at: "2026-01-01T00:00:00Z",
-      registered_via: "self",
-      counter_messages_ingested: 0,
-      counter_messages_failed: 0,
-      counter_source_api_calls: 0,
-      counter_checkpoint_saves: 0,
-      counter_dedupe_accepted: 0,
-      checkpoint_cursor: null,
-      checkpoint_updated_at: null,
-      ...overrides,
-    };
-  }
-
-  it("derives liveness=online when heartbeat is within 5 minutes", async () => {
-    const recent = new Date(Date.now() - 2 * 60 * 1000).toISOString(); // 2 mins ago
-    mockResponse({ data: [makeEntry({ last_heartbeat_at: recent })] });
-    const resp = await listConnectorSummaries();
-    expect(resp.data[0].liveness).toBe("online");
-  });
-
-  it("derives liveness=stale when heartbeat is 6-15 minutes ago", async () => {
-    const stale = new Date(Date.now() - 10 * 60 * 1000).toISOString(); // 10 mins ago
-    mockResponse({ data: [makeEntry({ last_heartbeat_at: stale })] });
-    const resp = await listConnectorSummaries();
-    expect(resp.data[0].liveness).toBe("stale");
-  });
-
-  it("derives liveness=offline when heartbeat is 16+ minutes ago", async () => {
-    // Regression guard for bu-27dxl.6.6: this window previously used a
-    // 30-minute cutoff here (disagreeing with the backend's 15-minute one),
-    // so a 20-minute-old heartbeat used to render "stale" on this card while
-    // every backend-computed liveness reader already called it "offline".
-    const old = new Date(Date.now() - 20 * 60 * 1000).toISOString(); // 20 mins ago
-    mockResponse({ data: [makeEntry({ last_heartbeat_at: old })] });
-    const resp = await listConnectorSummaries();
-    expect(resp.data[0].liveness).toBe("offline");
-  });
-
-  it("derives liveness=offline when no heartbeat", async () => {
-    mockResponse({ data: [makeEntry({ last_heartbeat_at: null })] });
-    const resp = await listConnectorSummaries();
-    expect(resp.data[0].liveness).toBe("offline");
-  });
-
-  it("derives liveness=offline for a future-dated heartbeat (clock skew)", async () => {
-    const future = new Date(Date.now() + 60 * 60 * 1000).toISOString(); // 1 hour ahead
-    mockResponse({ data: [makeEntry({ last_heartbeat_at: future })] });
-    const resp = await listConnectorSummaries();
-    expect(resp.data[0].liveness).toBe("offline");
+  it("updateConnectorSettings calls the canonical settings route", async () => {
+    mockResponse({ data: {} });
+    await updateConnectorSettings("gmail", "user@example.com", { flush_interval_s: 60 });
+    const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/ingestion/connectors/gmail/user%40example.com/settings");
+    expect(url).not.toContain("/api/switchboard/connectors");
+    expect(init.method).toBe("PATCH");
+    expect(init.body).toBe(JSON.stringify({ settings: { flush_interval_s: 60 } }));
   });
 });
 
@@ -341,54 +281,5 @@ describe("getConnectorDetail counters and checkpoint mapping", () => {
     });
     const resp = await getConnectorDetail("gmail", "u@x.com");
     expect(resp.data.checkpoint).toBeNull();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Bug 1 fix: _toConnectorSummary maps counter_messages_ingested to today
-// ---------------------------------------------------------------------------
-
-describe("listConnectorSummaries today field mapping (Bug 1)", () => {
-  function makeEntry(overrides: Partial<{ today_messages_ingested: number; today_messages_failed: number }> = {}) {
-    return {
-      connector_type: "gmail",
-      endpoint_identity: "u@example.com",
-      instance_id: null,
-      version: "1.0",
-      state: "healthy",
-      error_message: null,
-      uptime_s: null,
-      last_heartbeat_at: null,
-      first_seen_at: "2026-01-01T00:00:00Z",
-      registered_via: "self",
-      counter_messages_ingested: 0,
-      counter_messages_failed: 0,
-      counter_source_api_calls: 0,
-      counter_checkpoint_saves: 0,
-      counter_dedupe_accepted: 0,
-      today_messages_ingested: 0,
-      today_messages_failed: 0,
-      checkpoint_cursor: null,
-      checkpoint_updated_at: null,
-      ...overrides,
-    };
-  }
-
-  it("maps today_messages_ingested to today.messages_ingested (not null)", async () => {
-    mockResponse({ data: [makeEntry({ today_messages_ingested: 42, today_messages_failed: 3 })] });
-    const resp = await listConnectorSummaries();
-    const connector = resp.data[0];
-    expect(connector.today).not.toBeNull();
-    expect(connector.today!.messages_ingested).toBe(42);
-    expect(connector.today!.messages_failed).toBe(3);
-  });
-
-  it("maps zero today counters to today with zeroes (not null)", async () => {
-    mockResponse({ data: [makeEntry({ today_messages_ingested: 0, today_messages_failed: 0 })] });
-    const resp = await listConnectorSummaries();
-    const connector = resp.data[0];
-    expect(connector.today).not.toBeNull();
-    expect(connector.today!.messages_ingested).toBe(0);
-    expect(connector.today!.messages_failed).toBe(0);
   });
 });

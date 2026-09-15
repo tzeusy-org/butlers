@@ -369,7 +369,7 @@ async def upcoming_bills(
         ``autopay``, ``predicted``, ``suppressed_placeholders``, and ``totals``.
     """
     # Local date for comparing against plain-date due_date columns.
-    today = date.today()
+    today = datetime.now(UTC).date()
     horizon = today + timedelta(days=days_ahead)
 
     if include_overdue:
@@ -504,7 +504,7 @@ def compose_upcoming_bills_digest(
         Reference date for the header; defaults to today.
     """
     if today is None:
-        today = date.today()
+        today = datetime.now(UTC).date()
 
     auto_settled = sweep.get("auto_settled", [])
     candidates = sweep.get("candidates", [])

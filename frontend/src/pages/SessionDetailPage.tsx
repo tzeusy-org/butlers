@@ -1,9 +1,12 @@
+import { useEffect } from "react";
 import { Link, useParams } from "react-router";
 
 import { Page } from "@/components/ui/page";
+import { chatMessageDeepLink } from "@/components/chat/message-id.ts";
 import { StatusBadge } from "@/components/sessions/StatusBadge";
 import { SessionDossier } from "@/components/sessions/SessionDossier";
 import { useGlobalSessionDetail } from "@/hooks/use-sessions";
+import { usePageSubject } from "@/lib/page-context.tsx";
 
 // ---------------------------------------------------------------------------
 // SessionDetailPage — the one session dossier on the trace spine
@@ -24,6 +27,18 @@ export default function SessionDetailPage() {
   const { id = "" } = useParams<{ id: string }>();
   const { data: response, isLoading, isError, error } = useGlobalSessionDetail(id || null);
   const session = response?.data;
+
+  // Page-context enrichment (bu-0ynlk.4): attaches the session id currently
+  // in view so a chat message sent from this page (e.g. "why did this fail")
+  // arrives grounded without the owner having to repeat the id.
+  const setPageSubject = usePageSubject().set;
+  useEffect(() => {
+    if (!id) return;
+    setPageSubject({
+      visible_resource: { kind: "session", id },
+      visible_summary: `Session ${id.slice(0, 8)}`,
+    });
+  }, [id, setPageSubject]);
 
   if (!id) {
     return (
@@ -49,10 +64,28 @@ export default function SessionDetailPage() {
         <>
           <p className="text-xs font-mono text-muted-foreground">{session.id}</p>
           <SessionDossier session={session} />
-          <div>
+          <div className="flex items-center gap-4">
             <Link to="/sessions" className="text-xs text-muted-foreground hover:underline">
               &larr; Back to sessions
             </Link>
+            {/* Reverse of MessageThread.tsx's forward "View session" link
+                (bu-0ynlk.5) -- only rendered once conversation_reply has
+                actually stamped a linked message on the session. The
+                conversation route resolves its owning butler cross-butler,
+                so the persisted conversation/message IDs are the only link
+                inputs. Never fabricated: no linked message or incomplete IDs
+                means no affordance. */}
+            {session.linked_message?.conversation_id && session.linked_message.message_id && (
+              <Link
+                to={chatMessageDeepLink(
+                  session.linked_message.conversation_id,
+                  session.linked_message.message_id,
+                )}
+                className="text-xs text-muted-foreground hover:underline"
+              >
+                Asked in chat &rarr;
+              </Link>
+            )}
           </div>
         </>
       )}

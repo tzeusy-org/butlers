@@ -574,6 +574,83 @@ async def test_opencode_go_health_command_preserves_provider_qualified_model(
     assert "create_subprocess_exec" not in getsource(_run_provider_test)
 
 
+async def test_opencode_go_health_command_accepts_short_form_model_flag(tmp_path: Path):
+    """bu-8xdhf: the model lookup must not assume ``--model`` is the only spelling.
+
+    registry.py's opencode-openai entry already uses ``-m`` as a live short
+    form on this CLI, and registry.py's opencode-go maintenance note warns the
+    test_command shape may be repinned — the lookup must survive that.
+    """
+    from butlers.api.routers.cli_auth import _run_provider_test
+
+    auth_path = tmp_path / ".local" / "share" / "opencode" / "auth.json"
+    auth_path.parent.mkdir(parents=True)
+    auth_path.write_text('{"opencode-go":{"type":"api","key":"test-only"}}', encoding="utf-8")
+    os.chmod(auth_path, 0o600)
+    canonical_model = "opencode-go/minimax-m3"
+    provider = replace(
+        PROVIDERS["opencode-go"],
+        token_path=auth_path,
+        test_command=[
+            "opencode",
+            "run",
+            "-m",
+            canonical_model,
+            "respond with only the word ok",
+        ],
+    )
+    commands: list[tuple[str, ...]] = []
+
+    class _RecordingSandbox:
+        async def run_readonly_command(self, _provider, *, command, authority, timeout_s):
+            commands.append(command)
+            return SimpleNamespace(returncode=0, output=b"ok")
+
+    result = await _run_provider_test(provider, None, sandbox=_RecordingSandbox())
+
+    assert result.success is True
+    command = commands[0]
+    assert command[command.index("-m") + 1] == canonical_model
+
+
+async def test_opencode_go_health_command_reports_shape_mismatch_distinctly(tmp_path: Path):
+    """bu-8xdhf: a reshaped test_command must not read as a credential failure.
+
+    Previously ``test_command.index('--model')`` raised ``ValueError`` when the
+    flag was missing/renamed, which the broad ``except Exception`` turned into
+    the same generic "Test command failed to execute." detail as a real
+    credential failure. The distinct detail here must not claim the
+    credential itself failed.
+    """
+    from butlers.api.routers.cli_auth import _run_provider_test
+
+    auth_path = tmp_path / ".local" / "share" / "opencode" / "auth.json"
+    auth_path.parent.mkdir(parents=True)
+    auth_path.write_text('{"opencode-go":{"type":"api","key":"test-only"}}', encoding="utf-8")
+    os.chmod(auth_path, 0o600)
+    provider = replace(
+        PROVIDERS["opencode-go"],
+        token_path=auth_path,
+        test_command=[
+            "opencode",
+            "run",
+            "--llm",
+            "opencode-go/minimax-m3",
+            "respond with only the word ok",
+        ],
+    )
+
+    class _UnreachableSandbox:
+        async def run_readonly_command(self, _provider, *, command, authority, timeout_s):
+            raise AssertionError("sandbox must not run when the test command shape is unrecognized")
+
+    result = await _run_provider_test(provider, None, sandbox=_UnreachableSandbox())
+
+    assert result.success is False
+    assert "credential" not in result.detail.lower() or "not a credential failure" in result.detail
+    assert "misconfigured" in result.detail.lower()
+
+
 async def test_status_probe_stages_regular_authority_copy_through_shared_sandbox(
     tmp_path: Path,
 ) -> None:

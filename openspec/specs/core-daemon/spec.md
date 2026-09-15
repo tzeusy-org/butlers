@@ -30,7 +30,7 @@ The daemon SHALL read the `type` field from `butler.toml` config and apply type-
 - **THEN** startup proceeds exactly as before this change — no behavioral differences from the pre-staffer codebase
 
 ### Requirement: Core Tool Surface
-Every butler daemon SHALL register core MCP tools based on the `core_groups` allowlist from `runtime_config` (DB) and the butler's type/name. When `core_groups` is NULL, all groups are enabled (backward compat). When set, only tools in the listed groups are registered.
+Every butler daemon registers core MCP tools based on the `core_groups` allowlist from `runtime_config` (DB) and the butler's type/name. The daemon SHALL treat that stored allowlist as a projection, not independent capability authority: Git-owned `[butler.runtime_seed].core_groups` defines the declared surface, and a DB value may narrow it only when `core_groups_narrowing_reason` is non-empty. An unreasoned stale value is reconciled to Git at startup. When the effective `core_groups` is NULL, all groups are enabled (backward compat). When set, only tools in the listed groups are registered.
 
 This requirement **supersedes** the tier-based system (UNIVERSAL/DOMAIN/MESSENGER/SWITCHBOARD constants and the `_tools_to_remove` post-registration pruning) documented in RFC 0002 §Tool Budget Discipline. The tier constants (`UNIVERSAL_CORE_TOOL_NAMES`, `DOMAIN_CORE_TOOL_NAMES`, `MESSENGER_CORE_TOOL_NAMES`) are removed. RFC 0002 §Tool Budget Discipline requires amendment to reflect the `core_groups` mechanism.
 
@@ -55,8 +55,14 @@ Name-gated tools (messenger-only, switchboard-only) are gated by butler name as 
 
 #### Scenario: core_groups filters tool registration
 - **WHEN** a butler daemon starts with `core_groups = ['infra', 'notifications']` in runtime_config
+- **AND** that set is a strict subset of its Git declaration carrying a non-empty narrowing reason
 - **THEN** only tools in the `infra` and `notifications` groups SHALL be registered on the MCP server (plus `route.execute` which is always registered)
 - **AND** tools in other groups (state, scheduling, sessions, media, temporal) SHALL NOT be registered
+
+#### Scenario: Unreasoned runtime row cannot hide a Git capability
+- **WHEN** a butler daemon's runtime_config row omits one or more Git-declared groups and has no narrowing reason
+- **THEN** the Git declaration SHALL become the effective group set before tool registration
+- **AND** the stored row and audit log SHALL be reconciled idempotently
 
 #### Scenario: NULL core_groups enables all tools
 - **WHEN** a butler daemon starts with `core_groups = NULL` in runtime_config
@@ -81,29 +87,38 @@ Name-gated tools (messenger-only, switchboard-only) are gated by butler name as 
 - **THEN** deadline, event_chain, and seasonal_period tools SHALL NOT be registered
 
 ### Requirement: Config loading parses runtime_seed section
-The daemon config loader SHALL parse `[butler.runtime_seed]` from the toml and return a `RuntimeSeedConfig` dataclass. The old `[butler.runtime]` and `[butler.seed_configs]` sections SHALL be rejected with a clear error.
+The daemon config loader SHALL parse `[butler.runtime_seed]` from the toml and return a `RuntimeSeedConfig` dataclass. The old `[butler.runtime]` and `[butler.seed_configs]` sections SHALL NOT be rejected with a clear error; they SHALL be accepted and ignored. The dataclass is operational-only: retired `model`, `runtime_type`, `args`, and `session_timeout_s` keys inside `[butler.runtime_seed]` SHALL be rejected, while the obsolete top-level `[runtime]` section SHALL be rejected with deletion guidance.
 
 Source: RFC 0001 §Startup Phases (phase 1 — config load), Doctrine Rule #5
 Scope: v1-mandatory
 
 #### Scenario: Parse runtime_seed section
 - **WHEN** `load_config()` reads a toml with `[butler.runtime_seed]`
-- **THEN** a `RuntimeSeedConfig` SHALL be returned with fields: core_groups (tuple[str,...] | None), model (str | None), runtime_type (str, default "codex"), args (tuple[str,...], default ()), max_concurrent_sessions (int, default 3), max_queued_sessions (int, default 10), session_timeout_s (int, default 900), liveness_ttl_seconds (int, default 300), route_contract_min (int, default 1), route_contract_max (int, default 1)
+- **THEN** a `RuntimeSeedConfig` SHALL NOT be returned with fields: core_groups (tuple[str,...] | None), model (str | None), runtime_type (str, default "codex"), args (tuple[str,...], default ()), max_concurrent_sessions (int, default 3), max_queued_sessions (int, default 10), session_timeout_s (int, default 900), liveness_ttl_seconds (int, default 300), route_contract_min (int, default 1), route_contract_max (int, default 1)
+- **AND** it SHALL instead contain exactly these fields: `core_groups` (`tuple[str, ...] | None`, default `None`), `catalog_read_sensitivity` (`normal | internal | confidential`, default `normal`), `max_concurrent_sessions` (`int`, default `3`), `max_queued_sessions` (`int`, default `10`), `liveness_ttl_seconds` (`int`, default `300`), `route_contract_min` (`int`, default `1`), and `route_contract_max` (`int`, default `1`)
+- **AND** `model`, `runtime_type`, `args`, and `session_timeout_s` SHALL NOT be dataclass fields and SHALL raise `ConfigError` when supplied inside `[butler.runtime_seed]`
 
 #### Scenario: Reject old [butler.runtime] section
 - **WHEN** `load_config()` reads a toml with `[butler.runtime]`
-- **THEN** a `ConfigError` SHALL be raised with message directing the user to rename to `[butler.runtime_seed]`
+- **THEN** a `ConfigError` SHALL NOT be raised with message directing the user to rename to `[butler.runtime_seed]`; the obsolete nested section SHALL be accepted and ignored
+- **AND** the nested section SHALL NOT alter the returned `RuntimeSeedConfig` or runtime selection
 
 #### Scenario: Reject old [butler.seed_configs] section
 - **WHEN** `load_config()` reads a toml with `[butler.seed_configs]`
-- **THEN** a `ConfigError` SHALL be raised with message directing the user to merge into `[butler.runtime_seed]`
+- **THEN** a `ConfigError` SHALL NOT be raised with message directing the user to merge into `[butler.runtime_seed]`; the obsolete nested section SHALL be accepted and ignored
+- **AND** the nested section SHALL NOT alter the returned `RuntimeSeedConfig`
+
+#### Scenario: Obsolete top-level [runtime] section is rejected
+- **WHEN** `load_config()` reads a toml with a top-level `[runtime]` section
+- **THEN** a `ConfigError` SHALL state that the section is no longer supported and direct the operator to delete it
+- **AND** the error SHALL NOT direct the operator to move runtime selection into `[butler.runtime_seed]`
 
 #### Scenario: Missing runtime_seed section uses defaults
 - **WHEN** `load_config()` reads a toml with no `[butler.runtime_seed]` section
 - **THEN** a `RuntimeSeedConfig` with all default values SHALL be returned (backward compat for minimal tomls)
 
 ### Requirement: Boot sequence seeds and reads runtime config from DB
-The daemon boot sequence SHALL create a `RuntimeConfigAccessor`, seed the DB from toml on first boot, and use the DB-backed config for tool registration and spawner construction. This is RFC 0001 phase 9, after phase 8 module dependency/bootstrap work and before phase 10 TOML schedule synchronization.
+The daemon boot sequence SHALL create a `RuntimeConfigAccessor`, seed the DB from toml on first boot, and use the DB-backed config for tool registration and spawner construction. During that read it SHALL reconcile Git-owned core groups and use the resolved split-authority config. This is RFC 0001 phase 9, after phase 8 module dependency/bootstrap work and before phase 10 TOML schedule synchronization.
 
 Phase: **9 — Resolve runtime config from DB (seed if first boot).**
 Failure mode: Fatal — cannot operate without runtime config.
@@ -118,8 +133,9 @@ Scope: v1-mandatory
 
 #### Scenario: Subsequent boot reads from DB
 - **WHEN** the daemon starts and `runtime_config` table has a row
-- **THEN** the daemon SHALL use the DB values (ignoring toml seed)
-- **AND** log "Using runtime config from DB for {name} (seeded {date}, updated {date})"
+- **THEN** the daemon SHALL use the DB values (ignoring toml seed) for DB-owned operational fields
+- **AND** it SHALL resolve core groups from Git unless the row carries a valid explicit narrowing reason
+- **AND** log "Using runtime config from DB for {name} (seeded {date}, updated {date})" plus the effective core-group source without logging the reason text or other sensitive payloads
 
 #### Scenario: Accessor passed to spawner
 - **WHEN** the daemon constructs the Spawner (phase 12)
@@ -127,7 +143,21 @@ Scope: v1-mandatory
 
 #### Scenario: core_groups read at tool registration time
 - **WHEN** the daemon calls `_register_core_tools()` (phase 13)
-- **THEN** it SHALL read `core_groups` from the effective RuntimeConfig (from accessor), not from the toml seed
+- **THEN** it SHALL read `core_groups` from the effective RuntimeConfig (from accessor), not from the toml seed; the accessor SHALL already have reconciled Git authority or retained a reasoned narrowing
+
+### Requirement: Tool-surface reconciliation is operator-visible
+
+The daemon and dashboard SHALL expose a three-way comparison of Git-declared core/module tools, the runtime-config group decision, and the handlers actually registered. A module import or registration failure SHALL remain isolated to that module, but it SHALL appear in the diff rather than letting the available subset masquerade as the declared surface.
+
+#### Scenario: Declared and registered surfaces agree
+- **WHEN** all Git-declared groups and module tools register successfully
+- **THEN** the butler console SHALL show declared, effective, and registered counts with an empty diff
+
+#### Scenario: Registration failure remains visible
+- **WHEN** a declared module or tool cannot register
+- **THEN** healthy tools SHALL remain available
+- **AND** declaration/attempt evidence SHALL retain the failed tool name independently of successful decorator registration
+- **AND** the butler console SHALL list the declared-but-not-registered tool or module with its bounded startup error type
 
 ### Requirement: Blob storage initialization at startup phase 8c
 The daemon SHALL initialize the S3-compatible blob store at startup phase 8c, immediately after the layered `CredentialStore` is built (phase 8b) and before CLI auth restoration (phase 8c2). All S3 connection parameters SHALL be resolved from the credential store with `env_fallback=False`; there is no `[butler.storage]` TOML section and no environment-variable resolution path.
@@ -226,4 +256,3 @@ after the durable callback/task path is verified.
   a new recurring/one-shot schedule
 - **AND** no user notification, briefing producer, or live configuration PATCH
   SHALL be implied by the inventory definition
-

@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-09-10
+goal: One role-aware canonical connector API surface with no same-repo legacy
+  route fallback.

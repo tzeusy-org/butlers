@@ -366,6 +366,8 @@ def _make_summary_record(*, success):
         "complexity": None,
         "input_tokens": 0,
         "output_tokens": 0,
+        "cached_input_tokens": None,
+        "cache_creation_tokens": None,
         "cancelled_by_owner": False,
     }
     m = MagicMock()

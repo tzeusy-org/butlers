@@ -48,7 +48,7 @@ import { TelegramSessionSetup } from "@/components/relationship/TelegramSessionS
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { EntityMark } from "@/components/ui/EntityMark";
 import { Eyebrow } from "@/components/ui/Eyebrow";
-import { usePageContext } from "@/lib/page-context.tsx";
+import { usePageSubject } from "@/lib/page-context.tsx";
 import { announce } from "@/lib/shell-announcer";
 import { Row } from "@/components/ui/Row";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
@@ -94,7 +94,6 @@ import {
   useEntityFacts,
   useEntityGifts,
   useEntityLoans,
-  useEntityReachOutDrafts,
   useEntityMessageThreads,
   useEntityNeighbours,
   useEntityTimeline,
@@ -822,55 +821,9 @@ function GiftsPanel({ entityId }: { entityId: string }) {
  * bu-86c4c.1: this page used to render `{loan.currency} {loan.amount_cents}`
  * directly — a $150 loan displayed as "USD 15000".
  */
-/**
- * Reach-out drafts: text the owner wrote and did not send.
- *
- * Kept visually distinct from the interaction timeline for exactly that
- * reason. A draft is not a touch, and letting it read as one would inflate
- * every recency signal on this page.
- */
-function ReachOutDraftsPanel({ entityId }: { entityId: string }) {
-  const { data: drafts, isLoading, isError, refetch } = useEntityReachOutDrafts(entityId);
-  if (isLoading) return null;
-  // A dropped read must not look like "nothing drafted" (bu-hckjv).
-  if (isError) {
-    return (
-      <SourceDegradedNote
-        testId="entity-reach-out-drafts-error"
-        label="Drafts"
-        onRetry={() => void refetch()}
-      />
-    );
-  }
-  if (!drafts || drafts.length === 0) return null;
-
-  return (
-    <section className="space-y-2" data-testid="entity-reach-out-drafts">
-      <div className="flex items-baseline gap-3">
-        <h3 className="text-sm font-semibold uppercase tracking-wide">
-          Drafts
-        </h3>
-        <span className="text-muted-foreground text-xs">{drafts.length}</span>
-        <span className="text-muted-foreground text-xs">not sent</span>
-      </div>
-      <ul className="space-y-1.5">
-        {drafts.map((draft) => (
-          <li key={draft.id} className="flex items-baseline gap-3 text-sm">
-            <span className="flex-1 truncate">{draft.message ?? "Empty draft"}</span>
-            {draft.channel && (
-              <span className="text-muted-foreground text-xs">{draft.channel}</span>
-            )}
-            {draft.created_at && (
-              <span className="text-muted-foreground text-xs tabular-nums">
-                <Time value={draft.created_at} mode="absolute" precision="day" />
-              </span>
-            )}
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
+// The reach-out drafts panel (an inert, never-sent fact list) was retired in
+// bu-2jtfw.11, replaced by the prepared-action mechanism surfaced on the
+// insight digest rather than an entity-tab panel.
 
 function formatLoanAmount(amountCents: string | null, currency: string | null): string | null {
   if (amountCents == null) return null;
@@ -2374,9 +2327,9 @@ export default function EntityDetailPage() {
   // This attaches the entity currently in view as `entity_ref` (falling
   // back to the raw id while the name is still loading) so a message sent
   // from this page arrives grounded. Cleared automatically on unmount by
-  // usePageContext(), so navigating away never leaves a stale entity_ref
+  // usePageSubject(), so navigating away never leaves a stale entity_ref
   // attached to messages sent from a later, unrelated page.
-  const setPageContext = usePageContext().set;
+  const setPageContext = usePageSubject().set;
   useEffect(() => {
     if (!entityId || mergedSurvivorId) return;
     setPageContext({ entity_ref: entity?.canonical_name ?? entityId });
@@ -3180,8 +3133,8 @@ export default function EntityDetailPage() {
               {/* Activity timeline — primary content */}
               <ActivityTimeline entityId={entityId} />
 
-              {/* Operator verbs — log-interaction, gift-idea, draft-reach-out,
-                  note. Every chip writes a real fact (bu-6t8ix.4). */}
+              {/* Operator verbs — log-interaction, gift-idea, note. Every
+                  chip writes a real fact (bu-6t8ix.4). */}
               <EntityVerbRail entityId={entityId} />
 
               {/* Gifts and loans — structured panels, hidden when empty */}
@@ -3189,9 +3142,6 @@ export default function EntityDetailPage() {
                 <GiftsPanel entityId={entityId} />
                 <LoansPanel entityId={entityId} />
               </div>
-
-              {/* Reach-out drafts — written, deliberately not sent */}
-              <ReachOutDraftsPanel entityId={entityId} />
 
               {/* Message threads — only when matches exist */}
               <MessageThreadsSection entityId={entityId} />
@@ -3237,40 +3187,44 @@ export default function EntityDetailPage() {
               {practicalDrawer}
 
               {/* Workbench three-rail layout: context · workbench · curation.
-                  No 44px Display here (the identity hero above carries the name). */}
-              <div
-                className="grid grid-cols-1 gap-6 lg:grid-cols-[240px_minmax(0,1fr)_280px]"
-                data-testid="workbench-three-rail"
-              >
-                <WorkbenchContextRail
-                  entityId={entity.id}
-                  duplicatePeers={duplicatePeers}
-                  onOpenMergeReviewWith={openMergeReviewWith}
-                />
+                  Switch on usable content width so a docked chat rail cannot
+                  collapse the middle column. No 44px Display here (the identity
+                  hero above carries the name). */}
+              <div className="@container">
+                <div
+                  className="grid grid-cols-1 gap-6 @3xl:grid-cols-[240px_minmax(0,1fr)_280px]"
+                  data-testid="workbench-three-rail"
+                >
+                  <WorkbenchContextRail
+                    entityId={entity.id}
+                    duplicatePeers={duplicatePeers}
+                    onOpenMergeReviewWith={openMergeReviewWith}
+                  />
 
-                <div className="min-w-0 space-y-5">
-                  <WorkbenchKpiStrip entityId={entity.id} />
-                  {/* Dense sortable provenance grid over BOTH stores. */}
-                  <ProvenanceGrid entityId={entity.id} defaultStoreAll />
+                  <div className="min-w-0 space-y-5">
+                    <WorkbenchKpiStrip entityId={entity.id} />
+                    {/* Dense sortable provenance grid over BOTH stores. */}
+                    <ProvenanceGrid entityId={entity.id} defaultStoreAll />
+                  </div>
+
+                  <WorkbenchActionRail
+                    entityId={entity.id}
+                    isUnidentified={entity.unidentified}
+                    duplicatePeerId={duplicatePeerId}
+                    duplicateEvidence={duplicateEvidence}
+                    onOpenMergeReview={openMergeReview}
+                    onPromote={handlePromoteEntity}
+                    onPromoteTier={() => stepDunbarTier("promote")}
+                    onDemoteTier={() => stepDunbarTier("demote")}
+                    onEditAliases={handleEditAliases}
+                    onEditContacts={handleEditContacts}
+                    onArchive={handleArchiveEntity}
+                    onForget={() => {
+                      setForgetError(null);
+                      setForgetDialogOpen(true);
+                    }}
+                  />
                 </div>
-
-                <WorkbenchActionRail
-                  entityId={entity.id}
-                  isUnidentified={entity.unidentified}
-                  duplicatePeerId={duplicatePeerId}
-                  duplicateEvidence={duplicateEvidence}
-                  onOpenMergeReview={openMergeReview}
-                  onPromote={handlePromoteEntity}
-                  onPromoteTier={() => stepDunbarTier("promote")}
-                  onDemoteTier={() => stepDunbarTier("demote")}
-                  onEditAliases={handleEditAliases}
-                  onEditContacts={handleEditContacts}
-                  onArchive={handleArchiveEntity}
-                  onForget={() => {
-                    setForgetError(null);
-                    setForgetDialogOpen(true);
-                  }}
-                />
               </div>
             </>
           )}

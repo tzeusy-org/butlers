@@ -8,8 +8,10 @@ The session log is append-only: after creation the only mutation is
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import re
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -75,7 +77,7 @@ def _sanitize_json_value(value: Any) -> Any:
 
 
 # JSONB columns that need deserialization from string → Python object
-_JSONB_FIELDS = ("tool_calls", "cost")
+_JSONB_FIELDS = ("tool_calls", "cost", "prompt_provenance")
 _SUMMARY_PERIODS = frozenset({"today", "7d", "30d"})
 
 
@@ -103,6 +105,100 @@ def _is_valid_trigger_source(trigger_source: str) -> bool:
     return False
 
 
+#: Friction-episode kinds derivable deterministically at session close, no
+#: LLM judgment involved (bu-8cdl1.9 S2). Mirrors the same guardrail/timeout
+#: signatures as ``_ERROR_MARKER_CASE_SQL`` below, plus two additional
+#: buckets: ``recovered_error`` (a success carrying a leftover error string)
+#: and ``dead_end`` (a failure that matched none of the named guardrails).
+_FRICTION_GUARDRAIL_MARKERS = ("tool_call_budget_exceeded", "token_budget_exceeded")
+_FRICTION_CLASSIFICATION_TIMEOUT_SECONDS_RE = re.compile(r"Session timed out after (\d+)s")
+
+#: Every kind ``sessions_friction.kind`` accepts (mirrors the CHECK constraint
+#: in ``alembic/versions/core/core_220_sessions_friction.py``). Used to
+#: zero-fill ``friction_summary``'s ``by_kind`` breakdown so a console panel
+#: can render a stable set of counters instead of a sparse dict.
+_FRICTION_KINDS = (
+    "degenerate_tool_loop",
+    "guardrail_termination",
+    "classification_timeout",
+    "recovered_error",
+    "dead_end",
+)
+
+
+def _is_friction_classification_timeout(error: str | None, model: str | None) -> bool:
+    """Mirror the ``classification_timeout`` branch of ``_ERROR_MARKER_CASE_SQL``."""
+    if not error or not model or "mini" not in model.lower():
+        return False
+    error_lower = error.lower()
+    if "timeouterror" not in error_lower or "butler=switchboard" not in error_lower:
+        return False
+    match = _FRICTION_CLASSIFICATION_TIMEOUT_SECONDS_RE.search(error)
+    if not match:
+        return False
+    try:
+        return int(match.group(1)) <= 60
+    except ValueError:
+        return False
+
+
+def _classify_friction_kind(*, success: bool, error: str | None, model: str | None) -> str | None:
+    """Deterministically classify a completed session into a friction kind.
+
+    Returns ``None`` for a clean session (nothing to record). A successful
+    session that nonetheless carries a leftover ``error`` string is a
+    recovered failure, not a clean run.
+    """
+    if success:
+        return "recovered_error" if error else None
+
+    error_lower = (error or "").lower()
+    if "degenerate_tool_loop" in error_lower:
+        return "degenerate_tool_loop"
+    if any(marker in error_lower for marker in _FRICTION_GUARDRAIL_MARKERS):
+        return "guardrail_termination"
+    if _is_friction_classification_timeout(error, model):
+        return "classification_timeout"
+    return "dead_end"
+
+
+async def _record_friction_event(
+    pool: asyncpg.Pool,
+    session_id: uuid.UUID,
+    *,
+    success: bool,
+    error: str | None,
+    model: str | None,
+) -> None:
+    """Derive and persist a typed friction row for a just-completed session.
+
+    Best-effort and isolated from the session-close path: a write failure
+    here is logged and swallowed, never propagated, so a friction-ledger
+    outage cannot block the append-only session-close contract.
+    """
+    kind = _classify_friction_kind(success=success, error=error, model=model)
+    if kind is None:
+        return
+    try:
+        await pool.execute(
+            """
+            INSERT INTO sessions_friction (session_id, kind, ordinal, detail)
+            VALUES ($1, $2, 0, $3)
+            ON CONFLICT (session_id, kind, ordinal) DO NOTHING
+            """,
+            session_id,
+            kind,
+            error,
+        )
+    except Exception:
+        logger.warning(
+            "Failed to record friction event kind=%s for session %s",
+            kind,
+            session_id,
+            exc_info=True,
+        )
+
+
 def _decode_row(row: asyncpg.Record) -> dict[str, Any]:
     """Convert an asyncpg Record to a dict, deserializing JSONB string fields."""
     d = dict(row)
@@ -124,6 +220,10 @@ async def session_create(
     complexity: str | None = None,
     resolution_source: str | None = None,
     butler_name: str | None = None,
+    effective_system_prompt: str | None = None,
+    prompt_digest: str | None = None,
+    prompt_provenance: list[dict[str, Any]] | None = None,
+    purpose_lane: str = "standard",
 ) -> uuid.UUID:
     """Insert a new session row and return its UUID.
 
@@ -153,6 +253,14 @@ async def session_create(
         butler_name: Optional owning butler name, used only to enrich the
             ``session`` event emitted onto the fleet event bus (bu-86c4c.8);
             not persisted.
+        effective_system_prompt: Exact composed system-prompt text passed to
+            the runtime adapter. New Spawner sessions provide this together
+            with its digest and provenance receipt; legacy/direct callers may
+            omit all three fields.
+        prompt_digest: Lowercase SHA-256 of ``effective_system_prompt`` UTF-8
+            bytes.
+        prompt_provenance: Ordered content-blind source receipt for the
+            effective prompt.
 
     Returns:
         The UUID of the newly created session.
@@ -163,6 +271,8 @@ async def session_create(
     """
     if request_id is None:
         raise ValueError("request_id is required and must not be None")
+    if purpose_lane not in {"standard", "private_content"}:
+        raise ValueError("purpose_lane must be 'standard' or 'private_content'")
     if not _is_valid_trigger_source(trigger_source):
         raise ValueError(
             f"Invalid trigger_source {trigger_source!r}; must be 'tick', "
@@ -170,16 +280,38 @@ async def session_create(
             f"'dashboard', 'qa', 'schedule:<task-name>', or 'deadline:<task-name>'"
         )
 
+    receipt_values = (effective_system_prompt, prompt_digest, prompt_provenance)
+    if any(value is not None for value in receipt_values) and not all(
+        value is not None for value in receipt_values
+    ):
+        raise ValueError(
+            "effective_system_prompt, prompt_digest, and prompt_provenance "
+            "must be provided together"
+        )
+    if effective_system_prompt is not None:
+        if "\x00" in effective_system_prompt:
+            raise ValueError("effective_system_prompt contains a NUL character")
+        encoded_prompt = effective_system_prompt.encode("utf-8")
+        expected_digest = hashlib.sha256(encoded_prompt).hexdigest()
+        if prompt_digest != expected_digest:
+            raise ValueError("prompt_digest does not match effective_system_prompt")
+        if not isinstance(prompt_provenance, list):
+            raise ValueError("prompt_provenance must be a list")
+
     # Sanitize once up front so the retry path does not redo the work.
     sanitized_prompt = _strip_untranslatable_chars(prompt)
+    safe_prompt_provenance = (
+        _sanitize_json_value(prompt_provenance) if prompt_provenance is not None else None
+    )
 
     async def _insert(resolved_ingestion_event_id: str | None) -> uuid.UUID:
         return await pool.fetchval(
             """
             INSERT INTO sessions
                 (prompt, trigger_source, trace_id, model, request_id, ingestion_event_id,
-                 complexity, resolution_source)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                 complexity, resolution_source, effective_system_prompt, prompt_digest,
+                 prompt_provenance, purpose_lane)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             RETURNING id
             """,
             sanitized_prompt,
@@ -190,6 +322,10 @@ async def session_create(
             resolved_ingestion_event_id,
             complexity,
             resolution_source,
+            effective_system_prompt,
+            prompt_digest,
+            safe_prompt_provenance,
+            purpose_lane,
         )
 
     try:
@@ -279,7 +415,7 @@ async def session_complete(
     safe_tool_calls = _sanitize_json_value(tool_calls)
     safe_cost = _sanitize_json_value(cost) if cost is not None else None
 
-    row = await pool.fetchval(
+    row = await pool.fetchrow(
         """
         UPDATE sessions
         SET result        = $2,
@@ -294,7 +430,7 @@ async def session_complete(
             cache_creation_tokens = $11,
             completed_at  = now()
         WHERE id = $1
-        RETURNING id
+        RETURNING id, model
         """,
         session_id,
         safe_output,
@@ -310,6 +446,10 @@ async def session_complete(
     )
     if row is None:
         raise ValueError(f"Session {session_id} not found")
+
+    await _record_friction_event(
+        pool, session_id, success=success, error=safe_error, model=row["model"]
+    )
     logger.info(
         "Session completed: %s (%d ms, success=%s, in=%s, out=%s)",
         session_id,
@@ -437,7 +577,7 @@ async def sessions_list(
                duration_ms, trace_id, model, cost, success, error,
                input_tokens, output_tokens, cached_input_tokens, cache_creation_tokens,
                request_id, ingestion_event_id,
-               complexity, resolution_source, started_at, completed_at
+               complexity, resolution_source, purpose_lane, started_at, completed_at
         FROM sessions
         ORDER BY started_at DESC
         LIMIT $1 OFFSET $2
@@ -468,7 +608,8 @@ async def sessions_active(
         """
         SELECT id, prompt, trigger_source, result, tool_calls,
                duration_ms, trace_id, model, cost, success, error, request_id,
-               ingestion_event_id, complexity, resolution_source, started_at, completed_at
+               ingestion_event_id, complexity, resolution_source, purpose_lane,
+               started_at, completed_at
         FROM sessions
         WHERE completed_at IS NULL
         ORDER BY started_at DESC
@@ -496,7 +637,7 @@ async def sessions_get(
                duration_ms, trace_id, model, cost, success, error,
                input_tokens, output_tokens, cached_input_tokens, cache_creation_tokens,
                request_id, ingestion_event_id,
-               complexity, resolution_source, started_at, completed_at
+               complexity, resolution_source, purpose_lane, started_at, completed_at
         FROM sessions
         WHERE id = $1
         """,
@@ -711,8 +852,38 @@ def _estimate_monthly_runs(cron: str, *, reference: datetime = _CADENCE_ANCHOR) 
     return count / cycle_days * AVERAGE_MONTH_DAYS
 
 
+#: Deterministic error-marker classification for ``sessions_summary``'s
+#: ``by_error_marker`` breakdown. Pure substring/pattern matching against the
+#: same guardrail/timeout signatures the spawner and switchboard pipeline
+#: already emit (see ``spawner_guardrails.py`` and
+#: ``qa/sources/session_records.py::_is_switchboard_classification_timeout``)
+#: — no LLM judgment, evaluated in SQL at query time.
+#:
+#: The classification_timeout branch mirrors
+#: ``_is_switchboard_classification_timeout`` exactly: a plain switchboard
+#: timeout is not enough, since ``spawner.py`` emits the identical
+#: "Session timed out after {N}s (model=..., butler=...)" message for every
+#: session on a butler, not just classification dispatch. Classification
+#: sessions specifically use a "mini" model with a <=60s cap, so both must
+#: hold or a genuine (non-classification) switchboard timeout — e.g. a
+#: route-dispatch session — would be misclassified.
+_ERROR_MARKER_CASE_SQL = """
+    CASE
+        WHEN error ILIKE '%degenerate_tool_loop%' THEN 'degenerate_tool_loop'
+        WHEN error ILIKE '%tool_call_budget_exceeded%' THEN 'tool_call_budget_exceeded'
+        WHEN error ILIKE '%token_budget_exceeded%' THEN 'token_budget_exceeded'
+        WHEN error ILIKE '%TimeoutError%'
+            AND error ILIKE '%butler=switchboard%'
+            AND model ILIKE '%mini%'
+            AND substring(error from 'Session timed out after (\\d+)s')::bigint <= 60
+            THEN 'classification_timeout'
+        ELSE 'other'
+    END
+"""
+
+
 async def sessions_summary(pool: asyncpg.Pool, period: str = "today") -> dict[str, Any]:
-    """Return aggregate session/token stats grouped by model for a period."""
+    """Return aggregate session/token/outcome stats grouped by model for a period."""
     if period not in _SUMMARY_PERIODS:
         raise ValueError(f"Invalid period {period!r}; must be one of {sorted(_SUMMARY_PERIODS)}")
 
@@ -724,7 +895,9 @@ async def sessions_summary(pool: asyncpg.Pool, period: str = "today") -> dict[st
             COALESCE(SUM(input_tokens), 0)::bigint AS total_input_tokens,
             COALESCE(SUM(output_tokens), 0)::bigint AS total_output_tokens,
             COALESCE(SUM(cached_input_tokens), 0)::bigint AS total_cached_input_tokens,
-            COALESCE(SUM(cache_creation_tokens), 0)::bigint AS total_cache_creation_tokens
+            COALESCE(SUM(cache_creation_tokens), 0)::bigint AS total_cache_creation_tokens,
+            COUNT(*) FILTER (WHERE success IS TRUE)::bigint AS succeeded,
+            COUNT(*) FILTER (WHERE success IS FALSE)::bigint AS failed
         FROM sessions
         WHERE started_at >= $1
         """,
@@ -756,6 +929,20 @@ async def sessions_summary(pool: asyncpg.Pool, period: str = "today") -> dict[st
             "cache_creation_tokens": int(row["cache_creation_tokens"]),
         }
 
+    by_marker_rows = await pool.fetch(
+        f"""
+        SELECT {_ERROR_MARKER_CASE_SQL} AS marker, COUNT(*)::bigint AS count
+        FROM sessions
+        WHERE started_at >= $1 AND success IS FALSE
+        GROUP BY marker
+        ORDER BY marker
+        """,
+        since,
+    )
+    by_error_marker: dict[str, int] = {
+        str(row["marker"]): int(row["count"]) for row in by_marker_rows
+    }
+
     if totals is None:
         return {
             "period": period,
@@ -764,6 +951,9 @@ async def sessions_summary(pool: asyncpg.Pool, period: str = "today") -> dict[st
             "total_output_tokens": 0,
             "total_cached_input_tokens": 0,
             "total_cache_creation_tokens": 0,
+            "succeeded": 0,
+            "failed": 0,
+            "by_error_marker": by_error_marker,
             "by_model": by_model,
         }
 
@@ -774,7 +964,46 @@ async def sessions_summary(pool: asyncpg.Pool, period: str = "today") -> dict[st
         "total_output_tokens": int(totals["total_output_tokens"]),
         "total_cached_input_tokens": int(totals["total_cached_input_tokens"]),
         "total_cache_creation_tokens": int(totals["total_cache_creation_tokens"]),
+        "succeeded": int(totals["succeeded"]),
+        "failed": int(totals["failed"]),
+        "by_error_marker": by_error_marker,
         "by_model": by_model,
+    }
+
+
+async def friction_summary(pool: asyncpg.Pool, period: str = "today") -> dict[str, Any]:
+    """Return typed friction-episode counts for a period, zero-filled per kind.
+
+    Joins ``sessions_friction`` to ``sessions`` on ``session_id`` and filters
+    on the parent session's ``started_at`` -- the same window boundary
+    ``sessions_summary`` uses -- rather than the friction row's own
+    ``created_at``, so a friction breakdown and an outcome summary for the
+    same ``period`` always describe the same set of sessions.
+    """
+    if period not in _SUMMARY_PERIODS:
+        raise ValueError(f"Invalid period {period!r}; must be one of {sorted(_SUMMARY_PERIODS)}")
+
+    since = _period_start(period)
+    rows = await pool.fetch(
+        """
+        SELECT f.kind, COUNT(*)::bigint AS count
+        FROM sessions_friction f
+        JOIN sessions s ON s.id = f.session_id
+        WHERE s.started_at >= $1
+        GROUP BY f.kind
+        """,
+        since,
+    )
+
+    by_kind: dict[str, int] = dict.fromkeys(_FRICTION_KINDS, 0)
+    for row in rows:
+        kind = str(row["kind"])
+        by_kind[kind] = by_kind.get(kind, 0) + int(row["count"])
+
+    return {
+        "period": period,
+        "total": sum(by_kind.values()),
+        "by_kind": by_kind,
     }
 
 
@@ -882,6 +1111,7 @@ async def top_sessions(
             COALESCE(model, '') AS model,
             COALESCE(input_tokens, 0)::bigint AS input_tokens,
             COALESCE(output_tokens, 0)::bigint AS output_tokens,
+            purpose_lane,
             started_at
         FROM sessions
         WHERE completed_at IS NOT NULL
@@ -904,6 +1134,7 @@ async def top_sessions(
                 "model": str(row["model"]),
                 "input_tokens": int(row["input_tokens"]),
                 "output_tokens": int(row["output_tokens"]),
+                "purpose_lane": row["purpose_lane"],
                 "started_at": started_at.isoformat() if started_at else "",
             }
         )
@@ -929,6 +1160,12 @@ async def schedule_costs(
     own cadence over an average calendar month (``_estimate_monthly_runs``).
     ``forecast_basis`` states that basis once at the envelope level, since it is
     a constant and does not vary by schedule.
+
+    A row also carries ``enabled``, the live ``scheduled_tasks.enabled`` flag.
+    ``scheduler.py`` sets this ``false`` rather than deleting a removed TOML
+    schedule, so its historical sessions remain queryable -- but a disabled
+    schedule cannot recur, and ``projected_monthly_runs`` is forced to ``0.0``
+    for it regardless of what the cron expression implies (bu-2jtfw.4).
     """
     start_at, end_exclusive = _resolve_optional_range(from_date, to_date)
     rows = await pool.fetch(
@@ -936,6 +1173,7 @@ async def schedule_costs(
         SELECT
             st.name,
             st.cron,
+            st.enabled,
             s.model,
             COUNT(s.id)::bigint AS total_runs,
             COALESCE(SUM(s.input_tokens), 0)::bigint AS total_input_tokens,
@@ -947,7 +1185,7 @@ async def schedule_costs(
             ON s.trigger_source = ('schedule:' || st.name)
             AND ($1::timestamptz IS NULL OR s.started_at >= $1)
             AND ($2::timestamptz IS NULL OR s.started_at < $2)
-        GROUP BY st.name, st.cron, s.model
+        GROUP BY st.name, st.cron, st.enabled, s.model
         ORDER BY st.name, s.model
         """,
         start_at,
@@ -957,10 +1195,12 @@ async def schedule_costs(
     schedules: list[dict[str, Any]] = []
     for row in rows:
         cron = str(row["cron"])
+        enabled = bool(row["enabled"])
         schedules.append(
             {
                 "name": str(row["name"]),
                 "cron": cron,
+                "enabled": enabled,
                 "model": "" if row["model"] is None else str(row["model"]),
                 "total_runs": int(row["total_runs"]),
                 "total_input_tokens": int(row["total_input_tokens"]),
@@ -970,8 +1210,10 @@ async def schedule_costs(
                 # Forecast input, not measured history: the cadence the cron
                 # expression itself implies over an average calendar month
                 # (bu-6jv4m.2). Consumers must keep it separate from the
-                # measured totals above.
-                "projected_monthly_runs": _estimate_monthly_runs(cron),
+                # measured totals above. A retired (disabled) schedule cannot
+                # recur, so it never gets a forecast regardless of cadence
+                # (bu-2jtfw.4) -- the caller decides how to represent that.
+                "projected_monthly_runs": _estimate_monthly_runs(cron) if enabled else 0.0,
             }
         )
 

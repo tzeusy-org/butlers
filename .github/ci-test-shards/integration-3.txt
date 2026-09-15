@@ -4,6 +4,7 @@ roster/finance/tests/test_feed_reconciliation.py
 roster/finance/tests/test_track_d_sweep.py
 roster/health/tests/test_measurement_sources.py
 roster/health/tests/test_tools.py
+roster/lifestyle/tests/test_taste_ledger_legacy_facts.py
 roster/relationship/tests/test_commitment_extraction_db.py
 roster/relationship/tests/test_conf_immutability_guardrail.py
 roster/relationship/tests/test_dunbar_tier_contactless_integration.py
@@ -27,6 +28,7 @@ tests/api/test_relationship_narrative_scope_parity.py
 tests/api/test_steam_account_config_jsonb_integration.py
 tests/config/test_education_curriculum_receipt_db.py
 tests/config/test_migrations.py
+tests/config/test_schema_matrix_migrations.py
 tests/config/test_switchboard_connector_heartbeat_migration.py
 tests/core/healing/test_tracking.py
 tests/core/qa/test_case_helpers.py
@@ -34,6 +36,7 @@ tests/core/test_butler_logging_jsonb_roundtrip.py
 tests/core/test_db.py
 tests/core/test_event_chains_mcp.py
 tests/core_tools/test_schedule_trigger_dispatch.py
+tests/integration/test_approval_delivery_worker.py
 tests/integration/test_approval_push_on_park.py
 tests/integration/test_approvals_remaining_jsonb_roundtrip.py
 tests/integration/test_calendar_sync_deadman_roundtrip.py
@@ -66,6 +69,7 @@ tests/migrations/test_model_dispatch_attempts_outcome_index.py
 tests/migrations/test_owner_conditions_migration.py
 tests/migrations/test_priority_contacts_cascade_audit.py
 tests/migrations/test_qa_investigation_events_migration.py
+tests/migrations/test_qa_repo_org_rename_migration.py
 tests/migrations/test_retire_legacy_permission_seeds_migration.py
 tests/migrations/test_shared_pool_startup_lock.py
 tests/migrations/test_tombstone_memory_calendar_episodes_migration.py

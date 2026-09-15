@@ -93,6 +93,8 @@ class _FakeButlerPool:
                 "total_output_tokens": self.cost_output_tokens,
                 "total_cached_input_tokens": 0,
                 "total_cache_creation_tokens": 0,
+                "succeeded": 1,
+                "failed": 0,
             }
         raise AssertionError(f"unexpected fetchrow SQL: {sql}")
 
@@ -110,6 +112,10 @@ class _FakeButlerPool:
             if self.hourly_query_fails:
                 raise RuntimeError("hourly activity query failed")
             return [{"sessions_count": c} for c in self.hourly_counts]
+        if "AS marker" in sql:
+            if self.cost_query_fails:
+                raise RuntimeError("cost query failed")
+            return []
         if "model" in sql and "input_tokens" in sql:
             if self.cost_query_fails:
                 raise RuntimeError("cost query failed")

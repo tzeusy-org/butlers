@@ -1,0 +1,6 @@
+bu-xj2gi: synthetic non-secret fixture. Bind-mounted into the outer exact-image
+container at the real signer path (/run/secrets/runtime_probe_control_signing_key)
+so the adversarial signer-isolation test proves the Bubblewrap-sandboxed child
+gets ENOENT because that path is genuinely absent from its mount view -- not
+merely because no file exists anywhere in the container. This file is never
+read for its contents by production code or by the test payload.

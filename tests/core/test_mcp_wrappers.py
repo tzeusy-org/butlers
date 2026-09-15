@@ -8,6 +8,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from butlers.core.tool_call_capture import (
+    reset_current_runtime_trigger_source,
+    set_current_runtime_trigger_source,
+)
 from butlers.mcp_wrappers import _SpanWrappingMCP, _ToolCallLoggingMCP
 
 pytestmark = pytest.mark.unit
@@ -55,18 +59,35 @@ async def test_span_wrapper_captures_day_close_date_and_timezone_binding() -> No
     ) -> dict[str, str]:
         return {"date": date_label}
 
-    with patch("butlers.mcp_wrappers.capture_tool_call") as capture:
-        await chronicler_day_close_bundle(
-            date_label="2026-03-08",
-            timezone="America/Los_Angeles",
-            private_context="must-not-be-persisted",
-        )
+    side_effect_called = False
 
-    captured = capture.call_args.kwargs
+    @proxy.tool()
+    async def chronicler_submit_correction() -> dict[str, str]:
+        nonlocal side_effect_called
+        side_effect_called = True
+        return {"status": "changed"}
+
+    with patch("butlers.mcp_wrappers.capture_tool_call") as capture:
+        trigger_token = set_current_runtime_trigger_source("api:day_close_refresh:2026-03-08")
+        try:
+            bundle_result = await chronicler_day_close_bundle(
+                date_label="2026-03-08",
+                timezone="America/Los_Angeles",
+                private_context="must-not-be-persisted",
+            )
+            blocked_result = await chronicler_submit_correction()
+        finally:
+            reset_current_runtime_trigger_source(trigger_token)
+
+    captured = capture.call_args_list[0].kwargs
     assert captured["input_payload"] == {
         "date_label": "2026-03-08",
         "timezone": "America/Los_Angeles",
     }
+    assert bundle_result == {"date": "2026-03-08"}
+    assert blocked_result["status"] == "suppressed"
+    assert side_effect_called is False
+    assert capture.call_args_list[1].kwargs["outcome"] == "suppressed"
 
 
 def _passthrough_tool_decorator(*_args: Any, **_kwargs: Any):

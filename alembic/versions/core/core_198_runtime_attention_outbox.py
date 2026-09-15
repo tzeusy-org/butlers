@@ -271,8 +271,8 @@ _TRUSTED_FINALIZED_INTERFACE_SQL_TEMPLATE = """
               WHERE acl.privilege_type = 'EXECUTE'
                 AND acl.grantee <> outbox_owner.oid
                 AND COALESCE(granted_role.rolname, '') <> ALL (ARRAY[
-                    'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
-                    'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+                    'butler_chronicler_rw', 'butler_concierge_rw', 'butler_education_rw',
+                    'butler_finance_rw', 'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
                     'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
                     'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw'
                 ]::name[])
@@ -286,8 +286,8 @@ _TRUSTED_FINALIZED_INTERFACE_SQL_TEMPLATE = """
               WHERE acl.privilege_type = 'EXECUTE'
                 AND acl.grantee <> outbox_owner.oid
                 AND COALESCE(granted_role.rolname, '') <> ALL (ARRAY[
-                    'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
-                    'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+                    'butler_chronicler_rw', 'butler_concierge_rw', 'butler_education_rw',
+                    'butler_finance_rw', 'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
                     'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
                     'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw'
                 ]::name[])
@@ -298,18 +298,18 @@ _TRUSTED_FINALIZED_INTERFACE_SQL_TEMPLATE = """
               SELECT count(*)
               FROM pg_roles AS producer_runtime
               WHERE producer_runtime.rolname = ANY (ARRAY[
-                  'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
-                  'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+                  'butler_chronicler_rw', 'butler_concierge_rw', 'butler_education_rw',
+                  'butler_finance_rw', 'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
                   'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
                   'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw'
               ]::name[])
-          ) = 12
+          ) = 13
           AND NOT EXISTS (
               SELECT 1
               FROM pg_roles AS producer_runtime
               WHERE producer_runtime.rolname = ANY (ARRAY[
-                  'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
-                  'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+                  'butler_chronicler_rw', 'butler_concierge_rw', 'butler_education_rw',
+                  'butler_finance_rw', 'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
                   'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
                   'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw'
               ]::name[])
@@ -353,8 +353,8 @@ _TRUSTED_FINALIZED_INTERFACE_SQL_TEMPLATE = """
               SELECT 1
               FROM pg_roles AS producer_runtime
               WHERE producer_runtime.rolname = ANY (ARRAY[
-                  'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
-                  'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+                  'butler_chronicler_rw', 'butler_concierge_rw', 'butler_education_rw',
+                  'butler_finance_rw', 'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
                   'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
                   'butler_relationship_rw', 'butler_travel_rw'
               ]::name[])
@@ -401,13 +401,13 @@ _TRUSTED_FINALIZED_INTERFACE_SQL_TEMPLATE = """
           AND has_column_privilege(
               switchboard_runtime.oid, outbox.oid, 'claim_token', 'UPDATE'
           )
-          AND NOT has_column_privilege(
+          AND has_column_privilege(
               switchboard_runtime.oid, outbox.oid, 'delivery_error_class', 'UPDATE'
           )
-          AND NOT has_column_privilege(
+          AND has_column_privilege(
               switchboard_runtime.oid, outbox.oid, 'delivery_error_detail', 'UPDATE'
           )
-          AND NOT has_column_privilege(
+          AND has_column_privilege(
               switchboard_runtime.oid, outbox.oid, 'notification_ref', 'UPDATE'
           )
           AND has_table_privilege(switchboard_runtime.oid, delivery_lease.oid, 'SELECT')
@@ -641,6 +641,47 @@ def _has_trusted_finalized_interface(bind: sa.Connection) -> bool:
             _TRUSTED_BOOTSTRAP_FINALIZED_INTERFACE_SQL,
         )
     )
+
+
+def protected_rollback_preflight_passes(bind: sa.Connection) -> bool:
+    """Return whether this exact protected boundary can be rolled back now.
+
+    Later revisions with non-transactional downgrade work use this same proof
+    before crossing that work.  Keeping the predicate here prevents a partial
+    copy from drifting away from core_198's role, catalog, and ACL contract.
+    """
+    if bool(bind.execute(sa.text(_EXACT_ROLLBACK_READY_ABSENCE_SQL)).scalar_one()):
+        return True
+    if not (
+        bool(bind.execute(sa.text(_TRUSTED_BOOTSTRAP_ROLLBACK_SQL)).scalar_one())
+        and _has_trusted_finalized_interface(bind)
+    ):
+        return False
+
+    # Mirror rollback_interface's durable-evidence refusal before a later
+    # migration can enter autocommit. The trusted rollback proof above also
+    # requires the v2 producer controls to be absent, so ordinary producers
+    # cannot create new evidence after this point. Lock and recheck to cover a
+    # writer that began before the operator established that rollback-ready
+    # state; the relation lock remains held through this migration transaction.
+    if not bool(bind.execute(sa.text(_DURABLE_EVIDENCE_ABSENT_SQL)).scalar_one()):
+        return False
+    bind.execute(sa.text(_LOCK_DURABLE_EVIDENCE_SQL))
+    return bool(bind.execute(sa.text(_DURABLE_EVIDENCE_ABSENT_SQL)).scalar_one())
+
+
+_DURABLE_EVIDENCE_ABSENT_SQL = """
+    SELECT
+        NOT EXISTS (SELECT 1 FROM public.runtime_attention_outbox)
+        AND NOT EXISTS (SELECT 1 FROM public.runtime_attention_delivery_lease)
+"""
+
+_LOCK_DURABLE_EVIDENCE_SQL = """
+    LOCK TABLE
+        public.runtime_attention_outbox,
+        public.runtime_attention_delivery_lease
+    IN ACCESS EXCLUSIVE MODE
+"""
 
 
 _TRUSTED_BOOTSTRAP_INSTALLER_SQL = """

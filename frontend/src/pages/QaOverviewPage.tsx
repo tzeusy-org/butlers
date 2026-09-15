@@ -55,6 +55,7 @@ import {
 } from "@/hooks/use-qa";
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
 import { getQaPatrolStatusPresentation } from "@/lib/qa-patrol-status";
+import { usePageSubject } from "@/lib/page-context.tsx";
 
 // ---------------------------------------------------------------------------
 // Filter types (all URL-persisted — see useSearchParams below)
@@ -559,6 +560,21 @@ export default function QaOverviewPage() {
   );
 
   const selectedCaseId = params.get("case") ?? undefined;
+
+  // Page-context enrichment (bu-0ynlk.4): the active filters are already
+  // auto-captured via query_params, but a typed visible_resource lets a
+  // routed butler ground a correction on the specific case list the owner
+  // was triaging.
+  const setPageSubject = usePageSubject().set;
+  useEffect(() => {
+    setPageSubject({
+      visible_resource: {
+        kind: "qa_overview",
+        filters: { severity, since, state, butlers: [...selectedButlers].join(",") },
+      },
+      visible_summary: `QA: severity=${severity}, since=${since}`,
+    });
+  }, [severity, since, state, selectedButlers, setPageSubject]);
 
   const summary = useQaSummary();
   const forcePatrol = useForceQaPatrol();

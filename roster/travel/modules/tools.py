@@ -22,6 +22,7 @@ def register_tools(mcp: Any, module: Any) -> None:
     # Import sub-modules (deferred to avoid import-time side effects)
     from butlers.core_tools._domain_events import publish_domain_event
     from butlers.tools.travel import bookings as _bookings
+    from butlers.tools.travel import connections as _connections
     from butlers.tools.travel import documents as _documents
     from butlers.tools.travel import health as _health
     from butlers.tools.travel import trips as _trips
@@ -124,6 +125,24 @@ def register_tools(mcp: Any, module: Any) -> None:
             trip_id,
             patch,
             reason=reason,
+        )
+
+    @mcp.tool()
+    async def acknowledge_connection_risk(
+        trip_id: str,
+        inbound_leg_id: str,
+        outbound_leg_id: str,
+        verdict: str,
+        available_minutes: int | None = None,
+    ) -> dict[str, Any]:
+        """Acknowledge a broken-connection door and return its current derived state."""
+        return await _connections.acknowledge_connection_risk(
+            module._get_pool(),
+            trip_id=trip_id,
+            inbound_leg_id=inbound_leg_id,
+            outbound_leg_id=outbound_leg_id,
+            verdict=verdict,
+            available_minutes=available_minutes,
         )
 
     # =================================================================

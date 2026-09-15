@@ -24,7 +24,11 @@ from uuid import UUID
 from pydantic import Field
 
 from butlers.core.telemetry import tool_span
-from butlers.core.tool_call_capture import get_current_runtime_session_routing_context
+from butlers.core.tool_call_capture import (
+    get_current_runtime_session_id,
+    get_current_runtime_session_routing_context,
+    peek_runtime_session_tool_calls,
+)
 from butlers.core_tools._base import ToolContext
 
 logger = logging.getLogger(__name__)
@@ -47,6 +51,52 @@ def _best_effort_request_id() -> UUID | None:
         return UUID(str(raw))
     except (ValueError, AttributeError, TypeError):
         return None
+
+
+def _best_effort_session_id() -> UUID | None:
+    """Recover the ambient runtime session id, for the message's own lineage.
+
+    Absent when this butler's runtime never bound one (e.g. a legacy/mocked
+    call path) -- degrades to ``None`` rather than failing the tool call, so
+    the dashboard SSE poller's request_id-based backfill can fill the gap.
+    """
+    raw = get_current_runtime_session_id()
+    if not raw:
+        return None
+    try:
+        return UUID(str(raw))
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
+def _best_effort_tool_calls(session_id: UUID | None) -> list[dict[str, Any]] | None:
+    """Snapshot this turn's executed tool calls so far, without draining them.
+
+    Non-destructive: the Spawner still consumes the full session buffer at
+    session finish to persist the session-level record. ``None`` (not an
+    empty list) when there is no session context, mirroring the nullable
+    ``dashboard_messages.tool_calls`` column semantics.
+
+    ``tool_call_capture``'s records use the capture-side shape (``name``,
+    ``input``, ...); the dashboard chat widget's ``MessageToolCall`` type
+    (frontend/src/api/types.ts) expects ``{id, name, arguments, result}``
+    (the ``ToolCallDetails`` component reads ``.arguments`` directly) — this
+    reshapes rather than passing the raw capture records through.
+    """
+    if session_id is None:
+        return None
+    calls = peek_runtime_session_tool_calls(str(session_id))
+    if not calls:
+        return None
+    return [
+        {
+            "id": None,
+            "name": call.get("name", ""),
+            "arguments": call.get("input"),
+            "result": call.get("result"),
+        }
+        for call in calls
+    ]
 
 
 def register_conversation_reply_tool(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> None:
@@ -75,6 +125,21 @@ def register_conversation_reply_tool(ctx: ToolContext, mcp: Any, _core_tool: Cal
                 )
             ),
         ],
+        sources: Annotated[
+            list[str] | None,
+            Field(
+                description=(
+                    "Answer-lane only: what you consulted to produce this reply "
+                    "(tool names, record identifiers, etc.), e.g. "
+                    "['finance.get_budget', 'transaction#a1b2c3']. Omit entirely for "
+                    "a confirm-loop/action-proposal/bug-report reply. For an "
+                    "answer-lane reply, pass a NON-EMPTY list of NON-BLANK names — "
+                    "an empty/blank citation is rejected, since an unsourced "
+                    "'answer' is indistinguishable from a fabricated one; give an "
+                    "honest decline instead."
+                )
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         """Reply into a dashboard conversation for owner confirmation.
 
@@ -93,16 +158,37 @@ def register_conversation_reply_tool(ctx: ToolContext, mcp: Any, _core_tool: Cal
                 "error": f"conversation_id {conversation_id!r} is not a valid UUID",
             }
 
+        if sources is not None and (
+            not sources
+            or any(not isinstance(source, str) or not source.strip() for source in sources)
+        ):
+            return {
+                "status": "error",
+                "error": (
+                    "sources must contain only non-empty names for an answer-lane "
+                    "reply — name what you consulted, or omit `sources` entirely "
+                    "and give an honest decline instead of fabricating a citation."
+                ),
+            }
+
         if pool is None:
             return {"status": "error", "error": "Database pool is not available"}
 
         request_id = _best_effort_request_id()
+        session_id = _best_effort_session_id()
+        tool_calls = _best_effort_tool_calls(session_id)
 
         from butlers.api.conversations import conversation_reply_create
 
         try:
             msg = await conversation_reply_create(
-                pool, conv_uuid, message=message, request_id=request_id
+                pool,
+                conv_uuid,
+                message=message,
+                request_id=request_id,
+                sources=sources,
+                session_id=session_id,
+                tool_calls=tool_calls,
             )
         except Exception as exc:
             logger.exception(

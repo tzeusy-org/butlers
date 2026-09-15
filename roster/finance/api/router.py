@@ -42,6 +42,8 @@ if _spec is not None and _spec.loader is not None:
     DistinctMerchantModel = _models.DistinctMerchantModel
     FinanceExpectedSignalModel = _models.FinanceExpectedSignalModel
     FinanceExpectedSignalsResponse = _models.FinanceExpectedSignalsResponse
+    ObligationModel = _models.ObligationModel
+    ObligationsResponse = _models.ObligationsResponse
     SpendingGroupModel = _models.SpendingGroupModel
     SpendingSummaryModel = _models.SpendingSummaryModel
     SubscriptionModel = _models.SubscriptionModel
@@ -356,7 +358,8 @@ async def list_subscriptions(
 
     rows = await pool.fetch(
         f"SELECT id, service, amount, currency, frequency, next_renewal, status,"
-        f" auto_renew, payment_method, account_id, source_message_id, metadata,"
+        f" auto_renew, payment_method, account_id, source_message_id,"
+        f" cancellation_url, notice_period_days, cancel_by, metadata,"
         f" created_at, updated_at"
         f" FROM finance.subscriptions{where}"
         f" ORDER BY next_renewal ASC"
@@ -379,6 +382,9 @@ async def list_subscriptions(
             payment_method=r["payment_method"],
             account_id=str(r["account_id"]) if r["account_id"] else None,
             source_message_id=r["source_message_id"],
+            cancellation_url=r["cancellation_url"],
+            notice_period_days=r["notice_period_days"],
+            cancel_by=str(r["cancel_by"]) if r["cancel_by"] else None,
             metadata=sanitized_metadata(r["metadata"]),
             created_at=str(r["created_at"]),
             updated_at=str(r["updated_at"]),
@@ -390,6 +396,74 @@ async def list_subscriptions(
         data=data,
         meta=PaginationMeta(total=total, offset=offset, limit=limit),
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /obligations — forward obligation ledger (bu-8cdl1.10 slice 3)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/obligations", response_model=ObligationsResponse)
+async def list_obligations(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ObligationsResponse:
+    """List the forward obligation ledger, denormalized with each active
+    subscription's service/amount and cancellation-door status.
+
+    Ordered by the nearest actionable deadline (warn_by, else cancel_by,
+    else the renewal period itself) so the soonest action sorts first. Every
+    active subscription has exactly one row (bu-8cdl1.10 slice 2 registers
+    one per (subscription, next_renewal) via ``register_obligations``).
+    """
+    pool = _pool(db)
+
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT ol.subscription_id, ol.period, ol.warn_by, ol.unknown_door,
+                   ol.price_change_amount, ol.price_change_direction,
+                   s.service, s.amount, s.currency, s.cancellation_url,
+                   s.notice_period_days, s.cancel_by
+            FROM finance.obligation_ledger ol
+            JOIN finance.subscriptions s ON s.id = ol.subscription_id
+            WHERE s.status = 'active'
+            ORDER BY COALESCE(ol.warn_by, s.cancel_by, ol.period) ASC
+            """
+        )
+    except Exception:  # noqa: BLE001 -- explicit degraded envelope is fail-closed
+        logger.warning("Finance obligations read is unavailable", exc_info=True)
+        return ObligationsResponse(
+            items=[],
+            count=0,
+            available=False,
+            degraded_reason="obligation_ledger_unavailable",
+        )
+
+    today = date.today()
+    items = []
+    for r in rows:
+        cancel_by = r["cancel_by"]
+        items.append(
+            ObligationModel(
+                subscription_id=str(r["subscription_id"]),
+                service=r["service"],
+                amount=str(r["amount"]),
+                currency=r["currency"],
+                period=str(r["period"]),
+                cancellation_url=r["cancellation_url"],
+                notice_period_days=r["notice_period_days"],
+                cancel_by=str(cancel_by) if cancel_by else None,
+                warn_by=str(r["warn_by"]) if r["warn_by"] else None,
+                unknown_door=r["unknown_door"],
+                price_change_amount=(
+                    str(r["price_change_amount"]) if r["price_change_amount"] is not None else None
+                ),
+                price_change_direction=r["price_change_direction"],
+                days_remaining_to_act=(cancel_by - today).days if cancel_by else None,
+            )
+        )
+
+    return ObligationsResponse(items=items, count=len(items), available=True)
 
 
 # ---------------------------------------------------------------------------

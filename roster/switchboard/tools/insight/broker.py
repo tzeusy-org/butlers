@@ -25,11 +25,13 @@ import asyncpg
 from butlers.core.approvals_policy import (
     get_approvals_policy_quiet_hours,
     is_policy_quiet_now,
+    policy_quiet_hours_deliver_at,
 )
 from butlers.core.attention_ledger import (
     URGENT_PRIORITY_THRESHOLD,
     record_attention_event,
 )
+from butlers.tools.switchboard.insight.catchup import reconcile_catchup_task
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +96,8 @@ async def create_insight_tables(pool: asyncpg.Pool) -> None:
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             status TEXT NOT NULL DEFAULT 'pending',
             delivered_at TIMESTAMPTZ,
-            delivery_attempt_count INTEGER NOT NULL DEFAULT 0
+            delivery_attempt_count INTEGER NOT NULL DEFAULT 0,
+            prepared_action_id UUID
         )
     """)
     # dedup_key is the PRIMARY KEY here (not a synthetic id) to mirror the
@@ -188,12 +191,20 @@ async def propose_insight_candidate(
     cooldown_days: int | None = None,
     channel: str | None = None,
     metadata: dict | None = None,
+    prepared_action_id: Any | None = None,
     now: datetime | None = None,
 ) -> dict[str, str]:
     """Validate and insert an insight candidate into the staging table.
 
     Parameters
     ----------
+    prepared_action_id:
+        bu-2jtfw.11: the ``pending_actions.id`` (in *origin_butler*'s own
+        schema, ``origin='prepared'``) this candidate motivated, if any. When
+        set, the delivery cycle resolves its live status and renders a door
+        (still actionable) or an honest terminal line (already
+        approved/rejected/expired/executed elsewhere) instead of always
+        rendering plain text. ``None`` renders exactly as before this bead.
     now:
         Reference instant for the ``expires_at`` freshness check. Defaults to the
         broker's own clock. A scan that reads its clock once and derives
@@ -265,8 +276,8 @@ async def propose_insight_candidate(
         """
         INSERT INTO insight_candidates
             (origin_butler, priority, category, dedup_key, cooldown_days,
-             expires_at, message, channel, metadata, status)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, 'pending')
+             expires_at, message, channel, metadata, status, prepared_action_id)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, 'pending', $10)
         """,
         origin_butler,
         priority,
@@ -277,6 +288,7 @@ async def propose_insight_candidate(
         message,
         channel,
         metadata,
+        prepared_action_id,
     )
     return {"status": "accepted", "reason": "candidate queued for delivery cycle"}
 
@@ -775,6 +787,107 @@ def _format_standalone(candidate: dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Prepared-action door rendering (bu-2jtfw.11)
+# ---------------------------------------------------------------------------
+
+# A prepared action is still actionable -- render a door.
+_LIVE_PREPARED_STATUSES = frozenset({"pending", "approved"})
+
+# A prepared action is already decided elsewhere -- render an honest line,
+# never a dead button.
+_PREPARED_ACTION_TERMINAL_LINES: dict[str, str] = {
+    "rejected": "(prepared reply was declined)",
+    "expired": "(prepared reply expired)",
+    "executed": "(prepared reply already sent)",
+    "abandoned": "(prepared reply was abandoned)",
+}
+
+# Butlers with a wired prepared-action status resolver (a SECURITY DEFINER
+# lookup narrowly scoped to that butler's own pending_actions -- see
+# alembic/versions/core/core_226_relationship_prepared_action_status_definer.py).
+# A candidate from any other origin_butler renders as plain text: this bead
+# ships only the relationship producer, and guessing a door affordance for an
+# unresolvable status would be worse than omitting it.
+_PREPARED_ACTION_STATUS_QUERIES: dict[str, str] = {
+    "relationship": ("SELECT status FROM public.resolve_relationship_prepared_action_status($1)"),
+}
+
+
+def render_prepared_action_door(
+    prepared_action_id: Any | None, status: str | None
+) -> dict[str, Any] | None:
+    """Return the door affordance for a prepared-action-linked candidate.
+
+    ``None`` means "render as plain text": no prepared action is linked, its
+    status could not be resolved, or it is already terminal at selection time
+    -- never render a dead approve button for an action nothing can still
+    act on.
+    """
+    if prepared_action_id is None or status is None:
+        return None
+    if status not in _LIVE_PREPARED_STATUSES:
+        return None
+    return {"prepared_action_id": str(prepared_action_id), "verbs": ["approve", "dismiss"]}
+
+
+def prepared_action_terminal_line(status: str | None) -> str | None:
+    """Return the honest factual line for a terminal prepared action, or None."""
+    if status is None:
+        return None
+    return _PREPARED_ACTION_TERMINAL_LINES.get(status)
+
+
+def _decorate_candidate_with_door(candidate: dict[str, Any], status: str | None) -> dict[str, Any]:
+    """Return a copy of *candidate* with delivery text annotated for its door.
+
+    Pure with respect to *candidate*: returns a new dict. The result is used
+    only for this cycle's delivery-message formatting -- the stored
+    ``insight_candidates.message`` is never rewritten.
+    """
+    prepared_action_id = candidate.get("prepared_action_id")
+    decorated = dict(candidate)
+    door = render_prepared_action_door(prepared_action_id, status)
+    if door is not None:
+        decorated["message"] = f"{candidate['message']} [reply approve/dismiss]"
+        return decorated
+    terminal_line = prepared_action_terminal_line(status)
+    if terminal_line is not None:
+        decorated["message"] = f"{candidate['message']} {terminal_line}"
+    return decorated
+
+
+async def _resolve_prepared_action_statuses(
+    pool: asyncpg.Pool, candidates: list[dict[str, Any]]
+) -> dict[str, str | None]:
+    """Best-effort resolve the live status of every candidate's prepared action.
+
+    Keyed by ``str(prepared_action_id)``. A missing entry (unresolvable
+    origin_butler, lookup failure, or no matching row) is treated identically
+    to "no linked action" by callers -- this must never turn a broker hiccup
+    into a stuck non-rendering digest.
+    """
+    statuses: dict[str, str | None] = {}
+    for candidate in candidates:
+        prepared_action_id = candidate.get("prepared_action_id")
+        if prepared_action_id is None:
+            continue
+        query = _PREPARED_ACTION_STATUS_QUERIES.get(candidate.get("origin_butler") or "")
+        if query is None:
+            continue
+        try:
+            row = await pool.fetchrow(query, prepared_action_id)
+        except Exception:
+            logger.debug(
+                "insight-delivery-cycle: prepared-action status lookup failed for %s",
+                prepared_action_id,
+                exc_info=True,
+            )
+            row = None
+        statuses[str(prepared_action_id)] = row["status"] if row is not None else None
+    return statuses
+
+
+# ---------------------------------------------------------------------------
 # Correlated-candidate clustering (bu-ep4ks.9 slice 1 — zero-LLM, deterministic)
 # ---------------------------------------------------------------------------
 
@@ -1084,15 +1197,16 @@ _CONTEXT_MAX_HOLD: dict[str, timedelta] = {
 }
 
 
-async def get_suppressing_context_signal(
+async def _get_suppressing_context_signal_detail(
     pool: asyncpg.Pool | None, *, now: datetime | None = None
-) -> str | None:
-    """Return the active context-bus signal type currently holding routine
-    (sub-urgent) insight delivery, or None.
+) -> tuple[str, datetime] | None:
+    """Return ``(signal_type, set_at)`` for the context-bus signal currently
+    holding routine (sub-urgent) insight delivery, or None.
 
-    Deterministic, zero-LLM read of ``public.user_context`` via the existing
-    context-bus module. Fails open (returns None) on any error, matching
-    every other context-bus reader in this codebase.
+    Same selection as :func:`get_suppressing_context_signal`, but also
+    surfaces the winning signal's ``set_at`` so a caller can compute its
+    max-hold suppression-end instant (bu-kqnum.3 slice 3's broker catch-up
+    cycle) without a second context-bus read.
     """
     if pool is None:
         return None
@@ -1116,9 +1230,24 @@ async def get_suppressing_context_signal(
         return None
 
     for signal_type in _CONTEXT_SUPPRESSING_SIGNALS:
-        if any(s.signal_type == signal_type for s in held):
-            return signal_type
+        for s in held:
+            if s.signal_type == signal_type:
+                return signal_type, s.set_at
     return None  # pragma: no cover - `held` is filtered to these signals above.
+
+
+async def get_suppressing_context_signal(
+    pool: asyncpg.Pool | None, *, now: datetime | None = None
+) -> str | None:
+    """Return the active context-bus signal type currently holding routine
+    (sub-urgent) insight delivery, or None.
+
+    Deterministic, zero-LLM read of ``public.user_context`` via the existing
+    context-bus module. Fails open (returns None) on any error, matching
+    every other context-bus reader in this codebase.
+    """
+    detail = await _get_suppressing_context_signal_detail(pool, now=now)
+    return detail[0] if detail is not None else None
 
 
 # ---------------------------------------------------------------------------
@@ -1149,6 +1278,88 @@ def _daily_hold_fallback_reached(now: datetime) -> bool:
     branch in :func:`delivery_cycle` for the travel-day skip/defer rationale.
     """
     return now.hour >= _DAILY_HOLD_FALLBACK_UTC_HOUR
+
+
+# ---------------------------------------------------------------------------
+# Broker catch-up cycle at suppression end (bu-kqnum.3 slice 3)
+# ---------------------------------------------------------------------------
+
+# Today the only way a fully suppressed cycle resumes is the next regularly
+# scheduled cron tick (the daily digest's windowed cron, 06:15-11:45 UTC
+# only, or tomorrow if the hold outlasts that window). Rather than wait on
+# that polling cadence, every fully-suppressed skip reconciles a one-shot
+# catch-up task timed to the suppression's own computed end instant, so the
+# next non-quiet delivery the spec already promises (see
+# openspec/specs/proactive-insight-engine/spec.md "Quiet Hours Suppression")
+# happens close to when the hold actually ends.
+
+
+def _compute_catchup_deliver_at(
+    *,
+    suppression_signal: str | None,
+    policy: dict[str, Any] | None,
+    context_signal_set_at: datetime | None,
+    now: datetime,
+) -> datetime | None:
+    """Return the suppression's own computed end instant, or None when it
+    cannot be determined (no usable policy/signal data — fails open to "no
+    catch-up scheduled", matching every other fail-open path in this
+    module).
+    """
+    if suppression_signal == "quiet_hours":
+        return policy_quiet_hours_deliver_at(policy, now=now)
+    if suppression_signal in _CONTEXT_MAX_HOLD and context_signal_set_at is not None:
+        return context_signal_set_at + _CONTEXT_MAX_HOLD[suppression_signal]
+    return None
+
+
+async def _schedule_insight_catchup(
+    pool: asyncpg.Pool,
+    *,
+    suppression_signal: str | None,
+    suppression_reason: str,
+    policy: dict[str, Any] | None,
+    now: datetime,
+) -> None:
+    """Best-effort reconciliation of the insight-catchup task for the current
+    suppression. Never raises: a scheduling hiccup must not abort the
+    suppressed-cycle return it is attached to (mirrors
+    ``record_attention_event``'s degraded-honesty contract elsewhere in this
+    module).
+
+    Resolves a context-bus signal's ``set_at`` with its own fresh read rather
+    than threading it through from the suppression consult above: that
+    consult goes through the mockable, type-only ``get_suppressing_context_
+    signal`` (the public entry point tests patch), which doesn't carry
+    ``set_at``. A second read here costs nothing extra on the hot
+    (non-suppressed) path since this function is only ever called once a
+    cycle is already fully suppressed, and fails open to "no catch-up
+    scheduled" like every other path in this module if the signal cannot be
+    re-resolved (e.g. it cleared between the two reads).
+    """
+    context_signal_set_at: datetime | None = None
+    if suppression_signal in _CONTEXT_MAX_HOLD:
+        detail = await _get_suppressing_context_signal_detail(pool, now=now)
+        if detail is not None and detail[0] == suppression_signal:
+            context_signal_set_at = detail[1]
+    deliver_at = _compute_catchup_deliver_at(
+        suppression_signal=suppression_signal,
+        policy=policy,
+        context_signal_set_at=context_signal_set_at,
+        now=now,
+    )
+    if deliver_at is None:
+        return
+    try:
+        await reconcile_catchup_task(pool, deliver_at=deliver_at, reason=suppression_reason)
+    except Exception:
+        logger.warning(
+            "insight-delivery-cycle: could not reconcile the catch-up task for "
+            "suppression %r ending at %s",
+            suppression_reason,
+            deliver_at.isoformat(),
+            exc_info=True,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1284,6 +1495,7 @@ async def delivery_cycle(
     # attention-ledger telemetry (bu-ep4ks.9 slice 2) so "held by <signal>"
     # is queryable without parsing `reason`.
     _suppression_signal: str | None = None
+    policy: dict[str, Any] | None = None
     if not urgent_only:
         policy = await get_approvals_policy_quiet_hours(pool)
         _quiet_hours_active = is_policy_quiet_now(policy, now=now)
@@ -1404,6 +1616,13 @@ async def delivery_cycle(
                 reason="travel_day_defer",
                 metadata={"held_by": "traveling"},
             )
+            await _schedule_insight_catchup(
+                pool,
+                suppression_signal=_suppression_signal,
+                suppression_reason=_suppression_reason,
+                policy=policy,
+                now=now,
+            )
             result["skipped"] = True
             return result
         elif daily_hold_mode and _daily_hold_fallback_reached(now):
@@ -1432,6 +1651,13 @@ async def delivery_cycle(
                 intent="insight",
                 reason=_suppression_reason,
                 metadata={"held_by": _suppression_signal},
+            )
+            await _schedule_insight_catchup(
+                pool,
+                suppression_signal=_suppression_signal,
+                suppression_reason=_suppression_reason,
+                policy=policy,
+                now=now,
             )
             result["skipped"] = True
             return result
@@ -1464,7 +1690,7 @@ async def delivery_cycle(
     rows = await pool.fetch(
         """
         SELECT id, origin_butler, priority, category, dedup_key,
-               cooldown_days, message, channel, metadata
+               cooldown_days, message, channel, metadata, prepared_action_id
         FROM insight_candidates
         WHERE id = ANY($1::uuid[]) AND status = 'pending'
         ORDER BY priority DESC, created_at ASC
@@ -1478,6 +1704,20 @@ async def delivery_cycle(
 
     if not selected:
         return result
+
+    # bu-2jtfw.11: decorate any prepared-action-linked candidate's delivery
+    # text with a door (still actionable) or an honest terminal line (already
+    # decided elsewhere) before formatting. This never touches the stored
+    # insight_candidates.message -- only the ephemeral copy used for this
+    # cycle's delivery text.
+    if any(c.get("prepared_action_id") is not None for c in selected):
+        _prepared_statuses = await _resolve_prepared_action_statuses(pool, selected)
+        selected = [
+            _decorate_candidate_with_door(c, _prepared_statuses.get(str(c["prepared_action_id"])))
+            if c.get("prepared_action_id") is not None
+            else c
+            for c in selected
+        ]
 
     # Step 7: Deliver
     # Guard: if no notify function is wired, skip delivery entirely rather than

@@ -5,6 +5,7 @@ roster/finance/tests/test_budgets.py
 roster/finance/tests/test_data_import.py
 roster/finance/tests/test_expected_signals.py
 roster/finance/tests/test_import_transactions_blobstore.py
+roster/lifestyle/tests/test_lifestyle_module.py
 roster/lifestyle/tests/test_lifestyle_spotify_integration.py
 roster/relationship/tests/test_dunbar_ranking_api.py
 roster/relationship/tests/test_entity_facts_repoint_on_merge.py
@@ -32,6 +33,7 @@ tests/api/test_decision_memory_writeback.py
 tests/api/test_general_stats.py
 tests/api/test_google_health_router.py
 tests/api/test_health_measurement_types.py
+tests/api/test_ingestion_connector_detail.py
 tests/api/test_ingestion_connectors_available.py
 tests/api/test_insecure_defaults_indicator.py
 tests/api/test_last_session_started_at.py
@@ -119,6 +121,7 @@ tests/core/healing/test_anonymizer.py
 tests/core/healing/test_label_sanitization_gate.py
 tests/core/qa/test_butler_reports.py
 tests/core/qa/test_journal.py
+tests/core/qa/test_repo_clone.py
 tests/core/qa/test_repo_whitelist.py
 tests/core/qa/test_retention.py
 tests/core/qa/test_session_records.py
@@ -126,6 +129,7 @@ tests/core/qa/test_tool_call_failures.py
 tests/core/qa/test_triage.py
 tests/core/test_active_session_detection.py
 tests/core/test_aes_gcm.py
+tests/core/test_approval_delivery_worker.py
 tests/core/test_approvals_hooks.py
 tests/core/test_attention_ledger.py
 tests/core/test_dashboard_channel_extensions.py
@@ -141,6 +145,7 @@ tests/core/test_scheduler_legacy_schema.py
 tests/core/test_spawner_failover_verification.py
 tests/core/test_spawner_mcp_config.py
 tests/core/test_spawner_merge_tool_calls.py
+tests/core/test_spawner_provider.py
 tests/core/test_spawner_quota_ceiling_fold.py
 tests/core/test_spawner_situational_context.py
 tests/core/test_spawner_speculative_prewarm.py
@@ -183,6 +188,7 @@ tests/migrations/test_migrate_interaction_subjects.py
 tests/migrations/test_model_catalog_verify_error_migration.py
 tests/migrations/test_model_dispatch_attempts_migration.py
 tests/migrations/test_runtime_probe_control_receipts_migration.py
+tests/migrations/test_runtime_probe_control_receipts_owner_fence_migration.py
 tests/migrations/test_seed_long_tail_relational_predicates_migration.py
 tests/migrations/test_seed_works_at_member_of_migration.py
 tests/migrations/test_shared_pool_test_state_migration.py
@@ -210,6 +216,8 @@ tests/relationship/test_relationship_assert_fact_unit.py
 tests/relationship/test_relationship_lookup.py
 tests/scripts/test_backfill_entity_fact_observed_at.py
 tests/scripts/test_check_ci_test_shards.py
+tests/scripts/test_check_test_budget.py
+tests/scripts/test_ci_test_plan.py
 tests/scripts/test_combine_review_comment_sources.py
 tests/scripts/test_compose_frontend_dev_lockfile_guard.py
 tests/scripts/test_dockerfile_base_runtime_tools.py

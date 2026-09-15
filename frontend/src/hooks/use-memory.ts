@@ -21,7 +21,9 @@ import {
   getRules,
   inspectMemory,
   promoteEntity,
+  retireRule,
   retractFact,
+  retryEpisodeConsolidation,
   revealEntitySecret,
   setEntityLinkedContact,
   unlinkEntityContact,
@@ -29,6 +31,9 @@ import {
   updateMemoryRetentionPolicies,
   getDunbarRanking,
   forgetRelationshipEntity,
+  getLifestyleTasteSummary,
+  getLifestyleTasteWorks,
+  getLifestyleTasteVerdicts,
 } from "@/api/index.ts";
 import type {
   ApiResponse,
@@ -39,8 +44,11 @@ import type {
   Fact,
   FactParams,
   MemoryInspectParams,
+  MemoryRule,
   PaginatedResponse,
   RuleParams,
+  TasteVerdictsParams,
+  TasteWorksParams,
   UpdateEntityRequest,
   UpdateRetentionPoliciesRequest,
 } from "@/api/types.ts";
@@ -101,6 +109,26 @@ export function useEpisode(episodeId: string | undefined) {
     queryKey: ["memory-episode", episodeId],
     queryFn: () => getEpisode(episodeId!),
     enabled: !!episodeId,
+  });
+}
+
+/**
+ * Retry consolidation for a dead-lettered episode (POST
+ * /butlers/{butler}/memory/episodes/{id}/retry-consolidation). On success,
+ * invalidates the single-episode and episodes-list caches so the daybook and
+ * detail page reflect the reset to 'pending' immediately, plus memory-stats
+ * so the rail's dead-letter count drops. bu-6t8ix.2.
+ */
+export function useRetryEpisodeConsolidation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ butler, episodeId }: { butler: string; episodeId: string }) =>
+      retryEpisodeConsolidation(butler, episodeId),
+    onSuccess: (_, { episodeId }) => {
+      void queryClient.invalidateQueries({ queryKey: ["memory-episode", episodeId] });
+      void queryClient.invalidateQueries({ queryKey: ["memory-episodes"] });
+      void queryClient.invalidateQueries({ queryKey: ["memory-stats"] });
+    },
   });
 }
 
@@ -245,6 +273,41 @@ export function useRule(ruleId: string | null) {
     queryKey: ["memory-rule", ruleId],
     queryFn: () => getRule(ruleId!),
     enabled: !!ruleId,
+  });
+}
+
+/**
+ * Retire a rule (PATCH /rules/:id/retire). On success, invalidates the
+ * single-rule and rules-list caches so the detail page reflects the retired
+ * state immediately. bu-6t8ix.3.
+ */
+export function useRetireRule() {
+  return useOptimisticMutation<ApiResponse<MemoryRule>, string, ListSnapshot>({
+    mutationFn: (ruleId: string) => retireRule(ruleId),
+    cancelQueryKeys: (ruleId) => [
+      ["memory-rule", ruleId],
+      ["memory-rules"],
+    ],
+    applyOptimisticUpdate: (ruleId, queryClient) => {
+      // The precise server timestamp reconciles on settle; a client
+      // timestamp is sufficient to make the commit footer reflect the
+      // retirement immediately.
+      const retiredAt = new Date().toISOString();
+      const detailSnapshot = snapshotAndUpdateQueries<ApiResponse<MemoryRule>>(
+        queryClient,
+        ["memory-rule", ruleId],
+        (current) =>
+          current
+            ? { ...current, data: { ...current.data, retired_at: retiredAt } }
+            : current,
+      );
+      return detailSnapshot;
+    },
+    rollback: (snapshot, queryClient) => rollbackLists(queryClient, snapshot),
+    invalidateQueryKeys: (ruleId) => [
+      ["memory-rule", ruleId],
+      ["memory-rules"],
+    ],
   });
 }
 
@@ -438,44 +501,38 @@ export function useDunbarRanking(enabled: boolean = false) {
 }
 
 // ---------------------------------------------------------------------------
-// Lifestyle memory hooks
+// Lifestyle taste ledger hooks (bu-2jtfw.10)
+//
+// Replace the old useButlerFacts hook, which filtered facts to subject="user"
+// (missing 59 of 61 taste rows stored under spotify:* subjects) and dropped
+// meta.total in favour of the fetched page's .length. These hooks read the
+// ledger-backed /api/lifestyle/taste/* surface, which reports honest totals.
 // ---------------------------------------------------------------------------
 
-/**
- * Fetch up to `limit` active facts for a butler/subject pair with a single
- * stable cache key. Callers supply a `select` function to derive a
- * panel-specific slice from the shared cache entry — React Query caches the
- * full network response once and applies each subscriber's `select`
- * independently, so multiple calls with different `select` functions share the
- * same network request.
- *
- * Cache key: ["memory-butler-facts", butler, subject, limit]
- * Endpoint:  GET /memory/facts?subject=<subject>&scope=<butler>&validity=active&limit=<limit>
- *
- * @param butler  Butler name (e.g. "lifestyle"). Partitions the cache per butler.
- * @param subject Fact subject (e.g. "user").
- * @param select  Optional filter returning a subset of Fact[]. When omitted,
- *                returns all facts unchanged.
- * @param limit   Maximum facts to fetch (default 200).
- */
-export function useButlerFacts({
-  butler,
-  subject,
-  select,
-  limit = 200,
-}: {
-  butler: string;
-  subject: string;
-  select?: (facts: Fact[]) => Fact[];
-  limit?: number;
-}) {
+/** Ledger-wide taste counts. GET /api/lifestyle/taste/summary. */
+export function useLifestyleTasteSummary() {
   return useQuery({
-    queryKey: ["memory-butler-facts", butler, subject, limit],
-    queryFn: async () => {
-      const res = await getFacts({ subject, scope: butler, validity: "active", limit });
-      return res.data ?? [];
-    },
-    select,
+    queryKey: ["lifestyle-taste-summary"],
+    queryFn: () => getLifestyleTasteSummary(),
+    select: (res) => res.data,
+    refetchInterval: MEMORY_POLL_SLOW_MS,
+  });
+}
+
+/** Paginated taste-ledger works list. */
+export function useLifestyleTasteWorks(params?: TasteWorksParams) {
+  return useQuery({
+    queryKey: ["lifestyle-taste-works", params],
+    queryFn: () => getLifestyleTasteWorks(params),
+    refetchInterval: MEMORY_POLL_SLOW_MS,
+  });
+}
+
+/** Paginated owner-asserted taste verdicts (includes migrated legacy facts). */
+export function useLifestyleTasteVerdicts(params?: TasteVerdictsParams) {
+  return useQuery({
+    queryKey: ["lifestyle-taste-verdicts", params],
+    queryFn: () => getLifestyleTasteVerdicts(params),
     refetchInterval: MEMORY_POLL_SLOW_MS,
   });
 }

@@ -142,6 +142,20 @@ def register_infra_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> No
             "modules": modules_dict,
             "health": health,
             "uptime_seconds": round(uptime_seconds, 1),
+            "tool_surface": {
+                "declared_names": sorted(getattr(daemon, "_declared_tool_names", set())),
+                "effective_names": sorted(getattr(daemon, "_effective_tool_names", set())),
+                "registered_names": sorted(getattr(daemon, "_registered_tool_names", set())),
+                "registration_failures": [
+                    {"tool_name": tool_name, **failure}
+                    for tool_name, failure in sorted(
+                        getattr(daemon, "_tool_registration_failures", {}).items()
+                    )
+                ],
+                "declaration_complete": not any(
+                    status.status != "active" for status in daemon._module_statuses.values()
+                ),
+            },
         }
 
     @_core_tool("infra")
@@ -204,7 +218,6 @@ def register_infra_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> No
         )
         return {"dispatched": count}
 
-    @_core_tool("infra")
     async def correct(
         correction_type: str,
         target_session_id: str,
@@ -217,8 +230,6 @@ def register_infra_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> No
         memory_id: str | None = None,
         action_description: str | None = None,
     ) -> dict[str, Any]:
-        __doc__ = CORRECT_TOOL_DESCRIPTION  # noqa: F841
-
         import uuid as _uuid
 
         correcting_session_id_str = get_current_runtime_session_id()
@@ -351,3 +362,10 @@ def register_infra_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> No
                 "correction_id": "",
                 "summary": FAILURE_MESSAGES["unknown_correction_type"].format(type=correction_type),
             }
+
+    # CORRECT_TOOL_DESCRIPTION is assigned here (rather than as a literal
+    # docstring) because the MCP-exposed description must stay a single
+    # source of truth shared with tests/core/test_corrections.py's static
+    # contract check.
+    correct.__doc__ = CORRECT_TOOL_DESCRIPTION
+    correct = _core_tool("infra")(correct)
