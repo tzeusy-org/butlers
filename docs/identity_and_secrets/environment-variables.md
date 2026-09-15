@@ -33,7 +33,11 @@ The OTLP endpoint is configured identically for all butler processes. The tracin
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DASHBOARD_API_KEY` | (none) | When set, enables API key authentication on all dashboard endpoints. Requests must include `X-API-Key` header or `api_key` query parameter. |
+| `DASHBOARD_API_KEY` | (none) | Configured-key mode: non-browser `X-API-Key` or HTTPS key-to-session login. An absent key selects protected passkey enrollment/login. No query-parameter credential is accepted. Host reconciliation is required for mode/key changes. |
+| `DASHBOARD_AUTH_ORIGIN` | (none) | Exact canonical `https://<dns-host>` origin on port 443; no path, wildcard, alias or HTTP fallback. |
+| `DASHBOARD_AUTH_RP_ID` | (none) | The same exact DNS hostname, without scheme or path. |
+| `DASHBOARD_AUTH_DEPLOYMENT` | `default` | Stable deployment suffix, unique on the origin: lowercase ASCII letters/digits with interior hyphens, at most 32 characters. Scopes cookie names, not browser trust. |
+| `DASHBOARD_AUTH_TRUSTED_PROXY_PEERS` | (none) | Comma-separated exact IP addresses of trusted raw ASGI proxy peers. Empty rejects proxy authority; no CIDR or request-derived trust. |
 | `DASHBOARD_STATIC_DIR` | (none) | Path to the built frontend directory (e.g., `frontend/dist/`). When set, mounts a static file server at `/` for production mode. |
 
 ## Google OAuth Bootstrap Variables
@@ -132,16 +136,11 @@ print('OTLP endpoint:', endpoint or '(not set -- no-op tracer in use)')
 # Expected: if set, value is an HTTP URL like 'http://localhost:4318';
 # if unset, the tracer is in no-op mode (no error, just no traces exported)
 
-# 5. Verify DASHBOARD_API_KEY is enforced when set
-if [ -n "${DASHBOARD_API_KEY:-}" ]; then
-  curl -s -o /dev/null -w "%{http_code}" http://localhost:40200/api/butlers
-  # Expected: 401 (Unauthorized) without the header
-  curl -s -o /dev/null -w "%{http_code}" \
-    -H "X-API-Key: ${DASHBOARD_API_KEY}" http://localhost:40200/api/butlers
-  # Expected: 200 with the header
-else
-  echo "DASHBOARD_API_KEY not set -- authentication is disabled (opt-in feature)"
-fi
+# 5. Unauthenticated dashboard requests disclose no private data
+curl -s -o /dev/null -w "%{http_code}" http://localhost:41200/api/butlers
+# Expected: 401, or 503 when auth state is unavailable.
+# An absent DASHBOARD_API_KEY does not disable the owner boundary.
+# Validate successful owner access through the canonical HTTPS browser flow.
 
 # 6. Confirm connector variables are present in the running connector environment
 docker compose exec connector-gmail env | grep -E '^(SWITCHBOARD|CONNECTOR)_'

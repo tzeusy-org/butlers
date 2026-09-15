@@ -195,6 +195,22 @@ correct DatabaseManager instance.
 
 ---
 
+### Owner authentication before dashboard domain access
+
+The browser first completes the dedicated WebAuthn/session contract over the
+canonical HTTPS origin. Authentication-store access is bounded and separate
+from domain-pool acquisition: the central boundary must establish the owner
+before reading request bodies, domain records, caches or owner/contact rows.
+Unsafe cookie-backed requests additionally pass synchronizer CSRF and exact
+Origin validation. The resulting principal does not skip domain-specific
+approval, privacy, idempotency or owner-integrity checks.
+
+Host CLI operations use trusted administrative access for initial authorization,
+recovery and mode reconciliation. The API can complete only an already-authorized
+browser-bound ceremony through restricted persistence operations. No MCP tool,
+connector or runtime child receives host authorization authority. See
+[owner authentication](../../docs/identity_and_secrets/dashboard-owner-auth.md).
+
 ## 6. Butler to Butler: MCP via Switchboard
 
 **Rule**: Butlers never communicate directly. All inter-butler communication
