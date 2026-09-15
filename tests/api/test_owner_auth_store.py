@@ -569,6 +569,13 @@ async def test_factory_requires_real_restricted_login_and_reset_role_cannot_rest
                 await connection.execute(f"SET ROLE {postgres_container.username}")
         await close_owner_auth_service(restricted)
         restricted = None
+        await store.pool.execute("ALTER ROLE synthetic_dashboard_login REPLICATION")
+        try:
+            replication = await create_owner_auth_service(store.config)
+            assert replication.pool is None
+            await close_owner_auth_service(replication)
+        finally:
+            await store.pool.execute("ALTER ROLE synthetic_dashboard_login NOREPLICATION")
         # NOINHERIT does not help: a SET ROLE-capable ancestor still grants host authority.
         await store.pool.execute(
             "CREATE ROLE synthetic_host_login_capability NOLOGIN; GRANT EXECUTE ON FUNCTION dashboard_auth.host(text,jsonb) TO synthetic_host_login_capability; GRANT synthetic_host_login_capability TO synthetic_dashboard_login"
@@ -583,3 +590,110 @@ async def test_factory_requires_real_restricted_login_and_reset_role_cannot_rest
         if restricted:
             await close_owner_auth_service(restricted)
         await store.pool.execute("DROP ROLE synthetic_dashboard_login")
+
+
+async def _wait_for_lock_then_deadline(connection):
+    for _ in range(100):
+        await connection.execute("SELECT pg_stat_clear_snapshot()")
+        waiting = await connection.fetchval(
+            "SELECT EXISTS(SELECT FROM pg_stat_activity WHERE datname=current_database() "
+            "AND wait_event_type='Lock' AND pid<>pg_backend_pid())"
+        )
+        if waiting:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("The competing authentication transaction never waited for its lock")
+    await connection.execute("SELECT pg_sleep(0.3)")
+
+
+@pytest.mark.parametrize("held_row", ["instance", "ceremonies"])
+async def test_finish_rechecks_absolute_deadline_after_final_lock_wait(
+    store, monkeypatch, held_row
+):
+    context, intent, options, key, response = await registration(store)
+    final_ready = asyncio.Event()
+    release_verifier = asyncio.Event()
+    call = store._call
+
+    async def pause_before_final(action, **values):
+        if action == "finish_registration":
+            final_ready.set()
+            await release_verifier.wait()
+        return await call(action, **values)
+
+    monkeypatch.setattr(store, "_call", pause_before_final)
+    finish = asyncio.create_task(
+        store.finish_registration(
+            context.token,
+            context.data["csrf_token"],
+            options["ceremony_id"],
+            response,
+        )
+    )
+    await asyncio.wait_for(final_ready.wait(), 2)
+    async with store.pool.acquire() as blocker:
+        async with blocker.transaction():
+            await blocker.execute(f"SELECT 1 FROM dashboard_auth.{held_row} FOR UPDATE")
+            await blocker.execute(
+                "UPDATE dashboard_auth.ceremonies SET expires_at=clock_timestamp()+interval '200 milliseconds'"
+            )
+            release_verifier.set()
+            await _wait_for_lock_then_deadline(blocker)
+    with pytest.raises(AuthError) as denied:
+        await asyncio.wait_for(finish, 2)
+    assert denied.value.code == "AUTH_RESTART_REQUIRED"
+    assert await store.pool.fetchval("SELECT count(*) FROM dashboard_auth.credentials") == 0
+    assert await store.pool.fetchval("SELECT count(*) FROM dashboard_auth.sessions") == 0
+    assert not await store.pool.fetchval("SELECT consumed FROM dashboard_auth.ceremonies")
+
+
+async def test_host_approval_rechecks_deadline_after_singleton_lock_wait(store):
+    context = await store.context()
+    intent = await store.intent(context.token, context.data["csrf_token"], "enroll")
+    async with store.pool.acquire() as blocker:
+        async with blocker.transaction():
+            await blocker.execute("SELECT 1 FROM dashboard_auth.instance FOR UPDATE")
+            await blocker.execute(
+                "UPDATE dashboard_auth.intents SET expires_at=clock_timestamp()+interval '200 milliseconds'"
+            )
+            approval = asyncio.create_task(
+                host(store, "authorize_registration", request_id=intent["request_id"])
+            )
+            await _wait_for_lock_then_deadline(blocker)
+    with pytest.raises(AuthError) as denied:
+        await asyncio.wait_for(approval, 2)
+    assert denied.value.code == "AUTH_RESTART_REQUIRED"
+    assert not await store.pool.fetchval("SELECT authorized FROM dashboard_auth.intents")
+
+
+async def test_bad_configured_key_attempts_share_budget_and_do_not_mint_sessions(store):
+    store.config.api_key = "synthetic-current-key"
+    await host(store, "reconcile_mode", confirm_revoke=True)
+    second = OwnerAuthService(store.pool, store.config)
+    for i in range(120):
+        with pytest.raises(AuthError) as denied:
+            await (store if i % 2 else second).key_session("wrong-synthetic-key")
+        assert denied.value.code == "UNAUTHORIZED"
+    with pytest.raises(AuthError) as limited:
+        await second.key_session("synthetic-current-key")
+    assert limited.value.code == "RATE_LIMITED"
+    assert await store.pool.fetchval("SELECT count(*) FROM dashboard_auth.sessions") == 0
+    await store.pool.execute("UPDATE dashboard_auth.rate_buckets SET count=0")
+    await store.key_session("synthetic-current-key")
+    assert (
+        await store.pool.fetchval(
+            "SELECT count FROM dashboard_auth.rate_buckets WHERE kind='finish'"
+        )
+        == 1
+    )
+
+
+async def test_consumed_receipts_remain_for_full_day_before_payload_cleanup(store):
+    await enrolled(store)
+    await store.pool.execute(
+        "UPDATE dashboard_auth.intents SET expires_at=clock_timestamp()-interval '23 hours 30 minutes'; UPDATE dashboard_auth.ceremonies SET expires_at=clock_timestamp()-interval '23 hours 30 minutes'"
+    )
+    await store.cleanup()
+    assert await store.pool.fetchval("SELECT count(*) FROM dashboard_auth.intents") == 1
+    assert await store.pool.fetchval("SELECT count(*) FROM dashboard_auth.ceremonies") == 1

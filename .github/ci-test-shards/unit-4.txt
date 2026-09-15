@@ -81,6 +81,7 @@ tests/chronicler/test_sleep_stitching.py
 tests/chronicler/test_storage.py
 tests/chronicler/test_telemetry_participant_resolution.py
 tests/cli/test_cli.py
+tests/cli/test_owner_auth_commands.py
 tests/config/test_bounded_revision_downgrade_guard.py
 tests/config/test_config.py
 tests/config/test_credential_store.py

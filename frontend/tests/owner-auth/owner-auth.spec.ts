@@ -99,10 +99,33 @@ test("real HTTPS native passkey lifecycle, independent CSRF, recovery and privat
     await authenticator.cdp.send("WebAuthn.setAutomaticPresenceSimulation", { authenticatorId: authenticator.authenticatorId, enabled: true });
     await page.getByRole("button", { name: "Sign in with passkey" }).click();
     await expect.poll(async () => (await status(page)).authenticated).toBe(true);
-    phase = "expiry-and-revocation";
+    phase = "live-stream-and-query-teardown";
+    const evidence = () => page.evaluate(async () => (await fetch("/__test__/evidence")).json());
+    await expect.poll(async () => (await evidence()).websockets).toBeGreaterThan(0);
+    await expect.poll(async () => (await evidence()).pending_queries).toBeGreaterThan(0);
+    await page.evaluate(() => {
+      const observation = { chunks: 0, ended: false };
+      Object.assign(window, { ownerStreamEvidence: observation });
+      void (async () => {
+        try {
+          const response = await fetch("/api/test-stream");
+          const reader = response.body!.getReader();
+          while (!(await reader.read()).done) observation.chunks += 1;
+        } finally { observation.ended = true; }
+      })();
+    });
+    await expect.poll(async () => (await evidence()).sse).toBe(1);
+    await expect.poll(() => page.evaluate(() => (window as unknown as { ownerStreamEvidence: { chunks: number } }).ownerStreamEvidence.chunks)).toBeGreaterThan(0);
     host("expire-sessions");
-    await page.reload();
+    // The actual socket close purges the gate and aborts the pending React query
+    // without navigation, reload, or a test-triggered HTTP 401.
     await expect(page.getByRole("button", { name: "Sign in with passkey" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Owner session" })).not.toBeVisible();
+    await expect.poll(async () => (await evidence()).websockets).toBe(0);
+    await expect.poll(async () => (await evidence()).pending_queries).toBe(0);
+    await expect.poll(async () => (await evidence()).sse).toBe(0);
+    await expect.poll(() => page.evaluate(() => (window as unknown as { ownerStreamEvidence: { ended: boolean } }).ownerStreamEvidence.ended)).toBe(true);
+    phase = "expiry-and-revocation";
     await page.getByRole("button", { name: "Sign in with passkey" }).click();
     await expect.poll(async () => (await status(page)).authenticated).toBe(true);
     await page.getByRole("button", { name: "Owner session" }).click();
@@ -127,12 +150,62 @@ test("real HTTPS native passkey lifecycle, independent CSRF, recovery and privat
     await recoveryPage.getByRole("button", { name: "Sign in with passkey" }).click();
     await expect.poll(async () => (await status(recoveryPage)).authenticated).toBe(true);
     // Sensitive material is neither persisted in browser storage nor captured in traces.
-    const stored = await recoveryPage.evaluate(() => [...Object.keys(localStorage), ...Object.keys(sessionStorage)]);
-    expect(stored.some(key => /csrf|passkey|credential|api.?key|owner.?session/i.test(key))).toBe(false);
+    const stored = await recoveryPage.evaluate(async () => {
+      localStorage.setItem("synthetic-public-control", "capture-active");
+      const keys = [...Object.keys(localStorage), ...Object.keys(sessionStorage)];
+      const values = JSON.stringify([Object.entries(localStorage), Object.entries(sessionStorage)]);
+      const { data } = await (await fetch("/api/auth/owner/csrf", { mode: "cors" })).json();
+      const csrfAbsent = !values.includes(data.csrf_token);
+      localStorage.removeItem("synthetic-public-control");
+      return { keys, values, csrfAbsent };
+    });
+    expect(stored.values.includes("capture-active")).toBe(true);
+    expect(stored.csrfAbsent).toBe(true);
+    expect(stored.keys.some(key => /csrf|passkey|credential|api.?key|owner.?session/i.test(key))).toBe(false);
+    const privateValues = [cookies[0].value, ...(await replacement.cookies()).map(c => c.value),
+      ...virtualCredentials.credentials.flatMap(c => [c.credentialId, c.privateKey, c.userHandle ?? ""])].filter(Boolean);
+    expect(privateValues.some(value => stored.values.includes(value))).toBe(false);
     await replacement.close(); await context.close();
   } catch {
     // Native/CLI/Playwright failures can contain ceremony values or call arguments.
     // Retain only the closed phase label; inspect locally with content-blind probes.
     throw new Error(`Owner authentication browser verification failed during ${phase}.`);
+  } finally { await browser.close(); await fixture.close(); }
+});
+
+
+test("configured key browser session and independent automation", async () => {
+  const target = process.env.OWNER_AUTH_TEST_API_URL;
+  const key = process.env.OWNER_AUTH_TEST_CONFIGURED_KEY;
+  if (!target || !key || process.env.OWNER_AUTH_TEST_ISOLATED !== "1") throw new Error("Start the isolated configured-key harness.");
+  const fixture = await startOwnerAuthHttps(target);
+  const browser = await chromium.launch({ args: [`--host-resolver-rules=MAP butlers.example.test 127.0.0.1:${fixture.port}`, "--no-proxy-server"] });
+  try {
+    const context = await browser.newContext({ ignoreHTTPSErrors: true });
+    const page = await context.newPage();
+    await page.goto(origin);
+    expect((await status(page)).state).toBe("configured_key");
+    await expect(page.getByRole("button", { name: "Sign in with passkey" })).not.toBeVisible();
+    await page.getByLabel("Dashboard API key").fill("wrong-synthetic-key");
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await expect(page.getByText("Access could not be verified. Start again.")).toBeVisible();
+    await expect(page.getByLabel("Dashboard API key")).toHaveValue("");
+    await page.getByLabel("Dashboard API key").fill(key);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Owner session" })).toBeVisible();
+    expect((await status(page)).authenticated).toBe(true);
+    const automated = await fetch(`${target}/api/test-private`, { headers: { "X-API-Key": key } });
+    expect(automated.status).toBe(200);
+    const rejected = await page.evaluate(async () => (await fetch("/api/test-private", { headers: { "X-API-Key": "invalid-header" } })).status);
+    expect(rejected).toBe(401);
+    const stored = await page.evaluate(() => JSON.stringify([Object.entries(localStorage), Object.entries(sessionStorage)]));
+    expect(stored.includes(key)).toBe(false);
+    await page.getByRole("button", { name: "Owner session" }).click();
+    await page.getByRole("button", { name: "Sign out this browser" }).click();
+    await expect(page.getByLabel("Dashboard API key")).toHaveValue("");
+    expect((await status(page)).authenticated).toBe(false);
+    await context.close();
+  } catch {
+    throw new Error("Owner authentication browser verification failed during configured-key lifecycle.");
   } finally { await browser.close(); await fixture.close(); }
 });

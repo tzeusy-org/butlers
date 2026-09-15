@@ -6,7 +6,7 @@ DO $$ BEGIN
   CREATE ROLE dashboard_auth_api NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
  END IF;
  IF EXISTS (SELECT FROM pg_roles WHERE rolname='dashboard_auth_api'
-  AND (rolsuper OR rolcreaterole OR rolcreatedb OR rolbypassrls OR rolcanlogin))
+  AND (rolsuper OR rolcreaterole OR rolcreatedb OR rolbypassrls OR rolreplication OR rolcanlogin))
   OR EXISTS (SELECT FROM pg_auth_members m JOIN pg_roles r ON r.oid=m.member
    WHERE r.rolname='dashboard_auth_api') THEN
   RAISE EXCEPTION 'dashboard authentication role must be restricted';
@@ -86,6 +86,7 @@ DECLARE
  cap integer; n integer; result jsonb; mode_ok boolean; browser_ok boolean;
 BEGIN
  SELECT * INTO s FROM dashboard_auth.instance WHERE singleton FOR UPDATE;
+ t := clock_timestamp();
  IF NOT FOUND THEN RETURN '{"error":"AUTH_UNAVAILABLE"}'; END IF;
  mode_ok := s.key_generation IS NOT DISTINCT FROM p->>'key_generation';
  browser_ok := COALESCE(mode_ok AND s.origin IS NOT NULL AND s.origin=p->>'origin'
@@ -144,13 +145,13 @@ BEGIN
   RETURN '{}';
  END IF;
  IF NOT browser_ok THEN RETURN '{"error":"AUTH_UNAVAILABLE"}'; END IF;
- IF action='key_session' AND s.state<>'configured_key' THEN RETURN '{"error":"AUTH_UNAVAILABLE"}'; END IF;
- IF action NOT IN ('key_session','context') AND s.state='configured_key' THEN
+ IF action IN ('key_session','key_session_attempt') AND s.state<>'configured_key' THEN RETURN '{"error":"AUTH_UNAVAILABLE"}'; END IF;
+ IF action NOT IN ('key_session','key_session_attempt','context') AND s.state='configured_key' THEN
   RETURN '{"error":"AUTH_UNAVAILABLE"}'; END IF;
  -- Fixed, global buckets are independent of visitor-supplied labels.
  bucket := CASE WHEN action='context' THEN 'context'
   WHEN action IN ('registration_options','login_options') THEN 'options'
-  WHEN action IN ('snapshot_registration','snapshot_login','key_session') THEN 'finish' END;
+  WHEN action IN ('snapshot_registration','snapshot_login','key_session_attempt') THEN 'finish' END;
  IF bucket IS NOT NULL THEN
   cap := CASE bucket WHEN 'context' THEN 30 WHEN 'options' THEN 60 ELSE 120 END;
   INSERT INTO dashboard_auth.rate_buckets(kind,minute,count)
@@ -160,6 +161,7 @@ BEGIN
    RETURNING count INTO n;
   IF n>cap THEN RETURN '{"error":"RATE_LIMITED"}'; END IF;
  END IF;
+ IF action='key_session_attempt' THEN RETURN '{}'; END IF;
  IF action='context' THEN
   SELECT count(*) INTO n FROM dashboard_auth.contexts WHERE NOT revoked AND expires_at>t;
   IF n>=64 THEN RETURN '{"error":"RATE_LIMITED"}'; END IF;
@@ -170,6 +172,7 @@ BEGIN
  END IF;
  IF action<>'key_session' THEN
   SELECT * INTO c FROM dashboard_auth.contexts WHERE digest=p->>'context_digest' FOR UPDATE;
+  t := clock_timestamp();
   IF NOT FOUND THEN RETURN '{"error":"UNAUTHORIZED"}'; END IF;
   IF c.revoked OR c.expires_at<=t THEN RETURN '{"error":"AUTH_RESTART_REQUIRED"}'; END IF;
   IF c.csrf_digest IS DISTINCT FROM p->>'csrf_digest' THEN RETURN '{"error":"FORBIDDEN"}'; END IF;
@@ -211,6 +214,7 @@ BEGIN
  IF action IN ('registration_options','login_options') THEN
   IF action='registration_options' THEN
    SELECT * INTO i FROM dashboard_auth.intents WHERE id=p->>'request_id' FOR UPDATE;
+  t := clock_timestamp();
    IF NOT FOUND OR i.context_digest<>c.digest OR i.consumed OR i.expires_at<=t
     OR i.credential_epoch<>s.credential_epoch THEN RETURN '{"error":"AUTH_RESTART_REQUIRED"}'; END IF;
    IF NOT i.authorized THEN RETURN jsonb_build_object('state','pending','expires_at',i.expires_at); END IF;
@@ -233,6 +237,7 @@ BEGIN
   SELECT * INTO i FROM dashboard_auth.intents WHERE id=(
    SELECT intent_id FROM dashboard_auth.ceremonies WHERE id=p->>'ceremony_id') FOR UPDATE;
   SELECT * INTO q FROM dashboard_auth.ceremonies WHERE id=p->>'ceremony_id' FOR UPDATE;
+  t := clock_timestamp();
   IF NOT FOUND OR q.context_digest<>c.digest OR q.consumed OR q.expires_at<=t
    OR q.credential_epoch<>s.credential_epoch OR q.session_epoch<>s.session_epoch THEN
    RETURN '{"error":"AUTH_RESTART_REQUIRED"}'; END IF;
@@ -251,6 +256,10 @@ BEGIN
   IF action IN ('snapshot_registration','snapshot_login') THEN
    RETURN jsonb_build_object('ceremony',to_jsonb(q),'credential',to_jsonb(k));
   END IF;
+  -- Lock waits never preserve authority past its absolute DB-clock deadline.
+  t := clock_timestamp();
+  IF c.expires_at<=t OR q.expires_at<=t OR (i.id IS NOT NULL AND i.expires_at<=t) THEN
+   RETURN '{"error":"AUTH_RESTART_REQUIRED"}'; END IF;
   -- A verifier result is accepted only for the exact snapshot still current.
   IF p->>'challenge' IS DISTINCT FROM q.challenge OR
    (p->>'credential_epoch')::bigint<>s.credential_epoch THEN RETURN '{"error":"AUTH_RESTART_REQUIRED"}'; END IF;
@@ -300,6 +309,7 @@ DECLARE s dashboard_auth.instance%ROWTYPE; i dashboard_auth.intents%ROWTYPE;
  t timestamptz := clock_timestamp(); next_state text; event text;
 BEGIN
  SELECT * INTO s FROM dashboard_auth.instance WHERE singleton FOR UPDATE;
+ t := clock_timestamp();
  IF NOT FOUND THEN RETURN '{"error":"AUTH_UNAVAILABLE"}'; END IF;
  IF action='revoke_sessions' THEN
   IF NOT COALESCE((p->>'confirm_revoke')::boolean,false) THEN RETURN '{"error":"FORBIDDEN"}'; END IF;
@@ -331,6 +341,7 @@ BEGIN
    OR s.origin IS NULL OR s.key_generation IS DISTINCT FROM p->>'key_generation'
    OR s.state='configured_key' THEN RETURN '{"error":"AUTH_UNAVAILABLE"}'; END IF;
   SELECT * INTO i FROM dashboard_auth.intents WHERE id=p->>'request_id' FOR UPDATE;
+  t := clock_timestamp();
   IF NOT FOUND OR i.consumed OR i.expires_at<=t OR i.credential_epoch<>s.credential_epoch
    OR NOT EXISTS(SELECT FROM dashboard_auth.contexts WHERE digest=i.context_digest
     AND NOT revoked AND expires_at>t) THEN RETURN '{"error":"AUTH_RESTART_REQUIRED"}'; END IF;
@@ -371,8 +382,8 @@ LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,dashboard_auth AS $
 DECLARE t timestamptz := clock_timestamp();
 BEGIN
  -- A bounded batch per table. Repeated independent sweeps drain historical state.
- DELETE FROM dashboard_auth.intents WHERE id IN (SELECT id FROM dashboard_auth.intents WHERE expires_at<t-interval '23 hours' LIMIT 1000);
- DELETE FROM dashboard_auth.ceremonies WHERE id IN (SELECT id FROM dashboard_auth.ceremonies WHERE expires_at<t-interval '23 hours' LIMIT 1000);
+ DELETE FROM dashboard_auth.intents WHERE id IN (SELECT id FROM dashboard_auth.intents WHERE expires_at<t-interval '24 hours' LIMIT 1000);
+ DELETE FROM dashboard_auth.ceremonies WHERE id IN (SELECT id FROM dashboard_auth.ceremonies WHERE expires_at<t-interval '24 hours' LIMIT 1000);
  DELETE FROM dashboard_auth.contexts WHERE digest IN (SELECT digest FROM dashboard_auth.contexts WHERE expires_at<t-interval '23 hours' LIMIT 1000);
  DELETE FROM dashboard_auth.sessions WHERE digest IN (SELECT digest FROM dashboard_auth.sessions WHERE expires_at<t-interval '23 hours' LIMIT 1000);
  DELETE FROM dashboard_auth.csrf WHERE (session_digest,digest) IN (SELECT session_digest,digest FROM dashboard_auth.csrf WHERE expires_at<t-interval '23 hours' LIMIT 1000);

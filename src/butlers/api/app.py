@@ -283,7 +283,7 @@ async def lifespan(app: FastAPI):
 
         # The Telegram connector authenticates only the approval-callback
         # detail/decision routes with this Tier-1 DB credential. It is separate
-        # from the optional generic dashboard API key and never falls back to
+        # from the generic dashboard owner authority and never falls back to
         # an environment variable.
         try:
             shared_pool = get_db_manager().credential_shared_pool()
@@ -620,7 +620,37 @@ def create_app(
 
             init_telemetry("butlers-dashboard")
             init_metrics("butlers-dashboard")
-            FastAPIInstrumentor().instrument_app(app)
+            FastAPIInstrumentor().instrument_app(
+                app,
+                # Instrumentor wraps outside user middleware. Exclusion therefore
+                # belongs here as well as at the auth boundary, before URL capture.
+                excluded_urls=",".join(
+                    filter(
+                        None,
+                        [
+                            r".*/api/auth/owner(?:[/?]|$)",
+                            os.environ.get(
+                                "OTEL_PYTHON_FASTAPI_EXCLUDED_URLS",
+                                os.environ.get("OTEL_PYTHON_EXCLUDED_URLS", ""),
+                            ),
+                        ],
+                    )
+                ),
+                http_capture_headers_sanitize_fields=[
+                    *filter(
+                        None,
+                        os.environ.get(
+                            "OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SANITIZE_FIELDS", ""
+                        ).split(","),
+                    ),
+                    ".*authorization.*",
+                    ".*cookie.*",
+                    ".*token.*",
+                    ".*key.*",
+                    ".*secret.*",
+                    ".*password.*",
+                ],
+            )
             logger.info("FastAPI OTel instrumentation enabled")
         except Exception:
             logger.warning("Failed to enable FastAPI OTel instrumentation", exc_info=True)
@@ -645,7 +675,7 @@ def create_app(
 
     register_error_handlers(app)
     # Last registration is outermost: authentication precedes general audit,
-    # CORS, exception reflection, telemetry, routers and protected body reads.
+    # CORS, exception reflection, routers and protected body reads.
     app.add_middleware(OwnerAuthMiddleware, config=app.state.owner_auth_config)
 
     # --- Auto-discovered Butler Routers ---
@@ -739,7 +769,8 @@ def create_app(
             return JSONResponse(status_code=503, content={"status": "starting"})
         # Security-posture booleans — NEVER include secret values here.
         #
-        # auth.api_key_auth_enabled: True when ApiKeyMiddleware is active.
+        # auth.api_key_auth_enabled: True only for the configured-key mode.
+        # Owner authentication remains enabled in keyless mode.
         #   _effective_api_key is resolved once at create_app() time and
         #   captured via closure, matching exactly what the middleware uses.
         #

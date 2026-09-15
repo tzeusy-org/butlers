@@ -94,53 +94,68 @@ def main() -> int:
             port = reservation.getsockname()[1]
         env["OWNER_AUTH_TEST_API_URL"] = f"http://127.0.0.1:{port}"
         env["OWNER_AUTH_TEST_HOST_COMMAND"] = json.dumps(host)
-        with tempfile.TemporaryFile() as server_log:
-            server = subprocess.Popen(
-                [
-                    sys.executable,
-                    "-m",
-                    "uvicorn",
-                    "tests.api.owner_auth_browser_server:create_test_app",
-                    "--factory",
-                    "--host",
-                    "127.0.0.1",
-                    "--port",
-                    str(port),
-                    "--no-proxy-headers",
-                    "--no-access-log",
-                    "--log-level",
-                    "error",
-                ],
-                cwd=ROOT,
-                env=env,
-                stdout=server_log,
-                stderr=server_log,
-            )
-            try:
-                for _ in range(100):
-                    if server.poll() is not None:
-                        raise RuntimeError("Isolated auth server failed to start")
-                    try:
-                        with urllib.request.urlopen(
-                            env["OWNER_AUTH_TEST_API_URL"] + "/api/health", timeout=0.2
-                        ) as response:
-                            if response.status == 200:
-                                break
-                    except OSError:
-                        time.sleep(0.1)
-                else:
-                    raise RuntimeError("Isolated auth server readiness timed out")
-                result = subprocess.run(
-                    ["npm", "run", "test:owner-auth"], cwd=ROOT / "frontend", env=env, check=False
+        for scenario in ("native passkey", "configured key"):
+            if scenario == "configured key":
+                env["DASHBOARD_API_KEY"] = secrets.token_urlsafe(32)
+                env["OWNER_AUTH_TEST_CONFIGURED_KEY"] = env["DASHBOARD_API_KEY"]
+                subprocess.run(
+                    [*host, "reconcile-mode", "--confirm-revoke"],
+                    env=env,
+                    check=True,
+                    stdout=subprocess.DEVNULL,
                 )
-                return result.returncode
-            finally:
-                server.terminate()
+            with tempfile.TemporaryFile() as server_log:
+                server = subprocess.Popen(
+                    [
+                        sys.executable,
+                        "-m",
+                        "uvicorn",
+                        "tests.api.owner_auth_browser_server:create_test_app",
+                        "--factory",
+                        "--host",
+                        "127.0.0.1",
+                        "--port",
+                        str(port),
+                        "--no-proxy-headers",
+                        "--no-access-log",
+                        "--log-level",
+                        "error",
+                    ],
+                    cwd=ROOT,
+                    env=env,
+                    stdout=server_log,
+                    stderr=server_log,
+                )
                 try:
-                    server.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    server.kill()
-                    server.wait()
+                    for _ in range(100):
+                        if server.poll() is not None:
+                            raise RuntimeError("Isolated auth server failed to start")
+                        try:
+                            with urllib.request.urlopen(
+                                env["OWNER_AUTH_TEST_API_URL"] + "/api/health", timeout=0.2
+                            ) as response:
+                                if response.status == 200:
+                                    break
+                        except OSError:
+                            time.sleep(0.1)
+                    else:
+                        raise RuntimeError("Isolated auth server readiness timed out")
+                    result = subprocess.run(
+                        ["npm", "run", "test:owner-auth", "--", "--grep", scenario],
+                        cwd=ROOT / "frontend",
+                        env=env,
+                        check=False,
+                    )
+                    if result.returncode:
+                        return result.returncode
+                finally:
+                    server.terminate()
+                    try:
+                        server.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        server.kill()
+                        server.wait()
+        return 0
 
 
 if __name__ == "__main__":

@@ -208,6 +208,14 @@ async def test_closed_json_and_raw_body_caps():
         ).status_code == 400
     service.key_session.assert_not_called()
     service.context.assert_not_called()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=ORIGIN) as client:
+        assert (
+            await client.post(
+                "/api/auth/owner/unknown",
+                content=b"private-body-sentinel",
+                headers={"X-API-Key": "synthetic-key"},
+            )
+        ).status_code == 400
 
 
 async def test_csrf_reload_requires_browser_fetch_metadata():
@@ -319,3 +327,93 @@ async def test_oauth_state_is_provider_scoped_and_never_owner_authority():
             assert (await client.get("/api/private?state=synthetic-oauth-state")).status_code == 401
     finally:
         _state_store.pop("synthetic-oauth-state", None)
+
+
+async def test_instrumented_app_never_exports_auth_material(monkeypatch, caplog):
+    import logging
+
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+    from opentelemetry.metrics import NoOpMeterProvider
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    from tests.api.auth_helpers import create_authenticated_domain_app
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    instrument = FastAPIInstrumentor.instrument_app
+
+    def local_instrument(app, **kwargs):
+        return instrument(
+            app, tracer_provider=provider, meter_provider=NoOpMeterProvider(), **kwargs
+        )
+
+    monkeypatch.setattr(FastAPIInstrumentor, "instrument_app", staticmethod(local_instrument))
+    monkeypatch.setattr("butlers.core.telemetry.init_telemetry", lambda *args: None)
+    monkeypatch.setattr("butlers.core.metrics.init_metrics", lambda *args: None)
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:1")
+    monkeypatch.setenv("OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_REQUEST", ".*")
+    monkeypatch.setenv("OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_RESPONSE", ".*")
+    monkeypatch.setenv(
+        "OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SANITIZE_FIELDS", "x-private-diagnostic"
+    )
+    monkeypatch.setenv("DASHBOARD_AUTH_ORIGIN", ORIGIN)
+    monkeypatch.setenv("DASHBOARD_AUTH_RP_ID", CONFIG.rp_id)
+    caplog.set_level(logging.DEBUG)
+    logging.getLogger("auth_http_capture_control").warning("capture-live-control")
+    app = create_authenticated_domain_app(api_key="private-key-sentinel")
+    app.state.ready = True
+    service = app.state.owner_auth_service
+    service.key_session = AsyncMock(
+        return_value=SimpleNamespace(
+            token="private-cookie-sentinel",
+            data={
+                "csrf_token": "private-csrf-sentinel",
+                "csrf_expires_at": "2030-01-01T00:30:00Z",
+                "session_expires_at": "2030-01-01T12:00:00Z",
+            },
+        )
+    )
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url=ORIGIN
+        ) as client:
+            assert (
+                await client.get(
+                    "/api/health",
+                    headers={
+                        "Cookie": "private-header-cookie",
+                        "X-CSRF-Token": "private-header-csrf",
+                        "X-Private-Diagnostic": "existing-redaction-sentinel",
+                    },
+                )
+            ).status_code == 200
+            issued = await client.post(
+                "/api/auth/owner/session",
+                json={"api_key": "private-body-key"},
+                headers={"Origin": ORIGIN},
+            )
+            assert issued.status_code == 200
+        spans = exporter.get_finished_spans()
+        assert spans and any("health" in span.name for span in spans)
+        assert "capture-live-control" in caplog.text
+        retained = (
+            repr([(span.name, dict(span.attributes or {}), span.events) for span in spans])
+            + caplog.text
+        )
+        for private in (
+            "private-key-sentinel",
+            "private-cookie-sentinel",
+            "private-csrf-sentinel",
+            "private-header-cookie",
+            "private-header-csrf",
+            "private-body-key",
+            "existing-redaction-sentinel",
+        ):
+            assert private not in retained
+        assert not any("/auth/owner" in span.name for span in spans)
+    finally:
+        FastAPIInstrumentor.uninstrument_app(app)
+        provider.shutdown()

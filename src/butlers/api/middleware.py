@@ -20,8 +20,8 @@ as 500 responses with a stack trace in the server logs.  This prevents endpoint
 bugs from silently masquerading as butler-routing errors.
 
 Owner authentication is enforced by the outer ASGI boundary in
-``owner_auth.http`` before domain handling. ``ApiKeyMiddleware`` retains its
-import name for integrations and delegates to that same fail-closed boundary.
+``owner_auth.http`` before domain handling. The former optional key-only
+middleware was retired at the adopted owner-authentication cutover.
 """
 
 from __future__ import annotations
@@ -38,10 +38,6 @@ from butlers.api.models import ErrorDetail, ErrorResponse
 from butlers.api.routers.audit import AuditTableNotAvailableError
 
 logger = logging.getLogger(__name__)
-
-# Paths that are always public regardless of API-key configuration.
-# These are used by liveness/readiness probes and must never require auth.
-_PUBLIC_PATHS: frozenset[str] = frozenset({"/api/health", "/health"})
 
 
 def _is_approval_callback_route(request: Request) -> bool:
@@ -162,23 +158,6 @@ class CatchAllErrorMiddleware(BaseHTTPMiddleware):
             return JSONResponse(status_code=500, content=body.model_dump())
 
 
-class ApiKeyMiddleware:
-    """Compatibility import for the central fail-closed owner boundary.
-
-    New app wiring uses OwnerAuthMiddleware directly. Keeping the import name
-    does not preserve the former absent-key bypass.
-    """
-
-    def __init__(self, app, api_key: str | None = None) -> None:
-        from butlers.api.owner_auth.config import OwnerAuthConfig
-        from butlers.api.owner_auth.http import OwnerAuthMiddleware
-
-        self._middleware = OwnerAuthMiddleware(app, OwnerAuthConfig.from_env(api_key))
-
-    async def __call__(self, scope, receive, send):
-        await self._middleware(scope, receive, send)
-
-
 def register_error_handlers(app: FastAPI) -> None:
     """Attach all exception handlers to the FastAPI application.
 
@@ -189,9 +168,8 @@ def register_error_handlers(app: FastAPI) -> None:
     to intercept any unhandled exception before Starlette's default
     ``ServerErrorMiddleware`` can convert it to a plain-text 500.
 
-    Note: ``ApiKeyMiddleware`` is registered separately by ``create_app()``
-    because it needs to wrap the entire ASGI stack (including static files)
-    and its configuration is injected at app-creation time.
+    ``OwnerAuthMiddleware`` is registered outside these handlers so auth
+    failures terminate before general exception logging and body handling.
     """
     app.add_exception_handler(ButlerUnreachableError, _handle_butler_unreachable)  # type: ignore[arg-type]
     app.add_exception_handler(ButlerNotFoundError, _handle_butler_not_found)  # type: ignore[arg-type]

@@ -134,9 +134,9 @@ async def _body(request: Request, limit: int) -> dict:
     try:
         async with asyncio.timeout(5):
             async for chunk in request.stream():
-                raw.extend(chunk)
-                if len(raw) > limit:
+                if len(raw) + len(chunk) > limit:
                     raise AuthError("REQUEST_TOO_LARGE")
+                raw.extend(chunk)
         if not limit:
             return {}
 
@@ -223,6 +223,11 @@ class OwnerAuthMiddleware:
             key = connection.headers.get("x-api-key")
             token = _cookie(connection, self.config.owner_cookie)
             if key is None:
+                if token is None:
+                    # No browser authority is being exercised. Preserve the
+                    # authoritative unavailable/unauthorized distinction.
+                    await service.authorize(session_token=None)
+                    raise AuthError("UNAUTHORIZED")
                 if not trusted_https(connection, self.config):
                     raise _unavailable()
                 if method not in _SAFE or scope["type"] == "websocket":
@@ -234,6 +239,9 @@ class OwnerAuthMiddleware:
                 csrf_token=connection.headers.get("x-csrf-token"),
                 unsafe=method not in _SAFE,
             )
+            if path.startswith(PREFIX):
+                # Unknown auth methods/paths never fall into generic body audit.
+                raise _bad_request()
             scope.setdefault("state", {})["owner_authority"] = authority
             verified_http_principal.set("owner")
 

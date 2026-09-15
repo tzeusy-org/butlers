@@ -41,6 +41,7 @@ tests/api/test_latency_stats.py
 tests/api/test_lifestyle_taste.py
 tests/api/test_notifications.py
 tests/api/test_oauth_integration.py
+tests/api/test_owner_auth_verifier.py
 tests/api/test_pricing.py
 tests/api/test_priority_contacts_entity_facts.py
 tests/api/test_read_models_insights_v1.py
