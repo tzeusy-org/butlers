@@ -1,7 +1,7 @@
 """Install database-global owner authentication once across schema-scoped chains.
 
-Revision ID: core_239
-Revises: core_238
+Revision ID: core_240
+Revises: core_239
 """
 
 from pathlib import Path
@@ -10,12 +10,12 @@ from sqlalchemy import text
 
 from alembic import op
 
-revision = "core_239"
-down_revision = "core_238"
+revision = "core_240"
+down_revision = "core_239"
 branch_labels = None
 depends_on = None
 
-_MARKER = "butlers:dashboard-owner-auth:core_239"
+_MARKER = "butlers:dashboard-owner-auth:core_240"
 _COLUMNS = {
     "instance": (
         "singleton instance_id origin rp_id key_generation state credential_epoch session_epoch"
@@ -45,7 +45,7 @@ def _refuse() -> None:
 
 def _lock(bind) -> None:
     # Multiple butler schemas can advance their own core chain concurrently.
-    bind.execute(text("SELECT pg_advisory_xact_lock(hashtext('butlers.dashboard_auth.core_239'))"))
+    bind.execute(text("SELECT pg_advisory_xact_lock(hashtext('butlers.dashboard_auth.core_240'))"))
 
 
 def _schema_exists(bind) -> bool:
@@ -68,7 +68,7 @@ def _prior_installation_recorded(bind) -> bool:
             text(f"""
             SELECT EXISTS (SELECT FROM {quote(schema)}.alembic_version
                 WHERE CASE WHEN version_num ~ '^core_[0-9]+$'
-                    THEN substring(version_num FROM 6)::integer >= 239 ELSE false END)
+                    THEN substring(version_num FROM 6)::integer >= 240 ELSE false END)
         """)
         ).scalar()
         if recorded:

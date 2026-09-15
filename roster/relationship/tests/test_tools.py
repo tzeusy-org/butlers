@@ -1389,6 +1389,7 @@ async def test_loan_create(pool):
         borrower_contact_id=borrower["id"],
         description="Lunch money",
         amount_cents=5000,
+        currency="USD",
     )
     assert loan["amount_cents"] == 5000
     assert loan["lender_contact_id"] == lender["id"]
@@ -1409,6 +1410,7 @@ async def test_loan_settle(pool):
         borrower_contact_id=borrower["id"],
         description="Settle Test",
         amount_cents=10000,
+        currency="USD",
     )
     settled = await loan_settle(pool, loan["id"])
     assert settled["settled"] is True
@@ -1439,6 +1441,7 @@ async def test_loan_list(pool):
         borrower_contact_id=borrower["id"],
         description="First",
         amount_cents=2500,
+        currency="USD",
     )
     await loan_create(
         pool,
@@ -1446,6 +1449,7 @@ async def test_loan_list(pool):
         borrower_contact_id=borrower["id"],
         description="Second",
         amount_cents=7500,
+        currency="USD",
     )
 
     loans = await loan_list(pool, lender["id"])

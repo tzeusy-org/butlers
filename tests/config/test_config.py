@@ -286,6 +286,7 @@ def test_finance_and_relationship_seed_delegation_group():
         assert core_groups is not None
         assert "delegation" in core_groups
         assert "fleet_cases" in core_groups
+        assert "cost_claims" in core_groups
         for existing_group in ("infra", "state", "scheduling", "notifications"):
             assert existing_group in core_groups, (
                 f"{butler}: expected pre-existing group {existing_group!r} preserved, "
@@ -304,6 +305,7 @@ def test_cross_butler_and_switchboard_fleet_case_registration_is_declared():
         assert config.runtime_seed.core_groups is not None
         assert "delegation" in config.runtime_seed.core_groups
         assert "fleet_cases" in config.runtime_seed.core_groups
+        assert "cost_claims" in config.runtime_seed.core_groups
 
     assert switchboard.runtime_seed.core_groups is not None
     assert "fleet_cases" in switchboard.runtime_seed.core_groups

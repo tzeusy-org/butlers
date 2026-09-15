@@ -94,16 +94,22 @@
 #   - *_admin schemas                          bootstrap configuration rows
 #         (role names) plus the fixed installer/finalizer functions.
 #
-# No ordinary application data is excluded, and tests/scripts/test_pg_dump_backup.py
-# proves that against a real bootstrapped database: it fails if a fenced object
-# appears that is not listed here, and equally if anything listed here is in
-# fact readable. Do not add an entry to make a red run go green — an entry here
-# is a decision that data will not be in the backup.
+# No ordinary application data is excluded. The three cost-claim tables are the
+# narrow exception to pg_dump's data path: their schema, ownership, FORCE RLS,
+# policies, triggers, and definer function remain in the ordinary dump, while
+# their rows travel through an explicit hex-wrapped JSON staging block. The ordinary dump
+# still runs with row_security=off, so every other unexcluded fenced relation
+# remains a loud failure. The staging query is admitted only after a catalogue
+# check in the same exported snapshot proves the exact three-table set still
+# has one permissive, non-restrictive PUBLIC SELECT policy with USING (true).
 #
-# Do NOT add --enable-row-security to work around a row-level-security fence.
-# It turns a loud "permission denied" into a dump that silently omits the rows
-# the dump role's policies hide, which is the same class of failure as no
-# backup at all.
+# On restore, the staged rows pass through cost_claim_restore_row() under the
+# table owner's existing membership precondition. That fixed SECURITY DEFINER
+# function accepts only these three relations, suppresses only the audit events
+# that restoring historical rows would otherwise duplicate, and has no PUBLIC
+# execute grant. tests/scripts/test_pg_dump_backup.py and
+# tests/scripts/test_pg_restore_definer_ownership.py prove row parity and the
+# restored FORCE RLS, owner, and definer posture against real PostgreSQL.
 
 # NOTE: no `set -o pipefail` here. It is not POSIX, so the shebang above was a
 # lie on any host whose /bin/sh is dash — the script died on line 1 of its own
@@ -125,6 +131,9 @@ BACKUP_EXCLUDE_SCHEMAS="restore_drill_executor restore_drill_executor_admin dnd_
 # evidence projection, and excluding it is the one edit that would silently
 # empty that path. Four tests across two files fail if it is added.
 BACKUP_EXCLUDE_TABLES="public.dnd_generation_mutations public.user_context public.runtime_attention_outbox public.runtime_attention_delivery_lease public.runtime_attention_producer_control public.expected_signals public.runtime_probe_control_receipts public.fleet_cases public.fleet_case_links public.task_continuity"
+# Durable FORCE RLS application data carried by the scoped staging block.
+# Parsed and policy-verified by tests/scripts/test_pg_dump_backup.py.
+BACKUP_SCOPED_DATA_TABLES="public.cost_claims public.cost_claim_resolutions public.cost_claim_events"
 
 # A gzip stream smaller than this cannot hold a real dump (gzip's own
 # header+footer is ~20 bytes). Matches _BACKUP_MIN_SIZE_BYTES in
@@ -148,6 +157,8 @@ RUN_SENTINEL="${BACKUP_DIR}/last_run.json"
 # back. An abort nobody enumerated (any `set -e` failure) leaves it empty and is
 # recorded as "unexpected_error" -- never as a success.
 FAILURE_REASON=""
+SNAPSHOT_DIR=""
+SNAPSHOT_HOLDER_PID=""
 
 # Fixed reason vocabulary, mirrored by _BACKUP_RUN_REASONS in
 # src/butlers/core/backup_facts.py: ok, pg_dump_failed, artifact_undersize,
@@ -199,6 +210,14 @@ write_run_sentinel() {
 # route out of this script can skip the signal it is supposed to leave.
 cleanup() {
   status=$?
+  if [ -n "${SNAPSHOT_HOLDER_PID}" ]; then
+    printf 'ROLLBACK;\n\\q\n' >&9 2>/dev/null || true
+    exec 9>&- 2>/dev/null || true
+    wait "${SNAPSHOT_HOLDER_PID}" 2>/dev/null || true
+  fi
+  if [ -n "${SNAPSHOT_DIR}" ]; then
+    rm -rf "${SNAPSHOT_DIR}"
+  fi
   rm -f "${TMPFILE}" "${STATUSFILE}"
   if [ "${status}" -eq 0 ]; then
     write_run_sentinel 0 ok "${OUTFILE##*/}"
@@ -222,6 +241,94 @@ done
 for table in ${BACKUP_EXCLUDE_TABLES}; do
   set -- "$@" "--exclude-table=${table}"
 done
+for table in ${BACKUP_SCOPED_DATA_TABLES}; do
+  set -- "$@" "--exclude-table-data=${table}"
+done
+
+# pg_dump and the scoped ledger query must see one database instant. Keep a
+# read-only repeatable-read transaction open, export its snapshot, and bind
+# both producers and the exact RLS-policy proof to it. The FIFO writer stays
+# open until both are finished, so psql waits for the final COMMIT without a
+# sleep-based transaction lifetime.
+SNAPSHOT_DIR="$(mktemp -d)"
+SNAPSHOT_CONTROL="${SNAPSHOT_DIR}/control"
+SNAPSHOT_ID_FILE="${SNAPSHOT_DIR}/id"
+SNAPSHOT_POLICY_COUNT_FILE="${SNAPSHOT_DIR}/policy-count"
+SNAPSHOT_LOG="${SNAPSHOT_DIR}/holder.log"
+mkfifo "${SNAPSHOT_CONTROL}"
+PGPASSWORD="${POSTGRES_PASSWORD:-}" psql \
+  --host="${POSTGRES_HOST}" \
+  --port="${POSTGRES_PORT}" \
+  --username="${POSTGRES_USER}" \
+  --dbname="${POSTGRES_DB}" \
+  --no-password \
+  --no-align \
+  --tuples-only \
+  --set=ON_ERROR_STOP=1 \
+  < "${SNAPSHOT_CONTROL}" > "${SNAPSHOT_LOG}" 2>&1 &
+SNAPSHOT_HOLDER_PID=$!
+exec 9>"${SNAPSHOT_CONTROL}"
+printf 'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;\n' >&9
+printf '\\o %s\nSELECT pg_export_snapshot();\n\\o\n' "${SNAPSHOT_ID_FILE}" >&9
+# A FOR ALL policy also applies to SELECT. Count every SELECT-applying policy,
+# then require the one admitted policy to be the exact explicit PUBLIC SELECT
+# policy below; otherwise a restrictive FOR ALL policy could silently filter
+# the scoped export.
+printf '\\o %s\nSELECT count(*)
+      FROM pg_class AS c
+      JOIN pg_namespace AS n ON n.oid = c.relnamespace
+     WHERE n.nspname || '\''.'\'' || c.relname IN (
+               '\''public.cost_claims'\'',
+               '\''public.cost_claim_resolutions'\'',
+               '\''public.cost_claim_events'\''
+           )
+       AND c.relrowsecurity
+       AND c.relforcerowsecurity
+       AND (
+           SELECT count(*) = 1
+             FROM pg_policy AS p
+            WHERE p.polrelid = c.oid
+              AND p.polcmd IN ('\''r'\'', '\''*'\'')
+       )
+       AND EXISTS (
+           SELECT 1
+             FROM pg_policy AS p
+            WHERE p.polrelid = c.oid
+              AND p.polcmd = '\''r'\''
+              AND p.polpermissive
+              AND p.polroles = ARRAY[0::oid]
+              AND pg_get_expr(p.polqual, p.polrelid) = '\''true'\''
+       );
+\\o\n' "${SNAPSHOT_POLICY_COUNT_FILE}" >&9
+
+SNAPSHOT_WAIT=0
+while { [ ! -s "${SNAPSHOT_ID_FILE}" ] || [ ! -s "${SNAPSHOT_POLICY_COUNT_FILE}" ]; } \
+  && kill -0 "${SNAPSHOT_HOLDER_PID}" 2>/dev/null; do
+  SNAPSHOT_WAIT=$((SNAPSHOT_WAIT + 1))
+  if [ "${SNAPSHOT_WAIT}" -ge 100 ]; then
+    break
+  fi
+  sleep 0.05
+done
+if [ ! -s "${SNAPSHOT_ID_FILE}" ] || [ ! -s "${SNAPSHOT_POLICY_COUNT_FILE}" ]; then
+  FAILURE_REASON="pg_dump_failed"
+  echo "[backup] FAILED: could not establish a shared backup snapshot and policy proof; not publishing" >&2
+  exit 1
+fi
+BACKUP_SNAPSHOT="$(tr -d '\r\n' < "${SNAPSHOT_ID_FILE}")"
+case "${BACKUP_SNAPSHOT}" in
+  ''|*[!0-9A-Fa-f-]*)
+    FAILURE_REASON="pg_dump_failed"
+    echo "[backup] FAILED: shared backup snapshot was invalid; not publishing" >&2
+    exit 1
+    ;;
+esac
+COST_CLAIM_BACKUP_POLICY_COUNT="$(tr -d '\r\n' < "${SNAPSHOT_POLICY_COUNT_FILE}")"
+if [ "${COST_CLAIM_BACKUP_POLICY_COUNT}" != "3" ]; then
+  FAILURE_REASON="pg_dump_failed"
+  echo "[backup] FAILED: cost-claim backup policy is not the exact full-row contract; not publishing" >&2
+  exit 1
+fi
 
 # pg_dump writes to stdout; we pipe through gzip into a .tmp file so the
 # directory scanner in get_backup_facts() never sees a partial dump.  gzip's
@@ -237,10 +344,84 @@ done
     --username="${POSTGRES_USER}" \
     --dbname="${POSTGRES_DB}" \
     --format=plain \
+    --snapshot="${BACKUP_SNAPSHOT}" \
     --no-password \
     "$@" \
-  || echo "$?" > "${STATUSFILE}"
+  || { echo "$?" > "${STATUSFILE}"; exit 0; }
+
+  # The ordinary dump has already emitted schema, ownership, policies, and all
+  # non-fenced application data. Append the three explicitly scoped ledgers as
+  # hex-wrapped JSON COPY rows, then replay them through the fixed importer.
+  # Hex keeps COPY's tab/newline/backslash framing independent of user data.
+  printf '\n-- Butlers scoped cost-claim ledger data\n'
+  printf 'CREATE TEMP TABLE butlers_cost_claim_restore_rows (ordinal integer, relation_name text, payload_hex text);\n'
+  printf 'COPY butlers_cost_claim_restore_rows (ordinal, relation_name, payload_hex) FROM stdin;\n'
+  PGPASSWORD="${POSTGRES_PASSWORD:-}" psql \
+    --host="${POSTGRES_HOST}" \
+    --port="${POSTGRES_PORT}" \
+    --username="${POSTGRES_USER}" \
+    --dbname="${POSTGRES_DB}" \
+    --no-password \
+    --quiet \
+    --no-align \
+    --tuples-only \
+    --set=ON_ERROR_STOP=1 \
+    -c "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;
+        SET TRANSACTION SNAPSHOT '${BACKUP_SNAPSHOT}';
+        COPY (
+          SELECT 1, 'cost_claims',
+                 encode(convert_to(to_jsonb(t)::text, 'UTF8'), 'hex')
+            FROM public.cost_claims AS t
+          UNION ALL
+          SELECT 2, 'cost_claim_resolutions',
+                 encode(convert_to(to_jsonb(t)::text, 'UTF8'), 'hex')
+            FROM public.cost_claim_resolutions AS t
+          UNION ALL
+          SELECT 3, 'cost_claim_events',
+                 encode(convert_to(to_jsonb(t)::text, 'UTF8'), 'hex')
+            FROM public.cost_claim_events AS t
+          ORDER BY 1, 2, 3
+        ) TO STDOUT;
+        COMMIT" \
+  || { echo "$?" > "${STATUSFILE}"; exit 0; }
+  printf '\\.\n'
+  PGPASSWORD="${POSTGRES_PASSWORD:-}" psql \
+    --host="${POSTGRES_HOST}" \
+    --port="${POSTGRES_PORT}" \
+    --username="${POSTGRES_USER}" \
+    --dbname="${POSTGRES_DB}" \
+    --no-password \
+    --no-align \
+    --tuples-only \
+    --set=ON_ERROR_STOP=1 \
+    -c "SELECT format(
+                   'SELECT coalesce(pg_has_role(current_user, to_regrole(%L), ''MEMBER''), false) AS butlers_cost_claim_restore_authorized \\gset
+\\if :butlers_cost_claim_restore_authorized
+\\set ON_ERROR_STOP on
+GRANT SELECT ON butlers_cost_claim_restore_rows TO %I;
+SET ROLE %I;',
+                   pg_get_userbyid(relowner),
+                   pg_get_userbyid(relowner),
+                   pg_get_userbyid(relowner)
+               )
+          FROM pg_class
+         WHERE oid = 'public.cost_claims'::regclass" \
+  || { echo "$?" > "${STATUSFILE}"; exit 0; }
+  printf "SELECT public.cost_claim_restore_row(\n  relation_name,\n  convert_from(decode(payload_hex, 'hex'), 'UTF8')::jsonb\n)\nFROM butlers_cost_claim_restore_rows\nORDER BY ordinal, payload_hex;\n"
+  printf 'RESET ROLE;\n\\else\n\\echo cost-claim ledger replay skipped: restore owner membership unavailable\n\\endif\nDROP TABLE butlers_cost_claim_restore_rows;\n'
 } | gzip > "${TMPFILE}"
+
+printf 'COMMIT;\n\\q\n' >&9
+exec 9>&-
+if ! wait "${SNAPSHOT_HOLDER_PID}"; then
+  FAILURE_REASON="pg_dump_failed"
+  SNAPSHOT_HOLDER_PID=""
+  echo "[backup] FAILED: shared backup snapshot did not close cleanly; not publishing" >&2
+  exit 1
+fi
+SNAPSHOT_HOLDER_PID=""
+rm -rf "${SNAPSHOT_DIR}"
+SNAPSHOT_DIR=""
 
 DUMP_STATUS="$(cat "${STATUSFILE}")"
 if [ -n "${DUMP_STATUS}" ]; then

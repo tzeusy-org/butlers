@@ -464,6 +464,9 @@ class EntityLoan(BaseModel):
     direction: str | None = None
     settled: str | None = None
     settled_at: str | None = None
+    claim_id: UUID | None = None
+    resolution_state: str | None = None
+    unverifiable_reason: str | None = None
     created_at: datetime | None = None
     # Provenance contract fields (spec §"Provenance contract").
     src: str = "memory_module_legacy"

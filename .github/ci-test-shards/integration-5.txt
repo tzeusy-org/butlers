@@ -1,4 +1,6 @@
 roster/concierge/tests/test_dashboard_read.py
+roster/finance/tests/test_claim_reconciliation.py
+roster/relationship/tests/test_loans_currency_honesty.py
 roster/relationship/tests/test_tools.py
 roster/travel/tests/test_connections.py
 roster/travel/tests/test_migration_travel_002.py
@@ -31,3 +33,4 @@ tests/migrations/test_task_continuity_migration.py
 tests/modules/approvals/test_prepared_actions.py
 tests/modules/approvals/test_prepared_execution.py
 tests/scripts/test_pg_restore_definer_ownership.py
+tests/test_cost_claims_rls.py

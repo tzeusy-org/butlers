@@ -192,6 +192,7 @@ async def test_loan_create_stores_entity_id(pool):
         borrower_contact_id=borrower["id"],
         description="Entity anchor test",
         amount_cents=3000,
+        currency="USD",
     )
 
     # Verify entity_id is stored on the facts row (not NULL)
@@ -218,6 +219,7 @@ async def test_loan_create_contact_id_resolves_entity(pool):
         direction="lent",
         amount_cents=1500,
         description="Direct contact loan",
+        currency="USD",
     )
 
     row = await pool.fetchrow("SELECT entity_id FROM facts WHERE id = $1", loan["id"])
@@ -246,6 +248,7 @@ async def test_loan_settle_preserves_entity_id(pool):
         borrower_contact_id=borrower["id"],
         description="Settle preserve entity test",
         amount_cents=8000,
+        currency="USD",
     )
 
     # Get entity_id from the original fact
@@ -276,6 +279,7 @@ async def test_loan_settle_settled_flag_set(pool):
         borrower_contact_id=borrower["id"],
         description="Flag test",
         amount_cents=2000,
+        currency="USD",
     )
     settled = await loan_settle(pool, loan["id"])
 
@@ -342,6 +346,7 @@ async def test_loan_list_multiple_loans_same_lender(pool):
         borrower_contact_id=borrower["id"],
         description="First loan",
         amount_cents=1000,
+        currency="USD",
     )
     await loan_create(
         pool,
@@ -349,6 +354,7 @@ async def test_loan_list_multiple_loans_same_lender(pool):
         borrower_contact_id=borrower["id"],
         description="Second loan",
         amount_cents=2000,
+        currency="USD",
     )
 
     loans = await loan_list(pool, lender["id"])
