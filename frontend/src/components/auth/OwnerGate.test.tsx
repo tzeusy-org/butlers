@@ -26,12 +26,12 @@ beforeEach(() => {
   vi.stubGlobal("isSecureContext", true); vi.stubGlobal("PublicKeyCredential", class {});
   Object.defineProperty(navigator, "credentials", { configurable: true, value: { get: chooser, create: chooser } });
   chooser.mockReset(); fetchMock.mockReset();
-  fetchMock.mockImplementation(async (url: string) => {
+  fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
     const path = url.split("/auth/owner")[1];
     let data: unknown = {};
     if (path === "/status") data = { state: mode, authenticated, session_expires_at: authenticated ? future() : null };
     if (path === "/context" || path === "/csrf") data = tuple();
-    if (path === "/registration/intent") data = { request_id: requestId, operation: "enroll", expires_at: future(), canonical_origin: location.origin };
+    if (path === "/registration/intent") data = { request_id: requestId, operation: JSON.parse(String(init?.body)).operation, expires_at: future(), canonical_origin: location.origin };
     if (path === "/registration/options") data = approved ? { ceremony_id: requestId, publicKey: {} } : pendingOptions;
     if (path === "/login/options") data = { ceremony_id: requestId, publicKey: { challenge: requestId } };
     return new Response(JSON.stringify({ data }), { status: 200 });
@@ -81,6 +81,33 @@ describe("owner access user flows", () => {
     fireEvent.click(screen.getByRole("button", { name: "Sign in with passkey" }));
     await waitFor(() => expect(fetchMock.mock.calls.filter(c => c[0].endsWith("/context"))).toHaveLength(2));
   });
+  it("refreshes recovery authority after cancellation instead of offering the revoked passkey", async () => {
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: "Recover access" }));
+    await screen.findByRole("button", { name: "Check authorization" });
+    mode = "recovery_pending";
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await screen.findByRole("button", { name: "Restart host recovery" });
+    expect(screen.queryByRole("button", { name: "Sign in with passkey" })).toBeNull();
+  });
+  it.each([false, true])("does not replay an uncertain finish; uses only verified cookie status (%s)", async (cookieReceived) => {
+    const normal = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/login/finish")) { authenticated = cookieReceived; throw new TypeError("synthetic-lost-response"); }
+      return normal(url, init);
+    });
+    const rawId = new Uint8Array(32).buffer;
+    chooser.mockResolvedValue({ id: requestId, rawId, type: "public-key", getClientExtensionResults: () => ({}), response: {
+      clientDataJSON: rawId, authenticatorData: rawId, signature: rawId, userHandle: rawId,
+    } });
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: "Sign in with passkey" }));
+    if (cookieReceived) await screen.findByText("Protected dashboard");
+    else await screen.findByText(/Completion could not be confirmed/);
+    expect(fetchMock.mock.calls.filter(c => c[0].endsWith("/login/finish"))).toHaveLength(1);
+    expect(screen.queryByText("synthetic-lost-response")).toBeNull();
+  });
+
   it("clears a rejected configured key and exposes recovery pending without offering the old passkey", async () => {
     mode = "configured_key"; mount();
     const input = await screen.findByLabelText("Dashboard API key");
