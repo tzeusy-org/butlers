@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import urlparse
 
+from butlers.core.child_env import without_owner_auth
 from butlers.core.mcp_urls import prefer_ipv4_loopback_url
 from butlers.core.runtimes.base import RuntimeAdapter, register_adapter
 
@@ -753,7 +754,7 @@ async def run_codex_pre_warm(
                 "status",
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
-                env={**os.environ, "HOME": str(codex_dir.parent)},
+                env=without_owner_auth({**os.environ, "HOME": str(codex_dir.parent)}),
             )
             try:
                 _, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=30)
@@ -2407,7 +2408,7 @@ class CodexAdapter(RuntimeAdapter):
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=env if env else None,
+                env=without_owner_auth(env if env else os.environ),
                 cwd=str(cwd) if cwd else None,
             )
 

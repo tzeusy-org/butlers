@@ -35,7 +35,13 @@ from butlers.api.deps import (
     wire_db_dependencies,
 )
 from butlers.api.lifespan_supervisor import supervise_lifespan_loop
-from butlers.api.middleware import ApiKeyMiddleware, register_error_handlers
+from butlers.api.middleware import register_error_handlers
+from butlers.api.owner_auth.config import OwnerAuthConfig
+from butlers.api.owner_auth.http import OwnerAuthMiddleware
+from butlers.api.owner_auth.service import (
+    close_owner_auth_service,
+    create_owner_auth_service,
+)
 from butlers.api.router_discovery import discover_butler_routers
 from butlers.api.routers.activity_feed import router as activity_feed_router
 from butlers.api.routers.approvals import router as approvals_router
@@ -223,6 +229,13 @@ async def lifespan(app: FastAPI):
     On startup: initialize resources (will be implemented in future tasks)
     On shutdown: close all connections cleanly
     """
+    # Authentication has its own restricted pool and never initializes authority.
+    try:
+        app.state.owner_auth_service = await create_owner_auth_service(app.state.owner_auth_config)
+    except Exception:
+        app.state.owner_auth_service = None
+        logger.warning("Owner authentication storage is unavailable")
+
     # Startup
     init_dependencies()
 
@@ -270,7 +283,7 @@ async def lifespan(app: FastAPI):
 
         # The Telegram connector authenticates only the approval-callback
         # detail/decision routes with this Tier-1 DB credential. It is separate
-        # from the optional generic dashboard API key and never falls back to
+        # from the generic dashboard owner authority and never falls back to
         # an environment variable.
         try:
             shared_pool = get_db_manager().credential_shared_pool()
@@ -553,6 +566,9 @@ async def lifespan(app: FastAPI):
         external_deadman_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await external_deadman_task
+    if app.state.owner_auth_service is not None:
+        await close_owner_auth_service(app.state.owner_auth_service)
+        app.state.owner_auth_service = None
     await shutdown_db_manager()
     await shutdown_dependencies()
 
@@ -576,11 +592,9 @@ def create_app(
         ``DASHBOARD_STATIC_DIR`` environment variable.  When neither is
         set, no static mount is registered (development mode).
     api_key:
-        When provided, enables ``ApiKeyMiddleware`` with this key.  When
-        ``None`` (default), the middleware reads ``DASHBOARD_API_KEY`` from
-        the environment; if that variable is also absent, auth is disabled.
-        Pass an empty string ``""`` to explicitly disable auth regardless of
-        the environment variable (useful in tests).
+        Effective configured automation key, otherwise read from the environment.
+        An empty value selects keyless authentication; it never disables owner
+        authentication. The authoritative database mode must agree.
     """
     if cors_origins is None:
         _default = os.environ.get("DASHBOARD_CORS_ORIGINS", "http://localhost:41173")
@@ -606,7 +620,37 @@ def create_app(
 
             init_telemetry("butlers-dashboard")
             init_metrics("butlers-dashboard")
-            FastAPIInstrumentor().instrument_app(app)
+            FastAPIInstrumentor().instrument_app(
+                app,
+                # Instrumentor wraps outside user middleware. Exclusion therefore
+                # belongs here as well as at the auth boundary, before URL capture.
+                excluded_urls=",".join(
+                    filter(
+                        None,
+                        [
+                            r".*/api/auth/owner(?:[/?]|$)",
+                            os.environ.get(
+                                "OTEL_PYTHON_FASTAPI_EXCLUDED_URLS",
+                                os.environ.get("OTEL_PYTHON_EXCLUDED_URLS", ""),
+                            ),
+                        ],
+                    )
+                ),
+                http_capture_headers_sanitize_fields=[
+                    *filter(
+                        None,
+                        os.environ.get(
+                            "OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SANITIZE_FIELDS", ""
+                        ).split(","),
+                    ),
+                    ".*authorization.*",
+                    ".*cookie.*",
+                    ".*token.*",
+                    ".*key.*",
+                    ".*secret.*",
+                    ".*password.*",
+                ],
+            )
             logger.info("FastAPI OTel instrumentation enabled")
         except Exception:
             logger.warning("Failed to enable FastAPI OTel instrumentation", exc_info=True)
@@ -624,23 +668,15 @@ def create_app(
     # and audit only fires on genuine mutating requests.
     app.add_middleware(DashboardAuditMiddleware)
 
-    # API-key authentication (opt-in via DASHBOARD_API_KEY env var).
-    # Resolve the effective key here so ApiKeyMiddleware receives a definitive
-    # value and never reads the environment itself.
-    #
-    # Resolution rules:
-    #   api_key=None  → read DASHBOARD_API_KEY from environment (default)
-    #   api_key=""    → force-disable auth (useful in tests)
-    #   api_key="..." → use as-is (testing / programmatic override)
-    if api_key is None:
-        _effective_api_key: str | None = os.environ.get("DASHBOARD_API_KEY") or None
-    elif api_key == "":
-        _effective_api_key = None
-    else:
-        _effective_api_key = api_key
-    app.add_middleware(ApiKeyMiddleware, api_key=_effective_api_key)
+    effective_key = os.environ.get("DASHBOARD_API_KEY") if api_key is None else api_key
+    _effective_api_key = effective_key or None
+    app.state.owner_auth_config = OwnerAuthConfig.from_env(effective_key or "")
+    app.state.owner_auth_service = None
 
     register_error_handlers(app)
+    # Last registration is outermost: authentication precedes general audit,
+    # CORS, exception reflection, routers and protected body reads.
+    app.add_middleware(OwnerAuthMiddleware, config=app.state.owner_auth_config)
 
     # --- Auto-discovered Butler Routers ---
     # Discover and mount roster/{butler}/api/router.py routers
@@ -733,7 +769,8 @@ def create_app(
             return JSONResponse(status_code=503, content={"status": "starting"})
         # Security-posture booleans — NEVER include secret values here.
         #
-        # auth.api_key_auth_enabled: True when ApiKeyMiddleware is active.
+        # auth.api_key_auth_enabled: True only for the configured-key mode.
+        # Owner authentication remains enabled in keyless mode.
         #   _effective_api_key is resolved once at create_app() time and
         #   captured via closure, matching exactly what the middleware uses.
         #
@@ -768,6 +805,12 @@ def create_app(
         return {
             "status": "ok",
             "auth": {
+                "owner_auth_enabled": True,
+                "owner_auth_available": (
+                    (await app.state.owner_auth_service.status())["state"] != "unavailable"
+                    if app.state.owner_auth_service is not None
+                    else False
+                ),
                 "api_key_auth_enabled": bool(_effective_api_key),
                 "export_secret_insecure_default": not bool(
                     os.environ.get("DASHBOARD_EXPORT_SECRET")

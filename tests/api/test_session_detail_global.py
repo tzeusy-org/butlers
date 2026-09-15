@@ -22,9 +22,11 @@ from uuid import uuid4
 import httpx
 import pytest
 
-from butlers.api.app import create_app
+from butlers.api.app import create_app as create_guarded_app
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.sessions import _get_db_manager as _sessions_get_db
+from tests.api.auth_helpers import _DomainOwnerState
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 
@@ -110,7 +112,9 @@ def _make_record(row: dict):
     return m
 
 
-def _make_app(*, owning_butler: str, row: dict | None, degraded: list[str] | None = None) -> object:
+def _make_app(
+    *, owning_butler: str, row: dict | None, degraded: list[str] | None = None, app=None
+) -> object:
     """Wire an app whose fan_out returns ``row`` only for ``owning_butler``.
 
     ``degraded`` names any pool the fan-out reports as failed (the second
@@ -134,7 +138,8 @@ def _make_app(*, owning_butler: str, row: dict | None, degraded: list[str] | Non
     mock_db.fan_out_with_status = AsyncMock(side_effect=_fan_out)
     mock_db.pool.return_value = owning_pool
 
-    app = create_app()
+    if app is None:
+        app = create_app(api_key="synthetic-owner-key")
     app.dependency_overrides[_sessions_get_db] = lambda: mock_db
     return app
 
@@ -328,15 +333,16 @@ async def test_prompt_receipt_requires_owner_control_before_fanout(
     expected_status: int,
 ) -> None:
     """Denied or unavailable owner control observes no session database."""
-    if configured_key is None:
-        monkeypatch.delenv("DASHBOARD_API_KEY", raising=False)
-    else:
-        monkeypatch.setenv("DASHBOARD_API_KEY", configured_key)
-    app = _make_app(owning_butler="general", row=None)
+    monkeypatch.setenv("DASHBOARD_AUTH_ORIGIN", "https://owner.test.invalid")
+    monkeypatch.setenv("DASHBOARD_AUTH_RP_ID", "owner.test.invalid")
+    guarded = create_guarded_app(api_key=configured_key or "")
+    if configured_key:
+        guarded.state.owner_auth_service = _DomainOwnerState(configured_key)
+    app = _make_app(owning_butler="general", row=None, app=guarded)
     mock_db = app.dependency_overrides[_sessions_get_db]()
 
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+        transport=httpx.ASGITransport(app=app), base_url="https://owner.test.invalid"
     ) as client:
         response = await client.get(f"/api/sessions/{uuid4()}/prompt", headers=headers)
 

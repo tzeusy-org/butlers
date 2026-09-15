@@ -12,7 +12,7 @@
  * - Non-snapshot events are routed through applyFleetEvent() and onEvent
  * - Snapshot events replay each buffered event through applyFleetEvent()
  *   and onEvent, not through the cache patch keyed on "snapshot" itself
- * - The api_key query param is appended when provided
+ * - Authentication stays out of the WebSocket URL
  * - The hook closes the socket on unmount and reports status "closed"
  */
 
@@ -155,9 +155,9 @@ describe("useEventStream", () => {
     expect(wsConstructorSpy.mock.calls[0][0]).toContain("/events/stream");
   });
 
-  it("appends api_key param when provided", () => {
-    renderHook(() => useEventStream({ apiKey: "mysecret" }));
-    expect(wsConstructorSpy.mock.calls[0][0]).toContain("api_key=mysecret");
+  it("keeps credentials out of the stream URL", () => {
+    renderHook(() => useEventStream());
+    expect(wsConstructorSpy.mock.calls[0][0]).not.toContain("api_key");
   });
 
   it("does not open WebSocket when enabled=false", () => {
@@ -355,6 +355,16 @@ describe("useEventStream", () => {
     // observe the "closed" status transition here — see the disconnect()
     // test below for that assertion while still mounted.
     expect(ws?.close).toHaveBeenCalled();
+  });
+
+  it.each([4401, 4403])("stops reconnecting on authentication close %s", (code) => {
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useEventStream());
+    const ws = getLastWsInstance();
+    act(() => ws?.simulateClose(code));
+    expect(result.current.status).toBe("closed");
+    act(() => vi.advanceTimersByTime(60_000));
+    expect(wsConstructorSpy).toHaveBeenCalledOnce();
   });
 
   it("disconnect() closes the socket and sets status to 'closed'", async () => {

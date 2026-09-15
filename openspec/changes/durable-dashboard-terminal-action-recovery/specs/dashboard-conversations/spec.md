@@ -172,6 +172,16 @@ of `recovery_started`, `already_pending`, `already_accepted`,
 `rejected`, `ambiguous`, or `conflict`. `recovery_started` means only that this
 exact message acquired the ingress fence and began the original ingress workflow;
 it SHALL not claim that Switchboard or a downstream butler received the message.
+The central `dashboard-owner-auth` boundary SHALL admit a valid configured
+`X-API-Key` or a valid server-managed owner session before protected body reads,
+domain-pool acquisition, caches or handlers. Passkey verification issues a session;
+it is not a new per-route credential. Cookie-backed unsafe actions additionally
+require independent synchronizer CSRF and exact Origin validation. Unavailable
+authoritative auth state returns safe `503`; missing, expired, revoked or invalid
+caller authority returns `401`. An absent API key alone is not unavailability when
+healthy keyless session authority exists. Domain checks remain mandatory after
+central authentication; auth-store reads necessary for verification are distinct
+from forbidden pre-authentication domain access.
 
 ID: REQ-dashboard-conversations-006
 Source: dashboard-turn cancellation migration core_193; dashboard-terminal-action-recovery REQ-dashboard-terminal-action-recovery-003; design.md Decision 6

@@ -274,3 +274,23 @@ cp .env.example .env
 # Edit .env with production secrets
 docker compose up -d
 ```
+
+## Dashboard owner-authentication placement
+
+The dashboard API owns the central owner boundary, bounded WebAuthn/session
+router and dedicated `dashboard_auth` persistence. Its pool logs in with
+restricted Tier 0 `DASHBOARD_AUTH_DB_USER/PASSWORD`, separately from host
+administrative `POSTGRES_*` access; setting a role on an administrative login
+is insufficient because that session could reset its role. Trusted host CLI operations
+authorize exact browser-bound registration/recovery intents; the API cannot
+authorize an intent through a public endpoint. Butler runtime and generic
+Secrets surfaces have no authority over this schema. Domain owner/contact
+records remain separate from cryptographic HTTP authentication.
+
+Tailscale Serve supplies the canonical HTTPS entry point; the server pins one
+origin/RP hostname and trusted proxy path. Same-host dev/prod URL prefixes are
+one browser security origin. Separate cookie names/state avoid collisions,
+while separate trust requires distinct hostnames. Network membership does not
+identify the dashboard owner. See the
+[operator runbook](../../docs/identity_and_secrets/dashboard-owner-auth.md) and
+[adopted design](../../openspec/changes/specify-host-authorized-dashboard-enrollment/design.md).

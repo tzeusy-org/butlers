@@ -11,9 +11,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from butlers.api.app import create_app
 from butlers.api.routers.permissions import _get_db_manager
 from butlers.core.permissions import PERMISSION_DEFAULT_GRANTED
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]

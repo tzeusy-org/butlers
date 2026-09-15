@@ -97,7 +97,7 @@ export function useButlerHeartbeats() {
 /**
  * Fetch the dashboard security-posture booleans from GET /api/health.
  *
- * Returns `api_key_auth_enabled` and `export_secret_insecure_default`.
+ * Returns overall owner-auth availability, configured-key mode and export-secret posture.
  * Values are booleans only — never secret material.  The endpoint is
  * public (no X-API-Key required) so this hook always works.
  */

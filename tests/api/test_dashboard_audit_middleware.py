@@ -12,9 +12,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.audit_emit import build_user_context, emit_dashboard_audit, redact_body
 from butlers.api.db import DatabaseManager
+from tests.api.auth_helpers import _DOMAIN_KEY
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 
@@ -214,7 +215,11 @@ class TestBuildUserContext:
         assert ctx["client_ip"] == "10.0.0.1"
         assert ctx["forwarded_for"] == "203.0.113.7"
         assert ctx["user_agent"] == "butlers-cli/0.1"
-        assert ctx["api_key_authenticated"] is True
+        assert ctx["api_key_authenticated"] is False
+        from types import SimpleNamespace
+
+        request.state.owner_authority = SimpleNamespace(method="header")
+        assert build_user_context(request)["api_key_authenticated"] is True
         # The raw API key value must never appear in user_context.
         assert "super-secret" not in str(ctx)
 
@@ -332,7 +337,7 @@ class TestDashboardAuditMiddleware:
                 await client.post(
                     "/api/test-user-context",
                     json={"k": "v"},
-                    headers={"X-API-Key": "ignored", "User-Agent": "pytest-suite"},
+                    headers={"X-API-Key": _DOMAIN_KEY, "User-Agent": "pytest-suite"},
                 )
 
         audit_calls = [c for c in mock_pool.fetchval.call_args_list if "public.audit_log" in str(c)]

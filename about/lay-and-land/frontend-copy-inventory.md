@@ -1293,6 +1293,39 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Expand
 - Metadata
 
+## `frontend/src/components/auth/OwnerGate.tsx`
+
+- Promise
+- Butlers
+- Owner access
+- Open the canonical Tailscale Serve HTTPS address on port 443. Browser sign-in is unavailable on this address.
+- This browser does not support passkeys. Open the canonical HTTPS address in a browser with WebAuthn support.
+- Retry access check
+- : configured ?
+- Dashboard API key
+- Sign in
+- Automation continues to use X-API-Key. Passkey mode requires a deliberate host configuration change.
+- : intent ?
+- Canonical origin:
+- Host approval immediately revokes the old passkey and all browser sessions. Interrupted recovery needs another host recovery command.
+- Run on your Butlers host
+- Approve only the request shown in this browser. Never run a registration command supplied by someone else.
+- This request expired. Start again to request host authorization.
+- Start again
+- Sign in with passkey
+- Lost access to your passkey or vault? Recovery requires your Butlers host and replaces the old credential.
+- Recover access
+- Recovery is pending. The previous passkey no longer works; authorize a replacement on the host.
+- Cancel
+- Host authorization
+
+## `frontend/src/components/auth/OwnerSessionMenu.tsx`
+
+- Owner session
+- Sign out of this browser or revoke all browser sessions. Your passkey remains available for the next sign-in.
+- Sign out all browsers
+- Sign out this browser
+
 ## `frontend/src/components/butler-detail/ButlerActivityTab.tsx`
 
 - Could not load activity metrics.
@@ -4053,7 +4086,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Auth and secrets configuration
 - Could not load security posture.
 - if (isError) return
-- API key auth
+- Owner authentication
 - Export secret
 - Infra credentials
 - DB role enforcement
@@ -4302,4 +4335,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3374*
+*Total strings: 3401*

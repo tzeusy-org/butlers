@@ -32,6 +32,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from butlers.core.child_env import without_owner_auth
 from butlers.core.runtimes.base import RuntimeAdapter, register_adapter
 
 if TYPE_CHECKING:
@@ -490,7 +491,7 @@ class ClaudeCodeAdapter(RuntimeAdapter):
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=env,
+                env=without_owner_auth(env),
                 cwd=str(cwd) if cwd else None,
             )
 

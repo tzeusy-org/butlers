@@ -1043,6 +1043,7 @@ async def run_verify_all_models(
 
 @catalog_router.post("/verify-all", response_model=ApiResponse[VerifyAllResult])
 async def verify_all_models(
+    _owner: str = Depends(require_dashboard_owner_control),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[VerifyAllResult]:
     """Request a signed Switchboard runtime probe for every enabled model in parallel.
@@ -1770,6 +1771,7 @@ _TEST_UNAVAILABLE_DETAIL = {
 )
 async def test_catalog_entry(
     entry_id: UUID,
+    _owner: str = Depends(require_dashboard_owner_control),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[ModelTestResult]:
     """Probe one catalog entry through the signed runtime-probe control plane.

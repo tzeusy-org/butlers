@@ -24,7 +24,6 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerConnectionInfo,
@@ -42,6 +41,7 @@ from butlers.api.routers.spotify import _exchange_code_for_tokens, _TokenExchang
 from butlers.api.routers.spotify import (
     _get_db_manager as _spotify_get_db,
 )
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 
@@ -482,10 +482,18 @@ class TestSpotifyAPI:
 
         app = self._make_app()
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
-            base_url="http://test",
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             start = await client.post("/api/connectors/spotify/oauth/start")
+        from butlers.api.app import create_app as create_production_app
+
+        callback_app = create_production_app(api_key="")
+        callback_app.dependency_overrides.update(app.dependency_overrides)
+        assert callback_app.state.owner_auth_service is None
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=callback_app, raise_app_exceptions=False),
+            base_url="http://test",
+        ) as client:
             resp = await client.get(
                 "/api/connectors/spotify/oauth/callback",
                 params={"code": "code", "state": start.json()["state"]},

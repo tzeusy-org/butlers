@@ -19,25 +19,13 @@ handlers — are **not** caught here and will propagate to ``CatchAllErrorMiddle
 as 500 responses with a stack trace in the server logs.  This prevents endpoint
 bugs from silently masquerading as butler-routing errors.
 
-Also provides ``ApiKeyMiddleware`` for optional API-key authentication on all
-``/api/*`` routes (excluding health endpoints).
-
-Security doctrine (``about/heart-and-soul/security.md``, RFC-0008): the PRIMARY
-trust boundary is **network isolation** — all host ports bind to ``127.0.0.1``
-and external access is handled by Tailscale serve.  ``DASHBOARD_API_KEY`` is
-**opt-in defense-in-depth** layered on top of that boundary; it is meaningful
-mainly when the dashboard is Tailscale-funneled beyond localhost.  Omitting the
-variable is an intentional, by-design choice for the common case — not a
-misconfiguration.
-
-When ``DASHBOARD_API_KEY`` is absent the middleware is a complete no-op.  When
-the variable is set, every ``/api/*`` request (except health/probe endpoints)
-must supply a matching ``X-API-Key`` header.
+Owner authentication is enforced by the outer ASGI boundary in
+``owner_auth.http`` before domain handling. The former optional key-only
+middleware was retired at the adopted owner-authentication cutover.
 """
 
 from __future__ import annotations
 
-import hmac
 import logging
 from uuid import UUID
 
@@ -48,13 +36,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from butlers.api.deps import ButlerNotFoundError, ButlerUnreachableError
 from butlers.api.models import ErrorDetail, ErrorResponse
 from butlers.api.routers.audit import AuditTableNotAvailableError
-from butlers.core.approval_callbacks import APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER
 
 logger = logging.getLogger(__name__)
-
-# Paths that are always public regardless of API-key configuration.
-# These are used by liveness/readiness probes and must never require auth.
-_PUBLIC_PATHS: frozenset[str] = frozenset({"/api/health", "/health"})
 
 
 def _is_approval_callback_route(request: Request) -> bool:
@@ -175,108 +158,6 @@ class CatchAllErrorMiddleware(BaseHTTPMiddleware):
             return JSONResponse(status_code=500, content=body.model_dump())
 
 
-class ApiKeyMiddleware(BaseHTTPMiddleware):
-    """Optional API-key authentication middleware for all ``/api/*`` routes.
-
-    Behaviour
-    ---------
-    - When ``DASHBOARD_API_KEY`` is **not set**, the middleware passes every
-      request through without any check (opt-in, backward-compatible).
-    - When ``DASHBOARD_API_KEY`` **is set**, every request to a path that:
-        * starts with ``/api/``, *and*
-        * is not in ``_PUBLIC_PATHS`` (``/api/health``, ``/health``)
-      must supply a matching ``X-API-Key`` header.  A missing or incorrect
-      header yields a 401 JSON response in the standard error envelope.
-
-    Token comparison uses ``hmac.compare_digest`` to resist timing attacks.
-
-    Usage
-    -----
-    Register via ``create_app()`` in ``app.py``.  The middleware reads the
-    env var once at instantiation, so a restart is required to rotate the key.
-
-    The env var name ``DASHBOARD_API_KEY`` is intentionally generic — it
-    covers all butlers running behind this dashboard without requiring per-butler
-    key management.
-    """
-
-    def __init__(self, app, api_key: str | None = None) -> None:
-        super().__init__(app)
-        # ``api_key`` is the already-resolved key (non-empty string → enabled,
-        # ``None`` → disabled).  ``create_app()`` is responsible for reading
-        # ``DASHBOARD_API_KEY`` from the environment and passing the resolved
-        # value here.  Direct instantiation without ``create_app()`` will have
-        # auth disabled unless a key is passed explicitly.
-        self._api_key: str | None = api_key or None
-        if self._api_key:
-            logger.info("ApiKeyMiddleware: DASHBOARD_API_KEY is configured; auth is ENABLED")
-        else:
-            logger.info(
-                "ApiKeyMiddleware: DASHBOARD_API_KEY not set; API-key auth is inactive. "
-                "The network boundary (localhost binding + Tailscale) is the primary access "
-                "control — this is the expected default. Set DASHBOARD_API_KEY only if you "
-                "want an additional opt-in layer on top of the network boundary."
-            )
-
-    async def dispatch(self, request: Request, call_next):
-        # A dedicated DB-backed service credential authenticates the Telegram
-        # callback's tightly scoped approval detail/decision flow. It is not a
-        # general API-key bypass, and the route validates its provenance marker
-        # before attributing a mutation to the owner on Telegram.
-        callback_token = getattr(request.app.state, "approval_callback_connector_token", None)
-        provided_callback_token = request.headers.get(APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER, "")
-        if (
-            callback_token
-            and _is_approval_callback_route(request)
-            and provided_callback_token
-            and hmac.compare_digest(provided_callback_token, callback_token)
-        ):
-            request.state.approval_callback_authenticated = True
-            return await call_next(request)
-
-        # Auth disabled — pass through unconditionally.
-        if not self._api_key:
-            return await call_next(request)
-
-        # Allow CORS preflight requests through so that CORSMiddleware (which sits
-        # inside this middleware in the Starlette stack) can handle them.  Without
-        # this exemption, OPTIONS requests to /api/* would receive a 401 before the
-        # browser ever sees the CORS headers, breaking cross-origin access entirely.
-        if request.method == "OPTIONS":
-            return await call_next(request)
-
-        path = request.url.path
-
-        # Public paths are always allowed (health/readiness probes).
-        if path in _PUBLIC_PATHS:
-            return await call_next(request)
-
-        # Only enforce auth on /api/* routes.
-        if not path.startswith("/api/"):
-            return await call_next(request)
-
-        # Check the header.
-        provided_key = request.headers.get("X-API-Key", "")
-        if not provided_key or not hmac.compare_digest(provided_key, self._api_key):
-            logger.warning(
-                "ApiKeyMiddleware: rejected request to %s (missing or invalid X-API-Key)",
-                path,
-            )
-            body = ErrorResponse(
-                error=ErrorDetail(
-                    code="UNAUTHORIZED",
-                    message="Missing or invalid API key. Provide a valid X-API-Key header.",
-                )
-            )
-            return JSONResponse(
-                status_code=401,
-                content=body.model_dump(),
-                headers={"WWW-Authenticate": 'ApiKey realm="Butlers Dashboard"'},
-            )
-
-        return await call_next(request)
-
-
 def register_error_handlers(app: FastAPI) -> None:
     """Attach all exception handlers to the FastAPI application.
 
@@ -287,9 +168,8 @@ def register_error_handlers(app: FastAPI) -> None:
     to intercept any unhandled exception before Starlette's default
     ``ServerErrorMiddleware`` can convert it to a plain-text 500.
 
-    Note: ``ApiKeyMiddleware`` is registered separately by ``create_app()``
-    because it needs to wrap the entire ASGI stack (including static files)
-    and its configuration is injected at app-creation time.
+    ``OwnerAuthMiddleware`` is registered outside these handlers so auth
+    failures terminate before general exception logging and body handling.
     """
     app.add_exception_handler(ButlerUnreachableError, _handle_butler_unreachable)  # type: ignore[arg-type]
     app.add_exception_handler(ButlerNotFoundError, _handle_butler_not_found)  # type: ignore[arg-type]

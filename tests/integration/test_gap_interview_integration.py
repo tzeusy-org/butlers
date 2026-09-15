@@ -449,8 +449,8 @@ async def test_resolve_unknown_interview_errors(full_pool) -> None:
 def _build_chronicler_api(pool):
     from unittest.mock import MagicMock
 
-    from butlers.api.app import create_app
     from butlers.api.db import DatabaseManager
+    from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
     db = MagicMock(spec=DatabaseManager)
     db.pool.return_value = pool

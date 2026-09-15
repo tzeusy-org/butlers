@@ -810,6 +810,17 @@ test.describe("entity-v3: workbench mode", () => {
 // ===========================================================================
 
 test.describe("entity-v3: Cmd-K finder", () => {
+  async function visitFinderPage(page: Page) {
+    await page.goto("/", { timeout: TIMEOUT_MS });
+    // Navigation can finish before owner-session restoration mounts the shell.
+    // Wait for its actual command affordance and routed page before sending
+    // shortcuts or measuring headings; the login heading belongs to another UI.
+    await expect(page.getByRole("button", { name: "Open command menu" })).toBeVisible({
+      timeout: TIMEOUT_MS,
+    });
+    await expect(page.getByTestId("route-suspense-skeleton")).toHaveCount(0);
+  }
+
   /** Stubs shared by the finder tests. */
   async function installFinderStubs(page: Page) {
     // typed query → search results
@@ -852,7 +863,7 @@ test.describe("entity-v3: Cmd-K finder", () => {
     page,
   }) => {
     await installFinderStubs(page);
-    await page.goto("/", { timeout: TIMEOUT_MS });
+    await visitFinderPage(page);
 
     // Cmd-K / Ctrl-K opens the entity finder (global keydown handler).
     await page.keyboard.press("ControlOrMeta+k");
@@ -880,7 +891,7 @@ test.describe("entity-v3: Cmd-K finder", () => {
     await page.route("**/api/relationship/entities/search**", (route) =>
       json(route, { results: [], total: 0, q: "contacts", limit: 8 }),
     );
-    await page.goto("/", { timeout: TIMEOUT_MS });
+    await visitFinderPage(page);
 
     const trigger = page.getByRole("button", { name: "Open command menu" });
     const initialH1Count = await page.locator("h1").count();
@@ -984,7 +995,7 @@ test.describe("entity-v3: Cmd-K finder", () => {
     await page.setViewportSize({ width: 320, height: 568 });
     await page.emulateMedia({ reducedMotion: "reduce" });
     await installFinderStubs(page);
-    await page.goto("/", { timeout: TIMEOUT_MS });
+    await visitFinderPage(page);
 
     await page.getByRole("button", { name: "Open command menu" }).click();
     const dialog = page.getByRole("dialog", { name: "Command menu" });
@@ -1044,7 +1055,7 @@ test.describe("entity-v3: Cmd-K finder", () => {
       `**/api/relationship/entities/${ENTITY_ID}**`,
       (route) => json(route, entityDetail()),
     );
-    await page.goto("/", { timeout: TIMEOUT_MS });
+    await visitFinderPage(page);
 
     await page.keyboard.press("ControlOrMeta+k");
     const input = page.getByTestId("entity-finder-input");
@@ -1061,7 +1072,7 @@ test.describe("entity-v3: Cmd-K finder", () => {
 
   test("empty-query finder shows the owner-pinned set", async ({ page }) => {
     await installFinderStubs(page);
-    await page.goto("/", { timeout: TIMEOUT_MS });
+    await visitFinderPage(page);
 
     await page.keyboard.press("ControlOrMeta+k");
     await expect(page.getByTestId("entity-finder-input")).toBeVisible({

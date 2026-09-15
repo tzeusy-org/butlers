@@ -8,7 +8,6 @@ system-global generation-fenced authority boundary used by runtime code.  Direct
 and revoke are serialized owner mutations; device-auth and probe completion are
 conditional exact-operation outcomes.  A route SHALL fail closed before child
 launch or mutation when the selected authority is unavailable or unprovable.
-
 The existing owner-only Codex rotate response SHALL remain the documented
 one-time `{fingerprint, value}` shape, and Codex inventory/detail responses
 SHALL retain their on-read display `fingerprint` without a raw value. The raw
@@ -18,6 +17,20 @@ is operation provenance or authority. No route SHALL add a generation ID,
 operation ID, operation state, lineage, provider stderr, secret-bearing error,
 or any new credential-derived identifier to an HTTP response, audit note,
 browser payload, or log.
+The central `dashboard-owner-auth` boundary SHALL admit a valid configured
+`X-API-Key` or a valid server-managed owner session before protected body reads,
+domain-pool acquisition, caches or handlers. Passkey verification issues a session;
+it is not a new per-route credential. Cookie-backed unsafe actions additionally
+require independent synchronizer CSRF and exact Origin validation. Unavailable
+authoritative auth state returns safe `503`; missing, expired, revoked or invalid
+caller authority returns `401`. An absent API key alone is not unavailability when
+healthy keyless session authority exists. Domain checks remain mandatory after
+central authentication; auth-store reads necessary for verification are distinct
+from forbidden pre-authentication domain access.
+
+ID: REQ-dashboard-api-055
+Source: dashboard-owner-auth successor design D1-D9; existing dashboard-api behavior preserved except explicit owner-auth supersession
+Scope: v1-mandatory
 
 #### Scenario: Dashboard save supersedes an in-flight runtime operation
 - **WHEN** the owner saves a valid Codex replacement while a runtime operation
@@ -71,13 +84,26 @@ containment and strict staged-output validation, the callback SHALL
 conditionally complete that same operation and remove its stage. It SHALL not
 use the dashboard session ID, device code, child PID, local file timestamp, or
 staged output identity as authorization.
-
 The prepared sandbox SHALL use the same kernel-enforced per-invocation boundary
 as runtime children: a unique leased outer UID/GID and distinct user, mount,
 PID, IPC, and UTS namespaces with only the owning stage mounted. Stage
 preparation, prelaunch cancellation, failed marking, process-launch failure,
 and contained post-launch failures SHALL call the explicit guarded abandonment
 operation with a closed reason; duplicate abandonment SHALL be non-committing.
+The central `dashboard-owner-auth` boundary SHALL admit a valid configured
+`X-API-Key` or a valid server-managed owner session before protected body reads,
+domain-pool acquisition, caches or handlers. Passkey verification issues a session;
+it is not a new per-route credential. Cookie-backed unsafe actions additionally
+require independent synchronizer CSRF and exact Origin validation. Unavailable
+authoritative auth state returns safe `503`; missing, expired, revoked or invalid
+caller authority returns `401`. An absent API key alone is not unavailability when
+healthy keyless session authority exists. Domain checks remain mandatory after
+central authentication; auth-store reads necessary for verification are distinct
+from forbidden pre-authentication domain access.
+
+ID: REQ-dashboard-api-056
+Source: dashboard-owner-auth successor design D1-D9; existing dashboard-api behavior preserved except explicit owner-auth supersession
+Scope: v1-mandatory
 
 #### Scenario: First owner device auth bootstraps one current generation
 - **WHEN** the selected shared Codex authority is explicitly absent with no

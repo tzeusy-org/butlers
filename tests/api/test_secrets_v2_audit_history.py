@@ -29,7 +29,6 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.secrets_v2 import (
     _AUDIT_DEFAULT_LIMIT,
@@ -40,6 +39,7 @@ from butlers.api.routers.secrets_v2 import (
     _write_credential_audit,
     _write_system_audit,
 )
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 
