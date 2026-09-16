@@ -1031,23 +1031,18 @@ non-negotiable.
 
 ### Font load path
 
-Fonts load via Google Fonts in `frontend/index.html`:
-
-```html
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=Source+Serif+4:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-```
+Fonts are self-hosted from licensed WOFF2 assets in `frontend/public/fonts/` and declared with
+`@font-face` at the top of `frontend/src/index.css`. No font request leaves the Butlers instance.
 
 Weights loaded:
 
-- **Inter Tight**: 400 (body), 500 (Display, mega-numbers), 600, 700 (H1).
-- **Source Serif 4**: 400 roman (briefing prose), 400 italic (empty
-  states), 500 roman (occasional emphasis).
+- **Inter Tight**: 400 (body), 500 (Display, mega-numbers and heavier UI text).
+- **Source Serif 4**: 400/500 roman (briefing prose and emphasis), 400/500 italic (empty states and
+  emphasized voice).
 - **JetBrains Mono**: 400 (eyebrows, inline mono, deltas), 500
   (numeric weight where 400 looks thin).
 
-`display=swap` is intentional: the system font fallback paints
+`font-display: swap` is intentional: the fallback paints
 immediately, the web font swaps in when ready. The dashboard never
 holds the page on font load.
 

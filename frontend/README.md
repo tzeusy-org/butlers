@@ -79,6 +79,12 @@ npm run build
 
 Output will be in the `dist/` directory.
 
+### Local font assets
+
+Dispatch fonts are checked in under `public/fonts/`; builds and offline/LAN deployments never
+contact a public font host. The directory README records the exact vendored faces, package source,
+and retained SIL Open Font License notices.
+
 ### Preview
 
 Preview the production build locally:

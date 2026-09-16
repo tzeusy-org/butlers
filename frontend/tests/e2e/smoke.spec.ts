@@ -23,6 +23,18 @@ test("smoke: app loads and has a page title", async ({ page }) => {
   await expect(page.locator("#root")).toBeAttached();
 });
 
+test("smoke: stored dark theme paints the first captured frame dark", async ({ page }) => {
+  await page.addInitScript(() => window.localStorage.setItem("theme", "dark"));
+  await page.goto("/", { timeout: 10_000 });
+
+  const firstFrame = await page.screenshot();
+  expect(firstFrame.byteLength).toBeGreaterThan(0);
+  await expect(page.locator("html")).toHaveClass(/\bdark\b/);
+  expect(await page.locator("html").evaluate((node) => getComputedStyle(node).colorScheme)).toBe(
+    "dark",
+  );
+});
+
 test("smoke: /health route renders without crashing", async ({ page }) => {
   // Domain API requests without page.route() fixtures receive an explicit 404
   // from the local test harness, but the React tree must still mount cleanly.
