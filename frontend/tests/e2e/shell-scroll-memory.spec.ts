@@ -1,9 +1,13 @@
-import { expect, test, type Page, type Route } from "@playwright/test";
+import { expect, test, type Locator, type Page, type Route } from "@playwright/test";
 
 const SESSION_ID = "scroll-session-1";
 const TIMELINE_EVENT_ID = "scroll-event-1";
 const FACT_ID = "scroll-fact-1";
 const ISSUE_KEY = "audit_error_group:scroll";
+const SHELL_SCROLL_OFFSET = 640;
+const SCROLLABLE_ROUTE_CONTENT_HEIGHT = 3600;
+const SCROLL_FIXTURE_STYLE_ID = "shell-scroll-memory-route-fixture";
+const SCROLL_RESTORATION_TOLERANCE = 16;
 
 function envelope(data: unknown, meta: Record<string, unknown> = {}): string {
   return JSON.stringify({ data, meta });
@@ -254,21 +258,67 @@ async function mockScrollMemoryApis(page: Page): Promise<void> {
 }
 
 async function setShellScroll(page: Page): Promise<number> {
-  await page.locator("#main-content").evaluate((main) => {
-    const element = main as HTMLElement;
-    element.style.minHeight = "3600px";
-    element.scrollTop = 640;
-  });
-  return page.locator("#main-content").evaluate((main) => (main as HTMLElement).scrollTop);
+  const metrics = await page.locator("#main-content").evaluate(
+    (main, { fixtureStyleId, routeContentHeight, scrollOffset }) => {
+      const element = main as HTMLElement;
+      if (!document.getElementById(fixtureStyleId)) {
+        // The route root, not the persistent shell `<main>`, supplies overflow.
+        // That keeps this regression test on the production scroll boundary.
+        const fixtureStyle = document.createElement("style");
+        fixtureStyle.id = fixtureStyleId;
+        fixtureStyle.textContent = `#main-content > * { min-height: ${routeContentHeight}px !important; }`;
+        document.head.append(fixtureStyle);
+      }
+
+      const routeContent = element.firstElementChild;
+      if (!routeContent) throw new Error("Expected routed content inside #main-content");
+
+      element.scrollTop = scrollOffset;
+      element.dispatchEvent(new Event("scroll"));
+      return {
+        clientHeight: element.clientHeight,
+        routeContentHeight: routeContent.getBoundingClientRect().height,
+        scrollHeight: element.scrollHeight,
+        scrollTop: element.scrollTop,
+      };
+    },
+    {
+      fixtureStyleId: SCROLL_FIXTURE_STYLE_ID,
+      routeContentHeight: SCROLLABLE_ROUTE_CONTENT_HEIGHT,
+      scrollOffset: SHELL_SCROLL_OFFSET,
+    },
+  );
+
+  expect(metrics.routeContentHeight).toBeGreaterThan(metrics.clientHeight);
+  expect(metrics.scrollHeight).toBeGreaterThan(metrics.clientHeight);
+  expect(metrics.scrollTop).toBe(SHELL_SCROLL_OFFSET);
+  return metrics.scrollTop;
 }
 
 async function expectShellScroll(page: Page, expected: number): Promise<void> {
+  expect(expected).toBeGreaterThan(0);
+  // Scroll anchoring can adjust a restored offset slightly as routed data settles.
   await expect.poll(
     () => page.locator("#main-content").evaluate((main) => (main as HTMLElement).scrollTop),
-  ).toBeGreaterThanOrEqual(expected - 4);
+  ).toBeGreaterThanOrEqual(expected - SCROLL_RESTORATION_TOLERANCE);
   await expect.poll(
     () => page.locator("#main-content").evaluate((main) => (main as HTMLElement).scrollTop),
-  ).toBeLessThanOrEqual(expected + 4);
+  ).toBeLessThanOrEqual(expected + SCROLL_RESTORATION_TOLERANCE);
+}
+
+async function expectShellScrollAtTop(page: Page): Promise<void> {
+  await expect.poll(
+    () => page.locator("#main-content").evaluate((main) => (main as HTMLElement).scrollTop),
+  ).toBeLessThanOrEqual(4);
+}
+
+async function activateWithoutScrollingShell(target: Locator): Promise<void> {
+  // Playwright's pointer action and HTMLElement.click() both focus an off-screen
+  // target before dispatching it. React receives this bubbling event normally,
+  // without altering the shell offset under test.
+  await target.evaluate((element) => {
+    element.dispatchEvent(new MouseEvent("click", { bubbles: true, button: 0, cancelable: true }));
+  });
 }
 
 test.describe("shell scroll memory at detail boundaries", () => {
@@ -279,11 +329,13 @@ test.describe("shell scroll memory at detail boundaries", () => {
   test("Sessions restores the list offset after opening a session detail", async ({ page }) => {
     await page.goto("/sessions", { waitUntil: "networkidle" });
     await expect(page.getByTestId("session-row").first()).toBeVisible();
-    const offset = await setShellScroll(page);
     const detailLink = page.getByRole("link", { name: /nearest running session/ });
     await expect(detailLink).toBeVisible();
-    await detailLink.click();
+    const offset = await setShellScroll(page);
+    await expectShellScroll(page, offset);
+    await activateWithoutScrollingShell(detailLink);
     await expect(page).toHaveURL(/\/sessions\/scroll-session-1$/);
+    await expectShellScrollAtTop(page);
     await page.goBack();
     await expect(page).toHaveURL(/\/sessions$/);
     await expectShellScroll(page, offset);
@@ -294,8 +346,10 @@ test.describe("shell scroll memory at detail boundaries", () => {
     const disclosure = page.locator(`[data-timeline-disclosure-id="event:${TIMELINE_EVENT_ID}"]`);
     await expect(disclosure).toBeVisible();
     const offset = await setShellScroll(page);
-    await disclosure.click();
+    await expectShellScroll(page, offset);
+    await activateWithoutScrollingShell(disclosure);
     await expect(page).toHaveURL(/\/timeline\?event=scroll-event-1/);
+    await expectShellScrollAtTop(page);
     await page.goBack();
     await expect(page).toHaveURL(/\/timeline$/);
     await expectShellScroll(page, offset);
@@ -303,10 +357,13 @@ test.describe("shell scroll memory at detail boundaries", () => {
 
   test("Memory restores the register offset after opening a fact detail", async ({ page }) => {
     await page.goto("/memory", { waitUntil: "networkidle" });
-    await expect(page.getByRole("link", { name: /Fact: owner prefers/ })).toBeVisible();
+    const factLink = page.getByRole("link", { name: /Fact: owner prefers/ });
+    await expect(factLink).toBeVisible();
     const offset = await setShellScroll(page);
-    await page.getByRole("link", { name: /Fact: owner prefers/ }).click();
+    await expectShellScroll(page, offset);
+    await activateWithoutScrollingShell(factLink);
     await expect(page).toHaveURL(/\/memory\/facts\/scroll-fact-1/);
+    await expectShellScrollAtTop(page);
     await page.goBack();
     await expect(page).toHaveURL(/\/memory$/);
     await expectShellScroll(page, offset);
@@ -315,10 +372,14 @@ test.describe("shell scroll memory at detail boundaries", () => {
   test("Issues restores the feed offset after opening an occurrence's session", async ({ page }) => {
     await page.goto("/issues", { waitUntil: "networkidle" });
     await expect(page.getByTestId("issue-row")).toBeVisible();
-    const offset = await setShellScroll(page);
     await page.locator('[data-testid="issue-row"] [role="button"]').click();
-    await page.getByRole("link", { name: "Session →" }).click();
+    const sessionLink = page.getByRole("link", { name: "Session →" });
+    await expect(sessionLink).toBeVisible();
+    const offset = await setShellScroll(page);
+    await expectShellScroll(page, offset);
+    await activateWithoutScrollingShell(sessionLink);
     await expect(page).toHaveURL(/\/sessions\?request=scroll-request-1/);
+    await expectShellScrollAtTop(page);
     await page.goBack();
     await expect(page).toHaveURL(/\/issues$/);
     await expectShellScroll(page, offset);
