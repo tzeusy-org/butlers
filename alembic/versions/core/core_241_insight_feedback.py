@@ -15,6 +15,27 @@ depends_on = None
 
 _OLD_LEDGER_OUTCOMES = ("delivered", "coalesced", "deferred", "suppressed", "failed")
 _NEW_LEDGER_OUTCOMES = (*_OLD_LEDGER_OUTCOMES, "expired")
+_FEEDBACK_TABLE = "public.insight_feedback"
+_FEEDBACK_SEQUENCE = "public.insight_feedback_id_seq"
+_FEEDBACK_POLICY = "insight_feedback_switchboard"
+_SWITCHBOARD_ROLE = "butler_switchboard_rw"
+_NON_SWITCHBOARD_RUNTIME_ROLES = (
+    "butler_chronicler_rw",
+    "butler_concierge_rw",
+    "butler_education_rw",
+    "butler_finance_rw",
+    "butler_general_rw",
+    "butler_health_rw",
+    "butler_home_rw",
+    "butler_lifestyle_rw",
+    "butler_messenger_rw",
+    "butler_qa_rw",
+    "butler_relationship_rw",
+    "butler_travel_rw",
+    "butler_calendar_rw",
+    "connector_writer",
+    "restore_drill_executor",
+)
 
 
 def _set_ledger_outcomes(outcomes: tuple[str, ...]) -> None:
@@ -29,20 +50,60 @@ def _set_ledger_outcomes(outcomes: tuple[str, ...]) -> None:
     )
 
 
-def _grant_switchboard() -> None:
+def _for_existing_role(role: str, statement: str) -> None:
     op.execute(
-        """
+        f"""
         DO $$
         BEGIN
-            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'butler_switchboard_rw') THEN
-                GRANT SELECT, INSERT ON public.insight_feedback TO butler_switchboard_rw;
-                GRANT USAGE, SELECT ON SEQUENCE public.insight_feedback_id_seq
-                    TO butler_switchboard_rw;
-                GRANT SELECT, UPDATE ON public.insight_engagement TO butler_switchboard_rw;
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role}') THEN
+                EXECUTE '{statement}';
             END IF;
         EXCEPTION
             WHEN insufficient_privilege OR undefined_object OR undefined_table THEN NULL;
         END $$
+        """
+    )
+
+
+def _fence_feedback_table() -> None:
+    """Keep feedback readable and writable only by Switchboard runtime code.
+
+    ``scripts/init-db.sql`` deliberately grants public-table DML to every
+    runtime role, including on later bootstrap replays.  RLS is therefore the
+    durable authority boundary; the revokes make the initial ACL narrow, while
+    the policy survives a later broad grant.
+    """
+    op.execute(f"REVOKE ALL PRIVILEGES ON TABLE {_FEEDBACK_TABLE} FROM PUBLIC")
+    op.execute(f"REVOKE ALL PRIVILEGES ON SEQUENCE {_FEEDBACK_SEQUENCE} FROM PUBLIC")
+    for role in _NON_SWITCHBOARD_RUNTIME_ROLES:
+        _for_existing_role(role, f"REVOKE ALL PRIVILEGES ON TABLE {_FEEDBACK_TABLE} FROM {role}")
+        _for_existing_role(
+            role, f"REVOKE ALL PRIVILEGES ON SEQUENCE {_FEEDBACK_SEQUENCE} FROM {role}"
+        )
+    _for_existing_role(
+        _SWITCHBOARD_ROLE, f"GRANT SELECT, INSERT ON TABLE {_FEEDBACK_TABLE} TO {_SWITCHBOARD_ROLE}"
+    )
+    _for_existing_role(
+        _SWITCHBOARD_ROLE,
+        f"GRANT USAGE, SELECT ON SEQUENCE {_FEEDBACK_SEQUENCE} TO {_SWITCHBOARD_ROLE}",
+    )
+    _for_existing_role(
+        _SWITCHBOARD_ROLE,
+        "GRANT SELECT, UPDATE ON public.insight_engagement TO butler_switchboard_rw",
+    )
+
+    # API-managed pools run as the separate trusted dashboard/migration owner,
+    # not via SET ROLE, so FORCE would deny the server-side feedback route.
+    # That owner is never a runtime role; every runtime/connector role remains
+    # fenced by this policy even after init-db re-grants public DML.
+    op.execute(f"ALTER TABLE {_FEEDBACK_TABLE} ENABLE ROW LEVEL SECURITY")
+    op.execute(f"DROP POLICY IF EXISTS {_FEEDBACK_POLICY} ON {_FEEDBACK_TABLE}")
+    op.execute(
+        f"""
+        CREATE POLICY {_FEEDBACK_POLICY} ON {_FEEDBACK_TABLE}
+            FOR ALL TO PUBLIC
+            USING (current_user = '{_SWITCHBOARD_ROLE}')
+            WITH CHECK (current_user = '{_SWITCHBOARD_ROLE}')
         """
     )
 
@@ -102,7 +163,7 @@ def upgrade() -> None:
         WHERE verdict = 'useful'
         """
     )
-    _grant_switchboard()
+    _fence_feedback_table()
 
 
 def downgrade() -> None:
@@ -111,7 +172,7 @@ def downgrade() -> None:
     # pre-core_241 representation.
     op.execute("UPDATE public.attention_ledger SET outcome='suppressed' WHERE outcome='expired'")
     _set_ledger_outcomes(_OLD_LEDGER_OUTCOMES)
-    op.execute("DROP TABLE IF EXISTS public.insight_feedback")
+    op.execute(f"DROP TABLE IF EXISTS {_FEEDBACK_TABLE}")
     op.execute("DROP INDEX IF EXISTS public.idx_insight_engagement_category_recent")
     op.execute(
         """

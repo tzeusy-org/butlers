@@ -274,7 +274,7 @@ async def test_expire_candidates_writes_one_blocked_by_row_per_expiry(
     assert await expire_candidates(pool, now=test_now) == 2
     rows = await pool.fetch(
         """
-        SELECT notification_ref, outcome, reason
+        SELECT notification_ref, outcome, reason, dedup_key
         FROM public.attention_ledger
         WHERE notification_ref = ANY($1::text[])
         ORDER BY notification_ref
@@ -285,6 +285,23 @@ async def test_expire_candidates_writes_one_blocked_by_row_per_expiry(
         ("expired", "blocked_by:held_by"),
         ("expired", "blocked_by:dedup"),
     }
+    assert {row["dedup_key"] for row in rows} == {None}
+
+    listed = await _query_ledger(
+        pool,
+        offset=0,
+        limit=50,
+        since=test_now - timedelta(days=1),
+        until=None,
+        intent="insight",
+        source="insight",
+        outcome="expired",
+        origin_butler="finance",
+    )
+    expected_refs = {str(row["id"]) for row in candidate_ids}
+    expired_entries = [entry for entry in listed.data if entry.notification_ref in expected_refs]
+    assert len(expired_entries) == 2
+    assert all(entry.dedup_key is None for entry in expired_entries)
 
 
 async def test_expire_candidates_keeps_candidate_pending_when_ledger_write_fails(
@@ -303,6 +320,8 @@ async def test_expire_candidates_keeps_candidate_pending_when_ledger_write_fails
         """,
         test_now - timedelta(hours=1),
     )
+
+    production_writer = insight_broker.record_attention_event
 
     async def unavailable_ledger(*args: object, **kwargs: object) -> None:
         return None
@@ -324,6 +343,22 @@ async def test_expire_candidates_keeps_candidate_pending_when_ledger_write_fails
             str(candidate_id),
         )
         == 0
+    )
+
+    monkeypatch.setattr(insight_broker, "record_attention_event", production_writer)
+    assert await expire_candidates(pool, now=test_now) == 1
+    assert (
+        await pool.fetchval(
+            "SELECT status FROM public.insight_candidates WHERE id = $1", candidate_id
+        )
+        == "expired"
+    )
+    assert (
+        await pool.fetchval(
+            "SELECT count(*) FROM public.attention_ledger WHERE notification_ref = $1",
+            str(candidate_id),
+        )
+        == 1
     )
 
 

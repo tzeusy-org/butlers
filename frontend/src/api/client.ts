@@ -2472,8 +2472,6 @@ type InsightFeedbackResult = {
   status: "recorded";
   verdict: import("./types").InsightFeedbackVerdict;
   insight_id: string;
-  category: string;
-  dedup_family: string;
   snooze_until: string | null;
 };
 

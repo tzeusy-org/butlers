@@ -90,6 +90,7 @@ if _spec is not None and _spec.loader is not None:
     validate_ingestion_action = _models.validate_ingestion_action
     validate_rule_type_for_scope = _models.validate_rule_type_for_scope
     InsightCandidate = _models.InsightCandidate
+    InsightFeedbackResponse = _models.InsightFeedbackResponse
     FleetCaseSummary = _models.FleetCaseSummary
     FleetCaseEvidenceEntry = _models.FleetCaseEvidenceEntry
     FleetCaseLinkEntry = _models.FleetCaseLinkEntry
@@ -465,7 +466,7 @@ async def _record_feedback(
     insight_id: UUID,
     verdict: str,
     snooze_until: datetime.datetime | None = None,
-) -> ApiResponse[dict[str, Any]]:
+) -> ApiResponse[InsightFeedbackResponse]:
     from butlers.tools.switchboard.insight.broker import record_insight_feedback
 
     result = await record_insight_feedback(
@@ -479,10 +480,17 @@ async def _record_feedback(
     if result["status"] == "error":
         status_code = 404 if result["reason"] == "insight not found" else 422
         raise HTTPException(status_code=status_code, detail=result["reason"])
-    return ApiResponse[dict[str, Any]](data=result)
+    return ApiResponse[InsightFeedbackResponse](
+        data=InsightFeedbackResponse(
+            status="recorded",
+            verdict=result["verdict"],
+            insight_id=result["insight_id"],
+            snooze_until=result["snooze_until"],
+        )
+    )
 
 
-@router.post("/insights/{insight_id}/useful", response_model=ApiResponse[dict[str, Any]])
+@router.post("/insights/{insight_id}/useful", response_model=ApiResponse[InsightFeedbackResponse])
 async def mark_insight_useful(
     insight_id: UUID,
     db: DatabaseManager = Depends(_get_db_manager),
@@ -491,7 +499,7 @@ async def mark_insight_useful(
     return await _record_feedback(pool=_pool(db), insight_id=insight_id, verdict="useful")
 
 
-@router.post("/insights/{insight_id}/snooze", response_model=ApiResponse[dict[str, Any]])
+@router.post("/insights/{insight_id}/snooze", response_model=ApiResponse[InsightFeedbackResponse])
 async def snooze_insight(
     insight_id: UUID,
     snooze_until: datetime.datetime = Body(..., embed=True),
@@ -503,7 +511,7 @@ async def snooze_insight(
     )
 
 
-@router.post("/insights/{insight_id}/mute", response_model=ApiResponse[dict[str, Any]])
+@router.post("/insights/{insight_id}/mute", response_model=ApiResponse[InsightFeedbackResponse])
 async def mute_insight(
     insight_id: UUID,
     db: DatabaseManager = Depends(_get_db_manager),

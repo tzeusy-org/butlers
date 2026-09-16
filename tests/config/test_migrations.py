@@ -6,6 +6,7 @@ import asyncio
 import importlib.util
 import shutil
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -16,6 +17,7 @@ from butlers.migrations import get_chain_head
 from butlers.testing.migration import (
     create_migrated_test_db,
     create_migration_db,
+    init_db_sql_for_dbapi,
     migration_bootstrap_db_url,
     migration_db_name,
     table_exists,
@@ -182,6 +184,26 @@ def _execute_as_role(db_url: str, role_name: str, sql: str, *, scalar: bool = Fa
             finally:
                 conn.execute(text("RESET ROLE"))
     finally:
+        engine.dispose()
+
+
+def _replay_init_db(postgres_container, db_name: str, db_url: str) -> None:
+    """Replay production bootstrap so RLS must survive its broad public grants."""
+    migration_user = urlparse(db_url).username
+    assert migration_user is not None
+    engine = create_engine(
+        migration_bootstrap_db_url(postgres_container, db_name), isolation_level="AUTOCOMMIT"
+    )
+    raw_connection = engine.raw_connection()
+    try:
+        raw_connection.autocommit = True
+        with raw_connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT set_config('butlers.connecting_user', %s, false)", (migration_user,)
+            )
+            cursor.execute(init_db_sql_for_dbapi())
+    finally:
+        raw_connection.close()
         engine.dispose()
 
 
@@ -906,6 +928,123 @@ def test_insight_feedback_migration_shape_and_constraints(postgres_container):
                     )
     finally:
         engine.dispose()
+
+
+def test_insight_feedback_rls_survives_bootstrap_replay(postgres_container):
+    """Public-table grants cannot let non-Switchboard roles read or forge feedback."""
+    from butlers.migrations import run_migrations
+
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
+    asyncio.run(run_migrations(db_url, chain="core"))
+
+    engine = create_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            candidate_id = conn.execute(
+                text(
+                    "INSERT INTO public.insight_candidates "
+                    "(origin_butler, priority, category, dedup_key, expires_at, message) "
+                    "VALUES ('health', 50, 'Health', 'health:signal:today', "
+                    "now() + interval '1 day', 'x') RETURNING id"
+                )
+            ).scalar_one()
+            conn.execute(
+                text(
+                    "INSERT INTO public.insight_feedback "
+                    "(insight_id, dedup_family, category, origin_butler, verdict, actor) "
+                    "VALUES (:id, 'health:signal', 'Health', 'health', 'useful', 'owner')"
+                ),
+                {"id": candidate_id},
+            )
+    finally:
+        engine.dispose()
+
+    _replay_init_db(postgres_container, db_name, db_url)
+
+    engine = create_engine(db_url)
+    try:
+        with engine.connect() as conn:
+            assert conn.execute(
+                text(
+                    "SELECT relrowsecurity FROM pg_class WHERE oid = 'public.insight_feedback'::regclass"
+                )
+            ).scalar_one()
+            table_owner = conn.execute(
+                text(
+                    "SELECT pg_get_userbyid(relowner) FROM pg_class "
+                    "WHERE oid = 'public.insight_feedback'::regclass"
+                )
+            ).scalar_one()
+    finally:
+        engine.dispose()
+
+    assert table_owner not in {*RUNTIME_ROLES.values(), "connector_writer"}
+
+    assert (
+        _execute_as_role(
+            db_url,
+            RUNTIME_ROLES["switchboard"],
+            "SELECT count(*) FROM public.insight_feedback",
+            scalar=True,
+        )
+        == 1
+    )
+    for role in (RUNTIME_ROLES["general"], "connector_writer"):
+        assert (
+            _execute_as_role(
+                db_url,
+                role,
+                "SELECT count(*) FROM public.insight_feedback",
+                scalar=True,
+            )
+            == 0
+        )
+        with pytest.raises(ProgrammingError, match="row-level security"):
+            _execute_as_role(
+                db_url,
+                role,
+                "INSERT INTO public.insight_feedback "
+                f"(insight_id, dedup_family, category, origin_butler, verdict, actor) VALUES "
+                f"('{candidate_id}', 'health:signal', 'Health', 'health', 'useful', 'forged')",
+            )
+
+    async def owner_feedback_still_reaches_the_server_path() -> None:
+        import asyncpg
+
+        from butlers.tools.switchboard.insight.broker import record_insight_feedback
+
+        pool = await asyncpg.create_pool(db_url, min_size=1, max_size=1)
+        try:
+            result = await record_insight_feedback(
+                pool,
+                insight_id=str(candidate_id),
+                verdict="useful",
+                actor="owner",
+            )
+        finally:
+            await pool.close()
+        assert result["status"] == "recorded"
+
+    asyncio.run(owner_feedback_still_reaches_the_server_path())
+
+
+def test_insight_feedback_downgrade_tolerates_shared_table_replay(postgres_container):
+    """Two schema-scoped core chains may remove the same public table in turn."""
+    from butlers.migrations import _build_alembic_config
+
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
+    general = _build_alembic_config(db_url, chains=["core"], target_schema="general")
+    health = _build_alembic_config(db_url, chains=["core"], target_schema="health")
+
+    command.upgrade(general, "core@head")
+    command.upgrade(health, "core@head")
+    assert table_exists(db_url, "insight_feedback")
+
+    command.downgrade(general, "core_240")
+    command.downgrade(health, "core_240")
+    assert not table_exists(db_url, "insight_feedback")
 
 
 def test_core_acl_and_relationship_chain(postgres_container):
