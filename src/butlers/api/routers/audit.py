@@ -92,6 +92,8 @@ _PRIVILEGED_CONSEQUENCE_SQL = f"""
     OR action LIKE 'data.%'
     OR action LIKE 'webhook.%'
     OR action LIKE 'spend.%'
+    OR action = 'runtime_config_patch'
+    OR action LIKE 'PUT /api/butlers/%/model-overrides'
     OR action IN ({_CREDENTIAL_LIFECYCLE_ACTIONS_SQL})
     OR result = 'error'
 )

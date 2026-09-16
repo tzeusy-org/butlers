@@ -303,7 +303,11 @@ async def test_privileged_filter_is_a_consequence_allowlist(
         ("spend.ceiling", "success"),
         ("spend.rule.create", "success"),
         ("rotated", "success"),
+        ("runtime_config_patch", "success"),
+        ("PUT /api/butlers/qa/model-overrides", "success"),
         ("GET /api/health", "success"),
+        ("GET /api/butlers/qa/runtime-config", "success"),
+        ("GET /api/butlers/qa/model-overrides", "success"),
         ("butler_heartbeat", "success"),
         ("models.verify_all", "success"),
         ("runtime.heartbeat", "error"),
@@ -327,9 +331,13 @@ async def test_privileged_filter_is_a_consequence_allowlist(
         "spend.ceiling",
         "spend.rule.create",
         "rotated",
+        "runtime_config_patch",
+        "PUT /api/butlers/qa/model-overrides",
         "runtime.heartbeat",
     } <= actions
     assert "GET /api/health" not in actions
+    assert "GET /api/butlers/qa/runtime-config" not in actions
+    assert "GET /api/butlers/qa/model-overrides" not in actions
     assert "butler_heartbeat" not in actions
     assert "models.verify_all" not in actions
 
