@@ -16,7 +16,9 @@ This inventory describes what is implemented today in `frontend/src/**`.
 - Command palette with grouped search results and recent-search persistence.
 - Keyboard shortcuts:
   - `/` and `Ctrl/Cmd+K` for search palette.
-  - `g` then `o|b|s|t|r|n|i|a|m|c|h` for route jumps.
+  - `g` then `0–9`, `-`, or `a–f|h–z` for global route jumps. The exact
+    destination inventory is the typed [`SHELL_CAPABILITIES`](../../frontend/src/lib/shell-capability.ts)
+    manifest, which keeps the router, navigation surfaces, palette, help sheet, and chords aligned.
 - Theme toggle (light/dark/system with localStorage persistence).
 - Toast feedback for write mutations (schedule/state operations).
 

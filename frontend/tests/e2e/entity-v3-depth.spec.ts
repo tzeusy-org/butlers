@@ -1001,6 +1001,12 @@ test.describe("entity-v3: Cmd-K finder", () => {
     const dialog = page.getByRole("dialog", { name: "Command menu" });
     await expect(dialog).toBeVisible();
     await expect(page.getByTestId("entity-finder-input")).toBeFocused();
+    // Empty-query Pages are intentionally browsable and capped with an
+    // overflow row. Exercise that full mobile flow before measuring the
+    // dialog, rather than checking the sparse pre-browsability menu.
+    await expect(page.getByTestId("entity-finder-pages-group")).toBeVisible();
+    await expect(page.getByTestId("entity-finder-page-item")).toHaveCount(8);
+    await expect(page.getByTestId("entity-finder-overflow-row")).toHaveCount(1);
 
     const geometry = await page.evaluate(() => {
       const rect = (selector: string) => {
