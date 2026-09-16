@@ -11,8 +11,10 @@ from __future__ import annotations
 import importlib.util
 import logging
 import sys
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -28,6 +30,7 @@ if _spec is not None and _spec.loader is not None:
     _spec.loader.exec_module(_models)
 
     TasteSummary = _models.TasteSummary
+    TasteSummaryQueryAvailability = _models.TasteSummaryQueryAvailability
     TasteWork = _models.TasteWork
     TasteVerdict = _models.TasteVerdict
 else:
@@ -64,6 +67,39 @@ def _pool(db: DatabaseManager):
 # ---------------------------------------------------------------------------
 
 
+async def _run_summary_query(
+    query_name: str,
+    query: Callable[[], Awaitable[Any]],
+    *,
+    fallback: Any,
+    availability: list[Any],
+) -> Any:
+    """Run one summary query without discarding successful sibling sections.
+
+    Missing ledger tables retain the endpoint's established 503 contract.
+    Other failures are represented by a fixed, content-blind reason so the
+    response can identify the unavailable section without exposing database
+    errors or source payloads.
+    """
+    try:
+        value = await query()
+    except asyncpg.UndefinedTableError:
+        raise
+    except Exception:
+        logger.warning("Taste summary query unavailable: query=%s", query_name)
+        availability.append(
+            TasteSummaryQueryAvailability(
+                query=query_name,
+                state="unavailable",
+                reason="query_failed",
+            )
+        )
+        return fallback
+
+    availability.append(TasteSummaryQueryAvailability(query=query_name, state="available"))
+    return value
+
+
 @router.get("/taste/summary", response_model=ApiResponse[TasteSummary])
 async def get_taste_summary(
     db: DatabaseManager = Depends(_get_db_manager),
@@ -72,55 +108,89 @@ async def get_taste_summary(
     signals grouped by kind, and a 7-day recent-signal count.
 
     A missing ledger table is an unavailable read model, not an empty ledger,
-    and therefore returns 503. Other query failures retain the degraded
-    response envelope.
+    and therefore returns 503. Other query failures are isolated to the
+    affected section; successful sibling sections remain in the response.
     """
     pool = _pool(db)
+    query_availability: list[Any] = []
     try:
-        total_works = await pool.fetchval("SELECT count(*) FROM works") or 0
-        total_signals = await pool.fetchval("SELECT count(*) FROM taste_signals") or 0
-        total_verdicts = await pool.fetchval("SELECT count(*) FROM verdicts") or 0
         cutoff = datetime.now(UTC) - timedelta(days=7)
-        recent_signals_7d = (
-            await pool.fetchval(
+        total_works = await _run_summary_query(
+            "total_works",
+            lambda: pool.fetchval("SELECT count(*) FROM works"),
+            fallback=0,
+            availability=query_availability,
+        )
+        total_signals = await _run_summary_query(
+            "total_signals",
+            lambda: pool.fetchval("SELECT count(*) FROM taste_signals"),
+            fallback=0,
+            availability=query_availability,
+        )
+        total_verdicts = await _run_summary_query(
+            "total_verdicts",
+            lambda: pool.fetchval("SELECT count(*) FROM verdicts"),
+            fallback=0,
+            availability=query_availability,
+        )
+        recent_signals_7d = await _run_summary_query(
+            "recent_signals_7d",
+            lambda: pool.fetchval(
                 "SELECT count(*) FROM taste_signals WHERE occurred_at >= $1", cutoff
-            )
-            or 0
+            ),
+            fallback=0,
+            availability=query_availability,
         )
-        works_by_kind_rows = await pool.fetch(
-            "SELECT kind, count(*) AS n FROM works GROUP BY kind ORDER BY n DESC"
+        works_by_kind = await _run_summary_query(
+            "works_by_kind",
+            lambda: _fetch_grouped_counts(
+                pool,
+                "SELECT kind, count(*) AS n FROM works GROUP BY kind ORDER BY n DESC",
+                "kind",
+            ),
+            fallback={},
+            availability=query_availability,
         )
-        signals_by_kind_rows = await pool.fetch(
-            "SELECT signal_kind, count(*) AS n FROM taste_signals"
-            " GROUP BY signal_kind ORDER BY n DESC"
+        signals_by_kind = await _run_summary_query(
+            "signals_by_kind",
+            lambda: _fetch_grouped_counts(
+                pool,
+                "SELECT signal_kind, count(*) AS n FROM taste_signals"
+                " GROUP BY signal_kind ORDER BY n DESC",
+                "signal_kind",
+            ),
+            fallback={},
+            availability=query_availability,
         )
     except asyncpg.UndefinedTableError as exc:
         raise HTTPException(status_code=503, detail="Taste ledger is not available") from exc
-    except Exception:
-        logger.warning("Taste summary query failed", exc_info=True)
-        return ApiResponse[TasteSummary](
-            data=TasteSummary(
-                total_works=0,
-                total_signals=0,
-                total_verdicts=0,
-                recent_signals_7d=0,
-                works_by_kind={},
-                signals_by_kind={},
-                ledger_available=False,
-            )
-        )
+
+    unavailable = [query for query in query_availability if query.state == "unavailable"]
+    if not unavailable:
+        availability = "complete"
+    elif len(unavailable) == len(query_availability):
+        availability = "unavailable"
+    else:
+        availability = "partial"
 
     return ApiResponse[TasteSummary](
         data=TasteSummary(
-            total_works=total_works,
-            total_signals=total_signals,
-            total_verdicts=total_verdicts,
-            recent_signals_7d=recent_signals_7d,
-            works_by_kind={r["kind"]: r["n"] for r in works_by_kind_rows},
-            signals_by_kind={r["signal_kind"]: r["n"] for r in signals_by_kind_rows},
-            ledger_available=True,
+            total_works=total_works or 0,
+            total_signals=total_signals or 0,
+            total_verdicts=total_verdicts or 0,
+            recent_signals_7d=recent_signals_7d or 0,
+            works_by_kind=works_by_kind,
+            signals_by_kind=signals_by_kind,
+            availability=availability,
+            query_availability=query_availability,
+            ledger_available=availability != "unavailable",
         )
     )
+
+
+async def _fetch_grouped_counts(pool: Any, query: str, key: str) -> dict[str, int]:
+    rows = await pool.fetch(query)
+    return {row[key]: row["n"] for row in rows}
 
 
 # ---------------------------------------------------------------------------

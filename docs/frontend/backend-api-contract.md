@@ -665,6 +665,30 @@ models are not additional backend response contracts.
   while non-episode endpoints are `null`.
 - `GET /api/memory/activity` -> `ApiResponse<MemoryActivity[]>`
 
+## Lifestyle Taste Contract
+
+- `GET /api/lifestyle/taste/summary` -> `ApiResponse<TasteSummary>`
+  - `availability` is `complete`, `partial`, or `unavailable`.
+  - `query_availability` contains one content-blind typed entry for each
+    summary section: `total_works`, `total_signals`, `total_verdicts`,
+    `recent_signals_7d`, `works_by_kind`, and `signals_by_kind`.
+    Each entry has `state: available | unavailable`; an unavailable entry
+    has `reason: query_failed` and an available entry has `reason: null`.
+  - A partial response preserves every successful section and marks only
+    failed sections unavailable. `ledger_available` remains true for partial
+    coverage and is false only when every summary query is unavailable.
+  - A complete response with zero counts is a genuine empty ledger. The
+    dashboard must not render a failed section's compatibility zero as a
+    confirmed empty result.
+  - Failure status is content-blind: no SQL, exception text, credentials, or
+    source payload crosses the API boundary.
+- `GET /api/lifestyle/taste/works` ->
+  `PaginatedResponse<TasteWork>`; `meta.total` is the filtered ledger
+  count, not the fetched page length.
+- `GET /api/lifestyle/taste/verdicts` ->
+  `PaginatedResponse<TasteVerdict>`; includes migrated owner assertions.
+- A missing pre-migration ledger returns HTTP 503 on all three endpoints.
+
 ## Approvals Domain Contract
 
 - `GET /api/approvals` and `GET /api/approvals/history` -> `ApiResponse<ApprovalSummary[]>`; summaries carry a nullable, redacted `execution_result`, and Retry is eligible only for `status = approved` with `execution_result = null`

@@ -40,18 +40,28 @@ import {
   useLifestyleTasteVerdicts,
   useLifestyleTasteWorks,
 } from "@/hooks/use-memory";
+import type { TasteSummary } from "@/api/types";
 
 // ---------------------------------------------------------------------------
 // Fixture data
 // ---------------------------------------------------------------------------
 
-const SUMMARY_FIXTURE = {
+const SUMMARY_FIXTURE: TasteSummary = {
   total_works: 220,
   total_signals: 340,
   total_verdicts: 61,
   recent_signals_7d: 12,
   works_by_kind: { track: 220 },
   signals_by_kind: { listen_completed: 200, listen_skipped: 140 },
+  availability: "complete",
+  query_availability: [
+    { query: "total_works", state: "available", reason: null },
+    { query: "total_signals", state: "available", reason: null },
+    { query: "total_verdicts", state: "available", reason: null },
+    { query: "recent_signals_7d", state: "available", reason: null },
+    { query: "works_by_kind", state: "available", reason: null },
+    { query: "signals_by_kind", state: "available", reason: null },
+  ],
   ledger_available: true,
 };
 
@@ -235,6 +245,30 @@ describe("ButlerLifestyleTasteTab — KPI totals render from meta.total", () => 
     renderTab();
     expect(screen.getByText("Could not load taste overview.")).toBeDefined();
     expect(screen.queryByText("Works tracked")).toBeNull();
+  });
+
+  it("preserves successful summary sections and marks only the failed KPI unavailable", () => {
+    setupWithData({
+      summary: {
+        ...SUMMARY_FIXTURE,
+        availability: "partial",
+        total_works: 0,
+        query_availability: SUMMARY_FIXTURE.query_availability.map((query) =>
+          query.query === "total_works"
+            ? { query: query.query, state: "unavailable" as const, reason: "query_failed" as const }
+            : query,
+        ),
+      },
+    });
+    renderTab();
+
+    const kpiItems = screen.getAllByTestId("kpi-item");
+    expect(kpiItems[0].textContent).toContain("unavailable");
+    expect(kpiItems[1].textContent).toContain("340");
+    expect(kpiItems[2].textContent).toContain("61");
+    expect(screen.getByTestId("taste-summary-partial").textContent).toContain(
+      "total works: query_failed",
+    );
   });
 });
 

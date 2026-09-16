@@ -21,7 +21,9 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { KpiCell, ErrorLine, Panel } from "./atoms";
+import type { TasteSummary, TasteSummaryQueryName } from "@/api/types";
 import {
   useLifestyleTasteSummary,
   useLifestyleTasteVerdicts,
@@ -50,13 +52,29 @@ function LoadingRows({ count = 4 }: { count?: number }) {
 // Panel 1: KPI strip
 // ---------------------------------------------------------------------------
 
+const UNAVAILABLE = "unavailable";
+
 interface LifestyleKpiStripProps {
   totalWorks: number;
   totalSignals: number;
   totalVerdicts: number;
   recentSignals7d: number;
+  summary: TasteSummary | undefined;
   isLoading: boolean;
   isError: boolean;
+}
+
+function summaryQueryAvailable(
+  summary: TasteSummary | undefined,
+  queryName: TasteSummaryQueryName,
+): boolean {
+  // Treat a legacy response without the additive status ledger as available;
+  // the backend always emits it now, but this keeps an already-rendered page
+  // from turning a compatible response into a fabricated outage.
+  return (
+    summary?.query_availability.find((query) => query.query === queryName)?.state !==
+    "unavailable"
+  );
 }
 
 function LifestyleKpiStrip({
@@ -64,6 +82,7 @@ function LifestyleKpiStrip({
   totalSignals,
   totalVerdicts,
   recentSignals7d,
+  summary,
   isLoading,
   isError,
 }: LifestyleKpiStripProps) {
@@ -95,10 +114,50 @@ function LifestyleKpiStrip({
   return (
     <div data-testid="kpi-strip">
       <div className="grid grid-cols-2 sm:grid-cols-4 border-t border-l border-border/60">
-        <Panel testId="kpi-item"><KpiCell label="Works tracked" value={String(totalWorks)} big /></Panel>
-        <Panel testId="kpi-item"><KpiCell label="All signals" value={String(totalSignals)} big /></Panel>
-        <Panel testId="kpi-item"><KpiCell label="Taste verdicts" value={String(totalVerdicts)} big /></Panel>
-        <Panel testId="kpi-item"><KpiCell label="Signals (7d)" value={String(recentSignals7d)} big /></Panel>
+        <Panel testId="kpi-item">
+          <KpiCell
+            label="Works tracked"
+            value={
+              summaryQueryAvailable(summary, "total_works") ? String(totalWorks) : UNAVAILABLE
+            }
+            tone={summaryQueryAvailable(summary, "total_works") ? "fg" : "amber"}
+            big
+          />
+        </Panel>
+        <Panel testId="kpi-item">
+          <KpiCell
+            label="All signals"
+            value={
+              summaryQueryAvailable(summary, "total_signals") ? String(totalSignals) : UNAVAILABLE
+            }
+            tone={summaryQueryAvailable(summary, "total_signals") ? "fg" : "amber"}
+            big
+          />
+        </Panel>
+        <Panel testId="kpi-item">
+          <KpiCell
+            label="Taste verdicts"
+            value={
+              summaryQueryAvailable(summary, "total_verdicts")
+                ? String(totalVerdicts)
+                : UNAVAILABLE
+            }
+            tone={summaryQueryAvailable(summary, "total_verdicts") ? "fg" : "amber"}
+            big
+          />
+        </Panel>
+        <Panel testId="kpi-item">
+          <KpiCell
+            label="Signals (7d)"
+            value={
+              summaryQueryAvailable(summary, "recent_signals_7d")
+                ? String(recentSignals7d)
+                : UNAVAILABLE
+            }
+            tone={summaryQueryAvailable(summary, "recent_signals_7d") ? "fg" : "amber"}
+            big
+          />
+        </Panel>
       </div>
     </div>
   );
@@ -221,6 +280,10 @@ export default function ButlerLifestyleTasteTab() {
   const worksUnavailable = worksError || (!worksLoading && worksResponse === undefined);
   const summaryUnavailable =
     summaryError || (!summaryLoading && (summary === undefined || !summary.ledger_available));
+  const unavailableSummaryQueries =
+    summary?.query_availability.filter((query) => query.state === "unavailable") ?? [];
+  const summaryPartiallyUnavailable =
+    !summaryUnavailable && unavailableSummaryQueries.length > 0;
   const verdicts = verdictsResponse ? verdictsResponse.data : [];
   const works = worksResponse ? worksResponse.data : [];
 
@@ -234,6 +297,22 @@ export default function ButlerLifestyleTasteTab() {
           Some lifestyle taste data failed to load. Unavailable panels will retry automatically.
         </p>
       )}
+      {summaryPartiallyUnavailable && (
+        <SourceDegradedNote
+          label="Taste overview"
+          detail={
+            unavailableSummaryQueries
+              .map(
+                (query) =>
+                  query.query.replaceAll("_", " ") +
+                  ": " +
+                  (query.reason ?? "unavailable"),
+              )
+              .join(", ")
+          }
+          testId="taste-summary-partial"
+        />
+      )}
 
       {/* Row 1: KPI strip */}
       <LifestyleKpiStrip
@@ -241,6 +320,7 @@ export default function ButlerLifestyleTasteTab() {
         totalSignals={summary?.total_signals ?? 0}
         totalVerdicts={summary?.total_verdicts ?? 0}
         recentSignals7d={summary?.recent_signals_7d ?? 0}
+        summary={summary}
         isLoading={summaryLoading}
         isError={summaryUnavailable}
       />

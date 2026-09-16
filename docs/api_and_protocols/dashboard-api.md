@@ -133,8 +133,25 @@ The auto-discovered Lifestyle router exposes three read-only endpoints under
 
 The list endpoints obtain `meta.total` with a separate `COUNT(*)`; it is the ledger total for the
 same filter, not the length of the returned page. A missing pre-migration ledger returns HTTP 503
-on every taste endpoint rather than being presented as a genuine empty taste history. Other summary
-read failures remain distinguishable through `ledger_available=false`.
+on every taste endpoint rather than being presented as a genuine empty taste history.
+
+The summary payload also carries:
+
+- `availability`: `complete`, `partial`, or `unavailable`.
+- `query_availability`: one typed entry for each of `total_works`,
+  `total_signals`, `total_verdicts`, `recent_signals_7d`,
+  `works_by_kind`, and `signals_by_kind`. Each entry has `state`
+  (`available` or `unavailable`) and a nullable fixed
+  `reason` (`query_failed` when unavailable).
+- `ledger_available`: a compatibility boolean that is false only when all
+  summary queries are unavailable. A partial response keeps successful
+  sections and marks only failed sections; a complete response with all zeros
+  is a genuine empty ledger. Failure reasons are content-blind and never carry
+  SQL, exception text, credentials, or source payloads.
+
+The Lifestyle Taste tab renders a failed KPI section as unavailable rather than
+zero and shows the typed partial note. It renders an empty-state message only
+for a complete, available response with zero rows.
 
 ## SSE Streaming
 

@@ -1594,6 +1594,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Works tracked
 - All signals
 - Signals (7d)
+- Taste overview
 
 ## `frontend/src/components/butler-detail/ButlerLogsTab.tsx`
 
@@ -4339,4 +4340,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3405*
+*Total strings: 3406*
