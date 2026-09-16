@@ -86,6 +86,7 @@ vi.mock("@/hooks/use-entities", () => ({
     error: null,
   })),
   useEntityTimeline: vi.fn(() => ({ data: [], isLoading: false, isError: false })),
+  useEntityCadence: vi.fn(() => ({ data: { window_days: 30, interaction_count: 0, completeness: "complete", has_more: false }, isLoading: false, isError: false })),
   useEntityGifts: vi.fn(() => ({ data: [], isLoading: false, isError: false })),
   useEntityLoans: vi.fn(() => ({ data: [], isLoading: false, isError: false })),
   useEntityMessageThreads: vi.fn(() => ({ data: [], isLoading: false, isError: false })),

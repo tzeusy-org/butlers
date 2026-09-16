@@ -337,6 +337,7 @@ import type {
   ViewMarkResponse,
   CoreDatesResponse,
   EntityTimelineItem,
+  EntityCadenceResponse,
   DunbarTierOverrideResponse,
   EntityFinderSearchResponse,
   NeighboursResponse,
@@ -3201,6 +3202,17 @@ export function getEntityTimeline(
     ? `/relationship/entities/${encodeURIComponent(entityId)}/timeline?${qs}`
     : `/relationship/entities/${encodeURIComponent(entityId)}/timeline`;
   return apiFetch<EntityTimelineItem[]>(path);
+}
+
+/** Fetch completeness-tagged interaction evidence for a rolling window. */
+export function getEntityCadence(
+  entityId: string,
+  windowDays: number,
+): Promise<EntityCadenceResponse> {
+  const qs = new URLSearchParams({ window_days: String(windowDays) });
+  return apiFetch<EntityCadenceResponse>(
+    `/relationship/entities/${encodeURIComponent(entityId)}/cadence?${qs.toString()}`,
+  );
 }
 
 /** Fetch message thread summaries for a relationship entity. */
