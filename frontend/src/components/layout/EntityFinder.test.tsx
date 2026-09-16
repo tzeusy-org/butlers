@@ -18,6 +18,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, useLocation } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { waitFor } from "@testing-library/react";
 
 import EntityFinder from "@/components/layout/EntityFinder";
 import {
@@ -32,7 +33,7 @@ import {
 } from "@/hooks/use-entities";
 import { useSearch } from "@/hooks/use-search";
 import { useButlers } from "@/hooks/use-butlers";
-import type { NeighbourEntry } from "@/api/index.ts";
+import { getOwnerSetupStatus, type NeighbourEntry } from "@/api/index.ts";
 
 /** Renders the current location path+search for navigation assertions. */
 function LocationProbe() {
@@ -986,9 +987,17 @@ describe("EntityFinder", () => {
 
   it("renders the owner-pinned set when the query is empty", async () => {
     // Empty query → search hook disabled → undefined data. The ranked API
-    // shape caps each predicate at six rows, so this mock models both the
-    // truncated response and the complete response the finder must request.
+    // shape caps each predicate at six rows, so the resolved owner fixture
+    // below provides the complete unranked response the finder must request.
     mockSearchEmpty();
+    const ownerId = "owner-entity-id";
+    vi.mocked(getOwnerSetupStatus).mockResolvedValue({
+      entity_id: ownerId,
+      has_name: true,
+      has_telegram: false,
+      has_telegram_chat_id: false,
+      has_email: false,
+    });
     const ownerNeighbours: NeighbourEntry[] = Array.from({ length: 9 }, (_, index) => ({
       entity_id: `n${index + 1}`,
       canonical_name: `Pinned ${index + 1}`,
@@ -1001,11 +1010,16 @@ describe("EntityFinder", () => {
       verified: true,
       primary: null,
     }));
-    vi.mocked(useEntityNeighbours).mockImplementation((_entityId, params) => ({
-      data: {
-        neighbours: { knows: params?.rank ? ownerNeighbours.slice(0, 6) : ownerNeighbours },
-        remainders: params?.rank ? { knows: 3 } : {},
-      },
+    vi.mocked(useEntityNeighbours).mockImplementation((entityId, params) => ({
+      // Only an unranked fetch for the resolved owner receives the complete
+      // predicate set. A disabled call or a ranked owner request must not
+      // make the pinned-set assertions pass accidentally.
+      data: entityId === ownerId && params === undefined
+        ? {
+            neighbours: { knows: ownerNeighbours },
+            remainders: {},
+          }
+        : undefined,
       isLoading: false,
       isError: false,
     }) as unknown as UseEntityNeighboursResult);
@@ -1030,6 +1044,10 @@ describe("EntityFinder", () => {
       await flush();
     });
 
+    await waitFor(() => {
+      expect(vi.mocked(useEntityNeighbours)).toHaveBeenCalledWith(ownerId, undefined);
+    });
+
     const pinned = document.body.querySelectorAll(
       "[data-testid='entity-finder-pinned-item']",
     );
@@ -1043,11 +1061,6 @@ describe("EntityFinder", () => {
       document.body.querySelector("[data-testid='entity-finder-pinned-group'] [data-testid='entity-finder-overflow-row']")
         ?.textContent,
     ).toContain("1 more");
-    expect(
-      vi.mocked(useEntityNeighbours).mock.calls.some(
-        ([, params]) => params === undefined,
-      ),
-    ).toBe(true);
   });
 
   // -------------------------------------------------------------------------

@@ -340,6 +340,7 @@ export default function EntityFinder() {
 
   const { data: ownerNeighbours } = useEntityNeighbours(
     open && isEmptyQuery ? ownerId : undefined,
+    undefined,
   );
 
   // The ranked neighbours endpoint truncates *each predicate* before this
