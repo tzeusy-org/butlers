@@ -105,15 +105,19 @@ describe("useShellScrollMemory", () => {
     vi.unstubAllGlobals();
   });
 
-  it("resets on PUSH and restores the saved POP offset after a short first frame", async () => {
+  it("retries a POP restore when the first frame cannot reach the saved offset", async () => {
     const { main, controls } = renderHarness();
-    let contentHeight = 1_000;
+    let contentHeight = 1_200;
     Object.defineProperty(main(), "scrollHeight", {
       configurable: true,
       get: () => contentHeight,
     });
+    Object.defineProperty(main(), "clientHeight", {
+      configurable: true,
+      get: () => 500,
+    });
 
-    main().scrollTop = 264;
+    main().scrollTop = 640;
     main().dispatchEvent(new Event("scroll"));
 
     await act(async () => {
@@ -121,7 +125,7 @@ describe("useShellScrollMemory", () => {
     });
     expect(main().scrollTop).toBe(0);
 
-    contentHeight = 0;
+    contentHeight = 1_000;
     await act(async () => {
       controls().navigate(-1);
     });
@@ -129,12 +133,12 @@ describe("useShellScrollMemory", () => {
     expect(frames).toHaveLength(1);
     expect(main().scrollTop).toBe(0);
 
-    contentHeight = 1_000;
+    contentHeight = 1_200;
     await act(async () => {
       frames.shift()!(0);
     });
 
-    expect(main().scrollTop).toBe(264);
+    expect(main().scrollTop).toBe(640);
     expect(frames).toHaveLength(0);
   });
 

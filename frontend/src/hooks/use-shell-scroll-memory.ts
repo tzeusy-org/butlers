@@ -220,7 +220,8 @@ export function useShellScrollMemory(enabled = true): void {
     let cancelled = false;
     const applyRestore = () => {
       if (cancelled || pendingRestore.applied) return;
-      if (main.scrollHeight >= pendingRestore.offset) {
+      const maxReachableOffset = Math.max(0, main.scrollHeight - main.clientHeight);
+      if (maxReachableOffset >= pendingRestore.offset) {
         writeScrollTop(main, pendingRestore.offset);
         pendingRestore.applied = true;
         pendingRestoreRef.current = null;
