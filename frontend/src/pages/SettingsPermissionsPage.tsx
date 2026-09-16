@@ -247,6 +247,25 @@ interface HttpApiError {
   detail?: unknown;
 }
 
+const HTTP_STATUS_TEXT: Readonly<Record<number, string>> = {
+  400: "Bad Request",
+  401: "Unauthorized",
+  403: "Forbidden",
+  404: "Not Found",
+  405: "Method Not Allowed",
+  408: "Request Timeout",
+  409: "Conflict",
+  413: "Payload Too Large",
+  415: "Unsupported Media Type",
+  422: "Unprocessable Entity",
+  429: "Too Many Requests",
+  500: "Internal Server Error",
+  501: "Not Implemented",
+  502: "Bad Gateway",
+  503: "Service Unavailable",
+  504: "Gateway Timeout",
+};
+
 function isHttpApiError(error: unknown): error is HttpApiError {
   return (
     typeof error === "object" &&
@@ -289,11 +308,25 @@ function rethrowLegacyWebhookMutationError(
     isHttpApiError(error) &&
     error.detail === undefined &&
     error instanceof Error &&
-    error.message.trim()
+    error.message.trim() &&
+    !isGenericApiErrorMessage(error)
   ) {
     throw new Error(error.message);
   }
   rethrowLegacyMutationError(error, fallback);
+}
+
+// apiFetch keeps primitive/array detail only in Error.message, but uses the
+// response status text (or a generic fallback) when the body has no usable detail.
+// Do not turn those transport defaults into a page-specific error message.
+function isGenericApiErrorMessage(error: HttpApiError & Error): boolean {
+  const message = error.message.trim();
+  return (
+    message === "Request failed" ||
+    message.startsWith("Request failed:") ||
+    message === "Error" ||
+    message === HTTP_STATUS_TEXT[error.status]
+  );
 }
 
 interface WebhookConfirmDialogProps {

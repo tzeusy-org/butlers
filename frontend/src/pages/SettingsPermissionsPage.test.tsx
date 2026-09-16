@@ -892,6 +892,82 @@ describe("SettingsPermissionsPage — webhook edit modal [bu-9q1dx.7]", () => {
     );
   });
 
+  it("uses the PUT status fallback when the error response has no detail", async () => {
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.includes("/api/permissions")) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ data: { butlers: [], permissions: [], cells: {} } }),
+        });
+      }
+      if (url.includes("/api/webhooks/") && init?.method === "PUT") {
+        return Promise.resolve({
+          ok: false,
+          status: 502,
+          json: () => Promise.resolve({}),
+        });
+      }
+      if (url.includes("/api/webhooks")) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ data: [webhookRow()] }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: {} }) });
+    });
+
+    await act(async () => {
+      renderPage();
+    });
+    await act(async () => {
+      fireEvent.click(await screen.findByTestId(`webhook-toggle-${WEBHOOK_ID}`));
+    });
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        "Toggle failed: PUT /api/webhooks/11111111-1111-1111-1111-111111111111 failed: 502",
+      ),
+    );
+  });
+
+  it("uses the PUT status fallback when the error response is invalid JSON", async () => {
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.includes("/api/permissions")) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ data: { butlers: [], permissions: [], cells: {} } }),
+        });
+      }
+      if (url.includes("/api/webhooks/") && init?.method === "PUT") {
+        return Promise.resolve({
+          ok: false,
+          status: 503,
+          json: () => Promise.reject(new SyntaxError("Unexpected token < in JSON")),
+        });
+      }
+      if (url.includes("/api/webhooks")) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ data: [webhookRow()] }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: {} }) });
+    });
+
+    await act(async () => {
+      renderPage();
+    });
+    await act(async () => {
+      fireEvent.click(await screen.findByTestId(`webhook-toggle-${WEBHOOK_ID}`));
+    });
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        "Toggle failed: PUT /api/webhooks/11111111-1111-1111-1111-111111111111 failed: 503",
+      ),
+    );
+  });
+
   it("regenerate secret sends regenerate_secret and reveals the new secret once", async () => {
     // Override PUT to return a one-time secret on regenerate.
     fetchMock.mockImplementation((url: string, init?: RequestInit) => {
