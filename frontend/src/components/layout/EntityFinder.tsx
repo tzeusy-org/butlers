@@ -340,9 +340,11 @@ export default function EntityFinder() {
 
   const { data: ownerNeighbours } = useEntityNeighbours(
     open && isEmptyQuery ? ownerId : undefined,
-    { rank: "weight" },
   );
 
+  // The ranked neighbours endpoint truncates *each predicate* before this
+  // cross-predicate aggregation runs. Request the complete owner set so the
+  // pinned count and overflow row remain truthful after deduplication.
   const allPinned = useMemo(
     () => aggregateOwnerPinned(ownerNeighbours?.neighbours, ownerId, null),
     [ownerNeighbours, ownerId],
@@ -619,7 +621,7 @@ export default function EntityFinder() {
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent
         showCloseButton={false}
-        className="top-[15vh] translate-y-0 gap-0 border-0 bg-transparent p-0 shadow-none sm:max-w-3xl"
+        className="top-4 h-[calc(100dvh-2rem)] translate-y-0 gap-0 border-0 bg-transparent p-0 shadow-none sm:top-[15vh] sm:h-auto sm:max-w-3xl"
         onCloseAutoFocus={(event) => {
           // EntityFinder opens via a cross-component custom event, so there
           // is no colocated DialogTrigger for Radix to restore automatically.
@@ -635,7 +637,7 @@ export default function EntityFinder() {
         <Command
           label="Command menu"
           onValueChange={setActiveValue}
-          className="relative mx-auto flex w-full max-w-3xl overflow-hidden rounded-xl border border-border bg-background shadow-2xl"
+          className="relative mx-auto flex h-full min-h-0 w-full max-w-3xl overflow-hidden rounded-xl border border-border bg-background shadow-2xl sm:h-auto"
           onKeyDown={(e) => {
             // Tab = hop into the active result when a real entity row is
             // active (cmdk does not consume Tab, so we claim it here first).
@@ -649,7 +651,7 @@ export default function EntityFinder() {
           shouldFilter={false}
         >
         {/* Left column: input + list + footer */}
-        <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           {/* Input row */}
           <div className="flex items-center border-b border-border px-4 focus-within:ring-2 focus-within:ring-inset focus-within:ring-foreground">
             <span className="mr-2 shrink-0 font-mono text-xs text-muted-foreground">
@@ -667,7 +669,7 @@ export default function EntityFinder() {
             </kbd>
           </div>
 
-          <Command.List className="max-h-[420px] flex-1 overflow-y-auto p-2">
+          <Command.List className="min-h-0 flex-1 overflow-y-auto p-2 sm:max-h-[420px]">
             {/* Search error, no fallback data — a failed entity search with
              * nothing cached must surface as an error, not collapse into the
              * "no results" empty copy. Client-side page matches (which never

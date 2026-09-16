@@ -509,11 +509,23 @@ describe("Sidebar", () => {
       expect(overviewLink?.getAttribute("aria-label")).toBe("Overview");
     });
 
-    it("advertises the destination chord in rail tooltip metadata", () => {
+    it("renders the destination chord in the rail tooltip after keyboard focus", async () => {
       render();
 
       const calendarLink = container.querySelector('a[href="/calendar"]');
-      expect(calendarLink?.getAttribute("data-shortcut")).toBe("g v");
+      expect(calendarLink).toBeInstanceOf(HTMLAnchorElement);
+      expect(
+        document.body.querySelector("[data-slot='tooltip-content'] [data-testid='sidebar-chord']"),
+      ).toBeNull();
+
+      await act(async () => {
+        calendarLink?.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+      });
+
+      expect(
+        document.body.querySelector("[data-slot='tooltip-content'] [data-testid='sidebar-chord']")
+          ?.textContent,
+      ).toBe("g v");
     });
 
     it.each([

@@ -985,30 +985,30 @@ describe("EntityFinder", () => {
   });
 
   it("renders the owner-pinned set when the query is empty", async () => {
-    // Empty query → search hook disabled → undefined data.
+    // Empty query → search hook disabled → undefined data. The ranked API
+    // shape caps each predicate at six rows, so this mock models both the
+    // truncated response and the complete response the finder must request.
     mockSearchEmpty();
-    vi.mocked(useEntityNeighbours).mockReturnValue({
+    const ownerNeighbours: NeighbourEntry[] = Array.from({ length: 9 }, (_, index) => ({
+      entity_id: `n${index + 1}`,
+      canonical_name: `Pinned ${index + 1}`,
+      entity_type: "person",
+      direction: "forward",
+      src: "x",
+      conf: 1,
+      last_seen: null,
+      weight: 9 - index,
+      verified: true,
+      primary: null,
+    }));
+    vi.mocked(useEntityNeighbours).mockImplementation((_entityId, params) => ({
       data: {
-        neighbours: {
-          knows: [
-            {
-              entity_id: "n1",
-              canonical_name: "Pinned One",
-              direction: "forward",
-              src: "x",
-              conf: 1,
-              last_seen: null,
-              weight: 9,
-              verified: true,
-              primary: null,
-            },
-          ],
-        },
-        remainders: {},
+        neighbours: { knows: params?.rank ? ownerNeighbours.slice(0, 6) : ownerNeighbours },
+        remainders: params?.rank ? { knows: 3 } : {},
       },
       isLoading: false,
       isError: false,
-    } as unknown as UseEntityNeighboursResult);
+    }) as unknown as UseEntityNeighboursResult);
 
     const qc = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -1033,8 +1033,21 @@ describe("EntityFinder", () => {
     const pinned = document.body.querySelectorAll(
       "[data-testid='entity-finder-pinned-item']",
     );
-    expect(pinned.length).toBe(1);
-    expect(pinned[0].textContent).toContain("Pinned One");
+    expect(pinned).toHaveLength(8);
+    expect(pinned[0].textContent).toContain("Pinned 1");
+    expect(
+      document.body.querySelector("[data-testid='entity-finder-pinned-group'] [cmdk-group-heading]")
+        ?.textContent,
+    ).toBe("Pinned (8 of 9)");
+    expect(
+      document.body.querySelector("[data-testid='entity-finder-pinned-group'] [data-testid='entity-finder-overflow-row']")
+        ?.textContent,
+    ).toContain("1 more");
+    expect(
+      vi.mocked(useEntityNeighbours).mock.calls.some(
+        ([, params]) => params === undefined,
+      ),
+    ).toBe(true);
   });
 
   // -------------------------------------------------------------------------
