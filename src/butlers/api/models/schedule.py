@@ -157,3 +157,32 @@ class ScheduleUpdate(BaseModel):
             context="schedule_update",
         )
         return self
+
+
+class ScheduleToggleRequest(BaseModel):
+    """Requested enabled state for the idempotent schedule-toggle action."""
+
+    enabled: bool
+
+
+class ScheduleToggleAudit(BaseModel):
+    """Safe, server-derived audit evidence for a successful toggle."""
+
+    action: Literal["schedule.toggle"]
+    result: Literal["success"]
+    target: str
+
+
+class ScheduleToggleResult(BaseModel):
+    """Observed result returned after the butler persists a requested state."""
+
+    id: UUID
+    name: str
+    source: str
+    status: Literal["updated", "unchanged"]
+    outcome: Literal["applied", "already_requested"]
+    requested_enabled: bool
+    observed_enabled: bool
+    changed: bool
+    next_run_at: datetime | None = None
+    audit: ScheduleToggleAudit

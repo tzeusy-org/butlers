@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { toast } from "sonner";
 
-import type { Schedule } from "@/api/types.ts";
+import type { Schedule, ScheduleToggleResult } from "@/api/types.ts";
 import { ScheduleForm } from "@/components/schedules/ScheduleForm";
 import type { ScheduleFormValues } from "@/components/schedules/ScheduleForm";
 import { ScheduleTable } from "@/components/schedules/ScheduleTable";
@@ -63,6 +63,8 @@ export default function ButlerSchedulesTab({ butlerName }: ButlerSchedulesTabPro
 
   // Track which schedule is currently being triggered
   const [triggeringId, setTriggeringId] = useState<string | null>(null);
+  const [togglingId, setTogglingId] = useState<string | null>(null);
+  const [toggleReceipt, setToggleReceipt] = useState<ScheduleToggleResult | null>(null);
 
   // ---------------------------------------------------------------------------
   // Handlers
@@ -79,11 +81,20 @@ export default function ButlerSchedulesTab({ butlerName }: ButlerSchedulesTabPro
   }
 
   function handleToggle(schedule: Schedule) {
-    toggleMutation.mutate(schedule.id, {
-      onSuccess: () => {
-        toast.success(`Schedule "${schedule.name}" ${schedule.enabled ? "disabled" : "enabled"}`);
+    const requestedEnabled = !schedule.enabled;
+    setTogglingId(schedule.id);
+    setToggleReceipt(null);
+    toggleMutation.mutate({ scheduleId: schedule.id, enabled: requestedEnabled }, {
+      onSuccess: (response) => {
+        const receipt = response.data;
+        setTogglingId(null);
+        setToggleReceipt(receipt);
+        toast.success(
+          `${receipt.observed_enabled ? "Event resumed" : "Event paused"} (Schedule "${schedule.name}" confirmed by server)`,
+        );
       },
       onError: (err) => {
+        setTogglingId(null);
         toast.error(`Failed to toggle schedule: ${err instanceof Error ? err.message : "Unknown error"}`);
       },
     });
@@ -192,9 +203,17 @@ export default function ButlerSchedulesTab({ butlerName }: ButlerSchedulesTabPro
             onEdit={handleEdit}
             onDelete={handleDeleteClick}
             triggeringId={triggeringId}
+            togglingId={togglingId}
           />
         </CardContent>
       </Card>
+
+      {toggleReceipt && (
+        <p className="text-sm text-muted-foreground" role="status">
+          Server confirmed schedule &quot;{toggleReceipt.name}&quot; is {toggleReceipt.observed_enabled ? "enabled" : "disabled"}.
+          Audit receipt: {toggleReceipt.audit.action} ({toggleReceipt.audit.result}).
+        </p>
+      )}
 
       {/* Create / Edit form dialog */}
       <ScheduleForm

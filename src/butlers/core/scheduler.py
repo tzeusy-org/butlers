@@ -2835,6 +2835,135 @@ async def schedule_update(
     logger.info("Updated schedule %s: %s", task_id, list(normalized_fields.keys()))
 
 
+def _schedule_toggle_error(
+    task_id: uuid.UUID,
+    code: str,
+    message: str,
+    *,
+    source: str | None = None,
+) -> dict[str, Any]:
+    """Build a bounded, content-free schedule-toggle refusal."""
+    result: dict[str, Any] = {
+        "id": str(task_id),
+        "status": "error",
+        "code": code,
+        "message": message,
+        "error": message,
+    }
+    if source is not None:
+        result["source"] = source
+    return result
+
+
+async def schedule_toggle(
+    pool: asyncpg.Pool,
+    task_id: uuid.UUID,
+    *,
+    enabled: bool | None = None,
+    stagger_key: str | None = None,
+    max_stagger_seconds: int = _DEFAULT_MAX_STAGGER_SECONDS,
+) -> dict[str, Any]:
+    """Set one runtime schedule to the requested enabled state.
+
+    ``enabled`` is the canonical, retry-safe request: repeating the same
+    request returns an unchanged receipt instead of flipping the row again.
+    ``None`` is retained only for legacy MCP callers and derives the inverse
+    while holding the row lock; new callers must send the desired state.
+
+    TOML and other non-DB rows are configuration- or subsystem-managed and
+    cannot be changed through this interactive action.  Every refusal is a
+    bounded result rather than a false success.
+    """
+    if enabled is not None and not isinstance(enabled, bool):
+        return _schedule_toggle_error(
+            task_id,
+            "SCHEDULE_TOGGLE_INVALID",
+            "enabled must be a boolean",
+        )
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                """
+                SELECT id, name, cron, timezone, source, enabled, next_run_at
+                FROM scheduled_tasks
+                WHERE id = $1
+                FOR UPDATE
+                """,
+                task_id,
+            )
+            if row is None:
+                return _schedule_toggle_error(
+                    task_id,
+                    "SCHEDULE_NOT_FOUND",
+                    f"Schedule {task_id} not found",
+                )
+
+            source = str(row["source"] or "db")
+            if source == "toml":
+                return _schedule_toggle_error(
+                    task_id,
+                    "SCHEDULE_TOML_MANAGED",
+                    "TOML-managed schedules can only be changed in butler.toml",
+                    source=source,
+                )
+            if source != "db":
+                return _schedule_toggle_error(
+                    task_id,
+                    "SCHEDULE_MANAGED",
+                    f"Schedule source {source!r} is managed by its owning subsystem",
+                    source=source,
+                )
+
+            current_enabled = bool(row["enabled"])
+            requested_enabled = not current_enabled if enabled is None else enabled
+            if current_enabled == requested_enabled:
+                observed_next_run_at = row["next_run_at"]
+                changed = False
+            else:
+                observed_next_run_at = (
+                    _next_run(
+                        row["cron"],
+                        timezone=row["timezone"],
+                        stagger_key=stagger_key,
+                        max_stagger_seconds=max_stagger_seconds,
+                    )
+                    if requested_enabled
+                    else None
+                )
+                observed_next_run_at = await conn.fetchval(
+                    """
+                    UPDATE scheduled_tasks
+                    SET enabled = $2, next_run_at = $3, updated_at = now()
+                    WHERE id = $1
+                    RETURNING next_run_at
+                    """,
+                    task_id,
+                    requested_enabled,
+                    observed_next_run_at,
+                )
+                changed = True
+
+            return {
+                "id": str(task_id),
+                "name": row["name"],
+                "source": source,
+                "status": "updated" if changed else "unchanged",
+                "outcome": "applied" if changed else "already_requested",
+                "requested_enabled": requested_enabled,
+                "observed_enabled": requested_enabled,
+                "changed": changed,
+                "next_run_at": (
+                    observed_next_run_at.isoformat() if observed_next_run_at is not None else None
+                ),
+                "audit": {
+                    "action": "schedule.toggle",
+                    "result": "success",
+                    "target": f"schedule:{task_id}",
+                },
+            }
+
+
 async def schedule_delete(pool: asyncpg.Pool, task_id: uuid.UUID) -> None:
     """Delete a runtime scheduled task.
 
