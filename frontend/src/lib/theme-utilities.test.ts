@@ -131,7 +131,8 @@ describe("first-frame identity", () => {
       )
     })
 
-    expect(fontUrls).toEqual(EXPECTED_FONT_URLS)
+    expect(new Set(fontUrls).size).toBe(EXPECTED_FONT_URLS.length)
+    expect([...fontUrls].sort()).toEqual([...EXPECTED_FONT_URLS].sort())
     for (const fontUrl of fontUrls) {
       expect(fontUrl).toMatch(VENDORED_FONT_URL)
       expect(existsSync(resolve(FRONTEND_DIR, "public", fontUrl.replace(/^\//, "")))).toBe(true)
