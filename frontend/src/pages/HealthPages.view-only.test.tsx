@@ -4,6 +4,18 @@ import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router";
 
+const { insightFeedbackMutate, insightFeedbackState } = vi.hoisted(() => ({
+  insightFeedbackMutate: vi.fn(),
+  insightFeedbackState: {
+    isPending: false,
+    isError: false,
+    isSuccess: false,
+    variables: undefined as
+      | { insightId: string; verdict: "useful" | "not_now" | "never"; snoozeUntil?: string }
+      | undefined,
+  },
+}));
+
 // ---------------------------------------------------------------------------
 // Stubs for the new Health Overview page hooks (bu-w7b18.1)
 // ---------------------------------------------------------------------------
@@ -44,6 +56,10 @@ vi.mock("@/hooks/use-insights", () => ({
       },
     ],
     isLoading: false,
+  }),
+  useInsightFeedback: () => ({
+    mutate: insightFeedbackMutate,
+    ...insightFeedbackState,
   }),
 }));
 
@@ -314,7 +330,16 @@ import MedicationsPage from "./MedicationsPage";
 import ResearchPage from "./ResearchPage";
 import SymptomsPage from "./SymptomsPage";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+  Object.assign(insightFeedbackState, {
+    isPending: false,
+    isError: false,
+    isSuccess: false,
+    variables: undefined,
+  });
+});
 
 // The six-page health-CRUD epic (bu-eqkmi) is complete: no health page remains
 // view-only, so this list is empty. Each converted page is asserted to have
@@ -509,6 +534,47 @@ describe("Health Overview page (bu-w7b18.1)", () => {
   it("renders the insight message in the attention list", () => {
     renderInRouter(<HealthOverviewPage />);
     expect(screen.getByText("Weight has drifted upward over the past two weeks.")).toBeTruthy();
+  });
+
+  it("wires the insight row's useful, not-now, and never doors", () => {
+    renderInRouter(<HealthOverviewPage />);
+
+    screen.getByRole("button", { name: "Useful" }).click();
+    screen.getByRole("button", { name: "Not now" }).click();
+    screen.getByRole("button", { name: "Never" }).click();
+
+    expect(insightFeedbackMutate).toHaveBeenNthCalledWith(1, {
+      insightId: "insight-1",
+      verdict: "useful",
+    });
+    expect(insightFeedbackMutate.mock.calls[1][0]).toMatchObject({
+      insightId: "insight-1",
+      verdict: "not_now",
+    });
+    expect(insightFeedbackMutate).toHaveBeenNthCalledWith(3, {
+      insightId: "insight-1",
+      verdict: "never",
+    });
+  });
+
+  it("makes insight feedback outcomes and retry visible", () => {
+    insightFeedbackState.isError = true;
+    insightFeedbackState.variables = {
+      insightId: "insight-1",
+      verdict: "not_now",
+      snoozeUntil: "2026-01-08T08:00:00Z",
+    };
+    const view = renderInRouter(<HealthOverviewPage />);
+
+    expect(screen.getByRole("alert").textContent).toContain("Could not save feedback.");
+    screen.getByRole("button", { name: "Retry feedback" }).click();
+    expect(insightFeedbackMutate).toHaveBeenCalledWith(insightFeedbackState.variables);
+
+    view.unmount();
+    insightFeedbackState.isError = false;
+    insightFeedbackState.isSuccess = true;
+    renderInRouter(<HealthOverviewPage />);
+    expect(screen.getByRole("status").textContent).toContain("Feedback saved.");
   });
 
   it("renders the KPI strip with 4 cells", () => {

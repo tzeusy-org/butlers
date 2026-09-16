@@ -138,6 +138,13 @@ vi.mock("@/hooks/use-health-briefing", () => ({
 
 vi.mock("@/hooks/use-insights", () => ({
   useInsights: () => insightsResult,
+  useInsightFeedback: () => ({
+    mutate: vi.fn(),
+    isPending: false,
+    isError: false,
+    isSuccess: false,
+    variables: undefined,
+  }),
 }));
 
 vi.mock("@/lib/command-registry", () => ({
@@ -152,6 +159,12 @@ function renderPage() {
       <HealthOverviewPage />
     </MemoryRouter>,
   );
+}
+
+function attentionHref(): string | null {
+  const link = screen.getByTestId("attention-item").querySelector("a");
+  if (!(link instanceof HTMLAnchorElement)) throw new Error("Expected an attention link");
+  return link.getAttribute("href");
 }
 
 afterEach(() => {
@@ -257,7 +270,7 @@ describe("HealthOverviewPage — measurement vocabulary", () => {
 
     renderPage();
 
-    expect(screen.getByTestId("attention-item").getAttribute("href")).toBe(
+    expect(attentionHref()).toBe(
       "/health/measurements?type=weight&since=2026-07-01&until=2026-07-20",
     );
   });
@@ -295,7 +308,7 @@ describe("HealthOverviewPage — measurement vocabulary", () => {
 
     renderPage();
 
-    expect(screen.getByTestId("attention-item").getAttribute("href")).toBe(
+    expect(attentionHref()).toBe(
       "/health/measurements",
     );
   });
@@ -347,7 +360,7 @@ describe("HealthOverviewPage — measurement vocabulary", () => {
 
     renderPage();
 
-    expect(screen.getByTestId("attention-item").getAttribute("href")).toBe(
+    expect(attentionHref()).toBe(
       "/health/measurements",
     );
   });

@@ -499,6 +499,8 @@ export interface AttentionSourceSummary {
    * a benign hold that resolves on its own.
    */
   failed: number;
+  /** Candidates that expired before ever being delivered. */
+  expired_unseen: number;
   total: number;
   suppressed_never_delivered: boolean;
 }
@@ -9937,6 +9939,8 @@ export interface InsightCandidatesParams {
   status?: string;
   limit?: number;
 }
+
+export type InsightFeedbackVerdict = "useful" | "not_now" | "never";
 
 // ---------------------------------------------------------------------------
 // Owner Decision Desk -- Decisions lane (bu-ckkpz.2, epic bu-ckkpz)

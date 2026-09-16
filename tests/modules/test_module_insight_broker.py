@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -134,10 +134,39 @@ class TestProposeInsightCandidateTool:
         fake_db = MagicMock()
         fake_db.pool = MagicMock()
         await module.register_tools(mcp=mock_mcp, config={}, db=fake_db, butler_name="test-butler")
-        assert "propose_insight_candidate" in mock_mcp._registered_tools
+        assert {
+            "propose_insight_candidate",
+            "insight_mark_useful",
+            "insight_snooze",
+            "insight_mute",
+        } <= mock_mcp._registered_tools.keys()
         tool_fn = mock_mcp._registered_tools["propose_insight_candidate"]
         assert callable(tool_fn)
         assert asyncio.iscoroutinefunction(tool_fn)
+
+    @pytest.mark.asyncio
+    async def test_feedback_tools_call_the_shared_server_attributed_behavior(
+        self, module, mock_mcp
+    ):
+        fake_db = MagicMock()
+        fake_db.pool = MagicMock()
+        with patch(
+            "butlers.tools.switchboard.insight.broker.record_insight_feedback",
+            new=AsyncMock(return_value={"status": "recorded"}),
+        ) as feedback:
+            await module.register_tools(
+                mcp=mock_mcp, config={}, db=fake_db, butler_name="switchboard"
+            )
+            await mock_mcp._registered_tools["insight_mark_useful"]("insight-1")
+            await mock_mcp._registered_tools["insight_snooze"]("insight-2", "2026-09-20T00:00:00Z")
+            await mock_mcp._registered_tools["insight_mute"]("insight-3")
+
+        assert [call.kwargs["verdict"] for call in feedback.await_args_list] == [
+            "useful",
+            "not_now",
+            "never",
+        ]
+        assert {call.kwargs["actor"] for call in feedback.await_args_list} == {"owner"}
 
 
 # ---------------------------------------------------------------------------

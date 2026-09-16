@@ -868,6 +868,19 @@ class InsightCandidate(BaseModel):
     prepared_action_id: str | None = None
 
 
+class InsightFeedbackResponse(BaseModel):
+    """Content-blind result of one bounded insight-feedback decision.
+
+    The feedback store retains semantic family data so Switchboard can enforce
+    cooldowns, but an API or MCP caller receives only the outcome it requested.
+    """
+
+    status: Literal["recorded"]
+    verdict: Literal["useful", "not_now", "never"]
+    insight_id: str
+    snooze_until: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # Fleet case file — read API (bu-8cdl1.7 Slice 2, RFC 0032)
 # ---------------------------------------------------------------------------

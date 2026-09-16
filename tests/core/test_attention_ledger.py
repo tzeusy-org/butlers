@@ -189,6 +189,7 @@ class TestCountAttentionEventsSince:
             "delivered": 0,
             "deferred": 0,
             "failed": 0,
+            "expired": 0,
             "suppressed": 0,
         }
 
@@ -206,6 +207,7 @@ class TestCountAttentionEventsSince:
             "delivered": 3,
             "deferred": 0,
             "failed": 0,
+            "expired": 0,
             "suppressed": 1,
         }
 
@@ -218,6 +220,7 @@ class TestCountAttentionEventsSince:
             "delivered": 0,
             "deferred": 0,
             "failed": 0,
+            "expired": 0,
             "suppressed": 0,
         }
 
