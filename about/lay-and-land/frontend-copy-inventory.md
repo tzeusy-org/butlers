@@ -1192,6 +1192,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Deferred
 - Suppressed
 - Failed
+- Expired unseen
 - Total
 
 ## `frontend/src/components/approvals/autonomy-panel.tsx`
@@ -3193,6 +3194,10 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 - Nothing waiting.
 - Undo
+- Useful
+- Not now
+- Never
+- Retry feedback
 - Retry
 - Attention items
 - Severity: {}
@@ -4340,4 +4345,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3406*
+*Total strings: 3411*

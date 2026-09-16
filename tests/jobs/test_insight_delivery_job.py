@@ -18,7 +18,7 @@ resolve_owner_entity_info() are all mocked.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -511,6 +511,8 @@ class TestBrokerChannelSelectionInNotifyMetadata:
                 "message": "Insight 1",
                 "channel": channels[0],
                 "metadata": None,
+                "expires_at": _PINNED_NOW + timedelta(days=2),
+                "created_at": _PINNED_NOW,
             },
             {
                 "id": cid2,
@@ -522,6 +524,8 @@ class TestBrokerChannelSelectionInNotifyMetadata:
                 "message": "Insight 2",
                 "channel": channels[1],
                 "metadata": None,
+                "expires_at": _PINNED_NOW + timedelta(days=2),
+                "created_at": _PINNED_NOW,
             },
             {
                 "id": cid3,
@@ -533,6 +537,8 @@ class TestBrokerChannelSelectionInNotifyMetadata:
                 "message": "Insight 3",
                 "channel": channels[2],
                 "metadata": None,
+                "expires_at": _PINNED_NOW + timedelta(days=2),
+                "created_at": _PINNED_NOW,
             },
         ]
         all_ids = [cid1, cid2, cid3]
@@ -572,10 +578,6 @@ class TestBrokerChannelSelectionInNotifyMetadata:
                 "butlers.tools.switchboard.insight.broker.deduplicate_candidates",
                 new=AsyncMock(return_value=all_ids),
             ),
-            patch(
-                "butlers.tools.switchboard.insight.broker.compute_effective_budget",
-                new=AsyncMock(return_value=3),
-            ),
             patch("butlers.tools.switchboard.insight.broker.record_cooldowns", new=AsyncMock()),
             patch(
                 "butlers.tools.switchboard.insight.broker.record_engagement_rows", new=AsyncMock()
@@ -588,10 +590,10 @@ class TestBrokerChannelSelectionInNotifyMetadata:
         ):
 
             async def mock_fetch(query: str, *args: Any) -> list:
-                if "insight_candidates" in query and "LIMIT" not in query:
-                    return [_FakeRecord({"id": c["id"]}) for c in candidates]
-                if "insight_candidates" in query and "LIMIT" in query:
+                if "SELECT id, origin_butler" in query:
                     return [_FakeRecord(c) for c in candidates]
+                if "insight_candidates" in query:
+                    return [_FakeRecord({"id": c["id"]}) for c in candidates]
                 return []
 
             mock_pool.fetch = mock_fetch

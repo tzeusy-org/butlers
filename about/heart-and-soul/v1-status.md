@@ -242,12 +242,12 @@ A gen-1 spec-to-code reconciliation confirmed faithful implementation across
 
 | Evidence | Detail |
 |----------|--------|
-| Broker implementation | `roster/switchboard/tools/insight/broker.py` — `propose_insight_candidate()`, `expire_candidates()`, `filter_by_cooldown()`, `deduplicate_candidates()`, `compute_effective_budget()`, `check_and_update_engagement()`, `check_total_disengagement_auto_off()`, `delivery_cycle()` |
+| Broker implementation | `roster/switchboard/tools/insight/broker.py` — `propose_insight_candidate()`, `expire_candidates()`, `filter_by_cooldown()`, `deduplicate_candidates()`, `compute_category_budget_weights()`, `check_and_update_engagement()`, `check_total_disengagement_auto_off()`, `delivery_cycle()` |
 | Scheduled delivery cron | `roster/switchboard/butler.toml` — `cron = "0 8 * * *"`, job `insight_delivery_cycle` |
 | API endpoint | `GET /api/system/insights/delivery-state` (`src/butlers/api/routers/system.py`) |
 | Dashboard tile | `frontend/src/components/system/InsightDeliveryTile.tsx` |
 | Test coverage | `tests/modules/test_module_insight_broker.py` (8 tests), `tests/modules/test_insight_engine.py` (56 tests), `tests/api/test_system_insight_delivery.py` (8 tests), `tests/jobs/test_insight_delivery_job.py` (12 tests) — **84 tests total** (test-condensation cycles have trimmed this since the original count) |
-| Adaptive ratchet | `broker.py::compute_effective_budget()` — one-way ratchet; `check_total_disengagement_auto_off()` — auto-off on sustained disengagement |
+| Adaptive shaping | `broker.py::compute_category_budget_weights()` — category-local reversible weights under the configured global cap; `check_total_disengagement_auto_off()` — auto-off on sustained total disengagement |
 | Global budget + cooldowns | `broker.py` — `public.insight_candidates`, `public.insight_cooldowns`, per-key cooldown enforcement |
 
 **Why "unproven in production":** The code faithfully implements the spec

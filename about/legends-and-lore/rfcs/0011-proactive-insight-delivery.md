@@ -544,3 +544,37 @@ row keeps its stored UTC `deliver_at`; the scheduler does not re-gate it when
 the policy later changes. Missing, incomplete, invalid, or unreadable policy
 data fails open for routine paths, while approval pending-action expiry remains
 independent of push timing.
+
+### Amendment 7 (2026-09-16) — Reversible Per-Category Insight Shaping
+
+Applied per `bu-7exe4.15` via `openspec/changes/insight-feedback-expiry`.
+
+**Summary:** The former aggregate adaptive-budget calculation could let one
+noisy category reduce every other domain's capacity. Regular delivery now keeps
+the owner's configured global cap and uses the last ten attributed deliveries
+per category only to weight candidate ordering. Explicit useful, not-now, and
+never feedback remain owner-attributed, bounded, and reversible at the family
+boundary.
+
+**Changes made:**
+
+- **One stable global cap.** Routine delivery uses the configured verbosity or
+  custom budget unchanged; `off` and the urgent-only bypass retain their
+  existing behavior. A lower Health weight can change Health's rank, never the
+  number of Finance slots available under the configured cap.
+- **Category-local reversible signals.** Each category's last ten attributed
+  deliveries derive a baseline, 0.75, or 0.5 weight. A later useful verdict or
+  that category's own later engagement can restore its baseline; another
+  category cannot do so. The existing fourteen-day all-category auto-off safety
+  check remains separate.
+- **Expiry truth is transactional.** A pending candidate's transition to
+  `expired` and its required content-blind `expired_unseen` ledger row commit
+  together. If the ledger cannot be written, the candidate remains pending for
+  a later retry rather than becoming terminal without evidence.
+- **Feedback outcome honesty.** Dashboard feedback rows announce saving,
+  success, or a generic retryable failure without exposing server evidence.
+
+**Backward compatibility:** The existing REST and MCP feedback verbs, candidate
+schema, configured verbosity values, urgent delivery, and content-blind ledger
+fields remain stable. This amendment replaces only the aggregate regular-cycle
+budget reduction with category-isolated shaping.

@@ -15,6 +15,7 @@ Database tables used (all in the ``public`` schema):
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from datetime import UTC, date, datetime, timedelta
@@ -41,6 +42,9 @@ logger = logging.getLogger(__name__)
 
 VALID_STATUSES = frozenset({"pending", "delivered", "expired", "filtered"})
 TERMINAL_STATUSES = frozenset({"delivered", "expired", "filtered"})
+VALID_FEEDBACK_VERDICTS = frozenset({"useful", "not_now", "never"})
+_BLOCKED_BY_REASONS = frozenset({"budget", "cooldown", "held_by", "dedup"})
+_NEXT_REGULAR_CYCLE = timedelta(days=1)
 
 # Default cooldown periods by priority range (days)
 _DEFAULT_COOLDOWN_BY_PRIORITY: list[tuple[range, int]] = [
@@ -119,7 +123,9 @@ async def create_insight_tables(pool: asyncpg.Pool) -> None:
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             insight_id UUID NOT NULL,
             delivered_at TIMESTAMPTZ NOT NULL,
-            engaged BOOLEAN NOT NULL DEFAULT FALSE
+            engaged BOOLEAN NOT NULL DEFAULT FALSE,
+            category TEXT,
+            origin_butler TEXT
         )
     """)
     await pool.execute("""
@@ -129,6 +135,21 @@ async def create_insight_tables(pool: asyncpg.Pool) -> None:
     # bu-tdd4k.5: durable daily rollup — mirrors
     # alembic/versions/core/core_165_attention_daily_rollup.py exactly.
     await pool.execute("""
+        CREATE TABLE IF NOT EXISTS insight_feedback (
+            id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            insight_id UUID NOT NULL REFERENCES insight_candidates(id) ON DELETE CASCADE,
+            dedup_family TEXT NOT NULL,
+            category TEXT NOT NULL,
+            origin_butler TEXT NOT NULL,
+            verdict TEXT NOT NULL CHECK (verdict IN ('useful', 'not_now', 'never')),
+            snooze_until TIMESTAMPTZ,
+            actor TEXT NOT NULL,
+            decided_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            evidence_ref TEXT,
+            CHECK ((verdict = 'not_now') = (snooze_until IS NOT NULL))
+        )
+    """)
+    await pool.execute("""
         CREATE TABLE IF NOT EXISTS attention_daily_rollup (
             day                  DATE PRIMARY KEY,
             owner_ingress_count  INTEGER NOT NULL DEFAULT 0,
@@ -137,6 +158,11 @@ async def create_insight_tables(pool: asyncpg.Pool) -> None:
             updated_at           TIMESTAMPTZ NOT NULL DEFAULT now()
         )
     """)
+
+
+def dedup_family(dedup_key: str) -> str:
+    """Return the stable family prefix, excluding a candidate's time scope."""
+    return dedup_key.rsplit(":", 1)[0]
 
 
 # ---------------------------------------------------------------------------
@@ -293,29 +319,157 @@ async def propose_insight_candidate(
     return {"status": "accepted", "reason": "candidate queued for delivery cycle"}
 
 
+async def record_insight_feedback(
+    pool: asyncpg.Pool,
+    *,
+    insight_id: str,
+    verdict: str,
+    actor: str,
+    snooze_until: str | datetime | None = None,
+    evidence_ref: str | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Persist one owner verdict and apply its reversible cooldown effect."""
+    if verdict not in VALID_FEEDBACK_VERDICTS:
+        return {"status": "error", "reason": "verdict must be useful, not_now, or never"}
+    if now is None:
+        now = datetime.now(UTC)
+
+    snooze_dt: datetime | None = None
+    if verdict == "not_now":
+        if snooze_until is None:
+            return {"status": "error", "reason": "not_now requires snooze_until"}
+        try:
+            snooze_dt = (
+                snooze_until
+                if isinstance(snooze_until, datetime)
+                else datetime.fromisoformat(snooze_until.replace("Z", "+00:00"))
+            )
+        except (TypeError, ValueError):
+            return {"status": "error", "reason": "snooze_until must be an ISO 8601 datetime"}
+        if snooze_dt.tzinfo is None:
+            snooze_dt = snooze_dt.replace(tzinfo=UTC)
+        if snooze_dt <= now:
+            return {"status": "error", "reason": "snooze_until must be in the future"}
+    elif snooze_until is not None:
+        return {"status": "error", "reason": "snooze_until is only valid for not_now"}
+
+    async with pool.acquire() as conn, conn.transaction():
+        candidate = await conn.fetchrow(
+            """
+            SELECT id, dedup_key, category, origin_butler
+            FROM insight_candidates WHERE id = $1::uuid
+            FOR UPDATE
+            """,
+            insight_id,
+        )
+        if candidate is None:
+            return {"status": "error", "reason": "insight not found"}
+        family = dedup_family(candidate["dedup_key"])
+        await conn.execute(
+            """
+            INSERT INTO insight_feedback
+                (insight_id, dedup_family, category, origin_butler, verdict,
+                 snooze_until, actor, decided_at, evidence_ref)
+            VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9)
+            """,
+            insight_id,
+            family,
+            candidate["category"],
+            candidate["origin_butler"],
+            verdict,
+            snooze_dt,
+            actor,
+            now,
+            evidence_ref,
+        )
+        if verdict == "useful":
+            await conn.execute(
+                "DELETE FROM insight_cooldowns WHERE dedup_key IN ($1, $2)",
+                family,
+                candidate["dedup_key"],
+            )
+            await conn.execute(
+                "UPDATE insight_engagement SET engaged = TRUE WHERE insight_id = $1::uuid",
+                insight_id,
+            )
+        else:
+            await conn.execute(
+                """
+                INSERT INTO insight_cooldowns (dedup_key, cooldown_until, reason)
+                VALUES (
+                    $1,
+                    CASE WHEN $2 = 'never' THEN 'infinity'::timestamptz ELSE $3 END,
+                    $2
+                )
+                ON CONFLICT (dedup_key) DO UPDATE
+                SET cooldown_until = EXCLUDED.cooldown_until,
+                    reason = EXCLUDED.reason,
+                    created_at = now()
+                """,
+                family,
+                verdict,
+                snooze_dt,
+            )
+    return {
+        "status": "recorded",
+        "verdict": verdict,
+        "insight_id": insight_id,
+        "snooze_until": snooze_dt.isoformat() if snooze_dt else None,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Delivery cycle steps
 # ---------------------------------------------------------------------------
 
 
 async def expire_candidates(pool: asyncpg.Pool, *, now: datetime | None = None) -> int:
-    """Mark candidates past their expires_at as 'expired'.
+    """Mark stale candidates expired and record one honest ledger row each.
 
     Returns the number of candidates expired.
     """
     if now is None:
         now = datetime.now(UTC)
-    result = await pool.execute(
-        """
-        UPDATE insight_candidates
-        SET status = 'expired'
-        WHERE status = 'pending' AND expires_at <= $1
-        """,
-        now,
-    )
-    # asyncpg returns "UPDATE N" string
-    count_str = result.split()[-1] if result else "0"
-    return int(count_str)
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            rows = await conn.fetch(
+                """
+                UPDATE insight_candidates
+                SET status = 'expired'
+                WHERE status = 'pending' AND expires_at <= $1
+                RETURNING id, origin_butler, priority, dedup_key, channel, metadata
+                """,
+                now,
+            )
+            for row in rows:
+                raw_metadata = row["metadata"]
+                if isinstance(raw_metadata, str):
+                    try:
+                        raw_metadata = json.loads(raw_metadata)
+                    except json.JSONDecodeError:
+                        raw_metadata = None
+                metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+                blocked_by = metadata.get("blocked_by", "budget")
+                if blocked_by not in _BLOCKED_BY_REASONS:
+                    blocked_by = "budget"
+                ledger_id = await record_attention_event(
+                    conn,
+                    origin_butler=row["origin_butler"],
+                    source="insight",
+                    outcome="expired",
+                    channel=row["channel"],
+                    intent="insight",
+                    priority=row["priority"],
+                    reason=f"blocked_by:{blocked_by}",
+                    notification_ref=str(row["id"]),
+                    metadata={"blocked_by": blocked_by},
+                )
+                if ledger_id is None:
+                    raise RuntimeError(
+                        "expiry ledger write failed; candidate remains pending for retry"
+                    )
+    return len(rows)
 
 
 async def filter_by_cooldown(
@@ -354,7 +508,10 @@ async def filter_by_cooldown(
     eligible_ids: list[str] = []
     filtered_ids: list[str] = []
     for row in rows:
-        if row["dedup_key"] in active_cooldown_keys:
+        if (
+            row["dedup_key"] in active_cooldown_keys
+            or dedup_family(row["dedup_key"]) in active_cooldown_keys
+        ):
             filtered_ids.append(str(row["id"]))
         else:
             eligible_ids.append(str(row["id"]))
@@ -362,7 +519,10 @@ async def filter_by_cooldown(
     if filtered_ids:
         await pool.execute(
             """
-            UPDATE insight_candidates SET status = 'filtered'
+            UPDATE insight_candidates
+            SET status = 'filtered',
+                metadata = COALESCE(metadata, '{}'::jsonb)
+                           || jsonb_build_object('blocked_by', 'cooldown')
             WHERE id = ANY($1::uuid[])
             """,
             filtered_ids,
@@ -405,7 +565,10 @@ async def deduplicate_candidates(
     if loser_ids:
         await pool.execute(
             """
-            UPDATE insight_candidates SET status = 'filtered'
+            UPDATE insight_candidates
+            SET status = 'filtered',
+                metadata = COALESCE(metadata, '{}'::jsonb)
+                           || jsonb_build_object('blocked_by', 'dedup')
             WHERE id = ANY($1::uuid[])
             """,
             loser_ids,
@@ -421,49 +584,85 @@ async def compute_effective_budget(
     window_days: int = 14,
     now: datetime | None = None,
 ) -> int:
-    """Compute the effective delivery budget after adaptive reduction.
+    """Return the configured global cap without aggregate engagement reduction.
 
-    Rules:
-    - engagement_rate >= 0.5  → full configured budget
-    - 0.25 <= rate < 0.5      → max(1, budget - 1)
-    - rate < 0.25             → 1
-    - No deliveries in window → rate = 1.0 (no penalty)
+    ``pool``, ``window_days``, and ``now`` remain in the signature for callers
+    that used the former aggregate helper. Category-local engagement weights now
+    shape candidate order in :func:`delivery_cycle`; they never lower this cap.
     """
-    configured = _get_configured_budget(settings)
-    if configured == 0:
-        return 0
+    _ = pool, window_days, now
+    return _get_configured_budget(settings)
 
+
+async def compute_category_budget_weights(
+    pool: asyncpg.Pool,
+    categories: list[str],
+    *,
+    configured_budget: int = 1,
+    now: datetime | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Return reversible category weights while preserving one global cap."""
+    unique_categories = sorted(set(categories))
+    if not unique_categories:
+        return {}
     if now is None:
         now = datetime.now(UTC)
-    window_start = now - timedelta(days=window_days)
-
-    row = await pool.fetchrow(
+    rows = await pool.fetch(
         """
-        SELECT
-            COUNT(*) AS total,
-            COUNT(*) FILTER (WHERE engaged = TRUE) AS engaged_count
-        FROM insight_engagement
-        WHERE delivered_at >= $1 AND delivered_at <= $2
+        WITH recent AS (
+            SELECT category, engaged,
+                   row_number() OVER (PARTITION BY category ORDER BY delivered_at DESC, id DESC) rn
+            FROM insight_engagement
+            WHERE category = ANY($1::text[]) AND delivered_at <= $2
+        ), recent_stats AS (
+            SELECT category, count(*) AS total,
+                   count(*) FILTER (WHERE NOT engaged) AS ignored
+            FROM recent WHERE rn <= 10 GROUP BY category
+        ), latest_useful AS (
+            SELECT DISTINCT ON (category) category, decided_at
+            FROM insight_feedback
+            WHERE category = ANY($1::text[]) AND verdict = 'useful'
+            ORDER BY category, decided_at DESC, id DESC
+        )
+        SELECT rs.category, rs.total, rs.ignored, lu.decided_at AS latest_useful,
+               (SELECT max(e.delivered_at) FROM insight_engagement e
+                WHERE e.category = rs.category) AS latest_delivery
+        FROM recent_stats rs
+        LEFT JOIN latest_useful lu ON lu.category = rs.category
         """,
-        window_start,
+        unique_categories,
         now,
     )
-
-    total = int(row["total"]) if row else 0
-    engaged_count = int(row["engaged_count"]) if row else 0
-
-    if total == 0:
-        # No history → no penalty
-        return configured
-
-    rate = engaged_count / total
-
-    if rate >= 0.5:
-        return configured
-    elif rate >= 0.25:
-        return max(1, configured - 1)
-    else:
-        return 1
+    stats = {row["category"]: row for row in rows}
+    result: dict[str, dict[str, Any]] = {}
+    for category in unique_categories:
+        row = stats.get(category)
+        total = int(row["total"]) if row else 0
+        ignored = int(row["ignored"]) if row else 0
+        restored = bool(
+            row
+            and row["latest_useful"] is not None
+            and (row["latest_delivery"] is None or row["latest_useful"] >= row["latest_delivery"])
+        )
+        ratio = ignored / total if total else 0.0
+        if restored or ratio <= 0.5:
+            category_budget = configured_budget
+        elif ratio <= 0.75:
+            category_budget = max(1, configured_budget - 1)
+        else:
+            category_budget = 1
+        weight = 1.0 if restored or ratio <= 0.5 else (0.75 if ratio <= 0.75 else 0.5)
+        reason = (
+            f"hearing less from {category}: {ignored} of last {total} ignored"
+            if weight < 1.0
+            else f"{category}: baseline attention weight"
+        )
+        result[category] = {
+            "budget": category_budget,
+            "weight": weight,
+            "reason": reason,
+        }
+    return result
 
 
 async def record_cooldowns(
@@ -508,21 +707,30 @@ async def record_cooldowns(
 
 async def record_engagement_rows(
     pool: asyncpg.Pool | asyncpg.Connection,
-    candidate_ids: list[str],
+    candidates: list[dict[str, Any]],
     *,
     delivered_at: datetime | None = None,
 ) -> None:
     """Create engagement tracking rows (engaged=FALSE) for delivered candidates."""
-    if not candidate_ids:
+    if not candidates:
         return
     if delivered_at is None:
         delivered_at = datetime.now(UTC)
 
-    engagement_data = [(cid, delivered_at) for cid in candidate_ids]
+    engagement_data = [
+        (
+            str(candidate["id"]),
+            delivered_at,
+            candidate["category"],
+            candidate["origin_butler"],
+        )
+        for candidate in candidates
+    ]
     await pool.executemany(
         """
-        INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
-        VALUES ($1::uuid, $2, FALSE)
+        INSERT INTO insight_engagement
+            (insight_id, delivered_at, engaged, category, origin_butler)
+        VALUES ($1::uuid, $2, FALSE, $3, $4)
         """,
         engagement_data,
     )
@@ -1475,6 +1683,7 @@ async def delivery_cycle(
         "delivered": [],
         "delivery_message": None,
         "effective_budget": 0,
+        "category_budget_reasons": {},
     }
 
     settings = await get_insight_settings(pool)
@@ -1616,6 +1825,15 @@ async def delivery_cycle(
                 reason="travel_day_defer",
                 metadata={"held_by": "traveling"},
             )
+            await pool.execute(
+                """
+                UPDATE insight_candidates
+                SET metadata = COALESCE(metadata, '{}'::jsonb)
+                               || jsonb_build_object('blocked_by', 'held_by')
+                WHERE id = ANY($1::uuid[]) AND status = 'pending'
+                """,
+                pending_ids,
+            )
             await _schedule_insight_catchup(
                 pool,
                 suppression_signal=_suppression_signal,
@@ -1652,6 +1870,15 @@ async def delivery_cycle(
                 reason=_suppression_reason,
                 metadata={"held_by": _suppression_signal},
             )
+            await pool.execute(
+                """
+                UPDATE insight_candidates
+                SET metadata = COALESCE(metadata, '{}'::jsonb)
+                               || jsonb_build_object('blocked_by', 'held_by')
+                WHERE id = ANY($1::uuid[]) AND status = 'pending'
+                """,
+                pending_ids,
+            )
             await _schedule_insight_catchup(
                 pool,
                 suppression_signal=_suppression_signal,
@@ -1672,11 +1899,10 @@ async def delivery_cycle(
     if not eligible_ids:
         return result
 
-    # Step 5: Compute effective budget. urgent_only has no daily cap — every
-    # eligible urgent candidate is delivered this cycle (the budget exists to
-    # ration routine insights across a day; it does not apply to the
-    # always-deliver urgent bypass), so the "budget" here is simply the full
-    # eligible set.
+    # Step 5: Resolve the one global cap. urgent_only has no daily cap — every
+    # eligible urgent candidate is delivered this cycle. Routine delivery keeps
+    # the owner's configured cap intact: category engagement below shapes the
+    # mix, never another category's available capacity.
     if urgent_only:
         effective_budget = len(eligible_ids)
     else:
@@ -1686,21 +1912,55 @@ async def delivery_cycle(
     if effective_budget == 0:
         return result
 
-    # Step 6: Select top-B by priority (created_at tiebreak)
+    # Step 6: Select within the one global cap. Category weights shape the mix;
+    # an equal-priority candidate that cannot survive until the next regular
+    # cycle wins the deadline tiebreak.
     rows = await pool.fetch(
         """
         SELECT id, origin_butler, priority, category, dedup_key,
-               cooldown_days, message, channel, metadata, prepared_action_id
+               cooldown_days, expires_at, message, channel, metadata,
+               prepared_action_id, created_at
         FROM insight_candidates
         WHERE id = ANY($1::uuid[]) AND status = 'pending'
-        ORDER BY priority DESC, created_at ASC
-        LIMIT $2
         """,
         eligible_ids,
-        effective_budget,
     )
-    selected = [dict(row) for row in rows]
+    candidates = [dict(row) for row in rows]
+    weights = await compute_category_budget_weights(
+        pool,
+        [candidate["category"] for candidate in candidates],
+        configured_budget=configured_budget,
+        now=now,
+    )
+    result["category_budget_reasons"] = {
+        category: decision["reason"] for category, decision in weights.items()
+    }
+
+    def _selection_key(candidate: dict[str, Any]) -> tuple[float, int, datetime, datetime]:
+        weight = float(weights.get(candidate["category"], {"weight": 1.0})["weight"])
+        deadline = candidate["expires_at"]
+        expires_before_next = deadline <= now + _NEXT_REGULAR_CYCLE
+        return (
+            -(candidate["priority"] * weight),
+            0 if expires_before_next else 1,
+            deadline,
+            candidate["created_at"],
+        )
+
+    candidates.sort(key=_selection_key)
+    selected = candidates[:effective_budget]
     selected_ids = [str(c["id"]) for c in selected]
+    unselected_ids = [str(c["id"]) for c in candidates[effective_budget:]]
+    if unselected_ids:
+        await pool.execute(
+            """
+            UPDATE insight_candidates
+            SET metadata = COALESCE(metadata, '{}'::jsonb)
+                           || jsonb_build_object('blocked_by', 'budget')
+            WHERE id = ANY($1::uuid[]) AND status = 'pending'
+            """,
+            unselected_ids,
+        )
 
     if not selected:
         return result
@@ -1763,6 +2023,19 @@ async def delivery_cycle(
         "insight_ids": selected_ids,
         "intent": "insight",
         "channel": delivery_channel,
+        "category_budget_reasons": result["category_budget_reasons"],
+        # Connector renderers can expose these bounded actions as one-tap
+        # doors without learning broker internals or accepting free-form
+        # feedback payloads.
+        "feedback_actions": [
+            {
+                "insight_id": insight_id,
+                "useful": f"/api/switchboard/insights/{insight_id}/useful",
+                "snooze": f"/api/switchboard/insights/{insight_id}/snooze",
+                "mute": f"/api/switchboard/insights/{insight_id}/mute",
+            }
+            for insight_id in selected_ids
+        ],
     }
 
     # notify_fn is guaranteed non-None here (None case returns early above)
@@ -1813,7 +2086,7 @@ async def delivery_cycle(
                 await record_cooldowns(conn, selected, now=now)
 
                 # Step 9: Record engagement
-                await record_engagement_rows(conn, selected_ids, delivered_at=delivered_at)
+                await record_engagement_rows(conn, selected, delivered_at=delivered_at)
 
         result["delivered"] = selected_ids
 
