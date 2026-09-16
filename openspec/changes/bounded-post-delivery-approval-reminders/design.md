@@ -73,11 +73,14 @@ becomes `safe_hold(ack_evidence_unavailable)`, not "no acknowledgement".
 ### D2 - Reachability is four-valued and observational
 
 The states are `reachable`, `degraded`, `unreachable`, and `unknown`. Activity
-and channel evidence are fresh for 24 hours. `reachable` requires fresh,
-qualified owner activity. `degraded` requires no fresh activity but a fresh
-provider confirmation. `unreachable` requires a non-empty eligible-channel set
-plus fresh definitive no-effect failure on every member, with no confirmation
-or ambiguity.
+and channel evidence are fresh for 24 hours. The observational inventory is the
+complete set of allowlisted channels with current dispatch registration,
+enabled adapter, and active unambiguous owner reachability; it deliberately
+does not apply the per-episode unused predicate. In evaluation order,
+`reachable` requires fresh, qualified owner activity. `degraded` requires no
+fresh activity but a fresh provider confirmation on an inventory channel.
+`unreachable` requires a non-empty observation inventory plus fresh definitive
+no-effect failure on every member, with no confirmation or ambiguity.
 Everything else is `unknown`.
 
 This state does not admit reminders. Reminder authority is narrower: confirmed
@@ -86,13 +89,15 @@ ambiguous/in-flight presentation, unused ordinal, and an unused eligible
 channel. This separation prevents a product label from becoming egress
 authority.
 
-### D3 - Current channel inventory is a closed intersection
+### D3 - Reminder eligibility adds an episode-local predicate
 
-Eligibility is the intersection of the RFC allowlist, Switchboard dispatch
-registry, Messenger adapter availability, active unambiguous owner reachability
-fact, and unused episode channel. The RFC allowlist is exactly
-`{telegram, email}`. The owner preference is first only when it remains inside
-that intersection, followed by the existing fixed fallback.
+The first four predicates in the RFC's closed intersection -- allowlist,
+Switchboard dispatch registry, Messenger adapter availability, and active
+unambiguous owner reachability fact -- form the reachability observation
+inventory. Reminder eligibility adds the unused episode channel predicate. The
+RFC allowlist is exactly `{telegram, email}`. The owner preference is first
+only when it remains inside the reminder-eligible intersection, followed by
+the existing fixed fallback.
 
 | Channel | Messenger tool | Switchboard notify registry | RFC 0035 eligibility |
 | --- | --- | --- | --- |
@@ -129,8 +134,13 @@ after expiry, no reminder is admitted.
 Reminder admission resolves RFC 0021 quiet hours once and stores the exact
 end-of-window release. It participates in the same per-schema ten-minute burst
 window. The first three attention presentations are direct, the fourth creates
-one cohort digest, and later presentations join it. Cohort membership consumes
-the action's ordinal even though it creates no direct send.
+one cohort digest on a channel eligible for the creator action. A later action
+joins only if that digest channel is also eligible and unused for that action
+under its locked snapshot. An incompatible member enters
+`safe_hold(burst_digest_channel_incompatible)` without membership, ordinal
+consumption, direct send, or a second digest; an incomplete inventory uses
+`channel_inventory_unavailable`. Compatible cohort membership consumes the
+action's ordinal even though it creates no direct send.
 
 RFC 0023 recovery begins only after a presentation exists. It keeps the same
 key and channel across safe retries. An ambiguous post-start effect permits
@@ -197,8 +207,8 @@ starts. Replays return the durable prior result.
 | Ambiguity | Same-key reconciliation may later confirm. | Ambiguous effect blocks every fresh reminder, channel switch, and homecoming key. | Concurrent/duplicate sweeps return the existing ambiguous presentation. |
 | Recovery timing | Safe pre-handoff failure uses RFC 0023 recovery on one key/channel. | Recovery constants cannot become reminder or reachability constants. | Recovery attempts do not consume ordinals; restart reclaims only under RFC 0023. |
 | Reminder authority | Confirmed anchor admits one exact +4h/+24h ordinal when every gate passes. | Missing ack, terminal action, expiry, in-flight work, or no channel creates no send. | Unique `(action_id, reminder_ordinal)` and fixed lock order fence duplicate schedulers. |
-| Channel order | Eligible preferred channel, then Telegram, then email. | Unsupported/unregistered/unreachable preference is skipped; incomplete inventory holds. | The locked eligibility snapshot is returned to concurrent/replayed admission. |
-| Owner reachability | Fresh owner activity is reachable; fresh confirmation without activity is degraded. | Missing/stale/ambiguous evidence is unknown; non-empty all-channel no-effect evidence is unreachable. | One consistent snapshot derives state; event replay does not add activity. |
+| Channel order and burst compatibility | Eligible preferred channel, then Telegram, then email; digest members use only a channel eligible and unused for that action. | Unsupported/unregistered/unreachable preference is skipped; incomplete inventory holds; incompatible digest members hold without membership, ordinal consumption, direct send, or second digest. | The locked per-action eligibility snapshot is returned to concurrent/replayed admission. |
+| Owner reachability | Fresh owner activity is reachable; fresh confirmation on the observation inventory without activity is degraded even when the episode used that channel. | Missing/stale/ambiguous evidence is unknown; non-empty all-channel no-effect evidence is unreachable. | One consistent observation-inventory snapshot derives state; event replay does not add activity. |
 | Safe hold and expiry | Safe hold preserves a pending action for the owner until canonical expiry. | No hold mutates `ActionStatus`, expiry, decision, or execution. | Hold is monotonic/idempotent; concurrent canonical expiry remains the sole action writer. |
 | Homecoming | One bounded summary is admitted for a new owner-presence epoch. | Ambiguous actions are excluded; expired items are non-actionable; no rows means no summary. | Singleton epoch lock and unique epoch key deduplicate concurrent/restarted activity. |
 | Disengagement denominator | Existing insight delivery/owner-ingress writers keep their present semantics. | Approval traffic writes no insight denominator/numerator and cannot change auto-off. | Reachability replay/state changes never rewrite historic insight or approval evidence. |

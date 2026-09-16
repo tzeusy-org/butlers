@@ -113,14 +113,19 @@ acknowledgement exists.
 ### 2. Reachability evidence
 
 Reachability is an observation used for truthful UI and homecoming behavior. It
-is not reminder authority. Evidence is fresh for 24 hours from its durable
-occurrence time:
+is not reminder authority. Its observation inventory is the complete current
+set of `telegram` and `email` channels that are present in the Switchboard
+trusted-recovery notify registry, have an enabled Messenger adapter, and have
+one unambiguous active owner reachability fact. Unlike reminder eligibility,
+this inventory does not exclude a channel because a presentation already used
+it in an attention episode, and owner preference does not affect membership.
+Evidence is fresh for 24 hours from its durable occurrence time:
 
 | Derived state | Exact rule |
 | --- | --- |
 | `reachable` | At least one qualifying owner-activity event is fresh. |
-| `degraded` | No owner activity is fresh, but at least one eligible channel has a fresh provider-confirmed presentation. |
-| `unreachable` | No owner activity is fresh, the current eligible-channel set is non-empty, every channel in it has a fresh definitive pre-provider/no-effect unavailable result, and none has fresh confirmed or ambiguous evidence. |
+| `degraded` | No owner activity is fresh, but at least one channel in the reachability observation inventory has a fresh provider-confirmed presentation. |
+| `unreachable` | No owner activity is fresh, the reachability observation inventory is non-empty, every channel in it has a fresh definitive pre-provider/no-effect unavailable result, and none has fresh confirmed or ambiguous evidence. |
 | `unknown` | Evidence is missing, incomplete, stale, contradictory, or includes an unresolved ambiguous effect. |
 
 Qualifying owner activity is limited to an accepted ingress whose sender
@@ -128,10 +133,12 @@ resolved to the owner, successful owner authentication ceremony, or successful
 authenticated owner mutation. Background GETs, dashboard polling, connectors,
 scheduled jobs, health probes, and unresolved/non-owner senders do not qualify.
 
-Reachability older than 24 hours is retained as history but ignored by the
-current-state derivation. `unknown` never degrades to `unreachable` by passage
-of time. `degraded` is not proof of disengagement: it says only that a provider
-accepted something and no fresh owner activity is known.
+The rules are evaluated in table order from one consistent snapshot. An
+incomplete observation-inventory read yields `unknown`. Reachability older than
+24 hours is retained as history but ignored by current-state derivation.
+`unknown` never degrades to `unreachable` by passage of time. `degraded` is not
+proof of disengagement: it says only that a provider accepted something and no
+fresh owner activity is known.
 
 ### 3. Registered-channel eligibility and order
 
@@ -145,6 +152,11 @@ at reminder admission:
 4. the owner entity has one unambiguous, active reachability fact for it; and
 5. it has not been used by any provider-started or confirmed presentation in
    the current attention episode.
+
+The first four predicates are the reachability observation inventory from
+section 2. The fifth is action-episode policy and applies only to reminder and
+homecoming channel selection. It never removes historical channel outcomes
+from observational reachability derivation.
 
 Private addresses and handles are resolved only at egress. Eligibility stores
 the channel name and safe reason, never the identifier.
@@ -205,11 +217,16 @@ reminder is not sent and the episode enters `safe_hold(expiry_fence)`.
 
 Automatic reminders participate in the same per-schema ten-minute approval
 burst window. The first three approval attention presentations in a window are
-direct; the fourth creates one cohort-owned digest; later due reminders join
-that digest and record their ordinal as collapsed membership. One confirmed or
-ambiguous digest result applies to every member. A collapsed membership does
-not create an additional direct send. This preserves the one-digest burst
-shape instead of creating a reminder bypass.
+direct; the fourth creates one cohort-owned digest on a channel eligible for
+that action. A later due reminder may join that digest only when the digest
+channel is also eligible and unused for that action under the same locked
+per-member snapshot. A compatible membership records and consumes its ordinal.
+A definitive per-member mismatch enters
+`safe_hold(burst_digest_channel_incompatible)` without a membership, ordinal,
+direct send, or second digest; an incomplete inventory read instead enters
+`safe_hold(channel_inventory_unavailable)`. One confirmed or ambiguous digest
+result applies to every admitted member. This preserves the one-digest burst
+shape without bypassing the distinct-channel boundary.
 
 ### 5. Recovery is not reminder policy
 
@@ -239,7 +256,8 @@ Entering safe hold:
 - cancels unstarted automatic reminder slots;
 - records one closed reason such as `reminder_budget_exhausted`,
   `no_eligible_reminder_channel`, `ack_evidence_unavailable`,
-  `channel_inventory_unavailable`, `ambiguous_delivery`, or `expiry_fence`;
+  `channel_inventory_unavailable`, `burst_digest_channel_incompatible`,
+  `ambiguous_delivery`, or `expiry_fence`;
 - never changes `pending_actions.status`, arguments, `expires_at`, decision
   provenance, or execution state; and
 - is idempotent and monotonic except that a later qualifying acknowledgement
@@ -338,9 +356,11 @@ Future implementation is not accepted without behavior-executing tests for:
 
 - qualifying and non-qualifying acknowledgement evidence, stale evidence,
   replay, and concurrent acknowledgement;
-- exact channel eligibility/order, unsupported preference, missing registry,
-  unavailable recipient, and no private identifier persistence;
+- exact observation-inventory versus reminder-eligibility semantics, channel
+  order, unsupported preference, missing registry, unavailable recipient, and
+  no private identifier persistence;
 - exact 4-hour/24-hour slots, lifetime count, expiry fence, quiet-hours release,
+  per-member digest-channel compatibility, incompatible-member safe hold,
   burst collapse, restart replay, and defer with remaining budget;
 - safe pre-handoff recovery versus confirmed reminder admission and ambiguous
   no-resend/no-channel-switch;

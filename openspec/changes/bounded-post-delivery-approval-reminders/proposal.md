@@ -17,7 +17,9 @@ hours and burst control, and RFC 0023 ambiguous-effect no-resend.
 ## What Changes
 
 - Add a proposed `approval-attention-reminders` capability with an explicit
-  acknowledgement ledger and a 24-hour reachability-evidence freshness model.
+  acknowledgement ledger and a 24-hour reachability-evidence freshness model
+  whose observational channel inventory is separate from episode-local
+  reminder eligibility.
 - Allow at most two automatic reminder ordinals over an action's lifetime,
   due 4 hours and 24 hours after the current owner-requested presentation is
   provider-confirmed, and only on distinct eligible channels.
@@ -28,6 +30,10 @@ hours and burst control, and RFC 0023 ambiguous-effect no-resend.
 - Keep policy reminders separate from RFC 0023 recovery. Safe retry keeps the
   same key and channel; ambiguous effect permits reconciliation only and blocks
   every fresh reminder or homecoming key.
+- Preserve the one-digest burst shape while requiring the digest channel to be
+  eligible and unused for every admitted member; incompatible members hold
+  without joining, consuming an ordinal, sending directly, or creating another
+  digest.
 - Define `safe_hold` as monotonic attention state, never `ActionStatus`. It does
   not alter approval status, arguments, expiry, decisions, or execution.
 - Add one content-blind, bounded homecoming summary per owner-presence epoch,

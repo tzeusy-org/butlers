@@ -74,10 +74,15 @@ Scope: proposed
 ### Requirement: Fresh reachability truth
 
 The system SHALL derive owner reachability from evidence no older than 24
-hours. It SHALL report `reachable` for fresh qualifying owner activity;
-`degraded` for no fresh activity plus a fresh eligible-channel provider
-confirmation; `unreachable` only when the eligible-channel set is non-empty and
-every member has a fresh definitive no-effect/unavailable result with no fresh
+hours over a complete reachability observation inventory. That inventory SHALL
+contain each current `telegram` or `email` channel present in the Switchboard
+trusted-recovery notify registry with an enabled Messenger adapter and one
+unambiguous active owner reachability fact. It SHALL ignore owner preference
+and whether an attention episode already used the channel. In evaluation order,
+the system SHALL report `reachable` for fresh qualifying owner activity;
+`degraded` for no fresh activity plus a fresh provider confirmation on an
+inventory channel; `unreachable` only when the inventory is non-empty and every
+member has a fresh definitive no-effect/unavailable result with no fresh
 confirmation or ambiguity; and `unknown` otherwise. Reachability SHALL be
 observational and SHALL NOT itself authorize a reminder.
 
@@ -96,23 +101,25 @@ Scope: proposed
 
 #### Scenario: Confirmed delivery without activity is degraded
 
-- **WHEN** no qualifying owner activity is fresh and an eligible channel has a
-  provider-confirmed presentation within 24 hours
+- **WHEN** no qualifying owner activity is fresh and a channel in the
+  reachability observation inventory has a provider-confirmed presentation
+  within 24 hours, even if that episode already used the channel
 - **THEN** reachability is `degraded`, not `reachable` or `unreachable`
 - **AND** that label does not imply acknowledgement or disengagement
 
 #### Scenario: All channels definitively unavailable is unreachable
 
-- **WHEN** no qualifying activity is fresh and a non-empty currently eligible
-  channel set has fresh definitive pre-provider/no-effect unavailable evidence
-  for every member
-- **THEN** reachability is `unreachable` only if no eligible channel has fresh
+- **WHEN** no qualifying activity is fresh and a non-empty reachability
+  observation inventory has fresh definitive pre-provider/no-effect
+  unavailable evidence for every member
+- **THEN** reachability is `unreachable` only if no inventory channel has fresh
   confirmed or ambiguous evidence
 
 #### Scenario: Missing, stale, or ambiguous evidence is unknown
 
-- **WHEN** required inventory/evidence is incomplete, older than 24 hours,
-  contradictory, or includes an unresolved ambiguous provider effect
+- **WHEN** the reachability observation inventory or required evidence is
+  incomplete, older than 24 hours, contradictory, or includes an unresolved
+  ambiguous provider effect without a higher-priority fresh confirmation
 - **THEN** reachability is `unknown`
 - **AND** passage of time never converts unknown evidence into unreachable
 
@@ -131,7 +138,10 @@ enabled Messenger adapter, has one unambiguous active owner reachability fact,
 and is unused by any provider-started or confirmed presentation in the current
 episode. Eligible unused channels SHALL be ordered by eligible owner
 `prefers-channel`, then `telegram`, then `email`. Private destinations SHALL be
-resolved only at egress and SHALL NOT be stored in policy state.
+resolved only at egress and SHALL NOT be stored in policy state. The first four
+predicates SHALL form the reachability observation inventory; the episode-
+unused predicate SHALL apply only to reminder/homecoming channel selection and
+SHALL NOT filter observational reachability evidence.
 
 ID: REQ-approval-attention-reminders-003
 Source: RFC-0035
@@ -246,8 +256,10 @@ Scope: proposed
 Automatic reminder policy SHALL never write `pending_actions.expires_at` or any
 action decision field. It SHALL use RFC 0021's exact end-exclusive quiet-hours
 release and the same per-schema ten-minute first-three/one-digest/later-collapse
-burst shape. A release at or after expiry SHALL create no handoff. Terminal
-decision or expiry SHALL fence every unstarted reminder.
+burst shape. Every digest creator and joining member SHALL be compatible with
+the digest channel under that action's locked reminder-eligibility snapshot. A
+release at or after expiry SHALL create no handoff. Terminal decision or expiry
+SHALL fence every unstarted reminder.
 
 ID: REQ-approval-attention-reminders-005
 Source: RFC-0035
@@ -281,15 +293,28 @@ Scope: proposed
 - **WHEN** more than three approval attention presentations become due inside
   one schema's ten-minute window
 - **THEN** the first three are direct, the fourth creates one cohort-owned
-  digest, and later reminders join that digest as collapsed memberships
-- **AND** each membership consumes its action's ordinal without another direct
-  send
+  digest on its action's eligible channel, and a later reminder joins only when
+  that digest channel is eligible and unused for the joining action
+- **AND** each admitted membership consumes its action's ordinal without
+  another direct send
+
+#### Scenario: Incompatible action cannot join an existing digest
+
+- **WHEN** a later due reminder encounters the window's digest but that digest
+  channel was already used in its attention episode or lacks a current active
+  owner reachability fact at that member's admission
+- **THEN** the episode enters
+  `safe_hold(burst_digest_channel_incompatible)` without recording membership
+  or consuming the reminder ordinal
+- **AND** no direct presentation, alternate-channel send, or second digest is
+  created; an incomplete inventory read instead uses
+  `safe_hold(channel_inventory_unavailable)`
 
 #### Scenario: Ambiguous digest blocks all member successors
 
 - **WHEN** a reminder cohort digest has an unresolved ambiguous provider effect
-- **THEN** every member is blocked from a fresh direct or digest key for that
-  episode
+- **THEN** every admitted member is blocked from a fresh direct or digest key
+  for that episode
 - **AND** decision/expiry may still remove a member without replaying the
   digest
 

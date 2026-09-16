@@ -6,9 +6,10 @@
   recovery constants, `ActionStatus`, owner-activity writers, and proactive
   insight denominator/numerator writers before selecting policy.
 - [x] 1.3 Define exact acknowledgement evidence, 24-hour evidence freshness,
-  registered-channel eligibility/order, 4-hour/24-hour reminder slots, two-
-  ordinal lifetime bound, missing/stale evidence behavior, safe hold,
-  homecoming deduplication, and disengagement isolation.
+  observational channel inventory versus reminder eligibility, registered-
+  channel order, per-member digest-channel compatibility, 4-hour/24-hour
+  reminder slots, two-ordinal lifetime bound, missing/stale evidence behavior,
+  safe hold, homecoming deduplication, and disengagement isolation.
 - [x] 1.4 Preserve canonical expiry, RFC 0021 quiet hours and burst behavior,
   RFC 0023 same-key recovery, and ambiguous-effect no-resend.
 - [x] 1.5 Keep this change specification-only with `Tests: +0 ~0 -0` and no
@@ -47,7 +48,8 @@
   epochs with content-blind fields and closed reason vocabularies.
 - [ ] 4.3 Add deterministic reminder admission with the exact channel
   intersection/order, +4h/+24h schedule, two-ordinal lifetime budget, expiry,
-  quiet-hours, burst-cohort, defer, replay, and concurrency fences.
+  quiet-hours, per-member burst-cohort compatibility and safe hold, defer,
+  replay, and concurrency fences.
 - [ ] 4.4 Add the explicit authenticated attention-acknowledgement surface and
   truthful reachability/safe-hold projection without caller-asserted actor,
   provider identifiers, callback material, raw payloads, or action mutation.
