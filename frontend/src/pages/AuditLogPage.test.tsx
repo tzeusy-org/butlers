@@ -414,6 +414,39 @@ describe("AuditLogPage — debounced filter feedback", () => {
 // ---------------------------------------------------------------------------
 
 describe("AuditLogPage — table renders new-schema rows", () => {
+  it("renders runtime-config PATCH and model-overrides PUT rows from the privileged default view", () => {
+    const entries: AuditLogEntry[] = [
+      {
+        id: 1,
+        ts: "2026-01-15T10:00:00Z",
+        actor: "owner",
+        action: "runtime_config_patch",
+        target: "/api/butlers/qa/runtime-config",
+        note: null,
+        ip: null,
+        request_id: null,
+      },
+      {
+        id: 2,
+        ts: "2026-01-15T09:00:00Z",
+        actor: "butlers",
+        action: "PUT /api/butlers/qa/model-overrides",
+        target: "/api/butlers/qa/model-overrides",
+        note: null,
+        ip: null,
+        request_id: null,
+      },
+    ];
+    setupDefaults(entries);
+    const html = renderPage("/audit-log");
+
+    const calls = vi.mocked(useAuditLog).mock.calls;
+    const params: AuditLogParams = calls[calls.length - 1][0] ?? {};
+    expect(params.kind).toBe("privileged");
+    expect(html).toContain("runtime_config_patch");
+    expect(html).toContain("PUT /api/butlers/qa/model-overrides");
+  });
+
   it("renders actor and action columns from AuditLogEntry", () => {
     const entry: AuditLogEntry = {
       id: 1,
