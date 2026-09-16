@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, cleanup, screen, act, fireEvent, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { toast } from "sonner";
 
 import SettingsPermissionsPage from "@/pages/SettingsPermissionsPage";
 import { clearOwnerSession, rememberOwnerCsrf } from "@/api/owner-session";
@@ -117,11 +118,19 @@ async function defaultApiFetch(path: string, init?: RequestInit) {
   const response = await fetchMock(resolveApiHrefMock(path), init);
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
-    throw new Error(
+    const error = new Error(
       typeof body?.detail === "string"
         ? body.detail
         : body?.detail?.error ?? `Request failed: ${response.status}`,
     );
+    Object.assign(error, {
+      status: response.status,
+      detail:
+        typeof body?.detail === "object" && body.detail !== null
+          ? body.detail
+          : undefined,
+    });
+    throw error;
   }
   return response.json();
 }
@@ -740,6 +749,9 @@ describe("SettingsPermissionsPage — webhooks load error [bu-ep4ks.5]", () => {
 
     expect(await screen.findByTestId("webhooks-degraded")).toBeTruthy();
     expect(screen.queryByText("No webhooks registered.")).toBeNull();
+    expect(toast.error).toHaveBeenCalledWith(
+      "Failed to load webhooks: GET /api/webhooks failed: 500",
+    );
   });
 });
 
@@ -892,8 +904,11 @@ describe("SettingsPermissionsPage — webhook edit modal [bu-9q1dx.7]", () => {
     await act(async () => {
       fireEvent.click(await screen.findByTestId(`webhook-edit-${WEBHOOK_ID}`));
     });
+    const regenerateTrigger = (await screen.findByTestId(
+      "webhook-regenerate-secret",
+    )) as HTMLButtonElement;
     await act(async () => {
-      fireEvent.click(await screen.findByTestId("webhook-regenerate-secret"));
+      fireEvent.click(regenerateTrigger);
     });
 
     const confirmDialog = await screen.findByTestId("webhook-regenerate-confirm-dialog");
@@ -903,6 +918,7 @@ describe("SettingsPermissionsPage — webhook edit modal [bu-9q1dx.7]", () => {
 
     expect(putCalls).toHaveLength(0);
     expect(screen.queryByTestId("webhook-regenerate-confirm-dialog")).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(regenerateTrigger));
   });
 });
 
@@ -933,7 +949,10 @@ describe("SettingsPermissionsPage — webhook delete confirmation", () => {
       renderPage();
     });
 
-    fireEvent.click(await screen.findByTestId(`webhook-delete-${WEBHOOK_ID}`));
+    const deleteTrigger = (await screen.findByTestId(
+      `webhook-delete-${WEBHOOK_ID}`,
+    )) as HTMLButtonElement;
+    fireEvent.click(deleteTrigger);
     const confirmDialog = await screen.findByTestId("webhook-delete-confirm-dialog");
     expect(confirmDialog.textContent).toContain("https://example.com/hook");
 
@@ -943,6 +962,7 @@ describe("SettingsPermissionsPage — webhook delete confirmation", () => {
 
     expect(deleteCalls).toHaveLength(0);
     expect(screen.queryByTestId("webhook-delete-confirm-dialog")).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(deleteTrigger));
   });
 
   it("deletes the webhook only after confirmation", async () => {
