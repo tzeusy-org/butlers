@@ -287,8 +287,9 @@ equivalent sub-route.
 - Connectors (`/ingestion/connectors`):
   - Dense hairline-divided connector register (`ConnectorsRoster`) — no card
     chrome. Attention strip surfaces unhealthy connectors above the table.
-    Summary-level liveness/health/today's counts only; no per-connector
-    volume chart or fanout matrix (see "Orphaned capabilities" below).
+    Summary-level liveness/health/today's counts plus an observed 7-day
+    connector-to-butler routing distribution. Its explicit unavailable state
+    never renders as a calm empty matrix; no per-connector volume chart.
   - Discovery: dormant/available-but-not-registered connector types listed
     separately from the live roster.
 - Connector Detail (`/ingestion/connectors/:connectorType/:endpointIdentity`):
@@ -317,7 +318,6 @@ capabilities rather than porting them:
   filters, previously exposed via `FiltersTab.tsx` (also still present but
   unmounted) — not yet ported to the new Filters Pipeline surface (same
   follow-up).
-- Fanout distribution matrix (connector × butler message counts).
 - Volume time-series chart and the 24h/7d/30d period selector on it.
 - Tier-breakdown donut chart.
 - The legacy connector-card inline delete (deregister) button.

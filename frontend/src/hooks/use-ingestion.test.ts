@@ -52,6 +52,17 @@ describe("ingestionKeys", () => {
     expect(k24).not.toEqual(k7d);
   });
 
+  it("connectorFanout uses the documented aggregate key and isolates periods", () => {
+    expect(ingestionKeys.connectorFanout("7d")).toEqual([
+      "ingestion",
+      "fanout",
+      "7d",
+    ]);
+    expect(ingestionKeys.connectorFanout("24h")).not.toEqual(
+      ingestionKeys.connectorFanout("7d"),
+    );
+  });
+
   it("different identities produce different connectorDetail keys", () => {
     const k1 = ingestionKeys.connectorDetail("gmail", "a@x.com");
     const k2 = ingestionKeys.connectorDetail("gmail", "b@x.com");

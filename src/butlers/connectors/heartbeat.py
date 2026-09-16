@@ -24,7 +24,7 @@ import logging
 import math
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal
@@ -382,16 +382,17 @@ class ConnectorHeartbeat:
             ``<family>_created``.  The metadata sample is a Unix timestamp and
             must never become an operational count.
 
-            Some test/fake registries omit ``sample.name`` because the family
-            itself is already selected.  In that case the family name remains
-            the authority; when a name is present it must be the exact total
-            sample.  Values are parsed as finite, non-negative numbers before
-            the integer wire conversion so malformed, NaN, and infinity
-            samples are ignored rather than raising or fabricating a count.
+            The sample name is the authority, even when the surrounding family
+            is recognizable.  An unnamed or malformed sample might be a
+            ``*_created`` timestamp supplied by an alternate collector, so it
+            cannot be promoted to an operational count.  Values are parsed as
+            finite, non-negative numbers before the integer wire conversion so
+            malformed, NaN, and infinity samples are ignored rather than
+            raising or fabricating a count.
             """
             sample_name = getattr(sample, "name", None)
             expected_name = f"{family}_total"
-            if isinstance(sample_name, str) and sample_name != expected_name:
+            if sample_name != expected_name:
                 return None
 
             raw = getattr(sample, "value", None)
@@ -421,7 +422,9 @@ class ConnectorHeartbeat:
             # Ingest submissions
             if family == "connector_ingest_submissions":
                 for sample in metric.samples:
-                    labels = sample.labels
+                    labels = getattr(sample, "labels", None)
+                    if not isinstance(labels, Mapping):
+                        continue
                     if (
                         labels.get("connector_type") == self._config.connector_type
                         and labels.get("endpoint_identity") == self._config.endpoint_identity
@@ -444,7 +447,9 @@ class ConnectorHeartbeat:
             # Source API calls
             elif family == "connector_source_api_calls":
                 for sample in metric.samples:
-                    labels = sample.labels
+                    labels = getattr(sample, "labels", None)
+                    if not isinstance(labels, Mapping):
+                        continue
                     if (
                         labels.get("connector_type") == self._config.connector_type
                         and labels.get("endpoint_identity") == self._config.endpoint_identity
@@ -457,7 +462,9 @@ class ConnectorHeartbeat:
             # Checkpoint saves
             elif family == "connector_checkpoint_saves":
                 for sample in metric.samples:
-                    labels = sample.labels
+                    labels = getattr(sample, "labels", None)
+                    if not isinstance(labels, Mapping):
+                        continue
                     if (
                         labels.get("connector_type") == self._config.connector_type
                         and labels.get("endpoint_identity") == self._config.endpoint_identity

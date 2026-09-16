@@ -338,6 +338,7 @@ async def test_get_ingestion_fanout_no_prometheus_url_uses_db_fallback():
     )
 
     assert result.data == []
+    assert result.meta.aggregates_available is False
 
 
 async def test_get_ingestion_fanout_returns_matrix_from_prometheus():
@@ -414,6 +415,38 @@ async def test_get_ingestion_fanout_prometheus_error_falls_back_to_db():
             )
 
     assert result.data == []
+    assert result.meta.aggregates_available is False
+
+
+async def test_get_ingestion_fanout_empty_prometheus_vector_is_measured_empty():
+    """A successful empty vector is not a reason to substitute a degraded fallback."""
+
+    class _NoFallbackDB(_FakeDB):
+        def __init__(self) -> None:
+            self.fan_out_calls = 0
+
+        async def fan_out_with_status(
+            self, query: str, args: tuple = (), butler_names=None
+        ) -> tuple[dict, list[str]]:
+            self.fan_out_calls += 1
+            return {}, []
+
+    with patch(
+        "butlers.modules.metrics.prometheus.async_query",
+        new=AsyncMock(return_value=[]),
+    ):
+        with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
+            sys.modules.pop("switchboard_api_models", None)
+            router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
+            spec = importlib.util.spec_from_file_location("_sw_router_ifanout_empty", router_path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            db = _NoFallbackDB()
+            result = await mod.get_ingestion_fanout(period="24h", db=db)
+
+    assert result.data == []
+    assert result.meta.aggregates_available is True
+    assert db.fan_out_calls == 0
 
 
 async def test_get_ingestion_fanout_filters_zero_count_rows():
@@ -514,6 +547,15 @@ async def test_get_ingestion_fanout_ignores_metadata_and_non_finite_samples():
             },
             "value": [1740000000, "not-a-number"],
         },
+        {
+            "metric": {
+                "__name__": "unrelated_counter_total",
+                "connector_type": "gmail",
+                "endpoint_identity": "gmail:user:owner@example.com",
+                "target_butler": "finance",
+            },
+            "value": [1740000000, "97"],
+        },
     ]
 
     with patch(
@@ -530,6 +572,36 @@ async def test_get_ingestion_fanout_ignores_metadata_and_non_finite_samples():
 
     assert [(row.target_butler, row.message_count) for row in result.data] == [("general", 5)]
     assert result.meta.aggregates_available is True
+
+
+async def test_get_ingestion_fanout_rejects_samples_without_route_identity():
+    """A finite number without all route labels is unreadable, not an unknown route."""
+    fake_instant_result = [
+        {
+            "metric": {
+                "connector_type": "gmail",
+                "endpoint_identity": "gmail:user:owner@example.com",
+            },
+            "value": [1740000000, "5"],
+        }
+    ]
+
+    with patch(
+        "butlers.modules.metrics.prometheus.async_query",
+        new=AsyncMock(return_value=fake_instant_result),
+    ):
+        with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
+            sys.modules.pop("switchboard_api_models", None)
+            router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
+            spec = importlib.util.spec_from_file_location(
+                "_sw_router_ifanout_missing_identity", router_path
+            )
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            result = await mod.get_ingestion_fanout(period="24h", db=_FakeDB())
+
+    assert result.data == []
+    assert result.meta.aggregates_available is False
 
 
 async def test_get_ingestion_fanout_reports_unavailable_when_no_total_is_usable():
