@@ -4384,6 +4384,8 @@ import type {
   ConnectorDaySummary,
   ConnectorDetail,
   ConnectorEventsResponse,
+  ConnectorFanoutResponse,
+  ConnectorFanoutRow,
   ConnectorIncidentsResponse,
   ConnectorRoutingRulesResponse,
   ConnectorScopeEntry,
@@ -4406,6 +4408,8 @@ export type {
   ConnectorDetail,
   ConnectorScopeEntry,
   ConnectorEventsResponse,
+  ConnectorFanoutResponse,
+  ConnectorFanoutRow,
   ConnectorIncidentsResponse,
   ConnectorRoutingRulesResponse,
   ConnectorStats,
@@ -4654,6 +4658,21 @@ export async function getPipelineStats(
   window: "1h" | "24h" | "7d" = "24h",
 ): Promise<PipelineStats> {
   return apiFetch<PipelineStats>(`/ingestion/pipeline?window=${window}`);
+}
+
+/**
+ * GET /api/switchboard/ingestion/fanout?period=7d
+ *
+ * The route stays under Switchboard because it aggregates cross-butler
+ * delivery. Its explicit availability flag distinguishes a measured empty
+ * route set from an unreadable Prometheus source.
+ */
+export async function getConnectorFanout(
+  period: IngestionPeriod = "7d",
+): Promise<ConnectorFanoutResponse> {
+  return apiFetch<ConnectorFanoutResponse>(
+    `/switchboard/ingestion/fanout?period=${period}`,
+  );
 }
 
 /**

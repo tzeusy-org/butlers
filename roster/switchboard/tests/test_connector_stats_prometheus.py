@@ -338,6 +338,7 @@ async def test_get_ingestion_fanout_no_prometheus_url_uses_db_fallback():
     )
 
     assert result.data == []
+    assert result.meta.aggregates_available is False
 
 
 async def test_get_ingestion_fanout_returns_matrix_from_prometheus():
@@ -414,6 +415,38 @@ async def test_get_ingestion_fanout_prometheus_error_falls_back_to_db():
             )
 
     assert result.data == []
+    assert result.meta.aggregates_available is False
+
+
+async def test_get_ingestion_fanout_empty_prometheus_vector_is_measured_empty():
+    """A successful empty vector is not a reason to substitute a degraded fallback."""
+
+    class _NoFallbackDB(_FakeDB):
+        def __init__(self) -> None:
+            self.fan_out_calls = 0
+
+        async def fan_out_with_status(
+            self, query: str, args: tuple = (), butler_names=None
+        ) -> tuple[dict, list[str]]:
+            self.fan_out_calls += 1
+            return {}, []
+
+    with patch(
+        "butlers.modules.metrics.prometheus.async_query",
+        new=AsyncMock(return_value=[]),
+    ):
+        with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
+            sys.modules.pop("switchboard_api_models", None)
+            router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
+            spec = importlib.util.spec_from_file_location("_sw_router_ifanout_empty", router_path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            db = _NoFallbackDB()
+            result = await mod.get_ingestion_fanout(period="24h", db=db)
+
+    assert result.data == []
+    assert result.meta.aggregates_available is True
+    assert db.fan_out_calls == 0
 
 
 async def test_get_ingestion_fanout_filters_zero_count_rows():
@@ -459,6 +492,157 @@ async def test_get_ingestion_fanout_filters_zero_count_rows():
     assert len(result.data) == 1
     assert result.data[0].target_butler == "memory"
     assert result.data[0].message_count == 3
+
+
+async def test_get_ingestion_fanout_ignores_metadata_and_non_finite_samples():
+    """Only finite ``*_total`` samples contribute to the matrix.
+
+    Prometheus Counter families also expose ``*_created`` timestamps.  A
+    timestamp-sized value must never become a routed-message count, and a
+    malformed/NaN/infinite sibling must not poison a valid total sample.
+    """
+    fake_instant_result = [
+        {
+            "metric": {
+                "__name__": "switchboard_routed_messages_total",
+                "connector_type": "gmail",
+                "endpoint_identity": "gmail:user:owner@example.com",
+                "target_butler": "general",
+            },
+            "value": [1740000000, "5"],
+        },
+        {
+            "metric": {
+                "__name__": "switchboard_routed_messages_created",
+                "connector_type": "gmail",
+                "endpoint_identity": "gmail:user:owner@example.com",
+                "target_butler": "general",
+            },
+            "value": [1740000000, "1735689600"],
+        },
+        {
+            "metric": {
+                "__name__": "switchboard_routed_messages_total",
+                "connector_type": "gmail",
+                "endpoint_identity": "gmail:user:owner@example.com",
+                "target_butler": "health",
+            },
+            "value": [1740000000, "NaN"],
+        },
+        {
+            "metric": {
+                "__name__": "switchboard_routed_messages_total",
+                "connector_type": "gmail",
+                "endpoint_identity": "gmail:user:owner@example.com",
+                "target_butler": "relationship",
+            },
+            "value": [1740000000, "Infinity"],
+        },
+        {
+            "metric": {
+                "__name__": "switchboard_routed_messages_total",
+                "connector_type": "gmail",
+                "endpoint_identity": "gmail:user:owner@example.com",
+                "target_butler": "memory",
+            },
+            "value": [1740000000, "not-a-number"],
+        },
+        {
+            "metric": {
+                "__name__": "unrelated_counter_total",
+                "connector_type": "gmail",
+                "endpoint_identity": "gmail:user:owner@example.com",
+                "target_butler": "finance",
+            },
+            "value": [1740000000, "97"],
+        },
+    ]
+
+    with patch(
+        "butlers.modules.metrics.prometheus.async_query",
+        new=AsyncMock(return_value=fake_instant_result),
+    ):
+        with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
+            sys.modules.pop("switchboard_api_models", None)
+            router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
+            spec = importlib.util.spec_from_file_location("_sw_router_ifanout_hygiene", router_path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            result = await mod.get_ingestion_fanout(period="24h", db=_FakeDB())
+
+    assert [(row.target_butler, row.message_count) for row in result.data] == [("general", 5)]
+    assert result.meta.aggregates_available is True
+
+
+async def test_get_ingestion_fanout_rejects_samples_without_route_identity():
+    """A finite number without all route labels is unreadable, not an unknown route."""
+    fake_instant_result = [
+        {
+            "metric": {
+                "connector_type": "gmail",
+                "endpoint_identity": "gmail:user:owner@example.com",
+            },
+            "value": [1740000000, "5"],
+        }
+    ]
+
+    with patch(
+        "butlers.modules.metrics.prometheus.async_query",
+        new=AsyncMock(return_value=fake_instant_result),
+    ):
+        with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
+            sys.modules.pop("switchboard_api_models", None)
+            router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
+            spec = importlib.util.spec_from_file_location(
+                "_sw_router_ifanout_missing_identity", router_path
+            )
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            result = await mod.get_ingestion_fanout(period="24h", db=_FakeDB())
+
+    assert result.data == []
+    assert result.meta.aggregates_available is False
+
+
+async def test_get_ingestion_fanout_reports_unavailable_when_no_total_is_usable():
+    """Unreadable Prometheus samples are not a fabricated empty matrix."""
+    fake_instant_result = [
+        {
+            "metric": {
+                "__name__": "switchboard_routed_messages_created",
+                "connector_type": "gmail",
+                "endpoint_identity": "gmail:user:owner@example.com",
+                "target_butler": "general",
+            },
+            "value": [1740000000, "1735689600"],
+        },
+        {
+            "metric": {
+                "__name__": "switchboard_routed_messages_total",
+                "connector_type": "gmail",
+                "endpoint_identity": "gmail:user:owner@example.com",
+                "target_butler": "health",
+            },
+            "value": [1740000000, "NaN"],
+        },
+    ]
+
+    with patch(
+        "butlers.modules.metrics.prometheus.async_query",
+        new=AsyncMock(return_value=fake_instant_result),
+    ):
+        with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
+            sys.modules.pop("switchboard_api_models", None)
+            router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
+            spec = importlib.util.spec_from_file_location(
+                "_sw_router_ifanout_unavailable", router_path
+            )
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            result = await mod.get_ingestion_fanout(period="24h", db=_FakeDB())
+
+    assert result.data == []
+    assert result.meta.aggregates_available is False
 
 
 # ---------------------------------------------------------------------------
