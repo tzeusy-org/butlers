@@ -899,10 +899,10 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/pages/SettingsPermissionsPage.tsx`
 
+- Cancel
 - Promise
 - Reason (required)
 - A non-empty reason is required before submitting.
-- Cancel
 - No permissions or butlers found.
 - No recent audit entries.
 - Full audit log
@@ -932,6 +932,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Max attempts
 - Backoff (s)
 - Rotating replaces the signing secret. It is shown once.
+- The current signing secret for
 - Add webhook →
 - No webhooks registered.
 - Endpoint
@@ -941,6 +942,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Last test
 - Actions
 - Edit →
+- Delete
 - system · permissions
 - Permissions &amp; data
 - Failed to load matrix.
@@ -949,11 +951,13 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Audit reel
 - Export scope
 - permission.set, data.export
+- Regenerate signing secret?
 - Webhooks
 - Disable webhook
 - Enable webhook
 - Test webhook
 - Delete webhook
+- Delete webhook?
 - Permissions matrix
 - Flip cells to grant or revoke per-butler permissions. A reason is required for every change and is recorded in the audit log.
 - Last 15 privileged-action entries: permission changes, data operations, and webhook events. Heartbeat and routine traffic excluded.
@@ -4335,4 +4339,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3401*
+*Total strings: 3405*
