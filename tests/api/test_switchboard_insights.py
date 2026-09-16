@@ -269,7 +269,12 @@ async def test_insight_feedback_rest_verbs_share_server_attributed_behavior(
             )
 
     assert response.status_code == 200
-    assert response.json()["data"]["verdict"] == verdict
+    assert response.json()["data"] == {
+        "status": "recorded",
+        "verdict": verdict,
+        "insight_id": "11111111-1111-1111-1111-111111111111",
+        "snooze_until": body["snooze_until"] if body else None,
+    }
     assert feedback.await_args.args[0] is mock_pool
     assert feedback.await_args.kwargs["actor"] == "owner"
     assert "actor" not in (body or {})

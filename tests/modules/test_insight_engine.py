@@ -485,7 +485,12 @@ class TestEndToEndInsightFlow:
             actor="owner",
             now=_PINNED_NOW,
         )
-        assert never["status"] == "recorded"
+        assert never == {
+            "status": "recorded",
+            "verdict": "never",
+            "insight_id": insight_id,
+            "snooze_until": None,
+        }
         cooldown = await insight_pool.fetchrow(
             "SELECT cooldown_until, reason FROM insight_cooldowns WHERE dedup_key=$1",
             "health:medication",
@@ -500,7 +505,12 @@ class TestEndToEndInsightFlow:
             actor="owner",
             now=_PINNED_NOW + timedelta(minutes=1),
         )
-        assert useful["status"] == "recorded"
+        assert useful == {
+            "status": "recorded",
+            "verdict": "useful",
+            "insight_id": insight_id,
+            "snooze_until": None,
+        }
         assert (
             await insight_pool.fetchval(
                 "SELECT count(*) FROM insight_cooldowns WHERE dedup_key=$1", "health:medication"

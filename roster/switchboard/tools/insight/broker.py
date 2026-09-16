@@ -415,8 +415,6 @@ async def record_insight_feedback(
         "status": "recorded",
         "verdict": verdict,
         "insight_id": insight_id,
-        "category": candidate["category"],
-        "dedup_family": family,
         "snooze_until": snooze_dt.isoformat() if snooze_dt else None,
     }
 
@@ -463,7 +461,6 @@ async def expire_candidates(pool: asyncpg.Pool, *, now: datetime | None = None) 
                     channel=row["channel"],
                     intent="insight",
                     priority=row["priority"],
-                    dedup_key=row["dedup_key"],
                     reason=f"blocked_by:{blocked_by}",
                     notification_ref=str(row["id"]),
                     metadata={"blocked_by": blocked_by},
