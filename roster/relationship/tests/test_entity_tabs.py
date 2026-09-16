@@ -11,7 +11,7 @@ the Docker-availability guard applied to roster/ integration tests.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -314,6 +314,46 @@ class TestEntityTimeline:
 
         contents = [item["content"] for item in resp.json()]
         assert contents == ["newest", "middle", "oldest"]
+
+
+class TestEntityCadence:
+    """Cadence evidence names its window and whether the bounded read is complete."""
+
+    @pytest.mark.parametrize(
+        ("row_count", "limit", "expected_count", "expected_completeness", "has_more"),
+        [
+            (0, 200, 0, "complete", False),
+            (3, 2, 2, "incomplete", True),
+        ],
+    )
+    async def test_cadence_reports_bounded_evidence_completeness(
+        self,
+        row_count: int,
+        limit: int,
+        expected_count: int,
+        expected_completeness: str,
+        has_more: bool,
+    ):
+        app, pool = _app_with_pool(fetch_rows=[{"id": uuid4()} for _ in range(row_count)])
+
+        resp = await _get(
+            app,
+            f"/api/relationship/entities/{_ENT_ID}/cadence",
+            window_days=14,
+            limit=limit,
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["window_days"] == 14
+        assert body["interaction_count"] == expected_count
+        assert body["completeness"] == expected_completeness
+        assert body["has_more"] is has_more
+        assert body["window_started_at"] < body["window_ended_at"]
+
+        cadence_call = pool.fetch.await_args
+        assert cadence_call.args[4] == limit + 1
+        assert cadence_call.args[3] - cadence_call.args[2] == timedelta(days=14)
 
 
 # ---------------------------------------------------------------------------

@@ -6,6 +6,18 @@ import { PulseStrip } from "@/components/relationship/PulseStrip";
 
 vi.mock("@/hooks/use-entities", () => ({
   useEntityTimeline: vi.fn(() => ({ data: [], isLoading: false })),
+  useEntityCadence: vi.fn(() => ({
+    data: {
+      window_days: 30,
+      window_started_at: "2026-08-17T00:00:00Z",
+      window_ended_at: "2026-09-16T00:00:00Z",
+      interaction_count: 0,
+      completeness: "complete",
+      has_more: false,
+    },
+    isLoading: false,
+    isError: false,
+  })),
   useEntityGifts: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityLoans: vi.fn(() => ({ data: [], isLoading: false })),
   useUpdateEntityDunbarTier: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
@@ -16,7 +28,12 @@ import * as useEntities from "@/hooks/use-entities";
 
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 
-function render(props: { entityId: string; dunbarTier: number | null; isPinned: boolean }): string {
+function render(props: {
+  entityId: string;
+  dunbarTier: number | null;
+  isPinned: boolean;
+  cadenceWindowDays?: number;
+}): string {
   const queryClient = new QueryClient();
   return renderToStaticMarkup(
     <QueryClientProvider client={queryClient}>
@@ -47,6 +64,86 @@ describe("PulseStrip", () => {
   it("shows None recorded when there are no timeline items", () => {
     const html = render({ entityId: "e-1", dunbarTier: null, isPinned: false });
     expect(html).toContain("None recorded");
+  });
+
+  it("renders Quiet only for complete zero-interaction evidence", () => {
+    const html = render({ entityId: "e-1", dunbarTier: null, isPinned: false });
+    expect(html).toContain("Last 30 days");
+    expect(html).toContain(">Quiet<");
+    expect(html).not.toContain(">Incomplete<");
+  });
+
+  it.each([
+    {
+      name: "paginated evidence",
+      result: {
+        data: {
+          window_days: 30,
+          window_started_at: "2026-08-17T00:00:00Z",
+          window_ended_at: "2026-09-16T00:00:00Z",
+          interaction_count: 200,
+          completeness: "incomplete",
+          has_more: true,
+        },
+        isLoading: false,
+        isError: false,
+      },
+      expected: "Incomplete",
+    },
+    {
+      name: "query failure",
+      result: { data: undefined, isLoading: false, isError: true },
+      expected: "Unavailable",
+    },
+    {
+      name: "mismatched-window evidence",
+      result: {
+        data: {
+          window_days: 14,
+          window_started_at: "2026-09-02T00:00:00Z",
+          window_ended_at: "2026-09-16T00:00:00Z",
+          interaction_count: 0,
+          completeness: "complete",
+          has_more: false,
+        },
+        isLoading: false,
+        isError: false,
+      },
+      expected: "Incomplete",
+    },
+  ])("shows typed attention for $name instead of Quiet", ({ result, expected }) => {
+    vi.mocked(useEntities.useEntityCadence).mockReturnValueOnce(
+      result as unknown as ReturnType<typeof useEntities.useEntityCadence>,
+    );
+    const html = render({ entityId: "e-1", dunbarTier: null, isPinned: false });
+    expect(html).toContain(`>${expected}<`);
+    expect(html).not.toContain(">Quiet<");
+  });
+
+  it("uses the refreshed window's label and matching count", () => {
+    vi.mocked(useEntities.useEntityCadence).mockReturnValueOnce({
+      data: {
+        window_days: 14,
+        window_started_at: "2026-09-02T00:00:00Z",
+        window_ended_at: "2026-09-16T00:00:00Z",
+        interaction_count: 2,
+        completeness: "complete",
+        has_more: false,
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useEntities.useEntityCadence>);
+
+    const html = render({
+      entityId: "e-1",
+      dunbarTier: null,
+      isPinned: false,
+      cadenceWindowDays: 14,
+    });
+    expect(useEntities.useEntityCadence).toHaveBeenLastCalledWith("e-1", 14);
+    expect(html).toContain("Last 14 days");
+    expect(html).toContain(">2 interactions<");
+    expect(html).not.toContain("Last 30 days");
   });
 
   it("shows None for open loops when gifts and loans are empty", () => {

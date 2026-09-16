@@ -507,6 +507,22 @@ class EntityTimelineItem(BaseModel):
     primary: bool = False
 
 
+class EntityCadenceResponse(BaseModel):
+    """Bounded interaction evidence for one explicit rolling window.
+
+    ``interaction_count`` is exact only when ``completeness`` is ``complete``.
+    An incomplete response means the bounded read reached its cap; callers must
+    not turn the observed subset into a calm zero or exact count.
+    """
+
+    window_days: int
+    window_started_at: datetime
+    window_ended_at: datetime
+    interaction_count: int
+    completeness: Literal["complete", "incomplete"]
+    has_more: bool
+
+
 # ---------------------------------------------------------------------------
 # Entity-level tab WRITE models (bu-6t8ix.4)
 #
