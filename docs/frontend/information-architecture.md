@@ -24,6 +24,10 @@ All routes render inside a common shell (`RootLayout`) with:
 - Keyboard shortcut help sheet (`?`).
 - Error boundary around route content.
 - Toast notifications for mutation feedback.
+- Shell scroll memory: PUSH navigation starts the persistent main surface at the
+  top, while POP navigation restores the saved history-entry offset after the
+  destination paints. Calendar and chat declare their inner scrollers as the
+  scroll owner; a fresh reload starts at the top.
 
 ## Primary Navigation (Sidebar)
 

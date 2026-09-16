@@ -170,7 +170,11 @@ export default function ChatPage() {
 
   if (notFound) {
     return (
-      <div className="flex h-full flex-1 items-center justify-center" data-testid="chat-page-not-found">
+      <div
+        className="flex h-full flex-1 items-center justify-center"
+        data-shell-scroll-owner="route"
+        data-testid="chat-page-not-found"
+      >
         <EmptyState
           title="Conversation not found"
           description="This conversation may have been deleted, or the link is incorrect."
@@ -185,7 +189,11 @@ export default function ChatPage() {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-1 overflow-hidden" data-testid="chat-page">
+    <div
+      className="flex h-full min-h-0 flex-1 overflow-hidden"
+      data-shell-scroll-owner="route"
+      data-testid="chat-page"
+    >
       <aside className="hidden w-64 shrink-0 flex-col overflow-y-auto border-r border-border p-2 md:flex">
         <div className="mb-2 flex items-center justify-between px-1">
           <h2 className="text-sm font-medium text-muted-foreground">Recent</h2>
