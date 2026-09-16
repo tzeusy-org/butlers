@@ -6,6 +6,7 @@ import { type AvailabilityBadgeState, useBadgeCounts } from '@/hooks/use-qa-badg
 import { usePrefetchOnIntent } from '@/hooks/use-prefetch-on-intent'
 import { useRouteChunkPrefetchOnIntent } from '@/hooks/use-route-chunk-prefetch-on-intent'
 import { ButlerMark } from '@/components/ui/ButlerMark'
+import { KbMono } from '@/components/ui/KbMono'
 import { StateDot } from '@/components/ui/StateDot'
 import {
   Tooltip,
@@ -105,6 +106,16 @@ function StatusDot({ status }: { status: string | undefined }) {
       className={`absolute right-1 top-1 h-1.5 w-1.5 rounded-full ring-2 ring-background ${color}`}
       aria-hidden="true"
     />
+  )
+}
+
+function DestinationChord({ chord }: { chord?: string }) {
+  if (!chord) return null
+
+  return (
+    <KbMono data-testid="sidebar-chord">
+      g {chord}
+    </KbMono>
   )
 }
 
@@ -267,6 +278,7 @@ function FlatNavLink({
           onBlur={composeHandlers(chunkPrefetch.onBlur, dataPrefetch.onBlur)}
           className={railItemClassName(isActive)}
           aria-label={item.tooltip ?? item.label}
+          data-shortcut={item.chord ? `g ${item.chord}` : undefined}
         >
           <ItemGlyph
             item={item}
@@ -277,7 +289,10 @@ function FlatNavLink({
         </NavLink>
       </TooltipTrigger>
       <TooltipContent side="right" sideOffset={8}>
-        {item.tooltip ?? item.label}
+        <span className="flex items-center gap-2">
+          {item.tooltip ?? item.label}
+          <DestinationChord chord={item.chord} />
+        </span>
       </TooltipContent>
     </Tooltip>
   )
@@ -364,6 +379,7 @@ function NavGroup({
               path={child.path}
               end={child.end}
               label={child.label}
+              chord={child.chord}
               isActive={childActive}
               onNavClick={onNavClick}
             />
@@ -382,12 +398,14 @@ function NavGroupChildLink({
   path,
   end,
   label,
+  chord,
   isActive,
   onNavClick,
 }: {
   path: string
   end?: boolean
   label: string
+  chord?: string
   isActive: boolean
   onNavClick?: () => void
 }) {
@@ -410,6 +428,7 @@ function NavGroupChildLink({
           onBlur={composeHandlers(chunkPrefetch.onBlur, dataPrefetch.onBlur)}
           className={[railItemClassName(isActive), 'pl-2'].join(' ')}
           aria-label={label}
+          data-shortcut={chord ? `g ${chord}` : undefined}
         >
           <span className="flex size-5 items-center justify-center rounded text-[10px] font-semibold text-muted-foreground/70">
             {label[0]}
@@ -417,7 +436,10 @@ function NavGroupChildLink({
         </NavLink>
       </TooltipTrigger>
       <TooltipContent side="right" sideOffset={8}>
-        {label}
+        <span className="flex items-center gap-2">
+          {label}
+          <DestinationChord chord={chord} />
+        </span>
       </TooltipContent>
     </Tooltip>
   )
@@ -806,6 +828,7 @@ function MobileFlatLink({
         <StatusDot status={butlerStatus} />
       </span>
       <span className="flex-1">{item.label}</span>
+      <DestinationChord chord={item.chord} />
       {unavailableLabel ? (
         <UnavailableBadgeMarker label={unavailableLabel} className="ml-auto" />
       ) : count > 0 ? (
@@ -891,6 +914,7 @@ function MobileNavGroup({
             path={child.path}
             end={child.end}
             label={child.label}
+            chord={child.chord}
             onNavClick={onNavClick}
           />
         ))}
@@ -907,11 +931,13 @@ function MobileNavGroupChildLink({
   path,
   end,
   label,
+  chord,
   onNavClick,
 }: {
   path: string
   end?: boolean
   label: string
+  chord?: string
   onNavClick?: () => void
 }) {
   const chunkPrefetch = useRouteChunkPrefetchOnIntent(path)
@@ -942,6 +968,7 @@ function MobileNavGroupChildLink({
         {label[0]}
       </span>
       <span className="flex-1">{label}</span>
+      <DestinationChord chord={chord} />
     </NavLink>
   )
 }

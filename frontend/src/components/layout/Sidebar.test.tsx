@@ -508,6 +508,24 @@ describe("Sidebar", () => {
       const overviewLink = container.querySelector('a[href="/"]');
       expect(overviewLink?.getAttribute("aria-label")).toBe("Overview");
     });
+
+    it("advertises the destination chord in rail tooltip metadata", () => {
+      render();
+
+      const calendarLink = container.querySelector('a[href="/calendar"]');
+      expect(calendarLink?.getAttribute("data-shortcut")).toBe("g v");
+    });
+
+    it.each([
+      ["expanded", () => renderExpanded()],
+      ["mobile", () => renderMobile()],
+    ])("renders the destination chord chip in the %s sidebar", (_variant, renderSurface) => {
+      renderSurface();
+
+      const calendarLink = container.querySelector('a[href="/calendar"]');
+      expect(calendarLink).toBeInstanceOf(HTMLAnchorElement);
+      expect(calendarLink?.querySelector('[data-testid="sidebar-chord"]')?.textContent).toBe("g v");
+    });
   });
 
   // -------------------------------------------------------------------------

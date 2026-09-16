@@ -360,14 +360,47 @@ describe("EntityFinder", () => {
     });
 
     // Entity group must appear before any Pages group
-    const entityIdx = groupHeadings.indexOf("Entities");
-    const pagesIdx = groupHeadings.indexOf("Pages");
+    const entityIdx = groupHeadings.findIndex((heading) => heading.startsWith("Entities"));
+    const pagesIdx = groupHeadings.findIndex((heading) => heading.startsWith("Pages"));
 
     expect(entityIdx).toBeGreaterThanOrEqual(0);
     // If Pages group is present, entities must come first
     if (pagesIdx >= 0) {
       expect(entityIdx).toBeLessThan(pagesIdx);
     }
+  });
+
+  it("shows page chords and an explicit overflow row at empty query", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={qc}>
+          <MemoryRouter>
+            <EntityFinder />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+
+    await act(async () => {
+      dispatchOpenEntityFinder();
+      await flush();
+    });
+
+    const pagesGroup = document.body.querySelector(
+      "[data-testid='entity-finder-pages-group']",
+    );
+    const heading = pagesGroup?.querySelector("[cmdk-group-heading]")?.textContent;
+    expect(heading).toMatch(/^Pages \(8 of \d+\)$/);
+    expect(pagesGroup?.querySelector("[data-testid='entity-finder-page-chord']")?.textContent).toContain("go");
+
+    const overflow = pagesGroup?.querySelector(
+      "[data-testid='entity-finder-overflow-row']",
+    );
+    expect(overflow?.textContent).toMatch(/more, keep typing/);
+    expect(overflow?.getAttribute("aria-disabled")).toBe("true");
   });
 
   // -------------------------------------------------------------------------
@@ -1015,6 +1048,49 @@ describe("EntityFinder", () => {
     ]);
     return null;
   }
+
+  function ManyActionRegistrar() {
+    const commands = Array.from({ length: 10 }, (_, index) => ({
+      id: `action-${index}`,
+      label: `Action ${index}`,
+      perform: () => {},
+    }));
+    useRegisterCommands(commands);
+    return null;
+  }
+
+  it("reports the Actions total and remaining rows instead of silently truncating", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={qc}>
+          <MemoryRouter>
+            <CommandRegistryProvider>
+              <ManyActionRegistrar />
+              <EntityFinder />
+            </CommandRegistryProvider>
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+
+    await act(async () => {
+      dispatchOpenEntityFinder();
+      await flush();
+    });
+
+    const actionsGroup = document.body.querySelector(
+      "[data-testid='entity-finder-actions-group']",
+    );
+    expect(actionsGroup?.querySelector("[cmdk-group-heading]")?.textContent).toBe(
+      "Actions (8 of 10)",
+    );
+    expect(actionsGroup?.querySelector("[data-testid='entity-finder-overflow-row']")?.textContent).toBe(
+      "2 more, keep typing",
+    );
+  });
 
   it("shows registered Actions at empty query, not just after the first keystroke", async () => {
     const perform = vi.fn();
