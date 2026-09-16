@@ -461,6 +461,118 @@ async def test_get_ingestion_fanout_filters_zero_count_rows():
     assert result.data[0].message_count == 3
 
 
+async def test_get_ingestion_fanout_ignores_metadata_and_non_finite_samples():
+    """Only finite ``*_total`` samples contribute to the matrix.
+
+    Prometheus Counter families also expose ``*_created`` timestamps.  A
+    timestamp-sized value must never become a routed-message count, and a
+    malformed/NaN/infinite sibling must not poison a valid total sample.
+    """
+    fake_instant_result = [
+        {
+            "metric": {
+                "__name__": "switchboard_routed_messages_total",
+                "connector_type": "gmail",
+                "endpoint_identity": "gmail:user:owner@example.com",
+                "target_butler": "general",
+            },
+            "value": [1740000000, "5"],
+        },
+        {
+            "metric": {
+                "__name__": "switchboard_routed_messages_created",
+                "connector_type": "gmail",
+                "endpoint_identity": "gmail:user:owner@example.com",
+                "target_butler": "general",
+            },
+            "value": [1740000000, "1735689600"],
+        },
+        {
+            "metric": {
+                "__name__": "switchboard_routed_messages_total",
+                "connector_type": "gmail",
+                "endpoint_identity": "gmail:user:owner@example.com",
+                "target_butler": "health",
+            },
+            "value": [1740000000, "NaN"],
+        },
+        {
+            "metric": {
+                "__name__": "switchboard_routed_messages_total",
+                "connector_type": "gmail",
+                "endpoint_identity": "gmail:user:owner@example.com",
+                "target_butler": "relationship",
+            },
+            "value": [1740000000, "Infinity"],
+        },
+        {
+            "metric": {
+                "__name__": "switchboard_routed_messages_total",
+                "connector_type": "gmail",
+                "endpoint_identity": "gmail:user:owner@example.com",
+                "target_butler": "memory",
+            },
+            "value": [1740000000, "not-a-number"],
+        },
+    ]
+
+    with patch(
+        "butlers.modules.metrics.prometheus.async_query",
+        new=AsyncMock(return_value=fake_instant_result),
+    ):
+        with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
+            sys.modules.pop("switchboard_api_models", None)
+            router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
+            spec = importlib.util.spec_from_file_location("_sw_router_ifanout_hygiene", router_path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            result = await mod.get_ingestion_fanout(period="24h", db=_FakeDB())
+
+    assert [(row.target_butler, row.message_count) for row in result.data] == [("general", 5)]
+    assert result.meta.aggregates_available is True
+
+
+async def test_get_ingestion_fanout_reports_unavailable_when_no_total_is_usable():
+    """Unreadable Prometheus samples are not a fabricated empty matrix."""
+    fake_instant_result = [
+        {
+            "metric": {
+                "__name__": "switchboard_routed_messages_created",
+                "connector_type": "gmail",
+                "endpoint_identity": "gmail:user:owner@example.com",
+                "target_butler": "general",
+            },
+            "value": [1740000000, "1735689600"],
+        },
+        {
+            "metric": {
+                "__name__": "switchboard_routed_messages_total",
+                "connector_type": "gmail",
+                "endpoint_identity": "gmail:user:owner@example.com",
+                "target_butler": "health",
+            },
+            "value": [1740000000, "NaN"],
+        },
+    ]
+
+    with patch(
+        "butlers.modules.metrics.prometheus.async_query",
+        new=AsyncMock(return_value=fake_instant_result),
+    ):
+        with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
+            sys.modules.pop("switchboard_api_models", None)
+            router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
+            spec = importlib.util.spec_from_file_location(
+                "_sw_router_ifanout_unavailable", router_path
+            )
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            result = await mod.get_ingestion_fanout(period="24h", db=_FakeDB())
+
+    assert result.data == []
+    assert result.meta.aggregates_available is False
+
+
 # ---------------------------------------------------------------------------
 # Tests: _connector_stats_from_db SQL correctness (query shape)
 # ---------------------------------------------------------------------------
