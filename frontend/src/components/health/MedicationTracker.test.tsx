@@ -35,6 +35,8 @@ vi.mock("@/hooks/use-health", () => ({
           schedule: ["08:00"],
           active: true,
           notes: "with breakfast",
+          quantity: null,
+          quantity_updated_at: null,
           created_at: "2026-01-01T00:00:00Z",
           updated_at: "2026-01-01T00:00:00Z",
         },
@@ -85,6 +87,37 @@ describe("MedicationTracker — direct CRUD", () => {
     });
   });
 
+  it("creates a medication with an owner-recorded positive supply quantity", async () => {
+    render(<MedicationTracker />);
+
+    fireEvent.click(screen.getByRole("button", { name: /add medication/i }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Magnesium" } });
+    fireEvent.change(screen.getByLabelText("Dosage"), { target: { value: "200mg" } });
+    fireEvent.change(screen.getByLabelText("Frequency"), { target: { value: "nightly" } });
+    fireEvent.change(screen.getByLabelText(/supply quantity/i), { target: { value: "90" } });
+    fireEvent.click(screen.getByRole("button", { name: /^add medication$/i }));
+
+    await waitFor(() => expect(createMutate).toHaveBeenCalledTimes(1));
+    expect(createMutate).toHaveBeenCalledWith(
+      expect.objectContaining({ quantity: 90 }),
+    );
+  });
+
+  it("refuses zero, negative, and malformed supply quantities before mutation", async () => {
+    render(<MedicationTracker />);
+    fireEvent.click(screen.getByRole("button", { name: /add medication/i }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Magnesium" } });
+    fireEvent.change(screen.getByLabelText("Dosage"), { target: { value: "200mg" } });
+    fireEvent.change(screen.getByLabelText("Frequency"), { target: { value: "nightly" } });
+
+    for (const value of ["0", "-1", "90.5", "not-a-count"]) {
+      fireEvent.change(screen.getByLabelText(/supply quantity/i), { target: { value } });
+      fireEvent.click(screen.getByRole("button", { name: /^add medication$/i }));
+      expect(screen.getByRole("alert").textContent).toMatch(/positive whole number/i);
+    }
+    expect(createMutate).not.toHaveBeenCalled();
+  });
+
   it("requires name, dosage, and frequency before creating", async () => {
     render(<MedicationTracker />);
     fireEvent.click(screen.getByRole("button", { name: /add medication/i }));
@@ -102,14 +135,21 @@ describe("MedicationTracker — direct CRUD", () => {
     const dosage = screen.getByLabelText("Dosage") as HTMLInputElement;
     expect(dosage.value).toBe("1000IU");
     fireEvent.change(dosage, { target: { value: "2000IU" } });
+    fireEvent.change(screen.getByLabelText(/supply quantity/i), { target: { value: "120" } });
 
     fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
 
     await waitFor(() => expect(updateMutate).toHaveBeenCalledTimes(1));
     expect(updateMutate).toHaveBeenCalledWith({
       id: "med-1",
-      body: expect.objectContaining({ dosage: "2000IU", name: "Vitamin D" }),
+      body: expect.objectContaining({ dosage: "2000IU", name: "Vitamin D", quantity: 120 }),
     });
+  });
+
+  it("renders an absent supply quantity as unknown", () => {
+    render(<MedicationTracker />);
+    expect(screen.getByText("Supply: unknown")).toBeTruthy();
+    expect(screen.queryByText(/Supply: 0/)).toBeNull();
   });
 
   it("deletes a medication after confirmation", async () => {

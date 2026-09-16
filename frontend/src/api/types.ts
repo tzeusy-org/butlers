@@ -2368,6 +2368,10 @@ export interface Medication {
   schedule: unknown[];
   active: boolean;
   notes: string | null;
+  /** Owner-recorded count in the current supply; null means unknown. */
+  quantity: number | null;
+  /** When the current quantity was recorded (initial fill or refill). */
+  quantity_updated_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -2673,6 +2677,8 @@ export interface MedicationCreateRequest {
   frequency: string;
   schedule?: string[];
   notes?: string | null;
+  /** Positive whole-number supply count; omit when the supply is unknown. */
+  quantity?: number;
 }
 
 /**
@@ -2686,6 +2692,8 @@ export interface MedicationUpdateRequest {
   schedule?: string[];
   active?: boolean;
   notes?: string | null;
+  /** Positive whole-number current supply/refill count; omit to preserve it. */
+  quantity?: number;
 }
 
 /** Request body for creating a condition (POST /health/conditions). */
