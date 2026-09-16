@@ -462,6 +462,8 @@ export type {
   RoutingLogParams,
   Schedule,
   ScheduleCreate,
+  ScheduleToggleRequest,
+  ScheduleToggleResult,
   ScheduleUpdate,
   SearchResult,
   SearchResults,

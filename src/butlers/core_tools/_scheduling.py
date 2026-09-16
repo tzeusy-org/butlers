@@ -1,5 +1,6 @@
 """Scheduling core tools: schedule_list, schedule_create, schedule_update,
-schedule_delete, schedule_trigger (non-STAFFER only), schedule_costs."""
+schedule_toggle, schedule_delete, schedule_trigger (non-STAFFER only),
+schedule_costs."""
 
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ from butlers.core.scheduler import (
 from butlers.core.scheduler import schedule_create as _schedule_create
 from butlers.core.scheduler import schedule_delete as _schedule_delete
 from butlers.core.scheduler import schedule_list as _schedule_list
+from butlers.core.scheduler import schedule_toggle as _schedule_toggle
 from butlers.core.scheduler import schedule_update as _schedule_update
 from butlers.core.sessions import schedule_costs as _schedule_costs
 from butlers.core_tools._base import ToolContext
@@ -213,6 +215,36 @@ def register_scheduling_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
             "display_title": display_title,
             "calendar_event_id": calendar_event_id,
         }
+
+    @_core_tool("scheduling")
+    async def schedule_toggle(
+        task_id: str | None = None,
+        id: str | None = None,
+        enabled: bool | None = None,
+    ) -> dict:
+        """Set a runtime schedule's enabled state and return the observed receipt.
+
+        ``enabled`` is the desired state, so retries are idempotent.  Omitting
+        it preserves the legacy flip behavior for older MCP callers; the
+        dashboard always supplies it explicitly.  TOML- and subsystem-managed
+        rows return bounded typed refusals rather than claiming success.
+        """
+        resolved_id = _resolve_schedule_tool_id(task_id, id, "schedule_toggle")
+        try:
+            return await _schedule_toggle(
+                pool,
+                uuid.UUID(resolved_id),
+                enabled=enabled,
+                stagger_key=daemon.config.name,
+            )
+        except ValueError as exc:
+            return {
+                "id": resolved_id,
+                "status": "error",
+                "code": "SCHEDULE_TOGGLE_INVALID",
+                "message": str(exc),
+                "error": str(exc),
+            }
 
     @_core_tool("scheduling")
     async def schedule_delete(task_id: str | None = None, id: str | None = None) -> dict:
