@@ -20,6 +20,7 @@ import datetime
 import importlib.util
 import json
 import logging
+import math
 import os
 import sys
 import uuid
@@ -33,6 +34,7 @@ from butlers.api.audit_emit import authenticated_principal, emit_dashboard_audit
 from butlers.api.briefing.cache import BriefingCache, get_cache, resolve_owner_id
 from butlers.api.db import DatabaseManager
 from butlers.api.models import (
+    ApiMeta,
     ApiResponse,
     CursorPaginatedResponse,
     CursorPaginationMeta,
@@ -109,6 +111,41 @@ logger = logging.getLogger(__name__)
 # Period literal for query parameter validation
 PeriodLiteral = Literal["24h", "7d", "30d"]
 _PERIOD_HOURS: dict[str, int] = {"24h": 24, "7d": 168, "30d": 720}
+
+
+def _parse_prometheus_total_sample(series: Any) -> int | None:
+    """Parse one Prometheus counter result without treating metadata as data.
+
+    PromQL queries in this router target ``*_total`` counters, so the HTTP API
+    normally omits a metric name from each result's label map.  Test doubles
+    and alternate gateways may include ``__name__``; when present it is an
+    additional guard against accidentally accepting a ``*_created`` family.
+    A result with no finite, non-negative numeric sample is unreadable rather
+    than a zero observation.
+    """
+    if not isinstance(series, dict):
+        return None
+    labels = series.get("metric")
+    if not isinstance(labels, dict):
+        return None
+    metric_name = labels.get("__name__")
+    if metric_name is not None and (
+        not isinstance(metric_name, str) or not metric_name.endswith("_total")
+    ):
+        return None
+    raw_value = series.get("value")
+    if not isinstance(raw_value, (list, tuple)) or len(raw_value) < 2:
+        return None
+    raw = raw_value[1]
+    if isinstance(raw, bool):
+        return None
+    try:
+        numeric = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(numeric) or numeric < 0:
+        return None
+    return int(numeric)
 
 
 def _get_prometheus_url() -> str | None:
@@ -1479,12 +1516,17 @@ async def get_ingestion_fanout(
         results = await async_query(prom_url, q)
         if results and not (isinstance(results[0], dict) and "error" in results[0]):
             data = []
+            usable_series = 0
             for series in results:
-                m = series.get("metric", {})
-                try:
-                    count = int(float(series["value"][1]))
-                except (KeyError, IndexError, TypeError, ValueError):
-                    count = 0
+                count = _parse_prometheus_total_sample(series)
+                if count is None:
+                    # Ignore metadata/malformed/non-finite samples.  A valid
+                    # sibling series remains useful; if every series is
+                    # unreadable, return an explicit unavailable envelope
+                    # below instead of a fabricated empty matrix.
+                    continue
+                usable_series += 1
+                m = series["metric"]
                 if count > 0:
                     data.append(
                         FanoutRow(
@@ -1494,8 +1536,20 @@ async def get_ingestion_fanout(
                             message_count=count,
                         )
                     )
+            if results and usable_series == 0:
+                logger.warning(
+                    "Prometheus returned no usable *_total fanout samples; "
+                    "reporting aggregates unavailable"
+                )
+                return ApiResponse[list[FanoutRow]](
+                    data=[],
+                    meta=ApiMeta(aggregates_available=False),
+                )
             data.sort(key=lambda r: (r.connector_type, r.endpoint_identity, -r.message_count))
-            return ApiResponse[list[FanoutRow]](data=data)
+            return ApiResponse[list[FanoutRow]](
+                data=data,
+                meta=ApiMeta(aggregates_available=True),
+            )
 
         if results:
             logger.warning(
@@ -1512,7 +1566,10 @@ async def get_ingestion_fanout(
         logger.warning("DB fallback for ingestion fanout failed", exc_info=True)
         data = []
 
-    return ApiResponse[list[FanoutRow]](data=data)
+    return ApiResponse[list[FanoutRow]](
+        data=data,
+        meta=ApiMeta(aggregates_available=False),
+    )
 
 
 # ---------------------------------------------------------------------------
