@@ -42,7 +42,7 @@
 import { useMemo } from "react";
 
 import { useHealthBriefing } from "@/hooks/use-health-briefing.ts";
-import { useInsights } from "@/hooks/use-insights.ts";
+import { useInsightFeedback, useInsights } from "@/hooks/use-insights.ts";
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
 import { healthInsightSeverity } from "@/lib/health-insight-priority";
 import {
@@ -262,6 +262,7 @@ function FreshnessChips({ sources }: FreshnessChipsProps) {
 function toAttentionItems(
   candidates: InsightCandidate[],
   chartEligibleTypes: ReadonlySet<string>,
+  feedback: ReturnType<typeof useInsightFeedback>,
 ): AttentionListItem[] {
   return candidates.map((c) => ({
     id: c.id,
@@ -269,6 +270,15 @@ function toAttentionItems(
     title: c.message,
     detail: null,
     href: insightHref(c, chartEligibleTypes),
+    onUseful: () => feedback.mutate({ insightId: c.id, verdict: "useful" }),
+    onNotNow: () =>
+      feedback.mutate({
+        insightId: c.id,
+        verdict: "not_now",
+        snoozeUntil: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+      }),
+    onNever: () => feedback.mutate({ insightId: c.id, verdict: "never" }),
+    feedbackPending: feedback.isPending && feedback.variables?.insightId === c.id,
   }));
 }
 
@@ -322,6 +332,7 @@ export default function HealthOverviewPage() {
   // --- Insight candidates (no refetchInterval — manual refresh via pill) ---
   const { data: insights, isError: insightsError, refetch: refetchInsights } =
     useInsights(INSIGHT_PARAMS);
+  const insightFeedback = useInsightFeedback();
   const attentionItems: AttentionListItem[] = insightsError
     ? [
         {
@@ -334,7 +345,7 @@ export default function HealthOverviewPage() {
           onRetry: () => void refetchInsights(),
         },
       ]
-    : toAttentionItems(insights ?? [], chartEligibleTypes);
+    : toAttentionItems(insights ?? [], chartEligibleTypes, insightFeedback);
 
   // --- Derived briefing values with safe fallbacks. A failed briefing fetch
   // must never render the indefinite "Health overview loading…" copy forever

@@ -4,6 +4,8 @@ import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router";
 
+const { insightFeedbackMutate } = vi.hoisted(() => ({ insightFeedbackMutate: vi.fn() }));
+
 // ---------------------------------------------------------------------------
 // Stubs for the new Health Overview page hooks (bu-w7b18.1)
 // ---------------------------------------------------------------------------
@@ -44,6 +46,11 @@ vi.mock("@/hooks/use-insights", () => ({
       },
     ],
     isLoading: false,
+  }),
+  useInsightFeedback: () => ({
+    mutate: insightFeedbackMutate,
+    isPending: false,
+    variables: undefined,
   }),
 }));
 
@@ -314,7 +321,10 @@ import MedicationsPage from "./MedicationsPage";
 import ResearchPage from "./ResearchPage";
 import SymptomsPage from "./SymptomsPage";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+});
 
 // The six-page health-CRUD epic (bu-eqkmi) is complete: no health page remains
 // view-only, so this list is empty. Each converted page is asserted to have
@@ -509,6 +519,27 @@ describe("Health Overview page (bu-w7b18.1)", () => {
   it("renders the insight message in the attention list", () => {
     renderInRouter(<HealthOverviewPage />);
     expect(screen.getByText("Weight has drifted upward over the past two weeks.")).toBeTruthy();
+  });
+
+  it("wires the insight row's useful, not-now, and never doors", () => {
+    renderInRouter(<HealthOverviewPage />);
+
+    screen.getByRole("button", { name: "Useful" }).click();
+    screen.getByRole("button", { name: "Not now" }).click();
+    screen.getByRole("button", { name: "Never" }).click();
+
+    expect(insightFeedbackMutate).toHaveBeenNthCalledWith(1, {
+      insightId: "insight-1",
+      verdict: "useful",
+    });
+    expect(insightFeedbackMutate.mock.calls[1][0]).toMatchObject({
+      insightId: "insight-1",
+      verdict: "not_now",
+    });
+    expect(insightFeedbackMutate).toHaveBeenNthCalledWith(3, {
+      insightId: "insight-1",
+      verdict: "never",
+    });
   });
 
   it("renders the KPI strip with 4 cells", () => {

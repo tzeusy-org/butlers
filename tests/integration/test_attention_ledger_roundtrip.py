@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from datetime import UTC, datetime, timedelta
 
 import asyncpg
 import pytest
@@ -27,6 +28,7 @@ import pytest
 from butlers.api.routers.attention_ledger import _query_ledger, _query_ledger_summary
 from butlers.core.attention_ledger import record_attention_event
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.tools.switchboard.insight.broker import expire_candidates
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -214,6 +216,70 @@ async def test_record_attention_event_round_trips(pool: asyncpg.Pool) -> None:
     if isinstance(stored_metadata, str):
         stored_metadata = json.loads(stored_metadata)
     assert stored_metadata == {"insight_count": 3}
+
+
+async def test_expired_outcome_round_trips_and_is_summarized_per_origin(
+    pool: asyncpg.Pool,
+) -> None:
+    row_id = await record_attention_event(
+        pool,
+        origin_butler="health",
+        source="insight",
+        outcome="expired",
+        intent="insight",
+        dedup_key="health:signal:today",
+        reason="blocked_by:budget",
+        notification_ref="candidate-expired",
+        metadata={"blocked_by": "budget"},
+    )
+    assert row_id is not None
+
+    row = await pool.fetchrow(
+        "SELECT outcome, reason FROM public.attention_ledger WHERE id=$1::uuid", row_id
+    )
+    assert dict(row) == {"outcome": "expired", "reason": "blocked_by:budget"}
+
+    summary = await _query_ledger_summary(
+        pool,
+        since=datetime.now(UTC) - timedelta(minutes=1),
+        until=None,
+        intent="insight",
+        source="insight",
+        origin_butler="health",
+    )
+    assert summary.by_source[0].expired_unseen >= 1
+
+
+async def test_expire_candidates_writes_one_blocked_by_row_per_expiry(
+    pool: asyncpg.Pool,
+) -> None:
+    candidate_ids = await pool.fetch(
+        """
+        INSERT INTO public.insight_candidates
+            (origin_butler, priority, category, dedup_key, expires_at, message, metadata)
+        VALUES
+            ('finance', 60, 'Bills', 'finance:bill:expired-a', now() - interval '1 hour',
+             'a', '{"blocked_by":"held_by"}'::jsonb),
+            ('finance', 60, 'Bills', 'finance:bill:expired-b', now() - interval '2 hours',
+             'b', '{"blocked_by":"dedup"}'::jsonb)
+        RETURNING id
+        """
+    )
+
+    assert await expire_candidates(pool, now=datetime.now(UTC)) == 2
+    rows = await pool.fetch(
+        """
+        SELECT notification_ref, outcome, reason
+        FROM public.attention_ledger
+        WHERE notification_ref = ANY($1::text[])
+        ORDER BY notification_ref
+        """,
+        [str(row["id"]) for row in candidate_ids],
+    )
+    assert {(row["outcome"], row["reason"]) for row in rows} == {
+        ("expired", "blocked_by:held_by"),
+        ("expired", "blocked_by:dedup"),
+    }
 
 
 async def test_record_attention_event_notify_coalesced_round_trips(pool: asyncpg.Pool) -> None:

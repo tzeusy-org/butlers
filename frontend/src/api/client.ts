@@ -2467,6 +2467,33 @@ export function getInsightCandidates(
   ).then((r) => r.data);
 }
 
+/** Record one of the broker's bounded, reversible owner-feedback verbs. */
+type InsightFeedbackResult = {
+  status: "recorded";
+  verdict: import("./types").InsightFeedbackVerdict;
+  insight_id: string;
+  category: string;
+  dedup_family: string;
+  snooze_until: string | null;
+};
+
+export function submitInsightFeedback(
+  insightId: string,
+  verdict: import("./types").InsightFeedbackVerdict,
+  snoozeUntil?: string,
+): Promise<InsightFeedbackResult> {
+  const action = verdict === "not_now" ? "snooze" : verdict === "never" ? "mute" : "useful";
+  return apiFetch<ApiResponse<InsightFeedbackResult>>(
+    `/switchboard/insights/${encodeURIComponent(insightId)}/${action}`,
+    {
+      method: "POST",
+      ...(verdict === "not_now"
+        ? { body: JSON.stringify({ snooze_until: snoozeUntil }) }
+        : {}),
+    },
+  ).then((response) => response.data);
+}
+
 /**
  * Fetch the open decision-bead digest for the dashboard Decisions lane
  * (bu-ckkpz.2).

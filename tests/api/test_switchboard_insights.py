@@ -22,7 +22,7 @@ import datetime
 import importlib.util
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -234,3 +234,42 @@ async def test_insights_graceful_degrade_when_table_missing(app):
         resp = await client.get("/api/switchboard/insights")
     assert resp.status_code == 200
     assert resp.json()["data"] == []
+
+
+@pytest.mark.parametrize(
+    ("action", "verdict", "body"),
+    [
+        ("useful", "useful", None),
+        ("snooze", "not_now", {"snooze_until": "2026-09-20T00:00:00Z"}),
+        ("mute", "never", None),
+    ],
+)
+async def test_insight_feedback_rest_verbs_share_server_attributed_behavior(
+    app, action, verdict, body
+):
+    app, mock_pool = _app_with_mock(app, fetch_rows=[])
+    result = {
+        "status": "recorded",
+        "verdict": verdict,
+        "insight_id": "11111111-1111-1111-1111-111111111111",
+        "category": "Health",
+        "dedup_family": "health:signal",
+        "snooze_until": body["snooze_until"] if body else None,
+    }
+    with patch(
+        "butlers.tools.switchboard.insight.broker.record_insight_feedback",
+        new=AsyncMock(return_value=result),
+    ) as feedback:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                f"/api/switchboard/insights/11111111-1111-1111-1111-111111111111/{action}",
+                json=body,
+            )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["verdict"] == verdict
+    assert feedback.await_args.args[0] is mock_pool
+    assert feedback.await_args.kwargs["actor"] == "owner"
+    assert "actor" not in (body or {})

@@ -105,10 +105,12 @@ Source = Literal["notify", "insight", "discretion", "approvals"]
 # ``butlers.core.temporal.delivery_db.insert_deferred_notification``).
 # Conflating the two lets an outage impersonate quiet-hours discipline in the
 # ledger -- the exact failure mode bu-hmdqz.3 fixed for secrets_lifecycle.
-Outcome = Literal["delivered", "coalesced", "deferred", "suppressed", "failed"]
+Outcome = Literal["delivered", "coalesced", "deferred", "suppressed", "failed", "expired"]
 
 VALID_SOURCES = frozenset({"notify", "insight", "discretion", "approvals"})
-VALID_OUTCOMES = frozenset({"delivered", "coalesced", "deferred", "suppressed", "failed"})
+VALID_OUTCOMES = frozenset(
+    {"delivered", "coalesced", "deferred", "suppressed", "failed", "expired"}
+)
 
 # Metadata key carrying the runtime session id that was executing when the
 # ledger row was written (bu-358jk).

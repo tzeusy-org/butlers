@@ -29,7 +29,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 
-from butlers.api.audit_emit import emit_dashboard_audit
+from butlers.api.audit_emit import authenticated_principal, emit_dashboard_audit
 from butlers.api.briefing.cache import BriefingCache, get_cache, resolve_owner_id
 from butlers.api.db import DatabaseManager
 from butlers.api.models import (
@@ -457,6 +457,59 @@ async def list_insight_candidates(
     ]
 
     return ApiResponse[list[InsightCandidate]](data=data)
+
+
+async def _record_feedback(
+    *,
+    pool: Any,
+    insight_id: UUID,
+    verdict: str,
+    snooze_until: datetime.datetime | None = None,
+) -> ApiResponse[dict[str, Any]]:
+    from butlers.tools.switchboard.insight.broker import record_insight_feedback
+
+    result = await record_insight_feedback(
+        pool,
+        insight_id=str(insight_id),
+        verdict=verdict,
+        snooze_until=snooze_until,
+        actor=authenticated_principal(),
+        evidence_ref=f"dashboard:insight:{insight_id}",
+    )
+    if result["status"] == "error":
+        status_code = 404 if result["reason"] == "insight not found" else 422
+        raise HTTPException(status_code=status_code, detail=result["reason"])
+    return ApiResponse[dict[str, Any]](data=result)
+
+
+@router.post("/insights/{insight_id}/useful", response_model=ApiResponse[dict[str, Any]])
+async def mark_insight_useful(
+    insight_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[dict[str, Any]]:
+    """Record useful feedback and reverse a family mute/snooze."""
+    return await _record_feedback(pool=_pool(db), insight_id=insight_id, verdict="useful")
+
+
+@router.post("/insights/{insight_id}/snooze", response_model=ApiResponse[dict[str, Any]])
+async def snooze_insight(
+    insight_id: UUID,
+    snooze_until: datetime.datetime = Body(..., embed=True),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[dict[str, Any]]:
+    """Record bounded not-now feedback for an insight family."""
+    return await _record_feedback(
+        pool=_pool(db), insight_id=insight_id, verdict="not_now", snooze_until=snooze_until
+    )
+
+
+@router.post("/insights/{insight_id}/mute", response_model=ApiResponse[dict[str, Any]])
+async def mute_insight(
+    insight_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[dict[str, Any]]:
+    """Record an indefinite never verdict for an insight family."""
+    return await _record_feedback(pool=_pool(db), insight_id=insight_id, verdict="never")
 
 
 # ---------------------------------------------------------------------------
