@@ -508,6 +508,36 @@ describe("Sidebar", () => {
       const overviewLink = container.querySelector('a[href="/"]');
       expect(overviewLink?.getAttribute("aria-label")).toBe("Overview");
     });
+
+    it("renders the destination chord in the rail tooltip after keyboard focus", async () => {
+      render();
+
+      const calendarLink = container.querySelector('a[href="/calendar"]');
+      expect(calendarLink).toBeInstanceOf(HTMLAnchorElement);
+      expect(
+        document.body.querySelector("[data-slot='tooltip-content'] [data-testid='sidebar-chord']"),
+      ).toBeNull();
+
+      await act(async () => {
+        calendarLink?.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+      });
+
+      expect(
+        document.body.querySelector("[data-slot='tooltip-content'] [data-testid='sidebar-chord']")
+          ?.textContent,
+      ).toBe("g v");
+    });
+
+    it.each([
+      ["expanded", () => renderExpanded()],
+      ["mobile", () => renderMobile()],
+    ])("renders the destination chord chip in the %s sidebar", (_variant, renderSurface) => {
+      renderSurface();
+
+      const calendarLink = container.querySelector('a[href="/calendar"]');
+      expect(calendarLink).toBeInstanceOf(HTMLAnchorElement);
+      expect(calendarLink?.querySelector('[data-testid="sidebar-chord"]')?.textContent).toBe("g v");
+    });
   });
 
   // -------------------------------------------------------------------------

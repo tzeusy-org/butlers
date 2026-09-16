@@ -42,7 +42,7 @@
  *   Esc          — close
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Command } from "cmdk";
 import { useNavigate } from "react-router";
 import { useQuery } from "@tanstack/react-query";
@@ -91,6 +91,7 @@ interface PageEntry {
   path: string;
   section: string;
   butler?: string;
+  chord?: string;
 }
 
 const ALL_PAGES: PageEntry[] = ALL_ROUTES.map((r) => ({
@@ -98,7 +99,59 @@ const ALL_PAGES: PageEntry[] = ALL_ROUTES.map((r) => ({
   path: r.path,
   section: r.section,
   butler: r.butler,
+  chord: r.chord,
 }));
+
+const RECENTS_LIMIT = 5;
+const PINNED_LIMIT = 8;
+const PAGES_LIMIT = 8;
+const BUTLERS_LIMIT = 5;
+const ACTIONS_LIMIT = 8;
+
+interface PaletteGroupProps {
+  heading: string;
+  visibleCount: number;
+  total: number;
+  children: ReactNode;
+  testId?: string;
+}
+
+/**
+ * Keep every capped palette group honest. The heading reports the visible
+ * slice against the full matching set and the disabled row makes the hidden
+ * tail explicit instead of implying that no more destinations exist.
+ */
+function PaletteGroup({
+  heading,
+  visibleCount,
+  total,
+  children,
+  testId,
+}: PaletteGroupProps) {
+  const normalizedTotal = Math.max(total, visibleCount);
+  const remaining = normalizedTotal - visibleCount;
+
+  return (
+    <Command.Group
+      heading={`${heading} (${visibleCount} of ${normalizedTotal})`}
+      className="mb-1"
+      data-testid={testId}
+    >
+      {children}
+      {remaining > 0 && (
+        <Command.Item
+          value={`overflow:${heading}`}
+          disabled
+          className="flex select-none items-center rounded-md px-2 py-2 text-xs text-muted-foreground"
+          data-testid="entity-finder-overflow-row"
+          data-overflow-count={remaining}
+        >
+          {remaining} more, keep typing
+        </Command.Item>
+      )}
+    </Command.Group>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Match kind label — human-readable hint shown in the result caption
@@ -287,13 +340,17 @@ export default function EntityFinder() {
 
   const { data: ownerNeighbours } = useEntityNeighbours(
     open && isEmptyQuery ? ownerId : undefined,
-    { rank: "weight" },
+    undefined,
   );
 
-  const pinned = useMemo(
-    () => aggregateOwnerPinned(ownerNeighbours?.neighbours, ownerId, 8),
+  // The ranked neighbours endpoint truncates *each predicate* before this
+  // cross-predicate aggregation runs. Request the complete owner set so the
+  // pinned count and overflow row remain truthful after deduplication.
+  const allPinned = useMemo(
+    () => aggregateOwnerPinned(ownerNeighbours?.neighbours, ownerId, null),
     [ownerNeighbours, ownerId],
   );
+  const pinned = allPinned.slice(0, PINNED_LIMIT);
 
   // -------------------------------------------------------------------------
   // Open via custom event — reset query and focus input on open
@@ -354,7 +411,6 @@ export default function EntityFinder() {
   // (bu-qvnce.11) instead of `.includes()`, so e.g. "iss" ranks "Issues"
   // (prefix match) above a coincidental substring hit elsewhere.
   // -------------------------------------------------------------------------
-  const lowerQuery = trimmedQuery.toLowerCase();
   const {
     data: butlersResponse,
     isLoading: butlersLoading,
@@ -374,14 +430,12 @@ export default function EntityFinder() {
         : ALL_PAGES.filter((page) => !page.butler || installedButlers.has(page.butler)),
     [butlersError, butlersLoading, butlersResponse, installedButlers],
   );
-  const pageMatches: PageEntry[] =
-    lowerQuery.length >= 1
-      ? fuzzyFilter(trimmedQuery, availablePages, {
-          getLabel: (p) => p.label,
-          getKeywords: (p) => [p.path],
-          limit: 8,
-        })
-      : [];
+  const pageMatchesResult = fuzzyFilter(trimmedQuery, availablePages, {
+    getLabel: (p) => p.label,
+    getKeywords: (p) => [p.path],
+    limit: PAGES_LIMIT,
+  });
+  const pageMatches: PageEntry[] = pageMatchesResult.items;
 
   const entityResults: EntityFinderSearchResult[] = useMemo(
     () => searchData?.results ?? [],
@@ -392,10 +446,13 @@ export default function EntityFinder() {
   // Butlers group — client-side instant match, absorbed from the legacy
   // CommandPalette (bu-86c4c.7). Navigates to the butler detail page.
   // -------------------------------------------------------------------------
-  const butlerMatches =
-    lowerQuery.length >= 1 && butlersResponse?.data
-      ? fuzzyFilter(trimmedQuery, butlersResponse.data, { getLabel: (b) => b.name, limit: 5 })
-      : [];
+  const butlerMatchesResult = butlersResponse?.data
+    ? fuzzyFilter(trimmedQuery, butlersResponse.data, {
+        getLabel: (b) => b.name,
+        limit: BUTLERS_LIMIT,
+      })
+    : { items: [], total: 0 };
+  const butlerMatches = butlerMatchesResult.items;
 
   // -------------------------------------------------------------------------
   // Sessions / State groups — server-side debounced search, absorbed from the
@@ -476,13 +533,12 @@ export default function EntityFinder() {
   // scorer instead of `.includes()`.
   // -------------------------------------------------------------------------
   const allActions = useCommandMenuActions();
-  const actionMatches = isEmptyQuery
-    ? allActions.slice(0, 8)
-    : fuzzyFilter(trimmedQuery, allActions, {
-        getLabel: (a) => a.label,
-        getKeywords: (a) => a.keywords,
-        limit: 8,
-      });
+  const actionMatchesResult = fuzzyFilter(isEmptyQuery ? "" : trimmedQuery, allActions, {
+    getLabel: (a) => a.label,
+    getKeywords: (a) => a.keywords,
+    limit: ACTIONS_LIMIT,
+  });
+  const actionMatches = actionMatchesResult.items;
 
   const runAction = useCallback(
     (action: PaletteCommand) => {
@@ -514,9 +570,10 @@ export default function EntityFinder() {
         if (r.kind === "page") return { ...r, run: () => openPage(r.id, r.label) };
         return { ...r, run: () => openEntity(r.id, r.label, r.entityType) };
       })
-      .filter((row): row is RecentEntry & { run: () => void } => row != null)
-      .slice(0, 5);
+      .filter((row): row is RecentEntry & { run: () => void } => row != null);
   }, [recentEntries, isEmptyQuery, actionById, runAction, openPage, openEntity]);
+
+  const recentVisibleRows = recentRows.slice(0, RECENTS_LIMIT);
 
   // The active result the preview pane mirrors. cmdk highlights the first item
   // by default and encodes the highlighted item via its `value`
@@ -565,7 +622,7 @@ export default function EntityFinder() {
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent
         showCloseButton={false}
-        className="top-[15vh] translate-y-0 gap-0 border-0 bg-transparent p-0 shadow-none sm:max-w-3xl"
+        className="top-4 h-[calc(100dvh-2rem)] translate-y-0 gap-0 border-0 bg-transparent p-0 shadow-none sm:top-[15vh] sm:h-auto sm:max-w-3xl"
         onCloseAutoFocus={(event) => {
           // EntityFinder opens via a cross-component custom event, so there
           // is no colocated DialogTrigger for Radix to restore automatically.
@@ -581,7 +638,7 @@ export default function EntityFinder() {
         <Command
           label="Command menu"
           onValueChange={setActiveValue}
-          className="relative mx-auto flex w-full max-w-3xl overflow-hidden rounded-xl border border-border bg-background shadow-2xl"
+          className="relative mx-auto flex h-full min-h-0 w-full max-w-3xl overflow-hidden rounded-xl border border-border bg-background shadow-2xl sm:h-auto"
           onKeyDown={(e) => {
             // Tab = hop into the active result when a real entity row is
             // active (cmdk does not consume Tab, so we claim it here first).
@@ -595,7 +652,7 @@ export default function EntityFinder() {
           shouldFilter={false}
         >
         {/* Left column: input + list + footer */}
-        <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           {/* Input row */}
           <div className="flex items-center border-b border-border px-4 focus-within:ring-2 focus-within:ring-inset focus-within:ring-foreground">
             <span className="mr-2 shrink-0 font-mono text-xs text-muted-foreground">
@@ -613,7 +670,7 @@ export default function EntityFinder() {
             </kbd>
           </div>
 
-          <Command.List className="max-h-[420px] flex-1 overflow-y-auto p-2">
+          <Command.List className="min-h-0 flex-1 overflow-y-auto p-2 sm:max-h-[420px]">
             {/* Search error, no fallback data — a failed entity search with
              * nothing cached must surface as an error, not collapse into the
              * "no results" empty copy. Client-side page matches (which never
@@ -673,13 +730,14 @@ export default function EntityFinder() {
              * owner-pinned set since it reflects what THIS owner actually
              * just did.
              * --------------------------------------------------------------- */}
-            {isEmptyQuery && recentRows.length > 0 && (
-              <Command.Group
+            {isEmptyQuery && recentVisibleRows.length > 0 && (
+              <PaletteGroup
                 heading="Recents"
-                className="mb-1"
-                data-testid="entity-finder-recents-group"
+                visibleCount={recentVisibleRows.length}
+                total={recentRows.length}
+                testId="entity-finder-recents-group"
               >
-                {recentRows.map((r) => (
+                {recentVisibleRows.map((r) => (
                   <Command.Item
                     key={`${r.kind}:${r.id}`}
                     value={`recent:${r.kind}:${r.id}:${r.label}`}
@@ -697,7 +755,7 @@ export default function EntityFinder() {
                     <p className="min-w-0 flex-1 truncate font-medium">{r.label}</p>
                   </Command.Item>
                 ))}
-              </Command.Group>
+              </PaletteGroup>
             )}
 
             {/* ---------------------------------------------------------------
@@ -706,10 +764,11 @@ export default function EntityFinder() {
              * Typing replaces this set with search results.
              * --------------------------------------------------------------- */}
             {isEmptyQuery && pinned.length > 0 && (
-              <Command.Group
+              <PaletteGroup
                 heading="Pinned"
-                className="mb-1"
-                data-testid="entity-finder-pinned-group"
+                visibleCount={pinned.length}
+                total={allPinned.length}
+                testId="entity-finder-pinned-group"
               >
                 {pinned.map((p) => (
                   <Command.Item
@@ -735,7 +794,7 @@ export default function EntityFinder() {
                     </span>
                   </Command.Item>
                 ))}
-              </Command.Group>
+              </PaletteGroup>
             )}
 
             {/* ---------------------------------------------------------------
@@ -766,10 +825,11 @@ export default function EntityFinder() {
                     />
                   </div>
                 )}
-                <Command.Group
+                <PaletteGroup
                   heading="Entities"
-                  className="mb-1"
-                  data-testid="entity-finder-entity-group"
+                  visibleCount={entityResults.length}
+                  total={searchData?.total ?? entityResults.length}
+                  testId="entity-finder-entity-group"
                 >
                   {entityResults.map((result) => (
                     <Command.Item
@@ -799,7 +859,7 @@ export default function EntityFinder() {
                       </span>
                     </Command.Item>
                   ))}
-                </Command.Group>
+                </PaletteGroup>
               </FetchingDim>
             )}
 
@@ -811,7 +871,12 @@ export default function EntityFinder() {
              * and the health sub-pages being unreachable from the palette).
              * --------------------------------------------------------------- */}
             {pageMatches.length > 0 && (
-              <Command.Group heading="Pages">
+              <PaletteGroup
+                heading="Pages"
+                visibleCount={pageMatches.length}
+                total={pageMatchesResult.total}
+                testId="entity-finder-pages-group"
+              >
                 {pageMatches.map((page) => (
                   <Command.Item
                     key={page.path}
@@ -829,16 +894,31 @@ export default function EntityFinder() {
                         {page.section}
                       </p>
                     </div>
+                    {page.chord && (
+                      <span
+                        className="ml-auto flex shrink-0 items-center gap-1"
+                        data-testid="entity-finder-page-chord"
+                        aria-label={`g ${page.chord}`}
+                      >
+                        <KbMono>g</KbMono>
+                        <KbMono>{page.chord}</KbMono>
+                      </span>
+                    )}
                   </Command.Item>
                 ))}
-              </Command.Group>
+              </PaletteGroup>
             )}
 
             {/* ---------------------------------------------------------------
              * BUTLERS GROUP — absorbed from the legacy CommandPalette.
              * --------------------------------------------------------------- */}
             {butlerMatches.length > 0 && (
-              <Command.Group heading="Butlers">
+              <PaletteGroup
+                heading="Butlers"
+                visibleCount={butlerMatches.length}
+                total={butlerMatchesResult.total}
+                testId="entity-finder-butlers-group"
+              >
                 {butlerMatches.map((b) => (
                   <Command.Item
                     key={b.name}
@@ -858,7 +938,7 @@ export default function EntityFinder() {
                     </div>
                   </Command.Item>
                 ))}
-              </Command.Group>
+              </PaletteGroup>
             )}
 
             {/* ---------------------------------------------------------------
@@ -873,7 +953,12 @@ export default function EntityFinder() {
             {(sessionMatches.length > 0 || stateMatches.length > 0) && (
               <FetchingDim isFetching={genericFetching}>
                 {sessionMatches.length > 0 && (
-                  <Command.Group heading="Sessions">
+                  <PaletteGroup
+                    heading="Sessions"
+                    visibleCount={sessionMatches.length}
+                    total={sessionMatches.length}
+                    testId="entity-finder-sessions-group"
+                  >
                     {sessionMatches.map((s) => (
                       <Command.Item
                         key={s.id}
@@ -892,11 +977,16 @@ export default function EntityFinder() {
                         </div>
                       </Command.Item>
                     ))}
-                  </Command.Group>
+                  </PaletteGroup>
                 )}
 
                 {stateMatches.length > 0 && (
-                  <Command.Group heading="State">
+                  <PaletteGroup
+                    heading="State"
+                    visibleCount={stateMatches.length}
+                    total={stateMatches.length}
+                    testId="entity-finder-state-group"
+                  >
                     {stateMatches.map((s) => (
                       <Command.Item
                         key={s.id}
@@ -915,7 +1005,7 @@ export default function EntityFinder() {
                         </div>
                       </Command.Item>
                     ))}
-                  </Command.Group>
+                  </PaletteGroup>
                 )}
               </FetchingDim>
             )}
@@ -926,7 +1016,12 @@ export default function EntityFinder() {
              * contribute a command here for as long as it stays mounted.
              * --------------------------------------------------------------- */}
             {actionMatches.length > 0 && (
-              <Command.Group heading="Actions">
+              <PaletteGroup
+                heading="Actions"
+                visibleCount={actionMatches.length}
+                total={actionMatchesResult.total}
+                testId="entity-finder-actions-group"
+              >
                 {actionMatches.map((action) => (
                   <Command.Item
                     key={action.id}
@@ -954,7 +1049,7 @@ export default function EntityFinder() {
                     )}
                   </Command.Item>
                 ))}
-              </Command.Group>
+              </PaletteGroup>
             )}
           </Command.List>
 

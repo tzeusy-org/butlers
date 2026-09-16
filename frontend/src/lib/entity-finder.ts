@@ -30,7 +30,8 @@ export interface PinnedNeighbour {
 export function aggregateOwnerPinned(
   neighbours: Record<string, NeighbourEntry[]> | undefined,
   ownerId: string | null | undefined,
-  limit = 8,
+  /** Defaults to the owner-pinned set size; null keeps the full ranked set. */
+  limit: number | null = 8,
 ): PinnedNeighbour[] {
   if (!neighbours) return [];
   const byEntity = new Map<string, PinnedNeighbour>();
@@ -58,7 +59,7 @@ export function aggregateOwnerPinned(
     }
   }
 
-  return Array.from(byEntity.values())
+  const ranked = Array.from(byEntity.values())
     .sort((a, b) => b.weight - a.weight)
-    .slice(0, limit);
+  return limit == null ? ranked : ranked.slice(0, limit);
 }
