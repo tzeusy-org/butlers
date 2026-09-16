@@ -19,8 +19,9 @@ The Messenger is the sole owner of outbound user-channel delivery. It executes d
 - **Delivery validation:** Validate `notify.v1` payloads before any side effect. Reject invalid or missing targeting fields with no delivery attempt.
 - **Outcome reporting:** Return deterministic adapter outcome and error payloads.
 - **Lineage preservation:** Retain `origin_butler` and `request_context` in all responses for audit trail.
-- **Voice authority boundary:** Accept voice only from authenticated Switchboard
-  lineage, resolve only versioned opaque Messenger endpoints, and orchestrate
+- **Voice authority boundary:** Accept voice only from Switchboard's verified
+  isolated Ed25519 service principal, never caller-asserted route identity;
+  resolve only versioned opaque Messenger endpoints, and orchestrate
   current DND/quiet-hours, fresh Home-owned room-presence attestation, provider
   admissibility, and at-most-once physical handoff before any playback.
 - **Voice uncertainty truth:** Treat any handoff that may have started as
@@ -41,9 +42,10 @@ The Messenger is the sole owner of outbound user-channel delivery. It executes d
 - Messenger does **not** bypass DND/quiet hours for priority or approval, defer
   or coalesce voice, retry after possible provider start, persist audio/raw
   presence/provider bodies, use cloud TTS, or restore generic delivery tracking.
-- Messenger does **not** call Home directly or read Home's schema. Presence and
-  any admitted Home/HA provider path are brokered through Switchboard under RFC
-  0034 and RFC 0028.
+- Messenger does **not** call Home directly or read Home's schema. Signed
+  presence control hops are brokered through Switchboard under RFC 0034.
+  Home/HA voice is inadmissible under current RFC 0028 until a separate accepted
+  amendment defines its complete voice seam.
 
 ---
 
@@ -68,7 +70,8 @@ The Messenger is the sole owner of outbound user-channel delivery. It executes d
 | Rate limiting | Channel API returns rate-limit error | Return the provider outcome; caller recovery remains authoritative |
 | Messenger unreachable | `notify()` from domain butlers times out | Escalate; domain butler delivery halts until Messenger restores |
 | Payload validation failure | Missing or malformed `notify.v1` fields | Returns `validation_error` with no side effect; safe to retry after fixing payload |
-| Voice lineage or binding invalid | Switchboard assertion cannot be verified, or opaque endpoint/binding version is absent/stale | Fail before presence/provider access; invalid lineage receives no fallback |
+| Voice lineage or binding invalid | Dedicated service signature/nonce receipt cannot be verified, or opaque endpoint/binding version is absent/stale | Fail before presence/provider access; invalid lineage receives no fallback |
+| Voice process crashes before handoff | `presence_authorized` exists without the durable provider-handoff marker | Keep the pinned binding, recheck current DND, and obtain a newly signed nonce-bound Home attestation; never reuse the old presence authority |
 | Voice provider unavailable | No exact local-first provider profile is admissible | Do not call a provider; request at most one linked text-only non-voice fallback |
 | Voice quiet or presence denied | DND/quiet is active, or room evidence is missing/stale/absent/unknown/conflicting | Suppress immediately; never queue voice for later; request at most one linked text-only non-voice fallback |
 | Voice handoff uncertain | Provider may have crossed its start boundary but cannot confirm completion | Record `ambiguous`, never retry speech, and permit only the fixed uncertainty fallback |
@@ -86,8 +89,9 @@ The Messenger is the sole owner of outbound user-channel delivery. It executes d
 - **WhatsApp bridge:** External dependency for WhatsApp delivery
 - **Switchboard voice control plane:** Authenticates voice origin/lineage and
   resolves at most one separately keyed text-only non-voice fallback
-- **Home butler (via Switchboard only):** Owns fresh room-presence facts and any
-  admitted RFC 0028 Home/HA provider action
+- **Home butler (via Switchboard only):** Owns fresh room-presence facts and the
+  signed categorical attestation; it has no admitted voice action under current
+  RFC 0028
 - **Admissible local voice provider:** Exact versioned profile proving
   start/confirm/no-start/ambiguous semantics; otherwise voice stays unavailable
 - **PostgreSQL (`butlers.messenger` schema):** Session logging, state store

@@ -63,18 +63,23 @@ routed messages. Their schedulers and direct MCP triggers still work.
 
 ```mermaid
 graph LR
-    Origin["origin butler"] -- "notify.v1 + authenticated lineage" --> SW["Switchboard"]
-    SW -- "route to Messenger" --> MSG["Messenger"]
-    MSG -- "attestation request via Switchboard" --> SW
-    SW -- "MCP: voice_presence_attest.v1" --> HOME["Home"]
-    HOME -- "categorical attestation via Switchboard" --> SW
-    SW --> MSG
+    SIGN["isolated voice signers"] -. "fixed-purpose non-inheritable handles" .-> SW
+    SIGN -. "fixed-purpose non-inheritable handles" .-> MSG
+    SIGN -. "fixed-purpose non-inheritable handles" .-> HOME
+    Origin["origin butler"] -- "notify.v1" --> SW["Switchboard"]
+    SW -- "signed voice_origin.v1" --> MSG["Messenger"]
+    MSG -- "signed attestation request" --> SW
+    SW -- "signed broker request" --> HOME["Home"]
+    HOME -- "signed categorical result" --> SW
+    SW -- "signed nested relay" --> MSG
     MSG -- "one admitted handoff" --> VP["local-first voice provider"]
     MSG -- "one text-only fallback intent" --> SW
 ```
 
-Voice fails closed if Switchboard, Messenger's replay store, Home attestation,
-or the exact provider profile is unavailable. A failure does not redirect
+Voice fails closed if a required signer/keyring or durable nonce store,
+Switchboard, Messenger's replay store, Home attestation, or the exact provider
+profile is unavailable. Current RFC 0028 does not admit Home/HA voice. A
+failure does not redirect
 Messenger to another room/provider, infer a device from identity data, or make
 Live Listener an egress component. Telegram/email text fallback is separately keyed
 and resolved once by Switchboard.

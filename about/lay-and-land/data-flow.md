@@ -183,14 +183,14 @@ sequenceDiagram
     participant Provider as Admissible Local Provider
 
     Origin->>SW: notify.v1(channel=voice, reply or explicit endpoint)
-    SW->>SW: Authenticate service + durable origin lineage
-    SW->>MSG: voice_origin.v1 + notify.v1
+    SW->>MSG: Switchboard-signed voice_origin.v1 + notify.v1
+    MSG->>MSG: Verify service JWS + stable replay-fence lookup/claim
     MSG->>MSG: Provider admissibility, initiation, binding, DND/quiet
-    MSG->>SW: voice_presence_attest.v1 request (opaque room/version/nonce)
-    SW->>HOME: MCP-brokered attestation request
-    HOME-->>SW: Categorical fresh room result
-    SW-->>MSG: Authenticated attestation
-    MSG->>MSG: Atomic logical-delivery claim
+    MSG->>SW: Messenger-signed attest request (opaque room/version/nonce)
+    SW->>HOME: Switchboard-signed broker request
+    HOME-->>SW: Home-signed categorical fresh result
+    SW-->>MSG: Switchboard-signed relay containing Home JWS
+    MSG->>MSG: Verify both signatures + claim provider-handoff marker
     MSG->>Provider: One in-memory handoff
     Provider-->>MSG: no-start | started/confirmed | failed | unknown
     opt eligible terminal voice outcome
@@ -201,7 +201,9 @@ sequenceDiagram
 
 The generic deferred-notification queue never stores voice. Messenger's current
 DND/quiet decision is absolute, and fresh presence is required for every
-attempt. A possible provider start becomes non-retryable ambiguity. Audio,
+attempt and pre-handoff recovery. Endpoint binding versions are pinned receipt
+state, not stable logical-key inputs. A possible provider start becomes
+non-retryable ambiguity. Audio,
 provider bodies, raw presence, and physical identifiers do not persist. See
 RFC 0034 and `REQ-messenger-voice-egress-001` through
 `REQ-messenger-voice-egress-011`.
@@ -455,7 +457,7 @@ INSERT ... ON CONFLICT DO NOTHING -> read back effective row.
 | Ingestion | Connector poll/webhook | route_inbox INSERT | ingest.v1 -> route.v1 (MCP) | Yes (durable buffer + route_inbox) |
 | Scheduled | Scheduler tick | Session log INSERT | Internal (asyncio) | Yes (schedule DB) |
 | Response | LLM session notify() | External API call | MCP -> module-specific | Conditional: eligible routine owner-default holds are durable in the originating butler queue; other direct paths are fire-and-forget |
-| Voice response (candidate) | Explicit voice notify intent | Admissible local room provider | authenticated Switchboard -> Messenger; Home attestation via Switchboard; provider adapter | Content-blind Messenger receipt and replay tombstone only; audio, content, raw presence, and provider bodies are never durable |
+| Voice response (candidate) | Explicit voice notify intent | Admissible local room provider | Ed25519 service JWS hops; Home attestation via Switchboard; provider adapter | Content-blind Messenger receipt, stable replay tombstone, and control nonce receipts only; audio, content, raw presence, signatures, and provider bodies are never durable |
 | Identity | Channel identifier | Resolved contact | SQL (public schema) | N/A (read-only) |
 | Memory | Session observation | Tiered storage | SQL + pgvector | Yes |
 | Heartbeat | Connector loop | Registry update | MCP | No (ephemeral liveness) |

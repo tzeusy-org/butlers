@@ -206,9 +206,10 @@ component boundaries are:
 
 | Component | Candidate responsibility | Boundary |
 |---|---|---|
-| **Switchboard** | Authenticate `voice_origin.v1`, broker Messenger-to-Home presence requests, resolve one linked text-only non-voice fallback | Does not own endpoints, presence facts, or provider outcomes |
+| **Switchboard** | Verify/sign dedicated Ed25519 `voice-control.v1` hops, authenticate `voice_origin.v1`, broker Messenger-to-Home presence requests, resolve one linked text-only non-voice fallback | Does not trust caller-asserted identity or own endpoints, presence facts, or provider outcomes |
 | **Messenger** | Opaque versioned endpoint registry, voice policy orchestration, provider profile selection, physical-side-effect receipt/replay fence | Does not infer devices from `entity_info`, read Home schema, or call Home directly |
-| **Home** | Return categorical `voice_presence_attest.v1` from Home-owned room facts; execute an admitted HA provider only under RFC 0028 | Receives no message content and does not choose the delivery target |
+| **Home** | Return a signed categorical `voice_presence_attest.v1` from Home-owned room facts | Receives no message content and cannot execute voice under current RFC 0028; an accepted amendment is required first |
+| **Voice control signers** | Hold one private Ed25519 service key each and sign only through the matching fixed-purpose, close-on-exec daemon handle | No MCP/HTTP surface; no private key in all-butlers or any spawned runtime child |
 | **Live Listener** | Existing microphone/VAD/ASR ingress to Switchboard | Remains ingress-only; no TTS, speaker, presence, or provider authority |
 | **Voice provider adapter** | One exact start/confirm/no-start/unknown interface for an admitted local-first profile | No policy, retry, targeting, or fallback authority |
 

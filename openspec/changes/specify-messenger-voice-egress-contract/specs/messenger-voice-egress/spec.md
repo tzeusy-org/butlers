@@ -19,6 +19,73 @@ Messenger and Home SHALL exchange deterministic control-plane messages only by
 MCP through Switchboard; neither SHALL call the other directly or read the
 other's schema. Live Listener SHALL remain ingress-only.
 
+Every voice control-plane hop SHALL use a dedicated `voice-control.v1` compact
+JWS signed by the sending service's distinct server-held Ed25519 principal. The
+capability SHALL fix `alg=EdDSA` and bind `kid`, exact issuer and audience,
+contract/action, canonical payload digest, a 256-bit random nonce, integer
+`iat`, and `exp` with `0 < exp - iat <= 10 seconds` and at most five seconds of
+clock skew. Receivers SHALL resolve the key only from an immutable startup
+keyring, atomically consume `(issuer, audience, nonce_digest)` in a durable
+receipt before protected work, and retain it beyond expiry plus skew so replay
+fails across restart. Token-selected algorithms, dynamic key URLs, unsigned or
+wrong-key messages, caller-asserted identity, and bearer fallback SHALL NOT
+confer authority.
+
+The protected header SHALL contain exactly `alg`, `kid`, and
+`typ: "voice-control+jws"`. Signed claims SHALL contain exactly `iss`, `aud`,
+`action`, `contract_version`, `payload_sha256`, `control_nonce`, `iat`, and
+`exp`; `payload_sha256` SHALL be unpadded base64url SHA-256 of UTF-8 RFC 8785
+canonical JSON. The only allowed issuer/audience/action triples SHALL be
+`switchboard`/`messenger.voice-origin.v1`/`dispatch_origin`,
+`messenger`/`switchboard.voice-presence.v1`/`request_presence`,
+`switchboard`/`home.voice-presence.v1`/`broker_presence`,
+`home`/`messenger.voice-presence.v1`/`attest_presence`, and
+`switchboard`/`messenger.voice-presence-relay.v1`/`relay_presence`. The
+per-hop `control_nonce` SHALL be distinct from the end-to-end
+`attempt_nonce`; each SHALL be independently single-use.
+
+Each principal SHALL run in an isolated signer process. The canonical
+deployment supervisor SHALL give only the matching daemon object a
+pre-connected, close-on-exec
+signer handle with fixed issuer/audience/action authority; the signer protocol
+SHALL accept only canonical payload digest and timing/nonce material, SHALL NOT
+be an MCP/HTTP endpoint, and SHALL NOT be inherited by an LLM/runtime child.
+Only the signer process SHALL receive its strict document at
+`/run/secrets/voice_control_signing_key`; verifier processes SHALL receive peer
+public keys at `/run/secrets/voice_control_verifiers`. No private key SHALL
+enter the all-butlers daemon process, another signer, an LLM/runtime child, an
+environment variable, dynamic discovery, or the generic Secrets surface.
+Missing, malformed, permission-unsafe,
+mismatched, or not-yet-valid material SHALL leave voice unavailable. Rotation
+SHALL install current-plus-retiring verifier keyrings and restart/verify every
+receiver before signer-sidecar cutover, bound retiring-key signing to cutover
+and
+acceptance to `accept_until`, and remove the retiring verifier on a later
+restart. For cutover `T`, `current.sign_from` SHALL equal
+`retiring.sign_until == T`; the retiring signer SHALL issue only with
+`iat <= T`, the current signer only with `iat >= T`, and
+`retiring.accept_until` SHALL be within `[T+15s, T+60s]`. A verifier SHALL
+reject the retiring key after `accept_until` even before restart. This
+candidate SHALL NOT authorize production key provisioning or activation.
+
+The signer document SHALL be strict JSON containing only `version: 1`,
+`alg: "EdDSA"`, `issuer`, `kid`, unpadded base64url raw 32-byte
+`private_key_b64u`, `sign_from`, and nullable `sign_until`. The verifier
+document SHALL be strict JSON with `version: 1` and one entry per expected
+issuer, each with one `current` key and at most one `retiring` key carrying
+`alg`, `kid`, unpadded base64url raw 32-byte `public_key_b64u`, `sign_from`,
+and, for a retiring key, `sign_until` and `accept_until`. Unknown fields,
+duplicate issuers/key IDs, signer/verifier public-key or time-bound mismatch,
+or a private signer file readable by group/world SHALL fail voice closed. A
+public verifier file writable by group/world SHALL also fail voice closed.
+
+For presence, Messenger SHALL sign the request to Switchboard; Switchboard
+SHALL verify/consume it and sign its exact digest to Home; Home SHALL
+verify/consume that request and sign the nonce/version-bound result to
+Messenger; and Switchboard SHALL verify Home then relay the unchanged Home JWS
+inside a Switchboard-signed envelope whose digest covers it. Messenger SHALL
+verify and consume both signatures before using the result.
+
 ID: REQ-messenger-voice-egress-001
 Source: bu-7exe4.13 owner policies; RFC 0034 D1-D2
 Scope: owner-approval-required
@@ -35,6 +102,24 @@ Scope: owner-approval-required
 - **THEN** Messenger SHALL return terminal `invalid_origin`
 - **AND** it SHALL NOT read endpoint or presence state, contact Home, contact a provider, or create a fallback
 
+#### Scenario: Missing or wrong service key fails closed
+
+- **WHEN** `voice_origin.v1` or any presence-control hop has no capability, an unknown `kid`, a wrong issuer/audience/action/digest, or an invalid signature
+- **THEN** the receiver SHALL reject it before body parsing, durable route lookup, endpoint/presence state, provider access, or fallback
+- **AND** no caller-asserted service identity or unsigned MCP path SHALL substitute
+
+#### Scenario: Consumed capability cannot replay across restart
+
+- **WHEN** a previously consumed valid capability is presented again before or after the receiver restarts
+- **THEN** the durable nonce receipt SHALL reject it before protected work
+- **AND** the receiver SHALL NOT repeat route, presence, provider, or fallback effects
+
+#### Scenario: Restart and key rotation fail voice closed
+
+- **WHEN** a signer sidecar or verifier restarts with missing, unsafe, mismatched, not-yet-valid, or expired key material
+- **THEN** voice control SHALL remain unavailable without unsigned or bearer fallback while existing non-voice channels remain unchanged
+- **AND** during rotation the new signer SHALL issue only after every receiver reports the new `kid` issuable, while the retiring key SHALL be rejected after `accept_until`
+
 #### Scenario: Live Listener cannot perform egress
 
 - **WHEN** Live Listener captures, detects, or transcribes audio
@@ -44,10 +129,16 @@ Scope: owner-approval-required
 ### Requirement: Voice providers are evidence-gated and local-first
 
 Messenger SHALL consider provider profiles in this order only: a real local
-Wyoming/satellite TTS-plus-speaker adapter, then an authenticated Home/HA path
-that satisfies RFC 0028 where applicable, else unavailable. Cloud TTS SHALL
-NOT be admissible. ASR, VAD, a protocol listener, or a speaker entity alone
-SHALL NOT constitute voice-egress evidence.
+Wyoming/satellite TTS-plus-speaker adapter, then unavailable. Home/HA SHALL
+remain inadmissible under the current RFC 0028 because it does not define the
+speech-content handoff, the protected-action approval delay followed by fresh
+DND/presence evaluation, the mapping from Home's receipt outcomes to the five
+voice adapter outcomes, or this contract's content-blind persistence boundary.
+No Home/HA evidence artifact SHALL become admissible until a separate accepted
+RFC 0028 amendment defines those wire, risk, approval, receipt, freshness, and
+persistence seams. Home presence attestation SHALL NOT authorize Home
+actuation. Cloud TTS SHALL NOT be admissible. ASR, VAD, a protocol listener, or
+a speaker entity alone SHALL NOT constitute voice-egress evidence.
 
 A server-held provider profile SHALL be `admissible` only when an exact,
 content-blind evidence artifact proves authentication and target binding,
@@ -64,9 +155,15 @@ Scope: owner-approval-required
 
 #### Scenario: Local provider is considered first
 
-- **WHEN** both a local Wyoming/satellite profile and an authenticated Home/HA profile have evidence artifacts
-- **THEN** Messenger SHALL evaluate the local profile first
-- **AND** it SHALL use Home/HA only if no local profile is admissible
+- **WHEN** a local Wyoming/satellite profile has an evidence artifact
+- **THEN** Messenger SHALL evaluate that local profile
+- **AND** it SHALL remain unavailable if the local profile is inadmissible
+
+#### Scenario: Current RFC 0028 cannot admit Home voice
+
+- **WHEN** a Home/HA TTS service or evidence artifact is proposed under the current RFC 0028
+- **THEN** Messenger SHALL reject that provider profile as inadmissible
+- **AND** Home SHALL receive no speech content or actuation request from this voice path
 
 #### Scenario: Ingress evidence is insufficient
 
@@ -136,10 +233,11 @@ used as voice device registries.
 
 Registry mutations SHALL require the adopted fail-closed owner-authentication
 boundary, server-derived actor attribution, atomic version/CAS semantics, and
-content-blind audit evidence. A delivery SHALL bind the exact active version
-observed when its logical claim is created. A concurrent disable, retirement,
-or rebind SHALL either win before provider start or leave the claimed delivery
-on its original version; it SHALL NOT redirect it silently.
+content-blind audit evidence. After the stable logical claim is created, its
+generation SHALL pin the exact active binding version observed under CAS. A
+concurrent disable, retirement, or rebind SHALL either win before provider
+start or leave the claimed delivery on its original version; it SHALL NOT
+redirect it silently.
 
 ID: REQ-messenger-voice-egress-004
 Source: bu-7exe4.13 owner policies; RFC 0034 D3
@@ -174,12 +272,15 @@ After binding resolution and before provider claim, Messenger SHALL request one
 `voice_presence_attest.v1` from Home through Switchboard. The request SHALL
 carry only the opaque room reference, binding version, and a single-use attempt
 nonce. Home SHALL derive the result from its own authoritative local snapshot
-and return an authenticated categorical attestation bound to those values.
+and return the nested Home-and-Switchboard signed categorical attestation
+required by REQ-messenger-voice-egress-001, bound to those values.
 
 Messenger SHALL authorize presence only when the result is `owner_present`,
 all required room evidence agrees, the newest source observation is no more
 than 60 seconds old, Home issued the attestation no more than 5 seconds before
-consumption, binding version and nonce match, and the nonce has not been used.
+the provider-handoff claim, both received service capabilities verify, binding
+version and attempt nonce match, and the outer/inner control nonces and attempt
+nonce have not been used.
 Missing, stale, unavailable, unconfigured, `owner_absent`, `unknown`, or
 conflicting evidence SHALL fail closed. VAD, recent speech, request recency,
 generic `at_home`, or presence in another room SHALL NOT substitute. Messenger
@@ -204,7 +305,7 @@ Scope: owner-approval-required
 
 #### Scenario: Stale evidence fails closed
 
-- **WHEN** the newest required observation is older than 60 seconds or the attestation is older than 5 seconds at consumption
+- **WHEN** the newest required observation is older than 60 seconds or the attestation is older than 5 seconds at the provider-handoff claim
 - **THEN** Messenger SHALL terminate `no_presence` even if the last known value was `owner_present`
 
 #### Scenario: Presence cannot be replayed or inferred
@@ -212,6 +313,12 @@ Scope: owner-approval-required
 - **WHEN** an attestation nonce is reused, its binding version differs, or only VAD/recent speech/generic home presence is available
 - **THEN** Messenger SHALL reject the attestation
 - **AND** it SHALL request no provider handoff
+
+#### Scenario: Caller-forged Home attestation fails closed
+
+- **WHEN** a categorical presence result lacks either the valid Home signature or the valid Switchboard relay signature, or either signed digest differs
+- **THEN** Messenger SHALL terminate `no_presence` before provider handoff
+- **AND** a caller-asserted `owner_present` value SHALL carry no authority
 
 ### Requirement: DND and quiet hours always suppress voice
 
@@ -272,6 +379,17 @@ settlement proof, or `unknown_after_handoff` SHALL produce `ambiguous`. Neither
 `failed` nor `ambiguous` SHALL be automatically or caller-retried for the same
 logical key.
 
+`presence_authorized` SHALL be persisted only as an audit milestone and SHALL
+NOT be reusable authorization. Messenger SHALL persist a distinct fenced
+provider-handoff marker immediately before dispatch. Recovery of
+`presence_authorized` without that marker SHALL prove that no provider dispatch
+was attempted and SHALL NOT become `ambiguous`; before continuing on the pinned
+binding, recovery SHALL re-read current DND/quiet authority and obtain a newly
+signed Home attestation under a new nonce. The provider-handoff marker SHALL be
+claimable only while that replacement attestation is no more than five seconds
+old. Recovery at or after the marker SHALL be `ambiguous` absent definitive
+`rejected_before_start` evidence.
+
 ID: REQ-messenger-voice-egress-007
 Source: bu-7exe4.13 owner policies; RFC 0034 D7
 Scope: owner-approval-required
@@ -300,15 +418,24 @@ Scope: owner-approval-required
 - **THEN** Messenger SHALL settle `failed`
 - **AND** it SHALL NOT retry speech because partial or complete playback may already have occurred
 
+#### Scenario: Pre-handoff crash requires fresh authorization
+
+- **WHEN** recovery finds persisted `presence_authorized` with no provider-handoff marker
+- **THEN** it SHALL keep the pinned binding but re-evaluate current DND/quiet state and request a newly signed Home attestation with a new nonce
+- **AND** it SHALL claim no handoff from the old attestation and SHALL terminate `quiet` or `no_presence` if either fresh gate fails
+
 ### Requirement: Logical delivery idempotency prevents duplicate speech
 
-Before provider handoff, Messenger SHALL atomically claim a logical key that is
-a server-keyed digest of authenticated origin request id, intent, selected
-opaque endpoint reference, and binding version. Concurrent workers SHALL
-produce at most one provider start for that key. Replay of `confirmed` SHALL
-return the existing receipt. Replay of `provider_started`, `failed`, or
-`ambiguous` SHALL return the existing non-retryable terminal truth without
-another handoff.
+After lineage verification and before current binding resolution, Messenger
+SHALL look up or atomically claim a stable logical key that is a server-keyed
+digest of contract version, authenticated canonical origin request id, and
+intent. Selected endpoint reference and binding version SHALL be immutable
+receipt fields for each claimed generation and SHALL NOT be logical-key inputs.
+Concurrent workers SHALL produce at most one provider start for that key.
+Replay of `confirmed` SHALL return the existing receipt. Replay of
+`provider_started`, `failed`, or `ambiguous` SHALL return the existing
+non-retryable terminal truth without resolving a new binding, requesting
+presence, or creating another handoff.
 
 The system SHALL NOT schedule voice retries. A later explicit replay MAY claim
 a new generation only from `safe_retry`; it SHALL rerun lineage, provider,
@@ -336,6 +463,18 @@ Scope: owner-approval-required
 - **WHEN** an ambiguous logical delivery is replayed by a caller, scheduler, recovery path, or crash scan
 - **THEN** Messenger SHALL return the existing ambiguous truth
 - **AND** it SHALL NOT create a new provider handoff
+
+#### Scenario: Rebind cannot bypass confirmed replay tombstone
+
+- **WHEN** an owner has replaced the endpoint binding version after a logical delivery reached `confirmed` and that origin request is replayed
+- **THEN** the stable logical key SHALL resolve the existing receipt and its originally selected binding version
+- **AND** Messenger SHALL NOT resolve the replacement binding, request presence, or hand off speech again
+
+#### Scenario: Rebind cannot bypass failed or ambiguous tombstone
+
+- **WHEN** an owner has replaced the endpoint binding version after a logical delivery reached `failed` or `ambiguous` and that origin request is replayed
+- **THEN** the stable logical key SHALL resolve the existing non-retryable terminal truth and its originally selected binding version
+- **AND** Messenger SHALL NOT create a new generation or provider handoff
 
 #### Scenario: Explicit safe retry reruns every gate
 
@@ -398,14 +537,20 @@ credentials, and provider error bodies SHALL remain memory-only and SHALL NOT
 be written by the voice path to a database, blob store, audit event, log,
 metric, or trace.
 
-The voice receipt SHALL contain only keyed logical/endpoint digests, binding
-version, categorical states/reasons, provider profile version, timestamps,
+The voice receipt SHALL contain only keyed logical/endpoint digests, selected
+binding version for each generation, categorical states/reasons, provider
+profile version, timestamps,
 claim generation, and separately keyed fallback outcome. Detailed transition
 rows SHALL expire after 30 days. A minimal replay tombstone containing logical
-digest, terminal replay class, and binding version SHALL have no automatic
-expiry so cleanup cannot erase at-most-once truth. Destructive owner-authorized
+digest, terminal replay class, and selected binding version SHALL have no
+automatic expiry so cleanup cannot erase at-most-once truth. Destructive owner-authorized
 tombstone removal SHALL first disable voice globally and warn that the replay
 guarantee is being removed.
+
+A control-capability replay receipt SHALL contain only issuer, audience,
+action, `kid`, nonce digest, expiry, and consumed-at time and SHALL expire after
+the capability's expiry-plus-skew replay window. It SHALL NOT contain the raw
+nonce, signature, payload, payload digest, message digest, or protected body.
 
 Metrics SHALL use only bounded state, reason, provider profile class, presence
 freshness class, and fallback outcome labels. IDs, keyed digests, nonces,

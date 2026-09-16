@@ -45,6 +45,15 @@ boundaries before any implementation or provider experiment begins.
 - Home owns presence facts and any Home Assistant actuation. Messenger owns
   endpoint binding, delivery state, provider handoff truth, and fallback
   intent. Switchboard owns authenticated lineage and fallback resolution.
+- The candidate voice control plane uses distinct isolated Ed25519 signer
+  processes, fixed-purpose non-inheritable handles, immutable verifier
+  keyrings, and durable nonce consumption;
+  caller-asserted route identity is never authority. This draft does not
+  authorize production key provisioning or activation.
+- Home/HA voice actuation remains inadmissible under current RFC 0028. Home is
+  presence-only until a separate accepted RFC amendment defines the approval,
+  speech handoff, receipt mapping, freshness, and content-blind persistence
+  seam.
 - No generic Messenger delivery tracker is restored. Voice uses a narrow,
   channel-specific physical-side-effect receipt and replay fence.
 - No cloud TTS, proactive voice, VAD-as-presence, deferred voice, coalesced

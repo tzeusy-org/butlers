@@ -23,9 +23,9 @@ RFC 0028 remain binding.
 
 | Component | Owns | Explicitly does not own |
 |---|---|---|
-| Switchboard | Authenticated service/origin lineage, durable route witness, fallback target resolution and one-fallback key | Endpoint registry, presence facts, physical outcome |
+| Switchboard | Cryptographically authenticated service/origin lineage, durable route witness, broker-hop verification, fallback target resolution and one-fallback key | Endpoint registry, presence facts, physical outcome |
 | Messenger | Opaque endpoint/binding versions, admissible provider selection, policy/presence orchestration, handoff truth, voice receipt/replay fence, fallback intent | Ingress capture, Home facts, direct Home schema/calls, contact/device inference |
-| Home | Room-specific presence facts and categorical attestation; HA actuation under RFC 0028 if that provider is admitted | Voice target selection, message content, delivery retry |
+| Home | Room-specific presence facts and a cryptographically authenticated categorical attestation | Voice target selection, message content, delivery retry, or voice actuation under the current RFC 0028 contract |
 | Live Listener | Microphone capture, VAD/ASR, normalized `ingest.v1` submission | TTS, presence authority, endpoint selection, speaker/provider calls |
 | Provider adapter | One exact start/confirm/no-start/unknown interface for a server-held profile | Policy, target inference, retries, fallback |
 
@@ -50,6 +50,100 @@ changes this order.
 
 ## Wire contracts
 
+### Voice control-plane service authentication
+
+Voice control messages use a dedicated `voice-control.v1` compact JWS
+capability, signed with Ed25519 (`alg=EdDSA`). MCP reachability, TLS/network
+location, `request_context.source_endpoint_identity`, `origin_butler`, or any
+other caller field is not service authentication. Every capability fixes the
+algorithm and binds `kid`, exact issuer and audience, contract/action, a
+canonical payload digest, a 256-bit random nonce, integer `iat`, and `exp`,
+with `0 < exp - iat <= 10 seconds` and at most five seconds of clock skew. A
+receiver resolves `kid` only in its immutable deployment keyring; token-selected
+algorithms, dynamic key URLs, unknown issuers/audiences, wrong signatures, and
+missing capabilities fail before body parsing or protected state access.
+
+Switchboard, Messenger, and Home each have a distinct service principal backed
+by an isolated signer process. The canonical deployment supervisor gives the corresponding
+daemon object only a pre-connected, close-on-exec signer handle whose issuer,
+audience, and allowed actions are fixed by that handle; the signing protocol
+accepts only a canonical payload digest and timing/nonce material. It is not an
+MCP/HTTP endpoint and the handle is never inherited by a spawned LLM/runtime
+child. The operator provisions the signer's strict document as that isolated
+process's only deployment secret at
+`/run/secrets/voice_control_signing_key`; verifier processes receive peer
+public keys at `/run/secrets/voice_control_verifiers`. Private keys never enter
+the all-butlers daemon process, another signer, an LLM/runtime child,
+environment variables, the generic Secrets surface, or dynamic discovery.
+Each receiver atomically claims the
+`(issuer, audience, nonce_digest)` in its own durable receipt store before
+protected work and retains that claim beyond `exp` plus skew, so a valid
+capability cannot be replayed across a process restart. Raw nonce, signature,
+and signed control envelope are not persisted or emitted to telemetry.
+
+The signer document is strict JSON with only `version: 1`, `alg: "EdDSA"`,
+`issuer`, `kid`, unpadded base64url raw 32-byte `private_key_b64u`,
+`sign_from`, and nullable `sign_until`. The public verifier document is strict
+JSON with `version: 1` and one entry per expected issuer; each entry has one
+`current` key and at most one `retiring` key containing `alg`, `kid`, unpadded
+base64url raw 32-byte `public_key_b64u`, `sign_from`, and, for retiring keys,
+`sign_until` and `accept_until`. Unknown fields, duplicate issuers or key IDs,
+and a signer whose derived public key or time bounds do not match its verifier
+entry are invalid. Private signer files must be owned by and readable only by
+the service account; group/world access is permission-unsafe.
+
+The protected header is exactly `alg`, `kid`, and
+`typ: "voice-control+jws"`. The signed claims are exactly `iss`, `aud`,
+`action`, `contract_version`, `payload_sha256`, `control_nonce`, `iat`, and
+`exp`; `payload_sha256` is unpadded base64url SHA-256 of UTF-8 RFC 8785
+canonical JSON. Allowed issuer/audience/action triples are fixed:
+
+| Issuer | Audience | Action |
+|---|---|---|
+| `switchboard` | `messenger.voice-origin.v1` | `dispatch_origin` |
+| `messenger` | `switchboard.voice-presence.v1` | `request_presence` |
+| `switchboard` | `home.voice-presence.v1` | `broker_presence` |
+| `home` | `messenger.voice-presence.v1` | `attest_presence` |
+| `switchboard` | `messenger.voice-presence-relay.v1` | `relay_presence` |
+
+The per-hop `control_nonce` is distinct from the end-to-end
+`attempt_nonce`; all control nonces and the attempt nonce are independently
+single-use.
+
+The brokered presence exchange authenticates every hop:
+
+1. Messenger signs the presence request for the Switchboard audience;
+2. Switchboard verifies and consumes it, then signs the exact payload digest
+   for Home;
+3. Home verifies and consumes the broker capability, then signs its result for
+   Messenger, bound to the request nonce, room token, and binding version;
+4. Switchboard verifies Home's result and relays it byte-for-byte inside a new
+   Switchboard-signed envelope whose digest covers the Home JWS; and
+5. Messenger verifies and consumes both the outer Switchboard capability and
+   the inner Home capability before considering the categorical result.
+
+`voice_origin.v1` is likewise carried as a Switchboard-signed capability for
+Messenger. A generic `route.execute` call whose caller asserts `switchboard`
+without that capability has no voice authority.
+
+Signer-sidecar and verifier snapshots are validated once at process startup
+and remain
+immutable until restart. Missing, malformed, permission-unsafe, mismatched, or
+not-yet-valid material makes only the voice control plane unavailable; it does
+not fall back to caller identity, bearer tokens, or unsigned MCP. Rotation is
+two phase: deploy a public keyring containing distinct current and retiring
+keys to every verifier and restart them; confirm content-blind readiness for
+the new `kid`; install and restart each matching signer sidecar at cutover; accept the
+retiring key only for capabilities issued before cutover and only through its
+bounded `accept_until`; then remove it and restart verifiers. For cutover `T`,
+`current.sign_from == retiring.sign_until == T`, the retiring signer may issue
+only with `iat <= T`, the current signer only with `iat >= T`, and
+`retiring.accept_until` is in `[T+15s, T+60s]` so every pre-cutover capability
+can finish its ten-second lifetime plus five-second skew without leaving a
+long-lived overlap. Verifiers reject the retiring key after `accept_until`
+even if an old immutable snapshot remains mounted. No production key
+provisioning, mount activation, or rotation is authorized by this draft.
+
 ### `voice_origin.v1`
 
 Switchboard attaches this assertion on its authenticated route to Messenger:
@@ -68,8 +162,9 @@ Switchboard attaches this assertion on its authenticated route to Messenger:
 }
 ```
 
-The assertion is transport-authenticated and matched to Switchboard's durable
-route record. The JSON fields alone carry no authority. A reply has
+The assertion is carried in the consumed Switchboard-to-Messenger
+`voice-control.v1` capability and matched to Switchboard's durable route
+record. The JSON fields alone carry no authority. A reply has
 `reply_lineage_ref` and no caller-selected endpoint; a send has one explicit
 `endpoint_ref`. Raw mic, room, contact, provider, or device ids are invalid.
 
@@ -86,7 +181,7 @@ Messenger asks Home through Switchboard using an opaque room token:
 }
 ```
 
-Home returns a transport-authenticated categorical result:
+Home returns a categorical result inside the authenticated nested relay above:
 
 ```json
 {
@@ -101,10 +196,10 @@ Home returns a transport-authenticated categorical result:
 ```
 
 Only `owner_present` with agreeing evidence at most 60 seconds old and an
-attestation consumed within 5 seconds authorizes the attempt. The nonce and
-binding version must match and are single-use. Messenger persists only the
-result/freshness category. The attestation body and Home's raw evidence are
-discarded.
+attestation no more than 5 seconds old at the provider-handoff claim authorizes
+the attempt. Both signed hops, the attempt nonce, and the binding version must
+match and be single-use. Messenger persists only the result/freshness category.
+The attestation body, signatures, and Home's raw evidence are discarded.
 
 ### Provider adapter result
 
@@ -131,17 +226,30 @@ own adapter/configuration stores. Neither `public.entity_info` nor relationship
 facts may represent speakers, rooms, or provider targets.
 
 Mutations are owner-authenticated, server-attributed, atomic, version-CAS, and
-content-blind in audit/telemetry. A claimed attempt pins one binding version.
-A rebind either commits before claim or affects only later attempts.
+content-blind in audit/telemetry. After the stable logical claim, a claimed
+generation pins one binding version under CAS. A rebind either wins before that
+pin or affects only later logical deliveries and eligible safe-retry
+generations; it never changes the key or result of a confirmed, failed, or
+ambiguous delivery.
 
 ## Provider policy
 
 Candidate order is fixed: a real local Wyoming/satellite TTS-plus-speaker
-adapter, then authenticated Home/HA, else unavailable. A profile is admissible
-only through an exact content-blind artifact covering authentication, physical
-target binding, start boundary, completion proof, failure/ambiguity mapping,
-latency, data egress, and credential ownership. Working ASR/VAD or a protocol
-port does not prove egress. Cloud TTS is prohibited.
+adapter, then unavailable. Home/HA remains a named second candidate but is
+currently inadmissible: RFC 0028 does not define how speech content reaches an
+HA service without durable requested/observed content, how its protected-action
+approval delay re-runs current DND and obtains a new five-second presence
+attestation, or how its `succeeded`/`failed`/`unverified` receipt maps to this
+RFC's five adapter results. No evidence artifact may admit a Home/HA voice
+profile until a separate accepted RFC 0028 amendment defines those wire, risk,
+approval, receipt, freshness, and content-blind persistence seams. Home's
+presence role does not authorize Home actuation.
+
+A local provider profile is admissible only through an exact content-blind
+artifact covering authentication, physical target binding, start boundary,
+completion proof, failure/ambiguity mapping, latency, data egress, and
+credential ownership. Working ASR/VAD or a protocol port does not prove
+egress. Cloud TTS is prohibited.
 
 Mixed versions fail closed: Switchboard dispatches provider-capable voice only
 when Messenger advertises `messenger-voice-egress.v1` and the selected profile
@@ -181,10 +289,14 @@ post-handoff terminal:
 confirmed | failed | ambiguous
 ```
 
-The logical key is a server-keyed digest of authenticated origin request id,
-intent, endpoint reference, and binding version. Messenger atomically claims
-it before handoff and fences transitions by claim generation. Concurrent
-duplicates cross the provider start boundary at most once.
+The stable logical key is a server-keyed digest of contract version,
+authenticated canonical origin request id, and intent. Resolved endpoint and
+binding version are immutable receipt fields for the claimed generation, never
+logical-key inputs. Messenger looks up or atomically claims the stable key
+after lineage verification and before current binding resolution; therefore a
+rebind cannot route around an existing confirmed, failed, or ambiguous receipt
+or tombstone. Concurrent duplicates cross the provider start boundary at most
+once.
 
 Confirmed replay returns its receipt. Started, failed, and ambiguous replays
 return existing truth and never speak again. Safe retry exists only with
@@ -192,6 +304,17 @@ definitive `rejected_before_start` evidence. It is never scheduled; a later
 explicit replay creates a new generation, reruns every current gate and uses a
 new presence nonce. Across generations, only one may ever reach
 `provider_started`.
+
+`presence_authorized` is a persisted audit milestone, not reusable authority.
+The provider-handoff claim is a distinct durable marker written immediately
+before dispatch. Recovery of a row that reached `presence_authorized` but has
+no provider-handoff marker proves no provider dispatch was attempted; it is not
+ambiguous. Before continuing, the recovering worker keeps the pinned binding,
+re-evaluates current DND/quiet policy, invalidates the old presence authority,
+and obtains a newly signed Home attestation under a new nonce. The handoff
+marker may be claimed only while that replacement attestation is at most five
+seconds old. A crash at or after the handoff marker remains ambiguous unless
+the provider supplies definitive no-start evidence.
 
 ## One text-only non-voice fallback
 
@@ -212,9 +335,15 @@ text quiet-hours handling may defer the fallback without deferring voice.
 
 The voice path never persists or emits message text, generated audio/PCM/TTS,
 provider bodies/errors, raw presence or attestations, native room/device ids,
-or credentials. The receipt contains keyed logical/endpoint digests, binding
-version, categorical state/reason, provider profile version, timestamps, claim
-generation, and separately keyed fallback outcome.
+or credentials. The receipt contains keyed logical/endpoint digests, the
+immutable binding version selected for each generation, categorical
+state/reason, provider profile version, timestamps, claim generation, and
+separately keyed fallback outcome.
+
+A control-capability replay receipt stores only issuer, audience, action,
+`kid`, nonce digest, expiry, and consumed-at time, and expires after the
+capability's expiry-plus-skew replay window. It never stores the raw nonce,
+signature, payload, payload digest, message digest, or protected body.
 
 Detailed transitions expire after 30 days. A minimal logical digest, terminal
 replay class, and binding version tombstone has no automatic expiry so cleanup
@@ -247,6 +376,9 @@ another channel.
   revives a retired surface.
 - Direct Messenger-to-Home calls or schema reads: violates RFC 0003 and project
   doctrine.
+- Home/HA voice before an accepted RFC 0028 amendment: the current contract
+  cannot reconcile protected-action approval, fresh DND/presence, receipt
+  categories, and content-blind persistence.
 - Cloud TTS fallback: violates local-first/data-egress scope.
 
 ## Requirement traceability

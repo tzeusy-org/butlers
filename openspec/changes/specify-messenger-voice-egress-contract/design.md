@@ -53,6 +53,35 @@ service path and verifies it against Switchboard's durable routing record. The
 model-visible `origin_butler`, `request_context`, endpoint reference, mic id,
 room id, headers, or tool arguments never authenticate themselves.
 
+The voice control plane does not inherit authentication from generic
+`route.execute`. Switchboard, Messenger, and Home each use a distinct isolated
+Ed25519 signer process reached only through the matching daemon object's
+pre-connected, close-on-exec, fixed-purpose handle. Private material never
+enters the all-butlers or model/runtime process; verifier keyrings are public
+deployment material. Each
+`voice-control.v1` compact JWS fixes `alg=EdDSA` and binds `kid`, exact issuer
+and audience, action/contract, canonical payload digest, 256-bit nonce, `iat`,
+and an expiry no more than ten seconds later. Payload digests use SHA-256 over
+UTF-8 RFC 8785 canonical JSON; the fixed issuer/audience/action tuples in RFC
+0034 make every signature single-purpose. The receiver resolves keys only
+from its immutable startup snapshot, atomically consumes the nonce in a durable
+receipt before protected work, and rejects absent/wrong keys, wrong
+issuer/audience/action/digest, expired/future capabilities, and nonce replay
+before parsing the protected body. Caller fields, network location, bearer
+fallbacks, dynamic key URLs, generic Secrets, and model/runtime children carry
+no service authority.
+
+For presence, Messenger signs to Switchboard, Switchboard verifies and signs
+the exact request digest to Home, Home signs the nonce/version-bound result to
+Messenger, and Switchboard verifies then relays the unchanged Home JWS under a
+new Switchboard signature. Messenger requires both signatures. Startup with a
+missing, invalid, permission-unsafe, or mismatched signer/keyring leaves voice
+unavailable. Rotation installs current-plus-retiring verifier keyrings and
+restarts/verifies all receivers before signer-sidecar cutover, bounds old signing to
+the cutover and old acceptance to `accept_until`, and removes the retiring key
+on a later verifier restart. This design authorizes no production key mount or
+rotation.
+
 For a voice reply, the authoritative inbound lineage must identify Live
 Listener as the ingress connector and resolve through the active binding
 version from opaque inbound endpoint reference to opaque room and voice
@@ -82,18 +111,25 @@ traces. The registry is not `public.entity_info`. Mutations require the adopted
 owner-authentication boundary, server-derived actor attribution, version/CAS
 semantics, and content-blind audit evidence.
 
-Each delivery is bound to the exact active binding version observed at claim
-time. A concurrent disable, retire, or rebind wins before provider start or the
-attempt is rejected. It cannot silently redirect an already-claimed logical
-delivery.
+After the stable logical delivery is claimed, its generation is bound under
+CAS to the exact active binding version then observed. A concurrent disable,
+retire, or rebind wins before provider start or the attempt is rejected. It
+cannot silently redirect an already-claimed logical delivery.
 
 ## D4: Evidence-gated local-first provider interface
 
 The provider order is policy, not discovery:
 
 1. a real local Wyoming/satellite TTS-plus-speaker adapter;
-2. an authenticated Home/HA path conforming to RFC 0028 where applicable; or
-3. unavailable.
+2. unavailable.
+
+Home/HA remains a named future second candidate but is inadmissible under the
+current RFC 0028. That RFC does not define the speech-content handoff, the
+protected-action approval delay followed by a new DND/presence check, the
+mapping from Home's receipt outcomes to the five voice adapter results, or the
+content-blind persistence boundary required here. A separate accepted RFC 0028
+amendment must define all of those seams before any Home/HA profile can become
+admissible. Home's presence-attestation role is not actuation authority.
 
 Ingress ASR, VAD, a Wyoming protocol socket, or a speaker entity by itself is
 not egress evidence. A provider profile becomes `admissible` only after a
@@ -119,15 +155,16 @@ Messenger requests `voice_presence_attest.v1` from Home through Switchboard
 after endpoint/binding resolution and immediately before claiming provider
 handoff. The request carries an opaque room reference, binding version, and
 single-use attempt nonce. Home derives facts from its own authoritative local
-snapshot and returns a signed/authenticated categorical result bound to those
-values.
+snapshot and returns the nested Home-and-Switchboard signed categorical result
+defined in D2, bound to those values.
 
 An attestation is usable only when:
 
 - it says `owner_present`;
 - all required room evidence agrees;
 - the newest source observation is at most 60 seconds old;
-- Home issued the attestation at most 5 seconds before Messenger consumes it;
+- Home issued the attestation at most 5 seconds before Messenger claims
+  provider handoff;
 - the binding version and attempt nonce match; and
 - it has not been consumed by another attempt.
 
@@ -152,10 +189,12 @@ coalesced, burst-delivered, or replayed by a generic notification flusher.
 
 ## D7: Physical-side-effect state and replay fence
 
-The logical delivery key is a server-keyed digest of the authenticated origin
-request id, intent, selected endpoint reference, and binding version. Messenger
-atomically claims one row for that key before provider handoff. The state graph
-is:
+The stable logical delivery key is a server-keyed digest of the contract
+version, authenticated canonical origin request id, and intent. Endpoint and
+binding version are pinned receipt fields, not key inputs. Messenger looks up
+or atomically claims one row after lineage verification and before current
+binding resolution, so a rebind cannot evade an existing receipt or tombstone.
+The state graph is:
 
 ```text
 received
@@ -185,6 +224,15 @@ may claim a new generation only from `safe_retry`, rerun all policy, binding,
 and presence gates, and is still fenced to at most one eventual provider start.
 A timeout, reset, malformed provider response, crash after handoff, or lost
 settlement proof is `ambiguous`, never `safe_retry`.
+
+Persisted `presence_authorized` is evidence that the old check passed, not a
+capability a recovered worker may reuse. A separate durable handoff marker is
+claimed immediately before dispatch. When recovery finds
+`presence_authorized` without that marker, it knows no provider dispatch was
+attempted, preserves the pinned binding, reruns current DND/quiet policy, and
+obtains a newly signed Home attestation under a new nonce. Only a replacement
+attestation no more than five seconds old may support the handoff marker. A
+crash at or after that marker is ambiguous absent definitive no-start proof.
 
 ## D8: One linked text-only non-voice fallback, outside Messenger recursion
 
@@ -216,11 +264,12 @@ attestation payloads, native device/room ids, message text, and credentials are
 memory-only and are never written to a database, blob store, audit event, log,
 metric, or trace by the voice path.
 
-The voice receipt stores only keyed logical/endpoint digests, binding version,
-categorical states/reasons, provider profile version, timestamps, claim
+The voice receipt stores only keyed logical/endpoint digests, selected binding
+version, categorical states/reasons, provider profile version, timestamps, claim
 generation, and the separately keyed fallback outcome. Detailed transition
-rows expire after 30 days. A minimal replay tombstone containing the logical
-digest, terminal replay class, and binding version is retained without
+rows expire after 30 days. A minimal replay tombstone containing the stable
+logical digest, terminal replay class, and selected binding version is retained
+without
 automatic expiry so at-most-once truth survives cleanup. Owner-authorized
 destructive removal must first disable voice globally and warn that deleting a
 tombstone removes its replay guarantee.
