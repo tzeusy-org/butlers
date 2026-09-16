@@ -72,7 +72,7 @@ function summaryQueryAvailable(
   // the backend always emits it now, but this keeps an already-rendered page
   // from turning a compatible response into a fabricated outage.
   return (
-    summary?.query_availability.find((query) => query.query === queryName)?.state !==
+    summary?.query_availability?.find((query) => query.query === queryName)?.state !==
     "unavailable"
   );
 }
@@ -262,6 +262,8 @@ export default function ButlerLifestyleTasteTab() {
     data: summary,
     isLoading: summaryLoading,
     isError: summaryError,
+    isRefetchError: summaryRefetchError,
+    refetch: refetchSummary,
   } = useLifestyleTasteSummary();
 
   const {
@@ -279,11 +281,16 @@ export default function ButlerLifestyleTasteTab() {
   const verdictsUnavailable = verdictsError || (!verdictsLoading && verdictsResponse === undefined);
   const worksUnavailable = worksError || (!worksLoading && worksResponse === undefined);
   const summaryUnavailable =
-    summaryError || (!summaryLoading && (summary === undefined || !summary.ledger_available));
+    !summaryLoading && (summary === undefined || !summary.ledger_available);
   const unavailableSummaryQueries =
-    summary?.query_availability.filter((query) => query.state === "unavailable") ?? [];
+    summary?.query_availability?.filter((query) => query.state === "unavailable") ?? [];
   const summaryPartiallyUnavailable =
     !summaryUnavailable && unavailableSummaryQueries.length > 0;
+  const summaryStale =
+    !summaryLoading &&
+    summary !== undefined &&
+    summary.ledger_available &&
+    (summaryRefetchError || summaryError);
   const verdicts = verdictsResponse ? verdictsResponse.data : [];
   const works = worksResponse ? worksResponse.data : [];
 
@@ -311,6 +318,15 @@ export default function ButlerLifestyleTasteTab() {
               .join(", ")
           }
           testId="taste-summary-partial"
+        />
+      )}
+      {summaryStale && (
+        <SourceDegradedNote
+          label="Taste overview"
+          detail="last successful read is stale; refresh to confirm"
+          onRetry={() => void refetchSummary()}
+          retryLabel="Refresh"
+          testId="taste-summary-stale"
         />
       )}
 

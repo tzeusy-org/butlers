@@ -680,6 +680,9 @@ models are not additional backend response contracts.
   - A complete response with zero counts is a genuine empty ledger. The
     dashboard must not render a failed section's compatibility zero as a
     confirmed empty result.
+  - When the dashboard retains a last successful summary through a failed
+    background refetch, it labels those values stale and directs the owner to
+    refresh for confirmation; it does not present them as current or empty.
   - Failure status is content-blind: no SQL, exception text, credentials, or
     source payload crosses the API boundary.
 - `GET /api/lifestyle/taste/works` ->

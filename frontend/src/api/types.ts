@@ -10278,10 +10278,14 @@ export interface TasteSummary {
   recent_signals_7d: number;
   works_by_kind: Record<string, number>;
   signals_by_kind: Record<string, number>;
-  /** Complete, partial, or wholly unavailable summary coverage. */
-  availability: "complete" | "partial" | "unavailable";
-  /** Stable content-blind status for every summary query section. */
-  query_availability: TasteSummaryQueryAvailability[];
+  /**
+   * Complete, partial, or wholly unavailable summary coverage. The field is
+   * additive: cached or rolling-deploy responses produced before the status
+   * ledger remain usable as complete data.
+   */
+  availability?: "complete" | "partial" | "unavailable";
+  /** Stable content-blind status for every summary query section, when present. */
+  query_availability?: TasteSummaryQueryAvailability[];
   /** False only when every summary query failed, never for a genuine empty ledger. */
   ledger_available: boolean;
 }

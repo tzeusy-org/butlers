@@ -175,6 +175,15 @@ ledger from unavailable evidence.
 - **AND** the response SHALL never claim that zero counts or empty groups are
   a genuine empty ledger
 
+#### Scenario: Cached summary remains honestly stale after a refetch failure
+
+- **WHEN** the dashboard retains a last successful taste summary while a
+  background refetch fails
+- **THEN** it SHALL identify the displayed summary as stale and direct the
+  owner to refresh for confirmation
+- **AND** it SHALL not present the cached values as current, initial absence,
+  or a genuine empty ledger
+
 #### Scenario: Summary degradation is content-blind at the dashboard boundary
 
 - **WHEN** a taste-summary query is unavailable
