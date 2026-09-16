@@ -4739,7 +4739,7 @@ export default function CalendarWorkspacePage() {
   useRegisterShortcut(calendarShortcuts);
 
   return (
-    <div className="flex h-full flex-col overflow-hidden">
+    <div className="flex h-full flex-col overflow-hidden" data-shell-scroll-owner="route">
       {/* Masthead */}
       <header className="flex flex-wrap items-end justify-between gap-x-6 gap-y-4 pb-5">
         <div className="min-w-0">

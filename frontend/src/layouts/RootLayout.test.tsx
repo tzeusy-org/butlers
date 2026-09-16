@@ -4,11 +4,18 @@ import type { ReactNode } from "react"
 import { act, cleanup, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-const { mockAnnounce, mockPageHeader, mockShell, mockFloatingChatWidget } = vi.hoisted(() => ({
+const {
+  mockAnnounce,
+  mockPageHeader,
+  mockShell,
+  mockFloatingChatWidget,
+  mockShellScrollMemory,
+} = vi.hoisted(() => ({
   mockAnnounce: vi.fn(),
   mockPageHeader: vi.fn(),
   mockShell: vi.fn(),
   mockFloatingChatWidget: vi.fn(),
+  mockShellScrollMemory: vi.fn(),
 }))
 
 let mockHealth: "healthy" | "late" | "down" = "healthy"
@@ -77,6 +84,9 @@ vi.mock("../lib/page-context", () => ({
   PageContextProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
 }))
 vi.mock("../hooks/use-keyboard-shortcuts", () => ({ useKeyboardShortcuts: () => undefined }))
+vi.mock("../hooks/use-shell-scroll-memory", () => ({
+  useShellScrollMemory: mockShellScrollMemory,
+}))
 vi.mock("../components/ui/shortcut-hints", () => ({ ShortcutHints: () => null }))
 vi.mock("../lib/event-bus", () => ({
   EventBusProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
@@ -104,6 +114,7 @@ afterEach(() => {
   mockPageHeader.mockClear()
   mockShell.mockClear()
   mockFloatingChatWidget.mockClear()
+  mockShellScrollMemory.mockClear()
   mockHealth = "healthy"
   mockClientLinkStatus = "online"
   mockIsXlViewport = false
@@ -111,6 +122,12 @@ afterEach(() => {
 })
 
 describe("RootLayout", () => {
+  it("mounts shell scroll memory below the persistent shell", () => {
+    render(<RootLayout />)
+
+    expect(mockShellScrollMemory).toHaveBeenCalledOnce()
+  })
+
   it("renders a visible-on-focus skip link before routed content", () => {
     render(<RootLayout />)
 

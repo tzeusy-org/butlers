@@ -54,6 +54,11 @@ graph TB
   and main are flex siblings, no underlap). The gutter ramps at the canonical
   phone, tablet (`768px`), and desktop (`1024px`) bands. Page wrappers inherit
   this gutter rather than adding a second outer padding layer.
+- RootLayout mounts `useShellScrollMemory` below Shell. It keys the persistent
+  main offset by React Router's history location key, resets it on PUSH, and
+  restores it on POP after content height is available. Calendar and chat roots
+  opt out because their time grid/message thread own the inner scroll surface;
+  reloads intentionally start at the top.
 
 This is the only persistent chrome. Pages do not own anything outside
 their `Outlet` rectangle.
