@@ -235,7 +235,10 @@ async function updateWebhook(
     });
     return body.data as WebhookWithSecret;
   } catch (err) {
-    rethrowLegacyMutationError(err, (status) => `PUT /api/webhooks/${id} failed: ${status}`);
+    rethrowLegacyWebhookMutationError(
+      err,
+      (status) => `PUT /api/webhooks/${id} failed: ${status}`,
+    );
   }
 }
 
@@ -276,6 +279,21 @@ function rethrowLegacyMutationError(
     throw new Error(fallback(error.status));
   }
   throw error;
+}
+
+function rethrowLegacyWebhookMutationError(
+  error: unknown,
+  fallback: (status: number) => string,
+): never {
+  if (
+    isHttpApiError(error) &&
+    error.detail === undefined &&
+    error instanceof Error &&
+    error.message.trim()
+  ) {
+    throw new Error(error.message);
+  }
+  rethrowLegacyMutationError(error, fallback);
 }
 
 interface WebhookConfirmDialogProps {
@@ -854,6 +872,7 @@ function EditWebhookModal({ webhook, onClose, onSaved }: EditWebhookModalProps) 
   const [regenerating, setRegenerating] = useState(false);
   const [regenerateConfirmOpen, setRegenerateConfirmOpen] = useState(false);
   const regenerateTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const editDialogContentRef = useRef<HTMLDivElement | null>(null);
   // One-time plaintext secret from a regenerate. While set, the modal shows the
   // reveal view instead of the form — it is never recoverable afterwards.
   const [revealedSecret, setRevealedSecret] = useState<string | null>(null);
@@ -920,9 +939,11 @@ function EditWebhookModal({ webhook, onClose, onSaved }: EditWebhookModalProps) 
   function restoreRegenerateTriggerFocus(event: Event) {
     const trigger = regenerateTriggerRef.current;
     regenerateTriggerRef.current = null;
-    if (!trigger || !document.contains(trigger)) return;
+    const focusTarget =
+      trigger && document.contains(trigger) ? trigger : editDialogContentRef.current;
+    if (!focusTarget || !document.contains(focusTarget)) return;
     event.preventDefault();
-    trigger.focus();
+    focusTarget.focus();
   }
 
   async function handleCopy() {
@@ -940,7 +961,7 @@ function EditWebhookModal({ webhook, onClose, onSaved }: EditWebhookModalProps) 
 
   return (
     <Dialog open={webhook !== null} onOpenChange={onClose}>
-      <DialogContent>
+      <DialogContent ref={editDialogContentRef}>
         {revealedSecret ? (
           <>
             <DialogHeader>
@@ -1101,6 +1122,7 @@ function WebhooksSection() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<WebhookRow | null>(null);
   const deleteTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const webhooksRegionRef = useRef<HTMLDivElement | null>(null);
 
   function requestDelete(webhook: WebhookRow, trigger: HTMLButtonElement) {
     deleteTriggerRef.current = trigger;
@@ -1110,9 +1132,11 @@ function WebhooksSection() {
   function restoreDeleteTriggerFocus(event: Event) {
     const trigger = deleteTriggerRef.current;
     deleteTriggerRef.current = null;
-    if (!trigger || !document.contains(trigger)) return;
+    const focusTarget =
+      trigger && document.contains(trigger) ? trigger : webhooksRegionRef.current;
+    if (!focusTarget || !document.contains(focusTarget)) return;
     event.preventDefault();
-    trigger.focus();
+    focusTarget.focus();
   }
 
   async function reload() {
@@ -1207,7 +1231,13 @@ function WebhooksSection() {
   }
 
   return (
-    <div className="flex flex-col gap-3">
+    <div
+      ref={webhooksRegionRef}
+      role="region"
+      aria-label="Webhooks"
+      tabIndex={-1}
+      className="flex flex-col gap-3 rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-fg"
+    >
       <div className="flex justify-end">
         <InlineActionLink
           onClick={() => setAddOpen(true)}
