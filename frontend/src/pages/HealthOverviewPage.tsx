@@ -264,22 +264,41 @@ function toAttentionItems(
   chartEligibleTypes: ReadonlySet<string>,
   feedback: ReturnType<typeof useInsightFeedback>,
 ): AttentionListItem[] {
-  return candidates.map((c) => ({
-    id: c.id,
-    severity: healthInsightSeverity(c.priority),
-    title: c.message,
-    detail: null,
-    href: insightHref(c, chartEligibleTypes),
-    onUseful: () => feedback.mutate({ insightId: c.id, verdict: "useful" }),
-    onNotNow: () =>
-      feedback.mutate({
-        insightId: c.id,
-        verdict: "not_now",
-        snoozeUntil: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-      }),
-    onNever: () => feedback.mutate({ insightId: c.id, verdict: "never" }),
-    feedbackPending: feedback.isPending && feedback.variables?.insightId === c.id,
-  }));
+  return candidates.map((c) => {
+    const feedbackVariables = feedback.variables;
+    const isFeedbackTarget = feedbackVariables?.insightId === c.id;
+    const feedbackState = !isFeedbackTarget
+      ? undefined
+      : feedback.isPending
+        ? "pending"
+        : feedback.isError
+          ? "error"
+          : feedback.isSuccess
+            ? "saved"
+            : undefined;
+
+    return {
+      id: c.id,
+      severity: healthInsightSeverity(c.priority),
+      title: c.message,
+      detail: null,
+      href: insightHref(c, chartEligibleTypes),
+      onUseful: () => feedback.mutate({ insightId: c.id, verdict: "useful" }),
+      onNotNow: () =>
+        feedback.mutate({
+          insightId: c.id,
+          verdict: "not_now",
+          snoozeUntil: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+        }),
+      onNever: () => feedback.mutate({ insightId: c.id, verdict: "never" }),
+      feedbackPending: feedbackState === "pending",
+      feedbackState,
+      onRetryFeedback:
+        feedbackState === "error" && feedbackVariables
+          ? () => feedback.mutate(feedbackVariables)
+          : undefined,
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------

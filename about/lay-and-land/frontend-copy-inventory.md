@@ -3197,6 +3197,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Useful
 - Not now
 - Never
+- Retry feedback
 - Retry
 - Attention items
 - Severity: {}

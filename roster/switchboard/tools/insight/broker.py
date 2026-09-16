@@ -433,39 +433,45 @@ async def expire_candidates(pool: asyncpg.Pool, *, now: datetime | None = None) 
     """
     if now is None:
         now = datetime.now(UTC)
-    rows = await pool.fetch(
-        """
-        UPDATE insight_candidates
-        SET status = 'expired'
-        WHERE status = 'pending' AND expires_at <= $1
-        RETURNING id, origin_butler, priority, dedup_key, channel, metadata
-        """,
-        now,
-    )
-    for row in rows:
-        raw_metadata = row["metadata"]
-        if isinstance(raw_metadata, str):
-            try:
-                raw_metadata = json.loads(raw_metadata)
-            except json.JSONDecodeError:
-                raw_metadata = None
-        metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
-        blocked_by = metadata.get("blocked_by", "budget")
-        if blocked_by not in _BLOCKED_BY_REASONS:
-            blocked_by = "budget"
-        await record_attention_event(
-            pool,
-            origin_butler=row["origin_butler"],
-            source="insight",
-            outcome="expired",
-            channel=row["channel"],
-            intent="insight",
-            priority=row["priority"],
-            dedup_key=row["dedup_key"],
-            reason=f"blocked_by:{blocked_by}",
-            notification_ref=str(row["id"]),
-            metadata={"blocked_by": blocked_by},
-        )
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            rows = await conn.fetch(
+                """
+                UPDATE insight_candidates
+                SET status = 'expired'
+                WHERE status = 'pending' AND expires_at <= $1
+                RETURNING id, origin_butler, priority, dedup_key, channel, metadata
+                """,
+                now,
+            )
+            for row in rows:
+                raw_metadata = row["metadata"]
+                if isinstance(raw_metadata, str):
+                    try:
+                        raw_metadata = json.loads(raw_metadata)
+                    except json.JSONDecodeError:
+                        raw_metadata = None
+                metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+                blocked_by = metadata.get("blocked_by", "budget")
+                if blocked_by not in _BLOCKED_BY_REASONS:
+                    blocked_by = "budget"
+                ledger_id = await record_attention_event(
+                    conn,
+                    origin_butler=row["origin_butler"],
+                    source="insight",
+                    outcome="expired",
+                    channel=row["channel"],
+                    intent="insight",
+                    priority=row["priority"],
+                    dedup_key=row["dedup_key"],
+                    reason=f"blocked_by:{blocked_by}",
+                    notification_ref=str(row["id"]),
+                    metadata={"blocked_by": blocked_by},
+                )
+                if ledger_id is None:
+                    raise RuntimeError(
+                        "expiry ledger write failed; candidate remains pending for retry"
+                    )
     return len(rows)
 
 
@@ -581,49 +587,14 @@ async def compute_effective_budget(
     window_days: int = 14,
     now: datetime | None = None,
 ) -> int:
-    """Compute the effective delivery budget after adaptive reduction.
+    """Return the configured global cap without aggregate engagement reduction.
 
-    Rules:
-    - engagement_rate >= 0.5  → full configured budget
-    - 0.25 <= rate < 0.5      → max(1, budget - 1)
-    - rate < 0.25             → 1
-    - No deliveries in window → rate = 1.0 (no penalty)
+    ``pool``, ``window_days``, and ``now`` remain in the signature for callers
+    that used the former aggregate helper. Category-local engagement weights now
+    shape candidate order in :func:`delivery_cycle`; they never lower this cap.
     """
-    configured = _get_configured_budget(settings)
-    if configured == 0:
-        return 0
-
-    if now is None:
-        now = datetime.now(UTC)
-    window_start = now - timedelta(days=window_days)
-
-    row = await pool.fetchrow(
-        """
-        SELECT
-            COUNT(*) AS total,
-            COUNT(*) FILTER (WHERE engaged = TRUE) AS engaged_count
-        FROM insight_engagement
-        WHERE delivered_at >= $1 AND delivered_at <= $2
-        """,
-        window_start,
-        now,
-    )
-
-    total = int(row["total"]) if row else 0
-    engaged_count = int(row["engaged_count"]) if row else 0
-
-    if total == 0:
-        # No history → no penalty
-        return configured
-
-    rate = engaged_count / total
-
-    if rate >= 0.5:
-        return configured
-    elif rate >= 0.25:
-        return max(1, configured - 1)
-    else:
-        return 1
+    _ = pool, window_days, now
+    return _get_configured_budget(settings)
 
 
 async def compute_category_budget_weights(
@@ -1931,11 +1902,10 @@ async def delivery_cycle(
     if not eligible_ids:
         return result
 
-    # Step 5: Compute effective budget. urgent_only has no daily cap — every
-    # eligible urgent candidate is delivered this cycle (the budget exists to
-    # ration routine insights across a day; it does not apply to the
-    # always-deliver urgent bypass), so the "budget" here is simply the full
-    # eligible set.
+    # Step 5: Resolve the one global cap. urgent_only has no daily cap — every
+    # eligible urgent candidate is delivered this cycle. Routine delivery keeps
+    # the owner's configured cap intact: category engagement below shapes the
+    # mix, never another category's available capacity.
     if urgent_only:
         effective_budget = len(eligible_ids)
     else:
