@@ -7372,6 +7372,16 @@ export interface EntityTimelineItem {
   metadata: Record<string, unknown> | null;
 }
 
+/** Completeness-tagged interaction evidence for a rolling cadence window. */
+export interface EntityCadenceResponse {
+  window_days: number;
+  window_started_at: string;
+  window_ended_at: string;
+  interaction_count: number;
+  completeness: "complete" | "incomplete";
+  has_more: boolean;
+}
+
 /** A contact linked to an entity, for the entity detail page.
  *
  * Enriched with contact_info[], labels[], and preferred_channel so the

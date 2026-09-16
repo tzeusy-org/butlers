@@ -9,7 +9,7 @@
  * assignment.
  */
 
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Check, ChevronDown, Loader2, Lock } from "lucide-react";
 import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
@@ -25,6 +25,7 @@ import {
 import {
   useEntityGifts,
   useEntityLoans,
+  useEntityCadence,
   useEntityTimeline,
   useUpdateEntityDunbarTier,
 } from "@/hooks/use-entities";
@@ -205,15 +206,26 @@ export interface PulseStripProps {
   entityId: string;
   dunbarTier: number | null;
   isPinned: boolean;
+  cadenceWindowDays?: number;
 }
 
-export function PulseStrip({ entityId, dunbarTier, isPinned }: PulseStripProps) {
+export function PulseStrip({
+  entityId,
+  dunbarTier,
+  isPinned,
+  cadenceWindowDays = 30,
+}: PulseStripProps) {
   const { data: timelineItems, isLoading: timelineLoading, isError: timelineError } =
     useEntityTimeline(entityId);
   const { data: gifts, isLoading: giftsLoading, isError: giftsError } =
     useEntityGifts(entityId);
   const { data: loans, isLoading: loansLoading, isError: loansError } =
     useEntityLoans(entityId);
+  const {
+    data: cadence,
+    isLoading: cadenceLoading,
+    isError: cadenceError,
+  } = useEntityCadence(entityId, cadenceWindowDays);
 
   const lastInteraction = useMemo(() => {
     if (!timelineItems) return null;
@@ -221,21 +233,6 @@ export function PulseStrip({ entityId, dunbarTier, isPinned }: PulseStripProps) 
       (it: EntityTimelineItem) => it.kind === "interaction" && it.valid_at,
     );
   }, [timelineItems]);
-
-  // `now` is captured once at mount via lazy state init — Date.now() is impure
-  // and would trip react-hooks/purity inside useMemo. The cadence window only
-  // needs to be approximate, so a per-mount snapshot is fine.
-  const [mountedAt] = useState(() => Date.now());
-  const cadence30d = useMemo(() => {
-    if (!timelineItems) return null;
-    const cutoff = mountedAt - 30 * 24 * 60 * 60 * 1000;
-    return timelineItems.filter(
-      (it: EntityTimelineItem) =>
-        it.kind === "interaction" &&
-        it.valid_at &&
-        new Date(it.valid_at).getTime() >= cutoff,
-    ).length;
-  }, [timelineItems, mountedAt]);
 
   const openLoops = useMemo(() => {
     const giftOpen = (gifts ?? []).filter(
@@ -282,17 +279,29 @@ export function PulseStrip({ entityId, dunbarTier, isPinned }: PulseStripProps) 
         muted={timelineError || (!isLoading && !lastInteraction)}
       />
       <PulseTile
-        label="Last 30 days"
+        label={`Last ${cadenceWindowDays} days`}
         value={
-          isLoading
+          cadenceLoading
             ? "..."
-            : timelineError
+            : cadenceError
               ? "Unavailable"
-              : cadence30d === null || cadence30d === 0
-                ? "Quiet"
-                : `${cadence30d} interaction${cadence30d === 1 ? "" : "s"}`
+              : !cadence ||
+                  cadence.window_days !== cadenceWindowDays ||
+                  cadence.completeness !== "complete" ||
+                  cadence.has_more
+                ? "Incomplete"
+                : cadence.interaction_count === 0
+                  ? "Quiet"
+                  : `${cadence.interaction_count} interaction${cadence.interaction_count === 1 ? "" : "s"}`
         }
-        muted={timelineError || cadence30d === 0}
+        muted={
+          cadenceError ||
+          !cadence ||
+          cadence.window_days !== cadenceWindowDays ||
+          cadence.completeness !== "complete" ||
+          cadence.has_more ||
+          cadence.interaction_count === 0
+        }
       />
       <PulseTile
         label="Open loops"

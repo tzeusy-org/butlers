@@ -37,6 +37,7 @@ import {
   getEntityNeighbours,
   getPlexHalo,
   getEntityTimeline,
+  getEntityCadence,
   getRelationshipEntityQueue,
   listRelationshipEntities,
   markEntityView,
@@ -134,6 +135,15 @@ export function useEntityActivity(
       const nextOffset = lastPage.offset + lastPage.items.length;
       return lastPage.items.length > 0 && nextOffset < lastPage.total ? nextOffset : undefined;
     },
+    enabled: !!entityId,
+  });
+}
+
+/** Fetch cadence evidence scoped to the exact window represented by the tile label. */
+export function useEntityCadence(entityId: string | undefined, windowDays: number) {
+  return useQuery({
+    queryKey: ["entity-cadence", entityId, windowDays],
+    queryFn: () => getEntityCadence(entityId!, windowDays),
     enabled: !!entityId,
   });
 }
@@ -1014,6 +1024,7 @@ export function useCreateEntityInteraction() {
     onSuccess: (_, { entityId }) => {
       invalidateEntityActivityFamily(queryClient, entityId);
       void queryClient.invalidateQueries({ queryKey: ["entity-timeline", entityId] });
+      void queryClient.invalidateQueries({ queryKey: ["entity-cadence", entityId] });
       void queryClient.invalidateQueries({ queryKey: ["entity-message-threads", entityId] });
     },
   });

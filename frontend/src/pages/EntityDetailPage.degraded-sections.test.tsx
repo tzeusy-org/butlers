@@ -89,6 +89,7 @@ vi.mock("@/hooks/use-entities", () => ({
   })),
   useEntityTimeline: vi.fn(() => ({ data: [], isLoading: false, isError: false })),
   useEntityActivity: vi.fn(() => ({ data: { pages: [{ items: [], total: 0, limit: 50, offset: 0, degraded: false, degraded_reason: null }], pageParams: [0] }, isLoading: false, isError: false, isRefetching: false, refetch: vi.fn(), fetchNextPage: vi.fn(), hasNextPage: false, isFetchingNextPage: false })),
+  useEntityCadence: vi.fn(() => ({ data: { window_days: 30, interaction_count: 0, completeness: "complete", has_more: false }, isLoading: false, isError: false })),
   useEntityGifts: vi.fn(() => ({ data: [], isLoading: false, isError: false })),
   useEntityLoans: vi.fn(() => ({ data: [], isLoading: false, isError: false })),
   useEntityMessageThreads: vi.fn(() => ({ data: [], isLoading: false, isError: false })),
