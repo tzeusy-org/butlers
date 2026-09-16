@@ -19,7 +19,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -40,12 +40,32 @@ import {
   useLifestyleTasteVerdicts,
   useLifestyleTasteWorks,
 } from "@/hooks/use-memory";
+import type { TasteSummary } from "@/api/types";
 
 // ---------------------------------------------------------------------------
 // Fixture data
 // ---------------------------------------------------------------------------
 
-const SUMMARY_FIXTURE = {
+const SUMMARY_FIXTURE: TasteSummary = {
+  total_works: 220,
+  total_signals: 340,
+  total_verdicts: 61,
+  recent_signals_7d: 12,
+  works_by_kind: { track: 220 },
+  signals_by_kind: { listen_completed: 200, listen_skipped: 140 },
+  availability: "complete",
+  query_availability: [
+    { query: "total_works", state: "available", reason: null },
+    { query: "total_signals", state: "available", reason: null },
+    { query: "total_verdicts", state: "available", reason: null },
+    { query: "recent_signals_7d", state: "available", reason: null },
+    { query: "works_by_kind", state: "available", reason: null },
+    { query: "signals_by_kind", state: "available", reason: null },
+  ],
+  ledger_available: true,
+};
+
+const LEGACY_SUMMARY_FIXTURE: TasteSummary = {
   total_works: 220,
   total_signals: 340,
   total_verdicts: 61,
@@ -64,6 +84,8 @@ const WORKS_FIXTURE = [
   { id: "w1", kind: "track", title: "Song A", external_ids: {}, created_at: "2026-09-01T00:00:00Z" },
   { id: "w2", kind: "track", title: "Song B", external_ids: {}, created_at: "2026-09-01T00:00:00Z" },
 ];
+
+const summaryRefetch = vi.fn();
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -89,11 +111,16 @@ function setupWithData({
   verdictsTotal = 61,
   works = WORKS_FIXTURE,
   worksTotal = 250,
+  summaryError = false,
+  summaryRefetchError = false,
 } = {}) {
+  summaryRefetch.mockReset();
   vi.mocked(useLifestyleTasteSummary).mockReturnValue({
     data: summary,
     isLoading: false,
-    isError: false,
+    isError: summaryError,
+    isRefetchError: summaryRefetchError,
+    refetch: summaryRefetch,
   } as unknown as ReturnType<typeof useLifestyleTasteSummary>);
 
   vi.mocked(useLifestyleTasteVerdicts).mockReturnValue({
@@ -235,6 +262,53 @@ describe("ButlerLifestyleTasteTab — KPI totals render from meta.total", () => 
     renderTab();
     expect(screen.getByText("Could not load taste overview.")).toBeDefined();
     expect(screen.queryByText("Works tracked")).toBeNull();
+  });
+
+  it("keeps a legacy summary without the additive status ledger usable", () => {
+    setupWithData({ summary: LEGACY_SUMMARY_FIXTURE });
+    renderTab();
+
+    const kpiItems = screen.getAllByTestId("kpi-item");
+    expect(kpiItems[0].textContent).toContain("220");
+    expect(kpiItems[1].textContent).toContain("340");
+    expect(screen.queryByTestId("taste-summary-partial")).toBeNull();
+  });
+
+  it("labels retained data as stale after a background summary refetch failure", () => {
+    setupWithData({ summaryError: true, summaryRefetchError: true });
+    renderTab();
+
+    expect(screen.getByTestId("taste-summary-stale").textContent).toContain(
+      "last successful read is stale",
+    );
+    expect(screen.getAllByTestId("kpi-item")[0].textContent).toContain("220");
+    expect(screen.queryByTestId("taste-load-error")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(summaryRefetch).toHaveBeenCalledOnce();
+  });
+
+  it("preserves successful summary sections and marks only the failed KPI unavailable", () => {
+    setupWithData({
+      summary: {
+        ...SUMMARY_FIXTURE,
+        availability: "partial",
+        total_works: 0,
+        query_availability: SUMMARY_FIXTURE.query_availability!.map((query) =>
+          query.query === "total_works"
+            ? { query: query.query, state: "unavailable" as const, reason: "query_failed" as const }
+            : query,
+        ),
+      },
+    });
+    renderTab();
+
+    const kpiItems = screen.getAllByTestId("kpi-item");
+    expect(kpiItems[0].textContent).toContain("unavailable");
+    expect(kpiItems[1].textContent).toContain("340");
+    expect(kpiItems[2].textContent).toContain("61");
+    expect(screen.getByTestId("taste-summary-partial").textContent).toContain(
+      "total works: query_failed",
+    );
   });
 });
 
