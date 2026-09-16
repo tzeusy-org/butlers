@@ -15,6 +15,8 @@ import type { CSSProperties } from "react";
 import { Link } from "react-router";
 import { RowLink } from "@/components/ui/RowLink";
 
+type FeedbackState = "pending" | "saved" | "error";
+
 export interface AttentionListItem {
   id: string;
   severity: string;
@@ -65,6 +67,8 @@ export interface AttentionListItem {
   onNotNow?: () => void;
   onNever?: () => void;
   feedbackPending?: boolean;
+  feedbackState?: FeedbackState;
+  onRetryFeedback?: () => void;
 }
 
 interface AttentionListProps {
@@ -295,6 +299,35 @@ export function AttentionList({ items, selectedId = null }: AttentionListProps) 
                         style={inlineVerbButtonStyle}
                       >
                         Never
+                      </button>
+                    )}
+                    {item.feedbackState && (
+                      <span
+                        role={item.feedbackState === "error" ? "alert" : "status"}
+                        style={{
+                          fontFamily: "var(--font-mono)",
+                          fontSize: "11px",
+                          color:
+                            item.feedbackState === "error"
+                              ? "var(--destructive)"
+                              : "var(--muted-foreground)",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {item.feedbackState === "pending"
+                          ? "Saving feedback…"
+                          : item.feedbackState === "saved"
+                            ? "Feedback saved."
+                            : "Could not save feedback."}
+                      </span>
+                    )}
+                    {item.feedbackState === "error" && item.onRetryFeedback && (
+                      <button
+                        type="button"
+                        onClick={item.onRetryFeedback}
+                        style={inlineVerbButtonStyle}
+                      >
+                        Retry feedback
                       </button>
                     )}
                   </>

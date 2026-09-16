@@ -578,10 +578,6 @@ class TestBrokerChannelSelectionInNotifyMetadata:
                 "butlers.tools.switchboard.insight.broker.deduplicate_candidates",
                 new=AsyncMock(return_value=all_ids),
             ),
-            patch(
-                "butlers.tools.switchboard.insight.broker.compute_effective_budget",
-                new=AsyncMock(return_value=3),
-            ),
             patch("butlers.tools.switchboard.insight.broker.record_cooldowns", new=AsyncMock()),
             patch(
                 "butlers.tools.switchboard.insight.broker.record_engagement_rows", new=AsyncMock()

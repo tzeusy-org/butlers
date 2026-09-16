@@ -857,6 +857,104 @@
       "excerpt": "The delivery cycle SHALL consult the situational context bus (`public.user_context`) for an active `dnd` or `sleeping..."
     }
   ],
+  "insight-feedback-expiry/proactive-insight-engine/Adaptive Delivery with Graceful Degradation": [
+    {
+      "kind": "prose",
+      "scenario": null,
+      "digest": "4223643892e2",
+      "excerpt": "The system SHALL track user engagement with delivered insights and automatically reduce delivery frequency when the u..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Engagement detection",
+      "digest": "7110d491b33e",
+      "excerpt": "- **AND** ingress from a connector, an automated source, or any non-owner (including unresolved/unknown) sender SHALL..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Engagement rate computation",
+      "digest": "ba94fa044154",
+      "excerpt": "- **WHEN** the delivery cycle computes the engagement rate"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Engagement rate computation",
+      "digest": "cfbf0c27f848",
+      "excerpt": "- **THEN** it SHALL use a rolling 14-day window: `engagement_rate = count(engaged=TRUE) / count(delivered)` over the ..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Engagement rate computation",
+      "digest": "387c77bf17ef",
+      "excerpt": "- **AND** if no insights were delivered in the last 14 days, the engagement rate SHALL be treated as 1.0 (no penalty)"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Budget reduction on low engagement",
+      "digest": "9f2b1d612e4c",
+      "excerpt": "- **WHEN** `engagement_rate >= 0.5`"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Budget reduction on low engagement",
+      "digest": "a4fd99a1df28",
+      "excerpt": "- **THEN** the effective budget SHALL equal the user's configured budget (no reduction)"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Moderate disengagement",
+      "digest": "bae84db86a67",
+      "excerpt": "- **WHEN** `0.25 <= engagement_rate < 0.5`"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Moderate disengagement",
+      "digest": "9c0d07d51209",
+      "excerpt": "- **THEN** the effective budget SHALL be `max(1, configured_budget - 1)`"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Severe disengagement",
+      "digest": "3d1fb6f991d9",
+      "excerpt": "- **WHEN** `engagement_rate < 0.25`"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Severe disengagement",
+      "digest": "4593a5afbdc7",
+      "excerpt": "- **THEN** the effective budget SHALL be 1 regardless of the configured preset"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Total disengagement auto-off",
+      "digest": "1297f9807d07",
+      "excerpt": "- **WHEN** `engagement_rate == 0.0` for 14 consecutive days (at least 1 insight delivered per day during that period)"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Total disengagement auto-off",
+      "digest": "891326f262f5",
+      "excerpt": "- **AND** for any day in the 14-day window no longer present in `public.insight_engagement` (purged), the day's deliv..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "No automatic increase",
+      "digest": "7a9a38b4669d",
+      "excerpt": "- **WHEN** the user's engagement rate improves after a budget reduction"
+    },
+    {
+      "kind": "clause",
+      "scenario": "No automatic increase",
+      "digest": "beb75083e92e",
+      "excerpt": "- **THEN** the effective budget SHALL NOT automatically increase"
+    },
+    {
+      "kind": "clause",
+      "scenario": "No automatic increase",
+      "digest": "ca6e59f70702",
+      "excerpt": "- **AND** the user MUST explicitly change their verbosity setting to restore the original budget"
+    }
+  ],
   "memory-honesty-last-mile/module-memory/LLM-driven memory consolidation pipeline": [
     {
       "kind": "prose",
