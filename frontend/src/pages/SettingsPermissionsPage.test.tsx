@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, cleanup, screen, act, fireEvent, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { toast } from "sonner";
 
 import SettingsPermissionsPage from "@/pages/SettingsPermissionsPage";
 import { clearOwnerSession, rememberOwnerCsrf } from "@/api/owner-session";
@@ -56,6 +57,8 @@ vi.mock("sonner", () => ({
 beforeEach(() => {
   resolveApiHrefMock.mockReset();
   resolveApiHrefMock.mockImplementation((path: string) => `/api${path}`);
+  apiFetchMock.mockReset();
+  apiFetchMock.mockImplementation(defaultApiFetch);
   clearOwnerSession();
   rememberOwnerCsrf({
     csrf_token: "permissions-page-test-csrf",
@@ -109,6 +112,33 @@ function defaultFetch(url: string) {
     ok: true,
     json: () => Promise.resolve({ data: {} }),
   });
+}
+
+async function defaultApiFetch(path: string, init?: RequestInit) {
+  const response = await fetchMock(resolveApiHrefMock(path), init);
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    const error = new Error(
+      typeof body?.detail === "string"
+        ? body.detail
+        : Array.isArray(body?.detail)
+          ? body.detail
+              .map((detail: Record<string, unknown>) =>
+                String(detail.msg ?? detail.message ?? JSON.stringify(detail)),
+              )
+              .join("; ")
+        : body?.detail?.error ?? `Request failed: ${response.status}`,
+    );
+    Object.assign(error, {
+      status: response.status,
+      detail:
+        typeof body?.detail === "object" && body.detail !== null && !Array.isArray(body.detail)
+          ? body.detail
+          : undefined,
+    });
+    throw error;
+  }
+  return response.json();
 }
 
 /** Dense matrix fixture: chronicler with spawn=explicit(revoked), notify=inherited */
@@ -249,11 +279,15 @@ describe("SettingsPermissionsPage — export section [bu-9q1dx.1]", () => {
   it("posts and resolves an API-relative export download through the API client", async () => {
     const signedUrl = "/data/export/download/export-123?scope=all&issued_at=1&token=signed";
     const resolvedUrl = `/butlers-dev-api/api${signedUrl}`;
-    apiFetchMock.mockResolvedValueOnce({
-      data: { signed_url: signedUrl, expires_at: "2026-08-02T01:00:00Z" },
-    });
     resolveApiHrefMock.mockImplementation((path: string) =>
       path === signedUrl ? resolvedUrl : `/api${path}`,
+    );
+    apiFetchMock.mockImplementation((path: string, init?: RequestInit) =>
+      path === "/data/export"
+        ? Promise.resolve({
+            data: { signed_url: signedUrl, expires_at: "2026-08-02T01:00:00Z" },
+          })
+        : defaultApiFetch(path, init),
     );
 
     await act(async () => {
@@ -639,6 +673,34 @@ describe("SettingsPermissionsPage — webhook enabled state [bu-9q1dx.7]", () =>
   });
 });
 
+describe("SettingsPermissionsPage — mounted API base path", () => {
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it("loads permissions and webhooks through the mounted API base", async () => {
+    const requestedUrls: string[] = [];
+    resolveApiHrefMock.mockImplementation((path: string) => `/butlers-dev-api/api${path}`);
+    fetchMock.mockReset();
+    fetchMock.mockImplementation((url: string) => {
+      requestedUrls.push(url);
+      return defaultFetch(url);
+    });
+
+    await act(async () => {
+      renderPage();
+    });
+
+    await waitFor(() => {
+      expect(apiFetchMock).toHaveBeenCalledWith("/permissions");
+      expect(apiFetchMock).toHaveBeenCalledWith("/webhooks");
+    });
+    expect(requestedUrls).toContain("/butlers-dev-api/api/permissions");
+    expect(requestedUrls).toContain("/butlers-dev-api/api/webhooks");
+  });
+});
+
 describe("SettingsPermissionsPage — webhook last-test date precision", () => {
   afterEach(() => {
     cleanup();
@@ -693,6 +755,9 @@ describe("SettingsPermissionsPage — webhooks load error [bu-ep4ks.5]", () => {
 
     expect(await screen.findByTestId("webhooks-degraded")).toBeTruthy();
     expect(screen.queryByText("No webhooks registered.")).toBeNull();
+    expect(toast.error).toHaveBeenCalledWith(
+      "Failed to load webhooks: GET /api/webhooks failed: 500",
+    );
   });
 });
 
@@ -784,6 +849,125 @@ describe("SettingsPermissionsPage — webhook edit modal [bu-9q1dx.7]", () => {
     });
   });
 
+  it.each([
+    [404, "Webhook not found", "Webhook not found"],
+    [
+      503,
+      [{ msg: "Webhook service unavailable" }, { message: "Try again later" }],
+      "Webhook service unavailable; Try again later",
+    ],
+  ])("preserves update error detail for HTTP %i", async (status, detail, expectedMessage) => {
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.includes("/api/permissions")) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ data: { butlers: [], permissions: [], cells: {} } }),
+        });
+      }
+      if (url.includes("/api/webhooks/") && init?.method === "PUT") {
+        return Promise.resolve({
+          ok: false,
+          status,
+          json: () => Promise.resolve({ detail }),
+        });
+      }
+      if (url.includes("/api/webhooks")) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ data: [webhookRow()] }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: {} }) });
+    });
+
+    await act(async () => {
+      renderPage();
+    });
+    await act(async () => {
+      fireEvent.click(await screen.findByTestId(`webhook-toggle-${WEBHOOK_ID}`));
+    });
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(`Toggle failed: ${expectedMessage}`),
+    );
+  });
+
+  it("uses the PUT status fallback when the error response has no detail", async () => {
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.includes("/api/permissions")) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ data: { butlers: [], permissions: [], cells: {} } }),
+        });
+      }
+      if (url.includes("/api/webhooks/") && init?.method === "PUT") {
+        return Promise.resolve({
+          ok: false,
+          status: 502,
+          json: () => Promise.resolve({}),
+        });
+      }
+      if (url.includes("/api/webhooks")) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ data: [webhookRow()] }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: {} }) });
+    });
+
+    await act(async () => {
+      renderPage();
+    });
+    await act(async () => {
+      fireEvent.click(await screen.findByTestId(`webhook-toggle-${WEBHOOK_ID}`));
+    });
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        "Toggle failed: PUT /api/webhooks/11111111-1111-1111-1111-111111111111 failed: 502",
+      ),
+    );
+  });
+
+  it("uses the PUT status fallback when the error response is invalid JSON", async () => {
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.includes("/api/permissions")) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ data: { butlers: [], permissions: [], cells: {} } }),
+        });
+      }
+      if (url.includes("/api/webhooks/") && init?.method === "PUT") {
+        return Promise.resolve({
+          ok: false,
+          status: 503,
+          json: () => Promise.reject(new SyntaxError("Unexpected token < in JSON")),
+        });
+      }
+      if (url.includes("/api/webhooks")) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ data: [webhookRow()] }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: {} }) });
+    });
+
+    await act(async () => {
+      renderPage();
+    });
+    await act(async () => {
+      fireEvent.click(await screen.findByTestId(`webhook-toggle-${WEBHOOK_ID}`));
+    });
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        "Toggle failed: PUT /api/webhooks/11111111-1111-1111-1111-111111111111 failed: 503",
+      ),
+    );
+  });
+
   it("regenerate secret sends regenerate_secret and reveals the new secret once", async () => {
     // Override PUT to return a one-time secret on regenerate.
     fetchMock.mockImplementation((url: string, init?: RequestInit) => {
@@ -822,6 +1006,12 @@ describe("SettingsPermissionsPage — webhook edit modal [bu-9q1dx.7]", () => {
       fireEvent.click(await screen.findByTestId("webhook-regenerate-secret"));
     });
 
+    expect(putCalls).toHaveLength(0);
+    const confirmDialog = await screen.findByTestId("webhook-regenerate-confirm-dialog");
+    await act(async () => {
+      fireEvent.click(within(confirmDialog).getByRole("button", { name: "Regenerate secret" }));
+    });
+
     await waitFor(() => expect(putCalls).toHaveLength(1));
     expect(putCalls[0].body).toEqual({ regenerate_secret: true });
 
@@ -829,5 +1019,94 @@ describe("SettingsPermissionsPage — webhook edit modal [bu-9q1dx.7]", () => {
       "webhook-regenerated-secret",
     )) as HTMLInputElement;
     expect(revealed.value).toBe("whsec_brand_new_value");
+    const revealDialog = screen.getByRole("dialog", { name: "Copy your new signing secret" });
+    await waitFor(() => expect(document.activeElement).toBe(revealDialog));
+  });
+
+  it("does not regenerate the signing secret when confirmation is canceled", async () => {
+    await act(async () => {
+      renderPage();
+    });
+
+    await act(async () => {
+      fireEvent.click(await screen.findByTestId(`webhook-edit-${WEBHOOK_ID}`));
+    });
+    const regenerateTrigger = (await screen.findByTestId(
+      "webhook-regenerate-secret",
+    )) as HTMLButtonElement;
+    await act(async () => {
+      fireEvent.click(regenerateTrigger);
+    });
+
+    const confirmDialog = await screen.findByTestId("webhook-regenerate-confirm-dialog");
+    await act(async () => {
+      fireEvent.click(within(confirmDialog).getByRole("button", { name: "Cancel" }));
+    });
+
+    expect(putCalls).toHaveLength(0);
+    expect(screen.queryByTestId("webhook-regenerate-confirm-dialog")).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(regenerateTrigger));
+  });
+});
+
+describe("SettingsPermissionsPage — webhook delete confirmation", () => {
+  let deleteCalls: Array<{ url: string; init?: RequestInit }>;
+
+  beforeEach(() => {
+    deleteCalls = [];
+    fetchMock.mockReset();
+    const fallback = webhooksFetch([]);
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.includes(`/api/webhooks/${WEBHOOK_ID}`) && init?.method === "DELETE") {
+        deleteCalls.push({ url, init });
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: {} }) });
+      }
+      return fallback(url, init);
+    });
+    global.fetch = fetchMock as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it("leaves the webhook intact when deletion is canceled", async () => {
+    await act(async () => {
+      renderPage();
+    });
+
+    const deleteTrigger = (await screen.findByTestId(
+      `webhook-delete-${WEBHOOK_ID}`,
+    )) as HTMLButtonElement;
+    fireEvent.click(deleteTrigger);
+    const confirmDialog = await screen.findByTestId("webhook-delete-confirm-dialog");
+    expect(confirmDialog.textContent).toContain("https://example.com/hook");
+
+    await act(async () => {
+      fireEvent.click(within(confirmDialog).getByRole("button", { name: "Cancel" }));
+    });
+
+    expect(deleteCalls).toHaveLength(0);
+    expect(screen.queryByTestId("webhook-delete-confirm-dialog")).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(deleteTrigger));
+  });
+
+  it("deletes the webhook only after confirmation", async () => {
+    await act(async () => {
+      renderPage();
+    });
+
+    const webhooksRegion = screen.getByRole("region", { name: "Webhooks" });
+    fireEvent.click(await screen.findByTestId(`webhook-delete-${WEBHOOK_ID}`));
+    const confirmDialog = await screen.findByTestId("webhook-delete-confirm-dialog");
+    await act(async () => {
+      fireEvent.click(within(confirmDialog).getByRole("button", { name: "Delete webhook" }));
+    });
+
+    await waitFor(() => expect(deleteCalls).toHaveLength(1));
+    expect(deleteCalls[0]?.url).toBe(`/api/webhooks/${WEBHOOK_ID}`);
+    expect(deleteCalls[0]?.init?.method).toBe("DELETE");
+    await waitFor(() => expect(document.activeElement).toBe(webhooksRegion));
   });
 });
