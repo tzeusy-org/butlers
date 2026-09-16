@@ -139,6 +139,7 @@ SELECT
     COALESCE(tul.purpose, 'unknown') AS purpose,
     mc.model_id AS model_id,
     COUNT(*)::bigint AS calls,
+    BOOL_OR(tul.session_id IS NOT NULL) AS has_session,
     COALESCE(SUM(tul.input_tokens), 0)::bigint AS input_tokens,
     COALESCE(SUM(tul.output_tokens), 0)::bigint AS output_tokens,
     COALESCE(SUM(tul.cached_input_tokens), 0)::bigint AS cached_input_tokens,
@@ -399,6 +400,13 @@ async def _ledger_session_divergences(
 
     ledger_by_butler_day: dict[tuple[str, str], int] = defaultdict(int)
     for row in rows:
+        # Connector discretion and synthetic dashboard runtime calls are
+        # intentionally recorded without a task-session id. They are valid
+        # spend sources, but there can never be a roster session pool to
+        # compare them with. Only an explicit false value opts a grouped row
+        # out; older/partial evidence stays fail-closed as roster-backed.
+        if row.get("has_session") is False:
+            continue
         key = (str(row.get("butler_name") or "unknown"), str(row.get("day") or ""))
         ledger_by_butler_day[key] += sum(
             int(row.get(field) or 0)

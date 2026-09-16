@@ -417,6 +417,7 @@ describe("SpendPage — posture", () => {
                 difference_ratio: 0.2,
               },
             ],
+            divergence_source_error: true,
             historical_attribution_note: "Legacy labels use requested models.",
           },
           meta: {},
@@ -441,6 +442,10 @@ describe("SpendPage — posture", () => {
     expect(screen.getByTestId("forecast-divergence").textContent).toContain(
       "ledger/session token drift",
     );
+    expect(
+      screen.getByTestId("forecast-divergence-source-error").textContent,
+    ).toContain("session-to-ledger comparison unavailable");
+    expect(document.body.textContent).not.toContain("wa:");
     expect(
       screen.getByTestId("forecast-historical-attribution").textContent,
     ).toContain("Legacy labels");
