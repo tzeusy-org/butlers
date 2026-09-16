@@ -223,6 +223,27 @@ between domain butlers.
 **Exception**: The Switchboard itself holds MCP client connections to all
 registered domain butlers for route dispatch.
 
+### Candidate voice-egress control plane (not implemented)
+
+RFC 0034 keeps the same MCP-only rule while adding two versioned envelopes:
+
+| Envelope | Authenticated producer | Consumer | Content boundary |
+|---|---|---|---|
+| `voice_origin.v1` | Switchboard's isolated Ed25519 service principal, matched to its durable route record | Messenger | Switchboard-signed canonical request/service/intent/message digest plus verified reply-lineage ref or one explicit opaque endpoint ref; no raw mic/room/device id |
+| `voice_presence_attest.v1` request | Messenger signature verified by Switchboard; separately signed broker hop to Home | Home | Opaque room ref, binding version, single-use nonce; no message content |
+| `voice_presence_attest.v1` result | Home signature verified/relayed under a Switchboard signature | Messenger | Nested signatures over categorical result/freshness/age bound to version and nonce; no raw presence evidence |
+
+Messenger never connects directly to Home. Dedicated immutable service
+keyrings and durable nonce receipts authenticate every broker hop; generic MCP
+reachability and caller fields do not. Switchboard does not manufacture
+presence or choose a physical endpoint. Home does not receive speech content
+and is presence-only under this candidate: current RFC 0028 cannot admit a
+Home/HA voice provider. A separate accepted amendment must define its approval,
+speech, receipt, freshness, and persistence seam. The provider adapter is
+Messenger-owned and returns only the exact no-start/start/confirm/fail/unknown
+categories. This is a target contract only; it provisions no keys and exposes
+no live endpoint until separate implementation and activation authority exists.
+
 ---
 
 ## 7. Non-Switchboard Butler to Switchboard: Registration
