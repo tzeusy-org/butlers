@@ -10,6 +10,18 @@ const CSS_SOURCE = readFileSync(resolve(SRC_DIR, "index.css"), "utf-8")
 const HTML_SOURCE = readFileSync(resolve(FRONTEND_DIR, "index.html"), "utf-8")
 const ARBITRARY_SURFACE_TOKEN_CLASS =
   /\b[a-z-]+-\[var\(--(?:fg|bg)\)\](?:\/[\w.[\]-]+)?/g
+const REMOTE_ASSET_URL = /^(?:https?:)?\/\//i
+const VENDORED_FONT_URL = /^\/fonts\/[a-z0-9-]+\.woff2$/
+const EXPECTED_FONT_URLS = [
+  "/fonts/inter-tight-latin-400-normal.woff2",
+  "/fonts/inter-tight-latin-500-normal.woff2",
+  "/fonts/source-serif-4-latin-400-normal.woff2",
+  "/fonts/source-serif-4-latin-400-italic.woff2",
+  "/fonts/source-serif-4-latin-500-normal.woff2",
+  "/fonts/source-serif-4-latin-500-italic.woff2",
+  "/fonts/jetbrains-mono-latin-400-normal.woff2",
+  "/fonts/jetbrains-mono-latin-500-normal.woff2",
+]
 
 function extractTopLevelBlock(source: string, selector: string): string {
   const startPattern = new RegExp(`^${selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\{$`, "m")
@@ -74,7 +86,12 @@ describe("first-frame identity", () => {
   })
 
   it("uses local identity assets and a real document title", () => {
-    expect(HTML_SOURCE).not.toMatch(/https?:\/\//)
+    const shellAssetUrls = [
+      ...HTML_SOURCE.matchAll(/<(?:link|script)\b[^>]+(?:href|src)=["']([^"']+)["'][^>]*>/gi),
+    ].map((match) => match[1])
+    expect(shellAssetUrls.filter((url) => REMOTE_ASSET_URL.test(url))).toEqual([])
+    expect(HTML_SOURCE).not.toMatch(/\b(?:href|src)\s*=\s*["'](?:https?:)?\/\//i)
+    expect(HTML_SOURCE).not.toMatch(/@import\s+(?:url\()?\s*["']?(?:https?:)?\/\//i)
     expect(HTML_SOURCE).not.toContain("fonts.googleapis.com")
     expect(HTML_SOURCE).not.toContain("fonts.gstatic.com")
 
@@ -104,13 +121,21 @@ describe("first-frame identity", () => {
   )
 
   it("loads every declared face from a vendored WOFF2 file", () => {
-    const fontUrls = [...CSS_SOURCE.matchAll(/src:\s*url\(["']?(\/fonts\/[^"')]+\.woff2)["']?\)/g)]
-      .map((match) => match[1])
+    const fontFaceBlocks = CSS_SOURCE.match(/@font-face\s*\{[\s\S]*?\}/g) ?? []
+    expect(fontFaceBlocks).toHaveLength(EXPECTED_FONT_URLS.length)
 
-    expect(fontUrls).toHaveLength(8)
-    expect(new Set(fontUrls).size).toBe(fontUrls.length)
+    const fontUrls = fontFaceBlocks.flatMap((block) => {
+      expect(block).not.toMatch(/\blocal\s*\(/i)
+      return [...block.matchAll(/url\(\s*["']?([^"')\s]+)["']?\s*\)/gi)].map(
+        (match) => match[1],
+      )
+    })
+
+    expect(fontUrls).toEqual(EXPECTED_FONT_URLS)
     for (const fontUrl of fontUrls) {
+      expect(fontUrl).toMatch(VENDORED_FONT_URL)
       expect(existsSync(resolve(FRONTEND_DIR, "public", fontUrl.replace(/^\//, "")))).toBe(true)
     }
+    expect(CSS_SOURCE).not.toMatch(/(?:url\(|@import\s+(?:url\()?)\s*["']?(?:https?:)?\/\//i)
   })
 })
