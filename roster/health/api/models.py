@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictInt
 
 
 class Measurement(BaseModel):
@@ -96,7 +96,10 @@ class MedicationCreateRequest(BaseModel):
     frequency: str = Field(..., min_length=1)
     schedule: list[str] = []
     notes: str | None = None
-    quantity: int | None = Field(default=None, gt=0)
+    # StrictInt keeps JSON strings, floats, and booleans from becoming a
+    # persisted supply count through Pydantic coercion.  A quantity is an
+    # owner-recorded count, so only a positive whole number is meaningful.
+    quantity: StrictInt | None = Field(default=None, gt=0)
 
 
 class MedicationUpdateRequest(BaseModel):
@@ -114,7 +117,7 @@ class MedicationUpdateRequest(BaseModel):
     schedule: list[str] | None = None
     active: bool | None = None
     notes: str | None = None
-    quantity: int | None = Field(default=None, gt=0)
+    quantity: StrictInt | None = Field(default=None, gt=0)
 
 
 class Dose(BaseModel):
