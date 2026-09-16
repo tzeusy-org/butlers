@@ -1138,6 +1138,32 @@ class TestToolDelegation:
             read_policy=held_policy,
         )
 
+    @pytest.mark.parametrize(
+        ("tool_name", "feedback_name"),
+        [
+            ("memory_confirm", "memory_confirm"),
+            ("memory_mark_helpful", "memory_mark_helpful"),
+            ("memory_mark_harmful", "memory_mark_harmful"),
+        ],
+    )
+    async def test_memory_feedback_reference_uses_module_held_policy(
+        self, tool_name: str, feedback_name: str
+    ) -> None:
+        mod, tools, pool, _, _, feedback, *_ = await self._setup_and_register()
+        held_policy = object()
+        mod._catalog_read_policy = AsyncMock(return_value=held_policy)
+        setattr(feedback, feedback_name, AsyncMock(return_value={"ok": True}))
+        reference = "rule:550e8400-e29b-41d4-a716-446655440000"
+
+        result = await tools[tool_name](memory_ref=reference)
+
+        assert result == {"ok": True}
+        mod._catalog_read_policy.assert_awaited_once_with()
+        call = getattr(feedback, feedback_name).await_args
+        assert call.args[0] is pool
+        assert call.kwargs["memory_ref"] == reference
+        assert call.kwargs["read_policy"] is held_policy
+
 
 # ---------------------------------------------------------------------------
 # Sender entity_id fallback in memory_store_fact
