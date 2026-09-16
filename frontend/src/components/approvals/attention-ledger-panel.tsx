@@ -111,6 +111,16 @@ function SourceRow({ summary }: { summary: AttentionSourceSummary }) {
       >
         {summary.failed}
       </td>
+      <td
+        className={cn(
+          "px-1 py-2 text-right align-middle",
+          summary.expired_unseen > 0
+            ? "text-[var(--amber-text)] font-semibold"
+            : "text-muted-foreground",
+        )}
+      >
+        {summary.expired_unseen}
+      </td>
       <td className="px-1 py-2 text-right align-middle text-muted-foreground">{summary.total}</td>
     </tr>
   );
@@ -192,7 +202,7 @@ export function AttentionLedgerPanel() {
             <caption className="sr-only">Attention ledger outcome comparison</caption>
             <colgroup>
               <col className="w-[40%]" />
-              <col span={6} className="w-[10%]" />
+              <col span={7} className="w-[8.5%]" />
             </colgroup>
             <thead className="text-[10px] uppercase tracking-widest text-muted-foreground">
               <tr>
@@ -213,6 +223,9 @@ export function AttentionLedgerPanel() {
                 </th>
                 <th scope="col" className="px-1 pb-1 text-right font-normal break-words">
                   Failed
+                </th>
+                <th scope="col" className="px-1 pb-1 text-right font-normal break-words">
+                  Expired unseen
                 </th>
                 <th scope="col" className="px-1 pb-1 text-right font-normal break-words">
                   Total

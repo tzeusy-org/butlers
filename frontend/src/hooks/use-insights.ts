@@ -16,10 +16,14 @@
  * bu-w7b18.1  -- Frontend: Health Overview landing page
  */
 
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { getInsightCandidates } from "@/api/index.ts";
-import type { InsightCandidate, InsightCandidatesParams } from "@/api/index.ts";
+import { getInsightCandidates, submitInsightFeedback } from "@/api/index.ts";
+import type {
+  InsightCandidate,
+  InsightCandidatesParams,
+  InsightFeedbackVerdict,
+} from "@/api/index.ts";
 
 export const insightKeys = {
   all: (params?: InsightCandidatesParams) =>
@@ -41,5 +45,21 @@ export function useInsights(params?: InsightCandidatesParams) {
     queryFn: () => getInsightCandidates(params),
     staleTime: 5 * 60 * 1000,
     // refetchInterval intentionally omitted — manual refresh via pill only.
+  });
+}
+
+export function useInsightFeedback() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      insightId,
+      verdict,
+      snoozeUntil,
+    }: {
+      insightId: string;
+      verdict: InsightFeedbackVerdict;
+      snoozeUntil?: string;
+    }) => submitInsightFeedback(insightId, verdict, snoozeUntil),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["insights"] }),
   });
 }

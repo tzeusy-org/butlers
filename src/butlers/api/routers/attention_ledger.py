@@ -234,7 +234,10 @@ async def list_attention_ledger(
         None, description="Filter by choke point: notify, insight, or discretion"
     ),
     outcome: str | None = Query(
-        None, description="Filter by outcome: delivered, coalesced, deferred, suppressed, failed"
+        None,
+        description=(
+            "Filter by outcome: delivered, coalesced, deferred, suppressed, failed, expired"
+        ),
     ),
     origin_butler: str | None = Query(None, description="Filter by originating butler/job name"),
     db: DatabaseManager = Depends(_get_db_manager),
@@ -309,6 +312,7 @@ async def _query_ledger_summary(
         "COUNT(*) FILTER (WHERE outcome = 'deferred') AS deferred, "
         "COUNT(*) FILTER (WHERE outcome = 'suppressed') AS suppressed, "
         "COUNT(*) FILTER (WHERE outcome = 'failed') AS failed, "
+        "COUNT(*) FILTER (WHERE outcome = 'expired') AS expired_unseen, "
         "COUNT(*) AS total "
         f"FROM public.attention_ledger{where_clause} "
         "GROUP BY origin_butler "
@@ -324,6 +328,7 @@ async def _query_ledger_summary(
             deferred=row["deferred"],
             suppressed=row["suppressed"],
             failed=row["failed"],
+            expired_unseen=row["expired_unseen"],
             total=row["total"],
             suppressed_never_delivered=row["suppressed"] > 0 and row["delivered"] == 0,
         )

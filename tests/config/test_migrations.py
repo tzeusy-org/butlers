@@ -837,6 +837,77 @@ def test_alembic_version_tracking_and_schema_scoped(postgres_container):
     assert _table_exists_in_schema(db_url, "public", "alembic_version")
 
 
+def test_insight_feedback_migration_shape_and_constraints(postgres_container):
+    """core_241 keeps feedback typed and engagement attributable by category."""
+    from butlers.migrations import run_migrations
+
+    db_url = create_migration_db(postgres_container, migration_db_name())
+    asyncio.run(run_migrations(db_url, chain="core"))
+
+    engine = create_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            columns = {
+                row[0]
+                for row in conn.execute(
+                    text(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_schema='public' AND table_name='insight_feedback'"
+                    )
+                )
+            }
+            assert {
+                "insight_id",
+                "dedup_family",
+                "category",
+                "origin_butler",
+                "verdict",
+                "snooze_until",
+                "actor",
+                "decided_at",
+                "evidence_ref",
+            } <= columns
+            engagement_columns = {
+                row[0]
+                for row in conn.execute(
+                    text(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_schema='public' AND table_name='insight_engagement'"
+                    )
+                )
+            }
+            assert {"category", "origin_butler"} <= engagement_columns
+            conn.execute(
+                text(
+                    "INSERT INTO public.attention_ledger "
+                    "(origin_butler, source, outcome, reason) "
+                    "VALUES ('health', 'insight', 'expired', 'blocked_by:budget')"
+                )
+            )
+
+            candidate_id = conn.execute(
+                text(
+                    "INSERT INTO public.insight_candidates "
+                    "(origin_butler, priority, category, dedup_key, expires_at, message) "
+                    "VALUES ('health', 50, 'Health', 'health:signal:today', now() + interval '1 day', 'x') "
+                    "RETURNING id"
+                )
+            ).scalar_one()
+            with pytest.raises(IntegrityError):
+                with conn.begin_nested():
+                    conn.execute(
+                        text(
+                            "INSERT INTO public.insight_feedback "
+                            "(insight_id, dedup_family, category, origin_butler, verdict, actor) "
+                            "VALUES (:id, 'health:signal', 'Health', 'health', "
+                            "'not_now', 'owner')"
+                        ),
+                        {"id": candidate_id},
+                    )
+    finally:
+        engine.dispose()
+
+
 def test_core_acl_and_relationship_chain(postgres_container):
     """ACL: runtime roles exist, own-schema write allowed, cross-schema denied. relationship chain creates reminders."""
     from butlers.migrations import run_migrations

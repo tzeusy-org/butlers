@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from butlers.tools.switchboard.insight.broker import (
     cleanup_old_rows,
+    compute_category_budget_weights,
     compute_effective_budget,
     create_insight_tables,
     deduplicate_candidates,
@@ -16,12 +17,14 @@ from butlers.tools.switchboard.insight.broker import (
     propose_insight_candidate,
     record_cooldowns,
     record_engagement_rows,
+    record_insight_feedback,
 )
 from butlers.tools.switchboard.insight.models import InsightCandidate
 
 __all__ = [
     "InsightCandidate",
     "cleanup_old_rows",
+    "compute_category_budget_weights",
     "compute_effective_budget",
     "create_insight_tables",
     "deduplicate_candidates",
@@ -31,4 +34,5 @@ __all__ = [
     "propose_insight_candidate",
     "record_cooldowns",
     "record_engagement_rows",
+    "record_insight_feedback",
 ]
