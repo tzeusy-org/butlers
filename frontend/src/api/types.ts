@@ -10256,6 +10256,21 @@ export interface DeliveryEntry {
 // ---------------------------------------------------------------------------
 
 /** Ledger-wide taste counts. GET /api/lifestyle/taste/summary. */
+export type TasteSummaryQueryName =
+  | "total_works"
+  | "total_signals"
+  | "total_verdicts"
+  | "recent_signals_7d"
+  | "works_by_kind"
+  | "signals_by_kind";
+
+export interface TasteSummaryQueryAvailability {
+  query: TasteSummaryQueryName;
+  state: "available" | "unavailable";
+  /** Fixed content-blind classifier; no upstream exception text crosses the API. */
+  reason: "query_failed" | null;
+}
+
 export interface TasteSummary {
   total_works: number;
   total_signals: number;
@@ -10263,7 +10278,15 @@ export interface TasteSummary {
   recent_signals_7d: number;
   works_by_kind: Record<string, number>;
   signals_by_kind: Record<string, number>;
-  /** False only for a genuine ledger-read failure, never a pre-migration empty ledger. */
+  /**
+   * Complete, partial, or wholly unavailable summary coverage. The field is
+   * additive: cached or rolling-deploy responses produced before the status
+   * ledger remain usable as complete data.
+   */
+  availability?: "complete" | "partial" | "unavailable";
+  /** Stable content-blind status for every summary query section, when present. */
+  query_availability?: TasteSummaryQueryAvailability[];
+  /** False only when every summary query failed, never for a genuine empty ledger. */
   ledger_available: boolean;
 }
 

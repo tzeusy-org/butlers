@@ -77,6 +77,8 @@ class TestTasteSummary:
         assert data["recent_signals_7d"] == 12
         assert data["works_by_kind"] == {"track": 220}
         assert data["signals_by_kind"] == {"listen_completed": 200, "listen_skipped": 140}
+        assert data["availability"] == "complete"
+        assert all(query["state"] == "available" for query in data["query_availability"])
         assert data["ledger_available"] is True
 
     async def test_pre_migration_missing_table_reports_unavailable(self, app):
@@ -92,9 +94,15 @@ class TestTasteSummary:
         assert resp.status_code == 503
         assert resp.json()["detail"] == "Taste ledger is not available"
 
-    async def test_genuine_query_failure_sets_ledger_unavailable(self, app):
+    async def test_partial_query_failure_preserves_successful_sections(self, app):
         pool = AsyncMock()
-        pool.fetchval = AsyncMock(side_effect=RuntimeError("connection reset"))
+        pool.fetchval = AsyncMock(side_effect=[RuntimeError("connection reset"), 340, 61, 12])
+        pool.fetch = AsyncMock(
+            side_effect=[
+                [_row({"kind": "track", "n": 220})],
+                [_row({"signal_kind": "listen_completed", "n": 340})],
+            ]
+        )
         _wire_pool(app, pool)
 
         async with await _client(app) as client:
@@ -102,8 +110,60 @@ class TestTasteSummary:
 
         assert resp.status_code == 200
         data = resp.json()["data"]
+        assert data["total_works"] == 0
+        assert data["total_signals"] == 340
+        assert data["total_verdicts"] == 61
+        assert data["recent_signals_7d"] == 12
+        assert data["works_by_kind"] == {"track": 220}
+        assert data["signals_by_kind"] == {"listen_completed": 340}
+        assert data["availability"] == "partial"
+        assert data["ledger_available"] is True
+        statuses = {query["query"]: query for query in data["query_availability"]}
+        assert statuses["total_works"] == {
+            "query": "total_works",
+            "state": "unavailable",
+            "reason": "query_failed",
+        }
+        assert statuses["total_signals"]["state"] == "available"
+        assert "connection reset" not in resp.text
+
+    async def test_all_query_failures_are_unavailable_not_empty(self, app):
+        pool = AsyncMock()
+        pool.fetchval = AsyncMock(side_effect=RuntimeError("connection reset"))
+        pool.fetch = AsyncMock(side_effect=RuntimeError("connection reset"))
+        _wire_pool(app, pool)
+
+        async with await _client(app) as client:
+            resp = await client.get("/api/lifestyle/taste/summary")
+
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["availability"] == "unavailable"
         assert data["ledger_available"] is False
         assert data["total_works"] == 0
+        assert data["total_signals"] == 0
+        assert data["total_verdicts"] == 0
+        assert data["works_by_kind"] == {}
+        assert data["signals_by_kind"] == {}
+        assert len(data["query_availability"]) == 6
+        assert all(query["state"] == "unavailable" for query in data["query_availability"])
+        assert "connection reset" not in resp.text
+
+    async def test_empty_ledger_is_complete_and_available(self, app):
+        pool = AsyncMock()
+        pool.fetchval = AsyncMock(return_value=0)
+        pool.fetch = AsyncMock(return_value=[])
+        _wire_pool(app, pool)
+
+        async with await _client(app) as client:
+            resp = await client.get("/api/lifestyle/taste/summary")
+
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["availability"] == "complete"
+        assert data["ledger_available"] is True
+        assert data["total_works"] == 0
+        assert all(query["state"] == "available" for query in data["query_availability"])
 
     async def test_missing_pool_returns_503(self, app):
         mock_db = MagicMock(spec=DatabaseManager)

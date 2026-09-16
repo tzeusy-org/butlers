@@ -89,6 +89,36 @@ Gate any verdict/all-clear renderer on the relevant flag(s) using the `SourceDeg
 vocabulary (`frontend/src/components/ui/query-boundary.tsx`) — name the degraded source inline
 (colon-separated source and reason), never suppress it.
 
+### Section-level partial aggregation
+
+An aggregation with independent query sections keeps the successful sections
+when one query fails. Its payload exposes a closed availability state and one
+content-blind status entry per section; the failed section uses a safe
+compatibility fallback only when the status says unavailable.
+
+For example, the Lifestyle taste summary may return:
+
+```json
+{
+  "data": {
+    "total_works": 0,
+    "total_signals": 340,
+    "availability": "partial",
+    "ledger_available": true,
+    "query_availability": [
+      {"query": "total_works", "state": "unavailable", "reason": "query_failed"},
+      {"query": "total_signals", "state": "available", "reason": null}
+    ]
+  }
+}
+```
+
+The frontend renders the failed section as unavailable and preserves the
+successful value. A complete response with zero values is a genuine empty
+result; when every section is unavailable, the aggregate state is
+unavailable, never a genuine empty result. Status entries must not carry
+SQL, exception text, credentials, or source payloads.
+
 ### Currency-honest money aggregates
 
 An endpoint without an owner-sourced FX rate must aggregate monetary rows by their stored ISO
