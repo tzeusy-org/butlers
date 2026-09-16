@@ -1,6 +1,7 @@
 # RFC 0023: Durable Approval Delivery Intent Recovery
 
-**Status:** Proposed — owner sign-off required before implementation
+**Status:** Accepted (owner sign-off 2026-09-12; repository implementation
+released separately under `bu-umii8n`; rollout remains separately gated)
 **Date:** 2026-08-13
 **Related:** RFC 0006 (schema isolation), RFC 0017 (owner-routing safety),
 RFC 0019 (parked automation), RFC 0021 (one-tap approvals), RFC 0022
