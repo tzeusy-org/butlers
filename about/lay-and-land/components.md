@@ -199,6 +199,25 @@ It runs as a standard ButlerDaemon with additional Switchboard-specific tools.
 
 ---
 
+### Candidate voice-egress ownership (not implemented)
+
+RFC 0034 adds no connector and does not widen Live Listener. Its target
+component boundaries are:
+
+| Component | Candidate responsibility | Boundary |
+|---|---|---|
+| **Switchboard** | Authenticate `voice_origin.v1`, broker Messenger-to-Home presence requests, resolve one linked text-only non-voice fallback | Does not own endpoints, presence facts, or provider outcomes |
+| **Messenger** | Opaque versioned endpoint registry, voice policy orchestration, provider profile selection, physical-side-effect receipt/replay fence | Does not infer devices from `entity_info`, read Home schema, or call Home directly |
+| **Home** | Return categorical `voice_presence_attest.v1` from Home-owned room facts; execute an admitted HA provider only under RFC 0028 | Receives no message content and does not choose the delivery target |
+| **Live Listener** | Existing microphone/VAD/ASR ingress to Switchboard | Remains ingress-only; no TTS, speaker, presence, or provider authority |
+| **Voice provider adapter** | One exact start/confirm/no-start/unknown interface for an admitted local-first profile | No policy, retry, targeting, or fallback authority |
+
+Until the exact RFC/OpenSpec artifact is independently reviewed, owner-approved,
+implemented, and separately activated, every candidate provider is unavailable
+and the topology above performs no live action.
+
+---
+
 ## 4a. Chronicler (`roster/chronicler/`)
 
 The Chronicler is a domain butler that reconstructs past time from

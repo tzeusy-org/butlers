@@ -223,6 +223,24 @@ between domain butlers.
 **Exception**: The Switchboard itself holds MCP client connections to all
 registered domain butlers for route dispatch.
 
+### Candidate voice-egress control plane (not implemented)
+
+RFC 0034 keeps the same MCP-only rule while adding two versioned envelopes:
+
+| Envelope | Authenticated producer | Consumer | Content boundary |
+|---|---|---|---|
+| `voice_origin.v1` | Switchboard service path, matched to its durable route record | Messenger | Canonical request/service/intent/message digest plus verified reply-lineage ref or one explicit opaque endpoint ref; no raw mic/room/device id |
+| `voice_presence_attest.v1` request | Messenger through Switchboard | Home | Opaque room ref, binding version, single-use nonce; no message content |
+| `voice_presence_attest.v1` result | Home through Switchboard | Messenger | Categorical result/freshness/age bound to version and nonce; no raw presence evidence |
+
+Messenger never connects directly to Home. Switchboard authenticates and
+brokers the control messages but does not manufacture presence or choose a
+physical endpoint. Home does not receive speech content. The provider adapter
+is Messenger-owned (or, for an admitted Home/HA path, remains behind Home's RFC
+0028 boundary) and returns only the exact no-start/start/confirm/fail/unknown
+categories. This is a target contract only; it exposes no live endpoint until
+separate implementation and activation authority exists.
+
 ---
 
 ## 7. Non-Switchboard Butler to Switchboard: Registration

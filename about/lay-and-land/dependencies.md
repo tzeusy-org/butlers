@@ -59,6 +59,26 @@ Every non-switchboard butler:
 **Failure mode**: If the Switchboard is down, domain butlers cannot receive
 routed messages. Their schedulers and direct MCP triggers still work.
 
+### Candidate voice-egress dependency chain (not implemented)
+
+```mermaid
+graph LR
+    Origin["origin butler"] -- "notify.v1 + authenticated lineage" --> SW["Switchboard"]
+    SW -- "route to Messenger" --> MSG["Messenger"]
+    MSG -- "attestation request via Switchboard" --> SW
+    SW -- "MCP: voice_presence_attest.v1" --> HOME["Home"]
+    HOME -- "categorical attestation via Switchboard" --> SW
+    SW --> MSG
+    MSG -- "one admitted handoff" --> VP["local-first voice provider"]
+    MSG -- "one text-only fallback intent" --> SW
+```
+
+Voice fails closed if Switchboard, Messenger's replay store, Home attestation,
+or the exact provider profile is unavailable. A failure does not redirect
+Messenger to another room/provider, infer a device from identity data, or make
+Live Listener an egress component. Telegram/email text fallback is separately keyed
+and resolved once by Switchboard.
+
 ### Connector-to-Switchboard Dependency
 
 ```mermaid

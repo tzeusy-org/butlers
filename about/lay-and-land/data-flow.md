@@ -169,6 +169,43 @@ sequenceDiagram
 | `reply` | Contextual response to an ingested message (requires request_context) |
 | `react` | Emoji reaction on the source message (Telegram only, requires request_context) |
 
+### Candidate in-room voice branch (not implemented)
+
+Voice is an explicit-only branch of `notify.v1`; omitted-channel and preference
+resolution never select it. The target flow is:
+
+```mermaid
+sequenceDiagram
+    participant Origin as Origin Butler
+    participant SW as Switchboard
+    participant MSG as Messenger
+    participant HOME as Home
+    participant Provider as Admissible Local Provider
+
+    Origin->>SW: notify.v1(channel=voice, reply or explicit endpoint)
+    SW->>SW: Authenticate service + durable origin lineage
+    SW->>MSG: voice_origin.v1 + notify.v1
+    MSG->>MSG: Provider admissibility, initiation, binding, DND/quiet
+    MSG->>SW: voice_presence_attest.v1 request (opaque room/version/nonce)
+    SW->>HOME: MCP-brokered attestation request
+    HOME-->>SW: Categorical fresh room result
+    SW-->>MSG: Authenticated attestation
+    MSG->>MSG: Atomic logical-delivery claim
+    MSG->>Provider: One in-memory handoff
+    Provider-->>MSG: no-start | started/confirmed | failed | unknown
+    opt eligible terminal voice outcome
+        MSG->>SW: One separately keyed text-only fallback intent
+        SW->>SW: Resolve at most one Telegram/email target
+    end
+```
+
+The generic deferred-notification queue never stores voice. Messenger's current
+DND/quiet decision is absolute, and fresh presence is required for every
+attempt. A possible provider start becomes non-retryable ambiguity. Audio,
+provider bodies, raw presence, and physical identifiers do not persist. See
+RFC 0034 and `REQ-messenger-voice-egress-001` through
+`REQ-messenger-voice-egress-011`.
+
 ---
 
 ## 4. Identity Resolution Flow
@@ -418,6 +455,7 @@ INSERT ... ON CONFLICT DO NOTHING -> read back effective row.
 | Ingestion | Connector poll/webhook | route_inbox INSERT | ingest.v1 -> route.v1 (MCP) | Yes (durable buffer + route_inbox) |
 | Scheduled | Scheduler tick | Session log INSERT | Internal (asyncio) | Yes (schedule DB) |
 | Response | LLM session notify() | External API call | MCP -> module-specific | Conditional: eligible routine owner-default holds are durable in the originating butler queue; other direct paths are fire-and-forget |
+| Voice response (candidate) | Explicit voice notify intent | Admissible local room provider | authenticated Switchboard -> Messenger; Home attestation via Switchboard; provider adapter | Content-blind Messenger receipt and replay tombstone only; audio, content, raw presence, and provider bodies are never durable |
 | Identity | Channel identifier | Resolved contact | SQL (public schema) | N/A (read-only) |
 | Memory | Session observation | Tiered storage | SQL + pgvector | Yes |
 | Heartbeat | Connector loop | Registry update | MCP | No (ephemeral liveness) |
