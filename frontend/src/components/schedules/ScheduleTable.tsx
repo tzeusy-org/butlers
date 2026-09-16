@@ -28,6 +28,7 @@ export interface ScheduleTableProps {
   onEdit: (schedule: Schedule) => void;
   onDelete: (schedule: Schedule) => void;
   triggeringId?: string | null;
+  togglingId?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -107,6 +108,7 @@ export function ScheduleTable({
   onEdit,
   onDelete,
   triggeringId,
+  togglingId,
 }: ScheduleTableProps) {
   if (!isLoading && schedules.length === 0) {
     return <EmptyScheduleState />;
@@ -188,6 +190,7 @@ export function ScheduleTable({
                     <button
                       type="button"
                       onClick={() => onToggle(schedule)}
+                      disabled={togglingId === schedule.id}
                       className="cursor-pointer"
                     >
                       {schedule.enabled ? (

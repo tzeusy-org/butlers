@@ -1088,6 +1088,29 @@ export interface ScheduleUpdate {
   enabled?: boolean;
 }
 
+/** Explicit desired state sent to the idempotent schedule-toggle action. */
+export interface ScheduleToggleRequest {
+  enabled: boolean;
+}
+
+/** Server-observed receipt returned by a successful schedule toggle. */
+export interface ScheduleToggleResult {
+  id: string;
+  name: string;
+  source: string;
+  status: "updated" | "unchanged";
+  outcome: "applied" | "already_requested";
+  requested_enabled: boolean;
+  observed_enabled: boolean;
+  changed: boolean;
+  next_run_at: string | null;
+  audit: {
+    action: "schedule.toggle";
+    result: "success";
+    target: string;
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Calendar workspace
 // ---------------------------------------------------------------------------

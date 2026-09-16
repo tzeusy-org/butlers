@@ -105,6 +105,8 @@ import type {
   PaginatedResponse,
   Schedule,
   ScheduleCreate,
+  ScheduleToggleRequest,
+  ScheduleToggleResult,
   ScheduleUpdate,
   SearchResults,
   SessionAggregate,
@@ -1217,12 +1219,13 @@ export function triggerButlerSchedule(
 export function toggleButlerSchedule(
   name: string,
   scheduleId: string,
-): Promise<ApiResponse<Record<string, unknown>>> {
-  return apiFetch<ApiResponse<Record<string, unknown>>>(
+  body?: ScheduleToggleRequest,
+): Promise<ApiResponse<ScheduleToggleResult>> {
+  const options: RequestInit = { method: "PATCH" };
+  if (body) options.body = JSON.stringify(body);
+  return apiFetch<ApiResponse<ScheduleToggleResult>>(
     `/butlers/${encodeURIComponent(name)}/schedules/${encodeURIComponent(scheduleId)}/toggle`,
-    {
-      method: "PATCH",
-    },
+    options,
   );
 }
 
