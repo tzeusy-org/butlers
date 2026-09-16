@@ -33,11 +33,8 @@ export function useDarkMode() {
   useEffect(() => {
     if (!hasWindow) return
     const root = document.documentElement
-    if (resolvedTheme === 'dark') {
-      root.classList.add('dark')
-    } else {
-      root.classList.remove('dark')
-    }
+    root.classList.toggle('dark', resolvedTheme === 'dark')
+    root.classList.toggle('light', resolvedTheme === 'light')
     try {
       window.localStorage.setItem('theme', theme)
     } catch {

@@ -2,6 +2,70 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
+@font-face {
+  font-family: "Inter Tight";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/inter-tight-latin-400-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Inter Tight";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/inter-tight-latin-500-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Source Serif 4";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/source-serif-4-latin-400-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Source Serif 4";
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/source-serif-4-latin-400-italic.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Source Serif 4";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/source-serif-4-latin-500-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Source Serif 4";
+  font-style: italic;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/source-serif-4-latin-500-italic.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/jetbrains-mono-latin-400-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/jetbrains-mono-latin-500-normal.woff2") format("woff2");
+}
+
 @custom-variant dark (&:is(.dark *));
 
 :root {
@@ -14,8 +78,8 @@
   font-family: var(--font-sans);
   line-height: 1.5;
   font-weight: 400;
-  color: #213547;
-  background-color: #ffffff;
+  color: var(--fg);
+  background-color: var(--bg);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -312,15 +376,14 @@
    * --font-mono   JetBrains Mono Numerals: timestamps, IDs, deltas, KPI
    *                              mega-numbers, eyebrows, code, file paths.
    *
-   * Loaded via Google Fonts in frontend/index.html. The :root font-family
+   * Loaded from the locally vendored WOFF2 files above. The :root font-family
    * rule above remains the body default; opt-in consumers reference these
    * variables directly. See about/lay-and-land/frontend.md § Type tokens.
    *
-   * Font verification (Q10 — 2026-05-26):
-   *   Inter Tight:ital,wght@0,400..700  ✓ loaded (index.html line 9)
-   *   Source Serif 4:ital,wght@0,400;0,500;1,400  ✓ loaded (index.html line 9)
-   *   JetBrains Mono:wght@400;500  ✓ loaded (index.html line 9)
-   *   No @import additions required — all three families already present.
+   * Font verification (bu-7exe4.10):
+   *   Inter Tight: 400/500 roman
+   *   Source Serif 4: 400/500 roman and italic
+   *   JetBrains Mono: 400/500 roman
    * ---------------------------------------------------------------------------*/
   --font-sans:  'Inter Tight', ui-sans-serif, system-ui, sans-serif;
   --font-serif: 'Source Serif 4', ui-serif, Georgia, serif;
