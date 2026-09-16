@@ -5,6 +5,7 @@ import { cleanup, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import Shell from "./Shell"
+import { useShellScrollContainerRef } from "./ShellScrollContext"
 
 vi.mock("./Sidebar", () => ({ default: () => null }))
 vi.mock("../ui/sheet", () => ({
@@ -15,7 +16,29 @@ vi.mock("../ui/sheet", () => ({
 
 afterEach(cleanup)
 
+function ScrollRefProbe({
+  onRead,
+}: {
+  onRead: (ref: ReturnType<typeof useShellScrollContainerRef>) => void
+}) {
+  onRead(useShellScrollContainerRef())
+  return null
+}
+
 describe("Shell", () => {
+  it("provides the persistent main scroll ref through its context", () => {
+    const refHolder: { current: ReturnType<typeof useShellScrollContainerRef> } = {
+      current: null,
+    }
+    render(
+      <Shell header={<span>Header</span>}>
+        <ScrollRefProbe onRead={(ref) => { refHolder.current = ref }} />
+      </Shell>,
+    )
+
+    expect(refHolder.current?.current).toBe(screen.getByRole("main"))
+  })
+
   it("exposes a programmatically focusable main-content target for the skip link", () => {
     render(
       <Shell header={<span>Header</span>}>
@@ -97,5 +120,6 @@ describe("Shell", () => {
     expect(main.style.paddingBottom).toBe(
       "calc(var(--page-gutter-y) + var(--safe-area-bottom))",
     )
+    expect(main.style.overflowAnchor).toBe("none")
   })
 })

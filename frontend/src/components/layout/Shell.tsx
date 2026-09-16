@@ -1,5 +1,6 @@
-import { type ReactNode, useState } from 'react'
+import { type ReactNode, useMemo, useRef, useState } from 'react'
 import Sidebar from './Sidebar'
+import { ShellScrollContext, type ShellScrollContextValue } from './ShellScrollContext'
 import {
   Sheet,
   SheetContent,
@@ -30,6 +31,11 @@ function readCollapsedPreference(): boolean {
 export default function Shell({ header, children, chatDock }: ShellProps) {
   const [mobileOpen, setMobileOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(readCollapsedPreference)
+  const mainScrollContainerRef = useRef<HTMLElement>(null)
+  const scrollContextValue = useMemo<ShellScrollContextValue>(
+    () => ({ mainScrollContainerRef }),
+    [],
+  )
 
   const toggleCollapsed = () => {
     setCollapsed((prev) => {
@@ -44,14 +50,15 @@ export default function Shell({ header, children, chatDock }: ShellProps) {
   }
 
   return (
-    <div
-      className="flex h-dvh overflow-hidden bg-background"
-      style={{
-        paddingTop: 'var(--safe-area-top)',
-        paddingLeft: 'var(--safe-area-left)',
-        paddingRight: 'var(--safe-area-right)',
-      }}
-    >
+    <ShellScrollContext.Provider value={scrollContextValue}>
+      <div
+        className="flex h-dvh overflow-hidden bg-background"
+        style={{
+          paddingTop: 'var(--safe-area-top)',
+          paddingLeft: 'var(--safe-area-left)',
+          paddingRight: 'var(--safe-area-right)',
+        }}
+      >
       {/* Mobile sidebar (Sheet/drawer) — only rendered below md */}
       <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
         <SheetContent side="left" className="w-64 p-0 md:hidden" showCloseButton={false}>
@@ -100,10 +107,15 @@ export default function Shell({ header, children, chatDock }: ShellProps) {
 
         {/* Content */}
         <main
+          ref={mainScrollContainerRef}
           id="main-content"
           tabIndex={-1}
           className="flex-1 overflow-y-auto"
           style={{
+            // POP restoration is owned by useShellScrollMemory. Native scroll
+            // anchoring can otherwise move that deliberate offset as route
+            // content settles.
+            overflowAnchor: 'none',
             paddingTop: 'var(--page-gutter-y)',
             paddingLeft: 'var(--page-gutter-x)',
             paddingRight: 'var(--page-gutter-x)',
@@ -129,6 +141,7 @@ export default function Shell({ header, children, chatDock }: ShellProps) {
           {chatDock}
         </aside>
       )}
-    </div>
+      </div>
+    </ShellScrollContext.Provider>
   )
 }

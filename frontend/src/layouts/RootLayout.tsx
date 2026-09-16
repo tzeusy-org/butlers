@@ -21,6 +21,7 @@ import { ChatRecallCommands } from '../components/chat/ChatRecallCommands'
 import { useMediaQuery } from '../hooks/use-media-query'
 import { readBooleanSetting, writeBooleanSetting } from '../lib/local-settings'
 import { announce, useShellAnnouncement } from '../lib/shell-announcer'
+import { useShellScrollMemory } from '../hooks/use-shell-scroll-memory'
 
 // Tailwind's default `xl` breakpoint (1280px) — the docked chat rail's
 // default posture threshold (bu-0ynlk.11 behavior matrix).
@@ -55,6 +56,15 @@ function ShellAnnouncerRegion() {
       {message}
     </span>
   )
+}
+
+/**
+ * Mounted below Shell so the reusable scroll hook can read Shell's persistent
+ * `<main>` ref without making route pages aware of the shell implementation.
+ */
+function ShellScrollMemory() {
+  useShellScrollMemory()
+  return null
 }
 
 export default function RootLayout() {
@@ -168,6 +178,7 @@ function RootLayoutInner() {
               }
               chatDock={showDock ? <ChatDock onClose={closeDock} /> : undefined}
             >
+              <ShellScrollMemory />
               <ErrorBoundary>
                 <Outlet />
               </ErrorBoundary>
