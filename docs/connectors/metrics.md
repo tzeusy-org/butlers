@@ -85,8 +85,10 @@ route reports `aggregates_available: false` when its Prometheus-backed metrics
 cannot be read; callers must render that as unavailable rather than zero. The
 retired Switchboard connector namespace and its per-connector fanout endpoint
 are not dashboard API surfaces. The separate cross-connector
-`GET /api/switchboard/ingestion/fanout` overview matrix remains outside this
-connector-namespace migration.
+`GET /api/switchboard/ingestion/fanout` route remains outside this
+connector-namespace migration, but the active Connectors dashboard renders its
+7-day routing distribution. Its `meta.aggregates_available` flag distinguishes
+a measured empty response from an unavailable aggregate source.
 
 ## Verification
 

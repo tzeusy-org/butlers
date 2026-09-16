@@ -633,6 +633,14 @@ models are not additional backend response contracts.
 - `GET /api/general/entities/{entityId}` -> `ApiResponse<GeneralEntity>`
 - `GET /api/switchboard/routing-log` -> `PaginatedResponse<RoutingEntry>`
 - `GET /api/switchboard/registry` -> `ApiResponse<RegistryEntry[]>`
+- `GET /api/switchboard/ingestion/fanout?period=24h|7d|30d` ->
+  `ApiResponse<ConnectorFanoutRow[]>`
+  - Each row names a measured `connector_type`, `endpoint_identity`,
+    `target_butler`, and `message_count` route.
+  - `meta.aggregates_available` is `true` for a readable Prometheus aggregate,
+    including a measured empty response. It is `false` when no usable aggregate
+    sample exists or the endpoint uses a degraded fallback; clients must name
+    that state rather than render rows, zeroes, or an all-clear distribution.
 
 ## Memory Domain Contract
 

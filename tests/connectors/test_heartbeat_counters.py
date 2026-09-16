@@ -160,3 +160,51 @@ def test_collect_counters_marks_missing_source_unavailable_instead_of_claiming_z
     }
     assert counters.availability == "unavailable"
     assert counters.unavailable_fields == frozenset(counters)
+
+
+def test_collect_counters_ignores_unnamed_created_style_sample() -> None:
+    """A family name cannot turn an unnamed timestamp into a total."""
+    heartbeat = _heartbeat()
+    family = _family(
+        "connector_ingest_submissions",
+        [
+            SimpleNamespace(
+                name=None,
+                value=1_735_689_600,
+                labels={
+                    "connector_type": "gmail",
+                    "endpoint_identity": "gmail:user:owner@example.com",
+                    "status": "success",
+                },
+            )
+        ],
+    )
+
+    with patch("prometheus_client.REGISTRY") as registry:
+        registry.collect.return_value = [family]
+        counters = heartbeat._collect_counters()
+
+    assert counters["messages_ingested"] == 0
+    assert "messages_ingested" in counters.unavailable_fields
+
+
+def test_collect_counters_ignores_samples_without_a_label_mapping() -> None:
+    """Malformed labels lower the field to unavailable instead of aborting a heartbeat."""
+    heartbeat = _heartbeat()
+    family = _family(
+        "connector_ingest_submissions",
+        [
+            SimpleNamespace(
+                name="connector_ingest_submissions_total",
+                value=7,
+                labels=None,
+            )
+        ],
+    )
+
+    with patch("prometheus_client.REGISTRY") as registry:
+        registry.collect.return_value = [family]
+        counters = heartbeat._collect_counters()
+
+    assert counters["messages_ingested"] == 0
+    assert "messages_ingested" in counters.unavailable_fields
