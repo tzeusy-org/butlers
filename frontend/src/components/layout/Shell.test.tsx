@@ -120,5 +120,6 @@ describe("Shell", () => {
     expect(main.style.paddingBottom).toBe(
       "calc(var(--page-gutter-y) + var(--safe-area-bottom))",
     )
+    expect(main.style.overflowAnchor).toBe("none")
   })
 })

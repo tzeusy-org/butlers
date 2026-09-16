@@ -7,7 +7,7 @@ const ISSUE_KEY = "audit_error_group:scroll";
 const SHELL_SCROLL_OFFSET = 640;
 const SCROLLABLE_ROUTE_CONTENT_HEIGHT = 3600;
 const SCROLL_FIXTURE_STYLE_ID = "shell-scroll-memory-route-fixture";
-const SCROLL_RESTORATION_TOLERANCE = 16;
+const SCROLL_RESTORATION_TOLERANCE = 4;
 
 function envelope(data: unknown, meta: Record<string, unknown> = {}): string {
   return JSON.stringify({ data, meta });

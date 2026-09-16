@@ -112,6 +112,10 @@ export default function Shell({ header, children, chatDock }: ShellProps) {
           tabIndex={-1}
           className="flex-1 overflow-y-auto"
           style={{
+            // POP restoration is owned by useShellScrollMemory. Native scroll
+            // anchoring can otherwise move that deliberate offset as route
+            // content settles.
+            overflowAnchor: 'none',
             paddingTop: 'var(--page-gutter-y)',
             paddingLeft: 'var(--page-gutter-x)',
             paddingRight: 'var(--page-gutter-x)',
