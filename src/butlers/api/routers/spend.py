@@ -138,11 +138,17 @@ SELECT
     tul.butler_name AS butler_name,
     COALESCE(tul.purpose, 'unknown') AS purpose,
     mc.model_id AS model_id,
-    COUNT(*)::bigint AS calls,
-    COALESCE(SUM(tul.input_tokens), 0)::bigint AS input_tokens,
-    COALESCE(SUM(tul.output_tokens), 0)::bigint AS output_tokens,
-    COALESCE(SUM(tul.cached_input_tokens), 0)::bigint AS cached_input_tokens,
-    COALESCE(SUM(tul.cache_creation_tokens), 0)::bigint AS cache_creation_tokens
+    COUNT(*) FILTER (WHERE tul.usage_source = 'measured')::bigint AS calls,
+    COUNT(*) FILTER (WHERE tul.usage_source = 'unmeasurable')::bigint
+        AS unmeasurable_attempts,
+    COALESCE(SUM(tul.input_tokens) FILTER (WHERE tul.usage_source = 'measured'), 0)::bigint
+        AS input_tokens,
+    COALESCE(SUM(tul.output_tokens) FILTER (WHERE tul.usage_source = 'measured'), 0)::bigint
+        AS output_tokens,
+    COALESCE(SUM(tul.cached_input_tokens) FILTER (WHERE tul.usage_source = 'measured'), 0)::bigint
+        AS cached_input_tokens,
+    COALESCE(SUM(tul.cache_creation_tokens) FILTER (WHERE tul.usage_source = 'measured'), 0)::bigint
+        AS cache_creation_tokens
 FROM public.token_usage_ledger tul
 JOIN public.model_catalog mc ON mc.id = tul.catalog_entry_id
 WHERE tul.recorded_at >= $1
@@ -888,6 +894,7 @@ async def get_cost_summary(
             data=SpendSummary(
                 period=period_label,
                 total_cost_usd=0.0,
+                measured_usd=0.0,
                 total_sessions=0,
                 total_input_tokens=0,
                 total_output_tokens=0,
@@ -905,6 +912,8 @@ async def get_cost_summary(
         data=SpendSummary(
             period=period_label,
             total_cost_usd=round(spend.cost_usd, 6),
+            measured_usd=round(spend.cost_usd, 6),
+            unmeasurable_attempts=spend.unmeasurable_attempts,
             total_sessions=sum(int(row.get("calls") or 0) for row in rows),
             total_input_tokens=input_tokens,
             total_output_tokens=output_tokens,
@@ -1702,6 +1711,8 @@ class ForecastResponse(BaseModel):
     days_in_month: int
     days_elapsed: int
     mtd_usd: float
+    measured_usd: float = 0.0
+    unmeasurable_attempts: int = 0
     ceiling_usd: float | None
     projection_confidence: Literal["low", "normal"]
     # True when pricing MTD from public.token_usage_ledger (the same source
@@ -1822,6 +1833,8 @@ async def get_spend_forecast(
             days_in_month=days_in_month,
             days_elapsed=days_elapsed,
             mtd_usd=round(mtd_spend.cost_usd, 6),
+            measured_usd=round(mtd_spend.cost_usd, 6),
+            unmeasurable_attempts=mtd_spend.unmeasurable_attempts,
             ceiling_usd=ceiling_usd,
             projection_confidence=projection_confidence_for(days_elapsed),
             ceiling_source_error=ceiling_source_error,

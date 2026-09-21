@@ -71,6 +71,10 @@ import {
   useVerifyAllModels,
 } from "@/hooks/use-model-catalog";
 import type { UsageWindow } from "@/api/types.ts";
+import {
+  SPEND_UTC_DATE_KEY_TIMEZONE,
+  useSpendSummary,
+} from "@/hooks/use-spend";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -1740,9 +1744,19 @@ export default function SettingsModelsPage() {
 
   const { data, isLoading, isError } = useModelCatalog();
   const attentionQuery = useModelAttention();
+  const now = new Date();
+  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const spendSummary = useSpendSummary(
+    undefined,
+    monthStart,
+    now,
+    undefined,
+    SPEND_UTC_DATE_KEY_TIMEZONE,
+  );
   const verifyAll = useVerifyAllModels();
 
   const entries: ModelCatalogEntry[] = data?.data ?? [];
+  const unmeasurableAttempts = spendSummary?.data?.data.unmeasurable_attempts ?? 0;
 
   // Group by tier preserving canonical order
   const grouped = Object.fromEntries(
@@ -1866,6 +1880,16 @@ export default function SettingsModelsPage() {
           </Button>
         </div>
       </div>
+
+      {unmeasurableAttempts > 0 && (
+        <div
+          className="px-7 py-2.5 border-b border-border bg-[var(--amber)]/10 font-mono text-xs text-foreground"
+          role="status"
+          data-testid="models-unmeasurable-attempts"
+        >
+          {unmeasurableAttempts.toLocaleString()} attempts unpriced
+        </div>
+      )}
 
       {/* Add model dialog */}
       <AddModelDialog open={addOpen} onOpenChange={setAddOpen} />

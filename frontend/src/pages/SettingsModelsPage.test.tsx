@@ -68,6 +68,10 @@ vi.mock("@/hooks/use-model-catalog", () => ({
   useModelUsageDetail: vi.fn(() => ({ data: undefined, isLoading: false })),
 }));
 
+vi.mock("@/hooks/use-spend", () => ({
+  useSpendSummary: vi.fn(),
+}));
+
 vi.mock("sonner", () => ({
   toast: {
     success: vi.fn(),
@@ -94,6 +98,7 @@ import {
   useVerifyAllModels,
 } from "@/hooks/use-model-catalog";
 import { toast } from "sonner";
+import { useSpendSummary } from "@/hooks/use-spend";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyMock = any;
@@ -186,6 +191,11 @@ function mountPage() {
 beforeEach(() => {
   vi.resetAllMocks();
   setHookState({ entries: [] });
+  vi.mocked(useSpendSummary).mockReturnValue({
+    data: { data: { unmeasurable_attempts: 0 } },
+    isLoading: false,
+    isError: false,
+  } as AnyMock);
 });
 
 afterEach(() => {
@@ -319,6 +329,23 @@ describe("SettingsModelsPage — page structure", () => {
     setHookState({ entries: [] });
     const html = renderPage();
     expect(html).toContain("Verify all");
+  });
+
+  it("renders unmeasurable spend attempts only when the summary reports them", () => {
+    vi.mocked(useSpendSummary).mockReturnValue({
+      data: { data: { unmeasurable_attempts: 3 } },
+      isLoading: false,
+      isError: false,
+    } as AnyMock);
+    const html = renderPage();
+    expect(html).toContain("3 attempts unpriced");
+
+    vi.mocked(useSpendSummary).mockReturnValue({
+      data: { data: { unmeasurable_attempts: 0 } },
+      isLoading: false,
+      isError: false,
+    } as AnyMock);
+    expect(renderPage()).not.toContain("attempts unpriced");
   });
 });
 

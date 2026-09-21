@@ -213,7 +213,9 @@ async def record_dispatch_attempt(
 
         if outcome not in _QUALIFYING_BREAKER_OUTCOMES and not produce_fleet_halt:
             try:
-                await pool.execute(_DISPATCH_ATTEMPTS_INSERT, *values)
+                attempt_id = await pool.fetchval(_DISPATCH_ATTEMPTS_INSERT_RETURNING_ID, *values)
+                if not isinstance(attempt_id, int):
+                    raise RuntimeError("dispatch-attempt insert returned no stable bigint id")
             except Exception:
                 _safe_inc("degraded", "none")
                 logger.debug(
@@ -226,6 +228,7 @@ async def record_dispatch_attempt(
                 )
             else:
                 _safe_inc("persisted", "none")
+                return attempt_id
             return None
 
         edge_outcome = "none"

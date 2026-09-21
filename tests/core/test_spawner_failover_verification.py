@@ -540,20 +540,25 @@ class TestEligibleRuntimeFailureRetry:
         assert len(runtime_failures) == 1
         assert runtime_failures[0][2] == _PRIMARY_ID
         assert runtime_failures[0][5].startswith("empty_runtime_response")
-        mock_usage.assert_awaited_once()
-        _, usage_kwargs = mock_usage.call_args
-        assert usage_kwargs["catalog_entry_id"] == _PRIMARY_ID
-        assert usage_kwargs["butler_name"] == "test-butler"
-        assert usage_kwargs["session_id"] == _SESSION_ID
-        assert usage_kwargs["input_tokens"] == 10
-        assert usage_kwargs["output_tokens"] == 0
-        assert usage_kwargs["cached_input_tokens"] == 0
-        assert usage_kwargs["cache_creation_tokens"] == 0
-        assert usage_kwargs["purpose"] == "schedule:consolidation"
+        assert mock_usage.await_count == 2
+        failed_usage = mock_usage.await_args_list[0].kwargs
+        assert failed_usage["catalog_entry_id"] == _PRIMARY_ID
+        assert failed_usage["butler_name"] == "test-butler"
+        assert failed_usage["session_id"] == _SESSION_ID
+        assert failed_usage["input_tokens"] == 10
+        assert failed_usage["output_tokens"] == 0
+        assert failed_usage["cached_input_tokens"] == 0
+        assert failed_usage["usage_source"] == "measured"
+        fallback_usage = mock_usage.await_args_list[1].kwargs
+        assert fallback_usage["catalog_entry_id"] == _FALLBACK_ID
+        assert fallback_usage["usage_source"] == "unmeasurable"
+        assert fallback_usage["input_tokens"] is None
+        assert failed_usage["cache_creation_tokens"] == 0
+        assert failed_usage["purpose"] == "schedule:consolidation"
         # bu-hz0g0: this dispatch never resumed a conversation (trigger_source
         # is not "route"); the composed-prompt digest itself is covered by
         # TestComposedPromptLedgerColumns in test_spawner_dispatch_attempt_provenance.py.
-        assert usage_kwargs["resume_outcome"] is None
+        assert failed_usage["resume_outcome"] is None
 
     async def test_tool_only_adapter_result_remains_successful(self, tmp_path: Path) -> None:
         """A confirmed MCP action is a usable result even without final text."""

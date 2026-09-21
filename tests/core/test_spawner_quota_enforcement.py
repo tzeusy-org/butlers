@@ -337,7 +337,7 @@ class TestSpawnerLedgerRecording:
         assert result.success is True
         mock_record.assert_called_once()
 
-        # Adapter crashes before returning usage → no recording
+        # Adapter crashes before returning usage → explicit unmeasurable attempt
         class _FailingUsageAdapter(_MockAdapter):
             async def invoke(
                 self,
@@ -385,9 +385,11 @@ class TestSpawnerLedgerRecording:
             mock_create1.return_value = _SESSION_ID
             result1 = await spawner1.trigger("hello", "tick")
         assert result1.success is False
-        mock_record1.assert_not_called()
+        mock_record1.assert_awaited_once()
+        assert mock_record1.await_args.kwargs["usage_source"] == "unmeasurable"
+        assert mock_record1.await_args.kwargs["input_tokens"] is None
 
-        # Adapter returns None usage → no recording
+        # Adapter returns None usage → explicit unmeasurable attempt
         config_dir2 = tmp_path / "config2"
         config_dir2.mkdir()
         spawner2 = Spawner(
@@ -423,4 +425,6 @@ class TestSpawnerLedgerRecording:
             mock_create2.return_value = _SESSION_ID
             result2 = await spawner2.trigger("hi", "tick")
         assert result2.success is True
-        mock_record2.assert_not_called()
+        mock_record2.assert_awaited_once()
+        assert mock_record2.await_args.kwargs["usage_source"] == "unmeasurable"
+        assert mock_record2.await_args.kwargs["input_tokens"] is None

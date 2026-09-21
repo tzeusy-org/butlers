@@ -24,6 +24,10 @@ _EVIDENCE_MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
     / "alembic/versions/core/core_238_dispatch_purpose_lane_evidence.py"
 )
+_ATTEMPT_USAGE_MIGRATION_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "alembic/versions/core/core_242_attempt_grained_token_usage.py"
+)
 _PREFLIGHT_PATH = Path(__file__).resolve().parents[2] / "src/butlers/migration_preflight.py"
 
 
@@ -54,6 +58,91 @@ def test_prompt_receipt_migrations_extend_the_live_core_head() -> None:
     assert (purpose.revision, purpose.down_revision) == ("core_237", "core_236")
     evidence = _load_path("core_238", _EVIDENCE_MIGRATION_PATH)
     assert (evidence.revision, evidence.down_revision) == ("core_238", "core_237")
+    attempt_usage = _load_path("core_242", _ATTEMPT_USAGE_MIGRATION_PATH)
+    assert (attempt_usage.revision, attempt_usage.down_revision) == ("core_242", "core_241")
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_attempt_usage_migration_is_additive_closed_and_reversible(
+    provisioned_postgres_pool,
+) -> None:
+    async with provisioned_postgres_pool() as pool:
+        await pool.execute(
+            """
+            CREATE TABLE public.model_dispatch_attempts (
+                id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY
+            );
+            CREATE TABLE public.token_usage_ledger (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+                recorded_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            """
+        )
+        legacy_id = await pool.fetchval(
+            "INSERT INTO public.token_usage_ledger (input_tokens, output_tokens) "
+            "VALUES (5, 3) RETURNING id"
+        )
+        attempt_id = await pool.fetchval(
+            "INSERT INTO public.model_dispatch_attempts DEFAULT VALUES RETURNING id"
+        )
+
+        module = _load_path("core_242", _ATTEMPT_USAGE_MIGRATION_PATH)
+        statements: list[str] = []
+        mocked_op = MagicMock()
+        mocked_op.execute.side_effect = statements.append
+        with patch.object(module, "op", mocked_op):
+            module.upgrade()
+        for statement in statements:
+            await pool.execute(statement)
+
+        legacy = await pool.fetchrow(
+            "SELECT attempt_id, usage_source FROM public.token_usage_ledger WHERE id = $1",
+            legacy_id,
+        )
+        assert tuple(legacy) == (None, "measured")
+
+        unmeasurable_id = await pool.fetchval(
+            """
+            INSERT INTO public.token_usage_ledger (
+                input_tokens, output_tokens, cached_input_tokens,
+                cache_creation_tokens, attempt_id, usage_source
+            ) VALUES (NULL, NULL, NULL, NULL, $1, 'unmeasurable')
+            RETURNING id
+            """,
+            attempt_id,
+        )
+        with pytest.raises(asyncpg.CheckViolationError):
+            await pool.execute(
+                "INSERT INTO public.token_usage_ledger (usage_source) VALUES ('guessed')"
+            )
+        with pytest.raises(asyncpg.CheckViolationError):
+            await pool.execute(
+                "INSERT INTO public.token_usage_ledger "
+                "(input_tokens, output_tokens, usage_source) VALUES (1, 2, 'unmeasurable')"
+            )
+
+        statements.clear()
+        with patch.object(module, "op", mocked_op):
+            module.downgrade()
+        with pytest.raises(asyncpg.RaiseError, match="unmeasurable usage evidence exists"):
+            for statement in statements:
+                await pool.execute(statement)
+
+        await pool.execute("DELETE FROM public.token_usage_ledger WHERE id = $1", unmeasurable_id)
+        for statement in statements:
+            await pool.execute(statement)
+        columns = await pool.fetch(
+            "SELECT column_name, is_nullable FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = 'token_usage_ledger'"
+        )
+        by_name = {row["column_name"]: row["is_nullable"] for row in columns}
+        assert "attempt_id" not in by_name
+        assert "usage_source" not in by_name
+        assert by_name["input_tokens"] == "NO"
 
 
 async def _run_migration(pool, direction: str) -> None:

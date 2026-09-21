@@ -201,7 +201,7 @@ The quota system prevents runaway costs by limiting token consumption per model 
 
 ### Token Usage Recording
 
-`record_token_usage()` writes to `public.token_usage_ledger` after each session completes. This is best-effort: errors are logged and never propagate to the caller.
+`record_token_usage()` writes to `public.token_usage_ledger` once per invoked spawner attempt. The row references the matching `public.model_dispatch_attempts.id`: parseable provider usage is stored with `usage_source=measured`, while a timeout or other invocation with no parseable usage stores `usage_source=unmeasurable` and NULL token buckets. Historical rows remain `measured` with a NULL attempt link. Month-to-date pricing sums measured rows and separately reports `unmeasurable_attempts`, so failover storms and unknown usage cannot disappear behind one confident session total. Recording remains best-effort: errors are logged and never propagate to the caller.
 
 The ledger also carries a token digest for five tracked layers of the composed system prompt (`base_prompt_tokens`, `timezone_instruction_tokens`, `context_preamble_tokens`, `routing_instructions_tokens`, `memory_context_tokens`, from `spawner_context.compose_prompt_digest()`) and `resume_outcome` (whether a conversational turn resumed a provider-native session: `resumed`, `resume_failed_retried_cold`, `resume_failed_terminal`, or `NULL` when resume was never attempted). The separately governed blind-spot preamble is outside this ledger schema. Both fields are additive and nullable — a caller with no composed prompt of its own (the discretion dispatcher lane) omits them and the columns stay honestly `NULL` rather than a fabricated `0`.
 
@@ -286,9 +286,10 @@ Every attempt in the failover sequence writes a row to `public.model_dispatch_at
 |---|---|
 | `quota_skip` | Candidate skipped before invocation due to quota exhaustion |
 | `runtime_failure` | Adapter raised a failover-eligible error |
+| `resume_failure` | Provider-native resume failed safely; the same candidate is retried cold without affecting its breaker |
 | `suppressed` | Failover decision was ineligible (side effects or unknown error) |
 | `exhausted` | All same-tier candidates tried, none succeeded |
-| `success` | This attempt produced the final successful result (only written on failover) |
+| `success` | This attempt produced the final successful result |
 
 Query provenance via the API: `GET /api/dispatch/attempts?session_id=<uuid>` or directly from `public.model_dispatch_attempts`.
 

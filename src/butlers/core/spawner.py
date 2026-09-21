@@ -418,6 +418,7 @@ async def _write_dispatch_attempt(
     ``outcome`` must be one of:
     - ``'quota_skip'``    — candidate skipped before invocation due to quota
     - ``'runtime_failure'`` — adapter raised a failover-eligible error
+    - ``'resume_failure'`` — a failed provider resume will retry the same candidate cold
     - ``'suppressed'``    — failover decision was ineligible (side effects / unknown)
     - ``'exhausted'``     — all same-tier candidates tried, none succeeded
     - ``'success'``       — this attempt produced the final successful result
@@ -449,6 +450,39 @@ async def _write_dispatch_attempt(
         duration_ms=duration_ms,
         purpose_lane=purpose_lane,
         produce_fleet_halt=produce_fleet_halt,
+    )
+
+
+async def _write_attempt_usage(
+    pool: asyncpg.Pool,
+    *,
+    attempt_id: int | None,
+    usage: dict[str, Any] | None,
+    catalog_entry_id: uuid.UUID,
+    butler_name: str,
+    session_id: uuid.UUID | None,
+    purpose: str | None,
+    purpose_lane: PurposeLane,
+    resume_outcome: str | None,
+    composed_prompt: ComposedPrompt | None,
+) -> None:
+    """Persist measured or explicitly unmeasurable evidence for one invocation."""
+    measured = usage is not None and usage.get("input_tokens") is not None
+    await record_token_usage(
+        pool,
+        catalog_entry_id=catalog_entry_id,
+        butler_name=butler_name,
+        session_id=session_id,
+        input_tokens=usage.get("input_tokens") if measured else None,
+        output_tokens=(usage.get("output_tokens") or 0) if measured else None,
+        cached_input_tokens=(usage.get("cache_read_input_tokens") or 0) if measured else None,
+        cache_creation_tokens=(usage.get("cache_creation_input_tokens") or 0) if measured else None,
+        purpose=purpose,
+        purpose_lane=purpose_lane,
+        resume_outcome=resume_outcome,
+        attempt_id=attempt_id,
+        usage_source="measured" if measured else "unmeasurable",
+        **_composed_prompt_ledger_kwargs(composed_prompt),
     )
 
 
@@ -2338,6 +2372,7 @@ class Spawner:
                 _attempt_exc: BaseException | None = None
                 _attempt_tool_calls: list[dict[str, Any]] = []
                 _empty_response_usage: dict[str, Any] | None = None
+                usage: dict[str, Any] | None = None
                 dashboard_invoke_claimed = False
                 dashboard_release_event: asyncio.Event | None = None
                 dashboard_cancel_acknowledged_event: asyncio.Event | None = None
@@ -2463,6 +2498,7 @@ class Spawner:
                 except DashboardTurnControlError:
                     raise
                 except MCPToolDiscoveryError as exc:
+                    usage = exc.usage
                     executed_tool_calls = (
                         consume_runtime_session_tool_calls(runtime_session_id)
                         if runtime_session_id
@@ -2514,6 +2550,9 @@ class Spawner:
                 except Exception as attempt_exc:
                     # Capture the failure for classification below.
                     _attempt_exc = attempt_exc
+                    reported_usage = getattr(attempt_exc, "usage", None)
+                    if isinstance(reported_usage, dict):
+                        usage = reported_usage
                     # Collect tool calls captured before the failure.
                     if preconsumed_runtime_tool_calls is not None:
                         _attempt_tool_calls = list(preconsumed_runtime_tool_calls)
@@ -2581,33 +2620,6 @@ class Spawner:
                         else "resume_failed_terminal"
                     )
 
-                # An empty response can still carry provider-reported usage.
-                # Persist it only after classifying the failed attempt so a
-                # resume attempt never lands as an ambiguous NULL outcome.
-                if _empty_response_usage is not None:
-                    await record_token_usage(
-                        self._pool,
-                        catalog_entry_id=catalog_entry_id,
-                        butler_name=self._config.name,
-                        session_id=session_id,
-                        input_tokens=_empty_response_usage["input_tokens"],
-                        output_tokens=_empty_response_usage.get("output_tokens") or 0,
-                        cached_input_tokens=(
-                            _empty_response_usage.get("cache_read_input_tokens") or 0
-                        ),
-                        cache_creation_tokens=(
-                            _empty_response_usage.get("cache_creation_input_tokens") or 0
-                        ),
-                        purpose=(
-                            purpose_lane
-                            if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
-                            else trigger_source
-                        ),
-                        purpose_lane=purpose_lane,
-                        resume_outcome=_resume_outcome,
-                        **_composed_prompt_ledger_kwargs(_composed_prompt_digest),
-                    )
-
                 if not _failover_decision.eligible:
                     # Failover suppressed — emit metric and re-raise to the outer handler.
                     self._metrics.record_failover_suppressed(reason=_failover_decision.reason)
@@ -2618,7 +2630,7 @@ class Spawner:
                     )
                     # Record suppression provenance (best-effort).
                     if self._pool is not None and catalog_entry_id is not None:
-                        await _write_dispatch_attempt(
+                        _attempt_id = await _write_dispatch_attempt(
                             self._pool,
                             catalog_entry_id=catalog_entry_id,
                             butler=self._config.name,
@@ -2632,6 +2644,22 @@ class Spawner:
                             logical_session_id=effective_request_id,
                             purpose_lane=purpose_lane,
                             duration_ms=int((time.monotonic() - _attempt_t0) * 1000),
+                        )
+                        await _write_attempt_usage(
+                            self._pool,
+                            attempt_id=_attempt_id,
+                            usage=_empty_response_usage or usage,
+                            catalog_entry_id=catalog_entry_id,
+                            butler_name=self._config.name,
+                            session_id=session_id,
+                            purpose=(
+                                purpose_lane
+                                if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
+                                else trigger_source
+                            ),
+                            purpose_lane=purpose_lane,
+                            resume_outcome=_resume_outcome,
+                            composed_prompt=_composed_prompt_digest,
                         )
                     # Mark as already classified so the outer except handler does not
                     # double-emit the suppressed metric for this exception.
@@ -2649,10 +2677,9 @@ class Spawner:
                 # SAME candidate cold instead of routing this through ordinary
                 # same-tier failover -- the failure may be entirely about the resume
                 # handle (expired/rejected/unknown session), not the model's health.
-                # Evict the now-suspect handle and loop back without writing a
-                # runtime_failure row or advancing to another candidate: this must
-                # never consume a failover slot or count against the model's
-                # circuit breaker.
+                # Record it under a non-breaker outcome, then evict the handle and
+                # loop back without advancing to another candidate: this must never
+                # consume a failover slot or count against the model's circuit breaker.
                 if _attempt_count == 1 and invoke_kwargs.get("resume_session_id"):
                     logger.info(
                         "Provider resume attempt failed for butler=%s conversation=%s "
@@ -2673,6 +2700,38 @@ class Spawner:
                                 conversation_id,
                                 exc_info=True,
                             )
+                    if self._pool is not None and catalog_entry_id is not None:
+                        _attempt_id = await _write_dispatch_attempt(
+                            self._pool,
+                            catalog_entry_id=catalog_entry_id,
+                            butler=self._config.name,
+                            outcome="resume_failure",
+                            attempt_index=_attempt_count - 1,
+                            session_id=session_id,
+                            failure_reason=_failover_decision.reason,
+                            error_code=type(_attempt_exc).__name__,
+                            error_message=str(_attempt_exc),
+                            tool_call_count=len(_attempt_tool_calls),
+                            logical_session_id=effective_request_id,
+                            purpose_lane=purpose_lane,
+                            duration_ms=int((time.monotonic() - _attempt_t0) * 1000),
+                        )
+                        await _write_attempt_usage(
+                            self._pool,
+                            attempt_id=_attempt_id,
+                            usage=_empty_response_usage or usage,
+                            catalog_entry_id=catalog_entry_id,
+                            butler_name=self._config.name,
+                            session_id=session_id,
+                            purpose=(
+                                purpose_lane
+                                if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
+                                else trigger_source
+                            ),
+                            purpose_lane=purpose_lane,
+                            resume_outcome=_resume_outcome,
+                            composed_prompt=_composed_prompt_digest,
+                        )
                     continue
 
                 # Failover eligible — record runtime_failure provenance for the
@@ -2681,7 +2740,7 @@ class Spawner:
                 _failed_attempt_index = len(_attempted_ids)
                 _failed_attempt_duration_ms = int((time.monotonic() - _attempt_t0) * 1000)
                 if self._pool is not None and _failed_catalog_entry_id is not None:
-                    await _write_dispatch_attempt(
+                    _attempt_id = await _write_dispatch_attempt(
                         self._pool,
                         catalog_entry_id=_failed_catalog_entry_id,
                         butler=self._config.name,
@@ -2695,6 +2754,22 @@ class Spawner:
                         logical_session_id=effective_request_id,
                         purpose_lane=purpose_lane,
                         duration_ms=_failed_attempt_duration_ms,
+                    )
+                    await _write_attempt_usage(
+                        self._pool,
+                        attempt_id=_attempt_id,
+                        usage=_empty_response_usage or usage,
+                        catalog_entry_id=_failed_catalog_entry_id,
+                        butler_name=self._config.name,
+                        session_id=session_id,
+                        purpose=(
+                            purpose_lane
+                            if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
+                            else trigger_source
+                        ),
+                        purpose_lane=purpose_lane,
+                        resume_outcome=_resume_outcome,
+                        composed_prompt=_composed_prompt_digest,
                     )
 
                 # Attempt next same-tier candidate.
@@ -2850,6 +2925,40 @@ class Spawner:
                     _ledger_cached_input_tokens = cached_input_tokens or 0
                     _ledger_cache_creation_tokens = cache_creation_tokens or 0
 
+            # The provider invocation itself succeeded. Persist its attempt and
+            # usage before session bookkeeping or guardrails can fail, so every
+            # paid invocation remains linked even when later deterministic work
+            # downgrades the logical session outcome.
+            if self._pool is not None and catalog_entry_id is not None:
+                _attempt_id = await _write_dispatch_attempt(
+                    self._pool,
+                    catalog_entry_id=catalog_entry_id,
+                    butler=self._config.name,
+                    outcome="success",
+                    attempt_index=_attempt_count - 1,
+                    session_id=session_id,
+                    tool_call_count=len(tool_calls) if tool_calls else 0,
+                    logical_session_id=effective_request_id,
+                    purpose_lane=purpose_lane,
+                    duration_ms=int((time.monotonic() - _attempt_t0) * 1000),
+                )
+                await _write_attempt_usage(
+                    self._pool,
+                    attempt_id=_attempt_id,
+                    usage=usage,
+                    catalog_entry_id=catalog_entry_id,
+                    butler_name=self._config.name,
+                    session_id=session_id,
+                    purpose=(
+                        purpose_lane
+                        if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
+                        else trigger_source
+                    ),
+                    purpose_lane=purpose_lane,
+                    resume_outcome=_resume_outcome,
+                    composed_prompt=_composed_prompt_digest,
+                )
+
             # ------------------------------------------------------------------
             # Guardrail checks — run after tool-call merge and token extraction.
             # These conditions indicate intentional session termination and must
@@ -2941,28 +3050,6 @@ class Spawner:
                             session_id,
                             exc_info=True,
                         )
-
-                # Record successful-attempt provenance. Written on EVERY success, not
-                # only when failover occurred (attempt_index=0, no prior _attempted_ids,
-                # is the common single-shot case) -- otherwise a model that always
-                # succeeds on the first try but is slow (cf. the 436s opencode incident)
-                # never leaves a duration_ms trace anywhere evidence-based routing can
-                # see it (bu-ep4ks.13). `_attempt_t0` is the per-attempt clock from the
-                # failover loop iteration that just succeeded (still in scope after the
-                # `break`, whether or not that loop ever retried).
-                if self._pool is not None and catalog_entry_id is not None:
-                    await _write_dispatch_attempt(
-                        self._pool,
-                        catalog_entry_id=catalog_entry_id,
-                        butler=self._config.name,
-                        outcome="success",
-                        attempt_index=len(_attempted_ids),
-                        session_id=session_id,
-                        tool_call_count=len(tool_calls) if tool_calls else 0,
-                        logical_session_id=effective_request_id,
-                        purpose_lane=purpose_lane,
-                        duration_ms=int((time.monotonic() - _attempt_t0) * 1000),
-                    )
 
                 # Write process-level diagnostics (best-effort, never blocks result)
                 proc_info = runtime.last_process_info
@@ -3545,34 +3632,6 @@ class Spawner:
                     output_tokens=spawner_result.output_tokens or 0,
                     model=spawner_result.model or "unknown",
                     butler=self._config.name,
-                )
-            # Record token usage to ledger for both successful and failed sessions.
-            # Uses _ledger_input_tokens set as soon as the adapter reports usage,
-            # so the ledger receives token data even when post-invoke processing
-            # fails (e.g. session_complete raises). Tokens are consumed by the
-            # upstream provider on invocation regardless of session outcome.
-            if (
-                _ledger_input_tokens is not None
-                and catalog_entry_id is not None
-                and self._pool is not None
-            ):
-                await record_token_usage(
-                    self._pool,
-                    catalog_entry_id=catalog_entry_id,
-                    butler_name=self._config.name,
-                    session_id=session_id,
-                    input_tokens=_ledger_input_tokens,
-                    output_tokens=_ledger_output_tokens or 0,
-                    cached_input_tokens=_ledger_cached_input_tokens,
-                    cache_creation_tokens=_ledger_cache_creation_tokens,
-                    purpose=(
-                        purpose_lane
-                        if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
-                        else trigger_source
-                    ),
-                    purpose_lane=purpose_lane,
-                    resume_outcome=_resume_outcome,
-                    **_composed_prompt_ledger_kwargs(_composed_prompt_digest),
                 )
             # Emit per-call cost event onto the multiplexed fleet event bus via
             # Postgres LISTEN/NOTIFY (RFC 0022, bu-01r64.1). Uses the same

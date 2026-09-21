@@ -32,7 +32,7 @@ import pytest
 
 from butlers.config import ButlerConfig, RuntimeSeedConfig
 from butlers.core.failover_classifier import FailoverDecision
-from butlers.core.model_routing import QuotaStatus, TierQuotaExhausted
+from butlers.core.model_routing import QuotaStatus, TierQuotaExhausted, price_ledger_usage_rows
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import Spawner
@@ -200,6 +200,20 @@ class _AlwaysFailAdapter(RuntimeAdapter):
 
     def parse_system_prompt_file(self, config_dir: Path) -> str:
         return ""
+
+
+class _UsageError(RuntimeError):
+    def __init__(self, input_tokens: int, output_tokens: int) -> None:
+        super().__init__("connection refused after provider reported usage")
+        self.usage = {"input_tokens": input_tokens, "output_tokens": output_tokens}
+
+
+class _ThreeMeasuredFailuresThenSuccessAdapter(_SuccessAdapter):
+    async def invoke(self, *args: Any, **kwargs: Any) -> tuple[str | None, list, dict | None]:
+        self.invoke_calls += 1
+        if self.invoke_calls <= 3:
+            raise _UsageError(self.invoke_calls * 10, self.invoke_calls)
+        return "fallback-ok", [], {"input_tokens": 40, "output_tokens": 4}
 
 
 # ---------------------------------------------------------------------------
@@ -736,6 +750,140 @@ class TestAC3RuntimeFailureRetry:
         assert len(next_called_with_ids) == 1
         # Primary catalog ID is excluded
         assert _PRIMARY_CATALOG_ID in next_called_with_ids[0]
+
+
+class TestAttemptGrainedSpendEvidence:
+    async def test_three_measured_failures_and_success_write_four_priced_attempts(
+        self, tmp_path: Path
+    ) -> None:
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        adapter = _ThreeMeasuredFailuresThenSuccessAdapter()
+        mock_pool = AsyncMock()
+        catalog_ids = [
+            _PRIMARY_CATALOG_ID,
+            uuid.UUID("bbbbbbbb-0000-0000-0000-000000000003"),
+            uuid.UUID("bbbbbbbb-0000-0000-0000-000000000004"),
+            uuid.UUID("bbbbbbbb-0000-0000-0000-000000000005"),
+        ]
+        next_candidates = [
+            (DEFAULT_RUNTIME_TYPE, f"fallback-{index}", [], catalog_id, 1800)
+            for index, catalog_id in enumerate(catalog_ids[1:], start=1)
+        ]
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=_catalog_primary(),
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=_QUOTA_ALLOWED,
+            ),
+            patch(
+                "butlers.core.spawner.next_same_tier_candidate",
+                new_callable=AsyncMock,
+                side_effect=next_candidates,
+            ),
+            patch(
+                "butlers.core.spawner._write_dispatch_attempt",
+                new_callable=AsyncMock,
+                side_effect=[101, 102, 103, 104],
+            ) as write_attempt,
+            patch("butlers.core.spawner.record_token_usage", new_callable=AsyncMock) as write_usage,
+        ):
+            create.return_value = _SESSION_ID
+            result = await Spawner(
+                config=_make_config(), config_dir=config_dir, pool=mock_pool, runtime=adapter
+            ).trigger("hello", "tick")
+
+        assert result.success is True
+        assert [call.kwargs["outcome"] for call in write_attempt.await_args_list] == [
+            "runtime_failure",
+            "runtime_failure",
+            "runtime_failure",
+            "success",
+        ]
+        assert len(write_usage.await_args_list) == 4
+        assert [call.kwargs["attempt_id"] for call in write_usage.await_args_list] == [
+            101,
+            102,
+            103,
+            104,
+        ]
+        assert {call.kwargs["usage_source"] for call in write_usage.await_args_list} == {"measured"}
+
+        rows = [
+            {
+                "model_id": f"model-{index}",
+                "calls": 1,
+                "input_tokens": call.kwargs["input_tokens"],
+                "output_tokens": call.kwargs["output_tokens"],
+                "cached_input_tokens": call.kwargs["cached_input_tokens"],
+                "cache_creation_tokens": call.kwargs["cache_creation_tokens"],
+                "unmeasurable_attempts": 0,
+            }
+            for index, call in enumerate(write_usage.await_args_list)
+        ]
+        with patch(
+            "butlers.core.pricing.estimate_session_cost",
+            side_effect=lambda _pricing, _model, input_tokens, *_args, **_kwargs: (
+                input_tokens / 1000
+            ),
+        ):
+            spend = price_ledger_usage_rows(rows, pricing=Mock())
+        assert spend.cost_usd == 0.1
+
+    async def test_timeout_without_usage_writes_one_unmeasurable_attempt(
+        self, tmp_path: Path
+    ) -> None:
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        mock_pool = AsyncMock()
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=_catalog_primary(),
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=_QUOTA_ALLOWED,
+            ),
+            patch(
+                "butlers.core.spawner.next_same_tier_candidate",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "butlers.core.spawner._write_dispatch_attempt",
+                new_callable=AsyncMock,
+                side_effect=[201, 202],
+            ),
+            patch("butlers.core.spawner.record_token_usage", new_callable=AsyncMock) as write_usage,
+        ):
+            create.return_value = _SESSION_ID
+            result = await Spawner(
+                config=_make_config(),
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=_AlwaysFailAdapter(error=TimeoutError("provider timeout")),
+            ).trigger("hello", "tick")
+
+        assert result.success is False
+        write_usage.assert_awaited_once()
+        assert write_usage.await_args.kwargs["attempt_id"] == 201
+        assert write_usage.await_args.kwargs["usage_source"] == "unmeasurable"
+        assert write_usage.await_args.kwargs["input_tokens"] is None
+        assert write_usage.await_args.kwargs["output_tokens"] is None
 
 
 class TestAC4SuppressedFailover:

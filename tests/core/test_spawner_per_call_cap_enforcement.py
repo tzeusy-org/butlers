@@ -281,13 +281,15 @@ def _routing_breaker_open() -> SpendRoutingResult:
 
 
 def _override_execute_calls(mock_pool: AsyncMock) -> list:
-    """Return _write_dispatch_attempt execute() calls that recorded the override row.
+    """Return recorder calls that persisted the informational override row.
 
-    _write_dispatch_attempt calls pool.execute(SQL, session_id, catalog_entry_id,
-    butler, outcome, failure_reason, ...) — so args[4] is the outcome.
+    The non-breaker recorder now uses ``fetchval(... RETURNING id)`` so the
+    paired usage row can reference the attempt. Older mocked seams may still
+    expose ``execute``; both have the same positional fields and outcome index.
     """
     out = []
-    for call in mock_pool.execute.await_args_list:
+    calls = [*mock_pool.execute.await_args_list, *mock_pool.fetchval.await_args_list]
+    for call in calls:
         args = call.args
         if len(args) >= 6 and args[4] == BREAKER_OPEN_RULE_OVERRIDE_OUTCOME:
             out.append(args)

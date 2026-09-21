@@ -502,6 +502,10 @@ class SpendSummary(BaseModel):
 
     period: str = "today"
     total_cost_usd: float
+    # Explicit measured subtotal; ``total_cost_usd`` remains as a compatibility
+    # alias for existing clients and is byte-identical to this value.
+    measured_usd: float = 0.0
+    unmeasurable_attempts: int = 0
     total_sessions: int
     total_input_tokens: int
     total_output_tokens: int
