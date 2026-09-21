@@ -11,6 +11,7 @@ entity_merge so that episode_entities rows are re-pointed on merge (bu-cojsp).
 from __future__ import annotations
 
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -741,9 +742,34 @@ class TestRetractFactsOnConn:
 
 
 class TestEntityRebindReceipts:
-    async def test_undefined_tables_are_classified_without_claiming_success(self) -> None:
+    @staticmethod
+    def _pending_pool(rebind_id: uuid.UUID, target_schema: str) -> AsyncMock:
+        conn = AsyncMock()
+        conn.fetchrow = AsyncMock(
+            return_value={
+                "rebind_id": rebind_id,
+                "source_entity_id": SOURCE_UUID,
+                "target_entity_id": TARGET_UUID,
+                "target_schema": target_schema,
+                "references_rebound": 0,
+                "status": "pending",
+                "error_class": None,
+            }
+        )
+        transaction = AsyncMock()
+        transaction.__aenter__ = AsyncMock(return_value=None)
+        transaction.__aexit__ = AsyncMock(return_value=False)
+        conn.transaction = MagicMock(return_value=transaction)
+
+        @asynccontextmanager
+        async def _acquire():
+            yield conn
+
         pool = AsyncMock()
-        pool.execute = AsyncMock(return_value="UPDATE 0")
+        pool.acquire = MagicMock(return_value=_acquire())
+        return pool
+
+    async def test_undefined_tables_are_classified_without_claiming_success(self) -> None:
         receipt = _rebind.EntityRebindReceipt(
             rebind_id=uuid.uuid4(),
             target_schema="finance",
@@ -751,11 +777,12 @@ class TestEntityRebindReceipts:
             status="skipped_no_table",
             error_class="UndefinedTableError",
         )
+        pool = self._pending_pool(receipt.rebind_id, "finance")
         with (
             patch.object(
                 _rebind,
                 "_run_optional_table_step",
-                new=AsyncMock(side_effect=[(0, False), (0, False), (0, False)]),
+                new=AsyncMock(side_effect=[(0, False), (0, False), (0, False), (0, False)]),
             ),
             patch.object(_rebind, "_write_receipt", new=AsyncMock(return_value=receipt)) as write,
         ):
@@ -788,7 +815,7 @@ class TestEntityRebindReceipts:
             patch.object(_rebind, "_write_receipt", new=AsyncMock(return_value=receipt)) as write,
         ):
             result = await _rebind.rebind_entity_references(
-                AsyncMock(),
+                self._pending_pool(receipt.rebind_id, "finance"),
                 rebind_id=receipt.rebind_id,
                 source_entity_id=SOURCE_UUID,
                 target_entity_id=TARGET_UUID,

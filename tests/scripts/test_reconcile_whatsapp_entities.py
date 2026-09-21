@@ -20,6 +20,7 @@ import pytest
 from butlers.testing.schema_standins import (
     CONTACT_ENTITY_MAP,
     ENTITY_PREDICATE_REGISTRY,
+    ENTITY_REBIND_LOG,
     PENDING_ACTIONS,
 )
 from butlers.tools.relationship.whatsapp_reconciliation import (
@@ -370,6 +371,7 @@ async def test_pep_723_apply_path_runs_with_only_declared_dependencies(
             """
         )
         await conn.execute(ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship"))
+        await conn.execute(ENTITY_REBIND_LOG.ddl(schema="public"))
         await conn.execute(CONTACT_ENTITY_MAP.ddl(schema="relationship"))
         await conn.execute(PENDING_ACTIONS.ddl(schema="relationship"))
         source_id = await conn.fetchval(

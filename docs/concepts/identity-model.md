@@ -127,9 +127,12 @@ facts and association tables and settles its receipt. `pending` therefore
 means "not yet reported", while `failed` names the exception class; neither is
 presented as a zero-count success.
 
-The post-commit `entity.rebound.v1` fleet event refreshes dashboard caches but
-is deliberately not the correctness mechanism: a daemon that missed it drains
-its pending receipts during startup.
+The post-commit `entity.rebound.v1` fleet event makes running daemons process
+their local pending receipt immediately and refreshes dashboard caches. Event
+delivery is deliberately not the recovery authority: a daemon that missed it
+drains its pending receipts during startup. PostgreSQL row security permits
+only Relationship to create a cohort and permits each runtime role to settle
+only the receipt bound to its own schema.
 
 ## Verification
 

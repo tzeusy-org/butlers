@@ -8,6 +8,7 @@ module state at call time.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Annotated, Any, Literal
@@ -297,6 +298,7 @@ class MemoryModule(Module):
         # Opaque lifecycle token for the per-butler scheduled-maintenance runtime.
         self._maintenance_runtime: Any = None
         self._maintenance_runtime_owner: str | None = None
+        self._entity_rebind_tasks: list[asyncio.Task[None]] = []
 
     @property
     def name(self) -> str:
@@ -340,7 +342,10 @@ class MemoryModule(Module):
         # hint, so a daemon that was down during a merge drains its own pending
         # receipts before serving memory tools.
         try:
-            from butlers.entity_rebind import process_pending_entity_rebinds
+            from butlers.entity_rebind import (
+                process_pending_entity_rebinds,
+                run_entity_rebind_listener,
+            )
 
             memory_pool = self._get_pool()
             target_schema = await memory_pool.fetchval("SELECT current_schema()")
@@ -349,6 +354,16 @@ class MemoryModule(Module):
                     memory_pool,
                     target_schema=target_schema,
                 )
+                if isinstance(memory_pool, asyncpg.Pool):
+                    self._entity_rebind_tasks.append(
+                        asyncio.create_task(
+                            run_entity_rebind_listener(
+                                memory_pool,
+                                target_schema=target_schema,
+                            ),
+                            name=f"entity-rebind-listener:{target_schema}",
+                        )
+                    )
             # Chronicler deliberately keeps narrative memory in
             # ``chronicler_mem`` while episode associations remain in its
             # domain schema. The daemon owns both pools and settles each
@@ -360,6 +375,16 @@ class MemoryModule(Module):
                         chronicler_pool,
                         target_schema="chronicler",
                     )
+                    if isinstance(chronicler_pool, asyncpg.Pool):
+                        self._entity_rebind_tasks.append(
+                            asyncio.create_task(
+                                run_entity_rebind_listener(
+                                    chronicler_pool,
+                                    target_schema="chronicler",
+                                ),
+                                name="entity-rebind-listener:chronicler",
+                            )
+                        )
         except asyncpg.UndefinedTableError:
             logger.debug("entity_rebind_log is not installed yet; startup drain skipped")
         except Exception:
@@ -596,6 +621,12 @@ class MemoryModule(Module):
             unregister_memory_maintenance_runtime,
             unregister_memory_session_runtime,
         )
+
+        for task in self._entity_rebind_tasks:
+            task.cancel()
+        if self._entity_rebind_tasks:
+            await asyncio.gather(*self._entity_rebind_tasks, return_exceptions=True)
+        self._entity_rebind_tasks.clear()
 
         if self._session_runtime_owner is not None and self._session_runtime is not None:
             unregister_memory_session_runtime(
@@ -1780,11 +1811,16 @@ class MemoryModule(Module):
             Per-schema memory references are rebound asynchronously from the
             durable receipt cohort; this tool never reaches into sibling schemas.
             """
-            relationship_pool = await module._get_or_create_relationship_pool()
+            if getattr(module._db, "schema", None) == "relationship":
+                relationship_pool = module._get_pool()
+            else:
+                relationship_pool = await module._get_or_create_relationship_pool()
             if relationship_pool is None:
                 raise RuntimeError("Relationship merge authority is unavailable.")
             return await _entities.entity_merge(
-                relationship_pool, source_entity_id, target_entity_id
+                relationship_pool,
+                source_entity_id,
+                target_entity_id,
             )
 
         # --- Cross-butler catalog search tool ---

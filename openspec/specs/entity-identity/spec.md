@@ -218,8 +218,11 @@ Entity merge SHALL have one relationship-owned implementation. It SHALL rebind
 receipt per memory-bearing schema in `public.entity_rebind_log`, and publish an
 `entity.rebound.v1` fleet event after the merge transaction commits. Each
 memory-bearing daemon SHALL rebind only its own schema and settle its own
-receipt. Pending receipts SHALL be replayed on daemon startup; fleet-event
-delivery is a freshness hint, not the recovery authority.
+receipt. A running daemon SHALL react to the fleet event immediately. Pending
+receipts SHALL be replayed on daemon startup; fleet-event delivery is a
+freshness path, not the recovery authority. PostgreSQL SHALL restrict cohort
+creation to Relationship and receipt settlement to the runtime role bound to
+the receipt's target schema.
 
 #### Scenario: A merge opens an honest receipt cohort
 
@@ -234,6 +237,12 @@ delivery is a freshness hint, not the recovery authority.
 - **THEN** that daemon MUST process the receipt during startup
 - **AND** it MUST mutate only tables owned by its own schema
 - **AND** it MUST settle the receipt with the number of references actually rebound
+
+#### Scenario: A running daemon reacts without restart
+
+- **WHEN** a running memory-bearing daemon receives `entity.rebound.v1`
+- **THEN** it MUST process its schema-bound pending receipt
+- **AND** concurrent live and startup replay MUST NOT overwrite a truthful count with zero
 
 ---
 

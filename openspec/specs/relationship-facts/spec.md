@@ -587,7 +587,10 @@ Relationship SHALL be the sole authority that validates and tombstones an
 entity merge, rewires its canonical relationship facts, opens the per-schema
 rebind cohort, and emits `entity.rebound.v1`. It SHALL NOT update narrative
 facts or association tables in another butler schema. Those references SHALL
-be rebound by that schema's own daemon from the durable pending receipt.
+be rebound by that schema's own daemon from the durable pending receipt. A
+running daemon SHALL react to the emitted event, while startup replay SHALL
+recover missed delivery. Relationship's own receipt SHALL remain pending until
+its local narrative facts and association tables have been rebound.
 
 #### Scenario: Local repoint failure is visible
 

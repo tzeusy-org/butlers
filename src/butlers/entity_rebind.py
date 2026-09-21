@@ -7,6 +7,8 @@ receipt ledger; this module never opens or names a sibling butler schema.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -37,10 +39,13 @@ def _rowcount(command_tag: Any) -> int:
         return 0
 
 
-async def _run_optional_table_step(pool: Any, operation: Any) -> tuple[int, bool]:
+async def _run_optional_table_step(conn: Any, operation: Any) -> tuple[int, bool]:
     """Run one local-table step, distinguishing absence from real failure."""
     try:
-        async with pool.acquire() as conn, conn.transaction():
+        # Each optional table gets a savepoint. PostgreSQL aborts the current
+        # transaction on UndefinedTable, so catching without this nested
+        # transaction would make receipt settlement impossible.
+        async with conn.transaction():
             return int(await operation(conn)), True
     except asyncpg.UndefinedTableError:
         return 0, False
@@ -111,8 +116,35 @@ async def _repoint_episodes(conn: Any, source: UUID, target: UUID) -> int:
     return _rowcount(deleted) + _rowcount(updated)
 
 
+async def _repoint_catalog(conn: Any, source: UUID, target: UUID, target_schema: str) -> int:
+    tag = await conn.execute(
+        """
+        UPDATE public.memory_catalog
+        SET entity_id = CASE WHEN entity_id = $1 THEN $2 ELSE entity_id END,
+            object_entity_id = CASE
+                WHEN object_entity_id = $1 THEN $2 ELSE object_entity_id END
+        WHERE source_schema = $3
+          AND (entity_id = $1 OR object_entity_id = $1)
+        """,
+        source,
+        target,
+        target_schema,
+    )
+    return _rowcount(tag)
+
+
+def _receipt_from_row(row: Any) -> EntityRebindReceipt:
+    return EntityRebindReceipt(
+        rebind_id=row["rebind_id"],
+        target_schema=row["target_schema"],
+        references_rebound=row["references_rebound"],
+        status=row["status"],
+        error_class=row["error_class"],
+    )
+
+
 async def _write_receipt(
-    pool: Any,
+    conn: Any,
     *,
     rebind_id: UUID,
     source: UUID,
@@ -122,18 +154,20 @@ async def _write_receipt(
     status: str,
     error_class: str | None,
 ) -> EntityRebindReceipt:
-    await pool.execute(
+    row = await conn.fetchrow(
         """
-        INSERT INTO public.entity_rebind_log (
-            rebind_id, source_entity_id, target_entity_id, target_schema,
-            references_rebound, status, error_class, completed_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, now())
-        ON CONFLICT (rebind_id, target_schema) DO UPDATE
-        SET references_rebound = EXCLUDED.references_rebound,
-            status = EXCLUDED.status,
-            error_class = EXCLUDED.error_class,
-            completed_at = EXCLUDED.completed_at,
+        UPDATE public.entity_rebind_log
+        SET references_rebound = $5,
+            status = $6,
+            error_class = $7,
+            completed_at = now(),
             updated_at = now()
+        WHERE rebind_id = $1
+          AND source_entity_id = $2
+          AND target_entity_id = $3
+          AND target_schema = $4
+          AND status = 'pending'
+        RETURNING rebind_id, target_schema, references_rebound, status, error_class
         """,
         rebind_id,
         source,
@@ -143,13 +177,92 @@ async def _write_receipt(
         status,
         error_class,
     )
-    return EntityRebindReceipt(
-        rebind_id=rebind_id,
-        target_schema=target_schema,
-        references_rebound=references_rebound,
-        status=status,
-        error_class=error_class,
-    )
+    if row is None:
+        raise RuntimeError("entity rebind receipt could not be settled")
+    return _receipt_from_row(row)
+
+
+async def _rebind_entity_references_on_conn(
+    conn: Any,
+    *,
+    rebind_id: UUID,
+    source_entity_id: UUID,
+    target_entity_id: UUID,
+    target_schema: str,
+) -> EntityRebindReceipt:
+    async with conn.transaction():
+        # This row lock is the claim. A concurrent startup replay or live event
+        # waits here, then observes the settled row and returns its truthful
+        # count instead of running again and overwriting it with zero.
+        row = await conn.fetchrow(
+            """
+            SELECT rebind_id, source_entity_id, target_entity_id, target_schema,
+                   references_rebound, status, error_class
+            FROM public.entity_rebind_log
+            WHERE rebind_id = $1 AND target_schema = $2
+            FOR UPDATE
+            """,
+            rebind_id,
+            target_schema,
+        )
+        if row is None:
+            raise RuntimeError("entity rebind receipt does not exist")
+        if (
+            row["source_entity_id"] != source_entity_id
+            or row["target_entity_id"] != target_entity_id
+        ):
+            raise RuntimeError("entity rebind receipt identity mismatch")
+        if row["status"] != "pending":
+            return _receipt_from_row(row)
+
+        total = int(row["references_rebound"])
+        tables_seen = 0
+        try:
+            for operation in (_repoint_facts, _repoint_calendar, _repoint_episodes):
+                count, table_exists = await _run_optional_table_step(
+                    conn,
+                    lambda step_conn, operation=operation: operation(
+                        step_conn, source_entity_id, target_entity_id
+                    ),
+                )
+                total += count
+                tables_seen += int(table_exists)
+
+            catalog_count, catalog_exists = await _run_optional_table_step(
+                conn,
+                lambda step_conn: _repoint_catalog(
+                    step_conn,
+                    source_entity_id,
+                    target_entity_id,
+                    target_schema,
+                ),
+            )
+            total += catalog_count
+            tables_seen += int(catalog_exists)
+        except Exception as exc:
+            logger.exception("Entity rebind failed for schema %s", target_schema)
+            return await _write_receipt(
+                conn,
+                rebind_id=rebind_id,
+                source=source_entity_id,
+                target=target_entity_id,
+                target_schema=target_schema,
+                references_rebound=total,
+                status="failed",
+                error_class=type(exc).__name__,
+            )
+
+        status = "active" if tables_seen or total else "skipped_no_table"
+        return await _write_receipt(
+            conn,
+            rebind_id=rebind_id,
+            source=source_entity_id,
+            target=target_entity_id,
+            target_schema=target_schema,
+            references_rebound=total,
+            status=status,
+            error_class=None if status == "active" else "UndefinedTableError",
+        )
 
 
 async def rebind_entity_references(
@@ -161,60 +274,14 @@ async def rebind_entity_references(
     target_schema: str,
 ) -> EntityRebindReceipt:
     """Rebind references owned by ``target_schema`` and settle its receipt."""
-    total = 0
-    tables_seen = 0
-    try:
-        for operation in (_repoint_facts, _repoint_calendar, _repoint_episodes):
-            count, table_exists = await _run_optional_table_step(
-                pool,
-                lambda conn, operation=operation: operation(
-                    conn, source_entity_id, target_entity_id
-                ),
-            )
-            total += count
-            tables_seen += int(table_exists)
-
-        # The catalog is a shared projection, but ownership remains local: a
-        # daemon may update only rows attributed to its own source schema.
-        catalog_tag = await pool.execute(
-            """
-            UPDATE public.memory_catalog
-            SET entity_id = CASE WHEN entity_id = $1 THEN $2 ELSE entity_id END,
-                object_entity_id = CASE
-                    WHEN object_entity_id = $1 THEN $2 ELSE object_entity_id END,
-                updated_at = now()
-            WHERE source_schema = $3
-              AND (entity_id = $1 OR object_entity_id = $1)
-            """,
-            source_entity_id,
-            target_entity_id,
-            target_schema,
-        )
-        total += _rowcount(catalog_tag)
-    except Exception as exc:
-        logger.exception("Entity rebind failed for schema %s", target_schema)
-        return await _write_receipt(
-            pool,
+    async with pool.acquire() as conn:
+        return await _rebind_entity_references_on_conn(
+            conn,
             rebind_id=rebind_id,
-            source=source_entity_id,
-            target=target_entity_id,
+            source_entity_id=source_entity_id,
+            target_entity_id=target_entity_id,
             target_schema=target_schema,
-            references_rebound=total,
-            status="failed",
-            error_class=type(exc).__name__,
         )
-
-    status = "active" if tables_seen or total else "skipped_no_table"
-    return await _write_receipt(
-        pool,
-        rebind_id=rebind_id,
-        source=source_entity_id,
-        target=target_entity_id,
-        target_schema=target_schema,
-        references_rebound=total,
-        status=status,
-        error_class=None if status == "active" else "UndefinedTableError",
-    )
 
 
 async def process_pending_entity_rebinds(
@@ -242,9 +309,72 @@ async def process_pending_entity_rebinds(
     ]
 
 
+async def run_entity_rebind_listener(
+    pool: Any,
+    *,
+    target_schema: str,
+    health_poll_interval_s: float = 5.0,
+) -> None:
+    """React to live ``entity.rebound.v1`` events for one local schema.
+
+    LISTEN is connection-scoped, so the task retains one pool connection for
+    its lifetime. The callback only queues IDs; all database work remains in
+    the task and is serialized through the receipt row lock above.
+    """
+    from butlers.fleet_events import FLEET_EVENTS_CHANNEL
+
+    queue: asyncio.Queue[UUID] = asyncio.Queue()
+
+    def _on_notify(_conn: Any, _pid: int, channel: str, payload: str) -> None:
+        if channel != FLEET_EVENTS_CHANNEL:
+            return
+        try:
+            envelope = json.loads(payload)
+            if envelope.get("type") != ENTITY_REBOUND_EVENT_TYPE:
+                return
+            rebind_id = UUID(str(envelope["data"]["rebind_id"]))
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            logger.warning("Malformed entity rebind fleet event dropped")
+            return
+        queue.put_nowait(rebind_id)
+
+    async with pool.acquire() as conn:
+        await conn.add_listener(FLEET_EVENTS_CHANNEL, _on_notify)
+        try:
+            while True:
+                try:
+                    rebind_id = await asyncio.wait_for(queue.get(), timeout=health_poll_interval_s)
+                except TimeoutError:
+                    if conn.is_closed():
+                        raise RuntimeError("entity rebind listener connection closed")
+                    continue
+
+                row = await conn.fetchrow(
+                    """
+                    SELECT source_entity_id, target_entity_id
+                    FROM public.entity_rebind_log
+                    WHERE rebind_id = $1 AND target_schema = $2
+                    """,
+                    rebind_id,
+                    target_schema,
+                )
+                if row is None:
+                    continue
+                await _rebind_entity_references_on_conn(
+                    conn,
+                    rebind_id=rebind_id,
+                    source_entity_id=row["source_entity_id"],
+                    target_entity_id=row["target_entity_id"],
+                    target_schema=target_schema,
+                )
+        finally:
+            await conn.remove_listener(FLEET_EVENTS_CHANNEL, _on_notify)
+
+
 __all__ = [
     "ENTITY_REBOUND_EVENT_TYPE",
     "EntityRebindReceipt",
     "process_pending_entity_rebinds",
     "rebind_entity_references",
+    "run_entity_rebind_listener",
 ]

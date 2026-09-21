@@ -18,7 +18,7 @@ from uuid import UUID, uuid4
 
 import asyncpg
 
-from butlers.entity_rebind import ENTITY_REBOUND_EVENT_TYPE
+from butlers.entity_rebind import ENTITY_REBOUND_EVENT_TYPE, rebind_entity_references
 from butlers.fleet_events import publish_fleet_event
 from butlers.tools.relationship.merge_review import compute_merge_evidence, write_merge_review
 
@@ -369,18 +369,26 @@ async def merge_entity_pair(
                 target_entity_id,
             )
 
-            await conn.execute(
-                """
-                UPDATE public.memory_catalog
-                SET entity_id = CASE WHEN entity_id = $1 THEN $2 ELSE entity_id END,
-                    object_entity_id = CASE
-                        WHEN object_entity_id = $1 THEN $2 ELSE object_entity_id END,
-                    updated_at = now()
-                WHERE entity_id = $1 OR object_entity_id = $1
-                """,
-                source_entity_id,
-                target_entity_id,
-            )
+            # memory_catalog is deployed by the core chain but some bounded
+            # relationship-only installations and migration harnesses omit it.
+            # A savepoint keeps absence from aborting the authority transaction;
+            # the subscriber-local handlers still own schema-attributed catalog
+            # rows when the projection is installed.
+            try:
+                async with conn.transaction():
+                    await conn.execute(
+                        """
+                        UPDATE public.memory_catalog
+                        SET entity_id = CASE WHEN entity_id = $1 THEN $2 ELSE entity_id END,
+                            object_entity_id = CASE
+                                WHEN object_entity_id = $1 THEN $2 ELSE object_entity_id END
+                        WHERE entity_id = $1 OR object_entity_id = $1
+                        """,
+                        source_entity_id,
+                        target_entity_id,
+                    )
+            except asyncpg.UndefinedTableError:
+                pass
 
             tombstone_metadata = {
                 **source_metadata,
@@ -410,21 +418,18 @@ async def merge_entity_pair(
                 subject_facts_rewired + object_facts_rewired + _rowcount(contact_tag)
             )
             for schema in dict.fromkeys(target_schemas):
-                status = "active" if schema == "relationship" else "pending"
-                completed_at_sql = "now()" if status == "active" else "NULL"
                 await conn.execute(
-                    f"""
+                    """
                     INSERT INTO public.entity_rebind_log (
                         rebind_id, source_entity_id, target_entity_id, target_schema,
                         references_rebound, status, completed_at
-                    ) VALUES ($1, $2, $3, $4, $5, $6, {completed_at_sql})
+                    ) VALUES ($1, $2, $3, $4, $5, 'pending', NULL)
                     """,
                     rebind_id,
                     source_entity_id,
                     target_entity_id,
                     schema,
                     relationship_rebound if schema == "relationship" else 0,
-                    status,
                 )
                 receipt_rows.append(
                     {
@@ -433,14 +438,37 @@ async def merge_entity_pair(
                         "references_rebound": (
                             relationship_rebound if schema == "relationship" else 0
                         ),
-                        "status": status,
+                        "status": "pending",
                         "error_class": None,
-                        "completed_at": datetime.now(UTC) if status == "active" else None,
+                        "completed_at": None,
                     }
                 )
 
-    # The ledger is the recovery authority; this lossy fleet event only makes
-    # dashboard caches react immediately. Daemon startup drains pending rows.
+    # Relationship owns both the merge authority and memory-module tables in
+    # its own schema. Settle that receipt through the same local handler as
+    # every other daemon before claiming it is active.
+    if "relationship" in dict.fromkeys(target_schemas):
+        relationship_receipt = await rebind_entity_references(
+            pool,
+            rebind_id=rebind_id,
+            source_entity_id=source_entity_id,
+            target_entity_id=target_entity_id,
+            target_schema="relationship",
+        )
+        for index, row in enumerate(receipt_rows):
+            if row["target_schema"] == "relationship":
+                receipt_rows[index] = {
+                    "rebind_id": relationship_receipt.rebind_id,
+                    "target_schema": relationship_receipt.target_schema,
+                    "references_rebound": relationship_receipt.references_rebound,
+                    "status": relationship_receipt.status,
+                    "error_class": relationship_receipt.error_class,
+                    "completed_at": datetime.now(UTC),
+                }
+                break
+
+    # The ledger is the recovery authority. Live daemons react to this event;
+    # startup replay remains the durable recovery path for missed delivery.
     await publish_fleet_event(
         pool,
         ENTITY_REBOUND_EVENT_TYPE,

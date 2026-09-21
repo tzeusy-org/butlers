@@ -273,7 +273,8 @@ Entities are never hard-deleted. Merging sets `metadata.merged_into`; the source
 `memory_entity_merge` is a compatibility surface, not a second merge
 implementation. It dispatches to Relationship's merge authority. Local memory
 references are rebound from `public.entity_rebind_log`; each memory-enabled
-daemon handles only its own schema and replays pending receipts on startup.
+daemon handles only its own schema, reacts to live `entity.rebound.v1` events,
+and replays pending receipts on startup when live delivery was missed.
 
 ## Database Tables
 

@@ -1063,13 +1063,25 @@ async def entity_merge(
     """
     del extra_pools, chronicler_pool
 
-    from butlers.tools.relationship.entity_merge import merge_entity_pair
+    from butlers.tools.relationship.entity_merge import EntityMergeError, merge_entity_pair
 
-    result = await merge_entity_pair(
-        pool,
-        source_entity_id=uuid.UUID(source_entity_id),
-        target_entity_id=uuid.UUID(target_entity_id),
-    )
+    try:
+        result = await merge_entity_pair(
+            pool,
+            source_entity_id=uuid.UUID(source_entity_id),
+            target_entity_id=uuid.UUID(target_entity_id),
+        )
+    except EntityMergeError as exc:
+        # Keep the legacy memory-tool exception family stable while the actual
+        # merge semantics live exclusively in Relationship.
+        messages = {
+            "same_entity": "source_entity_id and target_entity_id must be different.",
+            "source_missing": f"Source entity '{source_entity_id}' not found.",
+            "target_missing": f"Target entity '{target_entity_id}' not found.",
+            "source_tombstoned": f"Source entity '{source_entity_id}' is already tombstoned.",
+            "target_tombstoned": f"Target entity '{target_entity_id}' is already tombstoned.",
+        }
+        raise ValueError(messages.get(exc.classification, exc.classification)) from exc
     receipt_statuses = {str(receipt["status"]) for receipt in result.receipts}
     rebind_status = (
         "failed"
