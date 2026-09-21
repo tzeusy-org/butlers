@@ -1,0 +1,7 @@
+# Evidence builds must never receive local provider configuration or cached state.
+.env*
+node_modules/
+dist/
+playwright-report/
+test-results/
+*.log

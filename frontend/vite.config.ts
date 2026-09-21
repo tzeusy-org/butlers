@@ -118,7 +118,12 @@ export default defineConfig({
     setupFiles: ["./src/test/setup.ts"],
     // Exclude Playwright e2e specs — they import @playwright/test which
     // conflicts with vitest's own test() when picked up by vitest's file scan.
-    exclude: ["**/tests/e2e/**", "**/tests/owner-auth/**", "**/node_modules/**"],
+    exclude: [
+      "**/tests/e2e/**",
+      "**/tests/owner-auth/**",
+      "**/node_modules/**",
+      "route-a-api-receipt.test.mjs",
+    ],
   },
   plugins: [tailwindcss(), react(), baseNoSlashRedirect()],
   resolve: {
