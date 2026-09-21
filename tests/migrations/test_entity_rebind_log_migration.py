@@ -12,11 +12,11 @@ import pytest
 
 pytestmark = [pytest.mark.integration, pytest.mark.db]
 
-_PATH = Path(__file__).resolve().parents[2] / "alembic/versions/core/core_242_entity_rebind_log.py"
+_PATH = Path(__file__).resolve().parents[2] / "alembic/versions/core/core_243_entity_rebind_log.py"
 
 
 def _load_migration():
-    spec = importlib.util.spec_from_file_location("core_242", _PATH)
+    spec = importlib.util.spec_from_file_location("core_243", _PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -37,7 +37,7 @@ async def _run(pool, direction: str) -> None:
 
 def test_entity_rebind_log_extends_current_core_head() -> None:
     migration = _load_migration()
-    assert (migration.revision, migration.down_revision) == ("core_242", "core_241")
+    assert (migration.revision, migration.down_revision) == ("core_243", "core_242")
 
 
 @pytest.mark.asyncio(loop_scope="session")

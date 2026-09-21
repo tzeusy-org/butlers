@@ -1,7 +1,7 @@
 """Add the fleet entity-rebind receipt ledger.
 
-Revision ID: core_242
-Revises: core_241
+Revision ID: core_243
+Revises: core_242
 Create Date: 2026-09-21 00:00:00.000000
 """
 
@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "core_242"
-down_revision = "core_241"
+revision = "core_243"
+down_revision = "core_242"
 branch_labels = None
 depends_on = None
 
@@ -32,7 +32,7 @@ def upgrade() -> None:
     # The core chain is replayed once per target schema and those replays can
     # overlap.  Serialize this shared-public DDL so concurrent IF NOT EXISTS
     # checks cannot race in PostgreSQL's catalogs.
-    op.execute("SELECT pg_advisory_xact_lock(hashtext('core_242_entity_rebind_log'))")
+    op.execute("SELECT pg_advisory_xact_lock(hashtext('core_243_entity_rebind_log'))")
     op.execute(
         """
         CREATE TABLE IF NOT EXISTS public.entity_rebind_log (
@@ -198,7 +198,7 @@ def downgrade() -> None:
                     INTO has_receipts;
                 IF has_receipts THEN
                     RAISE EXCEPTION
-                        'cannot downgrade core_242 while entity rebind receipts exist';
+                        'cannot downgrade core_243 while entity rebind receipts exist';
                 END IF;
             END IF;
         END
