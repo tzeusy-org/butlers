@@ -155,29 +155,111 @@ it("polls the head only and disables pagination when the surface is inactive", a
 
 it("reconciles active drawer and aggregate reads every 30 seconds without bus events", async () => {
   vi.useFakeTimers();
-  const { wrapper } = setup();
+  vi.setSystemTime("2026-01-01T12:00:00.000Z");
+  const { client, wrapper } = setup();
   vi.mocked(api.getIngestionEvent).mockResolvedValue({ data: {} } as Awaited<ReturnType<typeof api.getIngestionEvent>>);
   vi.mocked(api.getIngestionEventSessions).mockResolvedValue({ data: [], meta: {} });
-  vi.mocked(api.getIngestionWindowRollup).mockResolvedValue({
-    events: 0, sessions: 0, cost: null, window: { from: null, to: null },
-  });
-  vi.mocked(api.getIngestionEventsHistogram).mockResolvedValue({ buckets: [], bucket: "1m" });
+  vi.mocked(api.getIngestionWindowRollup)
+    .mockResolvedValueOnce({
+      events: 0, sessions: 0, cost: null, window: { from: null, to: null },
+    })
+    .mockResolvedValueOnce({
+      events: 1, sessions: 1, cost: null, window: { from: null, to: null },
+    })
+    .mockResolvedValueOnce({
+      events: 1, sessions: 1, cost: null, window: { from: null, to: null },
+    });
+  vi.mocked(api.getIngestionEventsHistogram)
+    .mockResolvedValueOnce({ buckets: [], bucket: "1m" })
+    .mockResolvedValueOnce({
+      buckets: [{
+        ts: "2026-01-01T12:00:00.000Z",
+        counts: {
+          ingested: 1,
+          skipped: 0,
+          filtered: 0,
+          error: 0,
+          failed: 0,
+          replay_pending: 0,
+          replay_complete: 0,
+          replay_failed: 0,
+        },
+      }],
+      bucket: "1m",
+    })
+    .mockResolvedValueOnce({
+      buckets: [],
+      bucket: "1m",
+    });
   const readers = [api.getIngestionEvent, api.getIngestionEventSessions,
     api.getIngestionWindowRollup, api.getIngestionEventsHistogram];
-  const { unmount, rerender } = renderHook(({ enabled }) => {
+  const liveHour = { kind: "live", durationMs: 60 * 60 * 1000 } as const;
+  const { result, unmount, rerender } = renderHook(({ enabled }) => {
     useIngestionEventDetail("event", { enabled });
     useIngestionEventSessions("event", { enabled });
-    useIngestionWindowRollup({}, { enabled });
-    useIngestionEventsHistogram({ trace_id: "trace" }, { enabled });
+    const rollup = useIngestionWindowRollup(
+      { channels: "gmail" },
+      { enabled, timeScope: liveHour },
+    );
+    const histogram = useIngestionEventsHistogram(
+      { bucket: "1m", channels: "gmail" },
+      { enabled, timeScope: liveHour },
+    );
+    return { rollup, histogram };
   }, { wrapper, initialProps: { enabled: true } });
   await act(async () => { await vi.advanceTimersByTimeAsync(0); });
   for (const read of readers) expect(read).toHaveBeenCalledTimes(1);
+  const firstWindow = {
+    from: "2026-01-01T11:00:00.000Z",
+    to: "2026-01-01T12:00:00.000Z",
+  };
+  expect(api.getIngestionWindowRollup).toHaveBeenNthCalledWith(
+    1,
+    { channels: "gmail", ...firstWindow },
+    expect.any(AbortSignal),
+  );
+  expect(api.getIngestionEventsHistogram).toHaveBeenNthCalledWith(
+    1,
+    { bucket: "1m", channels: "gmail", ...firstWindow },
+    expect.any(AbortSignal),
+  );
+  expect(client.getQueryCache().findAll({ queryKey: ["ingestion", "window-rollup"] })).toHaveLength(1);
+  expect(client.getQueryCache().findAll({ queryKey: ["ingestion", "events-histogram"] })).toHaveLength(1);
   await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
   for (const read of readers) expect(read).toHaveBeenCalledTimes(2);
+  const secondWindow = {
+    from: "2026-01-01T11:00:30.000Z",
+    to: "2026-01-01T12:00:30.000Z",
+  };
+  expect(api.getIngestionWindowRollup).toHaveBeenNthCalledWith(
+    2,
+    { channels: "gmail", ...secondWindow },
+    expect.any(AbortSignal),
+  );
+  expect(api.getIngestionEventsHistogram).toHaveBeenNthCalledWith(
+    2,
+    { bucket: "1m", channels: "gmail", ...secondWindow },
+    expect.any(AbortSignal),
+  );
+  expect(secondWindow.to.localeCompare(firstWindow.to)).toBeGreaterThan(0);
+  await vi.waitFor(() => {
+    expect(result.current.rollup.data?.events).toBe(1);
+    expect(result.current.histogram.data?.buckets).toHaveLength(1);
+  });
+  expect(client.getQueryCache().findAll({ queryKey: ["ingestion", "window-rollup"] })).toHaveLength(1);
+  expect(client.getQueryCache().findAll({ queryKey: ["ingestion", "events-histogram"] })).toHaveLength(1);
   rerender({ enabled: false });
   await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
   for (const read of readers) expect(read).toHaveBeenCalledTimes(2);
+  rerender({ enabled: true });
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  for (const read of readers) expect(read).toHaveBeenCalledTimes(3);
+  const reactivatedWindow = vi.mocked(api.getIngestionWindowRollup).mock.calls[2][0];
+  expect(reactivatedWindow.channels).toBe("gmail");
+  expect(new Date(reactivatedWindow.to!).getTime() - new Date(reactivatedWindow.from!).getTime())
+    .toBe(liveHour.durationMs);
+  expect(reactivatedWindow.to!.localeCompare(secondWindow.to)).toBeGreaterThan(0);
   unmount();
   await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
-  for (const read of readers) expect(read).toHaveBeenCalledTimes(2);
+  for (const read of readers) expect(read).toHaveBeenCalledTimes(3);
 });
