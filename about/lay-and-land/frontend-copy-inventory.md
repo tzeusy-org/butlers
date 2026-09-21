@@ -2768,7 +2768,6 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Scoped to trace
 - Dismiss
 - Scoped to
-- Failed to load ingestion events.
 - Retry
 - No events match the current filters.
 - search events…
@@ -4351,4 +4350,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3417*
+*Total strings: 3416*
