@@ -13,7 +13,6 @@ each key point in the failover flow:
 
 from __future__ import annotations
 
-import json
 import uuid
 from pathlib import Path
 from typing import Any
@@ -28,6 +27,7 @@ from butlers.core.model_routing import QuotaStatus, TierQuotaExhausted
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import Spawner, _attempt_resolution_receipt
+from butlers.db import encode_jsonb
 
 pytestmark = pytest.mark.unit
 
@@ -55,7 +55,7 @@ def _receipt_with_serialized_size(size: int) -> dict:
         "candidates": [],
         "truncated": False,
     }
-    empty_size = len(json.dumps(receipt, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+    empty_size = len(encode_jsonb(receipt)) - 1
     receipt["winner"]["model_id"] = "x" * (size - empty_size)
     return receipt
 
@@ -67,25 +67,19 @@ def test_receipt_at_exact_byte_bound_includes_non_truncated_marker() -> None:
 
     assert bounded is not None
     assert bounded["truncated"] is False
-    assert (
-        len(json.dumps(bounded, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
-        == 32 * 1024
-    )
+    assert len(encode_jsonb(bounded)) - 1 == 32 * 1024
 
 
 def test_marker_that_crosses_byte_bound_uses_bounded_fallback() -> None:
     receipt = _receipt_with_serialized_size(32 * 1024 + 1)
     receipt.pop("truncated")
-    assert len(json.dumps(receipt, separators=(",", ":")).encode("utf-8")) <= 32 * 1024
+    assert len(encode_jsonb(receipt)) - 1 <= 32 * 1024
 
     bounded = bound_resolution_receipt(receipt)
 
     assert bounded is not None
     assert bounded["truncated"] is True
-    assert (
-        len(json.dumps(bounded, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
-        <= 32 * 1024
-    )
+    assert len(encode_jsonb(bounded)) - 1 <= 32 * 1024
 
 
 def test_oversized_non_candidate_receipt_metadata_is_bounded() -> None:
@@ -93,13 +87,16 @@ def test_oversized_non_candidate_receipt_metadata_is_bounded() -> None:
         "policy_version": "2",
         "winner": {"model_id": "界" * 40_000, "reason": "sole_candidate"},
         "requested_intent": {"trigger_class": "x" * 40_000},
+        "effective_intent": {"trigger_class": "界" * 40_000},
         "candidates": [{"model_id": "candidate"}],
     }
     bounded = bound_resolution_receipt(receipt)
     assert bounded is not None
     assert bounded["truncated"] is True
     assert bounded["candidate_count"] == 1
-    assert len(json.dumps(bounded, ensure_ascii=False).encode("utf-8")) <= 32 * 1024
+    assert bounded["requested_intent"]["trigger_class"]
+    assert bounded["effective_intent"]["trigger_class"]
+    assert len(encode_jsonb(bounded)) - 1 <= 32 * 1024
 
 
 def test_failover_receipt_names_previous_attempt_failure_class() -> None:

@@ -1069,6 +1069,7 @@ candidates AS (
         ac.id,
         ac.session_timeout_s,
         ac.effective_tier,
+        ac.effective_priority,
         ac.quota_ok,
         ROW_NUMBER() OVER (ORDER BY ac.created_at ASC, ac.id ASC) - 1 AS rn,
         COUNT(*) OVER () AS total
@@ -1086,7 +1087,8 @@ evidence AS (
         PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY duration_ms)
             FILTER (WHERE outcome = 'success' AND duration_ms IS NOT NULL) AS p50_duration_ms,
         PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY duration_ms)
-            FILTER (WHERE outcome = 'success' AND duration_ms IS NOT NULL) AS p95_duration_ms
+            FILTER (WHERE outcome = 'success' AND duration_ms IS NOT NULL) AS p95_duration_ms,
+        MAX(ts) AS last_attempt_at
     FROM public.model_dispatch_attempts
     WHERE catalog_entry_id IN (SELECT id FROM candidates)
       AND outcome IN ('success', 'runtime_failure')
@@ -1095,8 +1097,9 @@ evidence AS (
 )
 SELECT
     c.runtime_type, c.model_id, c.extra_args, c.id, c.session_timeout_s, c.effective_tier,
+    c.effective_priority,
     c.rn, c.total,
-    e.success_count, e.failure_count, e.p50_duration_ms, e.p95_duration_ms,
+    e.success_count, e.failure_count, e.p50_duration_ms, e.p95_duration_ms, e.last_attempt_at,
     c.quota_ok
 FROM candidates c
 LEFT JOIN evidence e ON e.catalog_entry_id = c.id
@@ -1725,6 +1728,7 @@ async def resolve_model_with_effective_tier(
     allow_tier_fallthrough: bool = True,
     quota_aware: bool = False,
     intent: DispatchIntent | None = None,
+    receipt_intent: DispatchIntent | None = None,
     receipt_sink: list[DispatchResolution] | None = None,
 ) -> tuple[str, str, list[str], uuid.UUID, int, str] | None:
     """Resolve the best model for a butler and return the effective tier alongside.
@@ -1791,10 +1795,15 @@ async def resolve_model_with_effective_tier(
         authoritative for the tier -- the intent's own tier is overridden with
         it -- so callers cannot accidentally route to two different tiers by
         passing an intent built from a stale complexity. Ranking is unchanged,
-        and an intent that requires nothing selects exactly what ``None``
-        selects. The resolution receipt is dropped here (this signature returns
-        the same 6-tuple as before); callers that want it call
-        ``resolve_dispatch`` directly.
+        and an intent that requires nothing selects exactly what ``None`` selects.
+    receipt_intent:
+        Observational intent metadata for a receipt around the legacy selection
+        path. Unlike ``intent``, this never participates in eligibility or ranking;
+        the legacy query and selector produce the unchanged 6-tuple first. This is
+        used by tool-less Discretion dispatches whose established catalog contract
+        does not parse capability envelopes.
+    receipt_sink:
+        Optional collector for the intent-aware or observational resolution.
 
     Returns
     -------
@@ -1815,6 +1824,8 @@ async def resolve_model_with_effective_tier(
     else:
         tier_value = _check_deprecated_tier(str(complexity_tier))
 
+    if intent is not None and receipt_intent is not None:
+        raise ValueError("intent and receipt_intent are mutually exclusive")
     if intent is not None:
         try:
             resolution = await resolve_dispatch(
@@ -1876,7 +1887,7 @@ async def resolve_model_with_effective_tier(
             butler_name,
             effective_tier,
         )
-    return (
+    selection = (
         row["runtime_type"],
         row["model_id"],
         _parse_extra_args(row["extra_args"]),
@@ -1884,6 +1895,16 @@ async def resolve_model_with_effective_tier(
         row["session_timeout_s"],
         effective_tier,
     )
+    if receipt_sink is not None and receipt_intent is not None:
+        receipt_sink.append(
+            _describe_legacy_resolution(
+                rows,
+                winner=row,
+                intent=dataclasses.replace(receipt_intent, complexity_tier=tier_value),
+                selection=selection,
+            )
+        )
+    return selection
 
 
 # ---------------------------------------------------------------------------
@@ -2019,6 +2040,60 @@ def _evidence_age_s(row: asyncpg.Record, *, now: datetime) -> float | None:
     if last.tzinfo is None:
         last = last.replace(tzinfo=UTC)
     return max(0.0, (now - last).total_seconds())
+
+
+def _describe_legacy_resolution(
+    rows: list[asyncpg.Record],
+    *,
+    winner: asyncpg.Record,
+    intent: DispatchIntent,
+    selection: tuple[str, str, list[str], uuid.UUID, int, str],
+) -> DispatchResolution:
+    """Describe the legacy winner without re-evaluating candidate eligibility.
+
+    This is an observational adapter for callers such as DiscretionDispatcher whose
+    established routing contract predates capability envelopes. The exact legacy query
+    and selector still decide the winner; receipt construction must not parse or filter
+    the stored capability document.
+    """
+    pricing = _get_cached_pricing()
+    scored = {row["id"]: _score_row(row, pricing) for row in rows}
+    if len(rows) == 1:
+        winner_reason = WINNER_REASON_SOLE_CANDIDATE
+    elif sum(score.score is not None for score in scored.values()) >= 2:
+        winner_reason = WINNER_REASON_EVIDENCE_SCORE
+    else:
+        winner_reason = WINNER_REASON_ROUND_ROBIN
+
+    now = datetime.now(tz=UTC)
+    ordered_rows = sorted(rows, key=lambda row: int(row["rn"]))
+    candidates = tuple(
+        CandidateRecord(
+            catalog_entry_id=row["id"],
+            runtime_type=row["runtime_type"],
+            model_id=row["model_id"],
+            effective_tier=row["effective_tier"],
+            effective_priority=int(row["effective_priority"]),
+            outcome=(
+                CandidateOutcome.SELECTED
+                if row["id"] == winner["id"]
+                else CandidateOutcome.ELIGIBLE
+            ),
+            evidence_samples=int(row["success_count"] or 0) + int(row["failure_count"] or 0),
+            evidence_age_s=_evidence_age_s(row, now=now),
+            score=scored[row["id"]].score,
+        )
+        for row in ordered_rows
+    )
+    effective_intent = dataclasses.replace(intent, complexity_tier=selection[5])
+    return DispatchResolution(
+        policy_version=DISPATCH_POLICY_VERSION,
+        requested_intent=intent,
+        effective_intent=effective_intent,
+        candidates=candidates,
+        selection=selection,
+        winner_reason=winner_reason,
+    )
 
 
 def _row_capabilities(row: asyncpg.Record) -> CapabilityDescriptor | CapabilityDescriptorError:

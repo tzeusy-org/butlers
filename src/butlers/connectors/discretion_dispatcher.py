@@ -369,7 +369,7 @@ class DiscretionDispatcher:
             self._pool,
             self._butler_name,
             self._complexity_tier,
-            intent=discretion_dispatch_intent(
+            receipt_intent=discretion_dispatch_intent(
                 self._complexity_tier,
                 purpose_lane=self._purpose_lane,
             ),

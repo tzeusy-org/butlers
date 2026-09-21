@@ -149,7 +149,13 @@ async def test_hard_fit_excludes_tool_incapable_top_priority_entry(pool: asyncpg
 
 async def test_discretion_receipt_capture_matches_legacy_selection(pool: asyncpg.Pool) -> None:
     """Receipt capture cannot change the winner for tool-less discretion calls."""
-    api_id = await _insert_entry(pool, alias="ctl-api", runtime_type="api", priority=30)
+    api_id = await _insert_entry(
+        pool,
+        alias="ctl-api",
+        runtime_type="api",
+        priority=30,
+        capabilities=json.dumps({"no_such_feature": True}),
+    )
     await _insert_entry(pool, alias="ctl-claude", runtime_type="claude", priority=10)
 
     legacy = await resolve_model_with_effective_tier(
@@ -161,7 +167,7 @@ async def test_discretion_receipt_capture_matches_legacy_selection(pool: asyncpg
         BUTLER,
         Complexity.CHEAP,
         allow_tier_fallthrough=False,
-        intent=discretion_dispatch_intent(Complexity.CHEAP),
+        receipt_intent=discretion_dispatch_intent(Complexity.CHEAP),
         receipt_sink=receipt_sink,
     )
     assert legacy is not None

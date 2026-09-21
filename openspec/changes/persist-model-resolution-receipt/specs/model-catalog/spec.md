@@ -22,6 +22,12 @@ MUST NOT change routing eligibility, ordering, or selection.
 - **THEN** attempt one's receipt names attempt zero and its failure class
 - **AND** its winner names the candidate actually invoked for attempt one
 
+#### Scenario: Transparent cold retry is not a failover
+
+- **WHEN** a provider resume handle fails safely and the same catalog candidate is retried cold
+- **THEN** the retry receipt retains the predecessor failure class
+- **AND** labels the transition as a same-candidate cold retry, not a same-tier failover
+
 #### Scenario: Oversized candidate evidence remains explicit
 
 - **WHEN** a receipt exceeds the bounded storage projection
@@ -52,6 +58,8 @@ MUST NOT change routing eligibility, ordering, or selection.
 - **THEN** each recorded attempt carries the same bounded receipt contract
 - **AND** receipt capture adds no tool-use requirement and preserves the catalog
   eligibility, ordering, and winner used by its legacy `mcp_servers={}` path
+- **AND** malformed or forward-version capability envelopes remain eligible exactly
+  when the legacy resolver would have selected them
 
 #### Scenario: Read surfaces distinguish historical absence
 

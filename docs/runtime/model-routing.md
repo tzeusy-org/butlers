@@ -189,11 +189,15 @@ selects.
 `tier_not_reached`) and fit findings, evidence age, and the winner reason (`sole_candidate` /
 `evidence_score` / `round_robin`). It is prompt-free by construction and `describe()` is JSON-safe.
 It is carried on `TierQuotaExhausted.resolution` when quota blocks the tier. Catalog-backed
-Spawner and DiscretionDispatcher attempts persist a projection of that receipt. A spend-rule or
-private-content policy override re-projects the final winner, candidate outcomes, exclusions, and
-reason together; failover projections also carry the preceding failure class. The durable JSON is
-bounded to 32 KiB across the entire projection, not only its candidate list, and the row and receipt
-share one monotonically increasing `attempt_index` across quota skips and runtime attempts.
+Spawner and DiscretionDispatcher attempts persist a projection of that receipt. Discretion receipt
+capture observes the legacy winner without parsing capability envelopes or changing eligibility. A
+spend-rule or private-content policy override re-projects the final winner, candidate outcomes,
+exclusions, and reason together; failover projections carry the preceding failure class, while a
+transparent retry of the same candidate after a failed resume handle is labeled
+`same_candidate_cold_retry` instead. The durable JSON is measured with the registered asyncpg JSONB
+encoder and bounded to 32 KiB across the entire projection, not only its candidate list; requested
+and effective intent remain present in the bounded fallback. The row and receipt share one
+monotonically increasing `attempt_index` across quota skips and runtime attempts.
 
 ## Token Quotas
 
@@ -301,11 +305,14 @@ Each catalog-backed row also carries `resolution_receipt`, the prompt-free
 explanation computed by intent-aware resolution: requested/effective intent,
 the winner and tie-break reason, and the ordered candidates with exclusions
 such as `breaker_open`, capability fit, budget, or quota. A same-tier failover
-receipt names the preceding attempt and its classified failure. Receipts are
-bounded to 32 KiB by retaining an ordered candidate prefix and setting
-`truncated=true` plus the original `candidate_count`; they are never silently
-dropped for size. Historical and static-fallback attempts honestly expose a
-null receipt rather than reconstructing a decision from current catalog state.
+receipt names the preceding attempt and its classified failure. A safe resume-handle failure that
+retries the same candidate cold instead records `retry.kind="same_candidate_cold"`; it is not a
+model failover. Receipts are bounded to 32 KiB by retaining an ordered candidate prefix and setting
+`truncated=true` plus the original `candidate_count`; they are never silently dropped for size. The
+size check uses the exact registered JSONB serializer, including its default ASCII escaping, and
+the minimal projection retains both requested and effective intent. Historical and static-fallback
+attempts honestly expose a null receipt rather than reconstructing a decision from current catalog
+state.
 
 Qualifying `runtime_failure` and `success` rows use one serialized recorder per
 catalog entry. The recorder takes the advisory transaction lock before assigning

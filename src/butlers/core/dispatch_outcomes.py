@@ -10,7 +10,6 @@ that is rolled back to a savepoint so the attempt row still commits, edgeless.
 
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 from copy import deepcopy
@@ -20,6 +19,7 @@ import asyncpg
 
 from butlers.core.model_routing import CEILING_DENIAL_REASON_PREFIX, get_breaker_state
 from butlers.core.purpose_lane import PURPOSE_LANE_STANDARD, PurposeLane
+from butlers.db import encode_jsonb
 from butlers.metrics_registry import get_or_create_counter
 
 logger = logging.getLogger(__name__)
@@ -33,16 +33,90 @@ runtime_attention_recorder_total = get_or_create_counter(
 _QUALIFYING_BREAKER_OUTCOMES = frozenset({"runtime_failure", "success"})
 _MAX_RESOLUTION_RECEIPT_BYTES = 32 * 1024
 _MAX_RESOLUTION_RECEIPT_SCALAR_BYTES = 4 * 1024
+_MAX_FALLBACK_WINNER_SCALAR_BYTES = 1024
+_MAX_FALLBACK_INTENT_SCALAR_BYTES = 256
+_MAX_FALLBACK_INTENT_FEATURES = 8
 
 
-def _bounded_receipt_scalar(value: object) -> object:
+def _bounded_receipt_scalar(
+    value: object, *, max_bytes: int = _MAX_RESOLUTION_RECEIPT_SCALAR_BYTES
+) -> object:
     """Bound one fallback scalar without splitting a UTF-8 code point."""
     if not isinstance(value, str):
         return value
     encoded = value.encode("utf-8")
-    if len(encoded) <= _MAX_RESOLUTION_RECEIPT_SCALAR_BYTES:
+    if len(encoded) <= max_bytes:
         return value
-    return encoded[:_MAX_RESOLUTION_RECEIPT_SCALAR_BYTES].decode("utf-8", errors="ignore")
+    return encoded[:max_bytes].decode("utf-8", errors="ignore")
+
+
+def _jsonb_payload_size(value: object) -> int:
+    """Measure the bytes the registered asyncpg JSONB codec persists."""
+    return len(encode_jsonb(value)) - 1
+
+
+def _bounded_receipt_intent(value: object) -> dict:
+    """Project one required intent without allowing mutable strings to escape the bound."""
+    source = value if isinstance(value, dict) else {}
+
+    def _string(key: str) -> object:
+        if not isinstance(source.get(key), str):
+            return None
+        return _bounded_receipt_scalar(source.get(key), max_bytes=_MAX_FALLBACK_INTENT_SCALAR_BYTES)
+
+    def _features(key: str) -> list[object]:
+        raw = source.get(key)
+        if not isinstance(raw, list):
+            return []
+        return [
+            _bounded_receipt_scalar(item, max_bytes=_MAX_FALLBACK_INTENT_SCALAR_BYTES)
+            for item in raw[:_MAX_FALLBACK_INTENT_FEATURES]
+            if isinstance(item, str)
+        ]
+
+    def _number(key: str) -> int | float | None:
+        number = source.get(key)
+        if isinstance(number, int | float) and not isinstance(number, bool) and abs(number) <= 1e15:
+            return number
+        return None
+
+    return {
+        "trigger_class": _string("trigger_class"),
+        "complexity_tier": _string("complexity_tier"),
+        "consequence": _string("consequence"),
+        "purpose_lane": _string("purpose_lane"),
+        "required_features": _features("required_features"),
+        "preferred_features": _features("preferred_features"),
+        "min_context_tokens": _number("min_context_tokens"),
+        "deadline_s": _number("deadline_s"),
+        "max_cost_usd_per_call": _number("max_cost_usd_per_call"),
+    }
+
+
+def _bounded_receipt_transition(value: object, *, include_kind: bool = False) -> dict | None:
+    """Project retry/failover provenance for the minimal receipt."""
+    if not isinstance(value, dict):
+        return None
+    failure_class = value.get("failure_class")
+    projected = {
+        "from_attempt_index": value.get("from_attempt_index")
+        if isinstance(value.get("from_attempt_index"), int)
+        and not isinstance(value.get("from_attempt_index"), bool)
+        else None,
+        "failure_class": _bounded_receipt_scalar(
+            failure_class, max_bytes=_MAX_FALLBACK_INTENT_SCALAR_BYTES
+        )
+        if isinstance(failure_class, str)
+        else None,
+    }
+    if include_kind:
+        kind = value.get("kind")
+        projected["kind"] = (
+            _bounded_receipt_scalar(kind, max_bytes=_MAX_FALLBACK_INTENT_SCALAR_BYTES)
+            if isinstance(kind, str)
+            else None
+        )
+    return projected
 
 
 def bound_resolution_receipt(receipt: dict | None) -> dict | None:
@@ -60,8 +134,7 @@ def bound_resolution_receipt(receipt: dict | None) -> dict | None:
         candidates = []
         bounded["candidates"] = candidates
     bounded.setdefault("truncated", False)
-    encoded = json.dumps(bounded, separators=(",", ":"), ensure_ascii=False)
-    if len(encoded.encode("utf-8")) <= _MAX_RESOLUTION_RECEIPT_BYTES:
+    if _jsonb_payload_size(bounded) <= _MAX_RESOLUTION_RECEIPT_BYTES:
         return bounded
 
     original_count = len(candidates)
@@ -69,19 +142,23 @@ def bound_resolution_receipt(receipt: dict | None) -> dict | None:
     bounded["candidate_count"] = original_count
     while candidates:
         candidates.pop()
-        encoded = json.dumps(bounded, separators=(",", ":"), ensure_ascii=False)
-        if len(encoded.encode("utf-8")) <= _MAX_RESOLUTION_RECEIPT_BYTES:
+        if _jsonb_payload_size(bounded) <= _MAX_RESOLUTION_RECEIPT_BYTES:
             return bounded
 
     # Catalog-backed strings are mutable operator data. Project the remaining
     # receipt field-by-field and bound every retained scalar; never assume that
     # non-candidate metadata is small merely because the shape is code-owned.
-    encoded = json.dumps(bounded, separators=(",", ":"), ensure_ascii=False)
-    if len(encoded.encode("utf-8")) > _MAX_RESOLUTION_RECEIPT_BYTES:
+    if _jsonb_payload_size(bounded) > _MAX_RESOLUTION_RECEIPT_BYTES:
         source_winner = bounded.get("winner")
         winner = (
             {
-                key: _bounded_receipt_scalar(source_winner.get(key))
+                key: (
+                    _bounded_receipt_scalar(
+                        source_winner.get(key), max_bytes=_MAX_FALLBACK_WINNER_SCALAR_BYTES
+                    )
+                    if isinstance(source_winner.get(key), str)
+                    else None
+                )
                 for key in (
                     "catalog_entry_id",
                     "runtime_type",
@@ -94,14 +171,31 @@ def bound_resolution_receipt(receipt: dict | None) -> dict | None:
             else None
         )
         bounded = {
-            "policy_version": _bounded_receipt_scalar(bounded.get("policy_version")),
+            "policy_version": (
+                _bounded_receipt_scalar(
+                    bounded.get("policy_version"), max_bytes=_MAX_FALLBACK_WINNER_SCALAR_BYTES
+                )
+                if isinstance(bounded.get("policy_version"), str)
+                else None
+            ),
+            "requested_intent": _bounded_receipt_intent(bounded.get("requested_intent")),
+            "effective_intent": _bounded_receipt_intent(bounded.get("effective_intent")),
             "winner": winner,
             "candidates": [],
             "candidate_count": original_count,
             "truncated": True,
         }
-        encoded = json.dumps(bounded, separators=(",", ":"), ensure_ascii=False)
-        if len(encoded.encode("utf-8")) > _MAX_RESOLUTION_RECEIPT_BYTES:
+        if isinstance(receipt.get("attempt_index"), int) and not isinstance(
+            receipt.get("attempt_index"), bool
+        ):
+            bounded["attempt_index"] = receipt["attempt_index"]
+        failover = _bounded_receipt_transition(receipt.get("failover"))
+        if failover is not None:
+            bounded["failover"] = failover
+        retry = _bounded_receipt_transition(receipt.get("retry"), include_kind=True)
+        if retry is not None:
+            bounded["retry"] = retry
+        if _jsonb_payload_size(bounded) > _MAX_RESOLUTION_RECEIPT_BYTES:
             raise ValueError("minimal resolution receipt exceeds durable byte bound")
     return bounded
 
@@ -115,6 +209,7 @@ def project_resolution_receipt(
     effective_tier: str | None,
     attempt_index: int,
     previous_failure_class: str | None = None,
+    retry_failure_class: str | None = None,
     selection_reason: str | None = None,
 ) -> dict | None:
     """Project a resolution onto the candidate one attempt actually invokes."""
@@ -164,9 +259,13 @@ def project_resolution_receipt(
             }
         )
 
+    if previous_failure_class is not None and retry_failure_class is not None:
+        raise ValueError("an attempt cannot be both a failover and a same-candidate retry")
     reason = (
         "same_tier_failover"
         if previous_failure_class is not None
+        else "same_candidate_cold_retry"
+        if retry_failure_class is not None
         else selection_reason or original_reason
     )
     receipt["winner"] = {
@@ -183,6 +282,12 @@ def project_resolution_receipt(
         receipt["failover"] = {
             "from_attempt_index": attempt_index - 1,
             "failure_class": previous_failure_class,
+        }
+    if retry_failure_class is not None:
+        receipt["retry"] = {
+            "from_attempt_index": attempt_index - 1,
+            "failure_class": retry_failure_class,
+            "kind": "same_candidate_cold",
         }
     return receipt
 

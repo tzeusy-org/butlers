@@ -180,7 +180,7 @@ async def test_call_with_identity_records_per_connector_butler_name() -> None:
         result = await dispatcher.call("hi", identity="tg:12345")
 
     assert result == "FORWARD"
-    intent = resolver.await_args.kwargs["intent"]
+    intent = resolver.await_args.kwargs["receipt_intent"]
     assert intent.trigger_class == "discretion"
     assert intent.required_features == frozenset()
     assert adapter.invoke.await_args.kwargs["mcp_servers"] == {}

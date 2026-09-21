@@ -2776,7 +2776,7 @@ class Spawner:
                         model_id=model,
                         effective_tier=_failover_effective_tier,
                         attempt_index=_next_attempt_index,
-                        previous_failure_class=_failover_decision.reason,
+                        retry_failure_class=_failover_decision.reason,
                         selection_reason=_receipt_selection_reason,
                     )
                     continue
