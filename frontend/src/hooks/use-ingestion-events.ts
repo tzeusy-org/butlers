@@ -46,6 +46,17 @@ import type {
 /** Filters used as the infinite-scroll query key (cursor is NOT part of the key). */
 export type IngestionEventsFilters = Omit<IngestionEventsParams, "cursor">;
 
+/** Stable query identity for an aggregate window resolved at request time. */
+export type IngestionAggregateTimeScope = {
+  kind: "live";
+  durationMs: number;
+};
+
+type IngestionAggregateQueryOptions = {
+  enabled?: boolean;
+  timeScope?: IngestionAggregateTimeScope;
+};
+
 export const ingestionEventKeys = {
   all: ["ingestion", "events"] as const,
   list: (filters: IngestionEventsFilters) =>
@@ -60,10 +71,14 @@ export const ingestionEventKeys = {
     [...ingestionEventKeys.all, requestId, "detail"] as const,
   payload: (requestId: string) =>
     [...ingestionEventKeys.all, requestId, "payload"] as const,
-  windowRollup: (params: IngestionWindowRollupParams) =>
-    ["ingestion", "window-rollup", params] as const,
-  histogram: (params: IngestionHistogramParams) =>
-    ["ingestion", "events-histogram", params] as const,
+  windowRollup: (
+    params: IngestionWindowRollupParams,
+    timeScope?: IngestionAggregateTimeScope,
+  ) => ["ingestion", "window-rollup", params, ...(timeScope ? [timeScope] : [])] as const,
+  histogram: (
+    params: IngestionHistogramParams,
+    timeScope?: IngestionAggregateTimeScope,
+  ) => ["ingestion", "events-histogram", params, ...(timeScope ? [timeScope] : [])] as const,
 };
 
 /**
@@ -326,21 +341,39 @@ export function useIngestionEventDetail(
  * Fetches from GET /api/ingestion/rollup with the same filter params as
  * GET /api/ingestion/events. ``cost`` is a known-priced subtotal when pricing
  * is available; ``unpriced_session_count`` makes omitted session coverage
- * explicit.
+ * explicit. A live `timeScope` stays stable in the query key while resolving
+ * fresh equal-duration `from`/`to` bounds when each request starts.
  *
  * The query is disabled by default — pass `enabled: true` to activate.
  */
 export function useIngestionWindowRollup(
   params: IngestionWindowRollupParams = {},
-  options?: { enabled?: boolean },
+  options?: IngestionAggregateQueryOptions,
 ) {
   return useQuery<IngestionWindowRollup>({
-    queryKey: ingestionEventKeys.windowRollup(params),
-    queryFn: ({ signal }) => getIngestionWindowRollup(params, signal),
+    queryKey: ingestionEventKeys.windowRollup(params, options?.timeScope),
+    queryFn: ({ signal }) =>
+      getIngestionWindowRollup(resolveAggregateWindow(params, options?.timeScope), signal),
     staleTime: 30_000,
     refetchInterval: INGESTION_EVENTS_POLL_DEFAULT_MS,
     enabled: options?.enabled !== false,
   });
+}
+
+function resolveAggregateWindow<T extends { from?: string; to?: string }>(
+  params: T,
+  timeScope?: IngestionAggregateTimeScope,
+): T {
+  if (!timeScope) return params;
+  if (!Number.isFinite(timeScope.durationMs) || timeScope.durationMs <= 0) {
+    throw new Error("Live ingestion aggregate duration must be positive and finite");
+  }
+  const toMs = Date.now();
+  return {
+    ...params,
+    from: new Date(toMs - timeScope.durationMs).toISOString(),
+    to: new Date(toMs).toISOString(),
+  };
 }
 
 const NEXT_HISTOGRAM_BUCKET: Record<IngestionHistogramBucketSize, IngestionHistogramBucketSize | null> = {
@@ -375,8 +408,10 @@ function coarserHistogramParams(
  * UNLESS `params.trace_id` is set — a trace-scoped query auto-widens to the
  * trace's own event bounds server-side (bu-1f81d), so the query is enabled
  * whenever either the window (`from` and `to`) or `trace_id` is present; it
- * is disabled only when neither is available, so callers never fire an
- * unbounded aggregate scan.
+ * A live `timeScope` is the third bounded form: it resolves fresh `from`/`to`
+ * values at request start while retaining stable query identity. The query is
+ * disabled only when none of those forms is available, so callers never fire
+ * an unbounded aggregate scan.
  *
  * The backend enforces a bucket-count guardrail and returns 422 when the
  * range/bucket combination is too wide (e.g. '1m' over >48h). The hook makes
@@ -386,16 +421,17 @@ function coarserHistogramParams(
  */
 export function useIngestionEventsHistogram(
   params: IngestionHistogramParams,
-  options?: { enabled?: boolean },
+  options?: IngestionAggregateQueryOptions,
 ) {
   return useQuery<IngestionHistogramResponse>({
-    queryKey: ingestionEventKeys.histogram(params),
+    queryKey: ingestionEventKeys.histogram(params, options?.timeScope),
     queryFn: async ({ signal }) => {
+      const resolvedParams = resolveAggregateWindow(params, options?.timeScope);
       try {
-        return await getIngestionEventsHistogram(params, signal);
+        return await getIngestionEventsHistogram(resolvedParams, signal);
       } catch (error) {
         const fallbackParams = isHistogramRangeError(error)
-          ? coarserHistogramParams(params)
+          ? coarserHistogramParams(resolvedParams)
           : null;
         if (signal.aborted || !fallbackParams) throw error;
 
@@ -409,6 +445,7 @@ export function useIngestionEventsHistogram(
     retry: false,
     refetchInterval: INGESTION_EVENTS_POLL_DEFAULT_MS,
     enabled:
-      (!!params.trace_id || (!!params.from && !!params.to)) && options?.enabled !== false,
+      (!!params.trace_id || !!options?.timeScope || (!!params.from && !!params.to)) &&
+      options?.enabled !== false,
   });
 }

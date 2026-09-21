@@ -224,6 +224,119 @@ describe("TimelineTab — passive background refresh", () => {
     expect(container.querySelector("[data-testid='ledger-row-trigger']")).toBe(originalRow);
     expect(container.querySelector("[data-testid='events-retry-button']")).toBeNull();
   });
+
+  it("preserves row identity, drawer, selection, and focus during an aggregate refresh", () => {
+    renderWithQueryState({});
+    const row = container.querySelector("[data-testid='ledger-row']") as HTMLElement;
+    const trigger = container.querySelector("[data-testid='ledger-row-trigger']") as HTMLElement;
+    const checkbox = container.querySelector("[data-testid='row-checkbox']") as HTMLElement;
+
+    act(() => {
+      trigger.click();
+      checkbox.click();
+    });
+    expect(container.querySelector("[data-testid='event-drawer']")).not.toBeNull();
+    expect(container.querySelector("[data-testid='bulk-action-bar']")).not.toBeNull();
+    act(() => trigger.focus());
+
+    vi.mocked(useIngestionEventsHistogram).mockReturnValue({
+      data: { buckets: [], bucket: "1m" },
+      isLoading: false,
+      isFetching: true,
+      isError: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useIngestionEventsHistogram>);
+    vi.mocked(useIngestionWindowRollup).mockReturnValue({
+      data: { events: 1, sessions: 1, cost: null, window: { from: null, to: null } },
+      isLoading: false,
+      isFetching: true,
+      isError: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useIngestionWindowRollup>);
+    renderWithQueryState({});
+
+    expect(container.querySelector("[data-testid='ledger-row']")).toBe(row);
+    expect(container.querySelector("[data-testid='event-drawer']")).not.toBeNull();
+    expect(container.querySelector("[data-testid='bulk-action-bar']")).not.toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+});
+
+describe("TimelineTab — aggregate time scopes", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    queryClient = makeQueryClient();
+    setupDefaultMocks();
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult([]) as unknown as ReturnType<typeof useIngestionEvents>,
+    );
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    queryClient.clear();
+    vi.clearAllMocks();
+  });
+
+  function renderAt(url = "/") {
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={[url]}>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+  }
+
+  it("uses a stable live duration for ordinary histogram and rollup reads", () => {
+    renderAt("/?range=24h");
+    const histogramCall = vi.mocked(useIngestionEventsHistogram).mock.calls.at(-1)!;
+    const rollupCall = vi.mocked(useIngestionWindowRollup).mock.calls.at(-1)!;
+
+    expect(histogramCall[0]).not.toHaveProperty("from");
+    expect(histogramCall[0]).not.toHaveProperty("to");
+    expect(histogramCall[1]).toMatchObject({
+      enabled: true,
+      timeScope: { kind: "live", durationMs: 24 * 60 * 60 * 1000 },
+    });
+    expect(rollupCall[0]).not.toHaveProperty("from");
+    expect(rollupCall[0]).not.toHaveProperty("to");
+    expect(rollupCall[1]).toMatchObject({
+      enabled: true,
+      timeScope: { kind: "live", durationMs: 24 * 60 * 60 * 1000 },
+    });
+  });
+
+  it("keeps minute rollup bounds fixed while the full-range histogram stays live", () => {
+    renderAt("/?range=1h&scopedMinute=2026-01-01T10%3A15%3A00.000Z&scopedBucketMinutes=5");
+    const eventsCall = vi.mocked(useIngestionEvents).mock.calls.at(-1)!;
+    const histogramCall = vi.mocked(useIngestionEventsHistogram).mock.calls.at(-1)!;
+    const rollupCall = vi.mocked(useIngestionWindowRollup).mock.calls.at(-1)!;
+
+    expect(eventsCall[0]).toMatchObject({
+      from: "2026-01-01T10:15:00.000Z",
+      to: "2026-01-01T10:20:00.000Z",
+    });
+    expect(histogramCall[0]).not.toHaveProperty("from");
+    expect(histogramCall[0]).not.toHaveProperty("to");
+    expect(histogramCall[1]).toMatchObject({
+      timeScope: { kind: "live", durationMs: 60 * 60 * 1000 },
+    });
+    expect(rollupCall[0]).toMatchObject({
+      from: "2026-01-01T10:15:00.000Z",
+      to: "2026-01-01T10:20:00.000Z",
+    });
+    expect(rollupCall[1]).not.toHaveProperty("timeScope");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2597,6 +2710,7 @@ describe("TimelineTab — ?trace= drill-down spine filter", () => {
     const lastParams = calls[calls.length - 1][0];
     expect(lastParams).not.toHaveProperty("from");
     expect(lastParams).not.toHaveProperty("to");
+    expect(calls[calls.length - 1][1]).not.toHaveProperty("timeScope");
   });
 
   it("omits trace_id from the rollup query when no ?trace= param is present", () => {
@@ -2636,6 +2750,7 @@ describe("TimelineTab — ?trace= drill-down spine filter", () => {
     const lastParams = calls[calls.length - 1][0];
     expect(lastParams).not.toHaveProperty("from");
     expect(lastParams).not.toHaveProperty("to");
+    expect(calls[calls.length - 1][1]).not.toHaveProperty("timeScope");
   });
 
   it("omits trace_id from the histogram query when no ?trace= param is present", () => {
