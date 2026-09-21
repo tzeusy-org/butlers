@@ -84,6 +84,38 @@ _LEDGER_INSERT = "INSERT INTO public.token_usage_ledger"
 _RESUME_OUTCOME_ARG_INDEX = 14
 
 
+@pytest.fixture(autouse=True)
+def _isolate_atomic_recorder_for_spawner_unit_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Represent atomic usage evidence at the existing mock-pool seam."""
+
+    async def _capture(pool: AsyncMock, **fields: Any) -> int:
+        evidence = fields.get("usage_evidence")
+        if evidence is not None:
+            await pool.execute(
+                _LEDGER_INSERT,
+                fields["catalog_entry_id"],
+                fields["butler"],
+                fields.get("session_id"),
+                evidence.input_tokens,
+                evidence.output_tokens,
+                evidence.cached_input_tokens,
+                evidence.cache_creation_tokens,
+                evidence.purpose,
+                evidence.base_prompt_tokens,
+                evidence.timezone_instruction_tokens,
+                evidence.context_preamble_tokens,
+                evidence.routing_instructions_tokens,
+                evidence.memory_context_tokens,
+                evidence.resume_outcome,
+                fields.get("purpose_lane"),
+                1,
+                evidence.usage_source,
+            )
+        return 1
+
+    monkeypatch.setattr("butlers.core.spawner.record_dispatch_attempt", _capture)
+
+
 def _resume_outcomes_written(mock_pool: AsyncMock) -> list[str | None]:
     """resume_outcome values from every token_usage_ledger INSERT on mock_pool."""
     outcomes = []
@@ -414,7 +446,7 @@ class TestResumeGating:
 
 
 class TestResumeFailureFallsBackToCold:
-    async def test_failed_resume_retries_same_candidate_cold_without_provenance_row(
+    async def test_failed_resume_retries_same_candidate_cold_with_non_breaker_provenance(
         self, tmp_path: Path
     ) -> None:
         config_dir = tmp_path / "config"
@@ -473,19 +505,21 @@ class TestResumeFailureFallsBackToCold:
         mock_next.assert_not_called()
         # The stale handle was evicted.
         mock_clear.assert_awaited_once_with(mock_pool, _CONVERSATION_ID, butler_name=config.name)
-        # Only ONE dispatch-attempt row was written (the final success) -- the
-        # failed resume attempt did not consume a failover slot or count
-        # against the model's breaker.
+        # Both provider invocations are visible, but the failed resume uses a
+        # non-breaker outcome and therefore does not consume a failover slot or
+        # count against the model's breaker.
         outcomes = [c.kwargs.get("outcome") for c in mock_write.call_args_list]
-        assert outcomes == ["success"]
+        assert outcomes == ["resume_failure", "success"]
+        assert [c.kwargs.get("attempt_index") for c in mock_write.call_args_list] == [0, 1]
         # The session's resume_outcome reflects that resume WAS attempted and
         # failed, even though the transparent cold retry then won.
         # Both the usage-bearing failed resume and the successful cold retry
         # retain the classified resume outcome; neither row is ambiguous NULL.
-        assert _resume_outcomes_written(mock_pool) == [
+        assert [c.kwargs["resume_outcome"] for c in mock_write.await_args_list] == [
             "resume_failed_retried_cold",
             "resume_failed_retried_cold",
         ]
+        assert all(c.kwargs["invoked"] is True for c in mock_write.await_args_list)
 
     async def test_failed_resume_with_confirmed_tool_calls_uses_ordinary_failover(
         self, tmp_path: Path
@@ -548,10 +582,9 @@ class TestResumeFailureFallsBackToCold:
         # The transparent-cold-retry branch never fires for an ineligible
         # (side-effecting) failure -- the handle is left untouched.
         mock_clear.assert_not_awaited()
-        # The failed attempt never returned a usage payload (it raised before
-        # reporting tokens), so no ledger row -- and thus no resume_outcome --
-        # is ever written for this terminal failure.
-        assert _resume_outcomes_written(mock_pool) == []
+        # The failed invocation remains visible as unmeasurable evidence and
+        # retains the terminal resume classification.
+        assert _resume_outcomes_written(mock_pool) == ["resume_failed_terminal"]
 
 
 # ---------------------------------------------------------------------------
@@ -768,6 +801,10 @@ class TestCrossRuntimeFailoverNeverCarriesHandle:
         # Fallback adapter (different runtime_type): exactly one call, no resume.
         assert len(adapter_fallback.invoke_calls) == 1
         assert adapter_fallback.invoke_calls[0]["resume_session_id"] is None
-        # resume_outcome reflects the resume failure at attempt 1, regardless
+        # Every invocation retains the classified resume outcome, regardless
         # of which later candidate ultimately won.
-        assert _resume_outcomes_written(mock_pool) == ["resume_failed_retried_cold"]
+        assert _resume_outcomes_written(mock_pool) == [
+            "resume_failed_retried_cold",
+            "resume_failed_retried_cold",
+            "resume_failed_retried_cold",
+        ]

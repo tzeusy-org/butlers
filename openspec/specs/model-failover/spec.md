@@ -72,7 +72,7 @@ a catalog candidate is selected but cannot safely complete the invocation.
 The system SHALL persist enough provenance for operators to audit model failover behavior
 for a logical session. As built, attempt provenance is written best-effort to the
 `public.model_dispatch_attempts` table (migration `core_104`): one row per attempt or skip,
-carrying `outcome` (`quota_skip` / `runtime_failure` / `suppressed` / `success` / `exhausted`),
+carrying `outcome` (`quota_skip` / `runtime_failure` / `resume_failure` / `suppressed` / `success` / `exhausted`),
 `catalog_entry_id`, `attempt_index`, `failure_reason`, `error_code`, `error_message`,
 `tool_call_count`, and a `logical_session_id` that ties all attempts of one logical session
 together. Operators read it via `GET /api/dispatch/attempts` and
@@ -84,6 +84,18 @@ together. Operators read it via `GET /api/dispatch/attempts` and
 - **THEN** operator-visible provenance SHALL identify the failed primary
   `catalog_entry_id`, the fallback `catalog_entry_id`, the failure reason, and the
   final successful model
+
+#### Scenario: Failover attempts carry spend evidence independently
+- **WHEN** one logical session invokes multiple candidates before a fallback succeeds
+- **THEN** every invoked `runtime_failure`, `suppressed`, or `success` attempt SHALL have one corresponding `public.token_usage_ledger` row whose `attempt_id` identifies that attempt
+- **AND** reported provider usage SHALL be classified `measured`
+- **AND** an invoked attempt with no parseable usage SHALL be classified `unmeasurable` rather than omitted or assigned zero tokens
+- **AND** synthetic `quota_skip` and `exhausted` provenance rows SHALL NOT create token-usage rows because they do not represent provider invocations
+
+#### Scenario: Failed provider resume remains non-breaker provenance
+- **WHEN** a provider-native resume fails safely and the spawner retries the same candidate cold
+- **THEN** the failed invocation SHALL use `outcome='resume_failure'` and SHALL carry its own token-usage evidence
+- **AND** that outcome SHALL NOT count as a same-tier failover slot or a model circuit-breaker failure
 
 #### Scenario: Failover suppressed by side effects
 - **WHEN** failover is suppressed because captured tool calls are present

@@ -813,6 +813,10 @@ export interface SpendDivergence {
 /** Aggregate spend summary across all butlers. */
 export interface SpendSummary {
   total_cost_usd: number;
+  /** Priced subtotal from attempts with parseable provider usage. */
+  measured_usd?: number;
+  /** Invoked attempts whose provider usage could not be parsed. */
+  unmeasurable_attempts?: number;
   total_sessions: number;
   /** Uncached input tokens only -- see `total_cached_input_tokens`. */
   total_input_tokens: number;

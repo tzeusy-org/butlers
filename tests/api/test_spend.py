@@ -260,6 +260,7 @@ async def test_cost_summary_aggregates_multiple_butlers(app):
             butler_name="sw",
             model_id="claude-sonnet-4-20250514",
             calls=5,
+            unmeasurable_attempts=2,
             input_tokens=10_000,
             output_tokens=5_000,
         ),
@@ -282,6 +283,8 @@ async def test_cost_summary_aggregates_multiple_butlers(app):
     data = resp.json()["data"]
     assert data["total_sessions"] == 8
     assert data["total_cost_usd"] == pytest.approx(0.1274, abs=1e-4)
+    assert data["measured_usd"] == data["total_cost_usd"]
+    assert data["unmeasurable_attempts"] == 2
     assert data["by_butler"] == {"gen": pytest.approx(0.0224), "sw": pytest.approx(0.105)}
     mgr.get_client.assert_not_called()
 
@@ -383,6 +386,7 @@ def _ledger_row(
     purpose: str = "route",
     model_id: str = "claude-sonnet-4-20250514",
     calls: int = 1,
+    unmeasurable_attempts: int = 0,
     input_tokens: int = 0,
     output_tokens: int = 0,
     cached_input_tokens: int = 0,
@@ -395,6 +399,7 @@ def _ledger_row(
         "purpose": purpose,
         "model_id": model_id,
         "calls": calls,
+        "unmeasurable_attempts": unmeasurable_attempts,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "cached_input_tokens": cached_input_tokens,

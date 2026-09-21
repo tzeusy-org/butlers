@@ -362,12 +362,17 @@ class CeilingStatus:
     unpriced_models:
         Executed models with ledger usage but no configured price. Their usage
         is deliberately excluded from ``mtd_usd`` rather than treated as free.
+    unmeasurable_attempts:
+        Invoked attempts for which the runtime yielded no parseable token usage.
+        These are excluded from ``mtd_usd`` and surfaced separately so the
+        measured subtotal cannot impersonate a complete total.
     """
 
     allowed: bool
     mtd_usd: float
     ceiling_usd: float | None
     unpriced_models: tuple[UnpricedModelUsage, ...] = ()
+    unmeasurable_attempts: int = 0
 
 
 @dataclasses.dataclass(frozen=True)
@@ -398,6 +403,7 @@ class LedgerSpend:
 
     cost_usd: float
     unpriced_models: tuple[UnpricedModelUsage, ...] = ()
+    unmeasurable_attempts: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -1243,8 +1249,9 @@ INSERT INTO public.token_usage_ledger
     (catalog_entry_id, butler_name, session_id, input_tokens, output_tokens,
      cached_input_tokens, cache_creation_tokens, purpose,
      base_prompt_tokens, timezone_instruction_tokens, context_preamble_tokens,
-     routing_instructions_tokens, memory_context_tokens, resume_outcome, purpose_lane)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+     routing_instructions_tokens, memory_context_tokens, resume_outcome, purpose_lane,
+     attempt_id, usage_source)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 """
 
 # Read the configured monthly spend ceiling (singleton row id=1).
@@ -1259,11 +1266,16 @@ SELECT monthly_usd FROM public.spend_ceiling WHERE id = 1
 _MTD_USAGE_BY_MODEL_SQL = """
 SELECT
     mc.model_id AS model_id,
-    COUNT(*) AS calls,
-    COALESCE(SUM(tul.input_tokens), 0)  AS input_tokens,
-    COALESCE(SUM(tul.output_tokens), 0) AS output_tokens,
-    COALESCE(SUM(tul.cached_input_tokens), 0)   AS cached_input_tokens,
-    COALESCE(SUM(tul.cache_creation_tokens), 0) AS cache_creation_tokens
+    COUNT(*) FILTER (WHERE tul.usage_source = 'measured') AS calls,
+    COUNT(*) FILTER (WHERE tul.usage_source = 'unmeasurable') AS unmeasurable_attempts,
+    COALESCE(SUM(tul.input_tokens) FILTER (WHERE tul.usage_source = 'measured'), 0)
+        AS input_tokens,
+    COALESCE(SUM(tul.output_tokens) FILTER (WHERE tul.usage_source = 'measured'), 0)
+        AS output_tokens,
+    COALESCE(SUM(tul.cached_input_tokens) FILTER (WHERE tul.usage_source = 'measured'), 0)
+        AS cached_input_tokens,
+    COALESCE(SUM(tul.cache_creation_tokens) FILTER (WHERE tul.usage_source = 'measured'), 0)
+        AS cache_creation_tokens
 FROM public.token_usage_ledger tul
 JOIN public.model_catalog mc ON mc.id = tul.catalog_entry_id
 WHERE tul.recorded_at >= date_trunc('month', now() AT TIME ZONE 'UTC')
@@ -2835,15 +2847,20 @@ def price_ledger_usage_rows(
 
     effective_pricing = pricing or load_pricing()
     cost_usd = 0.0
+    unmeasurable_attempts = 0
     unpriced_by_model: dict[str, dict[str, int]] = {}
 
     for row in usage_rows:
         model_id = str(row.get("model_id") or "unknown")
-        calls = int(row.get("calls") or 1)
+        raw_calls = row.get("calls")
+        calls = 1 if raw_calls is None else int(raw_calls)
+        unmeasurable_attempts += int(row.get("unmeasurable_attempts") or 0)
         input_tokens = int(row.get("input_tokens") or 0)
         output_tokens = int(row.get("output_tokens") or 0)
         cached_input_tokens = int(row.get("cached_input_tokens") or 0)
         cache_creation_tokens = int(row.get("cache_creation_tokens") or 0)
+        if calls == 0:
+            continue
         cost = estimate_session_cost(
             effective_pricing,
             model_id,
@@ -2878,6 +2895,7 @@ def price_ledger_usage_rows(
             UnpricedModelUsage(model=model_id, **usage)
             for model_id, usage in sorted(unpriced_by_model.items())
         ),
+        unmeasurable_attempts=unmeasurable_attempts,
     )
 
 
@@ -2966,6 +2984,7 @@ async def check_monthly_ceiling(
             mtd_usd=spend.cost_usd,
             ceiling_usd=ceiling_usd,
             unpriced_models=spend.unpriced_models,
+            unmeasurable_attempts=spend.unmeasurable_attempts,
         )
 
     except Exception:
@@ -2982,10 +3001,10 @@ async def record_token_usage(
     catalog_entry_id: uuid.UUID,
     butler_name: str,
     session_id: uuid.UUID | None,
-    input_tokens: int,
-    output_tokens: int,
-    cached_input_tokens: int = 0,
-    cache_creation_tokens: int = 0,
+    input_tokens: int | None,
+    output_tokens: int | None,
+    cached_input_tokens: int | None = 0,
+    cache_creation_tokens: int | None = 0,
     purpose: str | None = None,
     purpose_lane: PurposeLane = PURPOSE_LANE_STANDARD,
     base_prompt_tokens: int | None = None,
@@ -2994,6 +3013,8 @@ async def record_token_usage(
     routing_instructions_tokens: int | None = None,
     memory_context_tokens: int | None = None,
     resume_outcome: str | None = None,
+    attempt_id: int | None = None,
+    usage_source: str = "measured",
 ) -> None:
     """Record token usage to ``public.token_usage_ledger``.
 
@@ -3049,10 +3070,32 @@ async def record_token_usage(
         without resume support, no handle available, etc.) -- an evolving,
         code-owned vocabulary with no DB-level CHECK constraint, mirroring
         ``purpose``.
+    attempt_id:
+        Stable ``public.model_dispatch_attempts.id`` for the provider invocation.
+        ``None`` is retained for historical and non-spawner callers that have no
+        dispatch-attempt identity.
+    usage_source:
+        ``"measured"`` when the provider returned parseable token counts, or
+        ``"unmeasurable"`` when an invoked attempt returned no usable counts.
+        Unmeasurable rows require all token buckets to be ``None``.
     """
     try:
         if purpose_lane not in {"standard", "private_content"}:
             raise ValueError("purpose_lane must be standard or private_content")
+        if usage_source not in {"measured", "unmeasurable"}:
+            raise ValueError("usage_source must be measured or unmeasurable")
+        if usage_source == "measured" and (input_tokens is None or output_tokens is None):
+            raise ValueError("measured usage requires input_tokens and output_tokens")
+        if usage_source == "unmeasurable" and any(
+            value is not None
+            for value in (
+                input_tokens,
+                output_tokens,
+                cached_input_tokens,
+                cache_creation_tokens,
+            )
+        ):
+            raise ValueError("unmeasurable usage must not fabricate token counts")
         await pool.execute(
             _LEDGER_INSERT_SQL,
             catalog_entry_id,
@@ -3070,6 +3113,8 @@ async def record_token_usage(
             memory_context_tokens,
             resume_outcome,
             purpose_lane,
+            attempt_id,
+            usage_source,
         )
     except Exception:
         logger.warning(
