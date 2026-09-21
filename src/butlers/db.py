@@ -134,7 +134,7 @@ def check_infra_default_creds() -> None:
         )
 
 
-def _jsonb_encoder(value: object) -> bytes:
+def encode_jsonb(value: object) -> bytes:
     """Encode a Python object to the JSONB binary wire format.
 
     asyncpg's binary JSONB format requires a leading ``\\x01`` version byte
@@ -169,7 +169,7 @@ async def register_jsonb_codec(conn: asyncpg.Connection) -> None:
     """
     await conn.set_type_codec(
         "jsonb",
-        encoder=_jsonb_encoder,
+        encoder=encode_jsonb,
         decoder=_jsonb_decoder,
         schema="pg_catalog",
         format="binary",

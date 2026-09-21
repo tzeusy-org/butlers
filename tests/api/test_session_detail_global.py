@@ -199,6 +199,32 @@ async def test_global_session_detail_includes_linked_message_when_present() -> N
     }
 
 
+async def test_global_session_detail_includes_recorded_model_resolution() -> None:
+    """Session detail returns stored evidence, not a re-derived current decision."""
+    session_id = uuid4()
+    app = _make_app(owning_butler="general", row=_make_detail_row(session_id))
+    mock_db = app.dependency_overrides[_sessions_get_db]()
+    owning_pool = mock_db.pool.return_value
+    receipt = {
+        "policy_version": "dispatch-fit-v1",
+        "winner": {"model_id": "claude-sonnet", "reason": "sole_candidate"},
+        "candidates": [],
+        "truncated": False,
+    }
+
+    async def _fetchval(sql, *_args):
+        return receipt if "resolution_receipt" in sql else 0
+
+    owning_pool.fetchval = AsyncMock(side_effect=_fetchval)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(f"/api/sessions/{session_id}")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["resolution_receipt"] == receipt
+
+
 async def test_global_session_detail_omits_linked_message_when_absent() -> None:
     """A session never invoked from dashboard chat has no linked message —
     never fabricated."""

@@ -1299,7 +1299,7 @@ class TestUpdateTransactionEnhanced:
         `current_metadata` to {} in that case — doing so would silently drop
         all pre-existing metadata keys when the fallback warning is persisted.
         """
-        from butlers.db import _jsonb_encoder
+        from butlers.db import encode_jsonb
         from butlers.tools.finance.transactions import update_transaction
 
         await _install_category_fk(pool_v2)
@@ -1317,7 +1317,7 @@ class TestUpdateTransactionEnhanced:
         async with pool_v2.acquire() as conn:
             await conn.set_type_codec(
                 "jsonb",
-                encoder=_jsonb_encoder,
+                encoder=encode_jsonb,
                 decoder=_passthrough_decoder,
                 schema="pg_catalog",
                 format="binary",

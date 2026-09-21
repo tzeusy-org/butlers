@@ -302,6 +302,52 @@ export function SessionDossier({ session, className }: SessionDossierProps) {
         </div>
       </section>
 
+      <section>
+        <details className="rounded-md border p-3" data-testid="model-resolution-disclosure">
+          <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Why this model?
+          </summary>
+          {session.resolution_receipt ? (
+            <div className="mt-3 space-y-2 text-xs">
+              <p>
+                <span className="text-muted-foreground">Winner: </span>
+                <span className="font-mono">
+                  {session.resolution_receipt.winner?.model_id ?? session.model ?? "Unknown"}
+                </span>
+                {session.resolution_receipt.winner?.reason
+                  ? ` · ${session.resolution_receipt.winner.reason.replaceAll("_", " ")}`
+                  : null}
+              </p>
+              {session.resolution_receipt.failover && (
+                <p data-testid="model-resolution-failover">
+                  Failover after attempt{" "}
+                  {session.resolution_receipt.failover.from_attempt_index + 1}:{" "}
+                  {session.resolution_receipt.failover.failure_class}
+                </p>
+              )}
+              <ul className="space-y-1">
+                {(session.resolution_receipt.candidates ?? []).map((candidate) => (
+                  <li key={candidate.catalog_entry_id} className="flex justify-between gap-3">
+                    <span className="font-mono">{candidate.model_id}</span>
+                    <span className="text-muted-foreground">
+                      {candidate.exclusion ?? candidate.outcome.replaceAll("_", " ")}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              {session.resolution_receipt.truncated && (
+                <p className="text-muted-foreground">
+                  Candidate list truncated; {session.resolution_receipt.candidate_count ?? "more"}{" "}
+                  were considered.
+                </p>
+              )}
+            </div>
+          ) : (
+            <p className="mt-3 text-xs text-muted-foreground">No receipt recorded.</p>
+          )}
+        </details>
+      </section>
+
       {/* Prompt */}
       <section>
         <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
