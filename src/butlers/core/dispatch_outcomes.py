@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import dataclass
 
 import asyncpg
 
@@ -28,6 +29,24 @@ runtime_attention_recorder_total = get_or_create_counter(
 )
 
 _QUALIFYING_BREAKER_OUTCOMES = frozenset({"runtime_failure", "success"})
+
+
+@dataclass(frozen=True, slots=True)
+class DispatchUsageEvidence:
+    """Token evidence committed with one invoked dispatch attempt."""
+
+    input_tokens: int | None
+    output_tokens: int | None
+    cached_input_tokens: int | None
+    cache_creation_tokens: int | None
+    purpose: str | None = None
+    base_prompt_tokens: int | None = None
+    timezone_instruction_tokens: int | None = None
+    context_preamble_tokens: int | None = None
+    routing_instructions_tokens: int | None = None
+    memory_context_tokens: int | None = None
+    resume_outcome: str | None = None
+    usage_source: str = "measured"
 
 
 def _safe_inc(outcome: str, edge: str) -> None:
@@ -100,6 +119,20 @@ _DISPATCH_ATTEMPTS_INSERT = """
 
 _DISPATCH_ATTEMPTS_INSERT_RETURNING_ID = _DISPATCH_ATTEMPTS_INSERT + " RETURNING id"
 
+_ATTEMPT_USAGE_INSERT = """
+    INSERT INTO public.token_usage_ledger
+        (catalog_entry_id, butler_name, session_id, input_tokens, output_tokens,
+         cached_input_tokens, cache_creation_tokens, purpose,
+         base_prompt_tokens, timezone_instruction_tokens, context_preamble_tokens,
+         routing_instructions_tokens, memory_context_tokens, resume_outcome, purpose_lane,
+         attempt_id, usage_source, recorded_at)
+    SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+           attempt.id, $17, attempt.ts
+      FROM public.model_dispatch_attempts AS attempt
+     WHERE attempt.id = $16
+    ON CONFLICT (attempt_id, recorded_at) WHERE attempt_id IS NOT NULL DO NOTHING
+"""
+
 _BREAKER_LOCK_SQL = """
     SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
 """
@@ -157,8 +190,9 @@ async def record_dispatch_attempt(
     duration_ms: int | None = None,
     purpose_lane: PurposeLane = PURPOSE_LANE_STANDARD,
     produce_fleet_halt: bool = False,
+    usage_evidence: DispatchUsageEvidence | None = None,
 ) -> int | None:
-    """Persist one attempt and atomically append any operational edge.
+    """Persist one attempt with its usage evidence and any operational edge.
 
     ``runtime_failure`` and ``success`` are serialized with a transaction-
     scoped advisory lock keyed by catalog entry.  A closed-to-open transition
@@ -170,8 +204,12 @@ async def record_dispatch_attempt(
     guarantee is the producer's own, so the deny path — which fires for every
     spawn while the fleet is halted — is not serialized fleet-wide.
 
-    Non-qualifying outcomes retain the existing lightweight best-effort insert
-    path.  The returned bigint is stable for transactional writes; ``None``
+    Invoked outcomes provide ``usage_evidence``. The attempt and ledger row
+    then share one transaction; the ledger insert uses the attempt timestamp
+    as its partition key and an idempotent unique conflict target. Synthetic
+    outcomes omit usage and retain the lightweight insert path.
+
+    The returned bigint is stable for transactional writes; ``None``
     means persistence degraded or the outcome was intentionally non-
     qualifying.  A producer that is unauthorized to run still returns the
     attempt id — see ``_produce_edge`` — and reports the ``*_unauthorized``
@@ -182,6 +220,23 @@ async def record_dispatch_attempt(
     """
     try:
         safe_error_message = error_message[:4096] if error_message else None
+        if usage_evidence is not None:
+            if usage_evidence.usage_source not in {"measured", "unmeasurable"}:
+                raise ValueError("usage_source must be measured or unmeasurable")
+            token_values = (
+                usage_evidence.input_tokens,
+                usage_evidence.output_tokens,
+                usage_evidence.cached_input_tokens,
+                usage_evidence.cache_creation_tokens,
+            )
+            if usage_evidence.usage_source == "measured" and any(
+                value is None for value in token_values
+            ):
+                raise ValueError("measured usage requires every token bucket")
+            if usage_evidence.usage_source == "unmeasurable" and any(
+                value is not None for value in token_values
+            ):
+                raise ValueError("unmeasurable usage must not fabricate token counts")
         if produce_fleet_halt and (
             outcome != "quota_skip"
             or not (failure_reason or "").startswith(CEILING_DENIAL_REASON_PREFIX)
@@ -211,11 +266,16 @@ async def record_dispatch_attempt(
             purpose_lane,
         )
 
-        if outcome not in _QUALIFYING_BREAKER_OUTCOMES and not produce_fleet_halt:
+        if (
+            outcome not in _QUALIFYING_BREAKER_OUTCOMES
+            and not produce_fleet_halt
+            and usage_evidence is None
+        ):
             try:
                 attempt_id = await pool.fetchval(_DISPATCH_ATTEMPTS_INSERT_RETURNING_ID, *values)
                 if not isinstance(attempt_id, int):
                     raise RuntimeError("dispatch-attempt insert returned no stable bigint id")
+
             except Exception:
                 _safe_inc("degraded", "none")
                 logger.debug(
@@ -257,6 +317,28 @@ async def record_dispatch_attempt(
                 )
                 if not isinstance(attempt_id, int):
                     raise RuntimeError("dispatch-attempt insert returned no stable bigint id")
+
+                if usage_evidence is not None:
+                    await connection.execute(
+                        _ATTEMPT_USAGE_INSERT,
+                        catalog_entry_id,
+                        butler,
+                        session_id,
+                        usage_evidence.input_tokens,
+                        usage_evidence.output_tokens,
+                        usage_evidence.cached_input_tokens,
+                        usage_evidence.cache_creation_tokens,
+                        usage_evidence.purpose,
+                        usage_evidence.base_prompt_tokens,
+                        usage_evidence.timezone_instruction_tokens,
+                        usage_evidence.context_preamble_tokens,
+                        usage_evidence.routing_instructions_tokens,
+                        usage_evidence.memory_context_tokens,
+                        usage_evidence.resume_outcome,
+                        purpose_lane,
+                        attempt_id,
+                        usage_evidence.usage_source,
+                    )
 
                 if outcome == "runtime_failure" and not breaker_was_open:
                     # The breaker path keeps a clock asymmetry the fleet-halt

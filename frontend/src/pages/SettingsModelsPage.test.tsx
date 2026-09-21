@@ -356,6 +356,15 @@ describe("SettingsModelsPage — page structure", () => {
     const failedHtml = renderPage();
     expect(failedHtml).toContain("Spend summary: unpriced-attempt count unavailable");
     expect(failedHtml).not.toContain("attempts unpriced");
+
+    vi.mocked(useSpendSummary).mockReturnValue({
+      data: { data: { unmeasurable_attempts: 0, source_error: true } },
+      isLoading: false,
+      isError: false,
+    } as AnyMock);
+    const degradedHtml = renderPage();
+    expect(degradedHtml).toContain("Spend summary: unpriced-attempt count unavailable");
+    expect(degradedHtml).not.toContain("attempts unpriced");
   });
 });
 

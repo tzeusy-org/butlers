@@ -794,7 +794,6 @@ class TestAttemptGrainedSpendEvidence:
                 new_callable=AsyncMock,
                 side_effect=[101, 102, 103, 104],
             ) as write_attempt,
-            patch("butlers.core.spawner.record_token_usage", new_callable=AsyncMock) as write_usage,
         ):
             create.return_value = _SESSION_ID
             result = await Spawner(
@@ -808,26 +807,21 @@ class TestAttemptGrainedSpendEvidence:
             "runtime_failure",
             "success",
         ]
-        assert len(write_usage.await_args_list) == 4
-        assert [call.kwargs["attempt_id"] for call in write_usage.await_args_list] == [
-            101,
-            102,
-            103,
-            104,
-        ]
-        assert {call.kwargs["usage_source"] for call in write_usage.await_args_list} == {"measured"}
+        assert all(call.kwargs["invoked"] is True for call in write_attempt.await_args_list)
+        assert all(call.kwargs["usage"] is not None for call in write_attempt.await_args_list)
 
         rows = [
             {
                 "model_id": f"model-{index}",
                 "calls": 1,
-                "input_tokens": call.kwargs["input_tokens"],
-                "output_tokens": call.kwargs["output_tokens"],
-                "cached_input_tokens": call.kwargs["cached_input_tokens"],
-                "cache_creation_tokens": call.kwargs["cache_creation_tokens"],
+                "input_tokens": usage["input_tokens"],
+                "output_tokens": usage.get("output_tokens", 0),
+                "cached_input_tokens": usage.get("cache_read_input_tokens", 0),
+                "cache_creation_tokens": usage.get("cache_creation_input_tokens", 0),
                 "unmeasurable_attempts": 0,
             }
-            for index, call in enumerate(write_usage.await_args_list)
+            for index, call in enumerate(write_attempt.await_args_list)
+            for usage in [call.kwargs["usage"]]
         ]
         with patch(
             "butlers.core.pricing.estimate_session_cost",
@@ -867,8 +861,7 @@ class TestAttemptGrainedSpendEvidence:
                 "butlers.core.spawner._write_dispatch_attempt",
                 new_callable=AsyncMock,
                 side_effect=[201, 202],
-            ),
-            patch("butlers.core.spawner.record_token_usage", new_callable=AsyncMock) as write_usage,
+            ) as write_attempt,
         ):
             create.return_value = _SESSION_ID
             result = await Spawner(
@@ -879,11 +872,9 @@ class TestAttemptGrainedSpendEvidence:
             ).trigger("hello", "tick")
 
         assert result.success is False
-        write_usage.assert_awaited_once()
-        assert write_usage.await_args.kwargs["attempt_id"] == 201
-        assert write_usage.await_args.kwargs["usage_source"] == "unmeasurable"
-        assert write_usage.await_args.kwargs["input_tokens"] is None
-        assert write_usage.await_args.kwargs["output_tokens"] is None
+        invoked = [call for call in write_attempt.await_args_list if call.kwargs.get("invoked")]
+        assert len(invoked) == 1
+        assert invoked[0].kwargs["usage"] is None
 
 
 class TestAC4SuppressedFailover:

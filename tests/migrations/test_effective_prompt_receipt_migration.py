@@ -10,6 +10,12 @@ from unittest.mock import MagicMock, patch
 
 import asyncpg
 import pytest
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import DBAPIError
+
+from alembic import command
+from butlers.migrations import _build_alembic_config
+from butlers.testing.migration import create_migration_db, migration_db_name
 
 pytestmark = [pytest.mark.integration, pytest.mark.db]
 
@@ -62,87 +68,101 @@ def test_prompt_receipt_migrations_extend_the_live_core_head() -> None:
     assert (attempt_usage.revision, attempt_usage.down_revision) == ("core_242", "core_241")
 
 
-@pytest.mark.asyncio(loop_scope="session")
-async def test_attempt_usage_migration_is_additive_closed_and_reversible(
-    provisioned_postgres_pool,
+def test_attempt_usage_migration_is_partition_safe_closed_and_reversible(
+    postgres_container,
 ) -> None:
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(
-            """
-            CREATE TABLE public.model_dispatch_attempts (
-                id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY
-            );
-            CREATE TABLE public.token_usage_ledger (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                input_tokens INTEGER NOT NULL DEFAULT 0,
-                output_tokens INTEGER NOT NULL DEFAULT 0,
-                cached_input_tokens INTEGER NOT NULL DEFAULT 0,
-                cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
-                recorded_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    db_url = create_migration_db(postgres_container, migration_db_name())
+    config = _build_alembic_config(db_url, chains=["core"])
+    command.upgrade(config, "core@core_241")
+    engine = create_engine(db_url)
+    try:
+        with engine.begin() as connection:
+            catalog_entry_id = uuid.uuid4()
+            connection.execute(
+                text(
+                    "INSERT INTO public.model_catalog (id, alias, runtime_type, model_id) "
+                    "VALUES (:id, 'core-242-test', 'codex', 'core-242-test')"
+                ),
+                {"id": catalog_entry_id},
             )
-            """
-        )
-        legacy_id = await pool.fetchval(
-            "INSERT INTO public.token_usage_ledger (input_tokens, output_tokens) "
-            "VALUES (5, 3) RETURNING id"
-        )
-        attempt_id = await pool.fetchval(
-            "INSERT INTO public.model_dispatch_attempts DEFAULT VALUES RETURNING id"
-        )
+            legacy_id = connection.execute(
+                text(
+                    "INSERT INTO public.token_usage_ledger "
+                    "(catalog_entry_id, butler_name, input_tokens, output_tokens) "
+                    "VALUES (:entry, 'general', 5, 3) RETURNING id"
+                ),
+                {"entry": catalog_entry_id},
+            ).scalar_one()
+            attempt_id = connection.execute(
+                text(
+                    "INSERT INTO public.model_dispatch_attempts "
+                    "(catalog_entry_id, butler, outcome) "
+                    "VALUES (:entry, 'general', 'success') RETURNING id"
+                ),
+                {"entry": catalog_entry_id},
+            ).scalar_one()
 
-        module = _load_path("core_242", _ATTEMPT_USAGE_MIGRATION_PATH)
-        statements: list[str] = []
-        mocked_op = MagicMock()
-        mocked_op.execute.side_effect = statements.append
-        with patch.object(module, "op", mocked_op):
-            module.upgrade()
-        for statement in statements:
-            await pool.execute(statement)
+        command.upgrade(config, "core@core_242")
+        with engine.begin() as connection:
+            legacy = connection.execute(
+                text(
+                    "SELECT attempt_id, usage_source FROM public.token_usage_ledger WHERE id = :id"
+                ),
+                {"id": legacy_id},
+            ).one()
+            assert tuple(legacy) == (None, "measured")
+            assert connection.execute(
+                text(
+                    "SELECT indisvalid AND indisunique FROM pg_index "
+                    "WHERE indexrelid = 'public.idx_token_usage_ledger_attempt'::regclass"
+                )
+            ).scalar_one()
+            assert connection.execute(
+                text(
+                    "SELECT bool_and(idx.indisvalid AND idx.indisunique) "
+                    "FROM pg_inherits inheritance "
+                    "JOIN pg_index idx ON idx.indexrelid = inheritance.inhrelid "
+                    "WHERE inheritance.inhparent = "
+                    "'public.idx_token_usage_ledger_attempt'::regclass"
+                )
+            ).scalar_one()
+            unmeasurable_id = connection.execute(
+                text(
+                    "INSERT INTO public.token_usage_ledger "
+                    "(catalog_entry_id, butler_name, input_tokens, output_tokens, "
+                    "cached_input_tokens, cache_creation_tokens, attempt_id, usage_source) "
+                    "VALUES (:entry, 'general', NULL, NULL, NULL, NULL, :attempt, "
+                    "'unmeasurable') RETURNING id"
+                ),
+                {"entry": catalog_entry_id, "attempt": attempt_id},
+            ).scalar_one()
 
-        legacy = await pool.fetchrow(
-            "SELECT attempt_id, usage_source FROM public.token_usage_ledger WHERE id = $1",
-            legacy_id,
-        )
-        assert tuple(legacy) == (None, "measured")
+        with pytest.raises(DBAPIError, match="unmeasurable usage exists"):
+            command.downgrade(config, "core@core_241")
 
-        unmeasurable_id = await pool.fetchval(
-            """
-            INSERT INTO public.token_usage_ledger (
-                input_tokens, output_tokens, cached_input_tokens,
-                cache_creation_tokens, attempt_id, usage_source
-            ) VALUES (NULL, NULL, NULL, NULL, $1, 'unmeasurable')
-            RETURNING id
-            """,
-            attempt_id,
-        )
-        with pytest.raises(asyncpg.CheckViolationError):
-            await pool.execute(
-                "INSERT INTO public.token_usage_ledger (usage_source) VALUES ('guessed')"
+        with engine.begin() as connection:
+            connection.execute(
+                text("DELETE FROM public.token_usage_ledger WHERE id = :id"),
+                {"id": unmeasurable_id},
             )
-        with pytest.raises(asyncpg.CheckViolationError):
-            await pool.execute(
-                "INSERT INTO public.token_usage_ledger "
-                "(input_tokens, output_tokens, usage_source) VALUES (1, 2, 'unmeasurable')"
-            )
+        command.downgrade(config, "core@core_241")
+        with engine.connect() as connection:
+            columns = connection.execute(
+                text(
+                    "SELECT column_name, is_nullable FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND table_name = 'token_usage_ledger'"
+                )
+            ).all()
+            by_name = {row.column_name: row.is_nullable for row in columns}
+            assert "attempt_id" not in by_name
+            assert "usage_source" not in by_name
+            assert by_name["input_tokens"] == "NO"
 
-        statements.clear()
-        with patch.object(module, "op", mocked_op):
-            module.downgrade()
-        with pytest.raises(asyncpg.RaiseError, match="unmeasurable usage evidence exists"):
-            for statement in statements:
-                await pool.execute(statement)
-
-        await pool.execute("DELETE FROM public.token_usage_ledger WHERE id = $1", unmeasurable_id)
-        for statement in statements:
-            await pool.execute(statement)
-        columns = await pool.fetch(
-            "SELECT column_name, is_nullable FROM information_schema.columns "
-            "WHERE table_schema = 'public' AND table_name = 'token_usage_ledger'"
-        )
-        by_name = {row["column_name"]: row["is_nullable"] for row in columns}
-        assert "attempt_id" not in by_name
-        assert "usage_source" not in by_name
-        assert by_name["input_tokens"] == "NO"
+        # A replay after downgrade uses the same global objects and repairs the
+        # partitioned index without relying on the target schema.
+        command.upgrade(config, "core@core_242")
+    finally:
+        engine.dispose()
 
 
 async def _run_migration(pool, direction: str) -> None:

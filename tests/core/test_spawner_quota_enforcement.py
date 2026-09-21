@@ -239,7 +239,7 @@ class TestSpawnerQuotaEnforcement:
                     new_callable=AsyncMock,
                     return_value=quota_status,
                 ),
-                patch("butlers.core.spawner.record_token_usage", new_callable=AsyncMock),
+                patch("butlers.core.spawner._write_dispatch_attempt", new_callable=AsyncMock),
             ):
                 mock_create.return_value = _SESSION_ID
                 result = await Spawner(
@@ -330,12 +330,19 @@ class TestSpawnerLedgerRecording:
                 new_callable=AsyncMock,
                 return_value=_quota_allowed(),
             ),
-            patch("butlers.core.spawner.record_token_usage", new_callable=AsyncMock) as mock_record,
+            patch(
+                "butlers.core.spawner._write_dispatch_attempt", new_callable=AsyncMock
+            ) as mock_record,
         ):
             mock_create.return_value = _SESSION_ID
             result = await spawner.trigger("hello", "tick")
         assert result.success is True
-        mock_record.assert_called_once()
+        mock_record.assert_awaited_once()
+        assert mock_record.await_args.kwargs["invoked"] is True
+        assert mock_record.await_args.kwargs["usage"] == {
+            "input_tokens": 200,
+            "output_tokens": 100,
+        }
 
         # Adapter crashes before returning usage → explicit unmeasurable attempt
         class _FailingUsageAdapter(_MockAdapter):
@@ -379,15 +386,15 @@ class TestSpawnerLedgerRecording:
                 return_value=_quota_allowed(),
             ),
             patch(
-                "butlers.core.spawner.record_token_usage", new_callable=AsyncMock
+                "butlers.core.spawner._write_dispatch_attempt", new_callable=AsyncMock
             ) as mock_record1,
         ):
             mock_create1.return_value = _SESSION_ID
             result1 = await spawner1.trigger("hello", "tick")
         assert result1.success is False
         mock_record1.assert_awaited_once()
-        assert mock_record1.await_args.kwargs["usage_source"] == "unmeasurable"
-        assert mock_record1.await_args.kwargs["input_tokens"] is None
+        assert mock_record1.await_args.kwargs["invoked"] is True
+        assert mock_record1.await_args.kwargs["usage"] is None
 
         # Adapter returns None usage → explicit unmeasurable attempt
         config_dir2 = tmp_path / "config2"
@@ -419,12 +426,12 @@ class TestSpawnerLedgerRecording:
                 return_value=_quota_allowed(),
             ),
             patch(
-                "butlers.core.spawner.record_token_usage", new_callable=AsyncMock
+                "butlers.core.spawner._write_dispatch_attempt", new_callable=AsyncMock
             ) as mock_record2,
         ):
             mock_create2.return_value = _SESSION_ID
             result2 = await spawner2.trigger("hi", "tick")
         assert result2.success is True
         mock_record2.assert_awaited_once()
-        assert mock_record2.await_args.kwargs["usage_source"] == "unmeasurable"
-        assert mock_record2.await_args.kwargs["input_tokens"] is None
+        assert mock_record2.await_args.kwargs["invoked"] is True
+        assert mock_record2.await_args.kwargs["usage"] is None

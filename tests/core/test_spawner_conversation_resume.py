@@ -84,6 +84,38 @@ _LEDGER_INSERT = "INSERT INTO public.token_usage_ledger"
 _RESUME_OUTCOME_ARG_INDEX = 14
 
 
+@pytest.fixture(autouse=True)
+def _isolate_atomic_recorder_for_spawner_unit_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Represent atomic usage evidence at the existing mock-pool seam."""
+
+    async def _capture(pool: AsyncMock, **fields: Any) -> int:
+        evidence = fields.get("usage_evidence")
+        if evidence is not None:
+            await pool.execute(
+                _LEDGER_INSERT,
+                fields["catalog_entry_id"],
+                fields["butler"],
+                fields.get("session_id"),
+                evidence.input_tokens,
+                evidence.output_tokens,
+                evidence.cached_input_tokens,
+                evidence.cache_creation_tokens,
+                evidence.purpose,
+                evidence.base_prompt_tokens,
+                evidence.timezone_instruction_tokens,
+                evidence.context_preamble_tokens,
+                evidence.routing_instructions_tokens,
+                evidence.memory_context_tokens,
+                evidence.resume_outcome,
+                fields.get("purpose_lane"),
+                1,
+                evidence.usage_source,
+            )
+        return 1
+
+    monkeypatch.setattr("butlers.core.spawner.record_dispatch_attempt", _capture)
+
+
 def _resume_outcomes_written(mock_pool: AsyncMock) -> list[str | None]:
     """resume_outcome values from every token_usage_ledger INSERT on mock_pool."""
     outcomes = []
@@ -483,10 +515,11 @@ class TestResumeFailureFallsBackToCold:
         # failed, even though the transparent cold retry then won.
         # Both the usage-bearing failed resume and the successful cold retry
         # retain the classified resume outcome; neither row is ambiguous NULL.
-        assert _resume_outcomes_written(mock_pool) == [
+        assert [c.kwargs["resume_outcome"] for c in mock_write.await_args_list] == [
             "resume_failed_retried_cold",
             "resume_failed_retried_cold",
         ]
+        assert all(c.kwargs["invoked"] is True for c in mock_write.await_args_list)
 
     async def test_failed_resume_with_confirmed_tool_calls_uses_ordinary_failover(
         self, tmp_path: Path

@@ -60,7 +60,7 @@ from butlers.core.dashboard_turns import (
     release_invoke,
 )
 from butlers.core.dispatch_intent import derive_dispatch_intent
-from butlers.core.dispatch_outcomes import record_dispatch_attempt
+from butlers.core.dispatch_outcomes import DispatchUsageEvidence, record_dispatch_attempt
 from butlers.core.failover_classifier import FailoverContext, classify_failover_eligibility
 from butlers.core.logging import resolve_log_root
 from butlers.core.mcp_urls import (
@@ -83,7 +83,6 @@ from butlers.core.model_routing import (
     check_token_quota,
     enforce_private_content_selection,
     next_same_tier_candidate,
-    record_token_usage,
     resolve_model_with_effective_tier,
 )
 from butlers.core.permissions import SPAWN_PERMISSION, check_permission
@@ -412,6 +411,11 @@ async def _write_dispatch_attempt(
     duration_ms: int | None = None,
     purpose_lane: PurposeLane = PURPOSE_LANE_STANDARD,
     produce_fleet_halt: bool = False,
+    usage: dict[str, Any] | None = None,
+    usage_purpose: str | None = None,
+    resume_outcome: str | None = None,
+    composed_prompt: ComposedPrompt | None = None,
+    invoked: bool = False,
 ) -> int | None:
     """Write one attempt row to public.model_dispatch_attempts (best-effort).
 
@@ -431,10 +435,26 @@ async def _write_dispatch_attempt(
     Consumed by ``model_routing.get_routing_evidence`` for evidence-based
     routing (bu-ep4ks.13).
 
-    Qualifying breaker outcomes and fleet-halt denials use the atomic recorder;
-    other outcomes retain lightweight best-effort persistence.  Never raises,
-    so provenance degradation cannot disrupt the caller-visible runtime result.
+    Invoked outcomes commit their measured or explicitly unmeasurable usage in
+    the same transaction. Synthetic outcomes omit ``invoked`` and retain
+    lightweight best-effort persistence. Never raises, so provenance
+    degradation cannot disrupt the caller-visible runtime result.
     """
+    usage_evidence = None
+    if invoked:
+        measured = usage is not None and usage.get("input_tokens") is not None
+        usage_evidence = DispatchUsageEvidence(
+            input_tokens=usage.get("input_tokens") if measured else None,
+            output_tokens=(usage.get("output_tokens") or 0) if measured else None,
+            cached_input_tokens=(usage.get("cache_read_input_tokens") or 0) if measured else None,
+            cache_creation_tokens=(usage.get("cache_creation_input_tokens") or 0)
+            if measured
+            else None,
+            purpose=usage_purpose,
+            resume_outcome=resume_outcome,
+            usage_source="measured" if measured else "unmeasurable",
+            **_composed_prompt_ledger_kwargs(composed_prompt),
+        )
     return await record_dispatch_attempt(
         pool,
         catalog_entry_id=catalog_entry_id,
@@ -450,39 +470,7 @@ async def _write_dispatch_attempt(
         duration_ms=duration_ms,
         purpose_lane=purpose_lane,
         produce_fleet_halt=produce_fleet_halt,
-    )
-
-
-async def _write_attempt_usage(
-    pool: asyncpg.Pool,
-    *,
-    attempt_id: int | None,
-    usage: dict[str, Any] | None,
-    catalog_entry_id: uuid.UUID,
-    butler_name: str,
-    session_id: uuid.UUID | None,
-    purpose: str | None,
-    purpose_lane: PurposeLane,
-    resume_outcome: str | None,
-    composed_prompt: ComposedPrompt | None,
-) -> None:
-    """Persist measured or explicitly unmeasurable evidence for one invocation."""
-    measured = usage is not None and usage.get("input_tokens") is not None
-    await record_token_usage(
-        pool,
-        catalog_entry_id=catalog_entry_id,
-        butler_name=butler_name,
-        session_id=session_id,
-        input_tokens=usage.get("input_tokens") if measured else None,
-        output_tokens=(usage.get("output_tokens") or 0) if measured else None,
-        cached_input_tokens=(usage.get("cache_read_input_tokens") or 0) if measured else None,
-        cache_creation_tokens=(usage.get("cache_creation_input_tokens") or 0) if measured else None,
-        purpose=purpose,
-        purpose_lane=purpose_lane,
-        resume_outcome=resume_outcome,
-        attempt_id=attempt_id,
-        usage_source="measured" if measured else "unmeasurable",
-        **_composed_prompt_ledger_kwargs(composed_prompt),
+        usage_evidence=usage_evidence,
     )
 
 
@@ -2630,7 +2618,7 @@ class Spawner:
                     )
                     # Record suppression provenance (best-effort).
                     if self._pool is not None and catalog_entry_id is not None:
-                        _attempt_id = await _write_dispatch_attempt(
+                        await _write_dispatch_attempt(
                             self._pool,
                             catalog_entry_id=catalog_entry_id,
                             butler=self._config.name,
@@ -2644,22 +2632,15 @@ class Spawner:
                             logical_session_id=effective_request_id,
                             purpose_lane=purpose_lane,
                             duration_ms=int((time.monotonic() - _attempt_t0) * 1000),
-                        )
-                        await _write_attempt_usage(
-                            self._pool,
-                            attempt_id=_attempt_id,
                             usage=_empty_response_usage or usage,
-                            catalog_entry_id=catalog_entry_id,
-                            butler_name=self._config.name,
-                            session_id=session_id,
-                            purpose=(
+                            usage_purpose=(
                                 purpose_lane
                                 if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
                                 else trigger_source
                             ),
-                            purpose_lane=purpose_lane,
                             resume_outcome=_resume_outcome,
                             composed_prompt=_composed_prompt_digest,
+                            invoked=True,
                         )
                     # Mark as already classified so the outer except handler does not
                     # double-emit the suppressed metric for this exception.
@@ -2701,7 +2682,7 @@ class Spawner:
                                 exc_info=True,
                             )
                     if self._pool is not None and catalog_entry_id is not None:
-                        _attempt_id = await _write_dispatch_attempt(
+                        await _write_dispatch_attempt(
                             self._pool,
                             catalog_entry_id=catalog_entry_id,
                             butler=self._config.name,
@@ -2715,22 +2696,15 @@ class Spawner:
                             logical_session_id=effective_request_id,
                             purpose_lane=purpose_lane,
                             duration_ms=int((time.monotonic() - _attempt_t0) * 1000),
-                        )
-                        await _write_attempt_usage(
-                            self._pool,
-                            attempt_id=_attempt_id,
                             usage=_empty_response_usage or usage,
-                            catalog_entry_id=catalog_entry_id,
-                            butler_name=self._config.name,
-                            session_id=session_id,
-                            purpose=(
+                            usage_purpose=(
                                 purpose_lane
                                 if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
                                 else trigger_source
                             ),
-                            purpose_lane=purpose_lane,
                             resume_outcome=_resume_outcome,
                             composed_prompt=_composed_prompt_digest,
+                            invoked=True,
                         )
                     continue
 
@@ -2740,7 +2714,7 @@ class Spawner:
                 _failed_attempt_index = len(_attempted_ids)
                 _failed_attempt_duration_ms = int((time.monotonic() - _attempt_t0) * 1000)
                 if self._pool is not None and _failed_catalog_entry_id is not None:
-                    _attempt_id = await _write_dispatch_attempt(
+                    await _write_dispatch_attempt(
                         self._pool,
                         catalog_entry_id=_failed_catalog_entry_id,
                         butler=self._config.name,
@@ -2754,22 +2728,15 @@ class Spawner:
                         logical_session_id=effective_request_id,
                         purpose_lane=purpose_lane,
                         duration_ms=_failed_attempt_duration_ms,
-                    )
-                    await _write_attempt_usage(
-                        self._pool,
-                        attempt_id=_attempt_id,
                         usage=_empty_response_usage or usage,
-                        catalog_entry_id=_failed_catalog_entry_id,
-                        butler_name=self._config.name,
-                        session_id=session_id,
-                        purpose=(
+                        usage_purpose=(
                             purpose_lane
                             if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
                             else trigger_source
                         ),
-                        purpose_lane=purpose_lane,
                         resume_outcome=_resume_outcome,
                         composed_prompt=_composed_prompt_digest,
+                        invoked=True,
                     )
 
                 # Attempt next same-tier candidate.
@@ -2930,7 +2897,7 @@ class Spawner:
             # paid invocation remains linked even when later deterministic work
             # downgrades the logical session outcome.
             if self._pool is not None and catalog_entry_id is not None:
-                _attempt_id = await _write_dispatch_attempt(
+                await _write_dispatch_attempt(
                     self._pool,
                     catalog_entry_id=catalog_entry_id,
                     butler=self._config.name,
@@ -2941,22 +2908,15 @@ class Spawner:
                     logical_session_id=effective_request_id,
                     purpose_lane=purpose_lane,
                     duration_ms=int((time.monotonic() - _attempt_t0) * 1000),
-                )
-                await _write_attempt_usage(
-                    self._pool,
-                    attempt_id=_attempt_id,
                     usage=usage,
-                    catalog_entry_id=catalog_entry_id,
-                    butler_name=self._config.name,
-                    session_id=session_id,
-                    purpose=(
+                    usage_purpose=(
                         purpose_lane
                         if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
                         else trigger_source
                     ),
-                    purpose_lane=purpose_lane,
                     resume_outcome=_resume_outcome,
                     composed_prompt=_composed_prompt_digest,
+                    invoked=True,
                 )
 
             # ------------------------------------------------------------------

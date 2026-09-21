@@ -1758,6 +1758,8 @@ export default function SettingsModelsPage() {
 
   const entries: ModelCatalogEntry[] = data?.data ?? [];
   const unmeasurableAttempts = spendSummary?.data?.data.unmeasurable_attempts;
+  const spendSummaryDegraded =
+    spendSummary?.isError || spendSummary?.data?.data.source_error === true;
 
   // Group by tier preserving canonical order
   const grouped = Object.fromEntries(
@@ -1882,7 +1884,7 @@ export default function SettingsModelsPage() {
         </div>
       </div>
 
-      {spendSummary?.isError ? (
+      {spendSummaryDegraded ? (
         <SourceDegradedNote
           label="Spend summary"
           detail="unpriced-attempt count unavailable"

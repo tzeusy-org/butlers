@@ -164,7 +164,6 @@ def _enter_session_patches(stack: ExitStack) -> AsyncMock:
         patch("butlers.core.spawner.session_create", new_callable=AsyncMock)
     )
     stack.enter_context(patch("butlers.core.spawner.session_complete", new_callable=AsyncMock))
-    stack.enter_context(patch("butlers.core.spawner.record_token_usage", new_callable=AsyncMock))
     mock_create.return_value = _SESSION_ID
     return mock_create
 
