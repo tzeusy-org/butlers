@@ -185,9 +185,11 @@ selects.
 
 **The receipt.** `resolve_dispatch` returns a `DispatchResolution`: requested vs effective intent
 (differing only in tier, when fallthrough occurred), every candidate with its outcome
-(`selected` / `eligible` / `excluded_hard_fit` / `excluded_quota` / `not_top_priority` /
-`tier_not_reached`) and fit findings, evidence age, and the winner reason (`sole_candidate` /
-`evidence_score` / `round_robin`). It is prompt-free by construction and `describe()` is JSON-safe.
+(`selected` / `eligible` / `excluded_hard_fit` / `excluded_breaker` / `excluded_quota` /
+`not_top_priority` / `tier_not_reached`) and fit findings, evidence age, and the winner reason
+(`sole_candidate` / `evidence_score` / `round_robin`). An `excluded_breaker` candidate records
+`exclusion="breaker_open"` in the persisted projection. It is prompt-free by construction and
+`describe()` is JSON-safe.
 It is carried on `TierQuotaExhausted.resolution` when quota blocks the tier. Catalog-backed
 Spawner and DiscretionDispatcher attempts persist a projection of that receipt. Discretion receipt
 capture observes the legacy winner without parsing capability envelopes or changing eligibility. A
