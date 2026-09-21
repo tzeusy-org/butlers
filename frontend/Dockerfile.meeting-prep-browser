@@ -1,0 +1,13 @@
+ARG ROUTE_A_PLAYWRIGHT_IMAGE
+ARG ROUTE_A_NPM_CACHE_IMAGE
+FROM ${ROUTE_A_PLAYWRIGHT_IMAGE}
+ARG ROUTE_A_NPM_CACHE_IMAGE
+
+WORKDIR /work
+COPY --from=${ROUTE_A_NPM_CACHE_IMAGE} /root/.npm/ /root/.npm/
+COPY package.json package-lock.json ./
+RUN npm ci --offline --cache=/root/.npm
+COPY playwright.route-a.config.ts ./
+COPY route-a-api-receipt.mjs ./
+COPY tests/e2e/meeting-prep-route-a.evidence.spec.ts ./tests/e2e/
+CMD ["./node_modules/.bin/playwright", "test", "-c", "playwright.route-a.config.ts"]

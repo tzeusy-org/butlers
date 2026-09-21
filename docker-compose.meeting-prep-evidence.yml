@@ -1,0 +1,195 @@
+# Isolated Route A browser-evidence topology.  It is deliberately standalone:
+# never include the stock Compose file or launch it through the stock launcher.
+
+x-route-a-db-env: &route-a-db-env
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: route_a
+  POSTGRES_USER: route_a_app
+  POSTGRES_SSLMODE: disable
+  # Trust auth is safe only because postgres has no host port and is on an
+  # internal network.  There is intentionally no database secret.
+  POSTGRES_PASSWORD: ""
+
+services:
+  postgres:
+    image: ${ROUTE_A_POSTGRES_IMAGE:?set a digest-pinned pgvector image}
+    pull_policy: never
+    environment:
+      POSTGRES_USER: route_a_admin
+      POSTGRES_DB: route_a
+      POSTGRES_HOST_AUTH_METHOD: trust
+    volumes:
+      - type: volume
+        source: postgres-data
+        target: /var/lib/postgresql/data
+    networks: [evidence-db]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U route_a_admin -d route_a"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    restart: "no"
+
+  bootstrap:
+    image: ${ROUTE_A_APP_IMAGE:?set the exact-SHA Route A app image}
+    pull_policy: never
+    entrypoint: ["/bin/sh", "-ec"]
+    command: |
+      until pg_isready -h postgres -U route_a_admin -d route_a; do sleep 1; done
+      psql -h postgres -U route_a_admin -d route_a -v ON_ERROR_STOP=1 -c \
+        'DO $$$$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '\''route_a_app'\'') THEN CREATE ROLE route_a_app LOGIN; END IF; END $$$$;'
+      PGOPTIONS="-c butlers.connecting_user=route_a_app" \
+        psql -h postgres -U route_a_admin -d route_a -v ON_ERROR_STOP=1 \
+        -f /workspace/init-db.sql
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: route_a
+      POSTGRES_USER: route_a_admin
+      POSTGRES_SSLMODE: disable
+      POSTGRES_PASSWORD: ""
+    volumes:
+      - type: bind
+        source: ./scripts/init-db.sql
+        target: /workspace/init-db.sql
+        read_only: true
+    networks: [evidence-db]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  migrations:
+    image: ${ROUTE_A_APP_IMAGE:?set the exact-SHA Route A app image}
+    pull_policy: never
+    command: ["db", "migrate"]
+    environment: *route-a-db-env
+    networks: [evidence-db]
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    restart: "no"
+
+  fixture-loader:
+    image: ${ROUTE_A_APP_IMAGE:?set the exact-SHA Route A app image}
+    pull_policy: never
+    entrypoint: ["uv", "run", "--frozen", "--no-dev", "python"]
+    command: ["/app/scripts/route_a_meeting_prep_fixture.py", "--manifest", "/artifacts/fixture-manifest.json"]
+    environment: *route-a-db-env
+    volumes:
+      - type: bind
+        source: ${ROUTE_A_ARTIFACT_DIR:?set a run-specific /tmp artifact directory}
+        target: /artifacts
+    networks: [evidence-db]
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+    restart: "no"
+
+  dashboard-api:
+    image: ${ROUTE_A_APP_IMAGE:?set the exact-SHA Route A app image}
+    pull_policy: never
+    command: ["dashboard", "--host", "0.0.0.0", "--port", "41200"]
+    environment:
+      <<: *route-a-db-env
+      BUTLERS_DISABLE_FILE_LOGGING: "1"
+      BUTLERS_HOST: route-a-unavailable
+      EXTERNAL_DEADMAN_URL: ""
+      GOOGLE_OAUTH_CLIENT_ID: ""
+      GOOGLE_OAUTH_CLIENT_SECRET: ""
+      GOOGLE_OAUTH_REDIRECT_URI: ""
+      SPOTIFY_OAUTH_REDIRECT_URI: ""
+      DASHBOARD_API_KEY: ""
+      DASHBOARD_AUTH_ORIGIN: ""
+      DASHBOARD_AUTH_DB_USER: ""
+      DASHBOARD_AUTH_DB_PASSWORD: ""
+      DASHBOARD_AUTH_TRUSTED_PROXY_PEERS: ""
+    volumes:
+      - type: bind
+        source: ./deploy/runtime-probe-control/signing-key-unprovisioned.json
+        target: /run/secrets/runtime_probe_control_signing_key
+        read_only: true
+      - type: bind
+        source: ./deploy/runtime-probe-control/verifiers-unprovisioned.json
+        target: /run/secrets/runtime_probe_control_verifiers
+        read_only: true
+    networks: [evidence-db, evidence-ui]
+    depends_on:
+      fixture-loader:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:41200/health >/dev/null"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    restart: "no"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.meeting-prep-evidence
+      network: none
+      pull: false
+      labels:
+        org.butlers.route-a.project: ${ROUTE_A_PROJECT_NAME:?set the generated Route A project name}
+        org.butlers.route-a.target-sha: ${ROUTE_A_TARGET_SHA:?set the Route A target SHA}
+      args:
+        ROUTE_A_NODE_IMAGE: ${ROUTE_A_NODE_IMAGE:?set a digest-pinned Node image}
+        ROUTE_A_NPM_CACHE_IMAGE: ${ROUTE_A_NPM_CACHE_IMAGE:?set a digest-pinned npm cache image}
+        VITE_API_URL: /api
+    image: ${ROUTE_A_FRONTEND_IMAGE:?set the exact-SHA Route A frontend image}
+    pull_policy: never
+    environment:
+      VITE_PROXY_TARGET: http://dashboard-api:41200
+    networks: [evidence-ui]
+    depends_on:
+      dashboard-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:4173').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\""]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    restart: "no"
+
+  browser:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.meeting-prep-browser
+      network: none
+      pull: false
+      labels:
+        org.butlers.route-a.project: ${ROUTE_A_PROJECT_NAME:?set the generated Route A project name}
+        org.butlers.route-a.target-sha: ${ROUTE_A_TARGET_SHA:?set the Route A target SHA}
+      args:
+        ROUTE_A_PLAYWRIGHT_IMAGE: ${ROUTE_A_PLAYWRIGHT_IMAGE:?set a digest-pinned Playwright image}
+        ROUTE_A_NPM_CACHE_IMAGE: ${ROUTE_A_NPM_CACHE_IMAGE:?set a digest-pinned npm cache image}
+    image: ${ROUTE_A_BROWSER_IMAGE:?set the exact-SHA Route A browser image}
+    pull_policy: never
+    environment:
+      ROUTE_A_EVIDENCE: "1"
+      PLAYWRIGHT_BASE_URL: http://frontend:4173
+      ROUTE_A_POPULATED_EVENT_TITLE: Route A populated synthetic meeting
+      ROUTE_A_EMPTY_EVENT_TITLE: Route A empty synthetic meeting
+      ROUTE_A_POPULATED_EVENT_ID: 00000000-0000-4000-8000-000000000101
+      ROUTE_A_EMPTY_EVENT_ID: 00000000-0000-4000-8000-000000000102
+      ROUTE_A_ARTIFACT_DIR: /artifacts
+    volumes:
+      - type: bind
+        source: ${ROUTE_A_ARTIFACT_DIR:?set a run-specific /tmp artifact directory}
+        target: /artifacts
+    networks: [evidence-ui]
+    depends_on:
+      frontend:
+        condition: service_healthy
+    restart: "no"
+
+volumes:
+  postgres-data:
+
+networks:
+  evidence-db:
+    internal: true
+  evidence-ui:
+    internal: true
