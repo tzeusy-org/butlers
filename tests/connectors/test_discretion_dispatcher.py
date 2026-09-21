@@ -46,6 +46,36 @@ def _allowed_quota() -> QuotaStatus:
     return QuotaStatus(allowed=True, usage_24h=0, limit_24h=None, usage_30d=0, limit_30d=None)
 
 
+def _resolver_with_receipt(catalog):
+    async def _resolve(*_args, **kwargs):
+        receipt = MagicMock()
+        receipt.describe.return_value = {
+            "policy_version": "2",
+            "winner": {
+                "catalog_entry_id": str(catalog[3]),
+                "runtime_type": catalog[0],
+                "model_id": catalog[1],
+                "effective_tier": catalog[5],
+                "reason": "sole_candidate",
+            },
+            "candidates": [
+                {
+                    "catalog_entry_id": str(catalog[3]),
+                    "runtime_type": catalog[0],
+                    "model_id": catalog[1],
+                    "effective_tier": catalog[5],
+                    "outcome": "selected",
+                    "exclusion": None,
+                    "exclusions": [],
+                }
+            ],
+        }
+        kwargs["receipt_sink"].append(receipt)
+        return catalog
+
+    return _resolve
+
+
 def _make_adapter(result_text: str = "FORWARD", usage: dict | None = None) -> MagicMock:
     adapter = MagicMock()
     adapter.invoke = AsyncMock(
@@ -194,7 +224,7 @@ async def test_private_content_uses_local_candidate_and_content_blind_attributio
     with (
         patch(
             f"{_MODULE}.resolve_model_with_effective_tier",
-            AsyncMock(return_value=remote),
+            AsyncMock(side_effect=_resolver_with_receipt(remote)),
         ),
         patch(
             f"{_MODULE}.apply_spend_routing_rules",
@@ -229,6 +259,14 @@ async def test_private_content_uses_local_candidate_and_content_blind_attributio
     assert record_usage.await_args.kwargs["butler_name"] == "__discretion__"
     assert record_attempt.await_args.kwargs["outcome"] == "success"
     assert record_attempt.await_args.kwargs["purpose_lane"] == PURPOSE_LANE_PRIVATE_CONTENT
+    receipt = record_attempt.await_args.kwargs["resolution_receipt"]
+    assert receipt["winner"]["catalog_entry_id"] == str(local_id)
+    assert receipt["winner"]["reason"] == "private_content_local_policy"
+    assert receipt["selection_override"] == {"reason": "private_content_local_policy"}
+    assert [c["outcome"] for c in receipt["candidates"]].count("selected") == 1
+    selected = next(c for c in receipt["candidates"] if c["outcome"] == "selected")
+    assert selected["catalog_entry_id"] == str(local_id)
+    assert selected["exclusion"] is None
 
 
 async def test_private_content_remote_only_refuses_before_provider_setup_and_audits() -> None:
@@ -244,7 +282,7 @@ async def test_private_content_remote_only_refuses_before_provider_setup_and_aud
     with (
         patch(
             f"{_MODULE}.resolve_model_with_effective_tier",
-            AsyncMock(return_value=remote),
+            AsyncMock(side_effect=_resolver_with_receipt(remote)),
         ),
         patch(
             f"{_MODULE}.apply_spend_routing_rules",
@@ -257,6 +295,7 @@ async def test_private_content_remote_only_refuses_before_provider_setup_and_aud
         patch.object(dispatcher, "_get_or_create_adapter") as get_adapter,
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock()) as provider_config,
         patch(f"{_MODULE}.write_audit_entry", AsyncMock()) as audit,
+        patch(f"{_MODULE}.record_dispatch_attempt", AsyncMock()) as record_attempt,
     ):
         with pytest.raises(PrivateContentModelUnavailable, match="local model unavailable"):
             await dispatcher.call("private fixture", identity="synthetic-chat")
@@ -266,6 +305,10 @@ async def test_private_content_remote_only_refuses_before_provider_setup_and_aud
     audit.assert_awaited_once()
     assert audit.await_args.args[2] == "model.private_content_remote_refused"
     assert "synthetic-chat" not in repr(audit.await_args)
+    assert record_attempt.await_args.kwargs["outcome"] == "suppressed"
+    receipt = record_attempt.await_args.kwargs["resolution_receipt"]
+    assert receipt["winner"]["catalog_entry_id"] == str(remote[3])
+    assert receipt["attempt_index"] == record_attempt.await_args.kwargs["attempt_index"] == 0
 
 
 async def test_private_content_allows_current_audited_explicit_remote_override() -> None:
@@ -368,7 +411,7 @@ async def test_call_keeps_declared_adapter_setup_allowance_outside_model_timeout
     with (
         patch(
             f"{_MODULE}.resolve_model_with_effective_tier",
-            AsyncMock(return_value=catalog),
+            AsyncMock(side_effect=_resolver_with_receipt(catalog)),
         ),
         patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
@@ -457,7 +500,7 @@ async def test_call_applies_matching_spend_rule_reroutes_model() -> None:
     with (
         patch(
             f"{_MODULE}.resolve_model_with_effective_tier",
-            AsyncMock(return_value=catalog),
+            AsyncMock(side_effect=_resolver_with_receipt(catalog)),
         ),
         patch(
             f"{_MODULE}.apply_spend_routing_rules", AsyncMock(return_value=rerouted)
@@ -466,6 +509,7 @@ async def test_call_applies_matching_spend_rule_reroutes_model() -> None:
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter) as mock_get,
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
         patch(f"{_MODULE}.record_token_usage", AsyncMock()) as mock_record,
+        patch(f"{_MODULE}.record_dispatch_attempt", AsyncMock()) as record_attempt,
     ):
         result = await dispatcher.call("hi", identity="tg:1")
 
@@ -495,6 +539,12 @@ async def test_call_applies_matching_spend_rule_reroutes_model() -> None:
     assert record_kwargs["purpose"] == "discretion"
     assert record_kwargs["butler_name"] == "tg:1"
     assert record_kwargs["catalog_entry_id"] == rerouted.resolved[3]
+    receipt = record_attempt.await_args.kwargs["resolution_receipt"]
+    assert receipt["winner"]["catalog_entry_id"] == str(rerouted.resolved[3])
+    assert receipt["winner"]["reason"] == "spend_rule_override"
+    assert receipt["selection_override"] == {"reason": "spend_rule_override"}
+    assert [c["outcome"] for c in receipt["candidates"]].count("selected") == 1
+    assert next(c for c in receipt["candidates"] if c["outcome"] == "selected")["exclusion"] is None
 
 
 async def test_call_no_matching_rule_keeps_tier_resolved_model() -> None:

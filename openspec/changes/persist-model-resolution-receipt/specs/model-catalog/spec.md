@@ -28,6 +28,28 @@ MUST NOT change routing eligibility, ordering, or selection.
 - **THEN** the ordered candidate list is truncated to a fitting prefix
 - **AND** `truncated=true` and the original `candidate_count` are persisted
 - **AND** the receipt is not silently dropped
+- **AND** the complete persisted JSON projection remains at or below 32 KiB even
+  when winner or intent metadata contains oversized catalog-backed strings
+
+#### Scenario: Post-resolution policy override stays coherent
+
+- **WHEN** a spend rule or private-content lane replaces the resolver's winner
+- **THEN** the receipt names the final invoked candidate as its sole selected candidate
+- **AND** clears stale exclusions on that candidate
+- **AND** records the policy override as the winner reason rather than retaining the
+  resolver's earlier tie-break reason
+
+#### Scenario: Attempt identity is atomic
+
+- **WHEN** quota skips or runtime retries precede a persisted attempt
+- **THEN** the row's `attempt_index` equals its receipt's `attempt_index`
+- **AND** no earlier row for that logical dispatch has the same index
+
+#### Scenario: Discretion dispatches retain receipts
+
+- **WHEN** DiscretionDispatcher resolves a catalog model and records quota-skip,
+  success, runtime-failure, or suppression provenance
+- **THEN** each recorded attempt carries the same bounded receipt contract
 
 #### Scenario: Read surfaces distinguish historical absence
 

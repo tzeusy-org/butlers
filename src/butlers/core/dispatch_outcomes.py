@@ -32,6 +32,17 @@ runtime_attention_recorder_total = get_or_create_counter(
 
 _QUALIFYING_BREAKER_OUTCOMES = frozenset({"runtime_failure", "success"})
 _MAX_RESOLUTION_RECEIPT_BYTES = 32 * 1024
+_MAX_RESOLUTION_RECEIPT_SCALAR_BYTES = 4 * 1024
+
+
+def _bounded_receipt_scalar(value: object) -> object:
+    """Bound one fallback scalar without splitting a UTF-8 code point."""
+    if not isinstance(value, str):
+        return value
+    encoded = value.encode("utf-8")
+    if len(encoded) <= _MAX_RESOLUTION_RECEIPT_SCALAR_BYTES:
+        return value
+    return encoded[:_MAX_RESOLUTION_RECEIPT_SCALAR_BYTES].decode("utf-8", errors="ignore")
 
 
 def bound_resolution_receipt(receipt: dict | None) -> dict | None:
@@ -62,19 +73,118 @@ def bound_resolution_receipt(receipt: dict | None) -> dict | None:
         if len(encoded.encode("utf-8")) <= _MAX_RESOLUTION_RECEIPT_BYTES:
             return bounded
 
-    # Non-candidate metadata is intentionally small and generated in-process.
-    # Keep an explicit marker even if a future policy version unexpectedly
-    # widens it beyond the bound.
+    # Catalog-backed strings are mutable operator data. Project the remaining
+    # receipt field-by-field and bound every retained scalar; never assume that
+    # non-candidate metadata is small merely because the shape is code-owned.
     encoded = json.dumps(bounded, separators=(",", ":"), ensure_ascii=False)
     if len(encoded.encode("utf-8")) > _MAX_RESOLUTION_RECEIPT_BYTES:
-        return {
-            "policy_version": bounded.get("policy_version"),
-            "winner": bounded.get("winner"),
+        source_winner = bounded.get("winner")
+        winner = (
+            {
+                key: _bounded_receipt_scalar(source_winner.get(key))
+                for key in (
+                    "catalog_entry_id",
+                    "runtime_type",
+                    "model_id",
+                    "effective_tier",
+                    "reason",
+                )
+            }
+            if isinstance(source_winner, dict)
+            else None
+        )
+        bounded = {
+            "policy_version": _bounded_receipt_scalar(bounded.get("policy_version")),
+            "winner": winner,
             "candidates": [],
             "candidate_count": original_count,
             "truncated": True,
         }
+        encoded = json.dumps(bounded, separators=(",", ":"), ensure_ascii=False)
+        if len(encoded.encode("utf-8")) > _MAX_RESOLUTION_RECEIPT_BYTES:
+            raise ValueError("minimal resolution receipt exceeds durable byte bound")
     return bounded
+
+
+def project_resolution_receipt(
+    base: dict | None,
+    *,
+    catalog_entry_id: uuid.UUID | None,
+    runtime_type: str,
+    model_id: str,
+    effective_tier: str | None,
+    attempt_index: int,
+    previous_failure_class: str | None = None,
+    selection_reason: str | None = None,
+) -> dict | None:
+    """Project a resolution onto the candidate one attempt actually invokes."""
+    if base is None or catalog_entry_id is None:
+        return None
+    receipt = deepcopy(base)
+    winner_id = str(catalog_entry_id)
+    original_reason = None
+    if isinstance(receipt.get("winner"), dict):
+        original_reason = receipt["winner"].get("reason")
+
+    candidates = receipt.get("candidates")
+    if not isinstance(candidates, list):
+        candidates = []
+        receipt["candidates"] = candidates
+    winner_candidate: dict | None = None
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        if candidate.get("catalog_entry_id") == winner_id:
+            winner_candidate = candidate
+            candidate["runtime_type"] = runtime_type
+            candidate["model_id"] = model_id
+            candidate["effective_tier"] = effective_tier
+            candidate["outcome"] = "selected"
+            candidate["exclusion"] = None
+            candidate["exclusions"] = []
+        elif candidate.get("outcome") == "selected":
+            candidate["outcome"] = "eligible"
+            candidate["exclusion"] = None
+            candidate["exclusions"] = []
+    if winner_candidate is None:
+        candidates.append(
+            {
+                "catalog_entry_id": winner_id,
+                "runtime_type": runtime_type,
+                "model_id": model_id,
+                "effective_tier": effective_tier,
+                "effective_priority": None,
+                "outcome": "selected",
+                "exclusion": None,
+                "exclusions": [],
+                "advisories": [],
+                "evidence_samples": 0,
+                "evidence_age_s": None,
+                "score": None,
+            }
+        )
+
+    reason = (
+        "same_tier_failover"
+        if previous_failure_class is not None
+        else selection_reason or original_reason
+    )
+    receipt["winner"] = {
+        "catalog_entry_id": winner_id,
+        "runtime_type": runtime_type,
+        "model_id": model_id,
+        "effective_tier": effective_tier,
+        "reason": reason,
+    }
+    receipt["attempt_index"] = attempt_index
+    if selection_reason is not None:
+        receipt["selection_override"] = {"reason": selection_reason}
+    if previous_failure_class is not None:
+        receipt["failover"] = {
+            "from_attempt_index": attempt_index - 1,
+            "failure_class": previous_failure_class,
+        }
+    return receipt
 
 
 @dataclass(frozen=True, slots=True)

@@ -13,6 +13,7 @@ each key point in the failover flow:
 
 from __future__ import annotations
 
+import json
 import uuid
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from butlers.config import ButlerConfig, RuntimeSeedConfig
+from butlers.core.dispatch_outcomes import bound_resolution_receipt
 from butlers.core.failover_classifier import FailoverDecision
 from butlers.core.model_routing import QuotaStatus, TierQuotaExhausted
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
@@ -44,6 +46,20 @@ _QUOTA_DENIED_24H = QuotaStatus(
 
 _ATTEMPTS_INSERT = "INSERT INTO public.model_dispatch_attempts"
 _LEDGER_INSERT = "INSERT INTO public.token_usage_ledger"
+
+
+def test_oversized_non_candidate_receipt_metadata_is_bounded() -> None:
+    receipt = {
+        "policy_version": "2",
+        "winner": {"model_id": "界" * 40_000, "reason": "sole_candidate"},
+        "requested_intent": {"trigger_class": "x" * 40_000},
+        "candidates": [{"model_id": "candidate"}],
+    }
+    bounded = bound_resolution_receipt(receipt)
+    assert bounded is not None
+    assert bounded["truncated"] is True
+    assert bounded["candidate_count"] == 1
+    assert len(json.dumps(bounded, ensure_ascii=False).encode("utf-8")) <= 32 * 1024
 
 
 def test_failover_receipt_names_previous_attempt_failure_class() -> None:
@@ -162,6 +178,14 @@ async def _resolve_with_receipt(*_args: Any, receipt_sink=None, **_kwargs: Any):
     return _PRIMARY_RESOLVED
 
 
+async def _resolve_quota_exhausted_with_receipt(
+    *_args: Any, receipt_sink=None, **_kwargs: Any
+) -> None:
+    assert receipt_sink is not None
+    receipt_sink.append(_SyntheticResolution())
+    raise _primary_quota_exhausted_at_resolve()
+
+
 def _primary_quota_exhausted_at_resolve() -> TierQuotaExhausted:
     """Build the exhaustion signal a quota_aware=True resolve raises for `_PRIMARY_RESOLVED`."""
     return TierQuotaExhausted(effective_tier="workhorse", representative=_PRIMARY_RESOLVED)
@@ -260,7 +284,7 @@ class TestQuotaSkipProvenance:
             patch(
                 "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                side_effect=_primary_quota_exhausted_at_resolve(),
+                side_effect=_resolve_quota_exhausted_with_receipt,
             ),
             patch(
                 "butlers.core.spawner.check_token_quota",
@@ -301,6 +325,10 @@ class TestQuotaSkipProvenance:
         attempts = _execute_calls_with_fragment(mock_pool, _ATTEMPTS_INSERT)
         outcomes = [a[4] for a in attempts]  # outcome is 5th arg ($4 in SQL)
         assert "quota_skip" in outcomes, f"Expected quota_skip in outcomes: {outcomes}"
+        quota_row = next(row for row in attempts if row[4] == "quota_skip")
+        success_row = next(row for row in attempts if row[4] == "success")
+        assert [quota_row[9], success_row[9]] == [0, 1]
+        assert [quota_row[13]["attempt_index"], success_row[13]["attempt_index"]] == [0, 1]
 
     async def test_quota_skip_row_has_correct_catalog_entry_id(self, tmp_path: Path) -> None:
         """quota_skip row carries the skipped catalog_entry_id."""

@@ -27,7 +27,6 @@ apply — the global cap is an additional outer constraint.
 from __future__ import annotations
 
 import asyncio
-import copy
 import logging
 import os
 import sys
@@ -61,7 +60,13 @@ from butlers.core.dashboard_turns import (
     release_invoke,
 )
 from butlers.core.dispatch_intent import derive_dispatch_intent
-from butlers.core.dispatch_outcomes import DispatchUsageEvidence, record_dispatch_attempt
+from butlers.core.dispatch_outcomes import (
+    DispatchUsageEvidence,
+    record_dispatch_attempt,
+)
+from butlers.core.dispatch_outcomes import (
+    project_resolution_receipt as _attempt_resolution_receipt,
+)
 from butlers.core.failover_classifier import FailoverContext, classify_failover_eligibility
 from butlers.core.logging import resolve_log_root
 from butlers.core.mcp_urls import (
@@ -475,43 +480,6 @@ async def _write_dispatch_attempt(
         usage_evidence=usage_evidence,
         resolution_receipt=resolution_receipt,
     )
-
-
-def _attempt_resolution_receipt(
-    base: dict[str, Any] | None,
-    *,
-    catalog_entry_id: uuid.UUID | None,
-    runtime_type: str,
-    model_id: str,
-    effective_tier: str | None,
-    attempt_index: int,
-    previous_failure_class: str | None = None,
-) -> dict[str, Any] | None:
-    """Project one resolution receipt onto the candidate this attempt invokes."""
-    if base is None or catalog_entry_id is None:
-        return None
-    receipt = copy.deepcopy(base)
-    original_reason = None
-    if isinstance(receipt.get("winner"), dict):
-        original_reason = receipt["winner"].get("reason")
-    winner: dict[str, Any] = {}
-    receipt["winner"] = winner
-    winner.update(
-        {
-            "catalog_entry_id": str(catalog_entry_id),
-            "runtime_type": runtime_type,
-            "model_id": model_id,
-            "effective_tier": effective_tier,
-            "reason": (original_reason if attempt_index == 0 else "same_tier_failover"),
-        }
-    )
-    receipt["attempt_index"] = attempt_index
-    if previous_failure_class is not None:
-        receipt["failover"] = {
-            "from_attempt_index": attempt_index - 1,
-            "failure_class": previous_failure_class,
-        }
-    return receipt
 
 
 class Spawner:
@@ -1579,6 +1547,7 @@ class Spawner:
         # -- exactly the pre-fold behavior, since the old code always quota-checked
         # whatever apply_spend_routing_rules produced.
         _pre_rule_catalog_entry_id = catalog_entry_id
+        _receipt_selection_reason: str | None = None
         _routing_result: SpendRoutingResult | None = None
         if catalog_entry_id is not None and self._pool is not None:
             try:
@@ -1617,6 +1586,8 @@ class Spawner:
                     exc_info=True,
                 )
         _spend_rule_fired = catalog_entry_id != _pre_rule_catalog_entry_id
+        if _spend_rule_fired:
+            _receipt_selection_reason = "spend_rule_override"
 
         # Private message content is local by default. This gate is deliberately
         # after operator-rule evaluation but before prewarm/provider setup: only
@@ -1625,6 +1596,7 @@ class Spawner:
         _private_provider_config: dict[str, dict[str, Any]] | None = None
         _private_local_failover_allowed = False
         if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT:
+            _pre_private_catalog_entry_id = catalog_entry_id
             if catalog_entry_id is None or self._pool is None:
                 exc = PrivateContentModelUnavailable(
                     "private_content_remote_refused: local model unavailable"
@@ -1699,6 +1671,12 @@ class Spawner:
                 catalog_entry_id,
                 catalog_timeout_s,
             ) = lane_selection
+            if catalog_entry_id != _pre_private_catalog_entry_id:
+                _receipt_selection_reason = (
+                    "private_content_audited_remote_override"
+                    if audited_remote_override
+                    else "private_content_local_policy"
+                )
             if audited_remote_override:
                 await write_audit_entry(
                     self._pool,
@@ -1747,7 +1725,9 @@ class Spawner:
             model_id=model,
             effective_tier=_failover_effective_tier,
             attempt_index=0,
+            selection_reason=_receipt_selection_reason,
         )
+        _next_attempt_index = 0
 
         # Breaker-open rule override (bu-14j0m, decision (b)): if an operator
         # spend rule routed to a model whose dispatch-outcome circuit breaker
@@ -1778,6 +1758,16 @@ class Spawner:
                 logical_session_id=effective_request_id,
                 purpose_lane=purpose_lane,
                 resolution_receipt=_current_resolution_receipt,
+            )
+            _next_attempt_index += 1
+            _current_resolution_receipt = _attempt_resolution_receipt(
+                _base_resolution_receipt,
+                catalog_entry_id=catalog_entry_id,
+                runtime_type=resolved_runtime_type,
+                model_id=model,
+                effective_tier=_failover_effective_tier,
+                attempt_index=_next_attempt_index,
+                selection_reason=_receipt_selection_reason,
             )
 
         _attempted_ids: list[uuid.UUID] = []
@@ -1814,7 +1804,7 @@ class Spawner:
                     catalog_entry_id=catalog_entry_id,
                     butler=self._config.name,
                     outcome="quota_skip",
-                    attempt_index=len(_attempted_ids),
+                    attempt_index=_next_attempt_index,
                     failure_reason=perm_msg,
                     tool_call_count=0,
                     logical_session_id=effective_request_id,
@@ -1861,7 +1851,7 @@ class Spawner:
                     catalog_entry_id,
                     quota_msg,
                 )
-                _skipped_attempt_index = len(_attempted_ids)
+                _skipped_attempt_index = _next_attempt_index
                 _attempted_ids.append(catalog_entry_id)
                 await _write_dispatch_attempt(
                     self._pool,
@@ -1875,6 +1865,7 @@ class Spawner:
                     purpose_lane=purpose_lane,
                     resolution_receipt=_current_resolution_receipt,
                 )
+                _next_attempt_index += 1
 
                 if _failover_effective_tier is None:
                     # No tier pinned (shouldn't happen in this branch, but be safe)
@@ -1935,8 +1926,9 @@ class Spawner:
                     runtime_type=resolved_runtime_type,
                     model_id=model,
                     effective_tier=_failover_effective_tier,
-                    attempt_index=len(_attempted_ids),
+                    attempt_index=_next_attempt_index,
                     previous_failure_class="quota_exhausted",
+                    selection_reason=_receipt_selection_reason,
                 )
                 # Loop again to check quota for the new candidate.
 
@@ -1981,7 +1973,7 @@ class Spawner:
                     catalog_entry_id=catalog_entry_id,
                     butler=self._config.name,
                     outcome="quota_skip",
-                    attempt_index=len(_attempted_ids),
+                    attempt_index=_next_attempt_index,
                     failure_reason=ceiling_msg,
                     tool_call_count=0,
                     logical_session_id=effective_request_id,
@@ -2044,7 +2036,7 @@ class Spawner:
                     catalog_entry_id=catalog_entry_id,
                     butler=self._config.name,
                     outcome="quota_skip",
-                    attempt_index=len(_attempted_ids),
+                    attempt_index=_next_attempt_index,
                     failure_reason=cap_msg,
                     tool_call_count=0,
                     logical_session_id=effective_request_id,
@@ -2386,6 +2378,8 @@ class Spawner:
 
             while True:
                 _attempt_count += 1
+                _current_attempt_index = _next_attempt_index
+                _next_attempt_index += 1
                 # Per-attempt clock (distinct from the outer `t0`, which spans the
                 # whole session including pre-invoke setup and post-invoke guardrail
                 # checks). Used to attribute duration_ms to the specific catalog
@@ -2690,7 +2684,7 @@ class Spawner:
                             catalog_entry_id=catalog_entry_id,
                             butler=self._config.name,
                             outcome="suppressed",
-                            attempt_index=len(_attempted_ids),
+                            attempt_index=_current_attempt_index,
                             session_id=session_id,
                             failure_reason=_failover_decision.reason,
                             error_code=type(_attempt_exc).__name__,
@@ -2755,7 +2749,7 @@ class Spawner:
                             catalog_entry_id=catalog_entry_id,
                             butler=self._config.name,
                             outcome="resume_failure",
-                            attempt_index=_attempt_count - 1,
+                            attempt_index=_current_attempt_index,
                             session_id=session_id,
                             failure_reason=_failover_decision.reason,
                             error_code=type(_attempt_exc).__name__,
@@ -2781,15 +2775,16 @@ class Spawner:
                         runtime_type=resolved_runtime_type,
                         model_id=model,
                         effective_tier=_failover_effective_tier,
-                        attempt_index=_attempt_count,
+                        attempt_index=_next_attempt_index,
                         previous_failure_class=_failover_decision.reason,
+                        selection_reason=_receipt_selection_reason,
                     )
                     continue
 
                 # Failover eligible — record runtime_failure provenance for the
                 # attempt that just failed before advancing to the next candidate.
                 _failed_catalog_entry_id = catalog_entry_id
-                _failed_attempt_index = len(_attempted_ids)
+                _failed_attempt_index = _current_attempt_index
                 _failed_attempt_duration_ms = int((time.monotonic() - _attempt_t0) * 1000)
                 if self._pool is not None and _failed_catalog_entry_id is not None:
                     await _write_dispatch_attempt(
@@ -2868,7 +2863,7 @@ class Spawner:
                             catalog_entry_id=catalog_entry_id,
                             butler=self._config.name,
                             outcome="exhausted",
-                            attempt_index=len(_attempted_ids),
+                            attempt_index=_next_attempt_index,
                             session_id=session_id,
                             failure_reason=(
                                 f"same_tier_failover_exhausted: tier={_failover_effective_tier} "
@@ -2880,7 +2875,16 @@ class Spawner:
                             logical_session_id=effective_request_id,
                             purpose_lane=purpose_lane,
                             duration_ms=_failed_attempt_duration_ms,
-                            resolution_receipt=_current_resolution_receipt,
+                            resolution_receipt=_attempt_resolution_receipt(
+                                _base_resolution_receipt,
+                                catalog_entry_id=catalog_entry_id,
+                                runtime_type=resolved_runtime_type,
+                                model_id=model,
+                                effective_tier=_failover_effective_tier,
+                                attempt_index=_next_attempt_index,
+                                previous_failure_class=_failover_decision.reason,
+                                selection_reason=_receipt_selection_reason,
+                            ),
                         )
                     preconsumed_runtime_tool_calls = _attempt_tool_calls
                     raise _attempt_exc
@@ -2912,8 +2916,9 @@ class Spawner:
                     runtime_type=resolved_runtime_type,
                     model_id=model,
                     effective_tier=_failover_effective_tier,
-                    attempt_index=len(_attempted_ids),
+                    attempt_index=_next_attempt_index,
                     previous_failure_class=_failover_decision.reason,
+                    selection_reason=_receipt_selection_reason,
                 )
 
                 # Re-create the runtime adapter for the new model's runtime type.
@@ -2991,7 +2996,7 @@ class Spawner:
                     catalog_entry_id=catalog_entry_id,
                     butler=self._config.name,
                     outcome="success",
-                    attempt_index=_attempt_count - 1,
+                    attempt_index=_current_attempt_index,
                     session_id=session_id,
                     tool_call_count=len(tool_calls) if tool_calls else 0,
                     logical_session_id=effective_request_id,

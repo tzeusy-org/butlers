@@ -188,8 +188,12 @@ selects.
 (`selected` / `eligible` / `excluded_hard_fit` / `excluded_quota` / `not_top_priority` /
 `tier_not_reached`) and fit findings, evidence age, and the winner reason (`sole_candidate` /
 `evidence_score` / `round_robin`). It is prompt-free by construction and `describe()` is JSON-safe.
-It is carried on `TierQuotaExhausted.resolution` when quota blocks the tier. Persisting it and
-exposing it as a session dossier door is deliberately not done yet.
+It is carried on `TierQuotaExhausted.resolution` when quota blocks the tier. Catalog-backed
+Spawner and DiscretionDispatcher attempts persist a projection of that receipt. A spend-rule or
+private-content policy override re-projects the final winner, candidate outcomes, exclusions, and
+reason together; failover projections also carry the preceding failure class. The durable JSON is
+bounded to 32 KiB across the entire projection, not only its candidate list, and the row and receipt
+share one monotonically increasing `attempt_index` across quota skips and runtime attempts.
 
 ## Token Quotas
 
