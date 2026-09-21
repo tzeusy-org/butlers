@@ -1576,6 +1576,9 @@ export type CalendarPrepCommitmentKind =
 /** Direction of the obligation represented by a prep-rail commitment. */
 export type CalendarPrepCommitmentDirection = "owner_to_other" | "other_to_owner" | "self";
 
+/** Condition-ledger escalation label accepted by the meeting-prep contract. */
+export type CalendarPrepCommitmentEscalationLevel = "L0" | "L1" | "L2" | "L3";
+
 /** An active owner commitment contributed to a meeting-prep attendee. */
 export interface CalendarPrepCommitment {
   kind: CalendarPrepCommitmentKind;
@@ -1583,8 +1586,8 @@ export interface CalendarPrepCommitment {
   summary: string;
   /** ISO-8601 deadline, or `null` when this commitment has no deadline. */
   deadline: string | null;
-  /** Condition-ledger escalation label, currently `L0` through `L3`. */
-  escalation_level: string;
+  /** Condition-ledger escalation label. */
+  escalation_level: CalendarPrepCommitmentEscalationLevel;
   /** Stable commitment identity, useful to future interactive surfaces. */
   fingerprint: string;
 }

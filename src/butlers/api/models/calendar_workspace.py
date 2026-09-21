@@ -269,6 +269,7 @@ CalendarPrepCommitmentKind = Literal[
     "decision",
 ]
 CalendarPrepCommitmentDirection = Literal["owner_to_other", "other_to_owner", "self"]
+CalendarPrepCommitmentEscalationLevel = Literal["L0", "L1", "L2", "L3"]
 
 
 class CalendarPrepCommitment(BaseModel):
@@ -279,7 +280,7 @@ class CalendarPrepCommitment(BaseModel):
     summary: str
     deadline: str | None = None
     # The condition ledger's escalation levels are serialized as L0-L3 labels.
-    escalation_level: str
+    escalation_level: CalendarPrepCommitmentEscalationLevel
     fingerprint: str
 
 
