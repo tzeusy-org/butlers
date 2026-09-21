@@ -7,7 +7,7 @@ Defines the token-usage ledger and per-model catalog limits used to budget and c
 ## Requirements
 
 ### Requirement: Token Usage Ledger Schema
-The system SHALL maintain a `public.token_usage_ledger` table as an append-only record of token consumption per catalog entry. The table is range-partitioned on `recorded_at` with monthly partitions managed by pg_partman (90-day retention).
+The system SHALL maintain a `public.token_usage_ledger` table as an append-only record of token-consumption evidence per catalog entry and invoked dispatch attempt. The table is range-partitioned on `recorded_at` with monthly partitions managed by pg_partman (90-day retention). Each new spawner row SHALL reference `public.model_dispatch_attempts.id` through nullable `attempt_id` and SHALL classify its evidence with `usage_source IN ('measured', 'unmeasurable')`; historical rows remain `usage_source='measured'` with `attempt_id=NULL` because their attempt link cannot be reconstructed honestly.
 
 #### Scenario: Ledger entry structure
 - **WHEN** a token usage record is written to the ledger
@@ -153,6 +153,11 @@ The system SHALL record token usage to the ledger whenever an adapter reports to
 - **THEN** a row is inserted into the ledger with the reported token counts
 - **AND** the usage counts against the quota (tokens were consumed by the provider regardless of session outcome)
 
+#### Scenario: Failover storm retains every measured attempt
+- **WHEN** three failover-eligible invocations report usage before failing and a fourth invocation succeeds with reported usage
+- **THEN** the spawner SHALL write four `usage_source='measured'` ledger rows with four distinct non-null `attempt_id` values
+- **AND** month-to-date measured spend SHALL equal the priced sum of all four attempts
+
 ### Requirement: Purpose-Tagged Spend Attribution
 `public.token_usage_ledger` SHALL carry a nullable `purpose` column (bu-qvnce.12) recording a coarse "why" dimension for each row, independent of `butler_name` (who spent) and the cache-aware token buckets (what was spent). `record_token_usage()` SHALL accept an optional `purpose` keyword argument and write it through unchanged; omitting it SHALL record `NULL`, never a fabricated default.
 
@@ -172,7 +177,8 @@ The system SHALL record token usage to the ledger whenever an adapter reports to
 
 #### Scenario: Adapter invocation fails before returning usage
 - **WHEN** the adapter raises an exception before returning any usage data (e.g., connection refused, immediate timeout)
-- **THEN** no ledger row is written (there are no token counts to record)
+- **THEN** the spawner SHALL write one `usage_source='unmeasurable'` ledger row linked to that dispatch attempt
+- **AND** all four token buckets SHALL be `NULL`, never fabricated zeroes
 
 #### Scenario: Discretion dispatcher records usage
 - **WHEN** a discretion dispatcher call completes (successfully or with an error) and the adapter reports token usage
@@ -188,8 +194,9 @@ The system SHALL record token usage to the ledger whenever an adapter reports to
 - **THEN** no ledger row is written (there is no `catalog_entry_id`)
 
 #### Scenario: No recording when adapter reports no usage
-- **WHEN** the adapter returns `None` or `{}` for usage
-- **THEN** no ledger row is written
+- **WHEN** an invoked spawner attempt returns `None` or `{}` for usage
+- **THEN** the spawner SHALL write one `usage_source='unmeasurable'` row for that attempt
+- **AND** non-spawner callers that have no dispatch-attempt identity MAY retain their existing no-row behavior
 
 ### Requirement: Hard Block on Quota Exhaustion
 The system SHALL hard-block session spawning or discretion dispatching when a catalog entry's token quota is exhausted and no eligible same-tier fallback candidate is available. When an eligible model exists in the same effective complexity tier, the spawner and discretion dispatcher SHALL fail over to it instead of hard-blocking. Note: the pre-spawn check and post-spawn record are not atomic, so concurrent spawns targeting the same catalog entry can overshoot the limit by up to N sessions' worth of tokens (where N is the number of concurrent spawns). This is accepted — the limit is a guardrail, not a billing boundary.
@@ -303,6 +310,12 @@ The model catalog table on the settings page SHALL display token usage alongside
 The monthly spend ceiling SHALL price the current month from the append-only
 token usage ledger and SHALL preserve the distinction between a known
 zero-marginal model and a model with no configured price.
+
+#### Scenario: Ceiling reports attempts with no measurable usage
+- **WHEN** the current-month ledger contains one or more `usage_source='unmeasurable'` rows
+- **THEN** `price_mtd_from_ledger()` and `check_monthly_ceiling()` SHALL exclude those rows from the measured USD subtotal
+- **AND** SHALL return their count as `unmeasurable_attempts`
+- **AND** the ceiling threshold comparison SHALL otherwise retain its existing measured-subtotal behavior
 
 #### Scenario: Known zero marginal cost remains priced
 - **WHEN** a ledger row resolves to a pricing entry classified as `subscription` or `local` with zero rates

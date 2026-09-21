@@ -466,6 +466,8 @@ failover is safe.
 ### Requirement: Logical Session Attempt Orchestration
 The spawner SHALL keep automatic model failover attempts bounded and auditable.
 
+Each provider invocation SHALL produce attempt-grained spend evidence: the spawner writes the dispatch-attempt row first, then writes exactly one token-usage row referencing that attempt. Parseable provider usage is `measured`; absence of parseable usage is `unmeasurable` with NULL token buckets.
+
 #### Scenario: Successful fallback completes logical session once
 - **WHEN** the primary model fails with a failover-eligible error
 - **AND** a fallback model succeeds
@@ -483,6 +485,12 @@ The spawner SHALL keep automatic model failover attempts bounded and auditable.
 - **THEN** the number of attempts SHALL be bounded by the number of eligible same-tier
   catalog candidates
 - **AND** no catalog entry SHALL be invoked more than once for the same logical session
+
+#### Scenario: Timeout without usage remains visible
+- **WHEN** a provider invocation times out and no token usage can be parsed
+- **THEN** the spawner SHALL write the invocation's dispatch-attempt provenance
+- **AND** SHALL write one linked `usage_source='unmeasurable'` ledger row
+- **AND** monthly spend surfaces SHALL identify that attempt as unpriced rather than presenting the measured subtotal as complete
 
 ### Requirement: Drain for Shutdown
 The spawner SHALL support `stop_accepting()` to reject new triggers and `drain(timeout)` to wait for in-flight sessions to complete, cancelling remaining sessions after timeout.

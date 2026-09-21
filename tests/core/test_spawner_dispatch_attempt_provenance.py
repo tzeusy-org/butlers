@@ -43,6 +43,7 @@ _QUOTA_DENIED_24H = QuotaStatus(
 )
 
 _ATTEMPTS_INSERT = "INSERT INTO public.model_dispatch_attempts"
+_LEDGER_INSERT = "INSERT INTO public.token_usage_ledger"
 
 
 @pytest.fixture(autouse=True)
@@ -69,6 +70,28 @@ def _isolate_atomic_recorder_for_spawner_unit_tests(monkeypatch: pytest.MonkeyPa
                 fields.get("logical_session_id"),
                 fields.get("duration_ms"),
             )
+            evidence = fields.get("usage_evidence")
+            if evidence is not None:
+                await pool.execute(
+                    _LEDGER_INSERT,
+                    fields["catalog_entry_id"],
+                    fields["butler"],
+                    fields.get("session_id"),
+                    evidence.input_tokens,
+                    evidence.output_tokens,
+                    evidence.cached_input_tokens,
+                    evidence.cache_creation_tokens,
+                    evidence.purpose,
+                    evidence.base_prompt_tokens,
+                    evidence.timezone_instruction_tokens,
+                    evidence.context_preamble_tokens,
+                    evidence.routing_instructions_tokens,
+                    evidence.memory_context_tokens,
+                    evidence.resume_outcome,
+                    fields.get("purpose_lane"),
+                    1,
+                    evidence.usage_source,
+                )
         except Exception:
             return
 
@@ -825,8 +848,6 @@ class TestSuccessProvenance:
 # ---------------------------------------------------------------------------
 # Tests: composed-prompt digest + resume_outcome on the ledger row (bu-hz0g0)
 # ---------------------------------------------------------------------------
-
-_LEDGER_INSERT = "INSERT INTO public.token_usage_ledger"
 
 
 class _UsageReportingAdapter(RuntimeAdapter):

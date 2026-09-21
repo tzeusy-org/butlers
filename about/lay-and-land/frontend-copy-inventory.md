@@ -879,6 +879,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Enable
 - Edit {}
 - Delete {}
+- Spend summary
 - Saved changes to {}
 - Added {}
 - Failed to update priority
@@ -4345,4 +4346,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3411*
+*Total strings: 3412*

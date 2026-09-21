@@ -69,6 +69,7 @@ _QUOTA_30D_FULL = QuotaStatus(
 )
 
 _ATTEMPTS_SQL_FRAGMENT = "INSERT INTO public.model_dispatch_attempts"
+_USAGE_SQL_FRAGMENT = "INSERT INTO public.token_usage_ledger"
 
 
 @pytest.fixture(autouse=True)
@@ -90,8 +91,31 @@ def _isolate_atomic_recorder_for_spawner_unit_tests(monkeypatch: pytest.MonkeyPa
             fields.get("logical_session_id"),
             fields.get("duration_ms"),
         )
+        evidence = fields.get("usage_evidence")
+        if evidence is not None:
+            await pool.execute(
+                _USAGE_SQL_FRAGMENT,
+                fields["catalog_entry_id"],
+                fields["butler"],
+                fields.get("session_id"),
+                evidence.input_tokens,
+                evidence.output_tokens,
+                evidence.cached_input_tokens,
+                evidence.cache_creation_tokens,
+                evidence.purpose,
+                evidence.resume_outcome,
+                evidence.usage_source,
+            )
 
     monkeypatch.setattr("butlers.core.spawner.record_dispatch_attempt", _capture)
+
+
+def _usage_rows(pool: AsyncMock) -> list[tuple[Any, ...]]:
+    return [
+        call.args
+        for call in pool.execute.await_args_list
+        if call.args and _USAGE_SQL_FRAGMENT in call.args[0]
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -506,7 +530,6 @@ class TestEligibleRuntimeFailureRetry:
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_sc,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
-            patch("butlers.core.spawner.record_token_usage", new_callable=AsyncMock) as mock_usage,
             patch(
                 "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
@@ -540,20 +563,27 @@ class TestEligibleRuntimeFailureRetry:
         assert len(runtime_failures) == 1
         assert runtime_failures[0][2] == _PRIMARY_ID
         assert runtime_failures[0][5].startswith("empty_runtime_response")
-        mock_usage.assert_awaited_once()
-        _, usage_kwargs = mock_usage.call_args
-        assert usage_kwargs["catalog_entry_id"] == _PRIMARY_ID
-        assert usage_kwargs["butler_name"] == "test-butler"
-        assert usage_kwargs["session_id"] == _SESSION_ID
-        assert usage_kwargs["input_tokens"] == 10
-        assert usage_kwargs["output_tokens"] == 0
-        assert usage_kwargs["cached_input_tokens"] == 0
-        assert usage_kwargs["cache_creation_tokens"] == 0
-        assert usage_kwargs["purpose"] == "schedule:consolidation"
+        usage_rows = _usage_rows(mock_pool)
+        assert len(usage_rows) == 2
+        failed_usage, fallback_usage = usage_rows
+        assert failed_usage[1:8] == (
+            _PRIMARY_ID,
+            "test-butler",
+            _SESSION_ID,
+            10,
+            0,
+            0,
+            0,
+        )
+        assert failed_usage[8] == "schedule:consolidation"
+        assert failed_usage[10] == "measured"
+        assert fallback_usage[1] == _FALLBACK_ID
+        assert fallback_usage[4] is None
+        assert fallback_usage[10] == "unmeasurable"
         # bu-hz0g0: this dispatch never resumed a conversation (trigger_source
         # is not "route"); the composed-prompt digest itself is covered by
         # TestComposedPromptLedgerColumns in test_spawner_dispatch_attempt_provenance.py.
-        assert usage_kwargs["resume_outcome"] is None
+        assert failed_usage[9] is None
 
     async def test_tool_only_adapter_result_remains_successful(self, tmp_path: Path) -> None:
         """A confirmed MCP action is a usable result even without final text."""
@@ -591,7 +621,6 @@ class TestEligibleRuntimeFailureRetry:
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_sc,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
-            patch("butlers.core.spawner.record_token_usage", new_callable=AsyncMock),
             patch.object(Spawner, "_ensure_mcp_endpoints_warmed", new_callable=AsyncMock),
             patch(
                 "butlers.core.spawner.resolve_model_with_effective_tier",

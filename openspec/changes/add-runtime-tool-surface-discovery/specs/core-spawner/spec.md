@@ -93,6 +93,8 @@ Scope: v1-mandatory
 ### Requirement: Logical Session Attempt Orchestration
 The spawner SHALL keep automatic model failover attempts bounded and auditable.
 
+Each provider invocation SHALL produce attempt-grained spend evidence: the spawner writes the dispatch-attempt row first, then writes exactly one token-usage row referencing that attempt. Parseable provider usage is `measured`; absence of parseable usage is `unmeasurable` with NULL token buckets.
+
 ID: REQ-core-spawner-003
 Source: [Observed] core-spawner Logical Session Attempt Orchestration; RFC 0027 §Failure and Replay Safety
 Scope: v1-mandatory
@@ -120,5 +122,11 @@ Scope: v1-mandatory
 - **WHEN** one candidate retries from native deferred to eager filtered under the replay-safe predicate
 - **THEN** the logical session records one candidate attempt with two ordered presentation subattempts
 - **AND** the retry does not consume or masquerade as a second model-catalog candidate selection
+
+#### Scenario: Timeout without usage remains visible
+- **WHEN** a provider invocation times out and no token usage can be parsed
+- **THEN** the spawner SHALL write the invocation's dispatch-attempt provenance
+- **AND** SHALL write one linked `usage_source='unmeasurable'` ledger row
+- **AND** monthly spend surfaces SHALL identify that attempt as unpriced rather than presenting the measured subtotal as complete
 
 Historical candidate-selection wording preserved for archive safety: “the number of attempts SHALL be bounded by the number of eligible same-tier catalog candidates” and “no catalog entry SHALL be invoked more than once for the same logical session.” RFC 0027 narrows those sentences to candidate selection while permitting one bounded presentation fallback for the already-selected candidate.

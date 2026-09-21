@@ -17,7 +17,7 @@ import asyncpg
 import pytest
 
 from butlers.core import dispatch_outcomes
-from butlers.core.dispatch_outcomes import record_dispatch_attempt
+from butlers.core.dispatch_outcomes import DispatchUsageEvidence, record_dispatch_attempt
 from butlers.core.model_routing import CEILING_DENIAL_REASON_PREFIX, get_breaker_state
 
 pytestmark = [pytest.mark.db, pytest.mark.integration]
@@ -95,6 +95,26 @@ class _FailAfterAttemptAcquire(_RoleAcquire):
 class _FailAfterAttemptPool(_RolePool):
     def acquire(self) -> _FailAfterAttemptAcquire:
         return _FailAfterAttemptAcquire(self._pool, self._role)
+
+
+class _FailUsageConnection(_FailAfterAttemptConnection):
+    """Fail the usage insert after the attempt insert in the same transaction."""
+
+    async def execute(self, statement: str, *args: object) -> str:
+        if "INSERT INTO public.token_usage_ledger" in statement:
+            raise RuntimeError("injected usage failure after attempt insert")
+        return await self._connection.execute(statement, *args)
+
+
+class _FailUsageAcquire(_RoleAcquire):
+    async def __aenter__(self) -> _FailUsageConnection:
+        connection = await super().__aenter__()
+        return _FailUsageConnection(connection)
+
+
+class _FailUsagePool(_RolePool):
+    def acquire(self) -> _FailUsageAcquire:
+        return _FailUsageAcquire(self._pool, self._role)
 
 
 class _DelayBeforeBreakerLockConnection:
@@ -463,6 +483,64 @@ async def test_skipped_and_suppressed_do_not_qualify_and_failed_recorder_rolls_b
             )
             == 0
         )
+
+
+async def test_attempt_usage_pair_rolls_back_atomically_and_retry_writes_one_pair(
+    migrated_core_postgres_pool,
+) -> None:
+    async with migrated_core_postgres_pool(min_pool_size=2, max_pool_size=4) as admin_pool:
+        entry_id = await _seed_catalog(admin_pool, "atomic-attempt-usage")
+        evidence = DispatchUsageEvidence(
+            input_tokens=12,
+            output_tokens=3,
+            cached_input_tokens=0,
+            cache_creation_tokens=0,
+            purpose="route",
+        )
+        fields = {
+            "catalog_entry_id": entry_id,
+            "butler": "general",
+            "outcome": "success",
+            "attempt_index": 0,
+            "logical_session_id": "atomic-attempt-usage-request",
+            "usage_evidence": evidence,
+        }
+
+        failed_id = await record_dispatch_attempt(
+            _FailUsagePool(admin_pool),  # type: ignore[arg-type]
+            **fields,
+        )
+        assert failed_id is None
+        assert (
+            await admin_pool.fetchval(
+                "SELECT count(*) FROM public.model_dispatch_attempts WHERE catalog_entry_id=$1",
+                entry_id,
+            )
+            == 0
+        )
+        assert (
+            await admin_pool.fetchval(
+                "SELECT count(*) FROM public.token_usage_ledger WHERE catalog_entry_id=$1",
+                entry_id,
+            )
+            == 0
+        )
+
+        attempt_id = await record_dispatch_attempt(
+            _RolePool(admin_pool),  # type: ignore[arg-type]
+            **fields,
+        )
+        assert isinstance(attempt_id, int)
+        row = await admin_pool.fetchrow(
+            """
+            SELECT attempt.id, usage.attempt_id, usage.input_tokens, usage.output_tokens
+              FROM public.model_dispatch_attempts AS attempt
+              JOIN public.token_usage_ledger AS usage ON usage.attempt_id = attempt.id
+             WHERE attempt.catalog_entry_id = $1
+            """,
+            entry_id,
+        )
+        assert tuple(row) == (attempt_id, attempt_id, 12, 3)
 
 
 async def test_fleet_halt_first_new_denial_creates_one_month_episode_without_backfill(

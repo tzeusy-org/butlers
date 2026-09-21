@@ -596,7 +596,6 @@ class TestSpawnerInvocation:
                     limit_30d=None,
                 ),
             ),
-            patch("butlers.core.spawner.record_token_usage", new_callable=AsyncMock),
         ):
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
             result = await spawner.trigger("hello", "tick")
@@ -2872,7 +2871,6 @@ class TestSpendEventBusWiring:
                     limit_30d=None,
                 ),
             ),
-            patch("butlers.core.spawner.record_token_usage", new_callable=AsyncMock),
             patch(
                 "butlers.fleet_events.publish_fleet_event",
                 new=mock_publish,
@@ -2942,7 +2940,6 @@ class TestSpendEventBusWiring:
                     limit_30d=None,
                 ),
             ),
-            patch("butlers.core.spawner.record_token_usage", new_callable=AsyncMock),
             patch("butlers.fleet_events.publish_fleet_event", new=mock_publish),
         ):
             mock_create.return_value = session_uuid
@@ -3031,7 +3028,6 @@ class TestSpendEventBusWiring:
                     limit_30d=None,
                 ),
             ),
-            patch("butlers.core.spawner.record_token_usage", new_callable=AsyncMock),
             patch(
                 "butlers.fleet_events.publish_fleet_event",
                 new=AsyncMock(side_effect=RuntimeError("broker exploded")),

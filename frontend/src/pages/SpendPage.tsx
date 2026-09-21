@@ -333,6 +333,7 @@ function KpiCell({ label, value, sub, tone = "fg", testId }: KpiCellProps) {
 function KpiStrip({ forecast }: { forecast: ForecastData }) {
   const daysRemaining = forecast.days_in_month - forecast.days_elapsed;
   const unpricedCalls = unpricedCallCount(forecast.unpriced_models);
+  const unmeasurableAttempts = forecast.unmeasurable_attempts ?? 0;
   const blindModels = forecast.ceiling_blind_to_unpriced_models ?? 0;
   const pct =
     forecast.ceiling_usd != null && forecast.ceiling_usd > 0
@@ -354,11 +355,17 @@ function KpiStrip({ forecast }: { forecast: ForecastData }) {
         testId="kpi-mtd"
         label="MTD Spend"
         value={formatCostUsd(forecast.mtd_usd)}
-        sub={
+        sub={[
+          `${forecast.days_elapsed} day${forecast.days_elapsed === 1 ? "" : "s"} elapsed`,
+          unmeasurableAttempts > 0
+            ? `${unmeasurableAttempts.toLocaleString()} attempts unpriced`
+            : null,
           unpricedCalls > 0
-            ? `${forecast.days_elapsed} day${forecast.days_elapsed === 1 ? "" : "s"} elapsed · excludes ${unpricedCalls.toLocaleString()} unpriced calls`
-            : `${forecast.days_elapsed} day${forecast.days_elapsed === 1 ? "" : "s"} elapsed`
-        }
+            ? `excludes ${unpricedCalls.toLocaleString()} unpriced calls`
+            : null,
+        ]
+          .filter(Boolean)
+          .join(" · ")}
       />
       <KpiCell
         testId="kpi-projected-eom"

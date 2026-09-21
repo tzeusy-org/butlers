@@ -379,6 +379,7 @@ describe("SpendPage — posture", () => {
     const mtdCell = await screen.findByTestId("kpi-mtd");
     expect(mtdCell.textContent).toContain("MTD Spend");
     expect(mtdCell.textContent).toContain("$2.20");
+    expect(mtdCell.textContent).not.toContain("attempts unpriced");
 
     const projCell = screen.getByTestId("kpi-projected-eom");
     expect(projCell.textContent).toContain("$5.42");
@@ -397,6 +398,7 @@ describe("SpendPage — posture", () => {
           data: {
             ...MOCK_FORECAST.data,
             ceiling_usd: 10,
+            unmeasurable_attempts: 3,
             unpriced_models: [
               {
                 model: "unpriced-codex",
@@ -432,6 +434,7 @@ describe("SpendPage — posture", () => {
     expect((await screen.findByTestId("kpi-mtd")).textContent).toContain(
       "excludes 1,988 unpriced calls",
     );
+    expect(screen.getByTestId("kpi-mtd").textContent).toContain("3 attempts unpriced");
     expect(screen.getByTestId("kpi-ceiling").textContent).toContain(
       "blind to 1 unpriced model",
     );

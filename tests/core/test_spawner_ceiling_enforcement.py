@@ -243,7 +243,6 @@ class TestSpawnerCeilingEnforcement:
                 new_callable=AsyncMock,
                 return_value=_ceiling_under(),
             ),
-            patch("butlers.core.spawner.record_token_usage", new_callable=AsyncMock),
         ):
             mock_create.return_value = _SESSION_ID
             result = await Spawner(
@@ -280,7 +279,6 @@ class TestSpawnerCeilingEnforcement:
                 new_callable=AsyncMock,
                 return_value=_ceiling_unset(),
             ),
-            patch("butlers.core.spawner.record_token_usage", new_callable=AsyncMock),
         ):
             mock_create.return_value = _SESSION_ID
             result = await Spawner(
