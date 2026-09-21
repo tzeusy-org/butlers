@@ -256,6 +256,18 @@ def test_calendar_prep_attendee_validates_commitment_kind_and_direction():
         )
 
 
+def test_calendar_prep_attendee_rejects_invalid_commitment_escalation_level():
+    """REQ-dashboard-api-054: commitment escalation follows the L0-L3 contract."""
+    with pytest.raises(ValidationError):
+        CalendarPrepAttendee.model_validate(
+            {
+                "entity_id": str(uuid4()),
+                "name": "Alice Tan",
+                "commitments": [_commitment(escalation_level="L4")],
+            }
+        )
+
+
 # ---------------------------------------------------------------------------
 # Honest empty-state + fail-open
 # ---------------------------------------------------------------------------
