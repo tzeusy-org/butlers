@@ -211,6 +211,24 @@ afterEach(() => {
 });
 
 describe("EntityDetailPage — merge-review entry points", () => {
+  it("renders active, failed, and pending rebind receipts without hiding unknown work", () => {
+    useRelationshipEntityQueue.mockReturnValue(EMPTY_QUEUE);
+    render("/entities/entity-001", {
+      ...ENTITY,
+      rebind_receipts: [
+        { rebind_id: "rebind-1", target_schema: "relationship", references_rebound: 4, status: "active", error_class: null, completed_at: "2026-09-21T00:00:00Z" },
+        { rebind_id: "rebind-1", target_schema: "finance", references_rebound: 0, status: "failed", error_class: "SerializationError", completed_at: "2026-09-21T00:00:01Z" },
+        { rebind_id: "rebind-1", target_schema: "travel", references_rebound: 0, status: "pending", error_class: null, completed_at: null },
+      ],
+    });
+
+    const cohort = container.querySelector("[data-testid='entity-rebind-cohort']");
+    expect(cohort?.textContent).toContain("relationship4 rebound");
+    expect(cohort?.textContent).toContain("financeFailed · SerializationError");
+    expect(cohort?.textContent).toContain("travelNot yet reported");
+    expect(cohort?.querySelectorAll("[data-status='pending']")).toHaveLength(1);
+  });
+
   it("renders the duplicate-warning panel when duplicate evidence exists", () => {
     useRelationshipEntityQueue.mockReturnValue(DUP_QUEUE);
     render();

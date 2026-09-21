@@ -1347,6 +1347,9 @@ class MergeEntitiesResponse(BaseModel):
     tombstoned_entity_id: UUID
     subject_facts_rewired: int
     object_facts_rewired: int
+    rebind_id: UUID | None = None
+    receipts: list[dict[str, Any]] = []
+    failed_schemas: list[str] = []
 
 
 # ---------------------------------------------------------------------------

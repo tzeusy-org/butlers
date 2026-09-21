@@ -31,6 +31,7 @@ from butlers.testing.schema_standins import (
     CONTACT_ENTITY_MAP,
     ENTITY_GRAPH_EDGES,
     ENTITY_PREDICATE_REGISTRY,
+    ENTITY_REBIND_LOG,
 )
 from roster.relationship.tests.evidence_schema import apply_evidence_schema
 
@@ -68,6 +69,7 @@ async def pool(provisioned_postgres_pool):
             )
         """)
         await p.execute("CREATE SCHEMA IF NOT EXISTS relationship")
+        await p.execute(ENTITY_REBIND_LOG.ddl(schema="public"))
         await p.execute(ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship"))
         await p.execute("""
             INSERT INTO relationship.entity_predicate_registry

@@ -11,12 +11,13 @@ entity_merge so that episode_entities rows are re-pointed on merge (bu-cojsp).
 from __future__ import annotations
 
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import asyncpg
 import pytest
 
+from butlers import entity_rebind as _rebind
 from butlers.modules.memory.tools.entities import (
     _SCORE_EXACT_DEMOTED,
     _SCORE_EXACT_NAME,
@@ -91,48 +92,6 @@ def _entity_mock_row(
 @pytest.fixture()
 def pool() -> AsyncMock:
     return AsyncMock()
-
-
-def _merge_pool(
-    src_row,
-    tgt_row,
-    *,
-    fact_rows=None,
-    edge_rows=None,
-    extra_fetchrow=None,
-    cal_src_rows=None,
-    cal_tgt_rows=None,
-):
-    """Build a mock pool for entity_merge with conn set up properly.
-
-    conn.fetch side_effect order matches entity_merge call sequence:
-      1. _repoint_facts_on_pool subject-side facts
-      2. _repoint_facts_on_pool edge/object-side facts
-      3. _repoint_calendar_event_entities source event_ids
-      4. _repoint_calendar_event_entities already-linked target rows
-    """
-    pool = MagicMock()
-    conn = AsyncMock()
-    extra = extra_fetchrow or []
-    conn.fetchrow = AsyncMock(side_effect=[src_row, tgt_row, *extra])
-    conn.fetch = AsyncMock(
-        side_effect=[
-            (fact_rows or []),
-            (edge_rows or []),
-            (cal_src_rows or []),
-            (cal_tgt_rows or []),
-        ]
-    )
-    conn.execute = AsyncMock()
-    cm = MagicMock()
-    cm.__aenter__ = AsyncMock(return_value=conn)
-    cm.__aexit__ = AsyncMock(return_value=None)
-    pool.acquire = MagicMock(return_value=cm)
-    txn_cm = MagicMock()
-    txn_cm.__aenter__ = AsyncMock(return_value=None)
-    txn_cm.__aexit__ = AsyncMock(return_value=None)
-    conn.transaction = MagicMock(return_value=txn_cm)
-    return pool, conn
 
 
 # ---------------------------------------------------------------------------
@@ -410,24 +369,46 @@ class TestEntityResolveSchema:
 # ---------------------------------------------------------------------------
 
 
-class TestEntityMerge:
-    async def test_raises_when_source_equals_target(self) -> None:
-        with pytest.raises(ValueError, match="must be different"):
-            await entity_merge(AsyncMock(), SOURCE_ID, SOURCE_ID)
+class TestEntityMergeDispatch:
+    """The legacy memory callable delegates to Relationship's sole authority."""
 
-    async def test_raises_when_already_tombstoned(self) -> None:
-        src = _entity_mock_row(SOURCE_UUID, metadata={"merged_into": TARGET_ID})
-        tgt = _entity_mock_row(TARGET_UUID)
-        pool, _conn = _merge_pool(src, tgt)
-        with pytest.raises(ValueError, match="already tombstoned"):
-            await entity_merge(pool, SOURCE_ID, TARGET_ID)
+    async def test_delegates_and_preserves_return_shape(self) -> None:
+        merge_result = MagicMock(
+            kept_entity_id=TARGET_UUID,
+            tombstoned_entity_id=SOURCE_UUID,
+            aliases_added=2,
+            rebind_id=uuid.uuid4(),
+            failed_schemas=("finance",),
+            receipts=(
+                {
+                    "target_schema": "finance",
+                    "status": "failed",
+                    "references_rebound": 0,
+                    "error_class": "RuntimeError",
+                },
+            ),
+        )
+        authority = AsyncMock(return_value=merge_result)
 
-    async def test_result_has_expected_keys(self) -> None:
-        src = _entity_mock_row(SOURCE_UUID)
-        tgt = _entity_mock_row(TARGET_UUID)
-        pool, conn = _merge_pool(src, tgt)
-        result = await entity_merge(pool, SOURCE_ID, TARGET_ID)
-        assert {
+        with patch(
+            "butlers.tools.relationship.entity_merge.merge_entity_pair",
+            new=authority,
+        ):
+            result = await entity_merge(
+                MagicMock(name="relationship_pool"),
+                SOURCE_ID,
+                TARGET_ID,
+                extra_pools=[MagicMock()],
+                chronicler_pool=MagicMock(),
+            )
+
+        authority.assert_awaited_once()
+        assert result["target_entity_id"] == TARGET_ID
+        assert result["source_entity_id"] == SOURCE_ID
+        assert result["aliases_added"] == 2
+        assert result["failed_schemas"] == ["finance"]
+        assert result["rebind_status"] == "failed"
+        assert set(result) == {
             "target_entity_id",
             "source_entity_id",
             "facts_repointed",
@@ -435,130 +416,15 @@ class TestEntityMerge:
             "edge_facts_repointed",
             "edge_facts_superseded",
             "aliases_added",
-        } == set(result.keys())
-
-    async def test_source_tombstoned_with_merged_into(self) -> None:
-        src = _entity_mock_row(SOURCE_UUID)
-        tgt = _entity_mock_row(TARGET_UUID)
-        pool, conn = _merge_pool(src, tgt)
-        await entity_merge(pool, SOURCE_ID, TARGET_ID)
-        tombstones = [
-            c
-            for c in conn.execute.call_args_list
-            if "UPDATE public.entities SET metadata" in c[0][0] and SOURCE_UUID in c[0]
-        ]
-        assert len(tombstones) == 1
-        # Metadata is now bound directly as a Python dict; the registered JSONB
-        # codec on the asyncpg pool handles serialization. See [bu-qki26].
-        # The codec rejects pre-serialized strings (double-encoding).
-        meta_arg = tombstones[0][0][1]
-        assert isinstance(meta_arg, dict), (
-            f"metadata must be passed as a dict for the asyncpg JSONB codec, "
-            f"got {type(meta_arg).__name__!r}"
-        )
-        assert meta_arg["merged_into"] == TARGET_ID
-
-    async def test_unidentified_flag_not_propagated(self) -> None:
-        src = _entity_mock_row(SOURCE_UUID, metadata={"unidentified": True, "src_key": "v"})
-        tgt = _entity_mock_row(TARGET_UUID, metadata={})
-        pool, conn = _merge_pool(src, tgt)
-        await entity_merge(pool, SOURCE_ID, TARGET_ID)
-        updates = [
-            c
-            for c in conn.execute.call_args_list
-            if "UPDATE public.entities SET aliases" in c[0][0] and TARGET_UUID in c[0]
-        ]
-        # Metadata bound as a dict (direct JSONB codec encoding).
-        # The codec rejects pre-serialized strings (double-encoding).
-        meta_arg = updates[0][0][2]
-        assert isinstance(meta_arg, dict), (
-            f"metadata must be passed as a dict for the asyncpg JSONB codec, "
-            f"got {type(meta_arg).__name__!r}"
-        )
-        assert "unidentified" not in meta_arg
-        assert meta_arg.get("src_key") == "v"
-
-    async def test_source_canonical_name_added_to_target_aliases(self) -> None:
-        src = _entity_mock_row(SOURCE_UUID, canonical_name="tzeusii", aliases=[])
-        tgt = _entity_mock_row(TARGET_UUID, canonical_name="Tze How Lee", aliases=[])
-        pool, conn = _merge_pool(src, tgt)
-        await entity_merge(pool, SOURCE_ID, TARGET_ID)
-        updates = [
-            c
-            for c in conn.execute.call_args_list
-            if "UPDATE public.entities SET aliases" in c[0][0] and TARGET_UUID in c[0]
-        ]
-        merged_aliases = updates[0][0][1]
-        assert "tzeusii" in merged_aliases
+            "rebind_id",
+            "failed_schemas",
+            "rebind_status",
+            "receipts",
+        }
 
 
 # ---------------------------------------------------------------------------
-# entity_merge — calendar_event_entities
-# ---------------------------------------------------------------------------
-
-EVENT_UUID_1 = uuid.UUID("cccccccc-1111-1111-1111-cccccccccccc")
-EVENT_UUID_2 = uuid.UUID("dddddddd-2222-2222-2222-dddddddddddd")
-
-
-def _cal_row(event_id: uuid.UUID) -> MagicMock:
-    row = MagicMock()
-    row.__getitem__ = lambda s, k: {"event_id": event_id}[k]
-    return row
-
-
-class TestEntityMergeCalendarEntities:
-    """entity_merge re-points calendar_event_entities from source to target."""
-
-    async def test_mixed_events_update_and_delete(self) -> None:
-        """Source has two events; one shared with target (delete), one unique (update).
-
-        Covers both repoint branches: unshared->UPDATE entity_id, shared->DELETE dedup.
-        """
-        src = _entity_mock_row(SOURCE_UUID)
-        tgt = _entity_mock_row(TARGET_UUID)
-        pool, conn = _merge_pool(
-            src,
-            tgt,
-            cal_src_rows=[_cal_row(EVENT_UUID_1), _cal_row(EVENT_UUID_2)],
-            cal_tgt_rows=[_cal_row(EVENT_UUID_1)],  # EVENT_UUID_1 is shared
-        )
-
-        await entity_merge(pool, SOURCE_ID, TARGET_ID)
-
-        update_calls = [
-            c
-            for c in conn.execute.call_args_list
-            if "UPDATE calendar_event_entities SET entity_id" in c[0][0]
-        ]
-        delete_calls = [
-            c
-            for c in conn.execute.call_args_list
-            if "DELETE FROM calendar_event_entities" in c[0][0]
-        ]
-        assert len(update_calls) == 1  # EVENT_UUID_2 re-pointed
-        assert len(delete_calls) == 1  # EVENT_UUID_1 deleted
-
-    async def test_no_calendar_events_no_execute_calls_for_cal(self) -> None:
-        """When source has no calendar event associations, no calendar SQL is issued."""
-        src = _entity_mock_row(SOURCE_UUID)
-        tgt = _entity_mock_row(TARGET_UUID)
-        pool, conn = _merge_pool(
-            src,
-            tgt,
-            cal_src_rows=[],
-            cal_tgt_rows=[],
-        )
-
-        await entity_merge(pool, SOURCE_ID, TARGET_ID)
-
-        cal_execute_calls = [
-            c for c in conn.execute.call_args_list if "calendar_event_entities" in c[0][0]
-        ]
-        assert cal_execute_calls == []
-
-
-# ---------------------------------------------------------------------------
-# entity_merge — episode_entities
+# Subscriber-local episode helper
 # ---------------------------------------------------------------------------
 
 EPISODE_UUID_1 = uuid.UUID("eeeeeeee-1111-1111-1111-eeeeeeeeeeee")
@@ -566,7 +432,6 @@ EPISODE_UUID_2 = uuid.UUID("ffffffff-2222-2222-2222-ffffffffffff")
 
 
 def _ep_row(episode_id: uuid.UUID, role: str = "participant") -> MagicMock:
-    """Build a mock asyncpg record for episode_entities."""
     row = MagicMock()
     row.__getitem__ = lambda s, k: {"episode_id": episode_id, "role": role}[k]
     return row
@@ -577,12 +442,6 @@ def _make_chronicler_pool(
     src_ep_rows: list,
     tgt_ep_rows: list,
 ) -> tuple[MagicMock, AsyncMock]:
-    """Build a mock chronicler pool for _repoint_episode_entities / entity_merge.
-
-    conn.fetch side_effect order:
-      1. SELECT ... episode_entities WHERE entity_id = $src  (src rows)
-      2. SELECT ... episode_entities WHERE entity_id = $tgt AND episode_id = ANY(...)  (tgt rows)
-    """
     pool = MagicMock()
     conn = AsyncMock()
     conn.fetch = AsyncMock(side_effect=[src_ep_rows, tgt_ep_rows])
@@ -691,94 +550,8 @@ class TestRePointEpisodeEntities:
         assert derived_updates == []  # derived column was dropped — no UPDATE
 
 
-class TestEntityMergeEpisodeEntities:
-    """entity_merge integration tests for episode_entities (6.2, 6.4)."""
-
-    async def test_repoints_episode_entities_via_chronicler_pool(self) -> None:
-        """entity_merge calls _repoint_episode_entities when chronicler_pool is supplied."""
-        src = _entity_mock_row(SOURCE_UUID)
-        tgt = _entity_mock_row(TARGET_UUID)
-        pool, _conn = _merge_pool(src, tgt)
-        ch_pool, ch_conn = _make_chronicler_pool(
-            src_ep_rows=[_ep_row(EPISODE_UUID_1)],
-            tgt_ep_rows=[],
-        )
-
-        await entity_merge(pool, SOURCE_ID, TARGET_ID, chronicler_pool=ch_pool)
-
-        update_calls = [
-            c
-            for c in ch_conn.execute.call_args_list
-            if "UPDATE chronicler.episode_entities SET entity_id" in c[0][0]
-        ]
-        assert len(update_calls) == 1
-
-    async def test_episode_entity_dedup_role_promotion_in_merge(self) -> None:
-        """entity_merge dedup case: one row remains, role is higher-precedence after merge."""
-        src = _entity_mock_row(SOURCE_UUID)
-        tgt = _entity_mock_row(TARGET_UUID)
-        pool, _conn = _merge_pool(src, tgt)
-        ch_pool, ch_conn = _make_chronicler_pool(
-            src_ep_rows=[_ep_row(EPISODE_UUID_1, "owner")],
-            tgt_ep_rows=[_ep_row(EPISODE_UUID_1, "participant")],
-        )
-
-        await entity_merge(pool, SOURCE_ID, TARGET_ID, chronicler_pool=ch_pool)
-
-        role_updates = [
-            c
-            for c in ch_conn.execute.call_args_list
-            if "UPDATE chronicler.episode_entities SET role" in c[0][0]
-        ]
-        delete_calls = [
-            c
-            for c in ch_conn.execute.call_args_list
-            if "DELETE FROM chronicler.episode_entities" in c[0][0]
-        ]
-        assert len(role_updates) == 1, "Role must be promoted in the surviving target row"
-        assert role_updates[0][0][1] == "owner"
-        assert len(delete_calls) == 1, "Source duplicate row must be deleted"
-
-    async def test_graceful_skip_when_episode_entities_table_absent(self) -> None:
-        """When chronicler.episode_entities is absent, merge completes without raising."""
-        src = _entity_mock_row(SOURCE_UUID)
-        tgt = _entity_mock_row(TARGET_UUID)
-        pool, _conn = _merge_pool(src, tgt)
-
-        # Build a chronicler pool whose fetch raises UndefinedTableError
-        ch_pool = MagicMock()
-        ch_conn = AsyncMock()
-        ch_conn.fetch = AsyncMock(
-            side_effect=asyncpg.exceptions.UndefinedTableError("relation does not exist")
-        )
-        ch_conn.execute = AsyncMock()
-        cm = MagicMock()
-        cm.__aenter__ = AsyncMock(return_value=ch_conn)
-        cm.__aexit__ = AsyncMock(return_value=None)
-        ch_pool.acquire = MagicMock(return_value=cm)
-        txn_cm = MagicMock()
-        txn_cm.__aenter__ = AsyncMock(return_value=None)
-        txn_cm.__aexit__ = AsyncMock(return_value=None)
-        ch_conn.transaction = MagicMock(return_value=txn_cm)
-
-        # Must NOT raise; merge completes and returns normal result
-        result = await entity_merge(pool, SOURCE_ID, TARGET_ID, chronicler_pool=ch_pool)
-        assert result["target_entity_id"] == TARGET_ID
-
-    async def test_no_episode_repointing_when_no_chronicler_pool(self) -> None:
-        """When chronicler_pool is not supplied, no chronicler SQL is executed."""
-        src = _entity_mock_row(SOURCE_UUID)
-        tgt = _entity_mock_row(TARGET_UUID)
-        pool, _conn = _merge_pool(src, tgt)
-
-        # No chronicler_pool passed — should not touch chronicler at all
-        result = await entity_merge(pool, SOURCE_ID, TARGET_ID)
-        assert result["target_entity_id"] == TARGET_ID
-
-
-# ---------------------------------------------------------------------------
-# entity_neighbors
-# ---------------------------------------------------------------------------
+# Cross-schema episode mutation is no longer part of entity_merge. The
+# subscriber-local helper remains covered above and is invoked by entity_rebind.
 
 
 class TestEntityNeighbors:
@@ -813,48 +586,8 @@ class TestEntityNeighbors:
         assert isinstance(result[0]["entity"]["id"], str)
 
 
+# MCP tool — relationship authority dispatch
 # ---------------------------------------------------------------------------
-# MCP tool — chronicler pool wiring (bu-cojsp)
-# ---------------------------------------------------------------------------
-
-
-# NOTE: The MCP-tool→entity_merge chronicler_pool wiring (both the supplied-pool
-# repoint and the None-pool no-op path) is covered behaviorally by
-# TestEntityMergeEpisodeEntities (test_repoints_episode_entities_via_chronicler_pool /
-# test_no_episode_repointing_when_no_chronicler_pool); the dedicated MCP-closure
-# re-proofs were folded out.
-
-
-# ---------------------------------------------------------------------------
-# MCP tool — merge_reviews audit-row wiring (bu-csvop)
-# ---------------------------------------------------------------------------
-
-
-def _make_relationship_pool(
-    *,
-    a_identity_rows: list | None = None,
-    b_identity_rows: list | None = None,
-    single_cardinality_rows: list | None = None,
-) -> tuple[MagicMock, AsyncMock]:
-    """Build a mock relationship pool for compute_merge_evidence + write_merge_review.
-
-    pool.fetch side_effect order (compute_merge_evidence):
-      1. fetch_identity_facts(entity_a)
-      2. fetch_identity_facts(entity_b)
-      3. fetch_single_cardinality_predicates()
-    pool.fetchval handles the merge_reviews INSERT (write_merge_review).
-    """
-    pool = MagicMock()
-    pool.fetch = AsyncMock(
-        side_effect=[
-            a_identity_rows or [],
-            b_identity_rows or [],
-            single_cardinality_rows or [],
-        ]
-    )
-    review_id = uuid.uuid4()
-    pool.fetchval = AsyncMock(return_value=review_id)
-    return pool, review_id
 
 
 def _register_memory_entity_merge_tool(mod, *, entity_merge_result):
@@ -903,114 +636,57 @@ def _register_memory_entity_merge_tool(mod, *, entity_merge_result):
     return _run
 
 
-class TestMemoryEntityMergeMCPMergeReviewWiring:
-    """memory_entity_merge writes a relationship.merge_reviews audit row so that
-    session-side merges leave history regardless of entry path (bu-csvop;
-    relationship-merge-review spec).
-    """
+class TestMemoryEntityMergeMCPDispatch:
+    """The MCP surface dispatches through the relationship-scoped pool."""
 
-    async def test_mcp_tool_writes_merge_reviews_audit_row(self) -> None:
+    async def test_mcp_tool_passes_relationship_pool_to_authority(self) -> None:
         from butlers.modules.memory import MemoryModule
 
         mod = MemoryModule()
         fake_db = MagicMock()
         fake_db.pool = MagicMock(name="memory_pool")
         mod._db = fake_db
+        relationship_pool = MagicMock(name="relationship_pool")
+        expected = {"target_entity_id": TARGET_ID}
+        run = _register_memory_entity_merge_tool(mod, entity_merge_result=expected)
 
-        rel_pool, review_id = _make_relationship_pool()
-
-        run = _register_memory_entity_merge_tool(
-            mod, entity_merge_result={"target_entity_id": TARGET_ID}
-        )
-
-        with (
-            patch.object(mod, "_get_or_create_chronicler_pool", new=AsyncMock(return_value=None)),
-            patch.object(
-                mod, "_get_or_create_relationship_pool", new=AsyncMock(return_value=rel_pool)
-            ),
+        with patch.object(
+            mod,
+            "_get_or_create_relationship_pool",
+            new=AsyncMock(return_value=relationship_pool),
         ):
             registered, fake_entities = await run()
-            tool = registered["memory_entity_merge"]
-            result = await tool(source_entity_id=SOURCE_ID, target_entity_id=TARGET_ID)
+            result = await registered["memory_entity_merge"](
+                source_entity_id=SOURCE_ID,
+                target_entity_id=TARGET_ID,
+            )
 
-        # The underlying memory merge still ran and its result is returned verbatim.
-        assert result == {"target_entity_id": TARGET_ID}
-        fake_entities.entity_merge.assert_awaited_once()
+        assert result == expected
+        fake_entities.entity_merge.assert_awaited_once_with(
+            relationship_pool,
+            SOURCE_ID,
+            TARGET_ID,
+        )
 
-        # An audit row was written to relationship.merge_reviews with outcome='merged'.
-        rel_pool.fetchval.assert_awaited_once()
-        insert_sql = rel_pool.fetchval.await_args.args[0]
-        assert "INSERT INTO relationship.merge_reviews" in insert_sql
-        insert_args = rel_pool.fetchval.await_args.args[1:]
-        # entity_a, entity_b, shared_json, divergent_json, outcome
-        assert insert_args[0] == uuid.UUID(SOURCE_ID)
-        assert insert_args[1] == uuid.UUID(TARGET_ID)
-        assert insert_args[4] == "merged"
-
-    async def test_mcp_tool_computes_evidence_before_merge(self) -> None:
-        """The audit evidence is computed BEFORE entity_merge mutates rows so the
-        snapshot reflects the pre-merge state (matches the API merge endpoint)."""
-
+    async def test_mcp_tool_fails_closed_without_relationship_authority(self) -> None:
         from butlers.modules.memory import MemoryModule
 
         mod = MemoryModule()
-        fake_db = MagicMock()
-        fake_db.pool = MagicMock(name="memory_pool")
-        mod._db = fake_db
-
-        rel_pool, _ = _make_relationship_pool()
-
-        order: list[str] = []
-        rel_pool.fetch = AsyncMock(side_effect=lambda *a, **k: order.append("evidence") or [])
-        rel_pool.fetchval = AsyncMock(
-            side_effect=lambda *a, **k: order.append("audit") or uuid.uuid4()
-        )
-
-        async def _record_merge(*a, **k):
-            order.append("merge")
-            return {"target_entity_id": TARGET_ID}
-
+        mod._db = MagicMock()
         run = _register_memory_entity_merge_tool(mod, entity_merge_result=None)
-        with (
-            patch.object(mod, "_get_or_create_chronicler_pool", new=AsyncMock(return_value=None)),
-            patch.object(
-                mod, "_get_or_create_relationship_pool", new=AsyncMock(return_value=rel_pool)
-            ),
+        with patch.object(
+            mod,
+            "_get_or_create_relationship_pool",
+            new=AsyncMock(return_value=None),
         ):
             registered, fake_entities = await run()
-            fake_entities.entity_merge = AsyncMock(side_effect=_record_merge)
-            tool = registered["memory_entity_merge"]
-            await tool(source_entity_id=SOURCE_ID, target_entity_id=TARGET_ID)
+            with pytest.raises(RuntimeError, match="authority is unavailable"):
+                await registered["memory_entity_merge"](
+                    source_entity_id=SOURCE_ID,
+                    target_entity_id=TARGET_ID,
+                )
 
-        # evidence reads happen, THEN the merge, THEN the audit INSERT.
-        assert order[0] == "evidence"
-        assert "merge" in order
-        assert order.index("merge") < order.index("audit")
-
-    async def test_mcp_tool_merge_not_blocked_when_relationship_pool_unavailable(self) -> None:
-        """In a memory-only deployment (no relationship schema), the merge still
-        succeeds and simply skips the audit row (best-effort)."""
-
-        from butlers.modules.memory import MemoryModule
-
-        mod = MemoryModule()
-        fake_db = MagicMock()
-        fake_db.pool = MagicMock(name="memory_pool")
-        mod._db = fake_db
-
-        run = _register_memory_entity_merge_tool(
-            mod, entity_merge_result={"target_entity_id": TARGET_ID}
-        )
-        with (
-            patch.object(mod, "_get_or_create_chronicler_pool", new=AsyncMock(return_value=None)),
-            patch.object(mod, "_get_or_create_relationship_pool", new=AsyncMock(return_value=None)),
-        ):
-            registered, fake_entities = await run()
-            tool = registered["memory_entity_merge"]
-            result = await tool(source_entity_id=SOURCE_ID, target_entity_id=TARGET_ID)
-
-        assert result == {"target_entity_id": TARGET_ID}
-        fake_entities.entity_merge.assert_awaited_once()
+        fake_entities.entity_merge.assert_not_awaited()
 
 
 class TestRetractFactsOnConn:
@@ -1063,3 +739,88 @@ class TestRetractFactsOnConn:
         assert _parse_rowcount(None) == 0
         assert _parse_rowcount("UPDATE") == 0
         assert _parse_rowcount(MagicMock()) == 0
+
+
+class TestEntityRebindReceipts:
+    @staticmethod
+    def _pending_pool(rebind_id: uuid.UUID, target_schema: str) -> AsyncMock:
+        conn = AsyncMock()
+        conn.fetchrow = AsyncMock(
+            return_value={
+                "rebind_id": rebind_id,
+                "source_entity_id": SOURCE_UUID,
+                "target_entity_id": TARGET_UUID,
+                "target_schema": target_schema,
+                "references_rebound": 0,
+                "status": "pending",
+                "error_class": None,
+            }
+        )
+        transaction = AsyncMock()
+        transaction.__aenter__ = AsyncMock(return_value=None)
+        transaction.__aexit__ = AsyncMock(return_value=False)
+        conn.transaction = MagicMock(return_value=transaction)
+
+        @asynccontextmanager
+        async def _acquire():
+            yield conn
+
+        pool = AsyncMock()
+        pool.acquire = MagicMock(return_value=_acquire())
+        return pool
+
+    async def test_undefined_tables_are_classified_without_claiming_success(self) -> None:
+        receipt = _rebind.EntityRebindReceipt(
+            rebind_id=uuid.uuid4(),
+            target_schema="finance",
+            references_rebound=0,
+            status="skipped_no_table",
+            error_class="UndefinedTableError",
+        )
+        pool = self._pending_pool(receipt.rebind_id, "finance")
+        with (
+            patch.object(
+                _rebind,
+                "_run_optional_table_step",
+                new=AsyncMock(side_effect=[(0, False), (0, False), (0, False), (0, False)]),
+            ),
+            patch.object(_rebind, "_write_receipt", new=AsyncMock(return_value=receipt)) as write,
+        ):
+            result = await _rebind.rebind_entity_references(
+                pool,
+                rebind_id=receipt.rebind_id,
+                source_entity_id=SOURCE_UUID,
+                target_entity_id=TARGET_UUID,
+                target_schema="finance",
+            )
+
+        assert result.status == "skipped_no_table"
+        assert write.await_args.kwargs["status"] == "skipped_no_table"
+        assert write.await_args.kwargs["error_class"] == "UndefinedTableError"
+
+    async def test_real_repoint_error_writes_failed_receipt_with_error_class(self) -> None:
+        receipt = _rebind.EntityRebindReceipt(
+            rebind_id=uuid.uuid4(),
+            target_schema="finance",
+            references_rebound=0,
+            status="failed",
+            error_class="RuntimeError",
+        )
+        with (
+            patch.object(
+                _rebind,
+                "_run_optional_table_step",
+                new=AsyncMock(side_effect=RuntimeError("write failed")),
+            ),
+            patch.object(_rebind, "_write_receipt", new=AsyncMock(return_value=receipt)) as write,
+        ):
+            result = await _rebind.rebind_entity_references(
+                self._pending_pool(receipt.rebind_id, "finance"),
+                rebind_id=receipt.rebind_id,
+                source_entity_id=SOURCE_UUID,
+                target_entity_id=TARGET_UUID,
+                target_schema="finance",
+            )
+
+        assert result.status == "failed"
+        assert write.await_args.kwargs["error_class"] == "RuntimeError"

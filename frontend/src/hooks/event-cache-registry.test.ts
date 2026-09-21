@@ -27,6 +27,7 @@ describe("EVENT_CACHE_REGISTRY", () => {
         "attention_remove",
         "calendar",
         "chronicles",
+        "entity.rebound.v1",
         "header_delta",
         "heartbeat",
         "ingestion",

@@ -98,6 +98,24 @@ class TestLifecycle:
         await mod.on_startup(config=None, db=fake_db)
         assert mod._db is fake_db
 
+    async def test_on_startup_processes_pending_entity_rebinds(self):
+        mod = MemoryModule()
+        fake_db = MagicMock()
+        fake_db.pool = AsyncMock()
+        fake_db.pool.fetchval = AsyncMock(return_value="finance")
+        process_pending = AsyncMock(return_value=[])
+
+        with patch(
+            "butlers.entity_rebind.process_pending_entity_rebinds",
+            new=process_pending,
+        ):
+            await mod.on_startup(config=None, db=fake_db)
+
+        process_pending.assert_awaited_once_with(
+            fake_db.pool,
+            target_schema="finance",
+        )
+
     async def test_on_shutdown_clears_state(self):
         mod = MemoryModule()
         fake_db = MagicMock()

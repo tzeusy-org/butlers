@@ -7,17 +7,23 @@ reconciliation remains auditable".
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import json
 import shutil
 from contextlib import asynccontextmanager
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
 import pytest
 
+from butlers.entity_rebind import rebind_entity_references, run_entity_rebind_listener
+from butlers.fleet_events import FLEET_EVENTS_CHANNEL
 from butlers.testing.schema_standins import (
     CONTACT_ENTITY_MAP,
     ENTITY_GRAPH_EDGES,
     ENTITY_PREDICATE_REGISTRY,
+    ENTITY_REBIND_LOG,
 )
 from butlers.tools.relationship.entity_merge import (
     AuditEntityOrderError,
@@ -246,7 +252,34 @@ async def merge_pool(provisioned_postgres_pool):
             )
         """)
         await pool.execute(CONTACT_ENTITY_MAP.ddl())
+        await pool.execute("""
+            CREATE TABLE calendar_event_entities (
+                event_id UUID NOT NULL,
+                entity_id UUID NOT NULL,
+                PRIMARY KEY (event_id, entity_id)
+            )
+        """)
+        await pool.execute("""
+            CREATE TABLE episode_entities (
+                episode_id UUID NOT NULL,
+                entity_id UUID NOT NULL,
+                role TEXT NOT NULL DEFAULT 'participant',
+                PRIMARY KEY (episode_id, entity_id)
+            )
+        """)
         await pool.execute(ENTITY_GRAPH_EDGES.ddl())
+        await pool.execute("""
+            CREATE TABLE public.memory_catalog (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                source_schema TEXT NOT NULL,
+                source_table TEXT NOT NULL,
+                source_id UUID NOT NULL,
+                entity_id UUID,
+                object_entity_id UUID,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        await pool.execute(ENTITY_REBIND_LOG.ddl(schema="public"))
         await pool.execute("""
             CREATE TABLE relationship.merge_reviews (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -333,6 +366,433 @@ async def test_conflicts_rewire_tombstone_and_audit_commit_atomically(merge_pool
         "entity_b": source_id,
         "outcome": "merged",
     }
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_merge_rebinds_catalog_and_opens_honest_receipt_cohort(merge_pool) -> None:
+    pool = merge_pool
+    target_id = await _insert_entity(pool, "Catalog target")
+    source_id = await _insert_entity(pool, "Catalog source")
+    await pool.executemany(
+        """
+        INSERT INTO public.memory_catalog
+            (source_schema, source_table, source_id, entity_id, object_entity_id)
+        VALUES ($1, 'facts', gen_random_uuid(), $2, $3)
+        """,
+        [
+            ("finance", source_id, None),
+            ("travel", None, source_id),
+        ],
+    )
+    local_fact = await pool.fetchval(
+        """
+        INSERT INTO facts (entity_id, predicate, content)
+        VALUES ($1, 'note', 'opaque local reference')
+        RETURNING id
+        """,
+        source_id,
+    )
+
+    with patch(
+        "butlers.tools.relationship.entity_merge.publish_fleet_event",
+        new=AsyncMock(return_value=True),
+    ) as publish:
+        result = await merge_entity_pair(
+            pool,
+            source_entity_id=source_id,
+            target_entity_id=target_id,
+            target_schemas=("relationship", "finance", "travel"),
+        )
+
+    publish.assert_awaited_once_with(
+        pool,
+        "entity.rebound.v1",
+        {
+            "rebind_id": str(result.rebind_id),
+            "source_entity_id": str(source_id),
+            "target_entity_id": str(target_id),
+        },
+    )
+
+    assert (
+        await pool.fetchval(
+            "SELECT count(*) FROM public.memory_catalog "
+            "WHERE entity_id = $1 OR object_entity_id = $1",
+            source_id,
+        )
+        == 0
+    )
+    assert (
+        await pool.fetchval(
+            "SELECT count(*) FROM public.memory_catalog "
+            "WHERE entity_id = $1 OR object_entity_id = $1",
+            target_id,
+        )
+        == 2
+    )
+    receipts = await pool.fetch(
+        "SELECT target_schema, references_rebound, status FROM public.entity_rebind_log "
+        "WHERE rebind_id = $1 ORDER BY target_schema",
+        result.rebind_id,
+    )
+    assert [tuple(row.values()) for row in receipts] == [
+        ("finance", 1, "pending"),
+        ("relationship", 1, "active"),
+        ("travel", 1, "pending"),
+    ]
+    assert await pool.fetchval("SELECT entity_id FROM facts WHERE id = $1", local_fact) == target_id
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_single_authority_preserves_alias_role_and_metadata_merge_semantics(
+    merge_pool,
+) -> None:
+    pool = merge_pool
+    target_id = await _insert_entity(pool, "Target identity")
+    source_id = await _insert_entity(pool, "Source identity")
+    await pool.execute(
+        """
+        UPDATE public.entities
+        SET aliases = ARRAY['Target alias'], roles = ARRAY['trusted'],
+            metadata = '{"shared":"target"}'::jsonb
+        WHERE id = $1
+        """,
+        target_id,
+    )
+    await pool.execute(
+        """
+        UPDATE public.entities
+        SET aliases = ARRAY['Source alias'], roles = ARRAY['owner'],
+            metadata = '{"shared":"source","source_only":true,"unidentified":true}'::jsonb
+        WHERE id = $1
+        """,
+        source_id,
+    )
+
+    result = await merge_entity_pair(
+        pool,
+        source_entity_id=source_id,
+        target_entity_id=target_id,
+        target_schemas=("relationship",),
+    )
+
+    target = await pool.fetchrow(
+        "SELECT aliases, roles, metadata FROM public.entities WHERE id = $1",
+        target_id,
+    )
+    assert result.aliases_added == 2
+    assert target["aliases"] == ["Target alias", "Source alias", "Source identity"]
+    assert target["roles"] == ["trusted", "owner"]
+    assert target["metadata"] == {"shared": "target", "source_only": True}
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_local_rebind_handler_repoints_every_owned_reference_and_settles_receipt(
+    merge_pool,
+) -> None:
+    pool = merge_pool
+    source_id = await _insert_entity(pool, "Local source")
+    target_id = await _insert_entity(pool, "Local target")
+    fact_id = await pool.fetchval(
+        """
+        INSERT INTO facts (entity_id, predicate, content)
+        VALUES ($1, 'note', 'opaque') RETURNING id
+        """,
+        source_id,
+    )
+    event_id = uuid4()
+    episode_id = uuid4()
+    await pool.execute(
+        "INSERT INTO calendar_event_entities (event_id, entity_id) VALUES ($1, $2)",
+        event_id,
+        source_id,
+    )
+    await pool.execute(
+        "INSERT INTO episode_entities (episode_id, entity_id) VALUES ($1, $2)",
+        episode_id,
+        source_id,
+    )
+    await pool.execute(
+        """
+        INSERT INTO public.memory_catalog
+            (source_schema, source_table, source_id, entity_id)
+        VALUES ('relationship', 'facts', $1, $2)
+        """,
+        fact_id,
+        source_id,
+    )
+
+    rebind_id = uuid4()
+    await pool.execute(
+        """
+        INSERT INTO public.entity_rebind_log (
+            rebind_id, source_entity_id, target_entity_id, target_schema, status
+        ) VALUES ($1, $2, $3, 'relationship', 'pending')
+        """,
+        rebind_id,
+        source_id,
+        target_id,
+    )
+    receipt = await rebind_entity_references(
+        pool,
+        rebind_id=rebind_id,
+        source_entity_id=source_id,
+        target_entity_id=target_id,
+        target_schema="relationship",
+    )
+
+    assert receipt.status == "active"
+    assert receipt.references_rebound == 4
+    assert await pool.fetchval("SELECT entity_id FROM facts WHERE id = $1", fact_id) == target_id
+    assert (
+        await pool.fetchval(
+            "SELECT entity_id FROM calendar_event_entities WHERE event_id = $1", event_id
+        )
+        == target_id
+    )
+    assert (
+        await pool.fetchval(
+            "SELECT entity_id FROM episode_entities WHERE episode_id = $1", episode_id
+        )
+        == target_id
+    )
+    assert (
+        await pool.fetchval(
+            "SELECT entity_id FROM public.memory_catalog WHERE source_id = $1", fact_id
+        )
+        == target_id
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_concurrent_replay_preserves_truthful_rebound_count(merge_pool) -> None:
+    pool = merge_pool
+    source_id = await _insert_entity(pool, "Concurrent source")
+    target_id = await _insert_entity(pool, "Concurrent target")
+    await pool.execute(
+        "INSERT INTO facts (entity_id, predicate, content) VALUES ($1, 'note', 'opaque')",
+        source_id,
+    )
+    rebind_id = uuid4()
+    await pool.execute(
+        """
+        INSERT INTO public.entity_rebind_log (
+            rebind_id, source_entity_id, target_entity_id, target_schema, status
+        ) VALUES ($1, $2, $3, 'relationship', 'pending')
+        """,
+        rebind_id,
+        source_id,
+        target_id,
+    )
+
+    receipts = await asyncio.gather(
+        *(
+            rebind_entity_references(
+                pool,
+                rebind_id=rebind_id,
+                source_entity_id=source_id,
+                target_entity_id=target_id,
+                target_schema="relationship",
+            )
+            for _ in range(2)
+        )
+    )
+
+    assert [receipt.references_rebound for receipt in receipts] == [1, 1]
+    assert (
+        await pool.fetchval(
+            "SELECT references_rebound FROM public.entity_rebind_log "
+            "WHERE rebind_id = $1 AND target_schema = 'relationship'",
+            rebind_id,
+        )
+        == 1
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_live_fleet_event_invokes_local_rebind_handler(merge_pool) -> None:
+    pool = merge_pool
+    source_id = await _insert_entity(pool, "Live source")
+    target_id = await _insert_entity(pool, "Live target")
+    fact_id = await pool.fetchval(
+        """
+        INSERT INTO facts (entity_id, predicate, content)
+        VALUES ($1, 'note', 'opaque') RETURNING id
+        """,
+        source_id,
+    )
+    rebind_id = uuid4()
+    await pool.execute(
+        """
+        INSERT INTO public.entity_rebind_log (
+            rebind_id, source_entity_id, target_entity_id, target_schema, status
+        ) VALUES ($1, $2, $3, 'relationship', 'pending')
+        """,
+        rebind_id,
+        source_id,
+        target_id,
+    )
+    ready = asyncio.Event()
+    listener = asyncio.create_task(
+        run_entity_rebind_listener(
+            pool,
+            target_schema="relationship",
+            health_poll_interval_s=0.05,
+            ready_event=ready,
+        )
+    )
+    payload = json.dumps(
+        {
+            "type": "entity.rebound.v1",
+            "data": {"rebind_id": str(rebind_id)},
+        }
+    )
+    try:
+        await asyncio.wait_for(ready.wait(), timeout=2)
+        await pool.execute("SELECT pg_notify($1, $2)", FLEET_EVENTS_CHANNEL, payload)
+        for _ in range(40):
+            if (
+                await pool.fetchval(
+                    "SELECT status FROM public.entity_rebind_log "
+                    "WHERE rebind_id = $1 AND target_schema = 'relationship'",
+                    rebind_id,
+                )
+                == "active"
+            ):
+                break
+            await asyncio.sleep(0.05)
+        else:
+            pytest.fail("live entity rebind listener did not settle the pending receipt")
+    finally:
+        listener.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await listener
+
+    assert await pool.fetchval("SELECT entity_id FROM facts WHERE id = $1", fact_id) == target_id
+
+
+@pytest.mark.asyncio
+async def test_listener_queues_events_that_arrive_during_startup_drain() -> None:
+    """LISTEN precedes replay so an event at the startup boundary cannot be lost."""
+    rebind_id = uuid4()
+    source_id = uuid4()
+    target_id = uuid4()
+    callback = None
+    order: list[str] = []
+    rebound = asyncio.Event()
+    conn = AsyncMock()
+    conn.is_closed = MagicMock(return_value=False)
+
+    async def _add_listener(channel, listener_callback):
+        nonlocal callback
+        order.append("listen")
+        callback = listener_callback
+
+    conn.add_listener = AsyncMock(side_effect=_add_listener)
+    conn.remove_listener = AsyncMock()
+    conn.fetchrow = AsyncMock(
+        return_value={"source_entity_id": source_id, "target_entity_id": target_id}
+    )
+
+    @asynccontextmanager
+    async def _acquire():
+        yield conn
+
+    pool = MagicMock()
+    pool.acquire = MagicMock(return_value=_acquire())
+
+    async def _drain(*_args, **_kwargs):
+        order.append("drain")
+        assert callback is not None
+        callback(
+            conn,
+            1,
+            FLEET_EVENTS_CHANNEL,
+            json.dumps({"type": "entity.rebound.v1", "data": {"rebind_id": str(rebind_id)}}),
+        )
+        return []
+
+    async def _rebind(*_args, **_kwargs):
+        order.append("rebind")
+        rebound.set()
+
+    with (
+        patch("butlers.entity_rebind._process_pending_entity_rebinds_on_conn", new=_drain),
+        patch("butlers.entity_rebind._rebind_entity_references_on_conn", new=_rebind),
+    ):
+        listener = asyncio.create_task(
+            run_entity_rebind_listener(pool, target_schema="finance", health_poll_interval_s=0.01)
+        )
+        try:
+            await asyncio.wait_for(rebound.wait(), timeout=1)
+        finally:
+            listener.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await listener
+
+    assert order[:3] == ["listen", "drain", "rebind"]
+
+
+@pytest.mark.asyncio
+async def test_listener_reconnects_and_replays_after_connection_failure() -> None:
+    """A closed retained connection starts a fresh LISTEN plus recovery drain."""
+    first = AsyncMock()
+    first.add_listener = AsyncMock()
+    first.remove_listener = AsyncMock()
+    first.is_closed = MagicMock(return_value=True)
+    second = AsyncMock()
+    second.add_listener = AsyncMock()
+    second.remove_listener = AsyncMock()
+    second.is_closed = MagicMock(return_value=False)
+
+    @asynccontextmanager
+    async def _first_acquire():
+        yield first
+
+    @asynccontextmanager
+    async def _second_acquire():
+        yield second
+
+    pool = MagicMock()
+    pool.acquire = MagicMock(side_effect=[_first_acquire(), _second_acquire()])
+    drained_twice = asyncio.Event()
+    drained_connections = []
+
+    async def _drain(conn, **_kwargs):
+        drained_connections.append(conn)
+        if len(drained_connections) == 2:
+            drained_twice.set()
+        return []
+
+    with patch("butlers.entity_rebind._process_pending_entity_rebinds_on_conn", new=_drain):
+        listener = asyncio.create_task(
+            run_entity_rebind_listener(
+                pool,
+                target_schema="finance",
+                health_poll_interval_s=0.001,
+                reconnect_delay_s=0,
+            )
+        )
+        try:
+            await asyncio.wait_for(drained_twice.wait(), timeout=1)
+        finally:
+            listener.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await listener
+
+    assert drained_connections == [first, second]
+    first.add_listener.assert_awaited_once()
+    second.add_listener.assert_awaited_once()
 
 
 async def _insert_fact_with_edge(

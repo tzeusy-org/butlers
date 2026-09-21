@@ -243,6 +243,20 @@ const settingsConsoleDeltaPatch: CachePatch = () => {
   // Intentionally a no-op -- see comment above.
 };
 
+const entityReboundPatch: CachePatch = (qc, event) => {
+  qc.invalidateQueries({ queryKey: ["relationship-entities"] });
+  qc.invalidateQueries({ queryKey: ["relationship-entity-queue"] });
+  qc.invalidateQueries({ queryKey: ["memory-entity"] });
+  qc.invalidateQueries({ queryKey: ["relationship-entity"] });
+  for (const key of ["source_entity_id", "target_entity_id"] as const) {
+    const entityId = asString(event.data[key]);
+    if (entityId) {
+      qc.invalidateQueries({ queryKey: ["memory-entity", entityId] });
+      qc.invalidateQueries({ queryKey: ["relationship-entity", entityId] });
+    }
+  }
+};
+
 // ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
@@ -263,6 +277,7 @@ export const EVENT_CACHE_REGISTRY: Record<string, CachePatch> = {
   header_delta: settingsConsoleDeltaPatch,
   attention_add: settingsConsoleDeltaPatch,
   attention_remove: settingsConsoleDeltaPatch,
+  "entity.rebound.v1": entityReboundPatch,
   heartbeat: heartbeatPatch,
 };
 

@@ -283,7 +283,7 @@ async def test_relationship_registration_dispatches_legacy_merge_via_memory_call
     assert result["status"] == "executed"
     assert result["tool_name"] == "entity_merge"  # provenance is not rewritten
     assert result["execution_result"]["success"] is True
-    merge.assert_awaited_once_with(db, "source", "target", chronicler_pool=None)
+    merge.assert_awaited_once_with(db, "source", "target")
     assert db.pending_actions[action_id]["status"] == "executed"
     event_types = [call["args"][0] for call in db.approval_events]
     assert "action_execution_succeeded" in event_types

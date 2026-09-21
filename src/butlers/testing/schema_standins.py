@@ -631,6 +631,68 @@ ENTITY_GRAPH_EDGES = TableStandin(
 )
 
 
+ENTITY_REBIND_LOG = TableStandin(
+    table="entity_rebind_log",
+    chains=("core",),
+    real_schema="public",
+    constant_path="src/butlers/testing/schema_standins.py::ENTITY_REBIND_LOG",
+    # core_242. Foreign keys to public.entities are omitted under the shared
+    # stand-in rule; the receipt's own constraints and immutable-identity
+    # trigger remain part of the executable contract.
+    columns=(
+        ("rebind_id", "UUID NOT NULL"),
+        ("source_entity_id", "UUID NOT NULL"),
+        ("target_entity_id", "UUID NOT NULL"),
+        ("target_schema", "TEXT NOT NULL"),
+        ("references_rebound", "INTEGER NOT NULL DEFAULT 0"),
+        ("status", "TEXT NOT NULL DEFAULT 'pending'"),
+        ("error_class", "TEXT"),
+        ("completed_at", "TIMESTAMPTZ"),
+        ("created_at", "TIMESTAMPTZ NOT NULL DEFAULT now()"),
+        ("updated_at", "TIMESTAMPTZ NOT NULL DEFAULT now()"),
+    ),
+    table_constraints=(
+        "PRIMARY KEY (rebind_id, target_schema)",
+        "CONSTRAINT ck_entity_rebind_log_distinct_entities "
+        "CHECK (source_entity_id <> target_entity_id)",
+        "CONSTRAINT ck_entity_rebind_log_status "
+        "CHECK (status IN ('active', 'failed', 'pending', 'skipped_no_table'))",
+        "CONSTRAINT ck_entity_rebind_log_completion CHECK ("
+        "(status = 'pending' AND completed_at IS NULL AND error_class IS NULL) OR "
+        "(status = 'active' AND completed_at IS NOT NULL AND error_class IS NULL) OR "
+        "(status = 'skipped_no_table' AND completed_at IS NOT NULL "
+        "AND error_class = 'UndefinedTableError') OR "
+        "(status = 'failed' AND completed_at IS NOT NULL AND error_class IS NOT NULL))",
+    ),
+    indexes=(
+        "CREATE INDEX IF NOT EXISTS idx_entity_rebind_log_target_status "
+        "ON {table} (target_schema, status, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_entity_rebind_log_entities "
+        "ON {table} (target_entity_id, source_entity_id, created_at DESC)",
+    ),
+    triggers=(
+        TriggerDefinition(
+            name="trg_entity_rebind_identity",
+            function_name="guard_entity_rebind_identity",
+            function_body="""
+        BEGIN
+            IF NEW.rebind_id IS DISTINCT FROM OLD.rebind_id
+               OR NEW.source_entity_id IS DISTINCT FROM OLD.source_entity_id
+               OR NEW.target_entity_id IS DISTINCT FROM OLD.target_entity_id
+               OR NEW.target_schema IS DISTINCT FROM OLD.target_schema
+            THEN
+                RAISE EXCEPTION 'entity rebind receipt identity is immutable';
+            END IF;
+            RETURN NEW;
+        END
+        """,
+            timing="BEFORE",
+            events=("UPDATE",),
+        ),
+    ),
+)
+
+
 STANDINS: dict[str, TableStandin] = {
     standin.table: standin
     for standin in (
@@ -643,6 +705,7 @@ STANDINS: dict[str, TableStandin] = {
         ENTITY_PREDICATE_REGISTRY,
         CONTACT_ENTITY_MAP,
         ENTITY_GRAPH_EDGES,
+        ENTITY_REBIND_LOG,
     )
 }
 """Every declared stand-in, keyed by table name. Both guards iterate this."""
@@ -656,6 +719,7 @@ __all__ = [
     "CONNECTOR_REGISTRY",
     "CONTACT_ENTITY_MAP",
     "ENTITY_GRAPH_EDGES",
+    "ENTITY_REBIND_LOG",
     "ENTITY_PREDICATE_REGISTRY",
     "PENDING_ACTIONS",
     "STANDINS",
