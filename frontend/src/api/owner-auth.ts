@@ -83,7 +83,9 @@ export function credentialWire(value: Credential | null, operation: "register" |
   if (!value || value.type !== "public-key") throw new OwnerAuthError(400);
   const credential = value as PublicKeyCredential;
   const id = encode(credential.rawId);
-  if (id !== credential.id || !credential.rawId.byteLength || credential.rawId.byteLength > 1023 || Object.keys(credential.getClientExtensionResults()).length) throw new OwnerAuthError(400);
+  // Bitwarden includes credProps: undefined when no extension was requested.
+  const hasExtensionData = Object.values(credential.getClientExtensionResults()).some(value => value !== undefined);
+  if (id !== credential.id || !credential.rawId.byteLength || credential.rawId.byteLength > 1023 || hasExtensionData) throw new OwnerAuthError(400);
   if (credential.authenticatorAttachment && !["platform", "cross-platform"].includes(credential.authenticatorAttachment)) throw new OwnerAuthError(400);
   const response = credential.response;
   const clientDataJSON = encode(response.clientDataJSON);
