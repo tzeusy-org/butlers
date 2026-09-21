@@ -288,7 +288,18 @@ async def process_pending_entity_rebinds(
     pool: Any, *, target_schema: str
 ) -> list[EntityRebindReceipt]:
     """Replay this schema's pending receipts during daemon startup."""
-    rows = await pool.fetch(
+    async with pool.acquire() as conn:
+        return await _process_pending_entity_rebinds_on_conn(
+            conn,
+            target_schema=target_schema,
+        )
+
+
+async def _process_pending_entity_rebinds_on_conn(
+    conn: Any, *, target_schema: str
+) -> list[EntityRebindReceipt]:
+    """Replay pending receipts on an already-retained schema connection."""
+    rows = await conn.fetch(
         """
         SELECT rebind_id, source_entity_id, target_entity_id
         FROM public.entity_rebind_log
@@ -298,8 +309,8 @@ async def process_pending_entity_rebinds(
         target_schema,
     )
     return [
-        await rebind_entity_references(
-            pool,
+        await _rebind_entity_references_on_conn(
+            conn,
             rebind_id=row["rebind_id"],
             source_entity_id=row["source_entity_id"],
             target_entity_id=row["target_entity_id"],
@@ -314,12 +325,15 @@ async def run_entity_rebind_listener(
     *,
     target_schema: str,
     health_poll_interval_s: float = 5.0,
+    reconnect_delay_s: float = 1.0,
+    ready_event: asyncio.Event | None = None,
 ) -> None:
     """React to live ``entity.rebound.v1`` events for one local schema.
 
-    LISTEN is connection-scoped, so the task retains one pool connection for
-    its lifetime. The callback only queues IDs; all database work remains in
-    the task and is serialized through the receipt row lock above.
+    LISTEN is connection-scoped, so each attempt retains one pool connection.
+    Registration precedes the recovery drain: events committed during replay
+    are queued, closing the drain-before-LISTEN loss window. A failed retained
+    connection is reacquired and replayed before live processing resumes.
     """
     from butlers.fleet_events import FLEET_EVENTS_CHANNEL
 
@@ -338,37 +352,70 @@ async def run_entity_rebind_listener(
             return
         queue.put_nowait(rebind_id)
 
-    async with pool.acquire() as conn:
-        await conn.add_listener(FLEET_EVENTS_CHANNEL, _on_notify)
+    first_attempt = True
+    while True:
         try:
-            while True:
+            async with pool.acquire() as conn:
+                await conn.add_listener(FLEET_EVENTS_CHANNEL, _on_notify)
                 try:
-                    rebind_id = await asyncio.wait_for(queue.get(), timeout=health_poll_interval_s)
-                except TimeoutError:
-                    if conn.is_closed():
-                        raise RuntimeError("entity rebind listener connection closed")
-                    continue
+                    await _process_pending_entity_rebinds_on_conn(
+                        conn,
+                        target_schema=target_schema,
+                    )
+                    if ready_event is not None and not ready_event.is_set():
+                        ready_event.set()
+                    first_attempt = False
 
-                row = await conn.fetchrow(
-                    """
-                    SELECT source_entity_id, target_entity_id
-                    FROM public.entity_rebind_log
-                    WHERE rebind_id = $1 AND target_schema = $2
-                    """,
-                    rebind_id,
-                    target_schema,
-                )
-                if row is None:
-                    continue
-                await _rebind_entity_references_on_conn(
-                    conn,
-                    rebind_id=rebind_id,
-                    source_entity_id=row["source_entity_id"],
-                    target_entity_id=row["target_entity_id"],
-                    target_schema=target_schema,
-                )
+                    while True:
+                        try:
+                            rebind_id = await asyncio.wait_for(
+                                queue.get(), timeout=health_poll_interval_s
+                            )
+                        except TimeoutError:
+                            if conn.is_closed():
+                                raise RuntimeError("entity rebind listener connection closed")
+                            continue
+
+                        row = await conn.fetchrow(
+                            """
+                            SELECT source_entity_id, target_entity_id
+                            FROM public.entity_rebind_log
+                            WHERE rebind_id = $1 AND target_schema = $2
+                            """,
+                            rebind_id,
+                            target_schema,
+                        )
+                        if row is None:
+                            continue
+                        await _rebind_entity_references_on_conn(
+                            conn,
+                            rebind_id=rebind_id,
+                            source_entity_id=row["source_entity_id"],
+                            target_entity_id=row["target_entity_id"],
+                            target_schema=target_schema,
+                        )
+                finally:
+                    if not conn.is_closed():
+                        try:
+                            await conn.remove_listener(FLEET_EVENTS_CHANNEL, _on_notify)
+                        except Exception:
+                            logger.debug("Entity rebind listener cleanup failed", exc_info=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning(
+                "Entity rebind listener failed for schema %s; reconnecting",
+                target_schema,
+                exc_info=True,
+            )
         finally:
-            await conn.remove_listener(FLEET_EVENTS_CHANNEL, _on_notify)
+            if first_attempt and ready_event is not None and not ready_event.is_set():
+                # Startup must not hang on a failed first attempt. The retained
+                # supervisor keeps retrying and each reconnect drains the ledger.
+                ready_event.set()
+                first_attempt = False
+
+        await asyncio.sleep(reconnect_delay_s)
 
 
 __all__ = [

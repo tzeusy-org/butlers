@@ -220,9 +220,11 @@ receipt per memory-bearing schema in `public.entity_rebind_log`, and publish an
 memory-bearing daemon SHALL rebind only its own schema and settle its own
 receipt. A running daemon SHALL react to the fleet event immediately. Pending
 receipts SHALL be replayed on daemon startup; fleet-event delivery is a
-freshness path, not the recovery authority. PostgreSQL SHALL restrict cohort
-creation to Relationship and receipt settlement to the runtime role bound to
-the receipt's target schema.
+freshness path, not the recovery authority. The daemon SHALL establish its
+fleet-event listener before startup replay and SHALL re-establish the listener
+and replay pending receipts after a retained-listener connection failure.
+PostgreSQL SHALL restrict cohort creation to Relationship and receipt
+settlement to the runtime role bound to the receipt's target schema.
 
 #### Scenario: A merge opens an honest receipt cohort
 
@@ -243,6 +245,8 @@ the receipt's target schema.
 - **WHEN** a running memory-bearing daemon receives `entity.rebound.v1`
 - **THEN** it MUST process its schema-bound pending receipt
 - **AND** concurrent live and startup replay MUST NOT overwrite a truthful count with zero
+- **AND** an event committed during startup replay MUST NOT be lost
+- **AND** a listener connection failure MUST trigger listener re-establishment and pending replay
 
 ---
 

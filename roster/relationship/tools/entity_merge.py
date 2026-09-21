@@ -10,6 +10,7 @@ before any merge write occurs.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -369,23 +370,27 @@ async def merge_entity_pair(
                 target_entity_id,
             )
 
+            catalog_rebound_by_schema: Counter[str] = Counter()
             # memory_catalog is deployed by the core chain but some bounded
             # relationship-only installations and migration harnesses omit it.
-            # A savepoint keeps absence from aborting the authority transaction;
-            # the subscriber-local handlers still own schema-attributed catalog
-            # rows when the projection is installed.
+            # RETURNING preserves ownership attribution when the shared authority
+            # performs this fleet-wide update before local handlers settle receipts.
             try:
                 async with conn.transaction():
-                    await conn.execute(
+                    catalog_rows = await conn.fetch(
                         """
                         UPDATE public.memory_catalog
                         SET entity_id = CASE WHEN entity_id = $1 THEN $2 ELSE entity_id END,
                             object_entity_id = CASE
                                 WHEN object_entity_id = $1 THEN $2 ELSE object_entity_id END
                         WHERE entity_id = $1 OR object_entity_id = $1
+                        RETURNING source_schema
                         """,
                         source_entity_id,
                         target_entity_id,
+                    )
+                    catalog_rebound_by_schema.update(
+                        str(row["source_schema"]) for row in catalog_rows
                     )
             except asyncpg.UndefinedTableError:
                 pass
@@ -418,6 +423,9 @@ async def merge_entity_pair(
                 subject_facts_rewired + object_facts_rewired + _rowcount(contact_tag)
             )
             for schema in dict.fromkeys(target_schemas):
+                initial_rebound = catalog_rebound_by_schema[schema]
+                if schema == "relationship":
+                    initial_rebound += relationship_rebound
                 await conn.execute(
                     """
                     INSERT INTO public.entity_rebind_log (
@@ -429,15 +437,13 @@ async def merge_entity_pair(
                     source_entity_id,
                     target_entity_id,
                     schema,
-                    relationship_rebound if schema == "relationship" else 0,
+                    initial_rebound,
                 )
                 receipt_rows.append(
                     {
                         "rebind_id": rebind_id,
                         "target_schema": schema,
-                        "references_rebound": (
-                            relationship_rebound if schema == "relationship" else 0
-                        ),
+                        "references_rebound": initial_rebound,
                         "status": "pending",
                         "error_class": None,
                         "completed_at": None,

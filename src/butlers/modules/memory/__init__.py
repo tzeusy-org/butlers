@@ -338,9 +338,8 @@ class MemoryModule(Module):
         # Bind the dedicated memory-schema pool (no-op unless memory_schema set).
         await self._ensure_memory_schema_pool()
 
-        # Rebinds are ledger-authoritative: the fleet event is only a live UI
-        # hint, so a daemon that was down during a merge drains its own pending
-        # receipts before serving memory tools.
+        # Register LISTEN before draining the durable ledger. Events committed
+        # during replay are then queued rather than lost at the startup boundary.
         try:
             from butlers.entity_rebind import (
                 process_pending_entity_rebinds,
@@ -349,21 +348,26 @@ class MemoryModule(Module):
 
             memory_pool = self._get_pool()
             target_schema = await memory_pool.fetchval("SELECT current_schema()")
-            if isinstance(target_schema, str) and target_schema:
-                await process_pending_entity_rebinds(
-                    memory_pool,
-                    target_schema=target_schema,
+
+            async def _start_rebind_consumer(pool: Any, schema: str) -> None:
+                if not isinstance(pool, asyncpg.Pool):
+                    # Lightweight test pools cannot retain a LISTEN connection.
+                    await process_pending_entity_rebinds(pool, target_schema=schema)
+                    return
+                ready = asyncio.Event()
+                task = asyncio.create_task(
+                    run_entity_rebind_listener(
+                        pool,
+                        target_schema=schema,
+                        ready_event=ready,
+                    ),
+                    name=f"entity-rebind-listener:{schema}",
                 )
-                if isinstance(memory_pool, asyncpg.Pool):
-                    self._entity_rebind_tasks.append(
-                        asyncio.create_task(
-                            run_entity_rebind_listener(
-                                memory_pool,
-                                target_schema=target_schema,
-                            ),
-                            name=f"entity-rebind-listener:{target_schema}",
-                        )
-                    )
+                self._entity_rebind_tasks.append(task)
+                await ready.wait()
+
+            if isinstance(target_schema, str) and target_schema:
+                await _start_rebind_consumer(memory_pool, target_schema)
             # Chronicler deliberately keeps narrative memory in
             # ``chronicler_mem`` while episode associations remain in its
             # domain schema. The daemon owns both pools and settles each
@@ -371,20 +375,7 @@ class MemoryModule(Module):
             if getattr(self._db, "schema", None) == "chronicler" and target_schema != "chronicler":
                 chronicler_pool = await self._get_or_create_chronicler_pool()
                 if chronicler_pool is not None:
-                    await process_pending_entity_rebinds(
-                        chronicler_pool,
-                        target_schema="chronicler",
-                    )
-                    if isinstance(chronicler_pool, asyncpg.Pool):
-                        self._entity_rebind_tasks.append(
-                            asyncio.create_task(
-                                run_entity_rebind_listener(
-                                    chronicler_pool,
-                                    target_schema="chronicler",
-                                ),
-                                name="entity-rebind-listener:chronicler",
-                            )
-                        )
+                    await _start_rebind_consumer(chronicler_pool, "chronicler")
         except asyncpg.UndefinedTableError:
             logger.debug("entity_rebind_log is not installed yet; startup drain skipped")
         except Exception:

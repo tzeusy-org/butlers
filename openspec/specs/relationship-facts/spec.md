@@ -589,8 +589,11 @@ rebind cohort, and emits `entity.rebound.v1`. It SHALL NOT update narrative
 facts or association tables in another butler schema. Those references SHALL
 be rebound by that schema's own daemon from the durable pending receipt. A
 running daemon SHALL react to the emitted event, while startup replay SHALL
-recover missed delivery. Relationship's own receipt SHALL remain pending until
-its local narrative facts and association tables have been rebound.
+recover missed delivery. Each daemon SHALL establish its listener before
+startup replay and SHALL re-establish the listener plus replay pending receipts
+after a retained-listener connection failure. Relationship's own receipt SHALL
+remain pending until its local narrative facts and association tables have
+been rebound.
 
 #### Scenario: Local repoint failure is visible
 
