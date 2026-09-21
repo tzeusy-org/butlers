@@ -1,7 +1,8 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "entry": [
-    "scripts/e2e-api-mock.mjs"
+    "scripts/e2e-api-mock.mjs",
+    "playwright.route-a.config.ts"
   ],
   "ignoreExportsUsedInFile": true,
   "rules": {
