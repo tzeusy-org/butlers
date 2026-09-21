@@ -164,10 +164,12 @@ const COMPONENT_SURFACE_TOKENS = [
   "bg-elev",
   "bg-deep",
   "background",
+  "primary",
   "secondary",
   "accent",
   "popover",
 ]
+const STATE_BOUNDARY_TOKENS = ["red", "amber", "green"]
 
 describe.each(["light", "dark"] as const)("contrast: %s theme text tokens vs surface backgrounds", (theme) => {
   const tokens = theme === "light" ? LIGHT_TOKENS : DARK_TOKENS
@@ -198,6 +200,20 @@ describe.each(["light", "dark"] as const)("contrast: %s theme component boundary
         ratio,
         `--focus (${theme}) vs --${surfaceName} = ${ratio.toFixed(2)}:1, below the ${WCAG_AA_NON_TEXT}:1 non-text floor`,
       ).toBeGreaterThanOrEqual(WCAG_AA_NON_TEXT)
+    }
+  })
+
+  it("keeps state-color boundaries above the WCAG non-text floor on Dispatch surfaces", () => {
+    for (const boundaryName of STATE_BOUNDARY_TOKENS) {
+      const boundary = requireToken(tokens, boundaryName)
+      for (const surfaceName of ["bg", "bg-elev"]) {
+        const surface = requireToken(tokens, surfaceName)
+        const ratio = contrastRatio(boundary, surface)
+        expect(
+          ratio,
+          `--${boundaryName} (${theme}) vs --${surfaceName} = ${ratio.toFixed(2)}:1, below the ${WCAG_AA_NON_TEXT}:1 non-text floor`,
+        ).toBeGreaterThanOrEqual(WCAG_AA_NON_TEXT)
+      }
     }
   })
 })

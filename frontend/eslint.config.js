@@ -2524,14 +2524,14 @@ const TH_SCOPE_SELECTORS = [
 const NO_UNGUARDED_OUTLINE_NONE_SELECTORS = [
   {
     selector:
-      'Literal[value=/^(?!.*focus-visible:ring)(?!.*focus:ring)(?=.*\\boutline-none\\b).*$/s]',
+      'Literal[value=/^(?!.*(?:^|\\s)(?:focus-visible|focus):ring-focus(?:\\s|$))(?=.*\\boutline-none\\b).*$/s]',
     message:
       'outline-none strips the native focus indicator with no local replacement (bu-7exe4.11). ' +
       'Add a focus-visible:ring-focus affordance; the global --focus outline remains the floor.',
   },
   {
     selector:
-      'TemplateElement[value.raw=/^(?!.*focus-visible:ring)(?!.*focus:ring)(?=.*\\boutline-none\\b).*$/s]',
+      'TemplateElement[value.raw=/^(?!.*(?:^|\\s)(?:focus-visible|focus):ring-focus(?:\\s|$))(?=.*\\boutline-none\\b).*$/s]',
     message:
       'outline-none strips the native focus indicator with no local replacement (bu-7exe4.11). ' +
       'Add a focus-visible:ring-focus affordance; the global --focus outline remains the floor.',

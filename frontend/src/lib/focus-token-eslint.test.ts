@@ -35,4 +35,18 @@ describe("focus-token lint", () => {
 
     expect(messages).toEqual([])
   })
+
+  it.each(["ring-0", "ring-transparent", "ring-destructive"])(
+    "rejects %s as an invalid outline-reset replacement",
+    async (replacement) => {
+      const outlineReset = "outline-" + "none"
+      const messages = await restrictedSyntaxMessages(
+        `export const className = "${outlineReset} focus-visible:${replacement}"\n`,
+      )
+
+      expect(messages).toEqual([
+        expect.objectContaining({ message: expect.stringContaining("no local replacement") }),
+      ])
+    },
+  )
 })

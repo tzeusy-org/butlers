@@ -1,10 +1,13 @@
-import { readFileSync } from "node:fs"
+import path from "node:path"
 import { fileURLToPath } from "node:url"
 
-import { describe, expect, it } from "vitest"
+import tailwindcss from "@tailwindcss/vite"
+import { JSDOM, VirtualConsole } from "jsdom"
+import { build } from "vite"
+import { beforeAll, describe, expect, it } from "vitest"
 
-const cssSource = readFileSync(fileURLToPath(new URL("../index.css", import.meta.url)), "utf-8")
-const focusSelector = ":is(a, button, input, select, textarea, [role='button'], [tabindex]):focus-visible"
+const frontendRoot = fileURLToPath(new URL("../..", import.meta.url))
+const cssPath = path.join(frontendRoot, "src/index.css")
 
 const primitiveHosts = {
   button: "button",
@@ -16,38 +19,104 @@ const primitiveHosts = {
   switch: "button",
 } as const
 
-function primitiveSource(name: keyof typeof primitiveHosts): string {
-  return readFileSync(fileURLToPath(new URL(`../components/ui/${name}.tsx`, import.meta.url)), "utf-8")
+async function buildGeneratedCss(): Promise<string> {
+  const result = await build({
+    root: frontendRoot,
+    configFile: false,
+    logLevel: "silent",
+    plugins: [tailwindcss()],
+    build: {
+      write: false,
+      emptyOutDir: false,
+      rollupOptions: { input: cssPath },
+    },
+  })
+  if (!Array.isArray(result) && "on" in result) {
+    throw new Error("Vite unexpectedly returned a watch-mode build")
+  }
+  const bundles = Array.isArray(result) ? result : [result]
+  const outputs = bundles.flatMap((bundle) => bundle.output)
+  const cssAsset = outputs.find(
+    (output) => output.type === "asset" && output.fileName.endsWith(".css"),
+  )
+  if (!cssAsset || cssAsset.type !== "asset") {
+    throw new Error("Vite did not emit the generated Tailwind stylesheet")
+  }
+  return typeof cssAsset.source === "string"
+    ? cssAsset.source
+    : Buffer.from(cssAsset.source).toString("utf-8")
+}
+
+function outlineRulesFrom(css: string): string {
+  const virtualConsole = new VirtualConsole()
+  const dom = new JSDOM(`<style>${css}</style>`, { virtualConsole })
+  const outlineRules: string[] = []
+
+  function visit(rules: CSSRuleList): void {
+    for (const rule of rules) {
+      if (rule.type === dom.window.CSSRule.STYLE_RULE) {
+        const styleRule = rule as CSSStyleRule
+        const properties = Array.from(styleRule.style)
+        if (properties.some((property) => property.startsWith("outline"))) {
+          outlineRules.push(styleRule.cssText)
+        }
+        continue
+      }
+      if ("cssRules" in rule) {
+        visit((rule as CSSGroupingRule).cssRules)
+      }
+    }
+  }
+
+  for (const sheet of dom.window.document.styleSheets) {
+    visit(sheet.cssRules)
+  }
+  return outlineRules.join("\n")
+}
+
+function computedFocusOutline(css: string, host: string, classes: string[]) {
+  const virtualConsole = new VirtualConsole()
+  const targetMarkup =
+    host === "summary"
+      ? "<details><summary>Focus target</summary></details>"
+      : `<${host}>Focus target</${host}>`
+  const dom = new JSDOM(`<style>${css}</style>${targetMarkup}`, {
+    pretendToBeVisual: true,
+    virtualConsole,
+  })
+  const target = dom.window.document.querySelector<HTMLElement>(host)
+  if (!target) throw new Error(`Could not create focus target <${host}>`)
+  target.className = classes.join(" ")
+  target.focus()
+  return dom.window.getComputedStyle(target)
 }
 
 describe("global focus-visible floor", () => {
-  const focusRule = cssSource.match(
-    /:is\(a, button, input, select, textarea, \[role='button'], \[tabindex]\):focus-visible \{([^}]*)\}/,
-  )?.[1]
+  let generatedOutlineCss: string
+  const outlineReset = "outline-" + "none"
+  const focusVisibleOutlineReset = "focus-visible:outline-" + "none"
 
-  it("uses the measured focus token for a two-pixel keyboard boundary", () => {
-    expect(focusRule).toBeDefined()
-    expect(focusRule).toContain("outline: 2px solid var(--focus) !important;")
-    expect(cssSource).toContain("outline-offset: 2px;")
-    expect(focusRule).not.toContain("var(--ring)")
+  beforeAll(async () => {
+    generatedOutlineCss = outlineRulesFrom(await buildGeneratedCss())
   })
 
-  it("has greater specificity than the outline reset and cannot be reset by a normal utility declaration", () => {
-    // :is() adopts the most-specific argument ([role] / [tabindex]), then
-    // :focus-visible adds a second pseudo-class: (0,2,0) vs (0,1,0).
-    const floorSpecificity = 200
-    const outlineNoneSpecificity = 100
-    expect(focusSelector.startsWith(":is(")).toBe(true)
-    expect(floorSpecificity).toBeGreaterThan(outlineNoneSpecificity)
-    expect(focusRule).toContain("!important")
-  })
-
-  it("covers all seven UI primitives and keeps their local affordances on --focus", () => {
+  it("keeps the emitted two-pixel focus boundary above every primitive outline utility", () => {
     for (const [name, host] of Object.entries(primitiveHosts)) {
-      const source = primitiveSource(name as keyof typeof primitiveHosts)
-      expect(focusSelector).toContain(host)
-      expect(source).toContain("ring-focus")
-      expect(source).not.toContain("ring-" + "ring")
+      const style = computedFocusOutline(
+        generatedOutlineCss,
+        host,
+        [outlineReset, focusVisibleOutlineReset, "focus-visible:outline-1"],
+      )
+      expect(style.outline, `${name} focus outline`).toBe("2px solid var(--focus)")
+      expect(style.outlineOffset, `${name} focus outline offset`).toBe("2px")
     }
+
+    const summaryStyle = computedFocusOutline(generatedOutlineCss, "summary", [
+      outlineReset,
+      focusVisibleOutlineReset,
+      "focus-visible:outline-1",
+    ])
+    expect(summaryStyle.outline, "summary focus outline").toBe("2px solid var(--focus)")
+    expect(summaryStyle.outlineOffset, "summary focus outline offset").toBe("2px")
   })
 })

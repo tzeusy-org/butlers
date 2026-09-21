@@ -82,7 +82,7 @@ demands, never as decoration:
 | Role     | Dark                       | Light                      | Used for |
 |----------|----------------------------|----------------------------|----------|
 | `--red`  | `oklch(0.685 0.250 29.2)`  | `oklch(0.627 0.257 29.2)`  | High severity, error, blockers, reauth |
-| `--amber`| `oklch(0.810 0.185 84.0)`  | `oklch(0.769 0.189 84.0)`  | Medium severity, degraded |
+| `--amber`| `oklch(0.810 0.185 84.0)`  | `oklch(0.660 0.189 84.0)`  | Medium severity, degraded |
 | `--green`| `oklch(0.790 0.195 148)`   | `oklch(0.50 0.140 152)`    | Healthy, positive delta |
 
 (Values align with the `--severity-*` scale in `frontend/src/index.css`, which is normative.)
