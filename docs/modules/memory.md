@@ -270,6 +270,11 @@ The `memory_entity_resolve` tool maps ambiguous name strings to stable entity id
 
 Entities are never hard-deleted. Merging sets `metadata.merged_into`; the source entity is tombstoned and excluded from future resolution.
 
+`memory_entity_merge` is a compatibility surface, not a second merge
+implementation. It dispatches to Relationship's merge authority. Local memory
+references are rebound from `public.entity_rebind_log`; each memory-enabled
+daemon handles only its own schema and replays pending receipts on startup.
+
 ## Database Tables
 
 The module owns tables in the hosting butler's schema (Alembic branch: `memory`):

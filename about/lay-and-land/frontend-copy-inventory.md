@@ -481,6 +481,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/pages/EntityDetailPage.tsx`
 
+- Memory rebind
 - Linked contact
 - Unlink
 - No contacts found.
@@ -529,6 +530,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - First seen
 - Last seen
 - Forget this entity?
+- Entity rebind receipts
 - Search contacts...
 - Contact search
 - Unlink this contact from the entity?
@@ -4346,4 +4348,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3412*
+*Total strings: 3414*

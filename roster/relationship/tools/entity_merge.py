@@ -10,14 +10,16 @@ before any merge write occurs.
 from __future__ import annotations
 
 import re
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import asyncpg
 
-from butlers.entity_fact_repoint import repoint_facts_on_conn
+from butlers.entity_rebind import ENTITY_REBOUND_EVENT_TYPE
+from butlers.fleet_events import publish_fleet_event
 from butlers.tools.relationship.merge_review import compute_merge_evidence, write_merge_review
 
 
@@ -86,9 +88,34 @@ class EntityMergeResult:
     subject_facts_rewired: int
     object_facts_rewired: int
     review_id: UUID
+    aliases_added: int = 0
+    rebind_id: UUID | None = None
+    receipts: tuple[Mapping[str, Any], ...] = ()
+    failed_schemas: tuple[str, ...] = ()
 
 
 LockedMergeGuard = Callable[[asyncpg.Connection, LockedEntityPair], Awaitable[None]]
+
+MEMORY_BEARING_SCHEMAS = (
+    "chronicler",
+    "chronicler_mem",
+    "education",
+    "finance",
+    "general",
+    "health",
+    "home",
+    "lifestyle",
+    "relationship",
+    "switchboard",
+    "travel",
+)
+
+
+def _rowcount(command_tag: Any) -> int:
+    try:
+        return int(str(command_tag).rsplit(" ", 1)[-1])
+    except (TypeError, ValueError):
+        return 0
 
 
 async def merge_entity_pair(
@@ -98,6 +125,7 @@ async def merge_entity_pair(
     target_entity_id: UUID,
     locked_guard: LockedMergeGuard | None = None,
     _audit_entity_order: tuple[UUID, UUID] | None = None,
+    target_schemas: Sequence[str] = MEMORY_BEARING_SCHEMAS,
 ) -> EntityMergeResult:
     """Atomically merge one locked entity pair and return content-blind counts."""
     if source_entity_id == target_entity_id:
@@ -112,6 +140,8 @@ async def merge_entity_pair(
     }:
         raise AuditEntityOrderError
 
+    rebind_id = uuid4()
+    receipt_rows: list[Mapping[str, Any]] = []
     async with pool.acquire() as conn:
         async with conn.transaction():
             lock_rows = await conn.fetch(
@@ -155,6 +185,37 @@ async def merge_entity_pair(
                 conn,
                 audit_entity_order[0],
                 audit_entity_order[1],
+            )
+
+            source_aliases = list(source["aliases"] or [])
+            source_name = str(source["canonical_name"] or "").strip()
+            target_name = str(target["canonical_name"] or "").strip()
+            if source_name and source_name.casefold() != target_name.casefold():
+                source_aliases.append(source_name)
+            merged_aliases = list(target["aliases"] or [])
+            alias_keys = {str(alias).casefold() for alias in merged_aliases}
+            aliases_added = 0
+            for alias in source_aliases:
+                if str(alias).casefold() not in alias_keys:
+                    merged_aliases.append(alias)
+                    alias_keys.add(str(alias).casefold())
+                    aliases_added += 1
+            merged_roles = list(dict.fromkeys([*(target["roles"] or []), *(source["roles"] or [])]))
+            source_metadata_clean = {
+                key: value
+                for key, value in source_metadata.items()
+                if key not in {"deleted_at", "merged_into", "unidentified"}
+            }
+            await conn.execute(
+                """
+                UPDATE public.entities
+                SET aliases = $1, roles = $2, metadata = $3, updated_at = now()
+                WHERE id = $4
+                """,
+                merged_aliases,
+                merged_roles,
+                {**source_metadata_clean, **target_metadata},
+                target_entity_id,
             )
 
             # Exact subject-side collisions preserve the target row and supersede
@@ -298,13 +359,24 @@ async def merge_entity_pair(
                     target_entity_id,
                 )
 
-            await repoint_facts_on_conn(conn, source_entity_id, target_entity_id)
-
-            await conn.execute(
+            contact_tag = await conn.execute(
                 """
                 UPDATE contact_entity_map
                 SET entity_id = $2
                 WHERE entity_id = $1
+                """,
+                source_entity_id,
+                target_entity_id,
+            )
+
+            await conn.execute(
+                """
+                UPDATE public.memory_catalog
+                SET entity_id = CASE WHEN entity_id = $1 THEN $2 ELSE entity_id END,
+                    object_entity_id = CASE
+                        WHEN object_entity_id = $1 THEN $2 ELSE object_entity_id END,
+                    updated_at = now()
+                WHERE entity_id = $1 OR object_entity_id = $1
                 """,
                 source_entity_id,
                 target_entity_id,
@@ -334,10 +406,61 @@ async def merge_entity_pair(
                 outcome="merged",
             )
 
+            relationship_rebound = (
+                subject_facts_rewired + object_facts_rewired + _rowcount(contact_tag)
+            )
+            for schema in dict.fromkeys(target_schemas):
+                status = "active" if schema == "relationship" else "pending"
+                completed_at_sql = "now()" if status == "active" else "NULL"
+                await conn.execute(
+                    f"""
+                    INSERT INTO public.entity_rebind_log (
+                        rebind_id, source_entity_id, target_entity_id, target_schema,
+                        references_rebound, status, completed_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, {completed_at_sql})
+                    """,
+                    rebind_id,
+                    source_entity_id,
+                    target_entity_id,
+                    schema,
+                    relationship_rebound if schema == "relationship" else 0,
+                    status,
+                )
+                receipt_rows.append(
+                    {
+                        "rebind_id": rebind_id,
+                        "target_schema": schema,
+                        "references_rebound": (
+                            relationship_rebound if schema == "relationship" else 0
+                        ),
+                        "status": status,
+                        "error_class": None,
+                        "completed_at": datetime.now(UTC) if status == "active" else None,
+                    }
+                )
+
+    # The ledger is the recovery authority; this lossy fleet event only makes
+    # dashboard caches react immediately. Daemon startup drains pending rows.
+    await publish_fleet_event(
+        pool,
+        ENTITY_REBOUND_EVENT_TYPE,
+        {
+            "rebind_id": str(rebind_id),
+            "source_entity_id": str(source_entity_id),
+            "target_entity_id": str(target_entity_id),
+        },
+    )
+
     return EntityMergeResult(
         kept_entity_id=target_entity_id,
         tombstoned_entity_id=source_entity_id,
         subject_facts_rewired=int(subject_facts_rewired),
         object_facts_rewired=int(object_facts_rewired),
         review_id=review_id,
+        aliases_added=aliases_added,
+        rebind_id=rebind_id,
+        receipts=tuple(receipt_rows),
+        failed_schemas=tuple(
+            row["target_schema"] for row in receipt_rows if row["status"] == "failed"
+        ),
     )

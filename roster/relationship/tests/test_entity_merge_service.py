@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import shutil
 from contextlib import asynccontextmanager
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
 import pytest
 
+from butlers.entity_rebind import rebind_entity_references
 from butlers.testing.schema_standins import (
     CONTACT_ENTITY_MAP,
     ENTITY_GRAPH_EDGES,
@@ -246,7 +247,48 @@ async def merge_pool(provisioned_postgres_pool):
             )
         """)
         await pool.execute(CONTACT_ENTITY_MAP.ddl())
+        await pool.execute("""
+            CREATE TABLE calendar_event_entities (
+                event_id UUID NOT NULL,
+                entity_id UUID NOT NULL,
+                PRIMARY KEY (event_id, entity_id)
+            )
+        """)
+        await pool.execute("""
+            CREATE TABLE episode_entities (
+                episode_id UUID NOT NULL,
+                entity_id UUID NOT NULL,
+                role TEXT NOT NULL DEFAULT 'participant',
+                PRIMARY KEY (episode_id, entity_id)
+            )
+        """)
         await pool.execute(ENTITY_GRAPH_EDGES.ddl())
+        await pool.execute("""
+            CREATE TABLE public.memory_catalog (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                source_schema TEXT NOT NULL,
+                source_table TEXT NOT NULL,
+                source_id UUID NOT NULL,
+                entity_id UUID,
+                object_entity_id UUID,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        await pool.execute("""
+            CREATE TABLE public.entity_rebind_log (
+                rebind_id UUID NOT NULL,
+                source_entity_id UUID NOT NULL,
+                target_entity_id UUID NOT NULL,
+                target_schema TEXT NOT NULL,
+                references_rebound INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL,
+                error_class TEXT,
+                completed_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                PRIMARY KEY (rebind_id, target_schema)
+            )
+        """)
         await pool.execute("""
             CREATE TABLE relationship.merge_reviews (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -333,6 +375,188 @@ async def test_conflicts_rewire_tombstone_and_audit_commit_atomically(merge_pool
         "entity_b": source_id,
         "outcome": "merged",
     }
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_merge_rebinds_catalog_and_opens_honest_receipt_cohort(merge_pool) -> None:
+    pool = merge_pool
+    target_id = await _insert_entity(pool, "Catalog target")
+    source_id = await _insert_entity(pool, "Catalog source")
+    await pool.executemany(
+        """
+        INSERT INTO public.memory_catalog
+            (source_schema, source_table, source_id, entity_id, object_entity_id)
+        VALUES ($1, 'facts', gen_random_uuid(), $2, $3)
+        """,
+        [
+            ("finance", source_id, None),
+            ("travel", None, source_id),
+        ],
+    )
+
+    with patch(
+        "butlers.tools.relationship.entity_merge.publish_fleet_event",
+        new=AsyncMock(return_value=True),
+    ) as publish:
+        result = await merge_entity_pair(
+            pool,
+            source_entity_id=source_id,
+            target_entity_id=target_id,
+            target_schemas=("relationship", "finance", "travel"),
+        )
+
+    publish.assert_awaited_once_with(
+        pool,
+        "entity.rebound.v1",
+        {
+            "rebind_id": str(result.rebind_id),
+            "source_entity_id": str(source_id),
+            "target_entity_id": str(target_id),
+        },
+    )
+
+    assert (
+        await pool.fetchval(
+            "SELECT count(*) FROM public.memory_catalog "
+            "WHERE entity_id = $1 OR object_entity_id = $1",
+            source_id,
+        )
+        == 0
+    )
+    assert (
+        await pool.fetchval(
+            "SELECT count(*) FROM public.memory_catalog "
+            "WHERE entity_id = $1 OR object_entity_id = $1",
+            target_id,
+        )
+        == 2
+    )
+    receipts = await pool.fetch(
+        "SELECT target_schema, status FROM public.entity_rebind_log "
+        "WHERE rebind_id = $1 ORDER BY target_schema",
+        result.rebind_id,
+    )
+    assert [tuple(row.values()) for row in receipts] == [
+        ("finance", "pending"),
+        ("relationship", "active"),
+        ("travel", "pending"),
+    ]
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_single_authority_preserves_alias_role_and_metadata_merge_semantics(
+    merge_pool,
+) -> None:
+    pool = merge_pool
+    target_id = await _insert_entity(pool, "Target identity")
+    source_id = await _insert_entity(pool, "Source identity")
+    await pool.execute(
+        """
+        UPDATE public.entities
+        SET aliases = ARRAY['Target alias'], roles = ARRAY['trusted'],
+            metadata = '{"shared":"target"}'::jsonb
+        WHERE id = $1
+        """,
+        target_id,
+    )
+    await pool.execute(
+        """
+        UPDATE public.entities
+        SET aliases = ARRAY['Source alias'], roles = ARRAY['owner'],
+            metadata = '{"shared":"source","source_only":true,"unidentified":true}'::jsonb
+        WHERE id = $1
+        """,
+        source_id,
+    )
+
+    result = await merge_entity_pair(
+        pool,
+        source_entity_id=source_id,
+        target_entity_id=target_id,
+        target_schemas=("relationship",),
+    )
+
+    target = await pool.fetchrow(
+        "SELECT aliases, roles, metadata FROM public.entities WHERE id = $1",
+        target_id,
+    )
+    assert result.aliases_added == 2
+    assert target["aliases"] == ["Target alias", "Source alias", "Source identity"]
+    assert target["roles"] == ["trusted", "owner"]
+    assert target["metadata"] == {"shared": "target", "source_only": True}
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_local_rebind_handler_repoints_every_owned_reference_and_settles_receipt(
+    merge_pool,
+) -> None:
+    pool = merge_pool
+    source_id = await _insert_entity(pool, "Local source")
+    target_id = await _insert_entity(pool, "Local target")
+    fact_id = await pool.fetchval(
+        """
+        INSERT INTO facts (entity_id, predicate, content)
+        VALUES ($1, 'note', 'opaque') RETURNING id
+        """,
+        source_id,
+    )
+    event_id = uuid4()
+    episode_id = uuid4()
+    await pool.execute(
+        "INSERT INTO calendar_event_entities (event_id, entity_id) VALUES ($1, $2)",
+        event_id,
+        source_id,
+    )
+    await pool.execute(
+        "INSERT INTO episode_entities (episode_id, entity_id) VALUES ($1, $2)",
+        episode_id,
+        source_id,
+    )
+    await pool.execute(
+        """
+        INSERT INTO public.memory_catalog
+            (source_schema, source_table, source_id, entity_id)
+        VALUES ('relationship', 'facts', $1, $2)
+        """,
+        fact_id,
+        source_id,
+    )
+
+    receipt = await rebind_entity_references(
+        pool,
+        rebind_id=uuid4(),
+        source_entity_id=source_id,
+        target_entity_id=target_id,
+        target_schema="relationship",
+    )
+
+    assert receipt.status == "active"
+    assert receipt.references_rebound == 4
+    assert await pool.fetchval("SELECT entity_id FROM facts WHERE id = $1", fact_id) == target_id
+    assert (
+        await pool.fetchval(
+            "SELECT entity_id FROM calendar_event_entities WHERE event_id = $1", event_id
+        )
+        == target_id
+    )
+    assert (
+        await pool.fetchval(
+            "SELECT entity_id FROM episode_entities WHERE episode_id = $1", episode_id
+        )
+        == target_id
+    )
+    assert (
+        await pool.fetchval(
+            "SELECT entity_id FROM public.memory_catalog WHERE source_id = $1", fact_id
+        )
+        == target_id
+    )
 
 
 async def _insert_fact_with_edge(

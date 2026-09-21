@@ -117,6 +117,20 @@ Identity resolution is called at several points in the system:
 - **Approval gate** --- to replace name-heuristic target resolution with role-based checks
 - **Memory module** --- to anchor facts and episodes to the correct entity
 
+## Merge Rebind Receipts
+
+Entity merges are coordinated only by Relationship. The merge transaction
+rewires canonical relationship facts and the shared `public.memory_catalog`,
+tombstones the source, and opens a cohort in `public.entity_rebind_log` with
+one receipt per memory-bearing schema. Each daemon later updates only its own
+facts and association tables and settles its receipt. `pending` therefore
+means "not yet reported", while `failed` names the exception class; neither is
+presented as a zero-count success.
+
+The post-commit `entity.rebound.v1` fleet event refreshes dashboard caches but
+is deliberately not the correctness mechanism: a daemon that missed it drains
+its pending receipts during startup.
+
 ## Verification
 
 To confirm the identity model described here matches the running system:

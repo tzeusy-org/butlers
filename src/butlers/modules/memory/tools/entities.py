@@ -7,8 +7,6 @@ import logging
 import uuid
 from typing import TYPE_CHECKING, Any, Literal
 
-import asyncpg
-
 if TYPE_CHECKING:
     from asyncpg import Pool
 
@@ -1057,216 +1055,39 @@ async def entity_merge(
     extra_pools: list[Pool] | None = None,
     chronicler_pool: Pool | None = None,
 ) -> dict[str, Any]:
-    """Merge a source entity into a target entity.
+    """Compatibility dispatch to the relationship-owned merge authority.
 
-    Merge behavior:
-    1. Re-point all facts referencing source entity_id to target entity_id,
-       across the primary pool AND any extra_pools (for multi-schema setups).
-       - If a conflict exists (target already has an active fact with same
-         scope+predicate), keep the higher-confidence fact as active and
-         supersede the lower-confidence one.
-    1b. Re-point all facts referencing source as object_entity_id to target.
-       - Same conflict resolution: if re-pointing would duplicate an existing
-         active edge (same entity_id, scope, predicate, object_entity_id=target),
-         the higher-confidence fact survives.
-    1c. Re-point calendar_event_entities rows from source to target.
-       - If the target is already associated with the same event, the source
-         row is deleted (deduplication on (event_id, entity_id)).
-    1d. Re-point chronicler.episode_entities rows from source to target (if
-       chronicler_pool is provided). Deduplication respects role precedence
-       (owner > organizer > participant).
-    2. Append source's aliases to target's alias list (deduplicated).
-    3. Merge source's metadata into target's metadata (target wins on conflict).
-    4. Tombstone source entity (mark as merged_into=target_entity_id, retained
-       for audit, excluded from entity_resolve results).
-    5. Emit a memory_event audit record for the merge.
-
-    Args:
-        pool: asyncpg connection pool.
-        source_entity_id: UUID string of the entity to merge from (will be tombstoned).
-        target_entity_id: UUID string of the entity to merge into (survives).
-        extra_pools: Additional pools to re-point facts on (for multi-butler setups
-                     where facts may live in different schemas).
-        chronicler_pool: Optional asyncpg pool for the chronicler schema. When
-                         provided, episode_entities rows are re-pointed
-                         atomically. Pass the chronicler DB pool at call
-                         sites that have access to it.
-
-    Returns:
-        Dict with keys:
-          - target_entity_id: UUID string of the surviving entity.
-          - source_entity_id: UUID string of the tombstoned entity.
-          - facts_repointed: number of subject-side facts moved from source to target.
-          - facts_superseded: number of subject-side facts superseded due to conflicts.
-          - edge_facts_repointed: number of object-side edge facts re-pointed.
-          - edge_facts_superseded: number of object-side edge facts superseded.
-          - aliases_added: number of new aliases added to target.
-
-    Raises:
-        ValueError: If source or target entity not found,
-                    or if source == target.
+    The legacy pool arguments remain accepted for wire compatibility but are
+    deliberately ignored: each daemon now rebinds only its own schema from the
+    durable fleet ledger.
     """
-    if source_entity_id == target_entity_id:
-        raise ValueError("source_entity_id and target_entity_id must be different.")
+    del extra_pools, chronicler_pool
 
-    src_uuid = uuid.UUID(source_entity_id)
-    tgt_uuid = uuid.UUID(target_entity_id)
+    from butlers.tools.relationship.entity_merge import merge_entity_pair
 
-    # ---------------------------------------------------------------
-    # 1. Validate + merge entity metadata + tombstone (single txn on shared schema)
-    # ---------------------------------------------------------------
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            src_row = await conn.fetchrow(
-                "SELECT id, canonical_name, aliases, metadata, roles "
-                "FROM public.entities WHERE id = $1 FOR UPDATE",
-                src_uuid,
-            )
-            if src_row is None:
-                raise ValueError(f"Source entity '{source_entity_id}' not found.")
-
-            tgt_row = await conn.fetchrow(
-                "SELECT id, canonical_name, aliases, metadata, roles "
-                "FROM public.entities WHERE id = $1 FOR UPDATE",
-                tgt_uuid,
-            )
-            if tgt_row is None:
-                raise ValueError(f"Target entity '{target_entity_id}' not found.")
-
-            src_metadata: dict[str, Any] = _parse_metadata(src_row["metadata"])
-            if "merged_into" in src_metadata:
-                raise ValueError(
-                    f"Source entity '{source_entity_id}' is already tombstoned "
-                    f"(merged_into={src_metadata['merged_into']!r})."
-                )
-
-            # Merge aliases (deduplicated, case-insensitive)
-            src_aliases: list[str] = list(src_row["aliases"]) if src_row["aliases"] else []
-            src_canonical_name = (src_row["canonical_name"] or "").strip()
-            tgt_canonical_name = (tgt_row["canonical_name"] or "").strip()
-            if src_canonical_name and src_canonical_name.lower() != tgt_canonical_name.lower():
-                src_aliases.append(src_canonical_name)
-            tgt_aliases: list[str] = list(tgt_row["aliases"]) if tgt_row["aliases"] else []
-            tgt_alias_set = {a.lower() for a in tgt_aliases}
-            new_aliases: list[str] = list(tgt_aliases)
-            aliases_added = 0
-            for alias in src_aliases:
-                if alias.lower() not in tgt_alias_set:
-                    new_aliases.append(alias)
-                    tgt_alias_set.add(alias.lower())
-                    aliases_added += 1
-
-            # Merge roles (union)
-            src_roles: list[str] = list(src_row["roles"]) if src_row["roles"] else []
-            tgt_roles: list[str] = list(tgt_row["roles"]) if tgt_row["roles"] else []
-            tgt_role_set = set(tgt_roles)
-            merged_roles: list[str] = list(tgt_roles)
-            for role in src_roles:
-                if role not in tgt_role_set:
-                    merged_roles.append(role)
-                    tgt_role_set.add(role)
-
-            # Merge metadata (target wins on conflict).
-            # Strip system keys from source so flags like "unidentified" don't
-            # propagate to a confirmed target entity.
-            _SYSTEM_METADATA_KEYS = {"deleted_at", "merged_into", "unidentified"}
-            tgt_metadata: dict[str, Any] = _parse_metadata(tgt_row["metadata"])
-            src_metadata_clean = {
-                k: v for k, v in src_metadata.items() if k not in _SYSTEM_METADATA_KEYS
-            }
-            merged_metadata = {**src_metadata_clean, **tgt_metadata}
-
-            await conn.execute(
-                "UPDATE public.entities SET aliases = $1, metadata = $2, roles = $3, "
-                "updated_at = now() WHERE id = $4",
-                new_aliases,
-                merged_metadata,
-                merged_roles,
-                tgt_uuid,
-            )
-
-            # Tombstone source
-            src_metadata_tombstoned = {**src_metadata, "merged_into": target_entity_id}
-            await conn.execute(
-                "UPDATE public.entities SET metadata = $1, updated_at = now() WHERE id = $2",
-                src_metadata_tombstoned,
-                src_uuid,
-            )
-
-    # ---------------------------------------------------------------
-    # 2. Re-point facts across ALL pools (primary + extra)
-    # ---------------------------------------------------------------
-    all_pools = [pool] + (extra_pools or [])
-    facts_repointed = 0
-    facts_superseded = 0
-    edge_facts_repointed = 0
-    edge_facts_superseded = 0
-
-    for p in all_pools:
-        try:
-            counts = await _repoint_facts_on_pool(p, src_uuid, tgt_uuid)
-        except Exception:
-            # Pool may lack facts table (not a memory schema) — skip
-            continue
-        facts_repointed += counts["facts_repointed"]
-        facts_superseded += counts["facts_superseded"]
-        edge_facts_repointed += counts["edge_facts_repointed"]
-        edge_facts_superseded += counts["edge_facts_superseded"]
-
-    # ---------------------------------------------------------------
-    # 2b. Re-point calendar_event_entities rows from source to target.
-    #     Deduplicate on (event_id, entity_id): if the target entity is
-    #     already associated with the same event, delete the source row;
-    #     otherwise update it.
-    # ---------------------------------------------------------------
-    for p in all_pools:
-        try:
-            await _repoint_calendar_event_entities(p, src_uuid, tgt_uuid)
-        except asyncpg.UndefinedTableError:
-            # Table may not exist in this schema — skip gracefully
-            continue
-
-    # ---------------------------------------------------------------
-    # 2c. Re-point chronicler.episode_entities rows from source to target.
-    #     Deduplication on PK (episode_id, entity_id) preserves the
-    #     higher-precedence role (owner > organizer > participant).
-    #     Wrapped in UndefinedTableError guard for deployments where the
-    #     chronicler schema or episode_entities table is absent.
-    # ---------------------------------------------------------------
-    if chronicler_pool is not None:
-        try:
-            await _repoint_episode_entities(chronicler_pool, src_uuid, tgt_uuid)
-        except asyncpg.UndefinedTableError:
-            # chronicler.episode_entities not yet deployed — skip gracefully
-            pass
-
-    # ---------------------------------------------------------------
-    # 3. Emit audit event
-    # ---------------------------------------------------------------
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            await conn.execute(
-                """
-                INSERT INTO memory_events (event_type, tenant_id, payload)
-                VALUES ('entity_merge', 'shared', $1)
-                """,
-                {
-                    "source_entity_id": source_entity_id,
-                    "target_entity_id": target_entity_id,
-                    "facts_repointed": facts_repointed,
-                    "facts_superseded": facts_superseded,
-                    "edge_facts_repointed": edge_facts_repointed,
-                    "edge_facts_superseded": edge_facts_superseded,
-                    "aliases_added": aliases_added,
-                },
-            )
-
+    result = await merge_entity_pair(
+        pool,
+        source_entity_id=uuid.UUID(source_entity_id),
+        target_entity_id=uuid.UUID(target_entity_id),
+    )
+    receipt_statuses = {str(receipt["status"]) for receipt in result.receipts}
+    rebind_status = (
+        "failed"
+        if "failed" in receipt_statuses
+        else "pending"
+        if "pending" in receipt_statuses
+        else "active"
+    )
     return {
-        "target_entity_id": target_entity_id,
-        "source_entity_id": source_entity_id,
-        "facts_repointed": facts_repointed,
-        "facts_superseded": facts_superseded,
-        "edge_facts_repointed": edge_facts_repointed,
-        "edge_facts_superseded": edge_facts_superseded,
-        "aliases_added": aliases_added,
+        "target_entity_id": str(result.kept_entity_id),
+        "source_entity_id": str(result.tombstoned_entity_id),
+        "facts_repointed": 0,
+        "facts_superseded": 0,
+        "edge_facts_repointed": 0,
+        "edge_facts_superseded": 0,
+        "aliases_added": result.aliases_added,
+        "rebind_id": str(result.rebind_id) if result.rebind_id is not None else None,
+        "failed_schemas": list(result.failed_schemas),
+        "rebind_status": rebind_status,
+        "receipts": [dict(receipt) for receipt in result.receipts],
     }

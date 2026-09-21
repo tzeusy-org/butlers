@@ -68,6 +68,7 @@ EVENT_TYPES = frozenset(
         "header_delta",  # Settings Console header_counts changed (bu-3quv8)
         "attention_add",  # Settings Console attention item appeared (bu-3quv8)
         "attention_remove",  # Settings Console attention item cleared (bu-3quv8)
+        "entity.rebound.v1",  # durable entity rebind cohort changed
         "heartbeat",  # synthetic keepalive; no `data`
     }
 )

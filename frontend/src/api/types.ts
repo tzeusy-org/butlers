@@ -3310,6 +3310,16 @@ export interface EntityDetail extends EntitySummary {
   recent_facts_has_more: boolean;
   linked_contact_name: string | null;
   entity_info: EntityInfoEntry[];
+  rebind_receipts?: EntityRebindReceipt[];
+}
+
+export interface EntityRebindReceipt {
+  rebind_id: string;
+  target_schema: string;
+  references_rebound: number;
+  status: "active" | "failed" | "pending" | "skipped_no_table";
+  error_class: string | null;
+  completed_at: string | null;
 }
 
 /** Query parameters for entity detail endpoints. */
@@ -7388,6 +7398,9 @@ export interface MergeRelationshipEntitiesResponse {
   tombstoned_entity_id: string;
   subject_facts_rewired: number;
   object_facts_rewired: number;
+  rebind_id: string | null;
+  receipts: EntityRebindReceipt[];
+  failed_schemas: string[];
 }
 
 // ---------------------------------------------------------------------------
