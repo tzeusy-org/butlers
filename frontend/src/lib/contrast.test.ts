@@ -12,12 +12,9 @@
 //
 // Verified failures at bead-open time (documented so a future regression is
 // obvious even if this file's math changes):
-//   light --amber vs --bg = 2.01:1   (fixed here: minted --amber-text,
-//                                      the readable variant for text sites;
-//                                      base --amber is untouched — it is
-//                                      also a fill/border token used far
-//                                      more broadly than as text, and does
-//                                      not need to carry the AA floor there)
+//   light --amber vs --bg failed the non-text floor (fixed here: retuned the
+//                                      canonical fill/border token while
+//                                      retaining --amber-text for text sites)
 //   light --dim   vs --bg = 3.49:1   (fixed here: light --dim retuned)
 //   dark  --dim   vs --bg = 4.08:1   (fixed here: dark --dim retuned)
 //
@@ -30,6 +27,8 @@
 import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { describe, expect, it } from "vitest"
+
+import { buttonVariants } from "@/components/ui/button"
 
 import {
   contrastRatio,
@@ -119,7 +118,7 @@ describe("contrast: math sanity", () => {
   })
 
   it("a color against itself is always 1:1", () => {
-    const amber: Oklch = { l: 0.769, c: 0.189, h: 84 }
+    const amber = requireToken(LIGHT_TOKENS, "amber")
     expect(contrastRatio(amber, amber)).toBeCloseTo(1, 5)
   })
 
@@ -129,8 +128,8 @@ describe("contrast: math sanity", () => {
   })
 
   it("contrast ratio is symmetric regardless of argument order", () => {
-    const a: Oklch = { l: 0.769, c: 0.189, h: 84 }
-    const b: Oklch = { l: 0.985, c: 0.003, h: 85 }
+    const a = requireToken(LIGHT_TOKENS, "amber")
+    const b = requireToken(LIGHT_TOKENS, "bg")
     expect(contrastRatio(a, b)).toBeCloseTo(contrastRatio(b, a), 10)
   })
 })
@@ -159,17 +158,30 @@ const TEXT_TOKENS = [
   ...CATEGORICAL_TEXT_TOKENS,
 ]
 const BG_TOKENS = ["bg", "bg-elev"]
-const COMPONENT_SURFACE_TOKENS = [
-  "bg",
-  "bg-elev",
-  "bg-deep",
-  "background",
-  "primary",
-  "secondary",
-  "accent",
-  "popover",
-]
+const COMPONENT_SURFACES = [
+  { name: "page", token: "bg" },
+  { name: "elevated", token: "bg-elev" },
+  { name: "deep", token: "bg-deep" },
+  { name: "background", token: "background" },
+  { name: "Button default", token: "primary", className: "bg-primary", buttonVariant: "default" },
+  {
+    name: "Button destructive",
+    token: "background",
+    className: "bg-background",
+    buttonVariant: "destructive",
+  },
+  { name: "secondary", token: "secondary" },
+  { name: "accent", token: "accent" },
+  { name: "popover", token: "popover" },
+] as const
 const STATE_BOUNDARY_TOKENS = ["red", "amber", "green"]
+
+it("keeps each Button variant on the surface represented by the contrast matrix", () => {
+  for (const surface of COMPONENT_SURFACES) {
+    if (!("buttonVariant" in surface)) continue
+    expect(buttonVariants({ variant: surface.buttonVariant }).split(" ")).toContain(surface.className)
+  }
+})
 
 describe.each(["light", "dark"] as const)("contrast: %s theme text tokens vs surface backgrounds", (theme) => {
   const tokens = theme === "light" ? LIGHT_TOKENS : DARK_TOKENS
@@ -193,12 +205,12 @@ describe.each(["light", "dark"] as const)("contrast: %s theme component boundary
   it("keeps the focus boundary above the WCAG non-text floor on every component surface", () => {
     const focus = requireToken(tokens, "focus")
 
-    for (const surfaceName of COMPONENT_SURFACE_TOKENS) {
-      const surface = requireToken(tokens, surfaceName)
+    for (const { name, token } of COMPONENT_SURFACES) {
+      const surface = requireToken(tokens, token)
       const ratio = contrastRatio(focus, surface)
       expect(
         ratio,
-        `--focus (${theme}) vs --${surfaceName} = ${ratio.toFixed(2)}:1, below the ${WCAG_AA_NON_TEXT}:1 non-text floor`,
+        `--focus (${theme}) vs ${name} --${token} = ${ratio.toFixed(2)}:1, below the ${WCAG_AA_NON_TEXT}:1 non-text floor`,
       ).toBeGreaterThanOrEqual(WCAG_AA_NON_TEXT)
     }
   })
@@ -268,9 +280,12 @@ describe.each(["light", "dark"] as const)("contrast: %s theme owner label fill f
 // ---------------------------------------------------------------------------
 
 describe("contrast: regression pins for the audit's verified failures", () => {
-  it("light --amber-text vs --bg is no longer ~2.01:1 (base --amber's old ratio)", () => {
-    const ratio = contrastRatio(requireToken(LIGHT_TOKENS, "amber-text"), requireToken(LIGHT_TOKENS, "bg"))
-    expect(ratio).toBeGreaterThanOrEqual(WCAG_AA_NORMAL_TEXT)
+  it("keeps light amber boundary and text roles above their respective floors", () => {
+    const bg = requireToken(LIGHT_TOKENS, "bg")
+    const boundaryRatio = contrastRatio(requireToken(LIGHT_TOKENS, "amber"), bg)
+    const textRatio = contrastRatio(requireToken(LIGHT_TOKENS, "amber-text"), bg)
+    expect(boundaryRatio).toBeGreaterThanOrEqual(WCAG_AA_NON_TEXT)
+    expect(textRatio).toBeGreaterThanOrEqual(WCAG_AA_NORMAL_TEXT)
   })
 
   it("light --dim vs --bg is no longer ~3.49:1", () => {

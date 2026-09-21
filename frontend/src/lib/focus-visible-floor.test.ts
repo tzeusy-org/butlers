@@ -91,13 +91,28 @@ function computedFocusOutline(css: string, host: string, classes: string[]) {
   return dom.window.getComputedStyle(target)
 }
 
+function generatedRuleContaining(css: string, fragment: string): { selector: string; body: string } {
+  const fragmentIndex = css.indexOf(fragment)
+  if (fragmentIndex === -1) throw new Error(`Generated CSS did not contain ${fragment}`)
+  const ruleStart = css.lastIndexOf("}", fragmentIndex) + 1
+  const bodyStart = css.indexOf("{", fragmentIndex)
+  const ruleEnd = css.indexOf("}", bodyStart)
+  if (bodyStart === -1 || ruleEnd === -1) throw new Error(`Could not parse generated rule for ${fragment}`)
+  return {
+    selector: css.slice(ruleStart, bodyStart),
+    body: css.slice(bodyStart + 1, ruleEnd),
+  }
+}
+
 describe("global focus-visible floor", () => {
+  let generatedCss: string
   let generatedOutlineCss: string
   const outlineReset = "outline-" + "none"
   const focusVisibleOutlineReset = "focus-visible:outline-" + "none"
 
   beforeAll(async () => {
-    generatedOutlineCss = outlineRulesFrom(await buildGeneratedCss())
+    generatedCss = await buildGeneratedCss()
+    generatedOutlineCss = outlineRulesFrom(generatedCss)
   })
 
   it("keeps the emitted two-pixel focus boundary above every primitive outline utility", () => {
@@ -118,5 +133,17 @@ describe("global focus-visible floor", () => {
     ])
     expect(summaryStyle.outline, "summary focus outline").toBe("2px solid var(--focus)")
     expect(summaryStyle.outlineOffset, "summary focus outline offset").toBe("2px")
+  })
+
+  it("emits an important two-pixel offset above the existing negative utility", () => {
+    const floor = generatedRuleContaining(generatedCss, ":focus-visible:focus-visible")
+    const negativeUtility = generatedRuleContaining(
+      generatedCss,
+      ".focus-visible\\:outline-offset-\\[-2px\\]:focus-visible",
+    )
+
+    expect(floor.selector).toContain("summary")
+    expect(floor.body).toContain("outline-offset:2px!important")
+    expect(negativeUtility.body).toBe("outline-offset:-2px")
   })
 })
