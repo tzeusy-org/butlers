@@ -28,4 +28,5 @@ tests/core_tools/test_fleet_cases.py
 tests/core_tools/test_graph.py
 tests/integration/test_dashboard_propose_then_act.py
 tests/scripts/test_backfill_fleet_cases.py
+tests/scripts/test_dashboard_proxy_peer.py
 tests/switchboard/insight/test_prepared_action_door.py
