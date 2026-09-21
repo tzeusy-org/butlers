@@ -7,7 +7,8 @@ Create Date: 2026-09-21 00:00:00.000000
 
 from __future__ import annotations
 
-from alembic import op
+from alembic import context, op
+from butlers.migration_preflight import preflight_runtime_attention_downgrade
 
 revision = "core_243"
 down_revision = "core_242"
@@ -187,6 +188,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    preflight_runtime_attention_downgrade(op, context)
     op.execute(
         """
         DO $$

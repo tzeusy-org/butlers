@@ -28,7 +28,10 @@ async def _run(pool, direction: str) -> None:
     statements: list[str] = []
     mocked_op = MagicMock()
     mocked_op.execute.side_effect = statements.append
-    with patch.object(module, "op", mocked_op):
+    with (
+        patch.object(module, "op", mocked_op),
+        patch.object(module, "preflight_runtime_attention_downgrade"),
+    ):
         getattr(module, direction)()
     async with pool.acquire() as conn, conn.transaction():
         for statement in statements:
@@ -38,6 +41,26 @@ async def _run(pool, direction: str) -> None:
 def test_entity_rebind_log_extends_current_core_head() -> None:
     migration = _load_migration()
     assert (migration.revision, migration.down_revision) == ("core_243", "core_242")
+
+
+def test_entity_rebind_log_preflights_protected_downgrade_before_mutation() -> None:
+    migration = _load_migration()
+    calls: list[str] = []
+    operation = MagicMock()
+    operation.execute.side_effect = lambda _statement: calls.append("execute")
+
+    with (
+        patch.object(migration, "op", operation),
+        patch.object(
+            migration,
+            "preflight_runtime_attention_downgrade",
+            side_effect=lambda _op, _context: calls.append("preflight"),
+        ) as preflight,
+    ):
+        migration.downgrade()
+
+    preflight.assert_called_once_with(operation, migration.context)
+    assert calls[0] == "preflight"
 
 
 @pytest.mark.asyncio(loop_scope="session")
