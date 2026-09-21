@@ -2542,3 +2542,7 @@ Two boundaries that are easy to get wrong in both directions (bu-5m67e):
 - Owner-auth database pools allow only the dedicated login and `dashboard_auth_api` in SET ROLE ancestry, and reject host-function execution, direct table/column privileges, schema CREATE/ownership, database ownership and privileged role flags. `SET LOCAL ROLE` and `NOINHERIT` alone do not remove the login's underlying authority; preflight restricted function OIDs through `pg_proc` before activating the capability role.
 - FastAPI OpenTelemetry instrumentation wraps user middleware externally. Keep owner-auth URL exclusions and credential-header sanitization on the actual instrumentor; middleware registration order alone cannot prevent auth material capture.
 - Bitwarden's browser credential wrapper can include `credProps: undefined` without a requested extension. Treat undefined optional outputs as absent before validating the empty extension contract; continue rejecting defined extension data and emitting `clientExtensionResults: {}` on the wire.
+
+### Ingestion refresh failures
+
+- TanStack Query can report `isError` while retaining successful data after a failed background refresh. Timeline error banners must not replace retained ledger rows; preserve row identity and report stale freshness separately. Histogram availability remains independent of row availability.

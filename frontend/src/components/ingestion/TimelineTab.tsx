@@ -2597,10 +2597,12 @@ export function TimelineTab({
       <div ref={ledgerRef} className="border border-border rounded" data-testid="timeline-ledger">
         <LedgerColumnHeaders />
 
-        {isError ? (
-          <div className="px-6 py-4 space-y-2">
+        {isError && (
+          <div className="px-6 py-4 space-y-2" role="status">
             <p className="font-serif text-[15px] leading-[1.55] text-muted-foreground italic">
-              Failed to load ingestion events.
+              {events.length > 0
+                ? "Refresh failed. Showing previously loaded events."
+                : "Failed to load ingestion events."}
             </p>
             <Button
               variant="outline"
@@ -2613,7 +2615,9 @@ export function TimelineTab({
               Retry
             </Button>
           </div>
-        ) : isLoading ? (
+        )}
+
+        {isError && events.length === 0 ? null : isLoading ? (
           <LedgerSkeleton />
         ) : events.length === 0 ? (
           <div className="px-6 py-8">
