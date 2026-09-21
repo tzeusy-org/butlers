@@ -28,9 +28,10 @@ import type {
   ModelAttentionEpisode,
   ModelCatalogEntry,
 } from "@/api/types.ts";
+import { Button } from "@/components/ui/button";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Switch } from "@/components/ui/switch";
 import { Time } from "@/components/ui/time";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -1756,7 +1757,7 @@ export default function SettingsModelsPage() {
   const verifyAll = useVerifyAllModels();
 
   const entries: ModelCatalogEntry[] = data?.data ?? [];
-  const unmeasurableAttempts = spendSummary?.data?.data.unmeasurable_attempts ?? 0;
+  const unmeasurableAttempts = spendSummary?.data?.data.unmeasurable_attempts;
 
   // Group by tier preserving canonical order
   const grouped = Object.fromEntries(
@@ -1881,14 +1882,24 @@ export default function SettingsModelsPage() {
         </div>
       </div>
 
-      {unmeasurableAttempts > 0 && (
-        <div
-          className="px-7 py-2.5 border-b border-border bg-[var(--amber)]/10 font-mono text-xs text-foreground"
-          role="status"
-          data-testid="models-unmeasurable-attempts"
-        >
-          {unmeasurableAttempts.toLocaleString()} attempts unpriced
-        </div>
+      {spendSummary?.isError ? (
+        <SourceDegradedNote
+          label="Spend summary"
+          detail="unpriced-attempt count unavailable"
+          className="mx-7 my-2"
+          testId="models-spend-summary-error"
+        />
+      ) : (
+        typeof unmeasurableAttempts === "number" &&
+        unmeasurableAttempts > 0 && (
+          <div
+            className="px-7 py-2.5 border-b border-border bg-[var(--amber)]/10 font-mono text-xs text-foreground"
+            role="status"
+            data-testid="models-unmeasurable-attempts"
+          >
+            {unmeasurableAttempts.toLocaleString()} attempts unpriced
+          </div>
+        )
       )}
 
       {/* Add model dialog */}

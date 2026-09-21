@@ -69,6 +69,7 @@ vi.mock("@/hooks/use-model-catalog", () => ({
 }));
 
 vi.mock("@/hooks/use-spend", () => ({
+  SPEND_UTC_DATE_KEY_TIMEZONE: "UTC",
   useSpendSummary: vi.fn(),
 }));
 
@@ -346,6 +347,15 @@ describe("SettingsModelsPage — page structure", () => {
       isError: false,
     } as AnyMock);
     expect(renderPage()).not.toContain("attempts unpriced");
+
+    vi.mocked(useSpendSummary).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+    } as AnyMock);
+    const failedHtml = renderPage();
+    expect(failedHtml).toContain("Spend summary: unpriced-attempt count unavailable");
+    expect(failedHtml).not.toContain("attempts unpriced");
   });
 });
 
