@@ -688,31 +688,144 @@ fi
 # A full down/up can allocate a different bridge gateway. Bind only the exact
 # host-published TCP peer; never infer trust from forwarded request headers.
 if [ -n "${DASHBOARD_AUTH_ORIGIN:-}" ]; then
+  readonly AUTH_READINESS_TIMEOUT_SECONDS=60
+  readonly AUTH_ATTRIBUTION_TIMEOUT_SECONDS=60
+
+  _dashboard_api_container() {
+    local service="$1" deadline="$2" now remaining container
+    now=$(date +%s)
+    remaining=$((deadline - now))
+    if ((remaining <= 0)) \
+      || ! container="$(timeout "${remaining}s" "${CMD[@]}" ps -q "$service" 2>/dev/null)" \
+      || [ -z "$container" ] \
+      || [[ "$container" == *$'\n'* ]]; then
+      return 1
+    fi
+    AUTH_API_CONTAINER="$container"
+  }
+
+  _wait_for_dashboard_api_health() {
+    local phase="$1" service="$2" deadline now attempt=0 result lifecycle health extra remaining
+    deadline=$(($(date +%s) + AUTH_READINESS_TIMEOUT_SECONDS))
+    if ! _dashboard_api_container "$service" "$deadline"; then
+      echo "ERROR: Dashboard API readiness failed (phase=${phase}, service=${service}, category=container-resolution); ensure exactly one selected service container exists, then rerun the launcher." >&2
+      return 1
+    fi
+    while true; do
+      attempt=$((attempt + 1))
+      now=$(date +%s)
+      remaining=$((deadline - now))
+      if ((remaining <= 0)); then
+        echo "ERROR: Dashboard API readiness failed (phase=${phase}, service=${service}, category=deadline-exceeded); inspect the selected service health, then rerun the launcher." >&2
+        return 1
+      fi
+      if ! result="$(timeout "${remaining}s" docker inspect --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$AUTH_API_CONTAINER" 2>/dev/null)"; then
+        echo "ERROR: Dashboard API readiness failed (phase=${phase}, service=${service}, category=inspection-unavailable); inspect the selected service health, then rerun the launcher." >&2
+        return 1
+      fi
+      read -r lifecycle health extra <<< "$result"
+      if [ -n "${extra:-}" ]; then
+        lifecycle=unknown
+        health=unknown
+      fi
+      case "${lifecycle}:${health}" in
+        running:healthy)
+          return 0
+          ;;
+        running:starting)
+          ;;
+        running:unhealthy)
+          echo "ERROR: Dashboard API readiness failed (phase=${phase}, service=${service}, category=unhealthy); inspect the selected service health, then rerun the launcher." >&2
+          return 1
+          ;;
+        exited:*|dead:*)
+          echo "ERROR: Dashboard API readiness failed (phase=${phase}, service=${service}, category=exited); inspect the selected service lifecycle, then rerun the launcher." >&2
+          return 1
+          ;;
+        running:missing)
+          echo "ERROR: Dashboard API readiness failed (phase=${phase}, service=${service}, category=healthcheck-unavailable); restore the selected service healthcheck, then rerun the launcher." >&2
+          return 1
+          ;;
+        *)
+          echo "ERROR: Dashboard API readiness failed (phase=${phase}, service=${service}, category=lifecycle-unavailable); inspect the selected service lifecycle, then rerun the launcher." >&2
+          return 1
+          ;;
+      esac
+      now=$(date +%s)
+      if ((now >= deadline)); then
+        echo "ERROR: Dashboard API readiness failed (phase=${phase}, service=${service}, category=deadline-exceeded); inspect the selected service health, then rerun the launcher." >&2
+        return 1
+      fi
+      remaining=$((deadline - now))
+      echo "Dashboard API readiness: phase=${phase} service=${service} attempt=${attempt} remaining=${remaining}s category=starting"
+      sleep 2
+    done
+  }
+
+  _proxy_attribution_category() {
+    case "$1" in
+      65) echo unstable-peer ;;
+      66) echo non-gateway-peer ;;
+      67) echo unsafe-dotenv ;;
+      68) echo container-inspection ;;
+      69) echo probe-unavailable ;;
+      75) echo concurrent-attribution ;;
+      124) echo deadline-exceeded ;;
+      *) echo attribution-failed ;;
+    esac
+  }
+
   AUTH_API_SERVICE=dashboard-api
   if [ "$HOTRELOAD_OPT" = "true" ]; then
     AUTH_API_SERVICE=dashboard-api-hotreload
   fi
-  AUTH_API_CONTAINER="$("${CMD[@]}" ps -q "$AUTH_API_SERVICE")"
-  if [ -z "$AUTH_API_CONTAINER" ] || [[ "$AUTH_API_CONTAINER" == *$'\n'* ]]; then
-    echo "ERROR: Expected one active dashboard API for proxy binding." >&2
-    exit 1
-  fi
-  # Startup can still be in progress after detached Compose returns.
+  _wait_for_dashboard_api_health initial-readiness "$AUTH_API_SERVICE" || exit 1
+
+  # Only concurrent attribution is retryable. Every other helper category is
+  # a security/configuration failure and fails closed immediately.
   AUTH_PROXY_PEER=""
-  for attempt in {1..30}; do
-    if AUTH_PROXY_PEER="$(python3 "${SCRIPT_DIR}/dashboard_proxy_peer.py" \
-      --container "$AUTH_API_CONTAINER" --port "$DASHBOARD_HOST_PORT" \
-      --env-file "$ENV_FILE")"; then
-      break
+  AUTH_ATTRIBUTION_DEADLINE=$(($(date +%s) + AUTH_ATTRIBUTION_TIMEOUT_SECONDS))
+  AUTH_ATTRIBUTION_ATTEMPT=0
+  while true; do
+    AUTH_ATTRIBUTION_ATTEMPT=$((AUTH_ATTRIBUTION_ATTEMPT + 1))
+    AUTH_ATTRIBUTION_NOW=$(date +%s)
+    AUTH_ATTRIBUTION_REMAINING=$((AUTH_ATTRIBUTION_DEADLINE - AUTH_ATTRIBUTION_NOW))
+    if ((AUTH_ATTRIBUTION_REMAINING <= 0)); then
+      echo "ERROR: Dashboard proxy binding failed (phase=peer-attribution, service=${AUTH_API_SERVICE}, category=deadline-exceeded); auth remains closed. Inspect API availability and rerun the launcher." >&2
+      exit 1
     fi
+    if AUTH_PROXY_PEER="$(timeout "${AUTH_ATTRIBUTION_REMAINING}s" python3 "${SCRIPT_DIR}/dashboard_proxy_peer.py" \
+      --container "$AUTH_API_CONTAINER" --port "$DASHBOARD_HOST_PORT" \
+      --env-file "$ENV_FILE" 2>/dev/null)"; then
+      if [ -n "$AUTH_PROXY_PEER" ]; then
+        break
+      fi
+      AUTH_ATTRIBUTION_STATUS=1
+    else
+      AUTH_ATTRIBUTION_STATUS=$?
+    fi
+    AUTH_ATTRIBUTION_CATEGORY="$(_proxy_attribution_category "$AUTH_ATTRIBUTION_STATUS")"
+    if [ "$AUTH_ATTRIBUTION_STATUS" -ne 75 ]; then
+      echo "ERROR: Dashboard proxy binding failed (phase=peer-attribution, service=${AUTH_API_SERVICE}, category=${AUTH_ATTRIBUTION_CATEGORY}); auth remains closed. Correct the reported category and rerun the launcher." >&2
+      exit 1
+    fi
+    AUTH_ATTRIBUTION_NOW=$(date +%s)
+    if ((AUTH_ATTRIBUTION_NOW >= AUTH_ATTRIBUTION_DEADLINE)); then
+      echo "ERROR: Dashboard proxy binding failed (phase=peer-attribution, service=${AUTH_API_SERVICE}, category=concurrent-attribution); quiesce competing requests and rerun the launcher." >&2
+      exit 1
+    fi
+    AUTH_ATTRIBUTION_REMAINING=$((AUTH_ATTRIBUTION_DEADLINE - AUTH_ATTRIBUTION_NOW))
+    echo "Dashboard proxy binding: phase=peer-attribution service=${AUTH_API_SERVICE} attempt=${AUTH_ATTRIBUTION_ATTEMPT} remaining=${AUTH_ATTRIBUTION_REMAINING}s category=concurrent-attribution"
     sleep 2
   done
-  if [ -z "$AUTH_PROXY_PEER" ]; then
-    echo "ERROR: Dashboard proxy binding failed; do not use owner authentication." >&2
-    exit 1
-  fi
   if [ "$AUTH_PROXY_PEER" != "${DASHBOARD_AUTH_TRUSTED_PROXY_PEERS:-}" ]; then
     export DASHBOARD_AUTH_TRUSTED_PROXY_PEERS="$AUTH_PROXY_PEER"
-    "${CMD[@]}" up -d --no-deps --force-recreate "$AUTH_API_SERVICE"
+    if ! "${CMD[@]}" up -d --no-deps --force-recreate "$AUTH_API_SERVICE" \
+      >/dev/null 2>&1; then
+      echo "ERROR: Dashboard proxy binding failed (phase=api-recreation, service=${AUTH_API_SERVICE}, category=command-failed); auth remains closed. Inspect the selected service lifecycle, then rerun the launcher." >&2
+      exit 1
+    fi
   fi
+  _wait_for_dashboard_api_health final-readiness "$AUTH_API_SERVICE" || exit 1
+  echo "Dashboard API readiness: phase=final-readiness service=${AUTH_API_SERVICE} category=healthy"
 fi

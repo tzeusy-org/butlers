@@ -272,12 +272,38 @@ removes authentication data nor authorizes an old image or live rollback.
 ### Proxy binding after a Compose network replacement
 
 `scripts/compose.sh` starts the API with no trusted proxy peers when owner auth is
-configured. It measures the exact source peer of two payload-free TCP connections
-through the host's loopback-published API port, using before/during/after socket
-metadata inside the API container. Only a unique, repeatable peer matching a Docker-reported gateway for that
+configured. Before attribution, it resolves exactly one container for the active
+API service (`dashboard-api-hotreload` in hotreload mode, otherwise
+`dashboard-api`) and waits under a finite deadline for that container's existing
+Docker healthcheck to report healthy. It does not infer readiness from port
+openness, logs, a different service, or a browser request. An API that disappears,
+exits, is unhealthy, cannot be inspected, or exceeds the deadline fails the
+launcher before any peer measurement, dotenv mutation, or API recreation.
+
+Once the selected API is healthy, the launcher measures the exact source peer of
+two payload-free TCP connections through the host's loopback-published API port,
+using before/during/after socket metadata inside that API container. Only a
+unique, repeatable peer matching a Docker-reported gateway for that exact
 container is accepted; gateway metadata never expands the allowlist.
 The launcher updates `DASHBOARD_AUTH_TRUSTED_PROXY_PEERS` in the selected `.env.dev`
-or `.env.prod` and recreates only the active API service with `--no-deps`.
-Ambiguous measurements leave authentication closed and fail the launcher.
+or `.env.prod` and recreates only the active API service with
+`--no-deps --force-recreate`. It then resolves the service's current container again and
+waits under a second finite deadline for that replacement to become healthy.
+Successful launcher exit therefore means the trust-bearing replacement API is
+healthy, not merely that recreation was requested.
+
+Readiness and attribution progress disclose only the phase, selected service,
+bounded attempt/deadline progress, and an allowlisted category. Terminal errors
+use the same content-blind categories, such as unavailable container resolution
+or inspection, starting deadline exceeded, unhealthy/exited lifecycle,
+concurrent attribution, unavailable probe, unstable peer, non-gateway peer, or
+unsafe dotenv. They never include an address, container ID, dotenv value,
+subprocess output, request data, credential, or error tail. Only concurrent or
+ambiguous TCP attribution is retried within its finite deadline. If contention
+persists, quiesce competing requests and rerun; the launcher never chooses among
+candidates. Other trust or configuration failures fail immediately.
+
+Ambiguous measurements and final-readiness failures leave authentication closed
+and fail the launcher without an alternate trust value or a success report.
 This prevents a full `down`/`up` from retaining a stale Docker bridge gateway.
 The canonical origin, RP ID, and forwarded-header checks remain required.
