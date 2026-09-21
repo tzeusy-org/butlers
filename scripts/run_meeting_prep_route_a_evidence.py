@@ -1044,9 +1044,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.playwright_image,
         )
     ):
-        parser.error(
-            "--execute requires all digest-pinned Route A image inputs"
-        )
+        parser.error("--execute requires all digest-pinned Route A image inputs")
     artifact_dir = Path(tempfile.mkdtemp(prefix="route-a-", dir="/tmp"))
     values = route_a_environment(
         target_sha=args.target_sha,
