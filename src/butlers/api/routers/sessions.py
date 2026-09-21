@@ -334,6 +334,27 @@ async def _attach_session_extras(detail: SessionDetail, pool, session_id: UUID) 
     """
     # Attach process log if available (best-effort — table may not exist yet)
     try:
+        receipt = await pool.fetchval(
+            """
+            SELECT resolution_receipt
+            FROM public.model_dispatch_attempts
+            WHERE session_id = $1 AND resolution_receipt IS NOT NULL
+            ORDER BY attempt_index DESC, ts DESC, id DESC
+            LIMIT 1
+            """,
+            session_id,
+        )
+        detail.resolution_receipt = receipt if isinstance(receipt, dict) else None
+    except Exception:
+        # Pre-core_244 databases and sessions predating receipt capture both
+        # disclose the same honest absence to clients.
+        logger.debug(
+            "Could not fetch model-resolution receipt for session %s",
+            session_id,
+            exc_info=True,
+        )
+
+    try:
         plog_row = await pool.fetchrow(
             """
             SELECT pid, exit_code, command, stderr, runtime_type,

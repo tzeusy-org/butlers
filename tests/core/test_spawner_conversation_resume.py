@@ -64,6 +64,23 @@ def _catalog_primary(model: str = "primary-model", tier: str = "workhorse") -> t
     return (DEFAULT_RUNTIME_TYPE, model, [], _PRIMARY_CATALOG_ID, 1800, tier)
 
 
+class _SyntheticResolution:
+    def describe(self) -> dict[str, Any]:
+        return {
+            "policy_version": "dispatch-fit-v1",
+            "requested_intent": {"trigger_class": "route"},
+            "effective_intent": {"trigger_class": "route"},
+            "winner": {"reason": "sole_candidate"},
+            "candidates": [],
+        }
+
+
+async def _catalog_primary_with_receipt(*_args: Any, receipt_sink=None, **_kwargs: Any) -> tuple:
+    assert receipt_sink is not None
+    receipt_sink.append(_SyntheticResolution())
+    return _catalog_primary()
+
+
 def _fresh_provider_session(
     *, runtime_type: str = DEFAULT_RUNTIME_TYPE, session_id: str = "resumable-session-id"
 ) -> dict[str, Any]:
@@ -464,7 +481,7 @@ class TestResumeFailureFallsBackToCold:
             patch(
                 "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=_catalog_primary(),
+                side_effect=_catalog_primary_with_receipt,
             ),
             patch(
                 "butlers.core.spawner.check_token_quota",
@@ -520,6 +537,17 @@ class TestResumeFailureFallsBackToCold:
             "resume_failed_retried_cold",
         ]
         assert all(c.kwargs["invoked"] is True for c in mock_write.await_args_list)
+        retry_receipt = mock_write.await_args_list[1].kwargs["resolution_receipt"]
+        assert retry_receipt["winner"]["reason"] == "same_candidate_cold_retry"
+        assert "failover" not in retry_receipt
+        assert retry_receipt["retry"] == {
+            "from_attempt_index": 0,
+            "failure_class": (
+                "empty_runtime_response: runtime returned no usable output before any tool call "
+                "was executed"
+            ),
+            "kind": "same_candidate_cold",
+        }
 
     async def test_failed_resume_with_confirmed_tool_calls_uses_ordinary_failover(
         self, tmp_path: Path

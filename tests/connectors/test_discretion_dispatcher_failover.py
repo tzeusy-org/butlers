@@ -384,8 +384,28 @@ async def test_call_keeps_runtime_failure_and_quota_skip_in_one_same_tier_chain(
         attempted_id_snapshots.append(list(args[3]))
         return [second, third][len(attempted_id_snapshots) - 1]
 
+    async def _resolve(*_args: object, **kwargs: object):
+        receipt = MagicMock()
+        receipt.describe.return_value = {
+            "policy_version": "2",
+            "winner": {"catalog_entry_id": str(first_id), "reason": "sole_candidate"},
+            "candidates": [
+                {
+                    "catalog_entry_id": str(first_id),
+                    "runtime_type": first[0],
+                    "model_id": first[1],
+                    "effective_tier": first[5],
+                    "outcome": "selected",
+                    "exclusion": None,
+                    "exclusions": [],
+                }
+            ],
+        }
+        kwargs["receipt_sink"].append(receipt)  # type: ignore[union-attr]
+        return first
+
     with (
-        patch(f"{_MODULE}.resolve_model_with_effective_tier", AsyncMock(return_value=first)),
+        patch(f"{_MODULE}.resolve_model_with_effective_tier", AsyncMock(side_effect=_resolve)),
         patch(
             f"{_MODULE}.apply_spend_routing_rules",
             AsyncMock(return_value=SpendRoutingResult(resolved=first[:5])),
@@ -405,6 +425,7 @@ async def test_call_keeps_runtime_failure_and_quota_skip_in_one_same_tier_chain(
             side_effect=_next_same_tier,
         ),
         patch(f"{_MODULE}.record_token_usage", AsyncMock()),
+        patch(f"{_MODULE}.record_dispatch_attempt", AsyncMock()) as record_attempt,
     ):
         result = await dispatcher.call("hi")
 
@@ -412,6 +433,15 @@ async def test_call_keeps_runtime_failure_and_quota_skip_in_one_same_tier_chain(
     assert adapter.invoke.await_count == 2
     assert attempted_id_snapshots == [[first_id], [first_id, second_id]]
     assert adapter.invoke.await_args.kwargs["model"] == "successful-model"
+    attempts = [call.kwargs for call in record_attempt.await_args_list]
+    assert [attempt["outcome"] for attempt in attempts] == [
+        "runtime_failure",
+        "quota_skip",
+        "success",
+    ]
+    assert [attempt["attempt_index"] for attempt in attempts] == [0, 1, 2]
+    assert [attempt["resolution_receipt"]["attempt_index"] for attempt in attempts] == [0, 1, 2]
+    assert all(attempt["resolution_receipt"] is not None for attempt in attempts)
 
 
 async def test_quota_skips_consume_the_existing_same_tier_attempt_cap(

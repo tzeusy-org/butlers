@@ -148,6 +148,8 @@ Attempt provenance is written to `public.model_dispatch_attempts`. Each row reco
 - `tool_call_count` — captured tool calls at time of decision
 - `attempt_index` — 0-based position in the attempt sequence
 - `logical_session_id` — shared across all rows for the same trigger
+- `resolution_receipt` — bounded prompt-free evidence for why this attempt's
+  candidate was selected; failover rows name the prior failure class
 
 Use the API endpoint `GET /api/dispatch/attempts?session_id=<uuid>` to retrieve attempt provenance for a completed session.
 

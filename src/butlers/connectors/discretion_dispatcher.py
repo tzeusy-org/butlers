@@ -70,7 +70,8 @@ from prometheus_client import Counter
 
 from butlers.cli_auth.registry import providers_for_runtime
 from butlers.core.audit import write_audit_entry
-from butlers.core.dispatch_outcomes import record_dispatch_attempt
+from butlers.core.dispatch_intent import discretion_dispatch_intent
+from butlers.core.dispatch_outcomes import project_resolution_receipt, record_dispatch_attempt
 from butlers.core.failover_classifier import FailoverContext, classify_failover_eligibility
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import (
@@ -363,8 +364,16 @@ class DiscretionDispatcher:
         ``butler_name`` so per-connector ``identity=`` values never inflate
         metric cardinality.
         """
+        resolution_receipts = []
         catalog_result = await resolve_model_with_effective_tier(
-            self._pool, self._butler_name, self._complexity_tier
+            self._pool,
+            self._butler_name,
+            self._complexity_tier,
+            receipt_intent=discretion_dispatch_intent(
+                self._complexity_tier,
+                purpose_lane=self._purpose_lane,
+            ),
+            receipt_sink=resolution_receipts,
         )
         if catalog_result is None:
             raise RuntimeError(
@@ -380,6 +389,10 @@ class DiscretionDispatcher:
             session_timeout_s,
             effective_tier,
         ) = catalog_result
+        base_resolution_receipt = (
+            resolution_receipts[-1].describe() if resolution_receipts else None
+        )
+        receipt_selection_reason: str | None = None
 
         # bu-m95jq: spend routing rules (public.spend_rules), model SELECTION
         # override. Mirrors Spawner._run()'s integration (butlers/core/spawner.py)
@@ -404,6 +417,7 @@ class DiscretionDispatcher:
                 session_timeout_s,
             )
         )
+        pre_rule_catalog_entry_id = catalog_entry_id
         if catalog_entry_id is not None:
             try:
                 routing_result = await apply_spend_routing_rules(
@@ -440,10 +454,23 @@ class DiscretionDispatcher:
                     model_id,
                     exc_info=True,
                 )
+        if catalog_entry_id != pre_rule_catalog_entry_id:
+            receipt_selection_reason = "spend_rule_override"
+
+        current_resolution_receipt = project_resolution_receipt(
+            base_resolution_receipt,
+            catalog_entry_id=catalog_entry_id,
+            runtime_type=runtime_type,
+            model_id=model_id,
+            effective_tier=effective_tier,
+            attempt_index=0,
+            selection_reason=receipt_selection_reason,
+        )
 
         private_provider_config: dict[str, dict] | None = None
         private_local_failover_allowed = False
         if self._purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT:
+            pre_private_catalog_entry_id = catalog_entry_id
             try:
                 (
                     selected,
@@ -465,6 +492,7 @@ class DiscretionDispatcher:
                     attempt_index=0,
                     failure_reason="private_content_remote_refused",
                     purpose_lane=self._purpose_lane,
+                    resolution_receipt=current_resolution_receipt,
                 )
                 await write_audit_entry(
                     self._pool,
@@ -486,6 +514,21 @@ class DiscretionDispatcher:
                 catalog_entry_id,
                 session_timeout_s,
             ) = selected
+            if catalog_entry_id != pre_private_catalog_entry_id:
+                receipt_selection_reason = (
+                    "private_content_audited_remote_override"
+                    if audited_override
+                    else "private_content_local_policy"
+                )
+                current_resolution_receipt = project_resolution_receipt(
+                    base_resolution_receipt,
+                    catalog_entry_id=catalog_entry_id,
+                    runtime_type=runtime_type,
+                    model_id=model_id,
+                    effective_tier=effective_tier,
+                    attempt_index=0,
+                    selection_reason=receipt_selection_reason,
+                )
             if audited_override:
                 await write_audit_entry(
                     self._pool,
@@ -536,6 +579,7 @@ class DiscretionDispatcher:
                     attempt_index=attempt_count - 1,
                     failure_reason=quota_msg,
                     purpose_lane=self._purpose_lane,
+                    resolution_receipt=current_resolution_receipt,
                 )
                 # Discretion calls do not own a Spawner session/logical-session
                 # record. Keep skip provenance bounded and operational: catalog
@@ -619,6 +663,16 @@ class DiscretionDispatcher:
                 extra_args = next_extra_args
                 catalog_entry_id = next_catalog_entry_id
                 session_timeout_s = next_session_timeout_s
+                current_resolution_receipt = project_resolution_receipt(
+                    base_resolution_receipt,
+                    catalog_entry_id=catalog_entry_id,
+                    runtime_type=runtime_type,
+                    model_id=model_id,
+                    effective_tier=effective_tier,
+                    attempt_index=attempt_count,
+                    previous_failure_class="quota_exhausted",
+                    selection_reason=receipt_selection_reason,
+                )
                 continue
 
             # Resolve provider config for models using external providers
@@ -717,6 +771,7 @@ class DiscretionDispatcher:
                     attempt_index=attempt_count - 1,
                     duration_ms=int((time.monotonic() - attempt_started_at) * 1000),
                     purpose_lane=self._purpose_lane,
+                    resolution_receipt=current_resolution_receipt,
                 )
                 self._last_success_at = time.time()
                 return result
@@ -743,6 +798,7 @@ class DiscretionDispatcher:
                 error_message=None if private_failure else str(attempt_exc),
                 duration_ms=int((time.monotonic() - attempt_started_at) * 1000),
                 purpose_lane=self._purpose_lane,
+                resolution_receipt=current_resolution_receipt,
             )
 
             # bu-ur7go: a genuine provider/auth-classified failure (e.g. a
@@ -843,6 +899,16 @@ class DiscretionDispatcher:
             extra_args = next_extra_args
             catalog_entry_id = next_catalog_entry_id
             session_timeout_s = next_session_timeout_s
+            current_resolution_receipt = project_resolution_receipt(
+                base_resolution_receipt,
+                catalog_entry_id=catalog_entry_id,
+                runtime_type=runtime_type,
+                model_id=model_id,
+                effective_tier=effective_tier,
+                attempt_index=attempt_count,
+                previous_failure_class=decision.reason,
+                selection_reason=receipt_selection_reason,
+            )
             # Loop again with the updated candidate.
 
     def get_auth_health(self) -> dict[str, Any]:

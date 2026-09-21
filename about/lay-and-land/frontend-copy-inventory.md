@@ -3846,6 +3846,9 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Bytes
 - SHA
 - Metadata
+- Why this model?
+- Winner:
+- No receipt recorded.
 - Prompt
 - Result
 - Error
@@ -4348,4 +4351,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3414*
+*Total strings: 3417*

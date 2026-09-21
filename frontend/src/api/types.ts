@@ -263,6 +263,8 @@ export interface SessionDetail {
   complexity?: string | null;
   resolution_source?: string | null;
   purpose_lane?: "standard" | "private_content" | null;
+  /** Durable, prompt-free explanation of the model selected for this attempt. */
+  resolution_receipt?: ModelResolutionReceipt | null;
   /** The dashboard chat message this session was invoked from, if any. */
   linked_message?: {
     conversation_id: string;
@@ -277,6 +279,34 @@ export interface SessionDetail {
     created_at?: string | null;
     expires_at?: string | null;
   } | null;
+}
+
+export interface ModelResolutionCandidate {
+  catalog_entry_id: string;
+  runtime_type: string;
+  model_id: string;
+  effective_tier: string;
+  outcome: string;
+  exclusion?: string | null;
+}
+
+export interface ModelResolutionReceipt {
+  policy_version?: string;
+  winner?: {
+    catalog_entry_id: string;
+    runtime_type: string;
+    model_id: string;
+    effective_tier: string | null;
+    reason: string | null;
+  } | null;
+  candidates?: ModelResolutionCandidate[];
+  attempt_index?: number;
+  failover?: {
+    from_attempt_index: number;
+    failure_class: string;
+  };
+  truncated?: boolean;
+  candidate_count?: number;
 }
 
 export interface PromptProvenanceEntry {
@@ -983,6 +1013,7 @@ export interface DispatchAttemptEntry {
   /** Null for pre-session denials (e.g. a ceiling quota_skip before any session row exists). */
   session_id: string | null;
   logical_session_id: string | null;
+  resolution_receipt?: ModelResolutionReceipt | null;
 }
 
 /** Identifies one logical dispatch cycle by either or both session selectors. */

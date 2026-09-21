@@ -180,6 +180,7 @@ class DispatchAttemptEntry(BaseModel):
     logical_session_id: str | None = None
     duration_ms: int | None = None
     purpose_lane: str | None = None
+    resolution_receipt: dict[str, Any] | None = None
 
 
 class ModelCatalogCreate(BaseModel):
@@ -1234,7 +1235,8 @@ async def get_model_attempts(
             """
             SELECT ts, butler, outcome, attempt_index,
                    failure_reason, error_code, error_message,
-                   tool_call_count, session_id, logical_session_id, duration_ms, purpose_lane
+                   tool_call_count, session_id, logical_session_id, duration_ms, purpose_lane,
+                   resolution_receipt
             FROM public.model_dispatch_attempts
             WHERE catalog_entry_id = $1
               AND ts >= $2
@@ -1272,6 +1274,7 @@ async def get_model_attempts(
             logical_session_id=row["logical_session_id"],
             duration_ms=_row_value(row, "duration_ms"),
             purpose_lane=_row_value(row, "purpose_lane"),
+            resolution_receipt=_row_value(row, "resolution_receipt"),
         )
         for row in rows
     ]
@@ -1977,7 +1980,8 @@ async def get_dispatch_attempts(
                 f"""
                 SELECT ts, butler, outcome, attempt_index,
                        failure_reason, error_code, error_message,
-                       tool_call_count, session_id, logical_session_id, duration_ms, purpose_lane
+                       tool_call_count, session_id, logical_session_id, duration_ms, purpose_lane,
+                       resolution_receipt
                 FROM public.model_dispatch_attempts
                 WHERE {where_sql}
                 ORDER BY ts {order_sql}, id {order_sql}
@@ -1995,7 +1999,8 @@ async def get_dispatch_attempts(
                 """
                 SELECT ts, butler, outcome, attempt_index,
                        failure_reason, error_code, error_message,
-                       tool_call_count, session_id, logical_session_id, duration_ms, purpose_lane
+                       tool_call_count, session_id, logical_session_id, duration_ms, purpose_lane,
+                       resolution_receipt
                 FROM public.model_dispatch_attempts
                 WHERE session_id = $1::uuid
                    OR logical_session_id = $2
@@ -2017,7 +2022,8 @@ async def get_dispatch_attempts(
                 """
                 SELECT ts, butler, outcome, attempt_index,
                        failure_reason, error_code, error_message,
-                       tool_call_count, session_id, logical_session_id, duration_ms, purpose_lane
+                       tool_call_count, session_id, logical_session_id, duration_ms, purpose_lane,
+                       resolution_receipt
                 FROM public.model_dispatch_attempts
                 WHERE session_id = $1::uuid
                 ORDER BY attempt_index ASC, ts ASC, id ASC
@@ -2035,7 +2041,8 @@ async def get_dispatch_attempts(
                 """
                 SELECT ts, butler, outcome, attempt_index,
                        failure_reason, error_code, error_message,
-                       tool_call_count, session_id, logical_session_id, duration_ms, purpose_lane
+                       tool_call_count, session_id, logical_session_id, duration_ms, purpose_lane,
+                       resolution_receipt
                 FROM public.model_dispatch_attempts
                 WHERE logical_session_id = $1
                 ORDER BY attempt_index ASC, ts ASC, id ASC
@@ -2068,6 +2075,7 @@ async def get_dispatch_attempts(
             logical_session_id=row["logical_session_id"],
             duration_ms=_row_value(row, "duration_ms"),
             purpose_lane=_row_value(row, "purpose_lane"),
+            resolution_receipt=_row_value(row, "resolution_receipt"),
         )
         for row in rows
     ]

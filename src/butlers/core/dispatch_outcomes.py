@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import logging
 import uuid
+from copy import deepcopy
 from dataclasses import dataclass
 
 import asyncpg
 
 from butlers.core.model_routing import CEILING_DENIAL_REASON_PREFIX, get_breaker_state
 from butlers.core.purpose_lane import PURPOSE_LANE_STANDARD, PurposeLane
+from butlers.db import encode_jsonb
 from butlers.metrics_registry import get_or_create_counter
 
 logger = logging.getLogger(__name__)
@@ -29,6 +31,265 @@ runtime_attention_recorder_total = get_or_create_counter(
 )
 
 _QUALIFYING_BREAKER_OUTCOMES = frozenset({"runtime_failure", "success"})
+_MAX_RESOLUTION_RECEIPT_BYTES = 32 * 1024
+_MAX_RESOLUTION_RECEIPT_SCALAR_BYTES = 4 * 1024
+_MAX_FALLBACK_WINNER_SCALAR_BYTES = 1024
+_MAX_FALLBACK_INTENT_SCALAR_BYTES = 256
+_MAX_FALLBACK_INTENT_FEATURES = 8
+
+
+def _bounded_receipt_scalar(
+    value: object, *, max_bytes: int = _MAX_RESOLUTION_RECEIPT_SCALAR_BYTES
+) -> object:
+    """Bound one fallback scalar without splitting a UTF-8 code point."""
+    if not isinstance(value, str):
+        return value
+    encoded = value.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return value
+    return encoded[:max_bytes].decode("utf-8", errors="ignore")
+
+
+def _jsonb_payload_size(value: object) -> int:
+    """Measure the bytes the registered asyncpg JSONB codec persists."""
+    return len(encode_jsonb(value)) - 1
+
+
+def _bounded_receipt_intent(value: object) -> dict:
+    """Project one required intent without allowing mutable strings to escape the bound."""
+    source = value if isinstance(value, dict) else {}
+
+    def _string(key: str) -> object:
+        if not isinstance(source.get(key), str):
+            return None
+        return _bounded_receipt_scalar(source.get(key), max_bytes=_MAX_FALLBACK_INTENT_SCALAR_BYTES)
+
+    def _features(key: str) -> list[object]:
+        raw = source.get(key)
+        if not isinstance(raw, list):
+            return []
+        return [
+            _bounded_receipt_scalar(item, max_bytes=_MAX_FALLBACK_INTENT_SCALAR_BYTES)
+            for item in raw[:_MAX_FALLBACK_INTENT_FEATURES]
+            if isinstance(item, str)
+        ]
+
+    def _number(key: str) -> int | float | None:
+        number = source.get(key)
+        if isinstance(number, int | float) and not isinstance(number, bool) and abs(number) <= 1e15:
+            return number
+        return None
+
+    return {
+        "trigger_class": _string("trigger_class"),
+        "complexity_tier": _string("complexity_tier"),
+        "consequence": _string("consequence"),
+        "purpose_lane": _string("purpose_lane"),
+        "required_features": _features("required_features"),
+        "preferred_features": _features("preferred_features"),
+        "min_context_tokens": _number("min_context_tokens"),
+        "deadline_s": _number("deadline_s"),
+        "max_cost_usd_per_call": _number("max_cost_usd_per_call"),
+    }
+
+
+def _bounded_receipt_transition(value: object, *, include_kind: bool = False) -> dict | None:
+    """Project retry/failover provenance for the minimal receipt."""
+    if not isinstance(value, dict):
+        return None
+    failure_class = value.get("failure_class")
+    projected = {
+        "from_attempt_index": value.get("from_attempt_index")
+        if isinstance(value.get("from_attempt_index"), int)
+        and not isinstance(value.get("from_attempt_index"), bool)
+        else None,
+        "failure_class": _bounded_receipt_scalar(
+            failure_class, max_bytes=_MAX_FALLBACK_INTENT_SCALAR_BYTES
+        )
+        if isinstance(failure_class, str)
+        else None,
+    }
+    if include_kind:
+        kind = value.get("kind")
+        projected["kind"] = (
+            _bounded_receipt_scalar(kind, max_bytes=_MAX_FALLBACK_INTENT_SCALAR_BYTES)
+            if isinstance(kind, str)
+            else None
+        )
+    return projected
+
+
+def bound_resolution_receipt(receipt: dict | None) -> dict | None:
+    """Return a JSON-safe receipt bounded for durable per-attempt storage.
+
+    Candidate order is meaningful, so oversized receipts retain the longest
+    ordered prefix that fits and disclose both truncation and the original
+    candidate count. A receipt is never silently dropped because it grew.
+    """
+    if receipt is None:
+        return None
+    bounded = deepcopy(receipt)
+    candidates = bounded.get("candidates")
+    if not isinstance(candidates, list):
+        candidates = []
+        bounded["candidates"] = candidates
+    bounded.setdefault("truncated", False)
+    if _jsonb_payload_size(bounded) <= _MAX_RESOLUTION_RECEIPT_BYTES:
+        return bounded
+
+    original_count = len(candidates)
+    bounded["truncated"] = True
+    bounded["candidate_count"] = original_count
+    while candidates:
+        candidates.pop()
+        if _jsonb_payload_size(bounded) <= _MAX_RESOLUTION_RECEIPT_BYTES:
+            return bounded
+
+    # Catalog-backed strings are mutable operator data. Project the remaining
+    # receipt field-by-field and bound every retained scalar; never assume that
+    # non-candidate metadata is small merely because the shape is code-owned.
+    if _jsonb_payload_size(bounded) > _MAX_RESOLUTION_RECEIPT_BYTES:
+        source_winner = bounded.get("winner")
+        winner = (
+            {
+                key: (
+                    _bounded_receipt_scalar(
+                        source_winner.get(key), max_bytes=_MAX_FALLBACK_WINNER_SCALAR_BYTES
+                    )
+                    if isinstance(source_winner.get(key), str)
+                    else None
+                )
+                for key in (
+                    "catalog_entry_id",
+                    "runtime_type",
+                    "model_id",
+                    "effective_tier",
+                    "reason",
+                )
+            }
+            if isinstance(source_winner, dict)
+            else None
+        )
+        bounded = {
+            "policy_version": (
+                _bounded_receipt_scalar(
+                    bounded.get("policy_version"), max_bytes=_MAX_FALLBACK_WINNER_SCALAR_BYTES
+                )
+                if isinstance(bounded.get("policy_version"), str)
+                else None
+            ),
+            "requested_intent": _bounded_receipt_intent(bounded.get("requested_intent")),
+            "effective_intent": _bounded_receipt_intent(bounded.get("effective_intent")),
+            "winner": winner,
+            "candidates": [],
+            "candidate_count": original_count,
+            "truncated": True,
+        }
+        if isinstance(receipt.get("attempt_index"), int) and not isinstance(
+            receipt.get("attempt_index"), bool
+        ):
+            bounded["attempt_index"] = receipt["attempt_index"]
+        failover = _bounded_receipt_transition(receipt.get("failover"))
+        if failover is not None:
+            bounded["failover"] = failover
+        retry = _bounded_receipt_transition(receipt.get("retry"), include_kind=True)
+        if retry is not None:
+            bounded["retry"] = retry
+        if _jsonb_payload_size(bounded) > _MAX_RESOLUTION_RECEIPT_BYTES:
+            raise ValueError("minimal resolution receipt exceeds durable byte bound")
+    return bounded
+
+
+def project_resolution_receipt(
+    base: dict | None,
+    *,
+    catalog_entry_id: uuid.UUID | None,
+    runtime_type: str,
+    model_id: str,
+    effective_tier: str | None,
+    attempt_index: int,
+    previous_failure_class: str | None = None,
+    retry_failure_class: str | None = None,
+    selection_reason: str | None = None,
+) -> dict | None:
+    """Project a resolution onto the candidate one attempt actually invokes."""
+    if base is None or catalog_entry_id is None:
+        return None
+    receipt = deepcopy(base)
+    winner_id = str(catalog_entry_id)
+    original_reason = None
+    if isinstance(receipt.get("winner"), dict):
+        original_reason = receipt["winner"].get("reason")
+
+    candidates = receipt.get("candidates")
+    if not isinstance(candidates, list):
+        candidates = []
+        receipt["candidates"] = candidates
+    winner_candidate: dict | None = None
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        if candidate.get("catalog_entry_id") == winner_id:
+            winner_candidate = candidate
+            candidate["runtime_type"] = runtime_type
+            candidate["model_id"] = model_id
+            candidate["effective_tier"] = effective_tier
+            candidate["outcome"] = "selected"
+            candidate["exclusion"] = None
+            candidate["exclusions"] = []
+        elif candidate.get("outcome") == "selected":
+            candidate["outcome"] = "eligible"
+            candidate["exclusion"] = None
+            candidate["exclusions"] = []
+    if winner_candidate is None:
+        candidates.append(
+            {
+                "catalog_entry_id": winner_id,
+                "runtime_type": runtime_type,
+                "model_id": model_id,
+                "effective_tier": effective_tier,
+                "effective_priority": None,
+                "outcome": "selected",
+                "exclusion": None,
+                "exclusions": [],
+                "advisories": [],
+                "evidence_samples": 0,
+                "evidence_age_s": None,
+                "score": None,
+            }
+        )
+
+    if previous_failure_class is not None and retry_failure_class is not None:
+        raise ValueError("an attempt cannot be both a failover and a same-candidate retry")
+    reason = (
+        "same_tier_failover"
+        if previous_failure_class is not None
+        else "same_candidate_cold_retry"
+        if retry_failure_class is not None
+        else selection_reason or original_reason
+    )
+    receipt["winner"] = {
+        "catalog_entry_id": winner_id,
+        "runtime_type": runtime_type,
+        "model_id": model_id,
+        "effective_tier": effective_tier,
+        "reason": reason,
+    }
+    receipt["attempt_index"] = attempt_index
+    if selection_reason is not None:
+        receipt["selection_override"] = {"reason": selection_reason}
+    if previous_failure_class is not None:
+        receipt["failover"] = {
+            "from_attempt_index": attempt_index - 1,
+            "failure_class": previous_failure_class,
+        }
+    if retry_failure_class is not None:
+        receipt["retry"] = {
+            "from_attempt_index": attempt_index - 1,
+            "failure_class": retry_failure_class,
+            "kind": "same_candidate_cold",
+        }
+    return receipt
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,8 +374,9 @@ _DISPATCH_ATTEMPTS_INSERT = """
     INSERT INTO public.model_dispatch_attempts
         (session_id, catalog_entry_id, butler, outcome,
          failure_reason, error_code, error_message,
-         tool_call_count, attempt_index, logical_session_id, duration_ms, purpose_lane, ts)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, clock_timestamp())
+         tool_call_count, attempt_index, logical_session_id, duration_ms, purpose_lane,
+         resolution_receipt, ts)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, clock_timestamp())
 """
 
 _DISPATCH_ATTEMPTS_INSERT_RETURNING_ID = _DISPATCH_ATTEMPTS_INSERT + " RETURNING id"
@@ -191,6 +453,7 @@ async def record_dispatch_attempt(
     purpose_lane: PurposeLane = PURPOSE_LANE_STANDARD,
     produce_fleet_halt: bool = False,
     usage_evidence: DispatchUsageEvidence | None = None,
+    resolution_receipt: dict | None = None,
 ) -> int | None:
     """Persist one attempt with its usage evidence and any operational edge.
 
@@ -220,6 +483,7 @@ async def record_dispatch_attempt(
     """
     try:
         safe_error_message = error_message[:4096] if error_message else None
+        safe_resolution_receipt = bound_resolution_receipt(resolution_receipt)
         if usage_evidence is not None:
             if usage_evidence.usage_source not in {"measured", "unmeasurable"}:
                 raise ValueError("usage_source must be measured or unmeasurable")
@@ -264,6 +528,7 @@ async def record_dispatch_attempt(
             logical_session_id,
             duration_ms,
             purpose_lane,
+            safe_resolution_receipt,
         )
 
         if (

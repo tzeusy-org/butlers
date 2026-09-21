@@ -27,6 +27,7 @@ tests/migrations/test_effective_prompt_receipt_migration.py
 tests/migrations/test_entity_rebind_log_migration.py
 tests/migrations/test_filtered_events_id_index_migration.py
 tests/migrations/test_fleet_case_file_migration.py
+tests/migrations/test_model_resolution_receipt_migration.py
 tests/migrations/test_runtime_attention_outbox_migration.py
 tests/migrations/test_runtime_attention_producer_upgrade.py
 tests/migrations/test_runtime_config_blind_spot_flag_migration.py

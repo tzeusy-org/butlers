@@ -213,6 +213,7 @@ class SessionDetail(BaseModel):
     purpose_lane: Literal["standard", "private_content"] | None = None
     correction_count: int = 0
     linked_message: LinkedChatMessage | None = None
+    resolution_receipt: dict[str, Any] | None = None
 
 
 class PromptProvenance(BaseModel):
