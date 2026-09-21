@@ -192,7 +192,7 @@ function ConcentrationRow({ entry, rank, maxWeight, onOpen }: ConcentrationRowPr
       <button
         type="button"
         onClick={() => onOpen(entry.entity_id)}
-        className="flex w-full items-center gap-3 py-2 px-2 rounded-sm text-left hover:bg-muted/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="flex w-full items-center gap-3 py-2 px-2 rounded-sm text-left hover:bg-muted/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-focus"
         aria-label={`Open ${entry.canonical_name}`}
       >
         {/* Rank badge */}

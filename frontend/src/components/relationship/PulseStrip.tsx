@@ -96,7 +96,7 @@ function DunbarTile({
           type="button"
           className={
             "group rounded-md border px-3 py-2.5 text-left transition-colors " +
-            "hover:bg-accent focus:outline-none focus:ring-2 focus:ring-ring " +
+            "hover:bg-accent focus:outline-none focus:ring-2 focus:ring-focus " +
             (isPinned ? "border-foreground/30" : "border-border")
           }
           disabled={updateTier.isPending}

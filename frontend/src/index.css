@@ -117,6 +117,9 @@
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
+  /* Keyboard-focus boundary. Kept literal so contrast tests grade the value
+   * that the browser paints in each theme rather than following an alias. */
+  --focus: oklch(0.18 0 0);
   --chart-1: oklch(0.620 0.130 41.1);   /* warm orange — chroma 0.222 → 0.130 */
   --chart-2: oklch(0.600 0.100 184.7);  /* teal        — chroma 0.118 → 0.100 */
   --chart-3: oklch(0.440 0.080 227.4);  /* slate-blue  — L lifted 0.398 → 0.440, chroma 0.07 → 0.080 */
@@ -498,6 +501,7 @@ body {
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --color-focus: var(--focus);
   --color-chart-1: var(--chart-1);
   --color-chart-2: var(--chart-2);
   --color-chart-3: var(--chart-3);
@@ -610,6 +614,7 @@ body {
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);
+  --focus: oklch(0.985 0 0);
   --chart-1: oklch(0.560 0.140 264.4);  /* muted blue   — L 0.488 → 0.560, chroma 0.243 → 0.140 */
   --chart-2: oklch(0.720 0.130 162.5);  /* muted teal   — chroma 0.170 → 0.130 */
   --chart-3: oklch(0.760 0.130 70.1);   /* soft amber   — chroma 0.188 → 0.130 */
@@ -717,8 +722,11 @@ body {
   * {
     @apply border-border;
   }
-  :where(a, button, [role='button'], [tabindex]):focus-visible {
-    outline: 2px solid var(--fg);
+  /* This important floor is deliberately stronger than Tailwind's
+   * outline-none utilities, including focus-visible variants. Components may
+   * add affordances, but they cannot erase the measured keyboard boundary. */
+  :is(a, button, input, select, textarea, [role='button'], [tabindex]):focus-visible {
+    outline: 2px solid var(--focus) !important;
     outline-offset: 2px;
   }
   /* Tell the browser which palette to render native UI (scrollbars, form

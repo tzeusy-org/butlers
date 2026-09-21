@@ -533,7 +533,7 @@ function PermissionsMatrixSection({ matrix, onCellFlip }: PermissionsMatrixSecti
                     <button
                       onClick={() => onCellFlip(butler, perm, granted)}
                       className={cn(
-                        "inline-flex h-6 w-6 items-center justify-center rounded-full font-mono text-xs leading-none transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/50",
+                        "inline-flex h-6 w-6 items-center justify-center rounded-full font-mono text-xs leading-none transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus",
                         inherited
                           ? "opacity-60 hover:opacity-100 hover:bg-muted/40"
                           : granted
@@ -1269,7 +1269,7 @@ function WebhooksSection() {
       role="region"
       aria-label="Webhooks"
       tabIndex={-1}
-      className="flex flex-col gap-3 rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-fg"
+      className="flex flex-col gap-3 rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
     >
       <div className="flex justify-end">
         <InlineActionLink

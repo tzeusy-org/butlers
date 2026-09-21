@@ -89,7 +89,7 @@ function CommitFooter({ rule }: { rule: MemoryRule }) {
             "font-mono text-[11px] font-medium",
             "border border-[var(--border)] bg-transparent text-fg",
             "transition-colors hover:border-fg",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus",
             "disabled:pointer-events-none disabled:opacity-40",
           )}
         >

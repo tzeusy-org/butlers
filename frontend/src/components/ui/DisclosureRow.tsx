@@ -116,7 +116,7 @@ export const DisclosureRow = React.forwardRef<HTMLDivElement, DisclosureRowProps
         aria-controls={controlsId}
         aria-disabled={disabled || undefined}
         className={cn(
-          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
+          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus focus-visible:ring-inset",
           disabled ? "cursor-default" : "cursor-pointer",
           className,
         )}

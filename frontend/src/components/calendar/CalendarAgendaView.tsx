@@ -64,7 +64,7 @@ export function CalendarAgendaView({
       <div className="mx-auto max-w-3xl">
         <div className="mb-6 flex items-start justify-between gap-4">
           <div className="min-w-0">
-            <h1 ref={initialFocusRef} tabIndex={-1} className="text-2xl font-semibold text-fg focus:outline-none">
+            <h1 ref={initialFocusRef} tabIndex={-1} className="text-2xl font-semibold text-fg">
               Agenda · {rangeLabel}
             </h1>
             <p className="mt-1 text-sm text-[var(--dim)]">

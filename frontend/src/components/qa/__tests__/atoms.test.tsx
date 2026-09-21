@@ -152,7 +152,7 @@ describe("QA dossier atoms", () => {
     expect(activeRow.className).toContain("focus-visible:outline");
     expect(activeRow.className).toContain("focus-visible:outline-2");
     expect(activeRow.className).toContain("focus-visible:outline-offset-2");
-    expect(activeRow.className).toContain("focus-visible:outline-fg");
+    expect(activeRow.className).toContain("focus-visible:outline-focus");
 
     fireEvent.click(screen.getByTestId("qa-case-row-case-2"));
     expect(onSelect).toHaveBeenCalledWith("case-2");
@@ -177,7 +177,7 @@ describe("QA dossier atoms", () => {
     expect(door.className).toContain("focus-visible:outline");
     expect(door.className).toContain("focus-visible:outline-2");
     expect(door.className).toContain("focus-visible:outline-offset-2");
-    expect(door.className).toContain("focus-visible:outline-fg");
+    expect(door.className).toContain("focus-visible:outline-focus");
   });
 
   it("renders no rail session-trace door when a case has no linked sessions", () => {

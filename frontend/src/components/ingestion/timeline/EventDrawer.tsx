@@ -691,7 +691,7 @@ export function EventDrawer({ event, onClose, onOptimisticUpdate }: EventDrawerP
       {/* Focus lands here on open (tabIndex=-1: programmatically focusable,
           not a Tab stop); visually hidden since StatusBadge + timestamp
           already carry the same information for sighted users. */}
-      <h2 ref={headingRef} tabIndex={-1} className="sr-only focus:outline-none">
+      <h2 ref={headingRef} tabIndex={-1} className="sr-only">
         Event detail: {event.source_channel ?? 'unknown channel'}, {event.status}
       </h2>
       {/* Polite live-region announcement — screen-reader users hear the

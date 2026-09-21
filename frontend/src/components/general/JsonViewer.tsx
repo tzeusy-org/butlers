@@ -103,7 +103,7 @@ function JsonNode({ label, value, defaultCollapsed, depth }: NodeProps) {
         role="button"
         tabIndex={0}
         aria-expanded={!collapsed}
-        className="flex cursor-pointer items-baseline gap-1 hover:bg-accent/30 rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        className="flex cursor-pointer items-baseline gap-1 hover:bg-accent/30 rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
         style={{ paddingLeft: depth * 16 }}
         onClick={() => setCollapsed((c) => !c)}
         onKeyDown={(e) => {

@@ -162,7 +162,7 @@ function validateCondition(
 const labelCls =
   'block font-mono text-[10px] tracking-[0.14em] uppercase text-muted-foreground/70 mb-1.5'
 const inputCls =
-  'w-full bg-transparent border border-border px-2.5 py-1.5 font-mono text-[12px] focus:outline-none focus:border-foreground'
+  'w-full bg-transparent border border-border px-2.5 py-1.5 font-mono text-[12px] focus:outline-none focus:border-focus focus:ring-focus'
 
 function TextField({
   label,

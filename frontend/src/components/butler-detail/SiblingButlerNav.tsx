@@ -174,11 +174,11 @@ export function SiblingButlerNav({ activeButlerName }: SiblingButlerNavProps) {
                     "text-muted-foreground",
                     "border-b-2 border-transparent",
                     "hover:text-foreground hover:border-border",
-                    "focus-visible:text-foreground focus-visible:border-border",
+                    "focus-visible:text-foreground focus-visible:border-focus",
                     "transition-colors duration-[120ms] ease-in-out",
                   ].join(" "),
               // Focus ring for keyboard nav
-              "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+              "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus",
             ].join(" ")}
           >
             {/* Butler hue appears ONLY on ButlerMark — not on any other chrome element */}

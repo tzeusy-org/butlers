@@ -77,7 +77,7 @@ export function Pill({ selected = false, count, children, className, ...props }:
         // Hover (unselected only)
         !selected && "hover:text-fg hover:border-[var(--border-strong,oklch(1_0_0/0.18))]",
         // Focus
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus",
         // Disabled
         "disabled:pointer-events-none disabled:opacity-40",
         className,

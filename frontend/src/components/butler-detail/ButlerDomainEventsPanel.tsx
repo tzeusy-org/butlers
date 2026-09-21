@@ -251,7 +251,7 @@ function DeliveryRow({ entry }: { entry: DeliveryEntry }) {
           aria-expanded={open}
           aria-controls={traceId}
           onClick={() => setOpen((wasOpen) => !wasOpen)}
-          className="font-mono text-[10px] underline underline-offset-2 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className="font-mono text-[10px] underline underline-offset-2 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
         >
           {open ? "hide trace" : "trace"}
         </button>
@@ -261,7 +261,7 @@ function DeliveryRow({ entry }: { entry: DeliveryEntry }) {
             aria-label={`${replaying ? "Replaying" : "Replay"} ${entry.event_type} delivery`}
             disabled={replaying}
             onClick={() => replay.mutate(entry.id)}
-            className="font-mono text-[10px] underline underline-offset-2 text-[var(--red-text)] hover:text-foreground disabled:opacity-50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="font-mono text-[10px] underline underline-offset-2 text-[var(--red-text)] hover:text-foreground disabled:opacity-50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
           >
             {replaying ? "replaying…" : "replay"}
           </button>

@@ -2517,39 +2517,39 @@ const TH_SCOPE_SELECTORS = [
   },
 ]
 
-// bu-ep4ks.15: the secrets passport's hand-styled form fields strip the
-// native focus outline (`outline-none`) without adding any replacement focus
-// indicator -- a keyboard user tabbing through the Add/Edit Secret forms
-// gets zero visual feedback on which field is focused. Fixed at the four
-// cited sites (GoogleAppCredentials.tsx, Spine.tsx, ProviderConfigDrawer.tsx,
-// pages.tsx) onto the same `focus-visible:ring-[3px] focus-visible:ring-ring/50`
-// pattern components/ui/input.tsx and textarea.tsx already establish.
-//
-// Scoped to NO_UNGUARDED_OUTLINE_NONE_FILES (the passport family this bead
-// touches) rather than repo-wide: several other outline-none sites elsewhere
-// in the app already have a DIFFERENT replacement indicator (e.g.
-// ApprovalsPage.tsx's `focus:border-destructive/50`), and several are
-// deliberately-unfocusable sr-only headings (tabIndex={-1} programmatic
-// focus targets for a11y announcements, not real Tab-stops needing a visible
-// ring) -- both are legitimate, and a blanket repo-wide rule would false-
-// positive on them. Broadening this to a full repo audit is a follow-up, not
-// silently expanded here (mirrors the POLL_POLICY_FILES scoping precedent).
-const NO_UNGUARDED_OUTLINE_NONE_FILES = [
-  'src/components/secrets/passport/pages.tsx',
-  'src/components/secrets/passport/ProviderConfigDrawer.tsx',
-  'src/components/secrets/passport/GoogleAppCredentials.tsx',
-  'src/components/secrets/passport/Spine.tsx',
-]
-
+// Focus reset and vocabulary guards are repo-wide. `outline-none` remains
+// available only when the same class literal installs an explicit focus
+// replacement; the global important --focus outline is the non-overridable
+// floor beneath that local affordance. No files are allowlisted.
 const NO_UNGUARDED_OUTLINE_NONE_SELECTORS = [
   {
     selector:
       'Literal[value=/^(?!.*focus-visible:ring)(?!.*focus:ring)(?=.*\\boutline-none\\b).*$/s]',
     message:
-      'outline-none strips the native focus indicator with no replacement (bu-ep4ks.15) -- a ' +
-      'keyboard user gets no visual feedback that this field is focused. Add ' +
-      'focus-visible:ring-[3px] focus-visible:ring-ring/50 (the pattern components/ui/input.tsx ' +
-      'and textarea.tsx already use), or another visible focus-visible indicator.',
+      'outline-none strips the native focus indicator with no local replacement (bu-7exe4.11). ' +
+      'Add a focus-visible:ring-focus affordance; the global --focus outline remains the floor.',
+  },
+  {
+    selector:
+      'TemplateElement[value.raw=/^(?!.*focus-visible:ring)(?!.*focus:ring)(?=.*\\boutline-none\\b).*$/s]',
+    message:
+      'outline-none strips the native focus indicator with no local replacement (bu-7exe4.11). ' +
+      'Add a focus-visible:ring-focus affordance; the global --focus outline remains the floor.',
+  },
+]
+
+const RING_RING_SELECTORS = [
+  {
+    selector: 'Literal[value=/\\bring-ring(?:\\/\\d+)?\\b/]',
+    message:
+      'ring-ring is below the WCAG 1.4.11 non-text contrast floor (bu-7exe4.11). ' +
+      'Use the measured ring-focus token.',
+  },
+  {
+    selector: 'TemplateElement[value.raw=/\\bring-ring(?:\\/\\d+)?\\b/]',
+    message:
+      'ring-ring is below the WCAG 1.4.11 non-text contrast floor (bu-7exe4.11). ' +
+      'Use the measured ring-focus token.',
   },
 ]
 
@@ -2670,6 +2670,8 @@ export default defineConfig([
         ...FORMAT_CLONE_SELECTORS,
         ...KEYDOWN_LISTENER_SELECTORS,
         ...NO_WINDOW_CONFIRM_SELECTORS,
+        ...NO_UNGUARDED_OUTLINE_NONE_SELECTORS,
+        ...RING_RING_SELECTORS,
         ...VISUAL_ROLE_SELECTORS,
       ],
     },
@@ -2693,6 +2695,8 @@ export default defineConfig([
         ...KEYDOWN_LISTENER_SELECTORS,
         ...TH_SCOPE_SELECTORS,
         ...NO_WINDOW_CONFIRM_SELECTORS,
+        ...NO_UNGUARDED_OUTLINE_NONE_SELECTORS,
+        ...RING_RING_SELECTORS,
         ...VISUAL_ROLE_SELECTORS,
       ],
     },
@@ -2717,6 +2721,8 @@ export default defineConfig([
         ...KEYDOWN_LISTENER_SELECTORS,
         ...TH_SCOPE_SELECTORS,
         ...NO_WINDOW_CONFIRM_SELECTORS,
+        ...NO_UNGUARDED_OUTLINE_NONE_SELECTORS,
+        ...RING_RING_SELECTORS,
         ...VISUAL_ROLE_SELECTORS,
       ],
     },
@@ -2742,6 +2748,8 @@ export default defineConfig([
         ...KEYDOWN_LISTENER_SELECTORS,
         ...TH_SCOPE_SELECTORS,
         ...NO_WINDOW_CONFIRM_SELECTORS,
+        ...NO_UNGUARDED_OUTLINE_NONE_SELECTORS,
+        ...RING_RING_SELECTORS,
         ...VISUAL_ROLE_SELECTORS,
       ],
     },
@@ -2760,6 +2768,8 @@ export default defineConfig([
         ...ANIMATE_PULSE_SELECTORS,
         ...FORMAT_CLONE_SELECTORS,
         ...NO_WINDOW_CONFIRM_SELECTORS,
+        ...NO_UNGUARDED_OUTLINE_NONE_SELECTORS,
+        ...RING_RING_SELECTORS,
         ...VISUAL_ROLE_SELECTORS,
       ],
     },
@@ -2779,6 +2789,8 @@ export default defineConfig([
         ...FORMAT_CLONE_SELECTORS,
         ...TH_SCOPE_SELECTORS,
         ...NO_WINDOW_CONFIRM_SELECTORS,
+        ...NO_UNGUARDED_OUTLINE_NONE_SELECTORS,
+        ...RING_RING_SELECTORS,
         ...VISUAL_ROLE_SELECTORS,
       ],
     },
@@ -2808,32 +2820,8 @@ export default defineConfig([
         ...VISUAL_ROLE_SELECTORS,
         ...TH_SCOPE_SELECTORS,
         ...NO_WINDOW_CONFIRM_SELECTORS,
-      ],
-    },
-  },
-  {
-    // bu-ep4ks.15: no-unguarded-outline-none, scoped -- see
-    // NO_UNGUARDED_OUTLINE_NONE_FILES comment above for why this isn't
-    // repo-wide. Must repeat the general '**/*.tsx' block's full selector set
-    // (flat config does not merge no-restricted-syntax across matching
-    // blocks for the same file).
-    files: NO_UNGUARDED_OUTLINE_NONE_FILES,
-    rules: {
-      'no-restricted-syntax': [
-        'error',
-        ...HSL_VAR_SELECTORS,
-        ...STATUS_COLOR_SELECTORS,
-        ...HEX_COLOR_SELECTORS,
-        ...PRIMITIVE_REDECLARATION_SELECTORS,
-        ...HANDROLLED_OVERLAY_SELECTORS,
-        ...POLL_POLICY_SELECTORS,
-        ...ANIMATE_PULSE_SELECTORS,
-        ...FORMAT_CLONE_SELECTORS,
-        ...KEYDOWN_LISTENER_SELECTORS,
-        ...TH_SCOPE_SELECTORS,
         ...NO_UNGUARDED_OUTLINE_NONE_SELECTORS,
-        ...NO_WINDOW_CONFIRM_SELECTORS,
-        ...VISUAL_ROLE_SELECTORS,
+        ...RING_RING_SELECTORS,
       ],
     },
   },
@@ -2857,6 +2845,8 @@ export default defineConfig([
         ...BLUE_PURPLE_STATUS_SELECTORS,
         ...TH_SCOPE_SELECTORS,
         ...NO_WINDOW_CONFIRM_SELECTORS,
+        ...NO_UNGUARDED_OUTLINE_NONE_SELECTORS,
+        ...RING_RING_SELECTORS,
         ...VISUAL_ROLE_SELECTORS,
       ],
     },

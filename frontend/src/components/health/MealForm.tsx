@@ -150,7 +150,7 @@ export function MealForm({ meal, onDone, onCancel }: MealFormProps) {
             id="meal-type"
             value={type}
             onChange={(e) => setType(e.target.value)}
-            className="border-input bg-background ring-offset-background focus-visible:ring-ring flex h-10 w-full rounded-md border px-3 py-2 text-sm capitalize focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
+            className="border-input bg-background ring-offset-background focus-visible:ring-focus flex h-10 w-full rounded-md border px-3 py-2 text-sm capitalize focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
           >
             {MEAL_TYPES.map((opt) => (
               <option key={opt} value={opt} className="capitalize">

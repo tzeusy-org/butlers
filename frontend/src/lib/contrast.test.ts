@@ -31,7 +31,13 @@ import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { describe, expect, it } from "vitest"
 
-import { contrastRatio, relativeLuminance, WCAG_AA_NORMAL_TEXT, type Oklch } from "./contrast"
+import {
+  contrastRatio,
+  relativeLuminance,
+  WCAG_AA_NON_TEXT,
+  WCAG_AA_NORMAL_TEXT,
+  type Oklch,
+} from "./contrast"
 import { labelFillColors } from "./visual-token-roles"
 
 const CSS_PATH = fileURLToPath(new URL("../index.css", import.meta.url))
@@ -153,6 +159,15 @@ const TEXT_TOKENS = [
   ...CATEGORICAL_TEXT_TOKENS,
 ]
 const BG_TOKENS = ["bg", "bg-elev"]
+const COMPONENT_SURFACE_TOKENS = [
+  "bg",
+  "bg-elev",
+  "bg-deep",
+  "background",
+  "secondary",
+  "accent",
+  "popover",
+]
 
 describe.each(["light", "dark"] as const)("contrast: %s theme text tokens vs surface backgrounds", (theme) => {
   const tokens = theme === "light" ? LIGHT_TOKENS : DARK_TOKENS
@@ -166,6 +181,23 @@ describe.each(["light", "dark"] as const)("contrast: %s theme text tokens vs sur
         ratio,
         `--${textName} (${theme}) vs --${bgName} = ${ratio.toFixed(2)}:1, below the ${WCAG_AA_NORMAL_TEXT}:1 AA floor`,
       ).toBeGreaterThanOrEqual(WCAG_AA_NORMAL_TEXT)
+    }
+  })
+})
+
+describe.each(["light", "dark"] as const)("contrast: %s theme component boundary tokens", (theme) => {
+  const tokens = theme === "light" ? LIGHT_TOKENS : DARK_TOKENS
+
+  it("keeps the focus boundary above the WCAG non-text floor on every component surface", () => {
+    const focus = requireToken(tokens, "focus")
+
+    for (const surfaceName of COMPONENT_SURFACE_TOKENS) {
+      const surface = requireToken(tokens, surfaceName)
+      const ratio = contrastRatio(focus, surface)
+      expect(
+        ratio,
+        `--focus (${theme}) vs --${surfaceName} = ${ratio.toFixed(2)}:1, below the ${WCAG_AA_NON_TEXT}:1 non-text floor`,
+      ).toBeGreaterThanOrEqual(WCAG_AA_NON_TEXT)
     }
   })
 })
