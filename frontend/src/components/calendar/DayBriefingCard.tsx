@@ -69,7 +69,7 @@ function DayBriefingChip({
     "flex max-w-full items-center gap-1 truncate rounded-[2px] border border-dashed bg-foreground/[0.02] px-1.5 py-0.5 text-left text-[11px] leading-none",
     accent,
     interactive &&
-      "cursor-pointer transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30",
+      "cursor-pointer transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus",
   );
 
   if (!interactive) {

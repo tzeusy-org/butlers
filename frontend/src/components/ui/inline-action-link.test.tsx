@@ -20,7 +20,7 @@ describe("InlineActionLink", () => {
     expect(html).toContain("focus-visible:outline")
     expect(html).toContain("focus-visible:outline-2")
     expect(html).toContain("focus-visible:outline-offset-2")
-    expect(html).toContain("focus-visible:outline-fg")
+    expect(html).toContain("focus-visible:outline-focus")
     expect(html).not.toContain("focus-visible:ring")
   })
 

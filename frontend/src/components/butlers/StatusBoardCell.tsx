@@ -346,7 +346,7 @@ export function StatusBoardCell({
           navigate(activityTabPath)
         }}
         aria-label={`Open ${name} activity`}
-        className="mt-auto block w-full appearance-none border-0 bg-transparent p-0 pt-4 text-left cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset rounded-sm"
+        className="mt-auto block w-full appearance-none border-0 bg-transparent p-0 pt-4 text-left cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus focus-visible:ring-inset rounded-sm"
       >
         <div className="flex items-center justify-between mb-1">
           <span className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground">

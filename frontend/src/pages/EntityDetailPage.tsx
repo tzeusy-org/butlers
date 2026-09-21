@@ -1286,7 +1286,7 @@ function FactRow({
                 revealed ? "Hide provenance" : "Reveal provenance"
               }
               onClick={() => setRevealed((v) => !v)}
-              className="rounded px-1 font-mono text-[10px] leading-none text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="rounded px-1 font-mono text-[10px] leading-none text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
             >
               {revealed ? "−" : "i"}
             </button>
@@ -1748,7 +1748,7 @@ function EntityDetailModeToggle({
       data-testid="entity-mode-toggle"
       onClick={() => onModeChange(nextMode)}
       title={`${mode === "editorial" ? "Editorial" : "Workbench"} mode: click to switch to ${nextMode}`}
-      className="inline-flex items-center gap-1.5 rounded border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:border-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      className="inline-flex items-center gap-1.5 rounded border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:border-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
     >
       <Layers className="h-3.5 w-3.5" aria-hidden />
       {mode === "editorial" ? "Editorial" : "Workbench"}
@@ -1897,7 +1897,7 @@ function WorkbenchContextRail({
                 type="button"
                 data-testid="workbench-shares-identifiers"
                 onClick={() => onOpenMergeReviewWith(peer.id)}
-                className="block w-full text-left font-mono text-[10px] uppercase leading-relaxed tracking-[0.08em] text-[var(--amber-text)] hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="block w-full text-left font-mono text-[10px] uppercase leading-relaxed tracking-[0.08em] text-[var(--amber-text)] hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
               >
                 {peer.name ?? "another entity"}, likely the same →
               </button>
@@ -2031,8 +2031,8 @@ function CurationAction({
       disabled={disabled}
       className={
         destructive
-          ? "block w-full rounded border border-border px-2.5 py-1.5 text-left font-mono text-[11px] uppercase tracking-[0.04em] text-destructive transition-colors hover:border-destructive hover:bg-destructive/10 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          : "block w-full rounded border border-border px-2.5 py-1.5 text-left font-mono text-[11px] uppercase tracking-[0.04em] text-muted-foreground transition-colors hover:border-foreground hover:text-foreground disabled:opacity-40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          ? "block w-full rounded border border-border px-2.5 py-1.5 text-left font-mono text-[11px] uppercase tracking-[0.04em] text-destructive transition-colors hover:border-destructive hover:bg-destructive/10 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
+          : "block w-full rounded border border-border px-2.5 py-1.5 text-left font-mono text-[11px] uppercase tracking-[0.04em] text-muted-foreground transition-colors hover:border-foreground hover:text-foreground disabled:opacity-40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
       }
     >
       {label}
@@ -2072,7 +2072,7 @@ function EditorialCurationCell({
       className={[
         "group flex flex-col gap-1 rounded border px-3 py-2.5 text-left transition-colors",
         "disabled:cursor-not-allowed disabled:opacity-40",
-        "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+        "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus",
         isDestructive
           ? "border-border text-destructive hover:border-destructive hover:bg-destructive/5"
           : "border-border text-foreground hover:border-foreground/40 hover:bg-muted/20",
@@ -2243,7 +2243,7 @@ function WorkbenchActionRail({
             type="button"
             data-testid="workbench-duplicate-commit"
             onClick={onOpenMergeReview}
-            className="inline-flex items-center gap-1.5 rounded border border-[var(--amber)] px-2.5 py-1 font-mono text-[11px] uppercase tracking-[0.04em] text-[var(--amber-text)] transition-colors hover:bg-[var(--amber)]/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="inline-flex items-center gap-1.5 rounded border border-[var(--amber)] px-2.5 py-1 font-mono text-[11px] uppercase tracking-[0.04em] text-[var(--amber-text)] transition-colors hover:bg-[var(--amber)]/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
           >
             <Layers className="h-3.5 w-3.5" aria-hidden />
             Review &amp; merge →
@@ -2787,7 +2787,7 @@ export default function EntityDetailPage() {
           setForgetError(null);
           setForgetDialogOpen(true);
         }}
-        className="inline-flex items-center gap-1.5 rounded border border-border px-2.5 py-1 text-xs font-medium text-destructive transition-colors hover:border-destructive hover:bg-destructive/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        className="inline-flex items-center gap-1.5 rounded border border-border px-2.5 py-1 text-xs font-medium text-destructive transition-colors hover:border-destructive hover:bg-destructive/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
       >
         <Trash2 className="h-3.5 w-3.5" aria-hidden />
         Forget
@@ -2830,7 +2830,7 @@ export default function EntityDetailPage() {
           tabIndex={0}
           onKeyDown={handleDetailKeyDown}
           data-testid="entity-detail-root"
-          className="outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-2"
+          className="outline-none focus-visible:ring-1 focus-visible:ring-focus focus-visible:ring-offset-2"
         >
           {/* eslint-enable jsx-a11y/no-static-element-interactions, jsx-a11y/no-noninteractive-tabindex */}
           <RebindReceiptCohort receipts={entity.rebind_receipts ?? []} />

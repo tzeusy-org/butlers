@@ -270,7 +270,7 @@ function EventRow({
     >
       <button
         type="button"
-        className={`${sessionLink ? "col-span-4" : "col-span-5"} grid min-h-6 min-w-0 items-center gap-x-3 bg-transparent p-0 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset`}
+        className={`${sessionLink ? "col-span-4" : "col-span-5"} grid min-h-6 min-w-0 items-center gap-x-3 bg-transparent p-0 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus focus-visible:ring-inset`}
         style={{ gridTemplateColumns: sessionLink ? ROW_DISCLOSURE_GRID : ROW_GRID }}
         onClick={onToggle}
         onFocus={() => onDisclosureFocus(disclosureId)}
@@ -298,7 +298,7 @@ function EventRow({
       {sessionLink ? (
         <Link
           to={sessionLink}
-          className="inline-flex size-6 items-center justify-center font-mono text-[10px] text-muted-foreground select-none transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
+          className="inline-flex size-6 items-center justify-center font-mono text-[10px] text-muted-foreground select-none transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus focus-visible:ring-inset"
           data-testid="row-session-link"
           aria-label="View session"
         >
@@ -399,7 +399,7 @@ function MaintenanceGroupRow({
       <button
         type="button"
         onClick={() => setExpanded(!expanded)}
-        className="flex w-full items-center gap-3 px-3 py-1.5 text-left transition-colors hover:bg-muted/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
+        className="flex w-full items-center gap-3 px-3 py-1.5 text-left transition-colors hover:bg-muted/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus focus-visible:ring-inset"
         data-testid="maintenance-group-row"
         aria-expanded={expanded}
         data-timeline-disclosure-id={disclosureId}

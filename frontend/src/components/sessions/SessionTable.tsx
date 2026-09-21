@@ -234,7 +234,7 @@ export function SessionTable({
                   {interactive ? (
                     <button
                       type="button"
-                      className="rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+                      className="rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-inset"
                       aria-label={`Open session detail for ${session.butler ?? "session"}: ${truncate(session.prompt, 80)}`}
                       onClick={(e) => {
                         e.stopPropagation();

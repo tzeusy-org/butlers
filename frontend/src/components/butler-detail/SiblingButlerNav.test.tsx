@@ -567,7 +567,7 @@ describe("Scenario 8 — keyboard contract and ARIA", () => {
     const focusedEl = document.activeElement
     expect(focusedEl).not.toBeNull()
     // The Link element must carry the Tailwind focus-visible ring class token.
-    expect(focusedEl?.className ?? "").toContain("focus-visible:ring-ring")
+    expect(focusedEl?.className ?? "").toContain("focus-visible:ring-focus")
   })
 
   it("Enter key on a focused sibling-nav entry navigates to /butlers/:name", async () => {

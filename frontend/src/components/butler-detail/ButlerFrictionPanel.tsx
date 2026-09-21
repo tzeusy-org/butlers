@@ -73,7 +73,7 @@ function PeriodToggle({ value, onChange }: { value: Period; onChange: (p: Period
             className={[
               "inline-flex items-center justify-center px-2 py-1",
               "font-mono text-[10px] uppercase tabular-nums transition-colors",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-background focus-visible:ring-offset-1",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-background focus-visible:ring-offset-1",
               "first:rounded-l-sm last:rounded-r-sm",
               isActive ? "bg-foreground text-background" : "bg-transparent text-foreground hover:bg-muted",
             ].join(" ")}

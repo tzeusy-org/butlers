@@ -88,7 +88,7 @@ export interface CalendarProposalsPanelProps {
 const PILL =
   "inline-flex items-center justify-center gap-1.5 h-7 rounded-[3px] border px-2.5 " +
   "font-mono text-[11px] leading-none transition-colors " +
-  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30 " +
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus " +
   "disabled:pointer-events-none disabled:opacity-40";
 
 export function CalendarProposalsPanel({
@@ -363,7 +363,7 @@ export function CalendarProposalsPanel({
                         onChange={(e) =>
                           setEditDraft((prev) => (prev ? { ...prev, title: e.target.value } : prev))
                         }
-                        className="rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 py-1.5 text-sm text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30"
+                        className="rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 py-1.5 text-sm text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
                       />
                     </label>
                     <div className="flex flex-wrap gap-2">
@@ -380,7 +380,7 @@ export function CalendarProposalsPanel({
                               prev ? { ...prev, startLocal: e.target.value } : prev,
                             )
                           }
-                          className="rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 py-1.5 font-mono text-[12px] text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30"
+                          className="rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 py-1.5 font-mono text-[12px] text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
                         />
                       </label>
                       <label className="flex flex-1 flex-col gap-1">
@@ -396,7 +396,7 @@ export function CalendarProposalsPanel({
                               prev ? { ...prev, endLocal: e.target.value } : prev,
                             )
                           }
-                          className="rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 py-1.5 font-mono text-[12px] text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30"
+                          className="rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 py-1.5 font-mono text-[12px] text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
                         />
                       </label>
                     </div>

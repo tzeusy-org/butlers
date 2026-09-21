@@ -86,7 +86,7 @@ function MonoCellInput({
         "w-20 bg-transparent font-mono text-[11px] tabular-nums leading-[1.4] text-fg",
         "border-0 border-b border-transparent px-0 py-0.5",
         "placeholder:text-[var(--mfg)]",
-        "focus:border-[var(--border-strong)] focus:outline-none",
+        "focus:border-[var(--border-strong)] focus:outline-none focus:ring-focus",
       )}
     />
   );
@@ -214,7 +214,7 @@ function RetentionPolicies() {
               "font-mono text-[10px] font-medium uppercase tracking-wide leading-none",
               "border border-fg text-fg bg-transparent",
               "transition-colors hover:bg-fg hover:text-bg",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus",
               "disabled:pointer-events-none disabled:opacity-40",
             )}
           >

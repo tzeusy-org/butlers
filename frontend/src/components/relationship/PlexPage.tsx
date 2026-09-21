@@ -329,7 +329,7 @@ function PlexNode({
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
-      className={`group absolute left-0 top-0 flex -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-0.5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
+      className={`group absolute left-0 top-0 flex -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-0.5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus ${
         dragging
           ? "z-20 cursor-grabbing"
           : "transition-transform duration-slow ease-out-quart"
@@ -1995,7 +1995,7 @@ export default function PlexPage() {
           onPointerMove={handleStagePointerMove}
           onPointerUp={handleStagePointerUp}
           data-testid="plex-canvas"
-          className={`relative min-h-0 min-w-0 flex-1 select-none overflow-hidden rounded-sm outline-none focus-visible:ring-1 focus-visible:ring-ring ${
+          className={`relative min-h-0 min-w-0 flex-1 select-none overflow-hidden rounded-sm outline-none focus-visible:ring-1 focus-visible:ring-focus ${
             panning ? "cursor-grabbing" : "cursor-grab"
           }`}
         >

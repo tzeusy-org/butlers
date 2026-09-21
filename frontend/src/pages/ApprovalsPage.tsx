@@ -133,7 +133,7 @@ const Q = {
 const APPROVAL_LANE_PILL_BASE = [
   "inline-flex items-center justify-center rounded-[3px] border px-2.5 py-1",
   "font-mono text-[11px] leading-none transition-colors",
-  "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground",
+  "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus",
 ].join(" ");
 
 function approvalLaneHref(lane: ApprovalLane, actionId?: string): string {
@@ -495,7 +495,7 @@ function RailItem({
       className={[
         "w-full text-left px-3 py-3 border-b border-border last:border-b-0",
         "transition-colors focus-visible:outline focus-visible:outline-2",
-        "focus-visible:outline-offset-[-2px] focus-visible:outline-foreground/40",
+        "focus-visible:outline-offset-[-2px] focus-visible:outline-focus",
         pushFailed && !isPending ? "border-l-2 border-l-[var(--red)] bg-[var(--red)]/[0.04]" : "",
         isPending
           ? "opacity-50 hover:opacity-70"
@@ -735,7 +735,7 @@ function Dossier({
                   className={[
                     "pointer-events-auto w-72 max-w-[80vw] px-2 py-1 text-xs rounded",
                     "border border-border bg-background/85 backdrop-blur-sm shadow-sm",
-                    "focus:outline-none focus:border-destructive/50",
+                    "focus:outline-none focus:ring-focus focus:border-destructive/50",
                   ].join(" ")}
                 />
               </>
@@ -799,7 +799,7 @@ function Dossier({
                   onChange={(e) => setDeferHours(e.target.value)}
                   className={[
                     "w-full px-2 py-1.5 text-sm border border-border rounded",
-                    "bg-background focus:outline-none focus:border-foreground/40",
+                    "bg-background focus:outline-none focus:ring-focus focus:border-focus",
                   ].join(" ")}
                 />
                 <button
@@ -1309,7 +1309,7 @@ function PolicySection() {
                   }))
                 }
                 placeholder="None"
-                className="w-full px-2 py-1.5 text-sm border border-border rounded bg-background focus:outline-none focus:border-foreground/40"
+                className="w-full px-2 py-1.5 text-sm border border-border rounded bg-background focus:outline-none focus:ring-focus focus:border-focus"
               />
             </div>
             <div>
@@ -1332,7 +1332,7 @@ function PolicySection() {
                   }))
                 }
                 placeholder="None"
-                className="w-full px-2 py-1.5 text-sm border border-border rounded bg-background focus:outline-none focus:border-foreground/40"
+                className="w-full px-2 py-1.5 text-sm border border-border rounded bg-background focus:outline-none focus:ring-focus focus:border-focus"
               />
             </div>
           </div>
@@ -1347,7 +1347,7 @@ function PolicySection() {
                 setDraft((d) => ({ ...d, timezone: e.target.value }))
               }
               placeholder="UTC"
-              className="w-full px-2 py-1.5 text-sm border border-border rounded bg-background focus:outline-none focus:border-foreground/40"
+              className="w-full px-2 py-1.5 text-sm border border-border rounded bg-background focus:outline-none focus:ring-focus focus:border-focus"
             />
           </div>
           <div className="flex gap-2">

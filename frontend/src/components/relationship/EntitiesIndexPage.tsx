@@ -928,7 +928,7 @@ function DuplicateEvidence({
                   highlight: trigger,
                 })
               }
-              className="min-w-0 truncate text-left text-xs text-[var(--amber-text)] underline decoration-[var(--border-strong)] underline-offset-4 hover:decoration-[var(--amber)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="min-w-0 truncate text-left text-xs text-[var(--amber-text)] underline decoration-[var(--border-strong)] underline-offset-4 hover:decoration-[var(--amber)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
             >
               {nameById.get(peerId) ?? "Linked entity"}
             </button>
@@ -1500,7 +1500,7 @@ export function EntitiesIndexPage() {
                       ? "Compare and merge the two selected"
                       : "Select exactly two to merge"
                   }
-                  className="inline-flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.04em] text-muted-foreground underline decoration-[var(--border-strong)] underline-offset-4 hover:text-foreground disabled:opacity-40 disabled:no-underline disabled:hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="inline-flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.04em] text-muted-foreground underline decoration-[var(--border-strong)] underline-offset-4 hover:text-foreground disabled:opacity-40 disabled:no-underline disabled:hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
                 >
                   <GitMergeIcon className="h-3.5 w-3.5" aria-hidden />
                   Merge
@@ -1509,7 +1509,7 @@ export function EntitiesIndexPage() {
                   type="button"
                   data-testid="gutter-archive"
                   onClick={() => setBulkConfirm("archive")}
-                  className="inline-flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.04em] text-muted-foreground underline decoration-[var(--border-strong)] underline-offset-4 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="inline-flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.04em] text-muted-foreground underline decoration-[var(--border-strong)] underline-offset-4 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
                 >
                   <ArchiveIcon className="h-3.5 w-3.5" aria-hidden />
                   Archive
@@ -1518,7 +1518,7 @@ export function EntitiesIndexPage() {
                   type="button"
                   data-testid="gutter-forget"
                   onClick={() => setBulkConfirm("forget")}
-                  className="inline-flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.04em] text-[var(--red-text)] underline decoration-[var(--border-strong)] underline-offset-4 hover:decoration-[var(--red)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="inline-flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.04em] text-[var(--red-text)] underline decoration-[var(--border-strong)] underline-offset-4 hover:decoration-[var(--red)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
                 >
                   <TrashIcon className="h-3.5 w-3.5" aria-hidden />
                   Forget
@@ -1527,7 +1527,7 @@ export function EntitiesIndexPage() {
                   type="button"
                   data-testid="gutter-clear"
                   onClick={() => setSelectedIds(new Set())}
-                  className="font-mono text-[11px] uppercase tracking-[0.04em] text-muted-foreground underline decoration-[var(--border-strong)] underline-offset-4 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="font-mono text-[11px] uppercase tracking-[0.04em] text-muted-foreground underline decoration-[var(--border-strong)] underline-offset-4 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
                 >
                   Clear
                 </button>
@@ -1543,7 +1543,7 @@ export function EntitiesIndexPage() {
             aria-label="Entity list"
             onKeyDown={handleListKeyDown}
             data-testid="entity-list-container"
-            className="rounded-sm outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="rounded-sm outline-none focus-visible:ring-1 focus-visible:ring-focus"
           >
             <EntityTable
               entities={entities}

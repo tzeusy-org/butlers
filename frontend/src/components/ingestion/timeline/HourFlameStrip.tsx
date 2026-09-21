@@ -256,7 +256,7 @@ export function HourFlameStrip({
               onMouseLeave={() => setActiveOffset((prev) => (prev === slot.offsetMinutes ? null : prev))}
               onFocus={() => setActiveOffset(slot.offsetMinutes)}
               onBlur={() => setActiveOffset((prev) => (prev === slot.offsetMinutes ? null : prev))}
-              className="relative flex flex-col justify-end shrink-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:z-10"
+              className="relative flex flex-col justify-end shrink-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus focus-visible:z-10"
               style={{ width: bucketMinutes, height }}
               aria-label={formatMinuteSummary(slot, tz)}
               data-testid="hour-strip-minute"

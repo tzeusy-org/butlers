@@ -82,7 +82,7 @@ demands, never as decoration:
 | Role     | Dark                       | Light                      | Used for |
 |----------|----------------------------|----------------------------|----------|
 | `--red`  | `oklch(0.685 0.250 29.2)`  | `oklch(0.627 0.257 29.2)`  | High severity, error, blockers, reauth |
-| `--amber`| `oklch(0.810 0.185 84.0)`  | `oklch(0.769 0.189 84.0)`  | Medium severity, degraded |
+| `--amber`| `oklch(0.810 0.185 84.0)`  | `oklch(0.660 0.189 84.0)`  | Medium severity, degraded |
 | `--green`| `oklch(0.790 0.195 148)`   | `oklch(0.50 0.140 152)`    | Healthy, positive delta |
 
 (Values align with the `--severity-*` scale in `frontend/src/index.css`, which is normative.)
@@ -391,13 +391,18 @@ count-up animations, "delight" of any kind. Calm is the feature.
 ### Requirement: Interaction Affordances
 Links SHALL be underlined with `text-underline-offset: 4px` and `text-decoration-color:
 var(--border-strong)` — visible but not loud. Hover on list rows is a 6% white tint on dark / 5%
-black tint on light, with no transform. Focus is visible — 2px outline of `--fg` at 2px offset —
-via `:focus-visible` only. Disabled state is opacity 0.4 with no pointer events; never grey out
-by changing color.
+black tint on light, with no transform. Focus is visible — 2px outline of `--focus` at 2px offset —
+via `:focus-visible` only. `--focus` is the sole focus-color token and SHALL maintain at least
+3:1 contrast against every component surface in both light and dark themes, per WCAG 1.4.11.
+The global outline is a non-overridable floor: component utilities may add an affordance but MUST
+NOT suppress or recolor it. Disabled state is opacity 0.4 with no pointer events; never grey out by
+changing color.
 
 #### Scenario: Keyboard focus visible
 - **WHEN** a user tabs to an interactive element
-- **THEN** a 2px `--fg` outline at 2px offset renders via `:focus-visible`
+- **THEN** a 2px `--focus` outline at 2px offset renders via `:focus-visible`
+- **AND** the outline has at least 3:1 contrast against the element's surface in either theme
+- **AND** component-level outline or ring utilities cannot suppress the global outline
 
 ### Requirement: Interface Copy
 Interface copy SHALL follow the settled voice doctrine

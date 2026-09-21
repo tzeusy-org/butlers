@@ -94,7 +94,7 @@ export function ExpandableDetail({
           aria-controls={regionId}
           aria-label={open ? `Hide full ${label}` : `Show full ${label}`}
           data-testid={testId}
-          className="mt-0.5 inline-flex shrink-0 items-center rounded-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className="mt-0.5 inline-flex shrink-0 items-center rounded-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
         >
           <ChevronDownIcon
             className={cn("size-3.5 transition-transform", open && "rotate-180")}

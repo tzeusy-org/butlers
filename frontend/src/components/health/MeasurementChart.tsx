@@ -390,7 +390,7 @@ export default function MeasurementChart() {
             type="date"
             value={since}
             onChange={(e) => setChartParam("since", e.target.value)}
-            className="border-input bg-background ring-offset-background focus-visible:ring-ring flex h-9 w-40 rounded-md border px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
+            className="border-input bg-background ring-offset-background focus-visible:ring-focus flex h-9 w-40 rounded-md border px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
           />
         </div>
         <div className="flex items-center gap-2">
@@ -402,7 +402,7 @@ export default function MeasurementChart() {
             type="date"
             value={until}
             onChange={(e) => setChartParam("until", e.target.value)}
-            className="border-input bg-background ring-offset-background focus-visible:ring-ring flex h-9 w-40 rounded-md border px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
+            className="border-input bg-background ring-offset-background focus-visible:ring-focus flex h-9 w-40 rounded-md border px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
           />
         </div>
         {(since || until) && (

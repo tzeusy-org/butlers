@@ -1754,7 +1754,7 @@ function RulesTable({
                 aria-label={`Routing rule at position ${rule.position} of ${rules.length}${isGrabbed ? ", grabbed. Use arrow keys to move, space or enter to drop, escape to cancel" : ". Press space or enter to reorder with the keyboard"}`}
                 className={cn(
                   "border-border/60 hover:bg-muted/30 cursor-grab active:cursor-grabbing",
-                  "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-fg",
+                  "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-focus",
                   isGrabbed &&
                     "bg-muted/50 outline outline-2 outline-offset-[-2px] outline-fg",
                 )}

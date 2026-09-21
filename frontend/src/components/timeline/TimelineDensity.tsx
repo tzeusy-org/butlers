@@ -111,7 +111,7 @@ export function TimelineDensity({
                 title={label}
                 data-testid="timeline-density-bucket"
                 tabIndex={index === activeIndex ? 0 : -1}
-                className="group relative flex h-full min-w-0 flex-1 items-end focus-visible:z-10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground"
+                className="group relative flex h-full min-w-0 flex-1 items-end focus-visible:z-10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
                 onFocus={() => setActiveIndex(index)}
                 onClick={() => onSelect(bucket.start, bucket.end)}
                 onKeyDown={(event) => {

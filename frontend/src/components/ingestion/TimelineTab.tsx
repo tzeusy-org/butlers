@@ -409,7 +409,7 @@ function Toolbar({
             className={[
               "pl-7 pr-2 py-1 font-mono text-[11px] bg-transparent border border-border rounded",
               "text-foreground placeholder:text-muted-foreground",
-              "focus:outline-none focus:ring-1 focus:ring-ring transition-colors",
+              "focus:outline-none focus:ring-1 focus:ring-focus transition-colors",
               "w-44",
             ].join(" ")}
             data-testid="search-input"

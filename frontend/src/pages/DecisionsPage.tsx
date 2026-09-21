@@ -126,7 +126,7 @@ function DecisionRow({
         className={[
           "block w-full text-left px-3 py-3 transition-colors",
           "focus-visible:outline focus-visible:outline-2",
-          "focus-visible:outline-offset-[-2px] focus-visible:outline-foreground/40",
+          "focus-visible:outline-offset-[-2px] focus-visible:outline-focus",
           selected ? "" : "hover:bg-foreground/[0.03]",
         ].join(" ")}
       >

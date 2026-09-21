@@ -117,6 +117,9 @@
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
+  /* Keyboard-focus boundary. Kept literal so contrast tests grade the value
+   * that the browser paints in each theme rather than following an alias. */
+  --focus: oklch(0.58 0 0);
   --chart-1: oklch(0.620 0.130 41.1);   /* warm orange — chroma 0.222 → 0.130 */
   --chart-2: oklch(0.600 0.100 184.7);  /* teal        — chroma 0.118 → 0.100 */
   --chart-3: oklch(0.440 0.080 227.4);  /* slate-blue  — L lifted 0.398 → 0.440, chroma 0.07 → 0.080 */
@@ -148,7 +151,7 @@
 
   /* Severity */
   --severity-low:    oklch(0.723 0.198 148.2);  /* green  — #22c55e */
-  --severity-medium: oklch(0.769 0.189 84.0);   /* amber  — #f59e0b */
+  --severity-medium: var(--amber);              /* canonical amber boundary */
   --severity-high:   oklch(0.627 0.257 29.2);   /* red    — #ef4444 */
 
   /* Attention-tint rail tokens
@@ -159,7 +162,7 @@
    * See about/heart-and-soul/design-language.md § Attention-tint exception.
    */
   --red:   oklch(0.627 0.257 29.2);   /* matches --severity-high  — #ef4444 */
-  --amber: oklch(0.769 0.189 84.0);   /* matches --severity-medium — #f59e0b */
+  --amber: oklch(0.660 0.189 84.0);   /* canonical light amber boundary */
 
   /* ---------------------------------------------------------------------------
    * Dispatch semantic surface tokens
@@ -198,8 +201,8 @@
   --dim:      oklch(0.55 0 0);         /* tertiary text, deltas */
   /* bu-86c4c.16: text-safe amber, split from the --amber fill/border token
    * below (fills/borders/badges intentionally stay bright — only TEXT needs
-   * the 4.5:1 AA floor). Base --amber at 2.01:1 against --bg cannot carry
-   * text; this token can. Use for any `text-[var(--amber)]` site. */
+   * the 4.5:1 AA floor). Base --amber clears the 3:1 non-text floor but not
+   * the text floor; this token clears 4.5:1. Use for amber text sites. */
   --amber-text: oklch(0.55 0.10 84.0);
   /* bu-f310e: text-safe red, split from the --red fill/border token the same
    * way --amber-text was split from --amber (bu-86c4c.16). Base --red at
@@ -498,6 +501,7 @@ body {
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --color-focus: var(--focus);
   --color-chart-1: var(--chart-1);
   --color-chart-2: var(--chart-2);
   --color-chart-3: var(--chart-3);
@@ -610,6 +614,7 @@ body {
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);
+  --focus: oklch(0.58 0 0);
   --chart-1: oklch(0.560 0.140 264.4);  /* muted blue   — L 0.488 → 0.560, chroma 0.243 → 0.140 */
   --chart-2: oklch(0.720 0.130 162.5);  /* muted teal   — chroma 0.170 → 0.130 */
   --chart-3: oklch(0.760 0.130 70.1);   /* soft amber   — chroma 0.188 → 0.130 */
@@ -626,12 +631,12 @@ body {
 
   /* Severity — lifted slightly for dark-background legibility */
   --severity-low:    oklch(0.790 0.195 148.2);
-  --severity-medium: oklch(0.810 0.185 84.0);
+  --severity-medium: var(--amber);
   --severity-high:   oklch(0.685 0.250 29.2);
 
   /* Attention-tint rail tokens — lifted to match dark-mode severity */
   --red:   oklch(0.685 0.250 29.2);   /* matches dark --severity-high  */
-  --amber: oklch(0.810 0.185 84.0);   /* matches dark --severity-medium */
+  --amber: oklch(0.810 0.185 84.0);   /* canonical dark amber boundary */
 
   /* Dispatch semantic surface tokens — dark mode (canonical per DESIGN_LANGUAGE.md §1a–b) */
   --bg:       oklch(0.145 0 0);         /* page */
@@ -717,9 +722,15 @@ body {
   * {
     @apply border-border;
   }
-  :where(a, button, [role='button'], [tabindex]):focus-visible {
-    outline: 2px solid var(--fg);
-    outline-offset: 2px;
+  /* This high-specificity important floor is deliberately stronger than
+   * Tailwind's outline and outline-offset utilities, including focus-visible
+   * variants. Components may add affordances, but they cannot erase or move
+   * the measured keyboard boundary. The repeated pseudo-class raises the
+   * selector above a focus-visible utility without changing which state it
+   * matches. */
+  :is(a, button, input, select, textarea, summary, [role='button'], [tabindex]):focus-visible:focus-visible {
+    outline: 2px solid var(--focus) !important;
+    outline-offset: 2px !important;
   }
   /* Tell the browser which palette to render native UI (scrollbars, form
      controls) in, so the default white scrollbar follows the theme. */
