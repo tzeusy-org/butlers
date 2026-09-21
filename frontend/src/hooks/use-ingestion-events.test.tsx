@@ -254,7 +254,8 @@ it("reconciles active drawer and aggregate reads every 30 seconds without bus ev
   rerender({ enabled: true });
   await act(async () => { await vi.advanceTimersByTimeAsync(0); });
   for (const read of readers) expect(read).toHaveBeenCalledTimes(3);
-  const reactivatedWindow = vi.mocked(api.getIngestionWindowRollup).mock.calls[2][0];
+  const reactivatedWindow = vi.mocked(api.getIngestionWindowRollup).mock.calls[2]?.[0];
+  if (!reactivatedWindow) throw new Error("Expected a rollup read after reactivation");
   expect(reactivatedWindow.channels).toBe("gmail");
   expect(new Date(reactivatedWindow.to!).getTime() - new Date(reactivatedWindow.from!).getTime())
     .toBe(liveHour.durationMs);
