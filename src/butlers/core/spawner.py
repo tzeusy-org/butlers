@@ -27,6 +27,7 @@ apply — the global cap is an additional outer constraint.
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import os
 import sys
@@ -416,6 +417,7 @@ async def _write_dispatch_attempt(
     resume_outcome: str | None = None,
     composed_prompt: ComposedPrompt | None = None,
     invoked: bool = False,
+    resolution_receipt: dict[str, Any] | None = None,
 ) -> int | None:
     """Write one attempt row to public.model_dispatch_attempts (best-effort).
 
@@ -471,7 +473,45 @@ async def _write_dispatch_attempt(
         purpose_lane=purpose_lane,
         produce_fleet_halt=produce_fleet_halt,
         usage_evidence=usage_evidence,
+        resolution_receipt=resolution_receipt,
     )
+
+
+def _attempt_resolution_receipt(
+    base: dict[str, Any] | None,
+    *,
+    catalog_entry_id: uuid.UUID | None,
+    runtime_type: str,
+    model_id: str,
+    effective_tier: str | None,
+    attempt_index: int,
+    previous_failure_class: str | None = None,
+) -> dict[str, Any] | None:
+    """Project one resolution receipt onto the candidate this attempt invokes."""
+    if base is None or catalog_entry_id is None:
+        return None
+    receipt = copy.deepcopy(base)
+    original_reason = None
+    if isinstance(receipt.get("winner"), dict):
+        original_reason = receipt["winner"].get("reason")
+    winner: dict[str, Any] = {}
+    receipt["winner"] = winner
+    winner.update(
+        {
+            "catalog_entry_id": str(catalog_entry_id),
+            "runtime_type": runtime_type,
+            "model_id": model_id,
+            "effective_tier": effective_tier,
+            "reason": (original_reason if attempt_index == 0 else "same_tier_failover"),
+        }
+    )
+    receipt["attempt_index"] = attempt_index
+    if previous_failure_class is not None:
+        receipt["failover"] = {
+            "from_attempt_index": attempt_index - 1,
+            "failure_class": previous_failure_class,
+        }
+    return receipt
 
 
 class Spawner:
@@ -1383,6 +1423,7 @@ class Spawner:
         fallback_runtime_type = DEFAULT_RUNTIME_TYPE
         fallback_model = _FALLBACK_MODEL_ID
         catalog_result = None
+        _resolution_receipts = []
         # ---------------------------------------------------------------------------
         # Quota gate fold (bu-ep4ks.13 follow-up / bu-k9te9): quota_aware=True folds
         # the pre-spawn token-quota check for the top-priority tier candidate into
@@ -1424,6 +1465,7 @@ class Spawner:
                     complexity,
                     quota_aware=True,
                     intent=dispatch_intent,
+                    receipt_sink=_resolution_receipts,
                 )
                 _initial_quota_confirmed = catalog_result is not None
             except TierQuotaExhausted as _quota_exc:
@@ -1473,6 +1515,9 @@ class Spawner:
             catalog_extra_args = []
             catalog_timeout_s = None
             resolution_source = "static_fallback"
+        _base_resolution_receipt = (
+            _resolution_receipts[-1].describe() if _resolution_receipts else None
+        )
 
         # ---------------------------------------------------------------------------
         # Ceiling gate fold (bu-ep4ks.13 follow-up / bu-k9te9): kick off the monthly
@@ -1695,6 +1740,14 @@ class Spawner:
         # (suppressed / runtime_failure / success) even when request_id is None
         # (scheduler/tick triggers).
         effective_request_id: str = request_id or generate_uuid7_string()
+        _current_resolution_receipt = _attempt_resolution_receipt(
+            _base_resolution_receipt,
+            catalog_entry_id=catalog_entry_id,
+            runtime_type=resolved_runtime_type,
+            model_id=model,
+            effective_tier=_failover_effective_tier,
+            attempt_index=0,
+        )
 
         # Breaker-open rule override (bu-14j0m, decision (b)): if an operator
         # spend rule routed to a model whose dispatch-outcome circuit breaker
@@ -1724,6 +1777,7 @@ class Spawner:
                 tool_call_count=0,
                 logical_session_id=effective_request_id,
                 purpose_lane=purpose_lane,
+                resolution_receipt=_current_resolution_receipt,
             )
 
         _attempted_ids: list[uuid.UUID] = []
@@ -1765,6 +1819,7 @@ class Spawner:
                     tool_call_count=0,
                     logical_session_id=effective_request_id,
                     purpose_lane=purpose_lane,
+                    resolution_receipt=_current_resolution_receipt,
                 )
                 return await self._dashboard_preflight_failure(
                     dashboard_turn_id=dashboard_turn_id,
@@ -1818,6 +1873,7 @@ class Spawner:
                     tool_call_count=0,
                     logical_session_id=effective_request_id,
                     purpose_lane=purpose_lane,
+                    resolution_receipt=_current_resolution_receipt,
                 )
 
                 if _failover_effective_tier is None:
@@ -1873,6 +1929,15 @@ class Spawner:
                 catalog_extra_args = next_extra_args
                 catalog_entry_id = next_entry_id
                 catalog_timeout_s = next_timeout_s
+                _current_resolution_receipt = _attempt_resolution_receipt(
+                    _base_resolution_receipt,
+                    catalog_entry_id=catalog_entry_id,
+                    runtime_type=resolved_runtime_type,
+                    model_id=model,
+                    effective_tier=_failover_effective_tier,
+                    attempt_index=len(_attempted_ids),
+                    previous_failure_class="quota_exhausted",
+                )
                 # Loop again to check quota for the new candidate.
 
         # ---------------------------------------------------------------------------
@@ -1922,6 +1987,7 @@ class Spawner:
                     logical_session_id=effective_request_id,
                     purpose_lane=purpose_lane,
                     produce_fleet_halt=True,
+                    resolution_receipt=_current_resolution_receipt,
                 )
                 return await self._dashboard_preflight_failure(
                     dashboard_turn_id=dashboard_turn_id,
@@ -1983,6 +2049,7 @@ class Spawner:
                     tool_call_count=0,
                     logical_session_id=effective_request_id,
                     purpose_lane=purpose_lane,
+                    resolution_receipt=_current_resolution_receipt,
                 )
                 return await self._dashboard_preflight_failure(
                     dashboard_turn_id=dashboard_turn_id,
@@ -2641,6 +2708,7 @@ class Spawner:
                             resume_outcome=_resume_outcome,
                             composed_prompt=_composed_prompt_digest,
                             invoked=True,
+                            resolution_receipt=_current_resolution_receipt,
                         )
                     # Mark as already classified so the outer except handler does not
                     # double-emit the suppressed metric for this exception.
@@ -2705,7 +2773,17 @@ class Spawner:
                             resume_outcome=_resume_outcome,
                             composed_prompt=_composed_prompt_digest,
                             invoked=True,
+                            resolution_receipt=_current_resolution_receipt,
                         )
+                    _current_resolution_receipt = _attempt_resolution_receipt(
+                        _base_resolution_receipt,
+                        catalog_entry_id=catalog_entry_id,
+                        runtime_type=resolved_runtime_type,
+                        model_id=model,
+                        effective_tier=_failover_effective_tier,
+                        attempt_index=_attempt_count,
+                        previous_failure_class=_failover_decision.reason,
+                    )
                     continue
 
                 # Failover eligible — record runtime_failure provenance for the
@@ -2737,6 +2815,7 @@ class Spawner:
                         resume_outcome=_resume_outcome,
                         composed_prompt=_composed_prompt_digest,
                         invoked=True,
+                        resolution_receipt=_current_resolution_receipt,
                     )
 
                 # Attempt next same-tier candidate.
@@ -2801,6 +2880,7 @@ class Spawner:
                             logical_session_id=effective_request_id,
                             purpose_lane=purpose_lane,
                             duration_ms=_failed_attempt_duration_ms,
+                            resolution_receipt=_current_resolution_receipt,
                         )
                     preconsumed_runtime_tool_calls = _attempt_tool_calls
                     raise _attempt_exc
@@ -2826,6 +2906,15 @@ class Spawner:
                 merged_args = list(next_extra_args)
                 catalog_entry_id = next_entry_id
                 catalog_timeout_s = next_timeout_s
+                _current_resolution_receipt = _attempt_resolution_receipt(
+                    _base_resolution_receipt,
+                    catalog_entry_id=catalog_entry_id,
+                    runtime_type=resolved_runtime_type,
+                    model_id=model,
+                    effective_tier=_failover_effective_tier,
+                    attempt_index=len(_attempted_ids),
+                    previous_failure_class=_failover_decision.reason,
+                )
 
                 # Re-create the runtime adapter for the new model's runtime type.
                 next_provider_config = (
@@ -2917,6 +3006,7 @@ class Spawner:
                     resume_outcome=_resume_outcome,
                     composed_prompt=_composed_prompt_digest,
                     invoked=True,
+                    resolution_receipt=_current_resolution_receipt,
                 )
 
             # ------------------------------------------------------------------

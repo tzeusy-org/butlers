@@ -1010,6 +1010,41 @@ all_candidates AS (
 )
 """
 
+# Receipt-aware variant of ``all_candidates``. Intent-aware resolution needs to
+# retain breaker-open entries long enough to explain their exclusion, while the
+# eligibility predicate below still keeps them out of the winning set. The
+# legacy resolver continues to use ``_ALL_CANDIDATES_CTE`` unchanged.
+_RECEIPT_ALL_CANDIDATES_CTE = """
+all_candidates AS (
+    SELECT
+        mc.runtime_type,
+        mc.model_id,
+        mc.extra_args,
+        mc.id,
+        mc.session_timeout_s,
+        mc.created_at,
+        mc.capabilities,
+        mc.max_context_tokens,
+        mc.max_output_tokens,
+        COALESCE(bmo.complexity_tier, mc.complexity_tier) AS effective_tier,
+        COALESCE(bmo.priority, mc.priority) AS effective_priority,
+        t.ord AS tier_ord,
+        COALESCE(qoc.quota_ok, true) AS quota_ok,
+        bo.catalog_entry_id IS NOT NULL AS breaker_open
+    FROM public.model_catalog mc
+    LEFT JOIN public.butler_model_overrides bmo
+        ON bmo.catalog_entry_id = mc.id AND bmo.butler_name = $1
+    LEFT JOIN quota_ok_candidates qoc
+        ON qoc.catalog_entry_id = mc.id
+    LEFT JOIN breaker_open bo
+        ON bo.catalog_entry_id = mc.id
+    JOIN tier_order t
+        ON COALESCE(bmo.complexity_tier, mc.complexity_tier) = t.tier
+    WHERE COALESCE(bmo.enabled, mc.enabled) = true
+      AND mc.last_verified_ok IS DISTINCT FROM false
+)
+"""
+
 _RESOLVE_SQL = f"""
 WITH
 {_BREAKER_OPEN_CTE},
@@ -1091,7 +1126,7 @@ tier_order AS (
     SELECT t.tier, t.ord
     FROM unnest($2::text[]) WITH ORDINALITY AS t(tier, ord)
 ),
-{_ALL_CANDIDATES_CTE},
+{_RECEIPT_ALL_CANDIDATES_CTE},
 evidence AS (
     SELECT
         catalog_entry_id,
@@ -1111,7 +1146,7 @@ evidence AS (
 SELECT
     ac.runtime_type, ac.model_id, ac.extra_args, ac.id, ac.session_timeout_s,
     ac.capabilities, ac.max_context_tokens, ac.max_output_tokens,
-    ac.effective_tier, ac.effective_priority, ac.tier_ord, ac.quota_ok,
+    ac.effective_tier, ac.effective_priority, ac.tier_ord, ac.quota_ok, ac.breaker_open,
     e.success_count, e.failure_count, e.p50_duration_ms, e.p95_duration_ms,
     e.last_attempt_at
 FROM all_candidates ac
@@ -1690,6 +1725,7 @@ async def resolve_model_with_effective_tier(
     allow_tier_fallthrough: bool = True,
     quota_aware: bool = False,
     intent: DispatchIntent | None = None,
+    receipt_sink: list[DispatchResolution] | None = None,
 ) -> tuple[str, str, list[str], uuid.UUID, int, str] | None:
     """Resolve the best model for a butler and return the effective tier alongside.
 
@@ -1780,13 +1816,20 @@ async def resolve_model_with_effective_tier(
         tier_value = _check_deprecated_tier(str(complexity_tier))
 
     if intent is not None:
-        resolution = await resolve_dispatch(
-            pool,
-            butler_name,
-            dataclasses.replace(intent, complexity_tier=tier_value),
-            allow_tier_fallthrough=allow_tier_fallthrough,
-            quota_aware=quota_aware,
-        )
+        try:
+            resolution = await resolve_dispatch(
+                pool,
+                butler_name,
+                dataclasses.replace(intent, complexity_tier=tier_value),
+                allow_tier_fallthrough=allow_tier_fallthrough,
+                quota_aware=quota_aware,
+            )
+        except TierQuotaExhausted as exc:
+            if receipt_sink is not None and exc.resolution is not None:
+                receipt_sink.append(exc.resolution)
+            raise
+        if receipt_sink is not None:
+            receipt_sink.append(resolution)
         return resolution.selection
 
     if allow_tier_fallthrough and tier_value in TIER_FALLTHROUGH_ORDER:
@@ -1858,6 +1901,9 @@ class CandidateOutcome(enum.StrEnum):
     EXCLUDED_HARD_FIT = "excluded_hard_fit"
     """Disqualified by capability / context / deadline / budget fit, before ranking."""
 
+    EXCLUDED_BREAKER = "excluded_breaker"
+    """Disqualified because its dispatch-outcome circuit breaker was open."""
+
     EXCLUDED_QUOTA = "excluded_quota"
     NOT_TOP_PRIORITY = "not_top_priority"
     """Fit the intent, but a higher effective priority existed in the same tier."""
@@ -1894,6 +1940,17 @@ class CandidateRecord:
 
     def describe(self) -> dict[str, Any]:
         """JSON-safe projection for the resolution receipt."""
+        exclusion = None
+        if self.outcome is CandidateOutcome.EXCLUDED_BREAKER:
+            exclusion = "breaker_open"
+        elif self.outcome is CandidateOutcome.EXCLUDED_QUOTA:
+            exclusion = "quota"
+        elif self.exclusions:
+            exclusion = (
+                "budget"
+                if any(f.code is FitCode.COST_EXCEEDS_BUDGET for f in self.exclusions)
+                else "capability"
+            )
         return {
             "catalog_entry_id": str(self.catalog_entry_id),
             "runtime_type": self.runtime_type,
@@ -1901,6 +1958,7 @@ class CandidateRecord:
             "effective_tier": self.effective_tier,
             "effective_priority": self.effective_priority,
             "outcome": self.outcome.value,
+            "exclusion": exclusion,
             "exclusions": [f.describe() for f in self.exclusions],
             "advisories": [f.describe() for f in self.advisories],
             "evidence_samples": self.evidence_samples,
@@ -2072,7 +2130,7 @@ async def resolve_dispatch(
     # First tier (in fallthrough order) with at least one candidate that fits.
     winning_tier: str | None = None
     for row in rows:
-        if verdicts[row["id"]].eligible:
+        if verdicts[row["id"]].eligible and not row["breaker_open"]:
             winning_tier = row["effective_tier"]
             break
 
@@ -2097,7 +2155,15 @@ async def resolve_dispatch(
         # Every candidate in every tier failed hard fit. This is NOT the same as "no
         # catalog entries exist": the caller's static fallback is still the right
         # recovery, but the receipt says why, which "returned None" never could.
-        candidates = tuple(_record(row, CandidateOutcome.EXCLUDED_HARD_FIT) for row in rows)
+        candidates = tuple(
+            _record(
+                row,
+                CandidateOutcome.EXCLUDED_BREAKER
+                if row["breaker_open"]
+                else CandidateOutcome.EXCLUDED_HARD_FIT,
+            )
+            for row in rows
+        )
         logger.warning(
             "resolve_dispatch: butler %r has %d eligible catalog entries but none fit "
             "intent (trigger_class=%s, tier=%s)",
@@ -2128,7 +2194,7 @@ async def resolve_dispatch(
 
     winning_tier_ord = next(r["tier_ord"] for r in rows if r["effective_tier"] == winning_tier)
     in_tier = [r for r in rows if r["effective_tier"] == winning_tier]
-    survivors = [r for r in in_tier if verdicts[r["id"]].eligible]
+    survivors = [r for r in in_tier if verdicts[r["id"]].eligible and not r["breaker_open"]]
     best_priority = max(int(r["effective_priority"]) for r in survivors)
     top = [r for r in survivors if int(r["effective_priority"]) == best_priority]
 
@@ -2148,6 +2214,8 @@ async def resolve_dispatch(
                 # Below the winning tier in fallthrough order: never evaluated against
                 # a winner, so "did not fit" would be a claim the resolver never made.
                 outcome = CandidateOutcome.TIER_NOT_REACHED
+            elif row["breaker_open"]:
+                outcome = CandidateOutcome.EXCLUDED_BREAKER
             elif not verdicts[rid].eligible:
                 # Includes every candidate in a HIGHER tier: that tier lost only
                 # because none of its entries fit, and the receipt must say so.

@@ -293,6 +293,16 @@ Every attempt in the failover sequence writes a row to `public.model_dispatch_at
 
 Query provenance via the API: `GET /api/dispatch/attempts?session_id=<uuid>` or directly from `public.model_dispatch_attempts`.
 
+Each catalog-backed row also carries `resolution_receipt`, the prompt-free
+explanation computed by intent-aware resolution: requested/effective intent,
+the winner and tie-break reason, and the ordered candidates with exclusions
+such as `breaker_open`, capability fit, budget, or quota. A same-tier failover
+receipt names the preceding attempt and its classified failure. Receipts are
+bounded to 32 KiB by retaining an ordered candidate prefix and setting
+`truncated=true` plus the original `candidate_count`; they are never silently
+dropped for size. Historical and static-fallback attempts honestly expose a
+null receipt rather than reconstructing a decision from current catalog state.
+
 Qualifying `runtime_failure` and `success` rows use one serialized recorder per
 catalog entry. The recorder takes the advisory transaction lock before assigning
 `clock_timestamp()` and the stable bigint ID, so `(ts, id)` reflects recorder

@@ -128,6 +128,41 @@ describe("SessionDossier", () => {
     expect(link?.getAttribute("href")).toBe("/timeline?trace=trace-001");
   });
 
+  it("discloses why the model won and breaker exclusions", () => {
+    renderDossier({
+      ...BASE_SESSION,
+      resolution_receipt: {
+        winner: {
+          catalog_entry_id: "winner-id",
+          runtime_type: "claude",
+          model_id: "claude-sonnet-4-6",
+          effective_tier: "workhorse",
+          reason: "sole_candidate",
+        },
+        candidates: [
+          {
+            catalog_entry_id: "broken-id",
+            runtime_type: "codex",
+            model_id: "gpt-broken",
+            effective_tier: "workhorse",
+            outcome: "excluded_breaker",
+            exclusion: "breaker_open",
+          },
+        ],
+      },
+    });
+
+    expect(document.body.textContent).toContain("Why this model?");
+    expect(document.body.textContent).toContain("claude-sonnet-4-6");
+    expect(document.body.textContent).toContain("sole candidate");
+    expect(document.body.textContent).toContain("breaker_open");
+  });
+
+  it("states honestly when a legacy session has no model receipt", () => {
+    renderDossier(BASE_SESSION);
+    expect(document.body.textContent).toContain("No receipt recorded.");
+  });
+
   it("links Request ID to /sessions?request=", () => {
     renderDossier(BASE_SESSION);
     const link = Array.from(document.body.querySelectorAll("a")).find(

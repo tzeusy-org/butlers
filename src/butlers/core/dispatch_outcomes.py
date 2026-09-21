@@ -10,8 +10,10 @@ that is rolled back to a savepoint so the attempt row still commits, edgeless.
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
+from copy import deepcopy
 from dataclasses import dataclass
 
 import asyncpg
@@ -29,6 +31,50 @@ runtime_attention_recorder_total = get_or_create_counter(
 )
 
 _QUALIFYING_BREAKER_OUTCOMES = frozenset({"runtime_failure", "success"})
+_MAX_RESOLUTION_RECEIPT_BYTES = 32 * 1024
+
+
+def bound_resolution_receipt(receipt: dict | None) -> dict | None:
+    """Return a JSON-safe receipt bounded for durable per-attempt storage.
+
+    Candidate order is meaningful, so oversized receipts retain the longest
+    ordered prefix that fits and disclose both truncation and the original
+    candidate count. A receipt is never silently dropped because it grew.
+    """
+    if receipt is None:
+        return None
+    bounded = deepcopy(receipt)
+    candidates = bounded.get("candidates")
+    if not isinstance(candidates, list):
+        candidates = []
+        bounded["candidates"] = candidates
+    encoded = json.dumps(bounded, separators=(",", ":"), ensure_ascii=False)
+    if len(encoded.encode("utf-8")) <= _MAX_RESOLUTION_RECEIPT_BYTES:
+        bounded.setdefault("truncated", False)
+        return bounded
+
+    original_count = len(candidates)
+    bounded["truncated"] = True
+    bounded["candidate_count"] = original_count
+    while candidates:
+        candidates.pop()
+        encoded = json.dumps(bounded, separators=(",", ":"), ensure_ascii=False)
+        if len(encoded.encode("utf-8")) <= _MAX_RESOLUTION_RECEIPT_BYTES:
+            return bounded
+
+    # Non-candidate metadata is intentionally small and generated in-process.
+    # Keep an explicit marker even if a future policy version unexpectedly
+    # widens it beyond the bound.
+    encoded = json.dumps(bounded, separators=(",", ":"), ensure_ascii=False)
+    if len(encoded.encode("utf-8")) > _MAX_RESOLUTION_RECEIPT_BYTES:
+        return {
+            "policy_version": bounded.get("policy_version"),
+            "winner": bounded.get("winner"),
+            "candidates": [],
+            "candidate_count": original_count,
+            "truncated": True,
+        }
+    return bounded
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,8 +159,9 @@ _DISPATCH_ATTEMPTS_INSERT = """
     INSERT INTO public.model_dispatch_attempts
         (session_id, catalog_entry_id, butler, outcome,
          failure_reason, error_code, error_message,
-         tool_call_count, attempt_index, logical_session_id, duration_ms, purpose_lane, ts)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, clock_timestamp())
+         tool_call_count, attempt_index, logical_session_id, duration_ms, purpose_lane,
+         resolution_receipt, ts)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, clock_timestamp())
 """
 
 _DISPATCH_ATTEMPTS_INSERT_RETURNING_ID = _DISPATCH_ATTEMPTS_INSERT + " RETURNING id"
@@ -191,6 +238,7 @@ async def record_dispatch_attempt(
     purpose_lane: PurposeLane = PURPOSE_LANE_STANDARD,
     produce_fleet_halt: bool = False,
     usage_evidence: DispatchUsageEvidence | None = None,
+    resolution_receipt: dict | None = None,
 ) -> int | None:
     """Persist one attempt with its usage evidence and any operational edge.
 
@@ -220,6 +268,7 @@ async def record_dispatch_attempt(
     """
     try:
         safe_error_message = error_message[:4096] if error_message else None
+        safe_resolution_receipt = bound_resolution_receipt(resolution_receipt)
         if usage_evidence is not None:
             if usage_evidence.usage_source not in {"measured", "unmeasurable"}:
                 raise ValueError("usage_source must be measured or unmeasurable")
@@ -264,6 +313,7 @@ async def record_dispatch_attempt(
             logical_session_id,
             duration_ms,
             purpose_lane,
+            safe_resolution_receipt,
         )
 
         if (

@@ -29,8 +29,10 @@ from butlers.core.dispatch_intent import (
     FitCode,
     derive_dispatch_intent,
 )
+from butlers.core.dispatch_outcomes import record_dispatch_attempt
 from butlers.core.model_capabilities import ModelFeature
 from butlers.core.model_routing import (
+    _BREAKER_FAILURE_THRESHOLD,
     CandidateOutcome,
     Complexity,
     TierQuotaExhausted,
@@ -38,6 +40,7 @@ from butlers.core.model_routing import (
     resolve_dispatch,
     resolve_model_with_effective_tier,
 )
+from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
@@ -66,7 +69,7 @@ def migrated_db_url(postgres_container) -> str:
 async def pool(migrated_db_url: str) -> asyncpg.Pool:
     """Pool with catalog, override, counter, and quota tables cleared between tests."""
     clear_routing_decision_cache()
-    p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=3)
+    p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=1)
     await p.execute(
         "TRUNCATE public.model_round_robin_counters, public.butler_model_overrides, "
         "public.token_limits, public.token_usage_ledger, public.model_catalog CASCADE"
@@ -339,3 +342,47 @@ async def test_receipt_is_json_safe_and_prompt_free(pool: asyncpg.Pool) -> None:
     # Evidence age is present as a field and null until an attempt exists.
     assert excluded["evidence_age_s"] is None
     assert excluded["evidence_samples"] == 0
+
+
+async def test_breaker_open_candidate_is_explained_and_receipt_persists(
+    pool: asyncpg.Pool,
+) -> None:
+    """A breaker exclusion remains visible without becoming eligible again."""
+    broken_id = await _insert_entry(pool, alias="rc-breaker", priority=30)
+    selected_id = await _insert_entry(pool, alias="rc-healthy", priority=10)
+    for attempt_index in range(_BREAKER_FAILURE_THRESHOLD):
+        await pool.execute(
+            """
+            INSERT INTO public.model_dispatch_attempts
+                (catalog_entry_id, butler, outcome, attempt_index)
+            VALUES ($1, $2, 'runtime_failure', $3)
+            """,
+            broken_id,
+            BUTLER,
+            attempt_index,
+        )
+
+    resolution = await resolve_dispatch(pool, BUTLER, TOOL_INTENT, allow_tier_fallthrough=False)
+    assert resolution.selection is not None
+    assert resolution.selection[3] == selected_id
+    payload = resolution.describe()
+    excluded = next(c for c in payload["candidates"] if c["catalog_entry_id"] == str(broken_id))
+    assert excluded["outcome"] == "excluded_breaker"
+    assert excluded["exclusion"] == "breaker_open"
+
+    async with pool.acquire() as connection:
+        await register_jsonb_codec(connection)
+    attempt_id = await record_dispatch_attempt(
+        pool,
+        catalog_entry_id=selected_id,
+        butler=BUTLER,
+        outcome="success",
+        attempt_index=0,
+        resolution_receipt=payload,
+    )
+    stored = await pool.fetchval(
+        "SELECT resolution_receipt FROM public.model_dispatch_attempts WHERE id = $1",
+        attempt_id,
+    )
+    assert stored["winner"]["catalog_entry_id"] == str(selected_id)
+    assert stored["truncated"] is False

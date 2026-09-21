@@ -25,7 +25,7 @@ from butlers.core.failover_classifier import FailoverDecision
 from butlers.core.model_routing import QuotaStatus, TierQuotaExhausted
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter
-from butlers.core.spawner import Spawner
+from butlers.core.spawner import Spawner, _attempt_resolution_receipt
 
 pytestmark = pytest.mark.unit
 
@@ -44,6 +44,29 @@ _QUOTA_DENIED_24H = QuotaStatus(
 
 _ATTEMPTS_INSERT = "INSERT INTO public.model_dispatch_attempts"
 _LEDGER_INSERT = "INSERT INTO public.token_usage_ledger"
+
+
+def test_failover_receipt_names_previous_attempt_failure_class() -> None:
+    receipt = _attempt_resolution_receipt(
+        {
+            "policy_version": "dispatch-fit-v1",
+            "winner": {"reason": "sole_candidate"},
+            "candidates": [],
+        },
+        catalog_entry_id=_FALLBACK_ID,
+        runtime_type="claude",
+        model_id="claude-fallback",
+        effective_tier="workhorse",
+        attempt_index=1,
+        previous_failure_class="rate_limit_before_work",
+    )
+    assert receipt is not None
+    assert receipt["winner"]["catalog_entry_id"] == str(_FALLBACK_ID)
+    assert receipt["winner"]["reason"] == "same_tier_failover"
+    assert receipt["failover"] == {
+        "from_attempt_index": 0,
+        "failure_class": "rate_limit_before_work",
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -69,6 +92,8 @@ def _isolate_atomic_recorder_for_spawner_unit_tests(monkeypatch: pytest.MonkeyPa
                 fields["attempt_index"],
                 fields.get("logical_session_id"),
                 fields.get("duration_ms"),
+                fields.get("purpose_lane"),
+                fields.get("resolution_receipt"),
             )
             evidence = fields.get("usage_evidence")
             if evidence is not None:
@@ -114,6 +139,27 @@ _PRIMARY_RESOLVED = (
     1800,
     "workhorse",
 )
+
+
+class _SyntheticResolution:
+    def describe(self) -> dict[str, Any]:
+        return {
+            "policy_version": "dispatch-fit-v1",
+            "winner": {
+                "catalog_entry_id": str(_PRIMARY_ID),
+                "runtime_type": DEFAULT_RUNTIME_TYPE,
+                "model_id": "claude-primary",
+                "effective_tier": "workhorse",
+                "reason": "sole_candidate",
+            },
+            "candidates": [],
+        }
+
+
+async def _resolve_with_receipt(*_args: Any, receipt_sink=None, **_kwargs: Any):
+    assert receipt_sink is not None
+    receipt_sink.append(_SyntheticResolution())
+    return _PRIMARY_RESOLVED
 
 
 def _primary_quota_exhausted_at_resolve() -> TierQuotaExhausted:
@@ -720,14 +766,7 @@ class TestSuccessProvenance:
             patch(
                 "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=(
-                    DEFAULT_RUNTIME_TYPE,
-                    "claude-primary",
-                    [],
-                    _PRIMARY_ID,
-                    1800,
-                    "workhorse",
-                ),
+                side_effect=_resolve_with_receipt,
             ),
             patch(
                 "butlers.core.spawner.check_token_quota",
@@ -794,6 +833,12 @@ class TestSuccessProvenance:
         attempts = _execute_calls_with_fragment(mock_pool, _ATTEMPTS_INSERT)
         outcomes = [a[4] for a in attempts]
         assert "success" in outcomes, f"Expected success row when fallback wins: {outcomes}"
+        success_row = next(row for row in attempts if row[4] == "success")
+        assert success_row[13]["winner"]["catalog_entry_id"] == str(_FALLBACK_ID)
+        assert success_row[13]["failover"] == {
+            "from_attempt_index": 0,
+            "failure_class": "cli_missing",
+        }
 
     async def test_success_row_written_when_primary_succeeds_directly(self, tmp_path: Path) -> None:
         """A success row is written even when no failover occurred (bu-ep4ks.13).
@@ -810,14 +855,7 @@ class TestSuccessProvenance:
             patch(
                 "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=(
-                    DEFAULT_RUNTIME_TYPE,
-                    "claude-primary",
-                    [],
-                    _PRIMARY_ID,
-                    1800,
-                    "workhorse",
-                ),
+                side_effect=_resolve_with_receipt,
             ),
             patch(
                 "butlers.core.spawner.check_token_quota",
@@ -843,6 +881,7 @@ class TestSuccessProvenance:
         assert row[4] == "success"
         assert row[9] == 0  # attempt_index=0: direct success, no prior attempts
         assert isinstance(row[11], int) and row[11] >= 0  # duration_ms measured, not None
+        assert row[13]["winner"]["catalog_entry_id"] == str(_PRIMARY_ID)
 
 
 # ---------------------------------------------------------------------------
