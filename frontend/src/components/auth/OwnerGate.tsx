@@ -194,7 +194,7 @@ function OwnerAccess({ status, initialMessage, onAuthenticated }: {
         : intent ? <section className="space-y-4" aria-label="Host authorization">
           <p className="text-sm">Canonical origin: <span className="font-mono break-all">{intent.canonical_origin}</span></p>
           {intent.operation === "recover" && <p className="text-sm">Host approval immediately revokes the old passkey and all browser sessions. Interrupted recovery needs another host recovery command.</p>}
-          <label className="block space-y-2 text-sm">Run on your Butlers host<textarea readOnly value={command} rows={4} className="w-full rounded-md border border-input bg-background p-3 font-mono text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" /></label>
+          <label className="block space-y-2 text-sm">Run on your Butlers host<textarea readOnly value={command} rows={4} className="w-full rounded-md border border-input bg-background p-3 font-mono text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus" /></label>
           <p className="text-sm text-muted-foreground">Approve only the request shown in this browser. Never run a registration command supplied by someone else.</p>
           {expired ? <><p role="alert" className="text-sm">This request expired. Start again to request host authorization.</p><Button ref={action} onClick={cancel}>Start again</Button></>
             : <Button ref={action} disabled={busy || now < nextCheck || !passkeys || document.visibilityState === "hidden"} onClick={() => void (ceremony ? register() : check())}>{ceremony ? "Register passkey" : "Check authorization"}</Button>}

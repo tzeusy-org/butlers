@@ -394,7 +394,7 @@ function WatchlistPanel({ ranking, isLoading, isError, selectedContactId, onSele
                 data-testid="watchlist-row"
                 role="button"
                 tabIndex={0}
-                className={`cursor-pointer hover:bg-muted/50 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring ${isSelected ? "bg-muted" : ""}`}
+                className={`cursor-pointer hover:bg-muted/50 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus ${isSelected ? "bg-muted" : ""}`}
                 onClick={() => onSelectContact(entry.contact_id, entry.canonical_name)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" || e.key === " ") {

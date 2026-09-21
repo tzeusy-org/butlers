@@ -92,7 +92,7 @@ exports[`QA case dossier composition > test_dossier_renders_full_case 1`] = `
         </div>
         <button
           aria-label="Dismiss case"
-          class="inline-flex items-center justify-center whitespace-nowrap font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive border bg-background shadow-xs hover:bg-accent hover:text-accent-foreground dark:bg-input/30 dark:border-input dark:hover:bg-input/50 gap-1 has-[>svg]:px-1.5 [&_svg:not([class*='size-'])]:size-3 h-6 rounded-full px-2 font-mono text-[10px] uppercase tracking-[0.10em]"
+          class="inline-flex items-center justify-center whitespace-nowrap font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-focus focus-visible:ring-focus focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive border bg-background shadow-xs hover:bg-accent hover:text-accent-foreground dark:bg-input/30 dark:border-input dark:hover:bg-input/50 gap-1 has-[>svg]:px-1.5 [&_svg:not([class*='size-'])]:size-3 h-6 rounded-full px-2 font-mono text-[10px] uppercase tracking-[0.10em]"
           data-size="xs"
           data-slot="button"
           data-variant="outline"
@@ -460,7 +460,7 @@ exports[`QA case dossier composition > test_dossier_renders_full_case 1`] = `
     >
       <a
         aria-label="Open investigation session 11111111-2222-3333-4444-555555555555"
-        class="inline-flex items-baseline gap-1.5 border border-border/60 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-foreground underline-offset-4 hover:underline focus-visible:outline focus-visible:outline-1 focus-visible:outline-ring tnum"
+        class="inline-flex items-baseline gap-1.5 border border-border/60 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-foreground underline-offset-4 hover:underline focus-visible:outline focus-visible:outline-1 focus-visible:outline-focus tnum"
         data-discover="true"
         data-testid="qa-session-door"
         href="/sessions/11111111-2222-3333-4444-555555555555"
@@ -476,7 +476,7 @@ exports[`QA case dossier composition > test_dossier_renders_full_case 1`] = `
       </a>
       <a
         aria-label="Open failing session aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-        class="inline-flex items-baseline gap-1.5 border border-border/60 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-foreground underline-offset-4 hover:underline focus-visible:outline focus-visible:outline-1 focus-visible:outline-ring tnum"
+        class="inline-flex items-baseline gap-1.5 border border-border/60 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-foreground underline-offset-4 hover:underline focus-visible:outline focus-visible:outline-1 focus-visible:outline-focus tnum"
         data-discover="true"
         data-testid="qa-session-door"
         href="/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
@@ -492,7 +492,7 @@ exports[`QA case dossier composition > test_dossier_renders_full_case 1`] = `
       </a>
       <a
         aria-label="Open failing session 99999999-8888-7777-6666-555555555555"
-        class="inline-flex items-baseline gap-1.5 border border-border/60 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-foreground underline-offset-4 hover:underline focus-visible:outline focus-visible:outline-1 focus-visible:outline-ring tnum"
+        class="inline-flex items-baseline gap-1.5 border border-border/60 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-foreground underline-offset-4 hover:underline focus-visible:outline focus-visible:outline-1 focus-visible:outline-focus tnum"
         data-discover="true"
         data-testid="qa-session-door"
         href="/sessions/99999999-8888-7777-6666-555555555555"

@@ -517,7 +517,7 @@ function PromptEditModal({
           </button>
         </div>
         <textarea
-          className="h-64 w-full resize-none rounded border border-border bg-muted/20 p-3 font-serif text-sm leading-relaxed focus:outline-none focus:ring-1 focus:ring-ring"
+          className="h-64 w-full resize-none rounded border border-border bg-muted/20 p-3 font-serif text-sm leading-relaxed focus:outline-none focus:ring-1 focus:ring-focus"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           placeholder="Enter system prompt…"

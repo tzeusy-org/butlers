@@ -104,7 +104,7 @@ function CommitFooter({ fact }: { fact: Fact }) {
             "font-mono text-[11px] font-medium",
             "bg-fg text-bg",
             "transition-opacity hover:opacity-90",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus",
             "disabled:pointer-events-none disabled:opacity-40",
           )}
         >
@@ -126,7 +126,7 @@ function CommitFooter({ fact }: { fact: Fact }) {
             "font-mono text-[11px] font-medium",
             "border border-[var(--border)] bg-transparent text-fg",
             "transition-colors hover:border-fg",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus",
             "disabled:pointer-events-none disabled:opacity-40",
           )}
         >

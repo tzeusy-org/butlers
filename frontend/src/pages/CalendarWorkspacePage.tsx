@@ -922,7 +922,7 @@ function capLaneEntriesByDay(
 const PILL_BASE =
   "inline-flex items-center justify-center gap-1.5 h-7 rounded-[3px] border px-2.5 " +
   "font-mono text-[11px] leading-none transition-colors " +
-  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30 " +
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus " +
   "disabled:pointer-events-none disabled:opacity-40";
 
 /** Pill button (§4c). `active` inverts bg/fg for the selected state. Never colored. */
@@ -1043,7 +1043,7 @@ function SnoozeMenu({
               value={custom}
               onChange={(e) => setCustom(e.target.value)}
               disabled={disabled}
-              className="min-w-0 flex-1 rounded-[3px] border border-[var(--border-strong)] bg-transparent px-1.5 py-1 text-xs text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30 disabled:opacity-50"
+              className="min-w-0 flex-1 rounded-[3px] border border-[var(--border-strong)] bg-transparent px-1.5 py-1 text-xs text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:opacity-50"
             />
             <CommitButton
               data-testid="butler-snooze-custom-confirm"
@@ -1144,12 +1144,12 @@ const SOURCE_TYPE_FACET_OPTIONS: Array<{
 const SELECT_CLASS =
   "h-7 rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2 " +
   "font-mono text-[11px] text-fg " +
-  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30";
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus";
 
 /** Form <select> (taller, full-width) used inside dialogs. */
 const FIELD_SELECT_CLASS =
   "flex h-9 w-full rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 " +
-  "text-sm text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30 " +
+  "text-sm text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus " +
   "disabled:cursor-not-allowed disabled:opacity-50";
 
 /** Map a source sync_state to a Dispatch StateDot state. Benign in-progress reads as waiting. */
@@ -1475,7 +1475,7 @@ function CalendarFindTimePanel({
                   className={cn(
                     "flex w-full items-center justify-between rounded-[3px] border border-[var(--border-strong)]",
                     "px-3 py-2 text-left transition-colors hover:bg-foreground/[0.06]",
-                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30",
+                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus",
                   )}
                   onClick={() => onSelectSlot(slot)}
                 >
@@ -2085,7 +2085,7 @@ function CalendarEntryDetailPanel({
             }}
             onBlur={handleTitleBlur}
             disabled={isPending}
-            className="w-full rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 py-1.5 text-sm font-medium text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30 disabled:opacity-50"
+            className="w-full rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 py-1.5 text-sm font-medium text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:opacity-50"
           />
         ) : (
           <span className="text-sm font-medium text-fg">
@@ -2227,7 +2227,7 @@ function CalendarEntryDetailPanel({
             onBlur={handleDescriptionBlur}
             disabled={isPending || !canMutateUser}
             rows={3}
-            className="w-full resize-none rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 py-1.5 text-sm text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30 disabled:opacity-50"
+            className="w-full resize-none rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 py-1.5 text-sm text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:opacity-50"
           />
         </div>
       ) : null}
@@ -2251,7 +2251,7 @@ function CalendarEntryDetailPanel({
             }}
             onBlur={handleLocationBlur}
             disabled={isPending || !canMutateUser}
-            className="w-full rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 py-1.5 text-sm text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30 disabled:opacity-50"
+            className="w-full rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 py-1.5 text-sm text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:opacity-50"
           />
         </div>
       ) : null}
@@ -2439,7 +2439,7 @@ function CalendarSearchPalette({
                         key={entry.entry_id}
                         type="button"
                         onClick={() => onJump(entry)}
-                        className="flex w-full items-center gap-2 rounded-[3px] px-2 py-1.5 text-left transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30"
+                        className="flex w-full items-center gap-2 rounded-[3px] px-2 py-1.5 text-left transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
                       >
                         <Mono muted className="w-14 shrink-0 tabular-nums">
                           {entry.all_day
@@ -5000,7 +5000,7 @@ export default function CalendarWorkspacePage() {
             title="Domain overlays: finance bills/renewals, travel, relationship dates, health appointments"
             onClick={() => updateQuery({ overlays: !overlaysEnabled })}
             className={cn(
-              "flex h-7 items-center gap-1.5 rounded-[3px] border px-2 font-mono text-[11px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30",
+              "flex h-7 items-center gap-1.5 rounded-[3px] border px-2 font-mono text-[11px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus",
               overlaysEnabled
                 ? "border-fg bg-foreground/[0.06] text-fg"
                 : "border-[var(--border-strong)] text-[var(--mfg)] hover:text-fg",
@@ -5428,7 +5428,7 @@ export default function CalendarWorkspacePage() {
                           type="button"
                           aria-label={`Create event on ${format(day, "EEE, MMM d")}`}
                           onClick={() => openUserCreateDialog(day)}
-                          className="absolute inset-0 z-0 cursor-pointer transition-colors hover:bg-foreground/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-fg/30"
+                          className="absolute inset-0 z-0 cursor-pointer transition-colors hover:bg-foreground/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus"
                         />
                       ) : null}
                       <div className="pointer-events-none relative z-10">
@@ -5457,7 +5457,7 @@ export default function CalendarWorkspacePage() {
                                 type="button"
                                 data-calendar-entry-id={entry.entry_id}
                                 onClick={() => openDetailPanel(entry)}
-                                className="pointer-events-auto flex w-full items-center gap-1 truncate rounded-[2px] px-1 py-0.5 text-left text-[11px] text-fg transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30"
+                                className="pointer-events-auto flex w-full items-center gap-1 truncate rounded-[2px] px-1 py-0.5 text-left text-[11px] text-fg transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
                               >
                               {!entry.all_day ? (
                                 <span className="shrink-0 font-mono text-[10px] tabular-nums text-[var(--mfg)]">
@@ -5479,7 +5479,7 @@ export default function CalendarWorkspacePage() {
                               onClick={() =>
                                 updateQuery({ range: "day", anchor: day })
                               }
-                              className="pointer-events-auto block px-1 font-mono text-[10px] tabular-nums text-[var(--mfg)] transition-colors hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30"
+                              className="pointer-events-auto block px-1 font-mono text-[10px] tabular-nums text-[var(--mfg)] transition-colors hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
                             >
                               +{dayEntries.length - 3} more
                             </button>
@@ -5702,7 +5702,7 @@ export default function CalendarWorkspacePage() {
                           <button
                             type="button"
                             aria-label={`Create event on ${format(day, "EEE, MMM d")}`}
-                            className="absolute inset-0 z-0 cursor-pointer touch-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-fg/30"
+                            className="absolute inset-0 z-0 cursor-pointer touch-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus"
                             onPointerDown={(evt) =>
                               beginCreateDrag(evt, dayIndex)
                             }
@@ -5796,7 +5796,7 @@ export default function CalendarWorkspacePage() {
                                 "absolute inset-x-0.5 z-20 flex flex-col overflow-hidden rounded-[3px]",
                                 "border border-dashed border-fg/50 bg-fg/[0.08]",
                                 "px-1.5 py-0.5 text-left transition-colors hover:bg-fg/[0.16]",
-                                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30",
+                                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus",
                               )}
                               style={{
                                 top: (topMin / 60) * HOUR_HEIGHT_PX,
@@ -5870,7 +5870,7 @@ export default function CalendarWorkspacePage() {
                                   : undefined
                               }
                               className={cn(
-                                "absolute inset-x-0.5 z-10 overflow-hidden rounded-[3px] border border-[var(--border)] bg-bg px-1.5 py-0.5 text-left transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30",
+                                "absolute inset-x-0.5 z-10 overflow-hidden rounded-[3px] border border-[var(--border)] bg-bg px-1.5 py-0.5 text-left transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus",
                                 // Amber left edge marks an event caught in an overlap.
                                 overlapEntryIds.has(entry.entry_id) &&
                                   "border-l-2 border-l-amber-500",

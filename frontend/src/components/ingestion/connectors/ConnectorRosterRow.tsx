@@ -153,7 +153,7 @@ export function ConnectorRosterRow({
       <Link
         to={detailPath}
         aria-label={`Open ${displayName} connector detail`}
-        className="absolute inset-0 z-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
+        className="absolute inset-0 z-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus focus-visible:ring-inset"
         data-testid={`row-link-${c.connector_type}`}
       />
 

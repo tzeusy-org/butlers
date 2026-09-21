@@ -179,7 +179,7 @@ export function TimelineAttentionStrip({
                     <li key={`${item.kind}:${item.id}`}>
                       <Link
                         to={itemHref(item, selectedButlers, trace)}
-                        className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-xs hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+                        className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-xs hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-inset"
                         data-testid={`timeline-attention-item-${item.kind}`}
                         data-record-id={item.id}
                         aria-label={`Inspect failed ${item.kind} ${item.id}`}

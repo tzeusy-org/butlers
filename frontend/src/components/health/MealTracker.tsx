@@ -415,7 +415,7 @@ export default function MealTracker({
                 setSince(e.target.value);
                 setPage(0);
               }}
-              className="w-36 rounded-sm border border-border bg-background px-2 py-0.5 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20"
+              className="w-36 rounded-sm border border-border bg-background px-2 py-0.5 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-focus"
             />
           </div>
           <div className="flex items-center gap-2">
@@ -429,7 +429,7 @@ export default function MealTracker({
                 setUntil(e.target.value);
                 setPage(0);
               }}
-              className="w-36 rounded-sm border border-border bg-background px-2 py-0.5 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-foreground/20"
+              className="w-36 rounded-sm border border-border bg-background px-2 py-0.5 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-focus"
             />
           </div>
           {(typeFilter || since || until) && (

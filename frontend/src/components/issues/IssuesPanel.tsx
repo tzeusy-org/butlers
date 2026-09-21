@@ -502,7 +502,7 @@ export default function IssuesPanel({
                     role="link"
                     tabIndex={0}
                     onKeyDown={handleLinkRowKeyDown}
-                    className="flex items-start justify-between gap-3 p-3 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
+                    className="flex items-start justify-between gap-3 p-3 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus focus-visible:ring-inset"
                   >
                     {rowContent}
                   </div>

@@ -63,7 +63,7 @@ function pillContent(
 }
 
 const DOT_COLORS: Record<"amber" | "green" | "dim" | "red", string> = {
-  amber: "var(--severity-medium)", // oklch(0.769 0.189 84.0)
+  amber: "var(--severity-medium)", // aliases the canonical --amber boundary
   green: "var(--severity-low)",    // oklch(0.723 0.198 148.2)
   dim: "var(--muted-foreground)",
   red: "var(--destructive)",

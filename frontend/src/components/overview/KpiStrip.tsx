@@ -122,7 +122,7 @@ export function KpiStrip({ cells }: KpiStripProps) {
               to={cell.href}
               title={cell.title}
               aria-label={cell.ariaLabel}
-              className="block no-underline text-inherit cursor-pointer rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
+              className="block no-underline text-inherit cursor-pointer rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus focus-visible:ring-inset"
               style={cellStyle}
             >
               {cellContent}

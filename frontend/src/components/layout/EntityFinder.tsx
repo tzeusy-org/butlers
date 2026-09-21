@@ -662,7 +662,7 @@ export default function EntityFinder() {
               value={query}
               onValueChange={setQuery}
               placeholder="Search entities, pages, butlers, actions…"
-              className="h-12 w-full bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
+              className="h-12 w-full bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-focus"
               data-testid="entity-finder-input"
             />
             <kbd className="ml-2 hidden shrink-0 rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground sm:inline-block">

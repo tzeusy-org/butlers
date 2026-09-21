@@ -162,7 +162,7 @@ export function TimelineEventDrawer({ event, onClose }: TimelineEventDrawerProps
       {/* Focus lands here on open (tabIndex=-1: programmatically focusable,
           not a Tab stop); visually hidden since the header row below already
           carries the same information for sighted users. */}
-      <h2 ref={initialFocusRef} tabIndex={-1} className="sr-only focus:outline-none">
+      <h2 ref={initialFocusRef} tabIndex={-1} className="sr-only">
         Event detail: {event.butler}, {event.type}
       </h2>
       <div className="flex items-center gap-3 px-4 py-3 border-b border-border">

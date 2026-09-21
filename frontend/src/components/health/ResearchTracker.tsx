@@ -103,7 +103,7 @@ function ResearchRow({
           type="button"
           onClick={onToggleExpand}
           aria-expanded={expanded}
-          className="group focus-visible:ring-ring w-full min-w-0 text-left focus-visible:outline-none focus-visible:ring-1"
+          className="group focus-visible:ring-focus w-full min-w-0 text-left focus-visible:outline-none focus-visible:ring-1"
         >
           <span className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
             <ChevronRight

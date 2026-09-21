@@ -63,7 +63,7 @@ export function UnroutableAttentionPanel() {
                   disabled={retrying}
                   aria-label={`${retrying ? "Retrying" : "Retry"} unroutable message`}
                   onClick={() => retry.mutate(row.id)}
-                  className="shrink-0 font-mono text-[11px] underline underline-offset-2 hover:text-foreground disabled:opacity-50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="shrink-0 font-mono text-[11px] underline underline-offset-2 hover:text-foreground disabled:opacity-50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
                 >
                   {retrying ? "retrying…" : "Retry"}
                 </button>
