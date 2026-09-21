@@ -294,7 +294,7 @@ omitted from this human command index; they are not maintainer entry points.
 | Script | Purpose and invocation boundary |
 | --- | --- |
 | [`compose.sh`](compose.sh) | Supported Compose launcher for the local stack and protected restore-drill variants; use it instead of composing protected fragments directly. |
-| [`run_meeting_prep_route_a_evidence.py`](run_meeting_prep_route_a_evidence.py) | Fail-closed launcher for the Route A synthetic meeting-prep browser receipt. It accepts only a clean linked worktree at an exact SHA and an isolated seven-service topology; it must never target the ordinary Compose project, an external database, or a credential-bearing environment. |
+| [`run_meeting_prep_route_a_evidence.py`](run_meeting_prep_route_a_evidence.py) | Fail-closed launcher for the Route A synthetic meeting-prep browser receipt. It accepts only a clean linked worktree at an exact SHA, a seven-service topology, and preloaded digest-pinned base/dependency-cache images whose labels match the checked-out locks; it records sanitized provenance and teardown receipts and must never target the ordinary Compose project, an external database, or a credential-bearing environment. |
 | [`route_a_meeting_prep_fixture.py`](route_a_meeting_prep_fixture.py) | Internal fixture loader for that launcher only. It writes fixed synthetic cached-prep envelopes to the disposable Route A database and refuses password-bearing or nonlocal database configuration. |
 | [`setup_worktree.sh`](setup_worktree.sh) | Prepares a newly created worktree with its machine-local pointers and cache links; run from that worktree. |
 | [`bump_version.py`](bump_version.py) | Updates the project version in `pyproject.toml`; use only as part of a reviewed release preparation. |

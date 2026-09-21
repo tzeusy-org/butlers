@@ -1,9 +1,21 @@
 import { expect, test } from "@playwright/test";
 
+import { writeSanitizedApiReceipt } from "../../route-a-api-receipt.mjs";
+
 const populatedTitle = process.env.ROUTE_A_POPULATED_EVENT_TITLE ?? "";
 const emptyTitle = process.env.ROUTE_A_EMPTY_EVENT_TITLE ?? "";
+const populatedEventId = process.env.ROUTE_A_POPULATED_EVENT_ID ?? "";
+const emptyEventId = process.env.ROUTE_A_EMPTY_EVENT_ID ?? "";
+const artifactDir = process.env.ROUTE_A_ARTIFACT_DIR ?? "";
 
-if (process.env.ROUTE_A_EVIDENCE !== "1" || !populatedTitle || !emptyTitle) {
+if (
+  process.env.ROUTE_A_EVIDENCE !== "1" ||
+  !populatedTitle ||
+  !emptyTitle ||
+  !populatedEventId ||
+  !emptyEventId ||
+  !artifactDir
+) {
   throw new Error("Route A evidence requires the isolated browser service configuration.");
 }
 
@@ -19,6 +31,16 @@ test.describe("Route A meeting-prep browser evidence", () => {
     const payload = await response.json();
 
     expect(payload.data.has_prep_context).toBe(true);
+    const receipt = await writeSanitizedApiReceipt({
+      artifactDir,
+      payload,
+      expected: {
+        fixture: "populated",
+        eventId: populatedEventId,
+        hasPrepContext: true,
+      },
+    });
+    expect(receipt.commitments).toHaveLength(2);
     const rail = page.getByRole("region", { name: "Meeting prep" });
     await expect(rail).toBeVisible();
     const commitments = rail.getByRole("list", { name: /Commitments for Route A Synthetic Attendee/ });
@@ -40,6 +62,16 @@ test.describe("Route A meeting-prep browser evidence", () => {
     const payload = await response.json();
 
     expect(payload.data.has_prep_context).toBe(false);
+    const receipt = await writeSanitizedApiReceipt({
+      artifactDir,
+      payload,
+      expected: {
+        fixture: "empty",
+        eventId: emptyEventId,
+        hasPrepContext: false,
+      },
+    });
+    expect(receipt.commitments).toEqual([]);
     const rail = page.getByRole("region", { name: "Meeting prep" });
     await expect(rail.getByText("No prep context yet")).toBeVisible();
     await expect(rail.getByRole("list")).toHaveCount(0);

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -92,6 +94,10 @@ def test_generated_environment_requires_pinned_images_and_tmp_artifacts(tmp_path
         target_sha="cfe0f848bce0596e4d17ea58dab7b56957aa5e49",
         artifact_dir=Path("/tmp/route-a-test-artifacts"),
         base_image=digest,
+        go_image=digest,
+        go_deps_image=digest,
+        uv_cache_image=digest,
+        npm_cache_image=digest,
         postgres_image=digest,
         node_image=digest,
         playwright_image=digest,
@@ -103,6 +109,10 @@ def test_generated_environment_requires_pinned_images_and_tmp_artifacts(tmp_path
             target_sha="cfe0f848bce0596e4d17ea58dab7b56957aa5e49",
             artifact_dir=tmp_path,
             base_image=digest,
+            go_image=digest,
+            go_deps_image=digest,
+            uv_cache_image=digest,
+            npm_cache_image=digest,
             postgres_image="postgres:latest",
             node_image=digest,
             playwright_image=digest,
@@ -135,9 +145,18 @@ def test_builds_are_offline_and_contexts_exclude_dotenv_variants() -> None:
         "frontend/Dockerfile.meeting-prep-evidence",
         "frontend/Dockerfile.meeting-prep-browser",
     ):
-        assert "npm ci --offline" in (ROOT / relative).read_text(encoding="utf-8")
+        source = (ROOT / relative).read_text(encoding="utf-8")
+        assert "ARG ROUTE_A_NPM_CACHE_IMAGE" in source
+        assert "COPY --from=${ROUTE_A_NPM_CACHE_IMAGE}" in source
+        assert "npm ci --offline --cache=/root/.npm" in source
+    route_a_dockerfile = (ROOT / launcher.ROUTE_A_DOCKERFILE).read_text(encoding="utf-8")
+    assert "# syntax=" not in route_a_dockerfile
+    assert "COPY --from=${ROUTE_A_GO_DEPS_IMAGE}" in route_a_dockerfile
+    assert "COPY --from=${ROUTE_A_UV_CACHE_IMAGE}" in route_a_dockerfile
+    assert "GOPROXY=off" in route_a_dockerfile
+    assert "uv sync --offline" in route_a_dockerfile
     config = (ROOT / "frontend/playwright.route-a.config.ts").read_text(encoding="utf-8")
-    assert "requires its disposable artifact mount" in config
+    assert "requires all isolated fixture and artifact variables" in config
     assert '?? "/artifacts"' not in config
     launcher_source = (ROOT / "scripts/run_meeting_prep_route_a_evidence.py").read_text(
         encoding="utf-8"
@@ -146,6 +165,156 @@ def test_builds_are_offline_and_contexts_exclude_dotenv_variants() -> None:
         '"--network",\n                    "none",\n                    "--pull=false"'
         in launcher_source
     )
+
+
+def test_dependency_cache_contracts_bind_cache_images_to_the_current_locks() -> None:
+    contracts = launcher.dependency_cache_contracts(ROOT)
+    assert set(contracts) == {
+        "ROUTE_A_GO_DEPS_IMAGE",
+        "ROUTE_A_UV_CACHE_IMAGE",
+        "ROUTE_A_NPM_CACHE_IMAGE",
+    }
+    assert contracts["ROUTE_A_GO_DEPS_IMAGE"][launcher.CACHE_KIND_LABEL] == "go-modules"
+    assert contracts["ROUTE_A_UV_CACHE_IMAGE"][launcher.CACHE_KIND_LABEL] == "uv-cache"
+    assert contracts["ROUTE_A_NPM_CACHE_IMAGE"][launcher.CACHE_KIND_LABEL] == "npm-cache"
+    assert all(
+        len(contract[launcher.CACHE_INPUT_SHA_LABEL]) == 64 for contract in contracts.values()
+    )
+
+
+def test_preloaded_cache_image_must_match_its_sealed_lock_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image = "cache@sha256:" + "a" * 64
+
+    def inspect(arguments, *, env, cwd=ROOT):
+        if "{{json .RepoDigests}}" in arguments:
+            return json.dumps([image])
+        if "{{json .Config.Labels}}" in arguments:
+            return json.dumps(
+                {launcher.CACHE_KIND_LABEL: "npm-cache", launcher.CACHE_INPUT_SHA_LABEL: "b" * 64}
+            )
+        raise AssertionError(arguments)
+
+    monkeypatch.setattr(launcher, "_docker_run", inspect)
+    launcher._assert_local_pinned_image(
+        image,
+        label="npm cache",
+        docker_env={},
+        required_labels={
+            launcher.CACHE_KIND_LABEL: "npm-cache",
+            launcher.CACHE_INPUT_SHA_LABEL: "b" * 64,
+        },
+    )
+    with pytest.raises(launcher.SafetyError, match="sealed dependency contract"):
+        launcher._assert_local_pinned_image(
+            image,
+            label="npm cache",
+            docker_env={},
+            required_labels={
+                launcher.CACHE_KIND_LABEL: "npm-cache",
+                launcher.CACHE_INPUT_SHA_LABEL: "c" * 64,
+            },
+        )
+
+
+def test_normalized_compose_receipt_binds_a_sanitized_stable_topology(tmp_path: Path) -> None:
+    artifact_dir = tmp_path / "route-a-artifacts"
+    config = {
+        "name": "routea-cfe0f848-0123456789ab",
+        "services": {"browser": {"volumes": [{"source": str(artifact_dir)}]}},
+    }
+    normalized, digest = launcher.normalized_compose_receipt(
+        config,
+        artifact_dir=artifact_dir,
+        project="routea-cfe0f848-0123456789ab",
+    )
+    serialized = json.dumps(normalized, sort_keys=True)
+    assert str(artifact_dir) not in serialized
+    assert "routea-cfe0f848-0123456789ab" not in serialized
+    assert "<ROUTE_A_ARTIFACT_DIR>" in serialized
+    assert len(digest) == 64
+
+
+def test_provenance_binds_compose_artifact_and_every_generated_image(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    values = {
+        "ROUTE_A_APP_IMAGE": "app",
+        "ROUTE_A_FRONTEND_IMAGE": "frontend",
+        "ROUTE_A_BROWSER_IMAGE": "browser",
+        "ROUTE_A_BASE_IMAGE": "base@sha256:" + "a" * 64,
+        "ROUTE_A_GO_IMAGE": "go@sha256:" + "a" * 64,
+        "ROUTE_A_GO_DEPS_IMAGE": "go-cache@sha256:" + "a" * 64,
+        "ROUTE_A_UV_CACHE_IMAGE": "uv-cache@sha256:" + "a" * 64,
+        "ROUTE_A_NPM_CACHE_IMAGE": "npm-cache@sha256:" + "a" * 64,
+        "ROUTE_A_POSTGRES_IMAGE": "postgres@sha256:" + "a" * 64,
+        "ROUTE_A_NODE_IMAGE": "node@sha256:" + "a" * 64,
+        "ROUTE_A_PLAYWRIGHT_IMAGE": "playwright@sha256:" + "a" * 64,
+    }
+    monkeypatch.setattr(
+        launcher,
+        "_generated_image_receipts",
+        lambda _values, *, docker_env: {
+            "app": {"reference": "app", "image_id": "sha256:app"},
+            "frontend": {"reference": "frontend", "image_id": "sha256:frontend"},
+            "browser": {"reference": "browser", "image_id": "sha256:browser"},
+        },
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_docker_run",
+        lambda arguments, *, env, cwd=ROOT: "GIT_SHA=abc123\n" if arguments[0] == "inspect" else "",
+    )
+    launcher._write_provenance_receipt(
+        artifact_dir=tmp_path,
+        target_sha="abc123",
+        project="routea-abc12345-0123456789ab",
+        values=values,
+        docker_env={},
+        dashboard_container="dashboard",
+        sanitized_compose_sha256="b" * 64,
+    )
+    receipt = json.loads((tmp_path / "provenance.json").read_text(encoding="utf-8"))
+    assert receipt["artifact_dir"] == str(tmp_path)
+    assert receipt["sanitized_normalized_compose_sha256"] == "b" * 64
+    assert set(receipt["generated_images"]) == {"app", "frontend", "browser"}
+
+
+def test_teardown_records_all_stages_after_down_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[str] = []
+    values = {
+        "ROUTE_A_TARGET_SHA": "cfe0f848bce0596e4d17ea58dab7b56957aa5e49",
+        "COMPOSE_PROJECT_NAME": "routea-cfe0f848-0123456789ab",
+    }
+
+    def fail_down(*_args, **_kwargs):
+        raise subprocess.CalledProcessError(42, ["docker", "compose", "down"])
+
+    monkeypatch.setattr(launcher, "_run", fail_down)
+    monkeypatch.setattr(
+        launcher,
+        "_remove_generated_images",
+        lambda _values, _docker_env: calls.append("remove_generated_images"),
+    )
+    monkeypatch.setattr(launcher, "_docker_run", lambda _arguments, *, env, cwd=ROOT: "")
+    with pytest.raises(launcher.SafetyError, match="teardown was incomplete"):
+        launcher.run_project_teardown(
+            worktree=ROOT,
+            compose_file=ROOT / "docker-compose.meeting-prep-evidence.yml",
+            project=values["COMPOSE_PROJECT_NAME"],
+            env_file=tmp_path / "route-a.env",
+            docker_env={},
+            values=values,
+            artifact_dir=tmp_path,
+        )
+    receipt = json.loads((tmp_path / "teardown.json").read_text(encoding="utf-8"))
+    assert calls == ["remove_generated_images"]
+    assert receipt["outcomes"][0]["stage"] == "compose_down"
+    assert receipt["outcomes"][0]["status"] == "failed"
+    assert all(not identifiers for identifiers in receipt["residuals"].values())
 
 
 def test_fixture_commitments_are_allowlisted_and_synthetic() -> None:

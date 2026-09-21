@@ -8,12 +8,6 @@
 #
 # This image rebuilds in ~30s (Python deps + source copy only).
 
-# The default preserves the ordinary development build.  The Route A evidence
-# launcher supplies a separate digest-pinned base image and forces an offline
-# dependency install, so it never reuses a mutable global `butlers-base` tag.
-ARG BUTLERS_BASE_IMAGE=butlers-base:latest
-ARG BUTLERS_OFFLINE=0
-
 # --- Optional: Go builder (whatsapp-bridge) --------------------------------
 # Only runs when whatsapp-bridge/ exists in context. The binary is small (~15MB)
 # so we always include it rather than maintaining a separate Dockerfile.
@@ -39,9 +33,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 # Digest-pinning is not applicable here — the local tag is set at build time and
 # has no registry-assigned digest until pushed. Reproducibility is achieved by
 # pinning the upstream python base in Dockerfile.base.
-FROM ${BUTLERS_BASE_IMAGE}
-
-ARG BUTLERS_OFFLINE
+FROM butlers-base:latest
 
 COPY --from=go-builder /out/whatsapp-bridge /usr/local/bin/whatsapp-bridge
 
@@ -73,11 +65,7 @@ COPY src/ src/
 #    NVIDIA CUDA packages that can't install in slim containers.
 ENV UV_TORCH_BACKEND=cpu
 RUN --mount=type=cache,target=/root/.cache/uv \
-    if [ "$BUTLERS_OFFLINE" = "1" ] && [ -n "$EXTRAS" ]; then \
-      uv sync --offline --frozen --no-dev --extra whatsapp --extra "$EXTRAS"; \
-    elif [ "$BUTLERS_OFFLINE" = "1" ]; then \
-      uv sync --offline --frozen --no-dev --extra whatsapp; \
-    elif [ -n "$EXTRAS" ]; then \
+    if [ -n "$EXTRAS" ]; then \
       uv sync --frozen --no-dev --extra whatsapp --extra "$EXTRAS"; \
     else \
       uv sync --frozen --no-dev --extra whatsapp; \

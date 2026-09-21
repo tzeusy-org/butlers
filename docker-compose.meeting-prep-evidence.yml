@@ -136,6 +136,7 @@ services:
         org.butlers.route-a.target-sha: ${ROUTE_A_TARGET_SHA:?set the Route A target SHA}
       args:
         ROUTE_A_NODE_IMAGE: ${ROUTE_A_NODE_IMAGE:?set a digest-pinned Node image}
+        ROUTE_A_NPM_CACHE_IMAGE: ${ROUTE_A_NPM_CACHE_IMAGE:?set a digest-pinned npm cache image}
         VITE_API_URL: /api
     image: ${ROUTE_A_FRONTEND_IMAGE:?set the exact-SHA Route A frontend image}
     pull_policy: never
@@ -163,6 +164,7 @@ services:
         org.butlers.route-a.target-sha: ${ROUTE_A_TARGET_SHA:?set the Route A target SHA}
       args:
         ROUTE_A_PLAYWRIGHT_IMAGE: ${ROUTE_A_PLAYWRIGHT_IMAGE:?set a digest-pinned Playwright image}
+        ROUTE_A_NPM_CACHE_IMAGE: ${ROUTE_A_NPM_CACHE_IMAGE:?set a digest-pinned npm cache image}
     image: ${ROUTE_A_BROWSER_IMAGE:?set the exact-SHA Route A browser image}
     pull_policy: never
     environment:
@@ -170,6 +172,8 @@ services:
       PLAYWRIGHT_BASE_URL: http://frontend:4173
       ROUTE_A_POPULATED_EVENT_TITLE: Route A populated synthetic meeting
       ROUTE_A_EMPTY_EVENT_TITLE: Route A empty synthetic meeting
+      ROUTE_A_POPULATED_EVENT_ID: 00000000-0000-4000-8000-000000000101
+      ROUTE_A_EMPTY_EVENT_ID: 00000000-0000-4000-8000-000000000102
       ROUTE_A_ARTIFACT_DIR: /artifacts
     volumes:
       - type: bind

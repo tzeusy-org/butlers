@@ -7,13 +7,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import secrets
 import subprocess
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[1]
 COMPOSE_FILENAME = "docker-compose.meeting-prep-evidence.yml"
 COMPOSE_FILE = REPO_ROOT / COMPOSE_FILENAME
+ROUTE_A_DOCKERFILE = "Dockerfile.meeting-prep-route-a"
 ALLOWED_SERVICES = frozenset(
     {
         "postgres",
@@ -59,12 +61,14 @@ BUILD_SERVICES = {
     "frontend": "Dockerfile.meeting-prep-evidence",
     "browser": "Dockerfile.meeting-prep-browser",
 }
+BUILD_ARGUMENT_NAMES = {
+    "frontend": frozenset({"ROUTE_A_NODE_IMAGE", "ROUTE_A_NPM_CACHE_IMAGE", "VITE_API_URL"}),
+    "browser": frozenset({"ROUTE_A_PLAYWRIGHT_IMAGE", "ROUTE_A_NPM_CACHE_IMAGE"}),
+}
 PROJECT_LABEL = "org.butlers.route-a.project"
 TARGET_SHA_LABEL = "org.butlers.route-a.target-sha"
-GO_BUILDER_IMAGE = (
-    "golang:1.25.11-bookworm@sha256:"
-    "bbb255b0e131db500cf0520adc97441d2260cf629c7fa7e39e025ddf53995a24"
-)
+CACHE_KIND_LABEL = "org.butlers.route-a.cache-kind"
+CACHE_INPUT_SHA_LABEL = "org.butlers.route-a.input-sha256"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 PINNED_IMAGE_RE = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 
@@ -230,6 +234,12 @@ def _validate_build(
         raise SafetyError(f"service {name} build must refuse image pulls")
     if not rendered and build.get("dockerfile") != expected_dockerfile:
         raise SafetyError(f"service {name} uses an unexpected Dockerfile")
+    if not rendered:
+        arguments = build.get("args")
+        if not isinstance(arguments, Mapping) or set(arguments) != BUILD_ARGUMENT_NAMES[name]:
+            raise SafetyError(f"service {name} build arguments exceed the sealed input allowlist")
+        if name == "frontend" and arguments.get("VITE_API_URL") != "/api":
+            raise SafetyError("Route A frontend must retain its internal API path")
     for forbidden in (
         "additional_contexts",
         "cache_from",
@@ -338,11 +348,77 @@ def require_pinned_image(value: str, *, label: str) -> None:
         raise SafetyError(f"{label} must be a digest-pinned image reference")
 
 
+def _digest_paths(worktree: Path, *relative_paths: str) -> str:
+    digest = hashlib.sha256()
+    for relative in relative_paths:
+        source = worktree / relative
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(source.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def dependency_cache_contracts(worktree: Path) -> dict[str, dict[str, str]]:
+    """Expected immutable cache-image labels for this exact source tree."""
+    return {
+        "ROUTE_A_GO_DEPS_IMAGE": {
+            CACHE_KIND_LABEL: "go-modules",
+            CACHE_INPUT_SHA_LABEL: _digest_paths(
+                worktree, "whatsapp-bridge/go.mod", "whatsapp-bridge/go.sum"
+            ),
+        },
+        "ROUTE_A_UV_CACHE_IMAGE": {
+            CACHE_KIND_LABEL: "uv-cache",
+            CACHE_INPUT_SHA_LABEL: _digest_paths(worktree, "uv.lock"),
+        },
+        "ROUTE_A_NPM_CACHE_IMAGE": {
+            CACHE_KIND_LABEL: "npm-cache",
+            CACHE_INPUT_SHA_LABEL: _digest_paths(worktree, "frontend/package-lock.json"),
+        },
+    }
+
+
+def validate_sealed_build_inputs(worktree: Path) -> None:
+    """Reject a Route A build recipe that could fetch a frontend or dependency."""
+    recipes = {
+        worktree / ROUTE_A_DOCKERFILE: (
+            "ARG ROUTE_A_GO_IMAGE",
+            "ARG ROUTE_A_GO_DEPS_IMAGE",
+            "ARG ROUTE_A_UV_CACHE_IMAGE",
+            "COPY --from=${ROUTE_A_GO_DEPS_IMAGE}",
+            "COPY --from=${ROUTE_A_UV_CACHE_IMAGE}",
+            "GOPROXY=off",
+            "uv sync --offline",
+        ),
+        worktree / "frontend/Dockerfile.meeting-prep-evidence": (
+            "ARG ROUTE_A_NPM_CACHE_IMAGE",
+            "COPY --from=${ROUTE_A_NPM_CACHE_IMAGE}",
+            "npm ci --offline --cache=/root/.npm",
+        ),
+        worktree / "frontend/Dockerfile.meeting-prep-browser": (
+            "ARG ROUTE_A_NPM_CACHE_IMAGE",
+            "COPY --from=${ROUTE_A_NPM_CACHE_IMAGE}",
+            "npm ci --offline --cache=/root/.npm",
+        ),
+    }
+    for recipe, required in recipes.items():
+        source = recipe.read_text(encoding="utf-8")
+        if "# syntax=" in source:
+            raise SafetyError(f"{recipe.name} may not select an external Dockerfile frontend")
+        if any(item not in source for item in required):
+            raise SafetyError(f"{recipe.name} does not consume every sealed Route A input")
+
+
 def route_a_environment(
     *,
     target_sha: str,
     artifact_dir: Path,
     base_image: str,
+    go_image: str,
+    go_deps_image: str,
+    uv_cache_image: str,
+    npm_cache_image: str,
     postgres_image: str,
     node_image: str,
     playwright_image: str,
@@ -352,6 +428,10 @@ def route_a_environment(
         raise SafetyError("Route A image provenance requires a full lowercase target SHA")
     for label, image in (
         ("Route A base", base_image),
+        ("Route A Go", go_image),
+        ("Route A Go dependency cache", go_deps_image),
+        ("Route A uv cache", uv_cache_image),
+        ("Route A npm cache", npm_cache_image),
         ("Route A PostgreSQL", postgres_image),
         ("Route A Node", node_image),
         ("Route A Playwright", playwright_image),
@@ -367,6 +447,10 @@ def route_a_environment(
         "ROUTE_A_TARGET_SHA": target_sha,
         "ROUTE_A_ARTIFACT_DIR": str(artifact_dir),
         "ROUTE_A_BASE_IMAGE": base_image,
+        "ROUTE_A_GO_IMAGE": go_image,
+        "ROUTE_A_GO_DEPS_IMAGE": go_deps_image,
+        "ROUTE_A_UV_CACHE_IMAGE": uv_cache_image,
+        "ROUTE_A_NPM_CACHE_IMAGE": npm_cache_image,
         "ROUTE_A_POSTGRES_IMAGE": postgres_image,
         "ROUTE_A_NODE_IMAGE": node_image,
         "ROUTE_A_PLAYWRIGHT_IMAGE": playwright_image,
@@ -449,7 +533,13 @@ def validate_local_docker_context(docker_env: Mapping[str, str]) -> None:
         raise SafetyError("Route A requires the local default Unix Docker context")
 
 
-def _assert_local_pinned_image(image: str, *, label: str, docker_env: Mapping[str, str]) -> None:
+def _assert_local_pinned_image(
+    image: str,
+    *,
+    label: str,
+    docker_env: Mapping[str, str],
+    required_labels: Mapping[str, str] | None = None,
+) -> None:
     require_pinned_image(image, label=label)
     try:
         raw = _docker_run(
@@ -465,18 +555,31 @@ def _assert_local_pinned_image(image: str, *, label: str, docker_env: Mapping[st
         raise SafetyError(f"{label} did not expose a verifiable local repo digest") from error
     if not isinstance(repo_digests, list) or image not in repo_digests:
         raise SafetyError(f"{label} is not available locally under its exact digest")
+    if required_labels:
+        actual_labels = _image_labels(image, docker_env=docker_env)
+        if any(actual_labels.get(key) != value for key, value in required_labels.items()):
+            raise SafetyError(f"{label} does not match this worktree's sealed dependency contract")
 
 
-def validate_local_input_images(values: Mapping[str, str], docker_env: Mapping[str, str]) -> None:
+def validate_local_input_images(
+    values: Mapping[str, str], *, worktree: Path, docker_env: Mapping[str, str]
+) -> None:
     inputs = {
-        "Route A Go builder image": GO_BUILDER_IMAGE,
         "Route A base image": values["ROUTE_A_BASE_IMAGE"],
+        "Route A Go image": values["ROUTE_A_GO_IMAGE"],
         "Route A PostgreSQL image": values["ROUTE_A_POSTGRES_IMAGE"],
         "Route A Node image": values["ROUTE_A_NODE_IMAGE"],
         "Route A Playwright image": values["ROUTE_A_PLAYWRIGHT_IMAGE"],
     }
     for label, image in inputs.items():
         _assert_local_pinned_image(image, label=label, docker_env=docker_env)
+    for key, contract in dependency_cache_contracts(worktree).items():
+        _assert_local_pinned_image(
+            values[key],
+            label=f"Route A {contract[CACHE_KIND_LABEL]} image",
+            docker_env=docker_env,
+            required_labels=contract,
+        )
 
 
 def _generated_images(values: Mapping[str, str]) -> tuple[str, str, str]:
@@ -512,6 +615,37 @@ def _assert_project_gone(project: str, docker_env: Mapping[str, str]) -> None:
             raise SafetyError("Route A teardown left a project-scoped Docker resource behind")
 
 
+def _sanitize_compose_value(value: Any, *, artifact_dir: Path, project: str) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            str(key): _sanitize_compose_value(item, artifact_dir=artifact_dir, project=project)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    if isinstance(value, list):
+        return [
+            _sanitize_compose_value(item, artifact_dir=artifact_dir, project=project)
+            for item in value
+        ]
+    if isinstance(value, str):
+        return value.replace(str(artifact_dir), "<ROUTE_A_ARTIFACT_DIR>").replace(
+            project, "<ROUTE_A_PROJECT>"
+        )
+    return value
+
+
+def normalized_compose_receipt(
+    rendered_config: Mapping[str, Any], *, artifact_dir: Path, project: str
+) -> tuple[dict[str, Any], str]:
+    """Return the stable, path-sanitized model that provenance binds to a run."""
+    normalized = _sanitize_compose_value(
+        rendered_config, artifact_dir=artifact_dir, project=project
+    )
+    if not isinstance(normalized, dict):
+        raise SafetyError("Route A sanitized Compose receipt must be an object")
+    canonical = json.dumps(normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return normalized, hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def _image_labels(image: str, *, docker_env: Mapping[str, str]) -> Mapping[str, str]:
     raw = _docker_run(
         ["image", "inspect", "--format", "{{json .Config.Labels}}", image], env=docker_env
@@ -523,6 +657,25 @@ def _image_labels(image: str, *, docker_env: Mapping[str, str]) -> Mapping[str, 
     if not isinstance(labels, Mapping):
         raise SafetyError("Route A image is missing its ownership labels")
     return {str(key): str(value) for key, value in labels.items()}
+
+
+def _generated_image_receipts(
+    values: Mapping[str, str], *, docker_env: Mapping[str, str]
+) -> dict[str, dict[str, str]]:
+    project = values["COMPOSE_PROJECT_NAME"]
+    target_sha = values["ROUTE_A_TARGET_SHA"]
+    receipts: dict[str, dict[str, str]] = {}
+    for name, image in zip(("app", "frontend", "browser"), _generated_images(values), strict=True):
+        labels = _image_labels(image, docker_env=docker_env)
+        if labels.get(PROJECT_LABEL) != project or labels.get(TARGET_SHA_LABEL) != target_sha:
+            raise SafetyError(f"Route A {name} image labels do not match the validated run")
+        receipts[name] = {
+            "reference": image,
+            "image_id": _docker_run(
+                ["image", "inspect", "--format", "{{.Id}}", image], env=docker_env
+            ).strip(),
+        }
+    return receipts
 
 
 def _remove_generated_images(values: Mapping[str, str], docker_env: Mapping[str, str]) -> None:
@@ -537,6 +690,120 @@ def _remove_generated_images(values: Mapping[str, str], docker_env: Mapping[str,
         _docker_run(["image", "rm", image], env=docker_env)
 
 
+def _cleanup_outcome(name: str, action: Callable[[], None]) -> dict[str, object]:
+    try:
+        action()
+    except Exception as error:  # Cleanup must keep attempting later independent stages.
+        outcome: dict[str, object] = {
+            "stage": name,
+            "status": "failed",
+            "error_type": type(error).__name__,
+        }
+        if isinstance(error, subprocess.CalledProcessError):
+            outcome["returncode"] = error.returncode
+        return outcome
+    return {"stage": name, "status": "passed"}
+
+
+def _project_residuals(
+    project: str, *, docker_env: Mapping[str, str]
+) -> tuple[dict[str, list[str]], list[dict[str, object]]]:
+    checks = {
+        "containers": ["ps", "-aq", "--filter", f"label=com.docker.compose.project={project}"],
+        "volumes": [
+            "volume",
+            "ls",
+            "-q",
+            "--filter",
+            f"label=com.docker.compose.project={project}",
+        ],
+        "networks": [
+            "network",
+            "ls",
+            "-q",
+            "--filter",
+            f"label=com.docker.compose.project={project}",
+        ],
+        "images": ["images", "-q", "--filter", f"label={PROJECT_LABEL}={project}"],
+    }
+    residuals: dict[str, list[str]] = {}
+    outcomes: list[dict[str, object]] = []
+    for name, command in checks.items():
+        try:
+            residuals[name] = sorted(
+                item for item in _docker_run(command, env=docker_env).splitlines() if item
+            )
+            outcomes.append({"stage": f"residual_{name}", "status": "passed"})
+        except Exception as error:  # Continue so the receipt identifies every observable residue.
+            outcome: dict[str, object] = {
+                "stage": f"residual_{name}",
+                "status": "failed",
+                "error_type": type(error).__name__,
+            }
+            if isinstance(error, subprocess.CalledProcessError):
+                outcome["returncode"] = error.returncode
+            outcomes.append(outcome)
+            residuals[name] = []
+    return residuals, outcomes
+
+
+def run_project_teardown(
+    *,
+    worktree: Path,
+    compose_file: Path,
+    project: str,
+    env_file: Path,
+    docker_env: Mapping[str, str],
+    values: Mapping[str, str],
+    artifact_dir: Path,
+) -> None:
+    """Attempt every cleanup/check stage, record it, then fail closed on residue."""
+    outcomes = [
+        _cleanup_outcome(
+            "compose_down",
+            lambda: _run(
+                compose_command(
+                    worktree=worktree,
+                    compose_file=compose_file,
+                    project=project,
+                    env_file=env_file,
+                    arguments=["down", "--volumes", "--remove-orphans"],
+                ),
+                cwd=worktree,
+                env=docker_env,
+            ),
+        ),
+        _cleanup_outcome(
+            "remove_generated_images",
+            lambda: _remove_generated_images(values, docker_env),
+        ),
+    ]
+    residuals, checks = _project_residuals(project, docker_env=docker_env)
+    outcomes.extend(checks)
+    clean = all(outcome["status"] == "passed" for outcome in outcomes) and not any(
+        residuals.values()
+    )
+    (artifact_dir / "teardown.json").write_text(
+        json.dumps(
+            {
+                "project": project,
+                "target_sha": values["ROUTE_A_TARGET_SHA"],
+                "clean": clean,
+                "outcomes": outcomes,
+                "residuals": residuals,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    if not clean:
+        raise SafetyError(
+            "Route A teardown was incomplete; inspect the project-scoped teardown receipt"
+        )
+
+
 def _write_provenance_receipt(
     *,
     artifact_dir: Path,
@@ -545,14 +812,9 @@ def _write_provenance_receipt(
     values: Mapping[str, str],
     docker_env: Mapping[str, str],
     dashboard_container: str,
+    sanitized_compose_sha256: str,
 ) -> None:
-    app_image = values["ROUTE_A_APP_IMAGE"]
-    app_labels = _image_labels(app_image, docker_env=docker_env)
-    if app_labels.get(PROJECT_LABEL) != project or app_labels.get(TARGET_SHA_LABEL) != target_sha:
-        raise SafetyError("Route A app image labels do not match the validated run")
-    image_id = _docker_run(
-        ["image", "inspect", "--format", "{{.Id}}", app_image], env=docker_env
-    ).strip()
+    generated_images = _generated_image_receipts(values, docker_env=docker_env)
     runtime_env = _docker_run(
         [
             "inspect",
@@ -577,11 +839,16 @@ def _write_provenance_receipt(
             {
                 "target_sha": target_sha,
                 "project": project,
-                "app_image": app_image,
-                "image_id": image_id,
+                "artifact_dir": str(artifact_dir),
+                "sanitized_normalized_compose_sha256": sanitized_compose_sha256,
+                "generated_images": generated_images,
                 "runtime_git_sha": runtime_sha,
                 "input_images": {
                     "base": values["ROUTE_A_BASE_IMAGE"],
+                    "go": values["ROUTE_A_GO_IMAGE"],
+                    "go_dependencies": values["ROUTE_A_GO_DEPS_IMAGE"],
+                    "uv_cache": values["ROUTE_A_UV_CACHE_IMAGE"],
+                    "npm_cache": values["ROUTE_A_NPM_CACHE_IMAGE"],
                     "postgres": values["ROUTE_A_POSTGRES_IMAGE"],
                     "node": values["ROUTE_A_NODE_IMAGE"],
                     "playwright": values["ROUTE_A_PLAYWRIGHT_IMAGE"],
@@ -602,6 +869,7 @@ def execute(*, worktree: Path, target_sha: str, values: Mapping[str, str]) -> No
     compose_file = compose_file_for(worktree)
     artifact_dir = Path(values["ROUTE_A_ARTIFACT_DIR"])
     validate_compose(load_compose(compose_file), worktree=worktree, artifact_dir=artifact_dir)
+    validate_sealed_build_inputs(worktree)
     artifact_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
     artifact_dir.chmod(0o700)
 
@@ -612,7 +880,7 @@ def execute(*, worktree: Path, target_sha: str, values: Mapping[str, str]) -> No
         docker_env = docker_environment(values, docker_config)
         env_file = write_env_file(temporary_dir, values)
         validate_local_docker_context(docker_env)
-        validate_local_input_images(values, docker_env)
+        validate_local_input_images(values, worktree=worktree, docker_env=docker_env)
         _assert_project_gone(values["COMPOSE_PROJECT_NAME"], docker_env)
         _assert_generated_images_absent(values, docker_env)
         config = _run(
@@ -638,7 +906,15 @@ def execute(*, worktree: Path, target_sha: str, values: Mapping[str, str]) -> No
             artifact_dir=artifact_dir,
             rendered=True,
         )
-        (artifact_dir / "compose-config.json").write_text(config, encoding="utf-8")
+        normalized_compose, sanitized_compose_sha256 = normalized_compose_receipt(
+            rendered_config,
+            artifact_dir=artifact_dir,
+            project=values["COMPOSE_PROJECT_NAME"],
+        )
+        (artifact_dir / "compose-config.json").write_text(
+            json.dumps(normalized_compose, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
 
         try:
             _docker_run(
@@ -654,9 +930,15 @@ def execute(*, worktree: Path, target_sha: str, values: Mapping[str, str]) -> No
                     "--build-arg",
                     f"GIT_SHA={target_sha}",
                     "--build-arg",
-                    f"BUTLERS_BASE_IMAGE={values['ROUTE_A_BASE_IMAGE']}",
+                    f"ROUTE_A_BASE_IMAGE={values['ROUTE_A_BASE_IMAGE']}",
                     "--build-arg",
-                    "BUTLERS_OFFLINE=1",
+                    f"ROUTE_A_GO_IMAGE={values['ROUTE_A_GO_IMAGE']}",
+                    "--build-arg",
+                    f"ROUTE_A_GO_DEPS_IMAGE={values['ROUTE_A_GO_DEPS_IMAGE']}",
+                    "--build-arg",
+                    f"ROUTE_A_UV_CACHE_IMAGE={values['ROUTE_A_UV_CACHE_IMAGE']}",
+                    "--file",
+                    str(worktree / ROUTE_A_DOCKERFILE),
                     "--tag",
                     values["ROUTE_A_APP_IMAGE"],
                     ".",
@@ -714,22 +996,18 @@ def execute(*, worktree: Path, target_sha: str, values: Mapping[str, str]) -> No
                 values=values,
                 docker_env=docker_env,
                 dashboard_container=dashboard_container,
+                sanitized_compose_sha256=sanitized_compose_sha256,
             )
         finally:
-            _run(
-                compose_command(
-                    worktree=worktree,
-                    compose_file=compose_file,
-                    project=values["COMPOSE_PROJECT_NAME"],
-                    env_file=env_file,
-                    arguments=["down", "--volumes", "--remove-orphans"],
-                ),
-                cwd=worktree,
-                env=docker_env,
+            run_project_teardown(
+                worktree=worktree,
+                compose_file=compose_file,
+                project=values["COMPOSE_PROJECT_NAME"],
+                env_file=env_file,
+                docker_env=docker_env,
+                values=values,
+                artifact_dir=artifact_dir,
             )
-            _remove_generated_images(values, docker_env)
-            _assert_project_gone(values["COMPOSE_PROJECT_NAME"], docker_env)
-            _assert_generated_images_absent(values, docker_env)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -738,6 +1016,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--worktree", type=Path, default=REPO_ROOT)
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--base-image")
+    parser.add_argument("--go-image")
+    parser.add_argument("--go-deps-image")
+    parser.add_argument("--uv-cache-image")
+    parser.add_argument("--npm-cache-image")
     parser.add_argument("--postgres-image")
     parser.add_argument("--node-image")
     parser.add_argument("--playwright-image")
@@ -750,13 +1032,30 @@ def main(argv: Sequence[str] | None = None) -> int:
             json.dumps({"status": "preflight-only", "target_sha": args.target_sha}, sort_keys=True)
         )
         return 0
-    if not all((args.base_image, args.postgres_image, args.node_image, args.playwright_image)):
-        parser.error("--execute requires digest-pinned base, postgres, node, and Playwright images")
+    if not all(
+        (
+            args.base_image,
+            args.go_image,
+            args.go_deps_image,
+            args.uv_cache_image,
+            args.npm_cache_image,
+            args.postgres_image,
+            args.node_image,
+            args.playwright_image,
+        )
+    ):
+        parser.error(
+            "--execute requires all digest-pinned Route A image inputs"
+        )
     artifact_dir = Path(tempfile.mkdtemp(prefix="route-a-", dir="/tmp"))
     values = route_a_environment(
         target_sha=args.target_sha,
         artifact_dir=artifact_dir,
         base_image=args.base_image,
+        go_image=args.go_image,
+        go_deps_image=args.go_deps_image,
+        uv_cache_image=args.uv_cache_image,
+        npm_cache_image=args.npm_cache_image,
         postgres_image=args.postgres_image,
         node_image=args.node_image,
         playwright_image=args.playwright_image,
