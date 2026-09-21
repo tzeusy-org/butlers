@@ -8,7 +8,7 @@
 //   options.enabled is explicitly false
 // - the query is enabled (fetch fires) once both from and to are present
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
@@ -44,6 +44,10 @@ function makeWrapper() {
 beforeEach(() => {
   vi.resetAllMocks();
   mockGetIngestionEventsHistogram.mockResolvedValue({ buckets: [], bucket: "1m" });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("ingestionEventKeys.histogram", () => {
@@ -156,25 +160,37 @@ describe("useIngestionEventsHistogram", () => {
   });
 
   it("coarsens a 422 histogram request once before succeeding", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime("2026-01-04T12:00:00.000Z");
     const Wrapper = makeWrapper();
     const params = {
-      from: "2026-01-01T00:00:00Z",
-      to: "2026-01-04T00:00:00Z",
       bucket: "1m" as const,
     };
     mockGetIngestionEventsHistogram
       .mockRejectedValueOnce(Object.assign(new Error("range too wide"), { status: 422 }))
       .mockResolvedValueOnce({ buckets: [], bucket: "5m" });
 
-    const { result } = renderHook(() => useIngestionEventsHistogram(params), {
-      wrapper: Wrapper,
-    });
+    const { result } = renderHook(
+      () => useIngestionEventsHistogram(params, {
+        timeScope: { kind: "live", durationMs: 72 * 60 * 60 * 1000 },
+      }),
+      { wrapper: Wrapper },
+    );
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(mockGetIngestionEventsHistogram).toHaveBeenCalledTimes(2);
-    expect(mockGetIngestionEventsHistogram).toHaveBeenNthCalledWith(1, params, expect.any(AbortSignal));
-    expect(mockGetIngestionEventsHistogram).toHaveBeenNthCalledWith(2, {
+    const resolvedParams = {
       ...params,
+      from: "2026-01-01T12:00:00.000Z",
+      to: "2026-01-04T12:00:00.000Z",
+    };
+    expect(mockGetIngestionEventsHistogram).toHaveBeenNthCalledWith(
+      1,
+      resolvedParams,
+      expect.any(AbortSignal),
+    );
+    expect(mockGetIngestionEventsHistogram).toHaveBeenNthCalledWith(2, {
+      ...resolvedParams,
       bucket: "5m",
     }, expect.any(AbortSignal));
   });
