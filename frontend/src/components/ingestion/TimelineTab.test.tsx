@@ -205,6 +205,25 @@ describe("TimelineTab — passive background refresh", () => {
     expect(dim.getAttribute("aria-busy")).toBe("true");
     expect(dim.className).toContain("opacity-60");
   });
+
+  it("retains rows through a failed background refresh and recovery with an honest retry cue", () => {
+    const refetch = vi.fn();
+    renderWithQueryState({ isError: false, refetch });
+    const originalRow = container.querySelector("[data-testid='ledger-row-trigger']");
+
+    renderWithQueryState({ isError: true, refetch });
+    expect(container.textContent).toContain("live@example.com");
+    expect(container.querySelector("[data-testid='ledger-row-trigger']")).toBe(originalRow);
+    expect(container.textContent).toContain("Refresh failed. Showing previously loaded events.");
+    act(() => {
+      (container.querySelector("[data-testid='events-retry-button']") as HTMLButtonElement).click();
+    });
+    expect(refetch).toHaveBeenCalledTimes(1);
+
+    renderWithQueryState({ isError: false, refetch });
+    expect(container.querySelector("[data-testid='ledger-row-trigger']")).toBe(originalRow);
+    expect(container.querySelector("[data-testid='events-retry-button']")).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------
