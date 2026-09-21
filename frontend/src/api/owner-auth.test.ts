@@ -30,4 +30,15 @@ describe("native WebAuthn wire boundary", () => {
     const oversized = { ...nativeCredential(true), response: { clientDataJSON: bytes(12), attestationObject: bytes(65537) } };
     expect(() => credentialWire(oversized as unknown as Credential, "register")).toThrow();
   });
+  it("accepts Bitwarden's absent extension placeholder without admitting extension data", () => {
+    const credential = nativeCredential(true);
+    const withExtensions = (extensions: object) => ({
+      ...credential,
+      getClientExtensionResults: () => extensions,
+    }) as unknown as Credential;
+    expect(credentialWire(withExtensions({ credProps: undefined }), "register"))
+      .toEqual(credentialWire(credential, "register"));
+    expect(() => credentialWire(withExtensions({ credProps: { rk: true } }), "register"))
+      .toThrow();
+  });
 });

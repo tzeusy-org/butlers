@@ -664,7 +664,13 @@ if [ "$RESTORE_DRILL_ENABLED" = "true" ]; then
   fi
 fi
 
+# Start closed until the new network's peer has been measured. Persisted peers
+# can now identify a different network, so must not authorize the initial API.
+if [ -n "${DASHBOARD_AUTH_ORIGIN:-}" ]; then
+  export DASHBOARD_AUTH_TRUSTED_PROXY_PEERS=""
+fi
 "${CMD[@]}" up -d "${SCALE_ARGS[@]}"
+
 if [ "$RESTORE_DRILL_ENABLED" = "true" ]; then
   unset RESTORE_DRILL_EXECUTOR_FIREWALL_CAPABILITY_NONCE
 fi
@@ -677,4 +683,36 @@ else
   echo "NOTE: Run 'sudo ALLOWED_TAILNET_HOSTS=\"${ALLOWED_TAILNET_HOSTS:-}\" ./scripts/egress-firewall.sh'"
   echo "  to block container access to LAN/Tailscale (sudo requires a password)."
   echo ""
+fi
+
+# A full down/up can allocate a different bridge gateway. Bind only the exact
+# host-published TCP peer; never infer trust from forwarded request headers.
+if [ -n "${DASHBOARD_AUTH_ORIGIN:-}" ]; then
+  AUTH_API_SERVICE=dashboard-api
+  if [ "$HOTRELOAD_OPT" = "true" ]; then
+    AUTH_API_SERVICE=dashboard-api-hotreload
+  fi
+  AUTH_API_CONTAINER="$("${CMD[@]}" ps -q "$AUTH_API_SERVICE")"
+  if [ -z "$AUTH_API_CONTAINER" ] || [[ "$AUTH_API_CONTAINER" == *$'\n'* ]]; then
+    echo "ERROR: Expected one active dashboard API for proxy binding." >&2
+    exit 1
+  fi
+  # Startup can still be in progress after detached Compose returns.
+  AUTH_PROXY_PEER=""
+  for attempt in {1..30}; do
+    if AUTH_PROXY_PEER="$(python3 "${SCRIPT_DIR}/dashboard_proxy_peer.py" \
+      --container "$AUTH_API_CONTAINER" --port "$DASHBOARD_HOST_PORT" \
+      --env-file "$ENV_FILE")"; then
+      break
+    fi
+    sleep 2
+  done
+  if [ -z "$AUTH_PROXY_PEER" ]; then
+    echo "ERROR: Dashboard proxy binding failed; do not use owner authentication." >&2
+    exit 1
+  fi
+  if [ "$AUTH_PROXY_PEER" != "${DASHBOARD_AUTH_TRUSTED_PROXY_PEERS:-}" ]; then
+    export DASHBOARD_AUTH_TRUSTED_PROXY_PEERS="$AUTH_PROXY_PEER"
+    "${CMD[@]}" up -d --no-deps --force-recreate "$AUTH_API_SERVICE"
+  fi
 fi

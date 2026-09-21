@@ -267,3 +267,17 @@ reinitialized. A never-host-initialized, empty store permits only a no-op
 revision downgrade that retains the global schema and marker. Initialized or
 historical state refuses that downgrade. This bookkeeping exception neither
 removes authentication data nor authorizes an old image or live rollback.
+
+
+### Proxy binding after a Compose network replacement
+
+`scripts/compose.sh` starts the API with no trusted proxy peers when owner auth is
+configured. It measures the exact source peer of two payload-free TCP connections
+through the host's loopback-published API port, using before/during/after socket
+metadata inside the API container. Only a unique, repeatable peer matching a Docker-reported gateway for that
+container is accepted; gateway metadata never expands the allowlist.
+The launcher updates `DASHBOARD_AUTH_TRUSTED_PROXY_PEERS` in the selected `.env.dev`
+or `.env.prod` and recreates only the active API service with `--no-deps`.
+Ambiguous measurements leave authentication closed and fail the launcher.
+This prevents a full `down`/`up` from retaining a stale Docker bridge gateway.
+The canonical origin, RP ID, and forwarded-header checks remain required.

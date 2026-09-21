@@ -49,6 +49,20 @@ test("real HTTPS native passkey lifecycle, independent CSRF, recovery and privat
   let phase = "bootstrap";
   try {
     const context = await browser.newContext({ ignoreHTTPSErrors: true });
+    await context.addInitScript(() => {
+      if (!navigator.credentials?.create) return;
+      const nativeCreate = navigator.credentials.create.bind(navigator.credentials);
+      navigator.credentials.create = async options => {
+        const credential = await nativeCreate(options);
+        if (credential?.type === "public-key") {
+          // Match Bitwarden's wrapper without changing the real authenticator proof.
+          Object.defineProperty(credential, "getClientExtensionResults", {
+            value: () => ({ credProps: undefined }),
+          });
+        }
+        return credential;
+      };
+    });
     const page = await context.newPage();
     const authenticator = await virtualAuthenticator(page);
     await page.goto(`${origin}/settings?returnTo=https://external.invalid`);
@@ -125,11 +139,16 @@ test("real HTTPS native passkey lifecycle, independent CSRF, recovery and privat
     await expect.poll(async () => (await evidence()).pending_queries).toBe(0);
     await expect.poll(async () => (await evidence()).sse).toBe(0);
     await expect.poll(() => page.evaluate(() => (window as unknown as { ownerStreamEvidence: { ended: boolean } }).ownerStreamEvidence.ended)).toBe(true);
-    phase = "expiry-and-revocation";
+    phase = "expiry-sign-in";
     await page.getByRole("button", { name: "Sign in with passkey" }).click();
     await expect.poll(async () => (await status(page)).authenticated).toBe(true);
     await page.getByRole("button", { name: "Owner session" }).click();
+    phase = "revoke-all";
     await page.getByRole("button", { name: "Sign out all browsers" }).click();
+    // Wait for the real mutation to complete before navigation can abort it.
+    await expect(page.getByRole("button", { name: "Sign in with passkey" })).toBeVisible();
+    expect((await status(page)).authenticated).toBe(false);
+    phase = "revoke-all-reload";
     await page.reload();
     await expect(page.getByRole("button", { name: "Sign in with passkey" })).toBeVisible();
 
