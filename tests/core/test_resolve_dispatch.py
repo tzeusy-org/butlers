@@ -28,6 +28,7 @@ from butlers.core.dispatch_intent import (
     DispatchIntent,
     FitCode,
     derive_dispatch_intent,
+    discretion_dispatch_intent,
 )
 from butlers.core.dispatch_outcomes import record_dispatch_attempt
 from butlers.core.model_capabilities import ModelFeature
@@ -56,7 +57,6 @@ BUTLER = "general"
 # Every trigger source except ``healing``/``qa`` gets MCP tool wiring in the spawner,
 # so this is the intent shape that matters most in production.
 TOOL_INTENT = derive_dispatch_intent("external", Complexity.CHEAP)
-NO_REQUIREMENTS_INTENT = derive_dispatch_intent("healing", Complexity.CHEAP)
 
 
 @pytest.fixture(scope="module")
@@ -147,28 +147,28 @@ async def test_hard_fit_excludes_tool_incapable_top_priority_entry(pool: asyncpg
     assert _outcome(resolution, claude_id) is CandidateOutcome.SELECTED
 
 
-async def test_intent_requiring_nothing_matches_legacy_selection(pool: asyncpg.Pool) -> None:
-    """Migration safety: no requirements means no behaviour change, including the winner."""
+async def test_discretion_receipt_capture_matches_legacy_selection(pool: asyncpg.Pool) -> None:
+    """Receipt capture cannot change the winner for tool-less discretion calls."""
     api_id = await _insert_entry(pool, alias="ctl-api", runtime_type="api", priority=30)
     await _insert_entry(pool, alias="ctl-claude", runtime_type="claude", priority=10)
 
     legacy = await resolve_model_with_effective_tier(
         pool, BUTLER, Complexity.CHEAP, allow_tier_fallthrough=False
     )
-    resolution = await resolve_dispatch(
-        pool, BUTLER, NO_REQUIREMENTS_INTENT, allow_tier_fallthrough=False
-    )
+    receipt_sink = []
     via_kwarg = await resolve_model_with_effective_tier(
         pool,
         BUTLER,
         Complexity.CHEAP,
         allow_tier_fallthrough=False,
-        intent=NO_REQUIREMENTS_INTENT,
+        intent=discretion_dispatch_intent(Complexity.CHEAP),
+        receipt_sink=receipt_sink,
     )
     assert legacy is not None
     assert legacy[3] == api_id
-    assert resolution.selection == legacy
     assert via_kwarg == legacy
+    assert receipt_sink[0].selection == legacy
+    assert receipt_sink[0].requested_intent.required_features == frozenset()
 
 
 async def test_falls_through_when_the_whole_tier_misfits(pool: asyncpg.Pool) -> None:

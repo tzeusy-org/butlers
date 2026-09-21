@@ -59,9 +59,9 @@ def bound_resolution_receipt(receipt: dict | None) -> dict | None:
     if not isinstance(candidates, list):
         candidates = []
         bounded["candidates"] = candidates
+    bounded.setdefault("truncated", False)
     encoded = json.dumps(bounded, separators=(",", ":"), ensure_ascii=False)
     if len(encoded.encode("utf-8")) <= _MAX_RESOLUTION_RECEIPT_BYTES:
-        bounded.setdefault("truncated", False)
         return bounded
 
     original_count = len(candidates)

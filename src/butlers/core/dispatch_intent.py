@@ -203,6 +203,20 @@ def derive_dispatch_intent(
     )
 
 
+def discretion_dispatch_intent(
+    complexity_tier: str,
+    *,
+    purpose_lane: PurposeLane = PURPOSE_LANE_STANDARD,
+) -> DispatchIntent:
+    """Describe a tool-less discretion call without adding routing requirements."""
+    return DispatchIntent(
+        trigger_class="discretion",
+        complexity_tier=str(complexity_tier),
+        consequence=Consequence.OBSERVE,
+        purpose_lane=purpose_lane,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Hard fit
 # ---------------------------------------------------------------------------

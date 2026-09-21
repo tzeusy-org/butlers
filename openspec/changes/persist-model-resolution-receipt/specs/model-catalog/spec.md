@@ -50,6 +50,8 @@ MUST NOT change routing eligibility, ordering, or selection.
 - **WHEN** DiscretionDispatcher resolves a catalog model and records quota-skip,
   success, runtime-failure, or suppression provenance
 - **THEN** each recorded attempt carries the same bounded receipt contract
+- **AND** receipt capture adds no tool-use requirement and preserves the catalog
+  eligibility, ordering, and winner used by its legacy `mcp_servers={}` path
 
 #### Scenario: Read surfaces distinguish historical absence
 

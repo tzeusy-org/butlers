@@ -48,6 +48,46 @@ _ATTEMPTS_INSERT = "INSERT INTO public.model_dispatch_attempts"
 _LEDGER_INSERT = "INSERT INTO public.token_usage_ledger"
 
 
+def _receipt_with_serialized_size(size: int) -> dict:
+    receipt = {
+        "policy_version": "2",
+        "winner": {"model_id": ""},
+        "candidates": [],
+        "truncated": False,
+    }
+    empty_size = len(json.dumps(receipt, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+    receipt["winner"]["model_id"] = "x" * (size - empty_size)
+    return receipt
+
+
+def test_receipt_at_exact_byte_bound_includes_non_truncated_marker() -> None:
+    receipt = _receipt_with_serialized_size(32 * 1024)
+
+    bounded = bound_resolution_receipt(receipt)
+
+    assert bounded is not None
+    assert bounded["truncated"] is False
+    assert (
+        len(json.dumps(bounded, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+        == 32 * 1024
+    )
+
+
+def test_marker_that_crosses_byte_bound_uses_bounded_fallback() -> None:
+    receipt = _receipt_with_serialized_size(32 * 1024 + 1)
+    receipt.pop("truncated")
+    assert len(json.dumps(receipt, separators=(",", ":")).encode("utf-8")) <= 32 * 1024
+
+    bounded = bound_resolution_receipt(receipt)
+
+    assert bounded is not None
+    assert bounded["truncated"] is True
+    assert (
+        len(json.dumps(bounded, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+        <= 32 * 1024
+    )
+
+
 def test_oversized_non_candidate_receipt_metadata_is_bounded() -> None:
     receipt = {
         "policy_version": "2",

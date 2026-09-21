@@ -70,7 +70,7 @@ from prometheus_client import Counter
 
 from butlers.cli_auth.registry import providers_for_runtime
 from butlers.core.audit import write_audit_entry
-from butlers.core.dispatch_intent import derive_dispatch_intent
+from butlers.core.dispatch_intent import discretion_dispatch_intent
 from butlers.core.dispatch_outcomes import project_resolution_receipt, record_dispatch_attempt
 from butlers.core.failover_classifier import FailoverContext, classify_failover_eligibility
 from butlers.core.metrics import ButlerMetrics
@@ -369,8 +369,7 @@ class DiscretionDispatcher:
             self._pool,
             self._butler_name,
             self._complexity_tier,
-            intent=derive_dispatch_intent(
-                "classification",
+            intent=discretion_dispatch_intent(
                 self._complexity_tier,
                 purpose_lane=self._purpose_lane,
             ),

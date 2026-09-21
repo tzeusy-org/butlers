@@ -168,12 +168,10 @@ async def test_call_with_identity_records_per_connector_butler_name() -> None:
     pool = MagicMock()
     dispatcher = DiscretionDispatcher(pool=pool)
     adapter = _make_adapter()
+    resolver = AsyncMock(return_value=_catalog_result())
 
     with (
-        patch(
-            f"{_MODULE}.resolve_model_with_effective_tier",
-            AsyncMock(return_value=_catalog_result()),
-        ),
+        patch(f"{_MODULE}.resolve_model_with_effective_tier", resolver),
         patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
@@ -182,6 +180,10 @@ async def test_call_with_identity_records_per_connector_butler_name() -> None:
         result = await dispatcher.call("hi", identity="tg:12345")
 
     assert result == "FORWARD"
+    intent = resolver.await_args.kwargs["intent"]
+    assert intent.trigger_class == "discretion"
+    assert intent.required_features == frozenset()
+    assert adapter.invoke.await_args.kwargs["mcp_servers"] == {}
     mock_record.assert_awaited_once()
     _, kwargs = mock_record.call_args
     assert kwargs["butler_name"] == "tg:12345"
