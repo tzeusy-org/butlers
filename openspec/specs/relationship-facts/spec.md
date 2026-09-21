@@ -581,6 +581,33 @@ verdict on faith.
   receipt for the same `(subject, predicate, src)`
 - **THEN** the stored outcome and observation time are unchanged
 
+### Requirement: Relationship owns entity-merge coordination
+
+Relationship SHALL be the sole authority that validates and tombstones an
+entity merge, rewires its canonical relationship facts, opens the per-schema
+rebind cohort, and emits `entity.rebound.v1`. It SHALL NOT update narrative
+facts or association tables in another butler schema. Those references SHALL
+be rebound by that schema's own daemon from the durable pending receipt. A
+running daemon SHALL react to the emitted event, while startup replay SHALL
+recover missed delivery. Each daemon SHALL establish its listener before
+startup replay and SHALL re-establish the listener plus replay pending receipts
+after a retained-listener connection failure. Relationship's own receipt SHALL
+remain pending until its local narrative facts and association tables have
+been rebound.
+
+#### Scenario: Local repoint failure is visible
+
+- **WHEN** a daemon receives a rebind and one of its local writes raises an error other than an absent optional table
+- **THEN** its receipt MUST become `failed`
+- **AND** the receipt MUST record the exception class
+- **AND** the merge result MUST name the failed schema
+
+#### Scenario: An optional local table is absent
+
+- **WHEN** a daemon attempts a rebind and an optional reference table is undefined
+- **THEN** that absence MUST be classified separately from a failed write
+- **AND** it MUST NOT be counted as a successful rebind
+
 ### Requirement: Approved fact writes execute under server-recorded provenance
 
 When the owner carve-out or the confidence gate parks a fact write, the

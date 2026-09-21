@@ -234,6 +234,17 @@ class EntityInfoEntry(BaseModel):
     secured: bool = False
 
 
+class EntityRebindReceipt(BaseModel):
+    """One schema's durable outcome for an entity-merge rebind cohort."""
+
+    rebind_id: str
+    target_schema: str
+    references_rebound: int
+    status: str
+    error_class: str | None = None
+    completed_at: str | None = None
+
+
 class EntityDetail(EntitySummary):
     """Full entity detail including recent facts and linked contact info."""
 
@@ -245,6 +256,7 @@ class EntityDetail(EntitySummary):
     recent_facts_has_more: bool = False
     linked_contact_name: str | None = None
     entity_info: list[EntityInfoEntry] = []
+    rebind_receipts: list[EntityRebindReceipt] = []
 
 
 class UpdateEntityRequest(BaseModel):

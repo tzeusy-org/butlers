@@ -2020,6 +2020,20 @@ async def get_entity(
         for r in info_rows
     ]
 
+    try:
+        receipt_rows = await pool.fetch(
+            """
+            SELECT rebind_id, target_schema, references_rebound, status,
+                   error_class, completed_at
+            FROM public.entity_rebind_log
+            WHERE source_entity_id = $1 OR target_entity_id = $1
+            ORDER BY created_at DESC, target_schema
+            """,
+            eid,
+        )
+    except UndefinedTableError:
+        receipt_rows = []
+
     detail = EntityDetail(
         id=str(row["id"]),
         canonical_name=row["canonical_name"],
@@ -2040,6 +2054,17 @@ async def get_entity(
         recent_facts_limit=facts_limit,
         recent_facts_has_more=(facts_offset + facts_limit) < fact_count,
         entity_info=entity_info,
+        rebind_receipts=[
+            {
+                "rebind_id": str(receipt["rebind_id"]),
+                "target_schema": receipt["target_schema"],
+                "references_rebound": receipt["references_rebound"],
+                "status": receipt["status"],
+                "error_class": receipt["error_class"],
+                "completed_at": (str(receipt["completed_at"]) if receipt["completed_at"] else None),
+            }
+            for receipt in receipt_rows
+        ],
     )
 
     meta_fields: dict[str, object] = {}

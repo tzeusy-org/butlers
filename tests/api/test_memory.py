@@ -2170,11 +2170,13 @@ class _EntityMemoryPool:
         fact_count: int = 0,
         fact_error: Exception | None = None,
         fact_update_error: Exception | None = None,
+        rebind_receipts: list[dict] | None = None,
     ) -> None:
         self._entity = entity
         self._fact_count = fact_count
         self._fact_error = fact_error
         self._fact_update_error = fact_update_error
+        self._rebind_receipts = rebind_receipts or []
         self.execute_calls: list[tuple[str, tuple[object, ...]]] = []
 
     async def fetchrow(self, query: str, *args: object):
@@ -2192,6 +2194,8 @@ class _EntityMemoryPool:
         return 0
 
     async def fetch(self, query: str, *args: object) -> list[object]:
+        if "FROM public.entity_rebind_log" in query:
+            return [_make_record(row) for row in self._rebind_receipts]
         if "FROM facts" in query and self._fact_error is not None:
             raise self._fact_error
         return []
@@ -2225,6 +2229,46 @@ async def test_entity_detail_names_failed_fact_pool(app) -> None:
     body = resp.json()
     assert body["data"]["fact_count"] == 0
     assert body["meta"]["pools_failed"] == ["finance"]
+
+
+async def test_entity_detail_returns_rebind_receipt_cohort(app) -> None:
+    entity_id = uuid.uuid4()
+    rebind_id = uuid.uuid4()
+    db = _MemoryFanOutDB(
+        {
+            "atlas": _EntityMemoryPool(
+                entity=_make_entity_row(entity_id),
+                rebind_receipts=[
+                    {
+                        "rebind_id": rebind_id,
+                        "target_schema": "finance",
+                        "references_rebound": 0,
+                        "status": "failed",
+                        "error_class": "SerializationError",
+                        "completed_at": None,
+                    }
+                ],
+            )
+        }
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/memory/entities/{entity_id}")
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["rebind_receipts"] == [
+        {
+            "rebind_id": str(rebind_id),
+            "target_schema": "finance",
+            "references_rebound": 0,
+            "status": "failed",
+            "error_class": "SerializationError",
+            "completed_at": None,
+        }
+    ]
 
 
 async def test_entity_detail_skips_absent_fact_schema_without_degraded_flag(app) -> None:

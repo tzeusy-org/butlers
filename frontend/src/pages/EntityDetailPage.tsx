@@ -30,6 +30,7 @@ import type {
   EntityFact,
   EntityFactStalenessBand,
   EntityFactsValidity,
+  EntityRebindReceipt,
   EntityTimelineItem,
   Fact,
   MessageThreadSummary,
@@ -145,6 +146,47 @@ function resolveMergeMetadata(
   if (!survivorId || survivorId === entityId) return { kind: "inconsistent" };
 
   return { kind: "redirect", survivorId };
+}
+
+function RebindReceiptCohort({ receipts }: { receipts: EntityRebindReceipt[] }) {
+  if (receipts.length === 0) return null;
+  const latestId = receipts[0]?.rebind_id;
+  const cohort = receipts.filter((receipt) => receipt.rebind_id === latestId);
+  return (
+    <section
+      className="rounded-md border border-border bg-muted/20 px-3 py-2"
+      data-testid="entity-rebind-cohort"
+      aria-label="Entity rebind receipts"
+    >
+      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        Memory rebind
+      </p>
+      <ul className="mt-2 flex flex-wrap gap-2">
+        {cohort.map((receipt) => {
+          const label =
+            receipt.status === "active"
+              ? `${receipt.references_rebound} rebound`
+              : receipt.status === "failed"
+                ? `Failed${receipt.error_class ? ` · ${receipt.error_class}` : ""}`
+                : receipt.status === "pending"
+                  ? "Not yet reported"
+                  : "No local table";
+          return (
+            <li key={`${receipt.rebind_id}:${receipt.target_schema}`} className="flex items-center gap-1">
+              <span className="text-xs text-foreground">{receipt.target_schema}</span>
+              <Badge
+                variant={receipt.status === "failed" ? "destructive" : "outline"}
+                className="text-[10px]"
+                data-status={receipt.status}
+              >
+                {label}
+              </Badge>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
 }
 
 /**
@@ -2791,6 +2833,7 @@ export default function EntityDetailPage() {
           className="outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-2"
         >
           {/* eslint-enable jsx-a11y/no-static-element-interactions, jsx-a11y/no-noninteractive-tabindex */}
+          <RebindReceiptCohort receipts={entity.rebind_receipts ?? []} />
           {mergeMetadata.kind === "inconsistent" && (
             <div
               className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm"

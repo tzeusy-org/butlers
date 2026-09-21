@@ -5919,6 +5919,9 @@ async def merge_entities(
         tombstoned_entity_id=result.tombstoned_entity_id,
         subject_facts_rewired=result.subject_facts_rewired,
         object_facts_rewired=result.object_facts_rewired,
+        rebind_id=result.rebind_id,
+        receipts=[dict(receipt) for receipt in result.receipts],
+        failed_schemas=list(result.failed_schemas),
     )
 
 
