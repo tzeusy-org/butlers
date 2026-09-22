@@ -46,3 +46,36 @@ describe("updateHomeAtmosphereLocation", () => {
     });
   });
 });
+
+describe("submitHomePersonMappings", () => {
+  it("sends the opaque key in a header and the exact batch in the body", async () => {
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse({
+        data: {
+          receipt: "00000000-0000-4000-8000-000000000001",
+          complete: true,
+          received_count: 1,
+          created_count: 1,
+          unchanged_count: 0,
+          conflict_count: 0,
+          invalid_reference_count: 0,
+        },
+        meta: {},
+      }),
+    );
+    const mappings = [
+      {
+        ha_person_id: "person.private_client_fixture",
+        entity_id: "00000000-0000-4000-8000-000000000002",
+      },
+    ];
+
+    await client.submitHomePersonMappings(mappings, "a".repeat(43));
+
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(url).toContain("/home/person-mappings");
+    expect(init.method).toBe("POST");
+    expect(init.headers).toMatchObject({ "idempotency-key": "a".repeat(43) });
+    expect(JSON.parse(init.body as string)).toEqual({ mappings });
+  });
+});

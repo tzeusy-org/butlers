@@ -5554,6 +5554,21 @@ export interface HomeAssistantDeleteResponse {
   message: string;
 }
 
+export interface HomePersonMappingInput {
+  ha_person_id: string;
+  entity_id: string;
+}
+
+export interface HomePersonMappingReceipt {
+  receipt: string;
+  complete: boolean;
+  received_count: number;
+  created_count: number;
+  unchanged_count: number;
+  conflict_count: number;
+  invalid_reference_count: number;
+}
+
 // ---------------------------------------------------------------------------
 // Dunbar tier ranking
 // ---------------------------------------------------------------------------
