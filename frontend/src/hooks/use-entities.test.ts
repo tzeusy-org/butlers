@@ -19,12 +19,14 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 
 const mockInvalidateQueries = vi.fn();
 const mockQueryClient = { invalidateQueries: mockInvalidateQueries };
+const mockUseQuery = vi.hoisted(() => vi.fn((opts: unknown) => opts));
 
 vi.mock("@tanstack/react-query", async (importOriginal) => {
   const original = await importOriginal<typeof import("@tanstack/react-query")>();
   return {
     ...original,
     useMutation: vi.fn((opts: unknown) => opts),
+    useQuery: mockUseQuery,
     useQueryClient: () => mockQueryClient,
   };
 });
@@ -37,6 +39,10 @@ vi.mock("@/api/index.ts", async (importOriginal) => {
   const original = await importOriginal<typeof import("@/api/index.ts")>();
   return {
     ...original,
+    getEntityActivity: vi.fn(),
+    createEntityNote: vi.fn(),
+    createEntityInteraction: vi.fn(),
+    createEntityGift: vi.fn(),
     mergeRelationshipEntities: vi.fn(),
     forgetRelationshipEntity: vi.fn(),
   };
@@ -48,12 +54,46 @@ vi.mock("@/api/index.ts", async (importOriginal) => {
 
 import { useMutation } from "@tanstack/react-query";
 import {
+  useCreateEntityGift,
+  useCreateEntityInteraction,
+  useCreateEntityNote,
+  useEntityActivity,
   useMergeRelationshipEntities,
   useForgetRelationshipEntity,
 } from "@/hooks/use-entities.ts";
 import type { MergeRelationshipEntitiesRequest } from "@/api/index.ts";
 
 const mockUseMutation = vi.mocked(useMutation);
+
+describe("useEntityActivity", () => {
+  beforeEach(() => {
+    mockUseQuery.mockClear();
+  });
+
+  it("uses the canonical cache key and forwards TanStack cancellation", async () => {
+    const { getEntityActivity } = await import("@/api/index.ts");
+    const activity = vi.mocked(getEntityActivity);
+    activity.mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 50,
+      offset: 0,
+      degraded: false,
+      degraded_reason: null,
+    });
+
+    useEntityActivity("entity-001", { limit: 50, offset: 0 });
+    const options = mockUseQuery.mock.calls.at(-1)?.[0] as {
+      queryKey: unknown[];
+      queryFn: (context: { signal: AbortSignal }) => Promise<unknown>;
+    };
+    const signal = new AbortController().signal;
+
+    expect(options.queryKey).toEqual(["entity-activity", "entity-001", 50, 0]);
+    await options.queryFn({ signal });
+    expect(activity).toHaveBeenCalledWith("entity-001", { limit: 50, offset: 0, signal });
+  });
+});
 
 /**
  * Call the hook-under-test (which calls mockUseMutation) and return the
@@ -157,6 +197,30 @@ describe("useForgetRelationshipEntity (use-entities)", () => {
 
     expect(mockInvalidateQueries).toHaveBeenCalledWith({
       queryKey: ["memory-entity", "forgotten-uuid"],
+    });
+  });
+});
+
+describe("entity activity mutation invalidation", () => {
+  beforeEach(() => {
+    mockUseMutation.mockClear();
+    mockInvalidateQueries.mockClear();
+  });
+
+  it.each([
+    ["note", useCreateEntityNote],
+    ["interaction", useCreateEntityInteraction],
+    ["gift", useCreateEntityGift],
+  ])("%s success refreshes the stream and daily bins", (_label, useHook) => {
+    useHook();
+    const { onSuccess } = capturedMutationOptions();
+    onSuccess(undefined, { entityId: "entity-001", request: {} }, undefined);
+
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["entity-activity", "entity-001"],
+    });
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["entity-activity-bins", "entity-001"],
     });
   });
 });

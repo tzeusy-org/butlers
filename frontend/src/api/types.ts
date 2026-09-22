@@ -9134,6 +9134,29 @@ export interface ActivityBin {
   count: number;
 }
 
+/** One canonical row in the merged entity activity stream. */
+export interface EntityActivityItem {
+  id: string;
+  ts: string | null;
+  kind: string;
+  src: "relationship" | "chronicler";
+  store: "narrative" | "identity" | null;
+  predicate: string | null;
+  episode_id: string | null;
+  /** Exact server-normalized narrative, identity value, or Chronicle title. */
+  summary: string | null;
+}
+
+/** Response for GET /api/relationship/entities/{id}/activity. */
+export interface EntityActivityResponse {
+  items: EntityActivityItem[];
+  total: number;
+  limit: number;
+  offset: number;
+  degraded: boolean;
+  degraded_reason: "chronicler_activity_unavailable" | null;
+}
+
 /**
  * Response for GET /api/butlers/relationship/entities/{id}/activity when
  * ``bins_only=true``.

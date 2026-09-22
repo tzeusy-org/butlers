@@ -92,6 +92,8 @@ export const EVENT_CACHE_COVERAGE_MANIFEST: CoverageEntry[] = [
 
   // chronicles — deterministic scheduled projections
   { eventType: "chronicles", queryKey: ["chronicles"], source: "use-chronicles.ts (projection-backed queries)" },
+  { eventType: "chronicles", queryKey: ["entity-activity", "entity-001"], source: "use-entities.ts (useEntityActivity)" },
+  { eventType: "chronicles", queryKey: ["entity-activity-bins", "entity-001", "90d"], source: "use-entities.ts (useEntityActivityBins)" },
 
   // entity.rebound.v1 — survivor/tombstone detail plus receipt cohort
   { eventType: "entity.rebound.v1", queryKey: ["memory-entity", "entity-1"], source: "use-memory.ts (useEntity)" },

@@ -6,9 +6,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import EntityDetailPage, { ENTITY_MODE_STORAGE_KEY } from "@/pages/EntityDetailPage";
 import { useEntity } from "@/hooks/use-memory";
 import {
+  useEntityActivity,
   useEntityDeltaFacts,
   useEntityFacts,
-  useEntityTimeline,
   useRelationshipEntitiesByIds,
 } from "@/hooks/use-entities";
 import type { EntityDetail, EntityFact } from "@/api/types";
@@ -89,6 +89,19 @@ vi.mock("@/hooks/use-entities", () => ({
     error: null,
   })),
   useEntityTimeline: vi.fn(() => ({ data: [], isLoading: false })),
+  useEntityActivity: vi.fn(() => ({
+    data: {
+      items: [],
+      total: 0,
+      limit: 50,
+      offset: 0,
+      degraded: false,
+      degraded_reason: null,
+    },
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  })),
   useEntityGifts: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityLoans: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityMessageThreads: vi.fn(() => ({ data: [], isLoading: false })),
@@ -198,18 +211,130 @@ describe("EntityDetailPage — identity hero", () => {
     setEntityState(BASE_ENTITY);
     const html = renderPage();
     expect(html).toContain("Activity");
+    expect(html).toContain("No activity recorded yet.");
   });
 
-  it("shows an activity error state (not 'No activity recorded yet.') on timeline load failure", () => {
-    // bu-mkd5r three-way contract: a down timeline backend must not read as a
+  it("renders exact summaries for colliding source-qualified rows without predicate fallback", () => {
+    setEntityState(BASE_ENTITY);
+    vi.mocked(useEntityActivity).mockReturnValue({
+      data: {
+        items: [
+          {
+            id: "shared-id",
+            ts: "2026-05-30T12:00:00Z",
+            kind: "note",
+            src: "relationship",
+            store: "narrative",
+            predicate: "contact_note",
+            episode_id: null,
+            summary: "Exact narrative summary",
+          },
+          {
+            id: "shared-id",
+            ts: "2026-05-29T12:00:00Z",
+            kind: "fact",
+            src: "relationship",
+            store: "identity",
+            predicate: "private_predicate_sentinel",
+            episode_id: null,
+            summary: null,
+          },
+        ],
+        total: 2,
+        limit: 50,
+        offset: 0,
+        degraded: false,
+        degraded_reason: null,
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useEntityActivity>);
+
+    const html = renderPage();
+    expect(html).toContain("Exact narrative summary");
+    expect(html).not.toContain(
+      '<p class="text-sm leading-snug">private predicate sentinel</p>',
+    );
+  });
+
+  it("keeps partial activity visible while naming unavailable Chronicle data", () => {
+    setEntityState(BASE_ENTITY);
+    vi.mocked(useEntityActivity).mockReturnValue({
+      data: {
+        items: [
+          {
+            id: "fact-1",
+            ts: "2026-05-30T12:00:00Z",
+            kind: "note",
+            src: "relationship",
+            store: "narrative",
+            predicate: "contact_note",
+            episode_id: null,
+            summary: "Available relationship activity",
+          },
+        ],
+        total: 1,
+        limit: 50,
+        offset: 0,
+        degraded: true,
+        degraded_reason: "chronicler_activity_unavailable",
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useEntityActivity>);
+
+    const html = renderPage();
+    expect(html).toContain('data-testid="entity-activity-degraded"');
+    expect(html).toContain("Chronicle activity: unavailable");
+    expect(html).toContain("Available relationship activity");
+    expect(html).not.toContain("No activity recorded yet.");
+  });
+
+  it("keeps cached rows visible when a refetch fails", () => {
+    setEntityState(BASE_ENTITY);
+    vi.mocked(useEntityActivity).mockReturnValue({
+      data: {
+        items: [
+          {
+            id: "cached-1",
+            ts: "2026-05-30T12:00:00Z",
+            kind: "note",
+            src: "relationship",
+            store: "narrative",
+            predicate: "contact_note",
+            episode_id: null,
+            summary: "Cached activity remains visible",
+          },
+        ],
+        total: 1,
+        limit: 50,
+        offset: 0,
+        degraded: false,
+        degraded_reason: null,
+      },
+      isLoading: false,
+      isError: true,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useEntityActivity>);
+
+    const html = renderPage();
+    expect(html).toContain('data-testid="entity-activity-fetch-error"');
+    expect(html).toContain("Cached activity remains visible");
+    expect(html).not.toContain("No activity recorded yet.");
+  });
+
+  it("shows an activity error state on initial activity load failure", () => {
+    // bu-mkd5r three-way contract: a down activity backend must not read as a
     // genuinely quiet history.
     setEntityState(BASE_ENTITY);
-    vi.mocked(useEntityTimeline).mockReturnValue({
+    vi.mocked(useEntityActivity).mockReturnValue({
       data: undefined,
       isLoading: false,
       isError: true,
       refetch: vi.fn(),
-    } as unknown as ReturnType<typeof useEntityTimeline>);
+    } as unknown as ReturnType<typeof useEntityActivity>);
     const html = renderPage();
     expect(html).toContain("entity-timeline-error");
     expect(html).not.toContain("No activity recorded yet.");

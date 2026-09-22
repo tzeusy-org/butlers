@@ -218,6 +218,8 @@ const calendarPatch: CachePatch = (qc) => {
  */
 const chroniclesPatch: CachePatch = (qc) => {
   qc.invalidateQueries({ queryKey: ["chronicles"] });
+  qc.invalidateQueries({ queryKey: ["entity-activity"] });
+  qc.invalidateQueries({ queryKey: ["entity-activity-bins"] });
 };
 
 /**

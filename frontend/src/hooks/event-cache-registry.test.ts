@@ -243,7 +243,13 @@ describe("EVENT_CACHE_REGISTRY", () => {
   it("chronicles: invalidates projection-backed chronicler data", () => {
     const { qc, invalidateQueries } = makeQc();
     applyFleetEvent(qc, { type: "chronicles", ts: 1, data: { kind: "projection" } });
-    expect(keys(invalidateQueries)).toEqual(expect.arrayContaining([["chronicles"]]));
+    expect(keys(invalidateQueries)).toEqual(
+      expect.arrayContaining([
+        ["chronicles"],
+        ["entity-activity"],
+        ["entity-activity-bins"],
+      ]),
+    );
   });
 
   it("heartbeat: is a no-op (no cache invalidation)", () => {

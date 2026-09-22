@@ -21,6 +21,7 @@ import {
   updateEntityContact,
   dismissRelationshipEntityQueueItem,
   forgetRelationshipEntity,
+  getEntityActivity,
   getEntityActivityBins,
   getEntityConcentration,
   getEntityCoreDates,
@@ -108,6 +109,20 @@ export function useEntityTimeline(entityId: string | undefined) {
   return useQuery({
     queryKey: ["entity-timeline", entityId],
     queryFn: () => getEntityTimeline(entityId!),
+    enabled: !!entityId,
+  });
+}
+
+/** Fetch the canonical merged entity activity stream with cancellable pagination. */
+export function useEntityActivity(
+  entityId: string | undefined,
+  params?: { limit?: number; offset?: number },
+) {
+  const limit = params?.limit ?? 50;
+  const offset = params?.offset ?? 0;
+  return useQuery({
+    queryKey: ["entity-activity", entityId, limit, offset],
+    queryFn: ({ signal }) => getEntityActivity(entityId!, { limit, offset, signal }),
     enabled: !!entityId,
   });
 }
@@ -953,6 +968,8 @@ export function useCreateEntityNote() {
     mutationFn: ({ entityId, request }: { entityId: string; request: CreateEntityNoteRequest }) =>
       createEntityNote(entityId, request),
     onSuccess: (_, { entityId }) => {
+      void queryClient.invalidateQueries({ queryKey: ["entity-activity", entityId] });
+      void queryClient.invalidateQueries({ queryKey: ["entity-activity-bins", entityId] });
       void queryClient.invalidateQueries({ queryKey: ["entity-timeline", entityId] });
     },
   });
@@ -976,6 +993,7 @@ export function useCreateEntityInteraction() {
       request: CreateEntityInteractionRequest;
     }) => createEntityInteraction(entityId, request),
     onSuccess: (_, { entityId }) => {
+      void queryClient.invalidateQueries({ queryKey: ["entity-activity", entityId] });
       void queryClient.invalidateQueries({ queryKey: ["entity-timeline", entityId] });
       void queryClient.invalidateQueries({ queryKey: ["entity-activity-bins", entityId] });
       void queryClient.invalidateQueries({ queryKey: ["entity-message-threads", entityId] });
@@ -991,8 +1009,9 @@ export function useCreateEntityGift() {
       createEntityGift(entityId, request),
     onSuccess: (_, { entityId }) => {
       void queryClient.invalidateQueries({ queryKey: ["entity-gifts", entityId] });
+      void queryClient.invalidateQueries({ queryKey: ["entity-activity", entityId] });
+      void queryClient.invalidateQueries({ queryKey: ["entity-activity-bins", entityId] });
       void queryClient.invalidateQueries({ queryKey: ["entity-timeline", entityId] });
     },
   });
 }
-

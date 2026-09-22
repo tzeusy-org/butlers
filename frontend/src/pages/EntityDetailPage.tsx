@@ -27,11 +27,11 @@ import type { DunbarTier, EntityState, EntityType, CurationRailAction } from "@/
 
 import type {
   ContactSummary,
+  EntityActivityItem,
   EntityFact,
   EntityFactStalenessBand,
   EntityFactsValidity,
   EntityRebindReceipt,
-  EntityTimelineItem,
   Fact,
   MessageThreadSummary,
   NeighbourEntry,
@@ -90,6 +90,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useContacts } from "@/hooks/use-contacts";
 import {
   useArchiveRelationshipEntity,
+  useEntityActivity,
   useEntityActivityBins,
   useEntityDeltaFacts,
   useEntityFacts,
@@ -97,7 +98,6 @@ import {
   useEntityLoans,
   useEntityMessageThreads,
   useEntityNeighbours,
-  useEntityTimeline,
   useRelationshipEntities,
   useRelationshipEntitiesByIds,
   useRelationshipEntityQueue,
@@ -648,6 +648,7 @@ const _TIMELINE_FILTERS: { id: TimelineFilter; label: string }[] = [
   { id: "loan", label: "Loans" },
   { id: "life_event", label: "Life events" },
 ];
+const _EMPTY_ACTIVITY_ITEMS: EntityActivityItem[] = [];
 
 function timelineKindGlyph(kind: string): string {
   switch (kind) {
@@ -669,19 +670,26 @@ function timelineKindGlyph(kind: string): string {
 }
 
 function ActivityTimeline({ entityId }: { entityId: string }) {
-  const { data: items, isLoading, isError, refetch } = useEntityTimeline(entityId);
+  const {
+    data: activity,
+    isLoading,
+    isError,
+    refetch,
+  } = useEntityActivity(entityId, { limit: 200, offset: 0 });
   const [filter, setFilter] = useState<TimelineFilter>("all");
+  const items = activity?.items ?? _EMPTY_ACTIVITY_ITEMS;
+  const isDegraded = activity?.degraded === true;
 
   const counts = useMemo(() => {
     const acc: Record<TimelineFilter, number> = {
-      all: items?.length ?? 0,
+      all: items.length,
       interaction: 0,
       note: 0,
       gift: 0,
       loan: 0,
       life_event: 0,
     };
-    for (const it of items ?? []) {
+    for (const it of items) {
       if (it.kind in acc) {
         acc[it.kind as TimelineFilter] += 1;
       }
@@ -690,17 +698,24 @@ function ActivityTimeline({ entityId }: { entityId: string }) {
   }, [items]);
 
   const filtered = useMemo(() => {
-    if (!items) return [];
     if (filter === "all") return items;
     return items.filter((it) => it.kind === filter);
   }, [items, filter]);
+
+  const timelineRows = filtered.length > 0 && (
+    <ul className="divide-y divide-border border-y">
+      {filtered.map((item) => (
+        <TimelineRow key={`${item.src}:${item.store ?? "none"}:${item.id}`} item={item} />
+      ))}
+    </ul>
+  );
 
   return (
     <section className="space-y-3">
       <div className="flex items-baseline justify-between gap-3">
         <h2 className="text-lg font-semibold">Activity</h2>
         <span className="text-muted-foreground text-xs">
-          {items ? `${items.length} entries` : ""}
+          {activity ? `${activity.total} entries` : ""}
         </span>
       </div>
 
@@ -741,8 +756,8 @@ function ActivityTimeline({ entityId }: { entityId: string }) {
             <Skeleton key={i} className="h-10 w-full" />
           ))}
         </div>
-      ) : isError && (!items || items.length === 0) ? (
-        // A failed timeline fetch must not render "No activity recorded yet." —
+      ) : isError && items.length === 0 ? (
+        // A failed activity fetch must not render "No activity recorded yet." —
         // a down backend would read as a genuinely quiet history (bu-mkd5r).
         <div
           role="alert"
@@ -754,28 +769,46 @@ function ActivityTimeline({ entityId }: { entityId: string }) {
             Retry
           </Button>
         </div>
+      ) : isError ? (
+        <>
+          <SourceDegradedNote
+            testId="entity-activity-fetch-error"
+            label="Activity"
+            detail="unavailable"
+            onRetry={() => void refetch()}
+          />
+          {timelineRows}
+        </>
+      ) : isDegraded ? (
+        <>
+          <SourceDegradedNote
+            testId="entity-activity-degraded"
+            label="Chronicle activity"
+            detail="unavailable"
+            onRetry={() => void refetch()}
+          />
+          {timelineRows}
+        </>
       ) : filtered.length === 0 ? (
         <p className="text-muted-foreground py-8 text-center text-sm">
           {filter === "all"
             ? "No activity recorded yet."
             : `No ${_TIMELINE_FILTERS.find((f) => f.id === filter)?.label.toLowerCase()} yet.`}
         </p>
-      ) : (
-        <ul className="divide-y divide-border border-y">
-          {filtered.map((item) => (
-            <TimelineRow key={item.id} item={item} />
-          ))}
-        </ul>
-      )}
+      ) : timelineRows}
     </section>
   );
 }
 
-function TimelineRow({ item }: { item: EntityTimelineItem }) {
-  const date = item.valid_at ? new Date(item.valid_at) : null;
-  const subtitle = item.predicate.startsWith("interaction_")
-    ? item.predicate.slice("interaction_".length).replaceAll("_", " ")
-    : item.predicate.replaceAll("_", " ");
+function TimelineRow({ item }: { item: EntityActivityItem }) {
+  const date = item.ts ? new Date(item.ts) : null;
+  const predicate = item.predicate ?? item.kind;
+  const subtitle =
+    item.src === "chronicler"
+      ? "Chronicle episode"
+      : predicate.startsWith("interaction_")
+        ? predicate.slice("interaction_".length).replaceAll("_", " ")
+        : predicate.replaceAll("_", " ");
 
   return (
     <li className="flex items-start gap-3 py-2.5">
@@ -787,11 +820,11 @@ function TimelineRow({ item }: { item: EntityTimelineItem }) {
         {timelineKindGlyph(item.kind)}
       </span>
       <div className="min-w-0 flex-1">
-        {item.content && (
-          <p className="text-sm leading-snug">{item.content}</p>
+        {item.summary && (
+          <p className="text-sm leading-snug">{item.summary}</p>
         )}
         <p className="text-muted-foreground mt-0.5 text-xs capitalize">
-          {subtitle}
+          {item.src === "chronicler" ? subtitle : `Relationship · ${subtitle}`}
         </p>
       </div>
       <span className="text-muted-foreground shrink-0 text-xs tabular-nums">
