@@ -1580,6 +1580,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Last snapshot
 - Maintenance queue
 - HA command log
+- Person mappings
 - Active devices
 - Recent commands
 - Energy
@@ -1903,6 +1904,15 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Retry
 - The saved location may be out of date.
 - Atmosphere location
+
+## `frontend/src/components/butler-detail/HomePersonMappingPanel.tsx`
+
+- Remove
+- Add mapping
+- Clear
+- Mapping request was not applied. Check the values and try again.
+- Home Assistant person ID {}
+- Person entity UUID {}
 
 ## `frontend/src/components/butler-detail/RuntimeConfigCard.tsx`
 
@@ -4350,4 +4360,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3416*
+*Total strings: 3423*
