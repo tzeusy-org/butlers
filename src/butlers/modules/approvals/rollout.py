@@ -22,10 +22,14 @@ async def read_approval_delivery_rollout(
     """Read the schema-local rollout row; absence or invalidity disables both paths."""
     lock_clause = " FOR SHARE" if lock else ""
     try:
-        row = await connection.fetchrow(
-            "SELECT admission_enabled, worker_enabled "
-            "FROM approval_delivery_rollout WHERE singleton IS TRUE" + lock_clause
-        )
+        # The savepoint is required when this read runs inside atomic parking:
+        # PostgreSQL marks the surrounding transaction failed after a rolling
+        # pre-migration missing-table error even when Python catches it.
+        async with connection.transaction():
+            row = await connection.fetchrow(
+                "SELECT admission_enabled, worker_enabled "
+                "FROM approval_delivery_rollout WHERE singleton IS TRUE" + lock_clause
+            )
     except Exception:  # Rolling/pre-migration schemas must remain inert.
         return ApprovalDeliveryRollout()
     if row is None:

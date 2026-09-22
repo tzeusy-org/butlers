@@ -564,53 +564,30 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
         # the fact. Deliberately silent (park_prepared_action never pushes) --
         # the owner sees it only through this candidate's door.
         #
-        # Idempotent by design: approvals_013's partial unique index rejects a
-        # second INSERT for the same deduplication_key while a prior row is
-        # pending/approved/rejected/abandoned, so a same-week re-run (or a
-        # week where the owner already decided) must reuse that row's id
-        # rather than re-park -- exactly the "re-run re-derives the same key
-        # and no-ops" contract this bead specifies.
+        # Idempotent by design: the shared admission transaction resolves the
+        # durable winner for a concurrent or repeated semantic key.
         prepared_dedup_key = f"relationship:prepared-reach-out:{contact_id}:{year_week}"
-        existing_prepared = await db_pool.fetchrow(
-            "SELECT id FROM pending_actions WHERE deduplication_key = $1 "
-            "AND status IN ('pending', 'approved', 'rejected', 'abandoned')",
-            prepared_dedup_key,
+        prepared_action_id = uuid.uuid4()
+        draft_message = (
+            f"Hey {contact_name}, it's been a while since we caught up -- how have you been?"
         )
-        if existing_prepared is not None:
-            prepared_action_id = existing_prepared["id"]
-        else:
-            prepared_action_id = uuid.uuid4()
-            draft_message = (
-                f"Hey {contact_name}, it's been a while since we caught up -- how have you been?"
-            )
-            try:
-                await park_prepared_action(
-                    db_pool,
-                    action_id=prepared_action_id,
-                    tool_name="notify",
-                    tool_args={
-                        "entity_id": str(entity_id),
-                        "message": draft_message,
-                        "intent": "send",
-                    },
-                    agent_summary=f"Prepared reach-out to {contact_name} (overdue check-in)",
-                    requested_at=now_utc,
-                    expires_at=stale_expires_at,
-                    why=why,
-                    deduplication_key=prepared_dedup_key,
-                )
-            except asyncpg.UniqueViolationError:
-                # A concurrent scan tick won the unique-key race. Resolve the
-                # durable winner rather than treating its benign conflict as
-                # a job error.
-                existing_prepared = await db_pool.fetchrow(
-                    "SELECT id FROM pending_actions WHERE deduplication_key = $1 "
-                    "AND status IN ('pending', 'approved', 'rejected', 'abandoned')",
-                    prepared_dedup_key,
-                )
-                if existing_prepared is None:
-                    raise
-                prepared_action_id = existing_prepared["id"]
+        admission = await park_prepared_action(
+            db_pool,
+            action_id=prepared_action_id,
+            tool_name="notify",
+            tool_args={
+                "entity_id": str(entity_id),
+                "message": draft_message,
+                "intent": "send",
+            },
+            agent_summary=f"Prepared reach-out to {contact_name} (overdue check-in)",
+            requested_at=now_utc,
+            expires_at=stale_expires_at,
+            why=why,
+            origin_butler="relationship",
+            deduplication_key=prepared_dedup_key,
+        )
+        prepared_action_id = admission.action_id
 
         should_continue = await _submit(
             priority=priority,

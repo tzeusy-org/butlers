@@ -1,7 +1,7 @@
 ## 1. Contract and additive persistence
 
-- [ ] 1.1 Confirm the owner-approved RFC 0023 constants: closed root/presentation/cohort state and reason vocabulary, logical action/cohort-subject and presentation-key formats, defer-generation/cohort replacement bounds, lease/backoff/stuck SLOs, authenticated transport-principal contract, and the per-provider idempotency/reconciliation capability inventory.
-  The per-provider capability inventory remains open: Telegram is known to lack proof-bearing idempotency/reconciliation, but every current adapter still needs an evidence-backed fail-closed classification before this task can be completed.
+- [x] 1.1 Confirm the owner-approved RFC 0023 constants: closed root/presentation/cohort state and reason vocabulary, logical action/cohort-subject and presentation-key formats, defer-generation/cohort replacement bounds, lease/backoff/stuck SLOs, authenticated transport-principal contract, and the per-provider idempotency/reconciliation capability inventory.
+  Evidence: RFC 0023 records Telegram, email, and WhatsApp against their actual Messenger provider boundary. None accepts a presentation idempotency key or implements `reconcile_approval_delivery`, so every post-start uncertain result remains fail-closed `ambiguous` with no resend.
 - [x] 1.2 Add guarded Approvals migrations for `approval_delivery_intents`, monotonic `approval_delivery_presentations`, durable burst cohorts/membership, append-only attempts, safe terminal event vocabulary, due/lease indexes, foreign keys, and fail-closed downgrade checks; do not backfill legacy rows.
 - [x] 1.3 Add the narrowly wired Messenger approval-handoff migration keyed by trusted `(issuer, owning_schema, presentation_key, mode)`, with pre-provider-start persistence and non-destructive downgrade checks; store no recovery envelope/callback material in generic notification tables.
 - [x] 1.4 Add real-PostgreSQL migration tests proving fresh/upgrade shape, generation/cohort uniqueness and constraints, legacy `approval_push_emissions` preservation, no historical intent creation, safe closed vocabularies, and downgrade refusal while recovery data exists.
@@ -43,13 +43,15 @@
 
 ## 6. Real-PostgreSQL fault, concurrency, and compatibility verification
 
-- [ ] 6.1 Add real-PostgreSQL transaction tests for action-plus-intent/presentation rollback, semantic-key duplication, concurrent burst admission, terminalized-fourth/fifth-member cohort continuity, and complete production callsite coverage.
-- [ ] 6.2 Add multi-worker real-PostgreSQL tests for `SKIP LOCKED` claims, stale lease fencing, token mismatch, heartbeat/terminal-write rejection, and restart recovery before send start.
-- [ ] 6.3 Add crash-injection tests at claim, pre-handoff marker, Messenger handoff persistence, provider acceptance before source result, terminal-result persistence, and daemon restart boundaries.
-- [ ] 6.4 Add decision/expiry/defer race tests proving cancellation before handoff prevents send, handoff-first blocks only future recovery, each successful defer creates exactly one fenced `now + hours` successor, cohort-member defer preserves other eligible digest members, and the worker never mutates a parked domain action.
+- [x] 6.1 Add real-PostgreSQL transaction tests for action-plus-intent/presentation rollback, semantic-key duplication, concurrent burst admission, terminalized-fourth/fifth-member cohort continuity, and complete production callsite coverage.
+  Evidence: `test_approval_push_on_park.py`, `test_approval_delivery_worker.py`, and `test_prepared_actions.py` cover rollback, concurrent semantic/burst admission, terminal fourth-to-fifth cohort replacement, and both prepared producers through the shared transaction.
+- [x] 6.2 Add multi-worker real-PostgreSQL tests for `SKIP LOCKED` claims, stale lease fencing, token mismatch, heartbeat/terminal-write rejection, and restart recovery before send start.
+- [x] 6.3 Add crash-injection tests at claim, pre-handoff marker, Messenger handoff persistence, provider acceptance before source result, terminal-result persistence, and daemon restart boundaries.
+  Evidence: the worker restart boundary matrix covers claimed, handoff-started, and terminal-result durable states; Messenger tuple tests cover pre-provider ledger persistence, accepted-result persistence, duplicate suppression, and reconcile-only restart behavior.
+- [x] 6.4 Add decision/expiry/defer race tests proving cancellation before handoff prevents send, handoff-first blocks only future recovery, each successful defer creates exactly one fenced `now + hours` successor, cohort-member defer preserves other eligible digest members, and the worker never mutates a parked domain action.
 - [x] 6.5 Add RFC 0021 regression tests for exact quiet-hours release/no re-gate, control-plane budget isolation, and concurrent first-three/digest/collapsed behavior outside generic deferred delivery.
   Evidence: `tests/integration/test_approval_push_on_park.py` passes the exact stored quiet-hours release and concurrent first-three/digest/collapsed cases with zero generic deferred rows; `tests/integration/test_approval_delivery_worker.py` passes admission plus confirmed processing while the insight broker is disabled, with its settings and candidates unchanged.
-- [ ] 6.6 Add generic-notification exclusion plus approval API/frontend redaction/truthful-state tests, retention/downgrade/stuck-observability tests, and exact-head focused/broader quality gates.
+- [x] 6.6 Add generic-notification exclusion plus approval API/frontend redaction/truthful-state tests, retention/downgrade/stuck-observability tests, and exact-head focused/broader quality gates.
 
 ## 7. Additive rollout and rollback gate
 
@@ -57,4 +59,5 @@
   Evidence: the schema-local rollout row defaults both writer admission and worker startup to disabled; real-PostgreSQL coverage passes for default, absent, and rejected-invalid configuration with a durable pending action, zero intent/presentation/cohort/membership/attempt or legacy-emission rows, and no duplicate action under concurrent semantic-key parks. Daemon lifecycle coverage passes with no worker task when the server-held worker flag is disabled or unreadable.
 - [ ] 7.2 Execute an owner-authorized staging/canary drill using synthetic newly parked actions only, including worker restart, provider ambiguity, quiet-hours, and decision-race reconciliation.
 - [ ] 7.3 Enable new writers/workers schema-by-schema only after the canary evidence and dashboard truth review; monitor stuck/ambiguous/oldest-due metrics.
-- [ ] 7.4 Document binary rollback as additive and block schema downgrade/drop while any root/presentation/cohort/attempt/audit data exists; do not delete, replay, approve, execute, or backfill historical actions.
+- [x] 7.4 Document binary rollback as additive and block schema downgrade/drop while any root/presentation/cohort/attempt/audit data exists; do not delete, replay, approve, execute, or backfill historical actions.
+  Evidence: guarded Approvals and Messenger downgrade tests exercise nonempty durable roots/handoffs, selected dependent and audit categories, and the additive rollback contract without deleting or replaying live data.
