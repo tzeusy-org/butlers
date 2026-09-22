@@ -6315,7 +6315,7 @@ _CHRONICLER_ACTIVITY_UNAVAILABLE: Literal["chronicler_activity_unavailable"] = (
     "chronicler_activity_unavailable"
 )
 
-#: Predicate → kind mapping for relationship.entity_facts rows surfaced in activity.
+#: Predicate → kind mapping for both local Relationship stores.
 #: Predicates not listed here are surfaced with kind='fact'.
 _FACT_PREDICATE_KIND: dict[str, str] = {
     "contact_note": "note",
@@ -6331,15 +6331,58 @@ _FACT_PREDICATE_KIND: dict[str, str] = {
     "dunbar_tier_override": "dunbar_tier_override",
 }
 
+_NARRATIVE_ACTIVITY_PREDICATES = (
+    "contact_note",
+    "life_event",
+    "gift",
+    "loan",
+    "dunbar_tier_override",
+)
 
-async def _fetch_relationship_activity(
+
+async def _fetch_narrative_activity(
     pool: object,
     entity_id: UUID,
 ) -> list[ActivityEntry]:
-    """Fetch active facts from relationship.entity_facts for the given entity.
+    """Fetch every active narrative activity fact from the local memory store."""
+    rows = await pool.fetch(
+        """
+        SELECT f.id, f.predicate, f.content, f.valid_at, f.created_at
+        FROM facts f
+        WHERE f.entity_id = $1
+          AND f.scope = 'relationship'
+          AND f.validity = 'active'
+          AND (
+              f.predicate = ANY($2::text[])
+              OR f.predicate LIKE 'interaction_%'
+          )
+        ORDER BY COALESCE(f.valid_at, f.created_at) DESC NULLS LAST, f.id
+        """,
+        entity_id,
+        list(_NARRATIVE_ACTIVITY_PREDICATES),
+    )
+    return [
+        ActivityEntry(
+            id=row["id"],
+            ts=row["valid_at"] or row["created_at"],
+            kind=_FACT_PREDICATE_KIND.get(row["predicate"], "fact"),
+            src="relationship",
+            store="narrative",
+            predicate=row["predicate"],
+            summary=row["content"],
+        )
+        for row in rows
+    ]
+
+
+async def _fetch_identity_activity(
+    pool: object,
+    entity_id: UUID,
+) -> list[ActivityEntry]:
+    """Fetch every active identity triple for the given entity.
 
     Returns all facts where subject=$entity_id OR (object_kind='entity'
-    AND object=$entity_id::text).  Ordered by timestamp DESC.
+    AND object=$entity_id::text). The identity value is projected verbatim.
 
     INVARIANT: No SQL references to chronicler.* schemas.
     """
@@ -6348,6 +6391,8 @@ async def _fetch_relationship_activity(
         SELECT
             f.id,
             f.predicate,
+            f.object,
+            f.observed_at,
             f.last_seen,
             f.created_at
         FROM relationship.entity_facts f
@@ -6356,7 +6401,7 @@ async def _fetch_relationship_activity(
               f.subject = $1
               OR (f.object_kind = 'entity' AND f.object = $1::text)
           )
-        ORDER BY COALESCE(f.last_seen, f.created_at) DESC NULLS LAST, f.id
+        ORDER BY COALESCE(f.observed_at, f.last_seen, f.created_at) DESC NULLS LAST, f.id
         """,
         entity_id,
     )
@@ -6365,14 +6410,16 @@ async def _fetch_relationship_activity(
     for r in rows:
         predicate: str = r["predicate"]
         kind = _FACT_PREDICATE_KIND.get(predicate, "fact")
-        ts: datetime | None = r["last_seen"] or r["created_at"]
+        ts: datetime | None = r["observed_at"] or r["last_seen"] or r["created_at"]
         entries.append(
             ActivityEntry(
                 id=r["id"],
                 ts=ts,
                 kind=kind,
                 src="relationship",
+                store="identity",
                 predicate=predicate,
+                summary=r["object"],
             )
         )
     return entries
@@ -6475,6 +6522,7 @@ async def _fetch_chronicler_activity(
                 ts=ts,
                 kind="episode",
                 src="chronicler",
+                store=None,
                 episode_id=episode_uuid,
                 summary=str(summary) if summary is not None else None,
             )
@@ -6490,13 +6538,22 @@ async def _fetch_chronicler_activity(
 
 
 def _sort_key_activity(entry: ActivityEntry) -> datetime:
-    """Sort key for activity entries: timestamp DESC (None → epoch for stable tail sort)."""
+    """Normalize an activity timestamp for the stable two-pass sort."""
     if entry.ts is None:
         return datetime.min.replace(tzinfo=UTC)
     # Normalise to UTC-aware so comparison works across tz-aware and tz-naive.
     if entry.ts.tzinfo is None:
         return entry.ts.replace(tzinfo=UTC)
     return entry.ts
+
+
+def _sort_activity(entries: list[ActivityEntry]) -> None:
+    """Sort timestamp descending/null-last with the source tuple ascending."""
+    entries.sort(key=lambda entry: (entry.src, entry.store or "", str(entry.id)))
+    entries.sort(
+        key=lambda entry: (entry.ts is not None, _sort_key_activity(entry)),
+        reverse=True,
+    )
 
 
 def _build_daily_bins(entries: list[ActivityEntry], window_days: int) -> list[ActivityBin]:
@@ -6556,18 +6613,20 @@ async def get_entity_activity(
 ) -> ActivityResponse | ActivityBinsResponse:
     """Return a merged activity stream for the given entity.
 
-    Combines:
+    Combines three independently read sources:
 
-    1. **Relationship facts** — all active ``relationship.entity_facts`` rows where
-       the entity is either subject or object (entity-side triple), regardless
-       of predicate.  Tagged ``src='relationship'``.
-    2. **Chronicler episodes** — episodes linked to this entity, fetched via
+    1. **Narrative facts** — active relationship-scoped memory facts for the
+       approved activity predicate families, with exact content summaries.
+    2. **Identity facts** — all active ``relationship.entity_facts`` rows where
+       the entity is either subject or an entity-typed object, with exact object
+       summaries.
+    3. **Chronicler episodes** — episodes linked to this entity, fetched via
        the ``chronicler_list_episodes`` MCP tool (not direct SQL).  Tagged
        ``src='chronicler'``.
 
-    The merged stream is sorted by timestamp descending (``last_seen`` for
-    facts; ``canonical_start_at`` for episodes).  Pagination is applied after
-    the merge.  ``total`` reflects the merged count before slicing.
+    The merged stream is sorted by normalized timestamp descending, nulls last,
+    then by the source-qualified identity tuple ascending. Pagination is applied
+    after the merge; no cross-store row is deduplicated.
 
     **Binning** (entity v3 — sparkline source): with ``bins=daily`` the endpoint
     additionally computes a dense per-day activity-count series over ``window``
@@ -6602,17 +6661,18 @@ async def get_entity_activity(
     # Entity existence gate.
     await _assert_entity_exists(pool, entity_id)
 
-    # Fetch from both sources concurrently.
-    rel_entries, chronicler_result = await asyncio.gather(
-        _fetch_relationship_activity(pool, entity_id),
+    # Fetch each local store independently; never join or deduplicate them.
+    narrative_entries, identity_entries, chronicler_result = await asyncio.gather(
+        _fetch_narrative_activity(pool, entity_id),
+        _fetch_identity_activity(pool, entity_id),
         _fetch_chronicler_activity(mcp_manager, entity_id),
     )
     chr_entries, degraded_reason = chronicler_result
     degraded = degraded_reason is not None
 
     # Merge and sort descending by timestamp.
-    all_entries: list[ActivityEntry] = rel_entries + chr_entries
-    all_entries.sort(key=_sort_key_activity, reverse=True)
+    all_entries: list[ActivityEntry] = narrative_entries + identity_entries + chr_entries
+    _sort_activity(all_entries)
 
     # Daily binning (sparkline). window is validated as '<N>d' by the route regex.
     if bins == "daily":

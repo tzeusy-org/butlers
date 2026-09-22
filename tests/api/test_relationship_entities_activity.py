@@ -1,7 +1,7 @@
 """Tests for GET /api/relationship/entities/{id}/activity (activity aggregator).
 
 Covers spec scenarios from
-``openspec/changes/archive/2026-05-20-relationship-tabs-to-entities/specs/dashboard-relationship/spec.md``
+``openspec/changes/amend-entity-activity-source-union/specs/dashboard-relationship/spec.md``
 § "Requirement: Entity activity aggregator (cross-butler read surface)".
 
 Acceptance criteria:
@@ -61,6 +61,8 @@ def _make_fact_row(
     *,
     fact_id: UUID | None = None,
     predicate: str = "contact_note",
+    object_value: str = "identity value",
+    observed_at: datetime | None = None,
     last_seen: datetime | None = None,
     created_at: datetime | None = None,
 ) -> MagicMock:
@@ -68,7 +70,29 @@ def _make_fact_row(
     data = {
         "id": fact_id or uuid4(),
         "predicate": predicate,
+        "object": object_value,
+        "observed_at": observed_at,
         "last_seen": last_seen,
+        "created_at": created_at or _NOW,
+    }
+    row = MagicMock()
+    row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
+    return row
+
+
+def _make_narrative_row(
+    *,
+    fact_id: UUID | None = None,
+    predicate: str = "contact_note",
+    content: str = "Narrative content",
+    valid_at: datetime | None = None,
+    created_at: datetime | None = None,
+) -> MagicMock:
+    data = {
+        "id": fact_id or uuid4(),
+        "predicate": predicate,
+        "content": content,
+        "valid_at": valid_at,
         "created_at": created_at or _NOW,
     }
     row = MagicMock()
@@ -152,6 +176,7 @@ def _app_with_mocks(
     owner_exists: bool = True,
     entity_exists: bool = True,
     fact_rows: list | None = None,
+    narrative_rows: list | None = None,
     chronicler_episodes: list[dict] | None = None,
     chronicler_unreachable: bool = False,
 ) -> tuple[FastAPI, AsyncMock, MagicMock]:
@@ -175,7 +200,7 @@ def _app_with_mocks(
 
     mock_pool.fetchrow = AsyncMock(return_value=owner_row)
     mock_pool.fetchval = AsyncMock(return_value=entity_val)
-    mock_pool.fetch = AsyncMock(return_value=fact_rows or [])
+    mock_pool.fetch = AsyncMock(side_effect=[narrative_rows or [], fact_rows or []])
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = mock_pool
@@ -232,12 +257,14 @@ class TestOwnerGate:
     """Non-owner callers receive HTTP 403 + owner_required."""
 
     async def test_no_owner_returns_403(self):
-        app, _, _ = _app_with_mocks(owner_exists=False)
+        app, pool, mcp = _app_with_mocks(owner_exists=False)
         resp = await _get(app)
         assert resp.status_code == 403
         body = resp.json()
         code = body.get("code") or (body.get("detail") or {}).get("code")
         assert code == "owner_required"
+        pool.fetch.assert_not_awaited()
+        mcp.get_client.assert_not_awaited()
 
     async def test_owner_present_allows_access(self):
         app, _, _ = _app_with_mocks(owner_exists=True, entity_exists=True)
@@ -322,6 +349,44 @@ class TestResponseShape:
         assert item["episode_id"] == str(ep_id)
         assert item["summary"] == "Test episode"
 
+    async def test_three_sources_preserve_meaning_and_source_qualified_collisions(self):
+        shared_id = uuid4()
+        narrative = _make_narrative_row(
+            fact_id=shared_id,
+            predicate="gift",
+            content="Exact gift text",
+            valid_at=_NOW,
+        )
+        identity = _make_fact_row(
+            fact_id=shared_id,
+            predicate="works-at",
+            object_value="Exact identity value",
+            observed_at=_NOW,
+        )
+        episode_id = uuid4()
+        app, _, _ = _app_with_mocks(
+            narrative_rows=[narrative],
+            fact_rows=[identity],
+            chronicler_episodes=[
+                _make_episode_dict(episode_id=episode_id, canonical_start_at=_NOW)
+            ],
+        )
+
+        body = (await _get(app)).json()
+
+        assert body["total"] == 3
+        assert [(item["src"], item["store"], item["id"]) for item in body["items"]] == [
+            ("chronicler", None, str(episode_id)),
+            ("relationship", "identity", str(shared_id)),
+            ("relationship", "narrative", str(shared_id)),
+        ]
+        assert body["items"][1]["summary"] == "Exact identity value"
+        assert body["items"][2]["summary"] == "Exact gift text"
+        assert all(
+            set(item) == {"id", "ts", "kind", "src", "store", "predicate", "episode_id", "summary"}
+            for item in body["items"]
+        )
+
 
 # ---------------------------------------------------------------------------
 # Scenario: Merged stream sort (timestamp descending)
@@ -345,9 +410,12 @@ class TestMergedStreamSort:
         assert items[0]["src"] == "chronicler"
         assert items[1]["src"] == "relationship"
         # Guard: relationship SQL must use entity_facts, not the memory-module facts table.
-        fetch_call_sql = pool.fetch.call_args_list[0][0][0]
+        narrative_sql = pool.fetch.call_args_list[0][0][0]
+        fetch_call_sql = pool.fetch.call_args_list[1][0][0]
+        assert "FROM facts" in narrative_sql
+        assert "entity_facts" not in narrative_sql
         assert "relationship.entity_facts" in fetch_call_sql
-        assert "relationship.facts" not in fetch_call_sql  # guard against regression
+        assert "FROM facts" not in fetch_call_sql
 
     async def test_multiple_items_sorted_desc(self):
         ep_old = uuid4()
@@ -362,6 +430,64 @@ class TestMergedStreamSort:
         items = body["items"]
         assert items[0]["episode_id"] == str(ep_new)
         assert items[1]["episode_id"] == str(ep_old)
+
+    async def test_timestamped_rows_precede_source_tuple_sorted_null_tail(self):
+        def record(data: dict) -> MagicMock:
+            row = MagicMock()
+            row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
+            return row
+
+        timestamped_id = UUID("00000000-0000-4000-8000-000000000010")
+        identity_id = UUID("00000000-0000-4000-8000-000000000003")
+        narrative_id = UUID("00000000-0000-4000-8000-000000000002")
+        chronicler_id = UUID("00000000-0000-4000-8000-000000000001")
+        narrative_rows = [
+            record(
+                {
+                    "id": timestamped_id,
+                    "predicate": "contact_note",
+                    "content": "Timestamped",
+                    "valid_at": _NOW,
+                    "created_at": _NOW,
+                }
+            ),
+            record(
+                {
+                    "id": narrative_id,
+                    "predicate": "contact_note",
+                    "content": "Null narrative",
+                    "valid_at": None,
+                    "created_at": None,
+                }
+            ),
+        ]
+        identity_rows = [
+            record(
+                {
+                    "id": identity_id,
+                    "predicate": "works-at",
+                    "object": "Null identity",
+                    "observed_at": None,
+                    "last_seen": None,
+                    "created_at": None,
+                }
+            )
+        ]
+        episodes = [{"id": str(chronicler_id), "canonical_title": "Null episode"}]
+        app, _, _ = _app_with_mocks(
+            narrative_rows=narrative_rows,
+            fact_rows=identity_rows,
+            chronicler_episodes=episodes,
+        )
+
+        items = (await _get(app)).json()["items"]
+
+        assert items[0]["id"] == str(timestamped_id)
+        assert [(item["src"], item["store"], item["id"]) for item in items[1:]] == [
+            ("chronicler", None, str(chronicler_id)),
+            ("relationship", "identity", str(identity_id)),
+            ("relationship", "narrative", str(narrative_id)),
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -397,7 +523,7 @@ class TestChroniclerDegrades:
         mock_pool = AsyncMock()
         mock_pool.fetchrow = AsyncMock(return_value=_make_owner_row())
         mock_pool.fetchval = AsyncMock(return_value=1)
-        mock_pool.fetch = AsyncMock(return_value=[fact_row])
+        mock_pool.fetch = AsyncMock(side_effect=[[], [fact_row]])
 
         mock_db = MagicMock(spec=DatabaseManager)
         mock_db.pool.return_value = mock_pool
@@ -433,9 +559,9 @@ class TestPagination:
         assert len(body["items"]) == 3
         assert body["limit"] == 3
         # Guard: relationship SQL must use entity_facts, not the memory-module facts table.
-        fetch_call_sql = pool.fetch.call_args_list[0][0][0]
+        fetch_call_sql = pool.fetch.call_args_list[1][0][0]
         assert "relationship.entity_facts" in fetch_call_sql
-        assert "relationship.facts" not in fetch_call_sql  # guard against regression
+        assert "FROM facts" not in fetch_call_sql
 
     async def test_offset_respected(self):
         rows = [_make_fact_row(last_seen=_NOW - timedelta(seconds=i)) for i in range(5)]
