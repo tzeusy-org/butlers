@@ -24,6 +24,7 @@ tests/api/test_audit_log_union_db.py
 tests/api/test_audit_propagation_rollback.py
 tests/api/test_calendar_workspace_undo_jsonb_integration.py
 tests/api/test_home_person_mappings.py
+tests/api/test_relationship_entities_activity_db.py
 tests/api/test_relationship_queue_dismissed_suppression_db.py
 tests/api/test_runtime_probe_control_receipts_db.py
 tests/api/test_secrets_v2_schema_drift_db.py

@@ -1500,6 +1500,8 @@ class TestEntityActivity:
         data = {
             "id": uuid4(),
             "predicate": predicate,
+            "object": "identity value",
+            "observed_at": None,
             "last_seen": last_seen or _NOW,
             "created_at": _NOW,
         }
@@ -1534,7 +1536,7 @@ class TestEntityActivity:
         entity_val = 1 if entity_exists else None
         mock_pool.fetchrow = AsyncMock(return_value=owner_row)
         mock_pool.fetchval = AsyncMock(return_value=entity_val)
-        mock_pool.fetch = AsyncMock(return_value=fact_rows or [])
+        mock_pool.fetch = AsyncMock(side_effect=[[], fact_rows or []])
 
         mock_mcp_manager = MagicMock()
         if chronicler_unreachable:
@@ -1579,9 +1581,12 @@ class TestEntityActivity:
         fact_row = self._make_fact_row(last_seen=_NOW)
         app, pool = self._make_app(fact_rows=[fact_row], chronicler_episodes=[])
         await _get(app, _ACTIVITY_PATH)
-        fetch_call_sql = pool.fetch.call_args_list[0][0][0]
+        narrative_sql = pool.fetch.call_args_list[0][0][0]
+        fetch_call_sql = pool.fetch.call_args_list[1][0][0]
+        assert "FROM facts" in narrative_sql
+        assert "entity_facts" not in narrative_sql
         assert "relationship.entity_facts" in fetch_call_sql
-        assert "relationship.facts" not in fetch_call_sql
+        assert "FROM facts" not in fetch_call_sql
 
     async def test_chronicler_unreachable_is_explicitly_degraded(self):
         """A failed Chronicler read cannot impersonate complete activity."""
@@ -2091,6 +2096,8 @@ class TestEntityActivityBinning:
         data = {
             "id": uuid4(),
             "predicate": "contact_note",
+            "object": "identity value",
+            "observed_at": None,
             "last_seen": last_seen,
             "created_at": last_seen,
         }
@@ -2122,7 +2129,7 @@ class TestEntityActivityBinning:
         mock_pool = AsyncMock()
         mock_pool.fetchrow = AsyncMock(return_value=_make_owner_row() if owner_exists else None)
         mock_pool.fetchval = AsyncMock(return_value=1 if entity_exists else None)
-        mock_pool.fetch = AsyncMock(return_value=fact_rows or [])
+        mock_pool.fetch = AsyncMock(side_effect=[[], fact_rows or []])
 
         mock_mcp = MagicMock()
         mock_client = AsyncMock()
