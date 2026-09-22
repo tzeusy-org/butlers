@@ -2,6 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 import { MessageThread, type StreamingState } from "./MessageThread.tsx";
 import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
@@ -31,6 +32,9 @@ function makeAssistantMessage(overrides: Partial<Message> = {}): Message {
     duration_ms: null,
     session_id: null,
     request_id: null,
+    sources: [],
+    citations: [],
+    routed_butler: null,
     created_at: "2026-09-05T00:00:00Z",
     ...overrides,
   };
@@ -441,6 +445,64 @@ describe("MessageThread — session link (bu-0ynlk.5)", () => {
     );
 
     expect(screen.queryByTitle("View session")).toBeNull();
+  });
+});
+
+describe("MessageThread — per-message attribution", () => {
+  it("keeps author, time, and Session visible while secondary details stay closed", async () => {
+    const user = userEvent.setup();
+    const message = makeAssistantMessage({
+      routed_butler: "finance",
+      session_id: "11111111-1111-1111-1111-111111111111",
+      model: "openai/gpt-6",
+      input_tokens: 1200,
+      output_tokens: 340,
+      duration_ms: 845,
+    });
+
+    render(
+      <MessageThread
+        messages={[message]}
+        streaming={null}
+        pricingMap={{ "openai/gpt-6": { input_per_million: 1, output_per_million: 2 } }}
+        conversationId="conversation-1"
+      />,
+    );
+
+    expect(screen.getByLabelText("finance")).toBeTruthy();
+    expect(screen.getByText("finance")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Session →" }).getAttribute("href")).toBe(
+      `/sessions/${message.session_id}`,
+    );
+    const toggle = screen.getByRole("button", { name: "Show response details" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("gpt-6")).toBeNull();
+
+    toggle.focus();
+    await user.keyboard("{Enter}");
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("gpt-6")).toBeTruthy();
+    expect(screen.getByText("1200 + 340 tokens")).toBeTruthy();
+  });
+
+  it("never infers an absent author while preserving a standalone session link", () => {
+    const message = makeAssistantMessage({
+      routed_butler: null,
+      session_id: "11111111-1111-1111-1111-111111111111",
+      model: "finance",
+    });
+
+    render(
+      <MessageThread
+        messages={[message]}
+        streaming={null}
+        pricingMap={null}
+        conversationId="conversation-1"
+      />,
+    );
+
+    expect(screen.queryByLabelText("finance")).toBeNull();
+    expect(screen.getByRole("link", { name: "Session →" })).toBeTruthy();
   });
 });
 

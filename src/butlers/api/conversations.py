@@ -892,6 +892,8 @@ async def message_create(
     error: str | None = None,
     request_id: UUID | None = None,
     sources: list[str] | None = None,
+    citations: list[dict[str, Any]] | None = None,
+    routed_butler: str | None = None,
     page_context: dict[str, Any] | None = None,
     captured_at: datetime | None = None,
 ) -> dict[str, Any]:
@@ -910,9 +912,9 @@ async def message_create(
         INSERT INTO public.dashboard_messages
             (id, conversation_id, role, content, created_at,
              session_id, model_name, input_tokens, output_tokens,
-             duration_ms, tool_calls, error, request_id, sources,
-             page_context, captured_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+             duration_ms, tool_calls, error, request_id, sources, citations,
+             routed_butler, page_context, captured_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
         """,
         msg_id,
         conversation_id,
@@ -928,6 +930,8 @@ async def message_create(
         error,
         request_id,
         sources,
+        citations,
+        routed_butler,
         page_context,
         captured_at,
     )
@@ -947,6 +951,8 @@ async def message_create(
         "error": error,
         "request_id": request_id,
         "sources": sources,
+        "citations": citations,
+        "routed_butler": routed_butler,
         "page_context": page_context,
         "captured_at": captured_at,
     }
@@ -980,13 +986,15 @@ async def message_create_idempotent(
         INSERT INTO public.dashboard_messages
             (id, conversation_id, role, content, created_at,
              session_id, model_name, input_tokens, output_tokens,
-             duration_ms, tool_calls, error, request_id, sources,
-             page_context, captured_at)
-        VALUES ($1, $2, $3, $4, $5, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, $6, $7)
+             duration_ms, tool_calls, error, request_id, sources, citations,
+             routed_butler, page_context, captured_at)
+        VALUES ($1, $2, $3, $4, $5, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+                NULL, NULL, NULL, NULL, $6, $7)
         ON CONFLICT (id) DO NOTHING
         RETURNING id, conversation_id, role, content, created_at,
                   session_id, model_name, input_tokens, output_tokens,
-                  duration_ms, tool_calls, error, request_id, sources,
+                  duration_ms, tool_calls, error, request_id, sources, citations,
+                  routed_butler,
                   page_context, captured_at
         """,
         message_id,
@@ -1004,7 +1012,8 @@ async def message_create_idempotent(
         """
         SELECT id, conversation_id, role, content, created_at,
                session_id, model_name, input_tokens, output_tokens,
-               duration_ms, tool_calls, error, request_id, sources,
+               duration_ms, tool_calls, error, request_id, sources, citations,
+               routed_butler,
                page_context, captured_at
         FROM public.dashboard_messages
         WHERE id = $1
@@ -1033,7 +1042,8 @@ async def message_get_by_id(
         """
         SELECT id, conversation_id, role, content, created_at,
                session_id, model_name, input_tokens, output_tokens,
-               duration_ms, tool_calls, error, request_id, sources,
+               duration_ms, tool_calls, error, request_id, sources, citations,
+               routed_butler,
                page_context, captured_at
         FROM public.dashboard_messages
         WHERE id = $1
@@ -1075,6 +1085,8 @@ async def conversation_reply_create(
     message: str,
     request_id: UUID | None = None,
     sources: list[str] | None = None,
+    citations: list[dict[str, Any]] | None = None,
+    routed_butler: str | None = None,
     session_id: UUID | None = None,
     tool_calls: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
@@ -1112,6 +1124,8 @@ async def conversation_reply_create(
         content=message,
         request_id=request_id,
         sources=sources,
+        citations=citations,
+        routed_butler=routed_butler,
         session_id=session_id,
         tool_calls=tool_calls,
     )
@@ -1151,7 +1165,8 @@ async def message_list(
         """
         SELECT id, conversation_id, role, content, created_at,
                session_id, model_name, input_tokens, output_tokens,
-               duration_ms, tool_calls, error, request_id, sources,
+               duration_ms, tool_calls, error, request_id, sources, citations,
+               routed_butler,
                page_context, captured_at
         FROM public.dashboard_messages
         WHERE conversation_id = $1
@@ -1166,14 +1181,17 @@ async def message_list(
     messages = []
     for row in rows:
         d = dict(row)
-        # Deserialize tool_calls/page_context JSONB (defensive: the shared
+        # Deserialize JSONB values defensively: the shared
         # pool registers a dict<->jsonb codec, but a pool that does not
         # would otherwise hand back a raw JSON string here).
-        if isinstance(d.get("tool_calls"), str):
-            try:
-                d["tool_calls"] = json.loads(d["tool_calls"])
-            except (json.JSONDecodeError, TypeError):
-                d["tool_calls"] = None
+        for field, fallback in (("tool_calls", None), ("sources", []), ("citations", [])):
+            if isinstance(d.get(field), str):
+                try:
+                    d[field] = json.loads(d[field])
+                except (json.JSONDecodeError, TypeError):
+                    d[field] = fallback
+        d["sources"] = d.get("sources") or []
+        d["citations"] = d.get("citations") or []
         if isinstance(d.get("page_context"), str):
             try:
                 d["page_context"] = json.loads(d["page_context"])
@@ -1200,7 +1218,8 @@ async def message_find_reply_since(
     row = await pool.fetchrow(
         """
         SELECT id, content, created_at, session_id, model_name,
-               input_tokens, output_tokens, duration_ms, tool_calls, error, request_id, sources
+               input_tokens, output_tokens, duration_ms, tool_calls, error, request_id,
+               sources, citations, routed_butler
         FROM public.dashboard_messages
         WHERE conversation_id = $1 AND role = 'assistant' AND created_at > $2
         ORDER BY created_at ASC
@@ -1218,6 +1237,12 @@ async def message_find_reply_since(
             d["tool_calls"] = json.loads(d["tool_calls"])
         except (json.JSONDecodeError, TypeError):
             d["tool_calls"] = None
+    for field in ("sources", "citations"):
+        if isinstance(d.get(field), str):
+            try:
+                d[field] = json.loads(d[field])
+            except (json.JSONDecodeError, TypeError):
+                d[field] = None
     return d
 
 

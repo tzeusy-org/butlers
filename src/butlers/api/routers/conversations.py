@@ -947,6 +947,8 @@ async def _stream_conversation_response(
                 "duration_ms": reply_row.get("duration_ms"),
                 "tool_calls": reply_row.get("tool_calls") or [],
                 "sources": reply_row.get("sources") or [],
+                "citations": reply_row.get("citations") or [],
+                "routed_butler": reply_row.get("routed_butler"),
             },
         )
         yield _sse_done()

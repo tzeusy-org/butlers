@@ -5647,6 +5647,12 @@ export interface MessageToolCall {
   result?: unknown;
 }
 
+export interface Citation {
+  label: string;
+  target: string | null;
+  kind: "internal" | "external" | "unlinked";
+}
+
 /** A single message in a dashboard conversation. */
 export interface Message {
   id: string;
@@ -5655,12 +5661,21 @@ export interface Message {
   content: string;
   tool_calls: MessageToolCall[] | null;
   error: string | null;
-  model: string | null;
+  /** Canonical API field. */
+  model_name?: string | null;
+  /** Deprecated frontend-only alias retained while optimistic fixtures migrate. */
+  model?: string | null;
   input_tokens: number | null;
   output_tokens: number | null;
   duration_ms: number | null;
   session_id: string | null;
   request_id: string | null;
+  /** Deprecated string-only compatibility projection during the rollout window. */
+  sources?: string[];
+  /** Canonical server-normalized navigation citations. */
+  citations?: Citation[];
+  /** Server-derived author of this assistant message; null for unknown/legacy rows. */
+  routed_butler?: string | null;
   created_at: string;
   /** Compact page-context snapshot captured with this user message, or null. */
   page_context?: PageContext | null;
@@ -5838,6 +5853,19 @@ export type ConversationSseEventType =
 export interface ConversationSseEvent {
   event: ConversationSseEventType;
   data: unknown;
+}
+
+export interface ConversationSseMessageCompleteData {
+  message_id: string;
+  session_id: string | null;
+  model_name: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  duration_ms: number | null;
+  tool_calls: MessageToolCall[];
+  sources: string[];
+  citations: Citation[];
+  routed_butler: string | null;
 }
 
 /**

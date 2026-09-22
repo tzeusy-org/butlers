@@ -23,6 +23,7 @@ from uuid import UUID
 
 from pydantic import Field
 
+from butlers.core.citations import normalize_citations
 from butlers.core.telemetry import tool_span
 from butlers.core.tool_call_capture import (
     get_current_runtime_session_id,
@@ -126,12 +127,11 @@ def register_conversation_reply_tool(ctx: ToolContext, mcp: Any, _core_tool: Cal
             ),
         ],
         sources: Annotated[
-            list[str] | None,
+            list[str | dict[str, str]] | None,
             Field(
                 description=(
-                    "Answer-lane only: what you consulted to produce this reply "
-                    "(tool names, record identifiers, etc.), e.g. "
-                    "['finance.get_budget', 'transaction#a1b2c3']. Omit entirely for "
+                    "Answer-lane only: what you consulted to produce this reply. "
+                    "Use names or {label, target} citation objects. Omit entirely for "
                     "a confirm-loop/action-proposal/bug-report reply. For an "
                     "answer-lane reply, pass a NON-EMPTY list of NON-BLANK names — "
                     "an empty/blank citation is rejected, since an unsourced "
@@ -158,18 +158,22 @@ def register_conversation_reply_tool(ctx: ToolContext, mcp: Any, _core_tool: Cal
                 "error": f"conversation_id {conversation_id!r} is not a valid UUID",
             }
 
-        if sources is not None and (
-            not sources
-            or any(not isinstance(source, str) or not source.strip() for source in sources)
-        ):
+        try:
+            normalization = normalize_citations(sources)
+        except ValueError as exc:
             return {
                 "status": "error",
                 "error": (
-                    "sources must contain only non-empty names for an answer-lane "
-                    "reply — name what you consulted, or omit `sources` entirely "
-                    "and give an honest decline instead of fabricating a citation."
+                    "sources must contain only non-empty names or usable citation objects "
+                    f"({exc}); omit `sources` and give an honest decline instead."
                 ),
             }
+        for reason_code, rejected_count in sorted(normalization.rejected_by_reason.items()):
+            logger.warning(
+                "citation_source_rejected reason_code=%s rejected_count=%d",
+                reason_code,
+                rejected_count,
+            )
 
         if pool is None:
             return {"status": "error", "error": "Database pool is not available"}
@@ -186,7 +190,9 @@ def register_conversation_reply_tool(ctx: ToolContext, mcp: Any, _core_tool: Cal
                 conv_uuid,
                 message=message,
                 request_id=request_id,
-                sources=sources,
+                sources=normalization.legacy_sources,
+                citations=normalization.citations,
+                routed_butler=butler_name,
                 session_id=session_id,
                 tool_calls=tool_calls,
             )
