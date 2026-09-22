@@ -1415,11 +1415,10 @@ class ActivityEntry(BaseModel):
     - ``'chronicler'`` — sourced via the chronicler MCP tool
       ``chronicler_list_episodes``.
 
-    Fields present for ``src='relationship'`` rows:
-    - ``id`` — fact UUID from ``relationship.facts``
-    - ``ts`` — ``last_seen`` of the fact (falls back to ``created_at``)
-    - ``kind`` — predicate family (e.g. ``'note'``, ``'interaction'``, ``'gift'``)
-    - ``predicate`` — the raw predicate string
+    Relationship rows carry ``store='narrative'`` for memory-module facts or
+    ``store='identity'`` for entity triples. ``summary`` is the exact stored
+    content or object respectively. Consumers identify rows by
+    ``(src, store, id)`` because UUIDs are not globally unique across stores.
 
     Fields present for ``src='chronicler'`` rows:
     - ``id`` — episode UUID from the chronicler
@@ -1427,6 +1426,7 @@ class ActivityEntry(BaseModel):
     - ``kind`` — always ``'episode'``
     - ``episode_id`` — same as ``id`` (kept for explicit episode-typed access)
     - ``summary`` — ``canonical_title`` from the corrected episode
+    - ``store`` — always ``None``
 
     Fields absent in a given row are ``None``.
     """
@@ -1435,6 +1435,7 @@ class ActivityEntry(BaseModel):
     ts: datetime | None = None
     kind: str
     src: Literal["relationship", "chronicler"]
+    store: Literal["narrative", "identity"] | None = None
     # relationship-only
     predicate: str | None = None
     # chronicler-only
@@ -1445,12 +1446,11 @@ class ActivityEntry(BaseModel):
 class ActivityResponse(BaseModel):
     """Response for ``GET /entities/{id}/activity``.
 
-    ``items`` is a merged, timestamp-descending stream of relationship facts
-    and chronicler episodes for the given entity.  Each entry carries a
-    ``src`` field so clients can distinguish the origin.
+    ``items`` merges relationship narrative facts, identity triples, and
+    chronicler episodes for the given entity.
 
-    ``total`` is the total number of items across both sources before
-    pagination (relationship_count + chronicler_count).
+    ``total`` is the materialized candidate count across all three sources
+    before pagination.
     ``limit`` and ``offset`` echo the request parameters.
 
     ``degraded`` is true when the Chronicler contribution could not be read.
