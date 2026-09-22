@@ -8,6 +8,10 @@ deltas, KPI numbers, eyebrows, code, file paths). The serif/sans split is meanin
 system speaking in data, serif is the system speaking in sentences. Forbidden primary faces:
 Inter (non-Tight), Roboto, Arial, Helvetica, Fraunces, `system-ui`.
 
+The three families SHALL be served from licensed, repository-vendored WOFF2 assets. The dashboard
+must not depend on a public font host, so an offline or LAN-only instance retains the same type
+system as an internet-connected one.
+
 The type scale SHALL be:
 
 | Role        | Family   | Size  | Weight | Tracking | Leading |
@@ -35,6 +39,11 @@ Scope: v1-mandatory
 #### Scenario: No fourth family
 - **WHEN** a page sets a font family
 - **THEN** it resolves to Inter Tight, Source Serif 4, or JetBrains Mono
+
+#### Scenario: Typography remains local
+- **WHEN** the dashboard loads without public-internet access
+- **THEN** every declared Dispatch face resolves from a repository-vendored WOFF2 asset
+- **AND** the application shell requests no remote font stylesheet or font file
 
 #### Scenario: Assistant answer type roles remain semantic
 
