@@ -105,6 +105,7 @@ tests/connectors/test_home_assistant_reorder_buffer.py
 tests/connectors/test_oauth_token_payload_sites.py
 tests/connectors/test_spotify_connector.py
 tests/connectors/test_telegram_user_client.py
+tests/contracts/test_citation_route_manifest.py
 tests/contracts/test_codex_auth_generation_plan_contract.py
 tests/contracts/test_commitment_grace_rfc_contract.py
 tests/contracts/test_graceful_shutdown.py

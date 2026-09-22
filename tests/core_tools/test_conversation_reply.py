@@ -143,7 +143,16 @@ async def test_conversation_reply_errors_when_persistence_raises(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("sources", [[], [""], ["   "]])
+@pytest.mark.parametrize(
+    "sources",
+    [
+        [],
+        [""],
+        ["   "],
+        [{"label": "Unknown", "target": "/not-a-shell-route"}],
+        ["x" * 201],
+    ],
+)
 async def test_empty_or_blank_sources_are_rejected_with_guidance(sources):
     """An answer-lane reply claiming sources but providing none must error —
     an unsourced 'answer' is indistinguishable from a fabricated one."""
@@ -191,6 +200,78 @@ async def test_non_empty_sources_persists(monkeypatch):
     }
     fake_create.assert_awaited_once()
     assert fake_create.await_args.kwargs["sources"] == ["finance.get_budget", "transaction#a1b2c3"]
+
+
+async def test_structured_sources_are_normalized_and_author_is_server_derived(monkeypatch):
+    """Navigation trust and authorship are established by the server boundary."""
+    conv_id = uuid4()
+    message_id = uuid4()
+    fake_create = AsyncMock(return_value={"id": message_id, "role": "assistant"})
+    monkeypatch.setattr("butlers.api.conversations.conversation_reply_create", fake_create)
+
+    tool = _register_and_grab(pool=AsyncMock(), butler_name="finance")
+
+    result = await tool(
+        conversation_id=str(conv_id),
+        message="The budget is on track.",
+        sources=[
+            {"label": "Budget detail", "target": "/spend"},
+            {
+                "label": "Session detail",
+                "target": "/sessions/123e4567-e89b-12d3-a456-426614174000",
+            },
+            {"label": "External reference", "target": "https://example.com/reference"},
+            "finance.get_budget",
+        ],
+    )
+
+    assert result["status"] == "ok"
+    assert fake_create.await_args.kwargs["citations"] == [
+        {"label": "Budget detail", "target": "/spend", "kind": "internal"},
+        {
+            "label": "Session detail",
+            "target": "/sessions/123e4567-e89b-12d3-a456-426614174000",
+            "kind": "internal",
+        },
+        {
+            "label": "External reference",
+            "target": "https://example.com/reference",
+            "kind": "external",
+        },
+        {"label": "finance.get_budget", "target": None, "kind": "unlinked"},
+    ]
+    assert fake_create.await_args.kwargs["sources"] == [
+        "Budget detail",
+        "Session detail",
+        "External reference",
+        "finance.get_budget",
+    ]
+    assert fake_create.await_args.kwargs["routed_butler"] == "finance"
+
+
+async def test_unknown_structured_route_is_dropped_without_echoing_it(monkeypatch, caplog):
+    fake_create = AsyncMock(return_value={"id": uuid4(), "role": "assistant"})
+    monkeypatch.setattr("butlers.api.conversations.conversation_reply_create", fake_create)
+    tool = _register_and_grab(pool=AsyncMock())
+
+    result = await tool(
+        conversation_id=str(uuid4()),
+        message="Grounded answer.",
+        sources=[
+            {"label": "Known", "target": "/spend"},
+            {"label": "private sentinel label", "target": "/not-a-shell-route/sentinel"},
+        ],
+    )
+
+    assert result["status"] == "ok"
+    assert fake_create.await_args.kwargs["citations"] == [
+        {"label": "Known", "target": "/spend", "kind": "internal"}
+    ]
+    assert "citation_source_rejected" in caplog.text
+    assert "reason_code=route_not_allowlisted" in caplog.text
+    assert "rejected_count=1" in caplog.text
+    assert "private sentinel" not in caplog.text
+    assert "/not-a-shell-route" not in caplog.text
 
 
 # ---------------------------------------------------------------------------
