@@ -9,27 +9,20 @@ infer mappings.
 
 The two identifiers form private household identity data. They must be entered
 only by the owner and must never cross an LLM/session or general observability
-surface. The dashboard currently has two distinct authentication contracts:
+surface. The dashboard's central owner-auth boundary now admits either a
+configured API key or a server-managed browser session, including
+host-authorized passkeys, over canonical Tailscale Serve HTTPS. It authenticates
+the owner before protected request bodies, domain-pool acquisition, or protected
+state access. The optional fail-open `ApiKeyMiddleware` remains insufficient for
+this route; `require_dashboard_owner_control` is the additive fail-closed route
+guard. `authenticated_principal()` merely attributes an already-authenticated
+single-user request to `owner`; it does not authenticate a request or replace
+the central boundary.
 
-- `ApiKeyMiddleware` is optional and fails open when `DASHBOARD_API_KEY` is
-  absent. It is insufficient for this route.
-- `require_dashboard_owner_control` fails closed: absent configuration is `503`,
-  and a missing or wrong `X-API-Key` is `401` after constant-time comparison.
-
-The configured-key browser mechanism is no longer undecided. The owner closed
-and adopted `bu-pb6oy` Option A: an HTTPS session-establishment surface accepts
-the configured key once, issues an expiring/revocable server-managed
-HttpOnly/Secure/SameSite=Strict cookie, protects state-changing requests against
-CSRF, preserves `X-API-Key` for non-browser callers, and rejects same-origin as
-authentication. That mechanism remains unimplemented. `authenticated_principal()`
-merely attributes an already-authenticated single-user request to `owner`; it
-does not authenticate a request or replace the session boundary.
-
-Default keyless Compose enrollment is a separate unresolved authority decision
-in `bu-azqfpk`. E1 must select either a transferable one-time host code or host
-approval of an inert browser challenge. E2 must select either existing Tailscale
-Serve HTTPS or a separately specified loopback TLS terminator. Neither choice
-is made by this mapping contract.
+The owner-auth enrollment and session decisions are closed, adopted, and landed
+through that central boundary. This mapping contract consumes the boundary
+without altering it, selecting another enrollment mechanism, or treating
+same-origin as authentication.
 
 ## Goals and non-goals
 
@@ -52,9 +45,8 @@ Non-goals:
 - No entity creation, merge, promotion, rename, alias lookup, or role change.
 - No Home Assistant API, snapshot, credential, secret, provider payload, or
   connector read.
-- No implementation or alteration of the adopted `bu-pb6oy` configured-key
-  session/CSRF mechanism, and no selection or implementation of `bu-azqfpk`
-  E1/E2 enrollment.
+- No implementation or alteration of the landed central dashboard owner-auth
+  boundary, and no alternate enrollment mechanism or credential transport.
 - No MCP tool, LLM prompt, session, scheduled job, CLI, direct-SQL operator
   workflow, background retry, or ingestion path.
 - No restart, replay, checkpoint or watermark change, synthetic transition,
@@ -124,19 +116,15 @@ Only after that gate succeeds may the handler call
 query parameter, or body field may assert the actor. The literal actor label
 `owner` is attribution, not evidence that authentication happened.
 
-The `bu-pb6oy` decision is closed and adopted; only its conforming implementation
-and proof remain a hard prerequisite for the mapping UI in configured-key
-deployments. This contract does not reopen that choice, introduce a
-JavaScript-held/build-time key, or accept same-origin as authentication. Until
-the approved session/CSRF mechanism is implemented and proven, the mapping UI
-must not ship and the backend route must not be described as an available
-dashboard workflow.
-
-Separately, the workflow must not be described as usable in default keyless
-Compose until `bu-azqfpk` E1/E2 are selected, independently reviewed, adopted,
-implemented, and proven. A configured-key session implementation does not
-silently choose host enrollment, and unresolved enrollment does not reopen the
-configured-key decision.
+The central dashboard owner-auth boundary is closed, adopted, and landed. It
+supports configured-key browser sessions and host-authorized passkey sessions
+over canonical Tailscale Serve HTTPS, with server-managed expiring/revocable
+cookies and CSRF protection for state-changing cookie requests. This contract
+does not alter that boundary, introduce a JavaScript-held/build-time key, or
+accept same-origin as authentication. The mapping UI and backend workflow may
+be described as available only where that central boundary is configured and
+proven for the target deployment; this mapping contract supplies no enrollment
+or deployment authority.
 
 ### D3: One mapping-specific lock and one transaction decide the batch
 
@@ -314,10 +302,11 @@ remain absent from every generic MCP and runtime tool registry.
 - Durable idempotency evidence adds storage. Unbounded retention avoids a replay
   window that could silently expire; a later retention policy needs separate
   privacy and replay analysis.
-- The current browser cannot yet use the adopted configured-key session because
-  its implementation remains outstanding. Keeping that implementation gate
-  separate from `bu-azqfpk` E1/E2 prevents this spec from laundering either
-  browser-session delivery or host enrollment into mapping authority.
+- The central owner-auth boundary is a deployment prerequisite, but its
+  configuration and availability do not grant mapping authority. Keeping that
+  boundary gate separate from mapping review, owner adoption, and environment
+  availability prevents this spec from laundering authentication into mapping
+  authority.
 - Existing conflicting or legacy-null mappings are refused, not repaired. Any
   remap, delete, rollback, cleanup, or historical-data correction is a separate
   owner-approved workflow.
@@ -328,10 +317,11 @@ remain absent from every generic MCP and runtime tool registry.
    commit. Any semantic edit invalidates that review.
 2. Obtain separate owner approval that names the exact reviewed commit and this
    change. Review or merge is not approval to implement, deploy, or submit data.
-3. Implement and prove the already-adopted `bu-pb6oy` configured-key
-   session/CSRF contract before exposing the UI in configured-key deployments.
-   Resolve, review, and adopt `bu-azqfpk` E1/E2 separately before claiming the
-   same UI usable in default keyless Compose.
+3. Implement the route and UI only behind the landed central dashboard
+   owner-auth boundary. Prove that configured-key and host-authorized passkey
+   sessions authenticate before body buffering, receipt creation, pool
+   acquisition, or protected reads in the target deployment. This change does
+   not alter or authorize enrollment, deployment, or credential provisioning.
 4. Implement under `bu-q364q` with the tests in `tasks.md`; obtain a fresh
    independent exact-head review and terminal hosted CI.
 5. Treat merge, queue, deployment/environment availability, `bu-pvapy` mapping
@@ -339,6 +329,7 @@ remain absent from every generic MCP and runtime tool registry.
 
 ## Open questions
 
-None are silently decided here. The configured-key browser-session choice is
-closed in `bu-pb6oy`, while `bu-azqfpk` E1 host-authority transport and E2 HTTPS
-entry remain explicitly unresolved.
+None are silently decided here. The central configured-key/passkey owner-auth
+boundary and canonical Tailscale Serve HTTPS enrollment are closed, adopted, and
+landed; this mapping contract neither alters that boundary nor supplies
+deployment or enrollment authority.

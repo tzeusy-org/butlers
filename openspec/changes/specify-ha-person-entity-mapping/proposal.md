@@ -20,20 +20,18 @@ mapping.
   encoded request body bounded to 32,768 octets before JSON decoding and a
   batch of exact, already-observed `person.<slug>` IDs and existing live person
   entity UUIDs. Neither identifier appears in the URL.
-- Require the existing fail-closed `require_dashboard_owner_control` boundary
-  before any body read or database acquisition. `authenticated_principal()` is
-  used only after authentication to derive the persisted actor.
-- Record the closed, adopted `bu-pb6oy` configured-key decision: the browser
-  establishes an expiring/revocable server-managed session over HTTPS using an
-  HttpOnly/Secure/SameSite=Strict cookie, state-changing requests receive CSRF
-  protection, non-browser callers retain `X-API-Key`, and same-origin alone is
-  never owner authentication. Its conforming implementation remains a UI
-  prerequisite; this proposal neither implements nor alters it.
-- Keep default keyless Compose usability separately unresolved under
-  `bu-azqfpk`: the owner has not selected E1 host authority (transferable
-  one-time host code or host approval of an inert browser challenge) or E2 HTTPS
-  entry (existing Tailscale Serve or a separately specified loopback TLS
-  terminator). This change selects neither enrollment mechanism.
+- Require the landed central dashboard owner-auth boundary through
+  `require_dashboard_owner_control` before any body read or database
+  acquisition. The boundary supports configured-key browser sessions and
+  host-authorized passkey sessions over canonical Tailscale Serve HTTPS;
+  `authenticated_principal()` is used only after authentication to derive the
+  persisted actor.
+- Consume the closed, adopted owner-auth contract without altering it: browser
+  sessions are expiring/revocable server-managed
+  HttpOnly/Secure/SameSite=Strict cookies, state-changing cookie requests
+  receive CSRF protection, non-browser callers retain `X-API-Key`, and
+  same-origin alone is never owner authentication. This mapping change selects
+  no enrollment mechanism and adds no alternate credential transport.
 - Define a server-generated opaque receipt and browser-generated opaque
   idempotency key, one mapping-specific transaction advisory lock, exact replay,
   deterministic locks on every referenced entity row, identical no-op, and
@@ -68,10 +66,10 @@ None.
   out of navigation state, browser persistence, query keys, and rendered errors.
 - This draft changes no runtime behavior, schema, frontend, mapping data,
   credentials, deployment, or environment.
-- `bu-q364q` remains blocked on independent exact-head privacy/security review,
-  separate owner approval of the exact artifact, implementation of the adopted
-  configured-key session boundary, and separate resolution/adoption of
-  `bu-azqfpk` E1/E2 before claiming default keyless Compose usability.
+- `bu-q364q` remains blocked on independent exact-head privacy/security review
+  and separate owner approval of the exact artifact. Later implementation and
+  use must consume and prove the landed central dashboard owner-auth boundary
+  in the target deployment before claiming workflow availability.
   `bu-pvapy` remains blocked on the later implementation and environment
   availability. Merge, queue, deployment, and actual mapping submission are
   separate acts.
