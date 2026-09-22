@@ -37,7 +37,9 @@ Public MCP closures load the existing runtime-config-held read policy; callers
 cannot supply or raise it. Feedback mutations apply the allowed-sensitivity
 predicate and live-row predicate in the same SQL statement that changes the
 memory. A denied UUID therefore has neither an observable distinction from an
-absent one nor a mutation side effect.
+absent one nor a mutation side effect. Successful reference-based actions
+return only an action-specific boolean acknowledgement; they never serialize
+the resolved row back across the tool boundary.
 
 ### Keep the current inputs as a compatibility surface
 

@@ -91,7 +91,8 @@ async def memory_mark_helpful(
 ) -> dict[str, Any]:
     """Report a rule was applied successfully.
 
-    Delegates to _storage.mark_helpful() and returns the serialized result.
+    Reference-based calls return only a bounded acknowledgement. Legacy ID
+    calls retain their existing serialized-row response for compatibility.
     """
     target = _resolve_target(
         memory_ref=memory_ref,
@@ -109,6 +110,8 @@ async def memory_mark_helpful(
     )
     if result is None:
         return {"error": _UNAVAILABLE}
+    if memory_ref is not None:
+        return {"helpful": True}
     return _serialize_row(result)
 
 
@@ -122,7 +125,8 @@ async def memory_mark_harmful(
 ) -> dict[str, Any]:
     """Report a rule caused problems.
 
-    Delegates to _storage.mark_harmful() and returns the serialized result.
+    Reference-based calls return only a bounded acknowledgement. Legacy ID
+    calls retain their existing serialized-row response for compatibility.
     """
     target = _resolve_target(
         memory_ref=memory_ref,
@@ -141,4 +145,6 @@ async def memory_mark_harmful(
     )
     if result is None:
         return {"error": _UNAVAILABLE}
+    if memory_ref is not None:
+        return {"harmful": True}
     return _serialize_row(result)

@@ -234,7 +234,16 @@ class TestMemoryFeedback:
         monkeypatch: pytest.MonkeyPatch,
         action,
     ) -> None:
-        storage_action = AsyncMock(return_value={"id": SAMPLE_UUID})
+        storage_action = AsyncMock(
+            return_value={
+                "id": SAMPLE_UUID,
+                "tenant_id": "private-tenant",
+                "source_butler": "private-source",
+                "sensitivity": "pii",
+                "content": "private rule content",
+                "metadata": {"private": "detail"},
+            }
+        )
         storage_name = "mark_helpful" if action is memory_mark_helpful else "mark_harmful"
         monkeypatch.setattr(_helpers._storage, storage_name, storage_action)
         policy = _helpers._search.resolve_catalog_read_policy("internal")
@@ -245,7 +254,8 @@ class TestMemoryFeedback:
             read_policy=policy,
         )
 
-        assert result["id"] == SAMPLE_STR
+        acknowledgement_key = "helpful" if action is memory_mark_helpful else "harmful"
+        assert result == {acknowledgement_key: True}
         assert storage_action.await_args.args[:2] == (pool, SAMPLE_UUID)
         assert storage_action.await_args.kwargs["allowed_sensitivities"] == (
             "normal",

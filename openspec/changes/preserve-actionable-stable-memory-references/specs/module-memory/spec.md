@@ -21,6 +21,9 @@ source, or content fields beyond the context already authorized for rendering.
 - **AND** `memory_confirm` MUST resolve either valid reference to that row
 - **AND** `memory_mark_helpful` and `memory_mark_harmful` MUST resolve only a
   valid rule reference to that rule
+- **AND** a successful reference-based action MUST return only its bounded
+  boolean acknowledgement (`confirmed`, `helpful`, or `harmful`) and MUST NOT
+  serialize the targeted memory row
 
 #### Scenario: Reference overhead remains inside existing budgets
 
