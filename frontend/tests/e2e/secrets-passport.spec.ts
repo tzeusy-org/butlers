@@ -44,7 +44,7 @@ import { test, expect } from "@playwright/test";
 //   - identities[].name (not .label)
 //   - system[].butler (not .source) — owning butler name
 //   - cli[].key (not .id) — credential key
-//   - cli[].description (not .label)
+//   - system[] / cli[] omit category and description (bu-y5uq4)
 //   - The full response is { data: {...}, meta: {...} }
 // ---------------------------------------------------------------------------
 
@@ -73,8 +73,6 @@ const MOCK_INVENTORY_RESPONSE = {
     system: [
       {
         key: "BUTLER_TELEGRAM_TOKEN",
-        category: "messaging",
-        description: "Bot token for Telegram.",
         state: "ok",
         fingerprint: "sha256:ab12cd34",
         last_verified: "14:01 today",
@@ -85,8 +83,6 @@ const MOCK_INVENTORY_RESPONSE = {
     cli: [
       {
         key: "claude-cli",
-        category: "runtime",
-        description: "Claude Code",
         state: "ok",
         fingerprint: "sha256:11a47cd2",
         last_verified: "14:15 today",

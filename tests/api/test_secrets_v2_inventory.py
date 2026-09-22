@@ -3576,9 +3576,9 @@ def test_inventory_user_row_for_unknown_type_publishes_other_not_the_type():
 # ---------------------------------------------------------------------------
 # Owner decision Option C puts "audit/probe/failure free text" off the wire
 # with no qualification by credential family, so the system and CLI arrays of
-# this same response are bound by it as well. Operator-authored labels (key,
-# category, description) are NOT covered by that decision and deliberately
-# still ship; whether they should is an open policy question.
+# this same response are bound by it as well. The adopted follow-up
+# minimization also withholds operator-authored ``category`` and ``description``
+# labels from the inventory while preserving the raw ``key`` identifier.
 # ---------------------------------------------------------------------------
 
 
@@ -3660,8 +3660,6 @@ def test_inventory_system_and_cli_rows_omit_every_probe_and_audit_sentinel():
     # The published field lists, locked so a new internal field cannot ride out.
     assert set(system_entry) == {
         "key",
-        "category",
-        "description",
         "state",
         "fingerprint",
         "last_verified",
@@ -3675,8 +3673,6 @@ def test_inventory_system_and_cli_rows_omit_every_probe_and_audit_sentinel():
     }
     assert set(cli_entry) == {
         "key",
-        "category",
-        "description",
         "state",
         "fingerprint",
         "issued",
@@ -3694,10 +3690,6 @@ def test_inventory_system_and_cli_rows_omit_every_probe_and_audit_sentinel():
     assert system_entry["last_test_code"] == 401
     assert system_entry["audit"] == [{"ts": ANY, "actor": "owner", "action": "verified"}]
 
-    # Operator-authored labels are outside the owner decision and still ship.
-    assert system_entry["description"] == "sentinel-system-description"
-    assert cli_entry["description"] == "sentinel-cli-description"
-
 
 # ---------------------------------------------------------------------------
 # bu-y5uq4: partial metadata minimization for system/CLI inventory rows
@@ -3712,27 +3704,12 @@ def test_inventory_system_and_cli_rows_omit_every_probe_and_audit_sentinel():
 # purpose-revealing string on the wire, so it is metadata minimization, not
 # content-blind identity.
 #
-# The exact contract is drafted in
-# openspec/changes/amend-secrets-inventory-label-minimization and awaits
-# separate owner approval before any handler change (bu-y5uq4 AC7). This test
-# proves the target contract against TODAY's handler and is expected to fail
-# until that spec is approved and `_content_blind_system` /
-# `_content_blind_cli` are updated to stop projecting `category` and
-# `description`. Do not remove the `xfail` marker as part of implementing the
-# approved spec without also removing the superseded positive assertions in
-# `test_inventory_system_and_cli_rows_omit_every_probe_and_audit_sentinel`.
+# The approved contract is implemented by the inventory projections below. The
+# sentinel values remain on the internal records, but neither label may reach
+# the serialized inventory row.
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    reason=(
-        "pending owner approval of the bu-y5uq4 spec delta "
-        "(openspec/changes/amend-secrets-inventory-label-minimization) and the "
-        "matching handler change; today's inventory still publishes system/CLI "
-        "description and category (bu-yk2hb Choice B not yet implemented)"
-    ),
-    strict=True,
-)
 def test_inventory_system_and_cli_rows_omit_description_and_category_but_retain_key():
     """Target contract: system/CLI inventory rows keep `key`, drop `description`
     and `category`. Each withheld field is planted with a distinct sentinel value

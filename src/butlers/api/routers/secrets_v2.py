@@ -827,16 +827,13 @@ class SystemSecretSummary(BaseModel):
     regardless of credential family, because that text can echo a provider
     response or the credential's own content.
 
-    ``key``, ``category`` and ``description`` deliberately survive. They are
-    operator-authored labels for infrastructure keys rather than evidence
-    derived from credential content, and the passport has no other way to name
-    a system row. Whether they belong behind the same projection is an open
-    policy question, not a decided one (bu-iph56).
+    ``key`` survives as the raw operator-chosen identifier that lets the
+    passport name a system row. ``category`` and ``description`` remain on the
+    internal record and on the selected system detail payload, but are omitted
+    from this broader inventory projection as partial metadata minimization.
     """
 
     key: str
-    category: str = "general"
-    description: str | None = None
     state: str  # 'ok' | 'warn' | 'failing' | 'expired' | 'never_set'
     fingerprint: str | None = None  # sha256[:8] hex, computed on-read
     last_verified: datetime | None = None
@@ -866,8 +863,6 @@ def _content_blind_system(record: SystemSecret) -> SystemSecretSummary:
     """
     return SystemSecretSummary(
         key=record.key,
-        category=record.category,
-        description=record.description,
         state=record.state,
         fingerprint=record.fingerprint,
         last_verified=record.last_verified,
@@ -898,8 +893,6 @@ class CliRuntimeSummary(BaseModel):
     """
 
     key: str
-    category: str = "cli"
-    description: str | None = None
     state: str  # 'ok' | 'warn' | 'failing' | 'expired' | 'never_set'
     fingerprint: str | None = None  # sha256[:8] hex, computed on-read
     issued: datetime | None = None
@@ -919,8 +912,6 @@ def _content_blind_cli(record: CliRuntime) -> CliRuntimeSummary:
     """
     return CliRuntimeSummary(
         key=record.key,
-        category=record.category,
-        description=record.description,
         state=record.state,
         fingerprint=record.fingerprint,
         issued=record.issued,
@@ -1043,20 +1034,19 @@ class SystemCredentialDetail(BaseModel):
     one row, one published shape. ``SystemSecretDetail`` stays internal so the
     probe and delete routes can keep reading the unprojected row.
 
-    Field parity with ``SystemSecretSummary`` is deliberate — the inventory and
-    the detail read publish the same ``s:`` row, so they publish the same
-    fields:
+    The detail payload intentionally carries a richer selected-row projection
+    than ``SystemSecretSummary``. Both read the same ``s:`` row, but the broad
+    inventory omits operator-authored labels while this per-credential detail
+    keeps them for the selected credential:
 
     - The probe's free-text ``message``, ``last_test_message``, and every audit
       ``note`` are dropped (owner decision, 2026-08-13): audit / probe /
       failure free text can echo a provider response or the credential's own
       content, whichever credential family it belongs to.
-    - ``key``, ``category`` and ``description`` survive for the reason recorded
-      on ``SystemSecretSummary``: they are operator-authored labels for
-      infrastructure keys rather than evidence derived from credential content,
-      and the passport has no other way to name a system row. Whether they
-      belong behind the same projection is an open policy question for both
-      surfaces at once, not one this endpoint answers alone.
+    - ``key``, ``category`` and ``description`` remain available here as the
+      selected system credential's operator-authored identity and metadata.
+      This deliberate inventory/detail asymmetry is the adopted partial
+      metadata-minimization contract.
 
     ``breaks`` is absent rather than projected. Nothing has ever populated it
     on ``SystemSecretDetail``, and an always-empty passthrough of
@@ -1153,10 +1143,11 @@ class CliCredentialDetail(BaseModel):
     ``last_used`` is absent rather than shipped as an always-null placeholder —
     nothing persists it. The probe's free-text ``message`` and
     ``last_test_message`` are dropped for the same reason as on
-    ``SystemCredentialDetail``. ``label`` survives for the reason
-    ``description`` survives on ``CliRuntimeSummary``: it is the row's only
-    human-readable name and the inventory already publishes it for these same
-    rows — the same open policy question, not a separate one.
+    ``SystemCredentialDetail``. ``label`` survives here as the selected CLI
+    credential's human-readable name, even though the broader inventory
+    projection omits the source ``description`` field. This deliberate
+    inventory/detail asymmetry is part of the adopted partial
+    metadata-minimization contract.
     """
 
     # Identity
@@ -2831,9 +2822,10 @@ async def get_inventory(
     ``UserSecretSummary`` whose scope evidence is published as
     ``CAPABILITY_VOCABULARY`` categories and whose provider slug is clamped to
     ``USER_PROVIDER_VOCABULARY``, and the persisted credential type and label
-    never reach the wire either. System and CLI rows keep their operator-authored
-    ``key`` / ``category`` / ``description`` labels; whether those belong behind
-    the same projection is an open policy question, not a decided one.
+    never reach the wire either. System and CLI rows retain their raw
+    operator-chosen ``key`` while omitting ``category`` and ``description`` as
+    partial metadata minimization; those labels remain available on selected
+    detail payloads.
 
     meta.failing_count / meta.unverified_count are computed server-side from
     a deduplicated row set (bu-976n0): failing_count counts genuinely broken
