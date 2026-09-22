@@ -180,6 +180,11 @@ beforeEach(() => {
     isLoading: false,
     error: null,
   } as unknown as ReturnType<typeof useEntity>);
+  vi.mocked(useEntityActivity).mockReturnValue({
+    data: { pages: [{ items: [], total: 0, limit: 200, offset: 0, degraded: false, degraded_reason: null }], pageParams: [0] },
+    isLoading: false, isError: false, isRefetching: false, refetch: vi.fn(),
+    fetchNextPage: vi.fn(), hasNextPage: false, isFetchingNextPage: false,
+  } as unknown as ReturnType<typeof useEntityActivity>);
 });
 
 afterEach(() => {
@@ -190,7 +195,9 @@ afterEach(() => {
 describe("EntityDetailPage — supplementary section degraded states", () => {
   it("loads activity beyond 200 while keeping totals and unloaded filters honest", async () => {
     const user = userEvent.setup();
-    const fetchNextPage = vi.fn();
+    let finishPage: (() => void) | undefined;
+    const pendingPage = new Promise<void>((resolve) => { finishPage = resolve; });
+    const fetchNextPage = vi.fn(() => pendingPage);
     const items: EntityActivityItem[] = Array.from({ length: 200 }, (_, index) => ({
       id: `note-${index}`, ts: "2026-05-01T00:00:00Z", kind: "note",
       src: "relationship", store: "narrative", predicate: "contact_note",
@@ -205,7 +212,36 @@ describe("EntityDetailPage — supplementary section degraded states", () => {
     expect(screen.getByText("Showing 200 of 201")).toBeTruthy();
     expect((screen.getByRole("button", { name: "Gifts 0+" }) as HTMLButtonElement).disabled).toBe(false);
     await user.click(screen.getByRole("button", { name: "Load more activity" }));
+    await user.click(screen.getByRole("button", { name: "Load more activity" }));
     expect(fetchNextPage).toHaveBeenCalledTimes(1);
+    expect(fetchNextPage).toHaveBeenCalledWith({ cancelRefetch: false });
+    finishPage?.();
+  });
+
+  it.each([
+    ["overlap", 3, "same-id"],
+    ["total shrink", 2, "new-id"],
+  ])("offers a content-blind refresh when multi-page activity has %s", async (_label, secondTotal, secondId) => {
+    const user = userEvent.setup();
+    const refetch = vi.fn();
+    const item = (id: string): EntityActivityItem => ({
+      id, ts: "2026-05-01T00:00:00Z", kind: "note", src: "relationship",
+      store: "narrative", predicate: "contact_note", episode_id: null, summary: "Visible summary",
+    });
+    vi.mocked(useEntityActivity).mockReturnValue({
+      data: { pages: [
+        { items: [item("same-id")], total: 3, limit: 1, offset: 0, degraded: false, degraded_reason: null },
+        { items: [item(secondId)], total: secondTotal, limit: 1, offset: 1, degraded: false, degraded_reason: null },
+      ], pageParams: [0, 1] },
+      isLoading: false, isError: false, isRefetching: false, refetch,
+      fetchNextPage: vi.fn(), hasNextPage: false, isFetchingNextPage: false,
+    } as unknown as ReturnType<typeof useEntityActivity>);
+
+    renderPage();
+    expect(screen.getByRole("alert").textContent).toContain("Activity changed while loading.");
+    expect(screen.queryByRole("button", { name: "Load more activity" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Refresh activity" }));
+    expect(refetch).toHaveBeenCalledWith({ cancelRefetch: false });
   });
 
   it("retries activity without cancelling an in-flight repeat", async () => {

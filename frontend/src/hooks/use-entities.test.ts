@@ -90,15 +90,53 @@ describe("useEntityActivity", () => {
     const options = mockUseInfiniteQuery.mock.calls.at(-1)?.[0] as {
       queryKey: unknown[];
       queryFn: (context: { signal: AbortSignal; pageParam: number }) => Promise<unknown>;
-      getNextPageParam: (page: { items: unknown[]; total: number; offset: number }) => number | undefined;
+      getNextPageParam: (
+        page: { items: unknown[]; total: number; offset: number },
+        pages: Array<{ items: unknown[]; total: number; offset: number }>,
+      ) => number | undefined;
     };
     const signal = new AbortController().signal;
 
     expect(options.queryKey).toEqual(["entity-activity", "entity-001", 50]);
     await options.queryFn({ signal, pageParam: 200 });
     expect(activity).toHaveBeenCalledWith("entity-001", { limit: 50, offset: 200, signal });
-    expect(options.getNextPageParam({ items: Array(200), total: 201, offset: 0 })).toBe(200);
-    expect(options.getNextPageParam({ items: [{}], total: 201, offset: 200 })).toBeUndefined();
+    const firstPage = {
+      items: Array.from({ length: 200 }, (_, index) => ({
+        id: `item-${index}`,
+        src: "relationship",
+        store: "narrative",
+      })),
+      total: 201,
+      offset: 0,
+    };
+    const finalPage = { items: [{}], total: 201, offset: 200 };
+    expect(options.getNextPageParam(firstPage, [firstPage])).toBe(200);
+    expect(options.getNextPageParam(finalPage, [firstPage, finalPage])).toBeUndefined();
+  });
+
+  it.each([
+    ["overlapping tuple identities", 300, "same-id"],
+    ["a changed total", 299, "new-id"],
+  ])("stops pagination after %s reveal a moving snapshot", (_label, secondTotal, secondId) => {
+    useEntityActivity("entity-001", { limit: 1 });
+    const options = mockUseInfiniteQuery.mock.calls.at(-1)?.[0] as {
+      getNextPageParam: (
+        page: { items: Array<Record<string, unknown>>; total: number; offset: number },
+        pages: Array<{ items: Array<Record<string, unknown>>; total: number; offset: number }>,
+      ) => number | undefined;
+    };
+    const firstPage = {
+      items: [{ id: "same-id", src: "relationship", store: "narrative" }],
+      total: 300,
+      offset: 0,
+    };
+    const secondPage = {
+      items: [{ id: secondId, src: "relationship", store: "narrative" }],
+      total: secondTotal,
+      offset: 1,
+    };
+
+    expect(options.getNextPageParam(secondPage, [firstPage, secondPage])).toBeUndefined();
   });
 });
 

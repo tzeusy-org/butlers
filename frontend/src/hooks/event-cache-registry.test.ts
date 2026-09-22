@@ -96,6 +96,8 @@ describe("EVENT_CACHE_REGISTRY", () => {
         ["session-detail", "home", "sess-1"],
         ["session-detail-global"],
         ["timeline"],
+        ["entity-activity"],
+        ["entity-activity-bins"],
       ]),
     );
   });

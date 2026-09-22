@@ -80,6 +80,7 @@ import {
   entityActivityInvalidationKeys,
   invalidateEntityActivityFamily,
 } from "@/hooks/entity-activity-cache";
+import { entityActivityPagesDrifted } from "@/lib/entity-activity-pages";
 
 /** Fetch all contacts linked to a relationship entity. */
 export function useEntityLinkedContacts(entityId: string | undefined) {
@@ -128,7 +129,8 @@ export function useEntityActivity(
     queryFn: ({ pageParam, signal }) =>
       getEntityActivity(entityId!, { limit, offset: pageParam as number, signal }),
     initialPageParam: 0,
-    getNextPageParam: (lastPage) => {
+    getNextPageParam: (lastPage, allPages) => {
+      if (entityActivityPagesDrifted(allPages)) return undefined;
       const nextOffset = lastPage.offset + lastPage.items.length;
       return lastPage.items.length > 0 && nextOffset < lastPage.total ? nextOffset : undefined;
     },

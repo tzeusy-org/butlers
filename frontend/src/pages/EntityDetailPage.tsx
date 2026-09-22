@@ -22,6 +22,10 @@ import { toast } from "sonner";
 import { Time } from "@/components/ui/time";
 import { Tip } from "@/components/ui/tip";
 import { ENTITY_DETAIL_INITIAL_FACTS_LIMIT } from "@/lib/entity-detail-query";
+import {
+  entityActivityItemKey,
+  entityActivityNeedsRefresh,
+} from "@/lib/entity-activity-pages";
 import { getEntityGloss, DUNBAR_TIER_VALUES, ENTITY_TYPE_VALUES, CURATION_RAIL_GLOSSES } from "@/lib/entity-glosses";
 import type { DunbarTier, EntityState, EntityType, CurationRailAction } from "@/lib/entity-glosses";
 
@@ -681,21 +685,30 @@ function ActivityTimeline({ entityId }: { entityId: string }) {
     isFetchingNextPage,
   } = useEntityActivity(entityId, { limit: 200 });
   const [filter, setFilter] = useState<TimelineFilter>("all");
+  const loadMoreInFlightRef = useRef(false);
   const pages = useMemo(() => activityPages?.pages ?? [], [activityPages?.pages]);
   const items = useMemo(() => {
     if (pages.length === 0) return _EMPTY_ACTIVITY_ITEMS;
     const seen = new Set<string>();
     return pages.flatMap((page) => page.items.filter((item) => {
-      const key = `${item.src}:${item.store ?? "none"}:${item.id}`;
+      const key = entityActivityItemKey(item);
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
     }));
   }, [pages]);
-  const total = pages.reduce((highest, page) => Math.max(highest, page.total), 0);
+  const total = pages[0]?.total ?? 0;
   const isDegraded = pages.some((page) => page.degraded);
   const hasUnloaded = items.length < total;
+  const activityChanged = entityActivityNeedsRefresh(pages, hasNextPage === true, items.length);
   const retryActivity = () => void refetch({ cancelRefetch: false });
+  const loadMoreActivity = () => {
+    if (loadMoreInFlightRef.current) return;
+    loadMoreInFlightRef.current = true;
+    void Promise.resolve(fetchNextPage({ cancelRefetch: false })).finally(() => {
+      loadMoreInFlightRef.current = false;
+    });
+  };
 
   const counts = useMemo(() => {
     const acc: Record<TimelineFilter, number> = {
@@ -768,6 +781,19 @@ function ActivityTimeline({ entityId }: { entityId: string }) {
         })}
       </div>
 
+      {activityChanged && (
+        <div
+          role="alert"
+          className="border-border bg-muted/30 flex items-center justify-between gap-3 rounded border px-3 py-2"
+          data-testid="entity-activity-changed"
+        >
+          <p className="text-sm">Activity changed while loading.</p>
+          <Button variant="outline" size="sm" onClick={retryActivity} disabled={isRefetching}>
+            {isRefetching ? "Refreshing…" : "Refresh activity"}
+          </Button>
+        </div>
+      )}
+
       {isLoading ? (
         <div className="space-y-2 py-2">
           {Array.from({ length: 4 }, (_, i) => (
@@ -817,7 +843,7 @@ function ActivityTimeline({ entityId }: { entityId: string }) {
         </p>
       ) : timelineRows}
 
-      {hasNextPage && (
+      {hasNextPage && !activityChanged && (
         <div className="flex items-center justify-between gap-3 border-t pt-3">
           <span className="text-muted-foreground text-xs tabular-nums">
             {items.length} of {total} loaded
@@ -826,7 +852,7 @@ function ActivityTimeline({ entityId }: { entityId: string }) {
             type="button"
             variant="outline"
             size="sm"
-            onClick={() => void fetchNextPage()}
+            onClick={loadMoreActivity}
             disabled={isFetchingNextPage}
             data-testid="entity-activity-load-more"
           >

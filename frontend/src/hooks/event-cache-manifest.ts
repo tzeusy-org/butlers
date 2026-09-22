@@ -59,6 +59,8 @@ export const EVENT_CACHE_COVERAGE_MANIFEST: CoverageEntry[] = [
   { eventType: "session", queryKey: ["butler-sessions"], source: "use-sessions.ts (useButlerSessions)" },
   { eventType: "session", queryKey: ["butlers", "board"], source: "use-butlers.ts (useButlersBoard)" },
   { eventType: "session", queryKey: ["timeline"], source: "use-timeline.ts (useTimeline)" },
+  { eventType: "session", queryKey: ["entity-activity", "entity-001"], source: "use-entities.ts (useEntityActivity after session completion)" },
+  { eventType: "session", queryKey: ["entity-activity-bins", "entity-001", "90d"], source: "use-entities.ts (useEntityActivityBins after session completion)" },
   { eventType: "session", queryKey: ["session-detail-global", "sess-1"], source: "use-sessions.ts (useGlobalSessionDetail / SessionDetailPage)" },
   // bu-01r64.4: the session-stripe chart above SessionsPage's list lagged the
   // list itself by up to 60s because sessionPatch never touched its key.

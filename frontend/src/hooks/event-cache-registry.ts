@@ -133,6 +133,7 @@ const sessionPatch: CachePatch = (qc, event) => {
   qc.invalidateQueries({ queryKey: ["timeline"] });
   qc.invalidateQueries({ queryKey: ["session-detail-global"] });
   qc.invalidateQueries({ queryKey: ["session-stripe"] });
+  invalidateEntityActivityFamily(qc);
   // Session events do not carry an ingestion request ID. Refresh lifecycle
   // projections, but never repeat audited payload reads or replay history.
   qc.invalidateQueries(
