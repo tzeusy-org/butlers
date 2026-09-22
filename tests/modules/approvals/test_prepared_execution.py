@@ -65,6 +65,7 @@ async def _park_and_approve(pool, *, action_id: uuid.UUID, tool_args: dict) -> N
         agent_summary="Prepared reach-out draft",
         requested_at=now,
         expires_at=now + timedelta(days=3),
+        origin_butler="relationship",
         deduplication_key=f"relationship:prepared-reach-out:{action_id}",
     )
     await pool.execute(

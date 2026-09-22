@@ -310,6 +310,7 @@ async def _raise_connection_door(
         requested_at=now,
         expires_at=now + timedelta(days=_DOOR_EXPIRES_DAYS),
         why=message,
+        origin_butler="travel",
         deduplication_key=dedup_key,
     )
 

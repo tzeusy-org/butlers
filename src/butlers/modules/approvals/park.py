@@ -1,14 +1,15 @@
 """Atomic admission for actions that require human approval.
 
-Every ordinary ``status='pending'`` producer enters through
-:func:`park_pending_action`. A schema-local server-held rollout row selects
+Every ``status='pending'`` producer enters through this module's transactional
+admission helpers. A schema-local server-held rollout row selects
 exactly one path: the default-off path commits only the established pending
 action, while the enabled path atomically commits the action, immutable
 delivery-intent root, RFC 0021 burst admission, and initial presentation/cohort
 records. Legacy emission rows remain read-only in both paths.
 
-Prepared insight actions retain their explicitly non-notifying path. They are
-surfaced by the insight digest and are not approval-delivery recovery subjects.
+Prepared insight actions retain their explicitly non-notifying behavior. When
+admission is enabled they use the same durable protocol with one standalone
+``collapsed`` presentation, which is terminal and can never reach a provider.
 """
 
 from __future__ import annotations
@@ -190,7 +191,43 @@ async def _existing_pending_action(
     )
 
 
-async def _park_without_delivery(connection: Any, request: ParkRequest) -> ParkAdmission:
+async def _insert_pending_action(
+    connection: Any,
+    request: ParkRequest,
+    *,
+    origin: str | None = None,
+) -> None:
+    await connection.execute(
+        """
+        INSERT INTO pending_actions (
+            id, tool_name, tool_args, agent_summary, session_id, status, origin,
+            requested_at, expires_at, why, evidence, blast_radius, reversibility,
+            deduplication_key
+        ) VALUES ($1, $2, $3, $4, $5, 'pending', $6,
+                  $7, $8, $9, $10, $11, $12, $13)
+        """,
+        request.action_id,
+        request.tool_name,
+        request.tool_args,
+        request.agent_summary,
+        request.session_id,
+        origin,
+        request.requested_at,
+        request.expires_at,
+        request.why,
+        list(request.evidence),
+        request.blast_radius,
+        request.reversibility,
+        request.deduplication_key,
+    )
+
+
+async def _park_without_delivery(
+    connection: Any,
+    request: ParkRequest,
+    *,
+    origin: str | None = None,
+) -> ParkAdmission:
     """Preserve pending-action behavior without any notification writer before cutover."""
     await connection.execute(
         "SELECT pg_advisory_xact_lock(hashtext('approval-delivery:' || current_schema()))"
@@ -202,27 +239,7 @@ async def _park_without_delivery(connection: Any, request: ParkRequest) -> ParkA
     )
     if existing is not None:
         return existing
-    await connection.execute(
-        """
-        INSERT INTO pending_actions (
-            id, tool_name, tool_args, agent_summary, session_id, status,
-            requested_at, expires_at, why, evidence, blast_radius, reversibility,
-            deduplication_key
-        ) VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9, $10, $11, $12)
-        """,
-        request.action_id,
-        request.tool_name,
-        request.tool_args,
-        request.agent_summary,
-        request.session_id,
-        request.requested_at,
-        request.expires_at,
-        request.why,
-        list(request.evidence),
-        request.blast_radius,
-        request.reversibility,
-        request.deduplication_key,
-    )
+    await _insert_pending_action(connection, request, origin=origin)
     return ParkAdmission(
         action_id=request.action_id,
         intent_id=None,
@@ -340,6 +357,13 @@ async def _admit(connection: Any, request: ParkRequest) -> ParkAdmission:
             """
             SELECT count(*) FROM approval_delivery_intents
              WHERE created_at >= $1::timestamptz - interval '10 minutes'
+               AND (
+                   admission_mode <> 'collapsed'
+                   OR EXISTS (
+                       SELECT 1 FROM approval_delivery_cohort_members AS member
+                        WHERE member.intent_id = approval_delivery_intents.id
+                   )
+               )
             """,
             database_now,
         )
@@ -362,27 +386,7 @@ async def _admit(connection: Any, request: ParkRequest) -> ParkAdmission:
     else:
         mode = "cohort_anchor"
 
-    await connection.execute(
-        """
-        INSERT INTO pending_actions (
-            id, tool_name, tool_args, agent_summary, session_id, status,
-            requested_at, expires_at, why, evidence, blast_radius, reversibility,
-            deduplication_key
-        ) VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9, $10, $11, $12)
-        """,
-        request.action_id,
-        request.tool_name,
-        request.tool_args,
-        request.agent_summary,
-        request.session_id,
-        request.requested_at,
-        request.expires_at,
-        request.why,
-        list(request.evidence),
-        request.blast_radius,
-        request.reversibility,
-        request.deduplication_key,
-    )
+    await _insert_pending_action(connection, request)
     intent_id = uuid.uuid4()
     action_key = f"approval:{owning_schema}:{request.action_id}"
     await connection.execute(
@@ -486,6 +490,61 @@ async def _admit(connection: Any, request: ParkRequest) -> ParkAdmission:
     )
 
 
+async def _admit_prepared(connection: Any, request: ParkRequest) -> ParkAdmission:
+    """Atomically represent one digest-only action without scheduling delivery."""
+    await connection.execute(
+        "SELECT pg_advisory_xact_lock(hashtext('approval-delivery:' || current_schema()))"
+    )
+    existing = await _existing_admission(
+        connection,
+        action_id=request.action_id,
+        deduplication_key=request.deduplication_key,
+    )
+    if existing is not None:
+        return existing
+
+    database_now = await connection.fetchval("SELECT clock_timestamp()")
+    owning_schema = await connection.fetchval("SELECT current_schema()")
+    await _insert_pending_action(connection, request, origin="prepared")
+    intent_id = uuid.uuid4()
+    action_key = f"approval:{owning_schema}:{request.action_id}"
+    await connection.execute(
+        """
+        INSERT INTO approval_delivery_intents (
+            id, action_id, action_key, owning_schema, origin_butler,
+            admission_mode, created_at
+        ) VALUES ($1, $2, $3, $4, $5, 'collapsed', $6)
+        """,
+        intent_id,
+        request.action_id,
+        action_key,
+        owning_schema,
+        request.origin_butler,
+        database_now,
+    )
+    presentation_key = await _insert_presentation(
+        connection,
+        intent_id=intent_id,
+        cohort_id=None,
+        subject_key=action_key,
+        mode="collapsed",
+        generation=1,
+        state="collapsed",
+        not_before=database_now,
+        reason_code=None,
+    )
+    return ParkAdmission(
+        action_id=request.action_id,
+        intent_id=intent_id,
+        action_key=action_key,
+        admission_mode="collapsed",
+        presentation_key=presentation_key,
+        cohort_key=None,
+        not_before=database_now,
+        duplicate=False,
+    )
+
+
 async def park_pending_action(
     pool: Any,
     *,
@@ -548,27 +607,31 @@ async def park_prepared_action(
     evidence: Sequence[dict[str, str]] | None = None,
     blast_radius: str | None = None,
     reversibility: str | None = None,
+    origin_butler: str,
     deduplication_key: str,
-) -> None:
-    """Insert one explicitly digest-only prepared action without a push intent."""
-    await pool.execute(
-        "INSERT INTO pending_actions "
-        "(id, tool_name, tool_args, agent_summary, session_id, status, origin, "
-        "requested_at, expires_at, why, evidence, blast_radius, reversibility, "
-        "deduplication_key) "
-        "VALUES ($1, $2, $3, $4, NULL, 'pending', 'prepared', $5, $6, $7, $8, $9, $10, $11)",
-        action_id,
-        tool_name,
-        tool_args,
-        agent_summary,
-        requested_at,
-        expires_at,
-        why,
-        list(evidence) if evidence is not None else [],
-        blast_radius,
-        reversibility,
-        deduplication_key,
+) -> ParkAdmission:
+    """Park one digest-only action through the shared durable admission boundary."""
+    request = ParkRequest(
+        action_id=action_id,
+        tool_name=tool_name,
+        tool_args=tool_args,
+        agent_summary=agent_summary,
+        requested_at=requested_at,
+        expires_at=expires_at,
+        why=why,
+        evidence=tuple(evidence or ()),
+        blast_radius=blast_radius,
+        reversibility=reversibility,
+        origin_butler=origin_butler,
+        deduplication_key=deduplication_key,
     )
+    _validate_request(request)
+    async with _connection(pool) as connection:
+        async with connection.transaction():
+            rollout = await read_approval_delivery_rollout(connection, lock=True)
+            if rollout.admission_enabled:
+                return await _admit_prepared(connection, request)
+            return await _park_without_delivery(connection, request, origin="prepared")
 
 
 __all__ = [

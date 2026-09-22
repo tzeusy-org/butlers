@@ -24,9 +24,9 @@ import pytest
 
 pytestmark = pytest.mark.contract
 
-# The atomic helper also contains the explicitly digest-only prepared-action
-# exception. gate.py contains only owner/rule auto-approved INSERTs; its PENDING
-# branch calls park_pending_action.
+# park.py contains the one shared pending INSERT used by ordinary and prepared
+# transactional admission. gate.py contains only owner/rule auto-approved
+# INSERTs; its PENDING branch calls park_pending_action.
 _ALLOWED_DIRECT_INSERT_FILES: frozenset[str] = frozenset(
     {
         "src/butlers/modules/approvals/gate.py",
@@ -98,6 +98,20 @@ def test_gate_direct_inserts_are_only_explicit_auto_approvals() -> None:
         ), "Every direct gate INSERT must bind ActionStatus.APPROVED.value"
 
 
+def test_atomic_helper_owns_exactly_one_pending_insert() -> None:
+    """Ordinary and prepared admission share one pending-row writer."""
+    helper_path = _repo_root() / "src/butlers/modules/approvals/park.py"
+    tree = ast.parse(helper_path.read_text(encoding="utf-8"))
+    inserts = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and "insert into pending_actions" in node.value.lower()
+    ]
+    assert len(inserts) == 1
+
+
 def test_production_parking_never_calls_legacy_push_writer() -> None:
     """The additive admission rollout leaves approval_push_emissions read-only."""
     violations: list[str] = []
@@ -139,7 +153,7 @@ def test_every_atomic_park_producer_supplies_origin() -> None:
                 name = called.id if isinstance(called, ast.Name) else None
                 if isinstance(called, ast.Attribute):
                     name = called.attr
-                if name != "park_pending_action":
+                if name not in {"park_pending_action", "park_prepared_action"}:
                     continue
                 if py_file.name == "approvals_hooks.py" and isinstance(called, ast.Attribute):
                     continue

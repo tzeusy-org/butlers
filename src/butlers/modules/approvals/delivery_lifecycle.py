@@ -424,6 +424,11 @@ async def defer_pending_action(
         action = PendingAction.from_row(row)
         if action.status != ActionStatus.PENDING:
             return DeferTransition(action, False)
+        if row.get("origin") == "prepared":
+            # Prepared doors are surfaced only inside their insight digest.
+            # Their durable collapsed presentation is evidence, not a latent
+            # owner-notification generation that defer may activate.
+            return DeferTransition(action, False, delivery_missing=True)
 
         database_now = now or await connection.fetchval("SELECT clock_timestamp()")
         if not isinstance(database_now, datetime):
