@@ -251,7 +251,9 @@ def normalize_citations(sources: list[Any] | None) -> CitationNormalization:
             raise ValueError("sources must contain names or {label, target} citation objects")
         label = _plain_label(source.get("label"))
         target = source.get("target")
-        if not isinstance(target, str) or not target or len(target) > MAX_TARGET_LENGTH:
+        if isinstance(target, str) and len(target) > MAX_TARGET_LENGTH:
+            raise ValueError("sources target exceeds the size limit")
+        if not isinstance(target, str) or not target:
             reason = "target_budget_or_shape_invalid"
             rejected_by_reason[reason] = rejected_by_reason.get(reason, 0) + 1
             continue

@@ -274,6 +274,28 @@ async def test_unknown_structured_route_is_dropped_without_echoing_it(monkeypatc
     assert "/not-a-shell-route" not in caplog.text
 
 
+async def test_over_budget_target_rejects_whole_call_without_persistence_or_echo(monkeypatch):
+    fake_create = AsyncMock(return_value={"id": uuid4(), "role": "assistant"})
+    monkeypatch.setattr("butlers.api.conversations.conversation_reply_create", fake_create)
+    tool = _register_and_grab(pool=AsyncMock())
+    private_target = "/private-budget-sentinel/" + "x" * 2048
+
+    result = await tool(
+        conversation_id=str(uuid4()),
+        message="Grounded answer.",
+        sources=[
+            {"label": "Known", "target": "/spend"},
+            {"label": "private budget label", "target": private_target},
+        ],
+    )
+
+    assert result["status"] == "error"
+    assert "size limit" in result["error"]
+    assert "private budget label" not in result["error"]
+    assert "private-budget-sentinel" not in result["error"]
+    fake_create.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # _best_effort_request_id — ambient routing-context recovery, best-effort only
 # ---------------------------------------------------------------------------
