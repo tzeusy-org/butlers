@@ -123,6 +123,38 @@ function activityBins(): { bins: Array<{ date: string; count: number }> } {
   return { bins };
 }
 
+function activityStream() {
+  return {
+    items: [
+      {
+        id: "episode-1",
+        ts: "2026-05-20T12:00:00Z",
+        kind: "episode",
+        src: "chronicler",
+        store: null,
+        predicate: null,
+        episode_id: "episode-1",
+        summary: "Lunch with Alice",
+      },
+      {
+        id: "fact-1",
+        ts: "2026-05-18T00:00:00Z",
+        kind: "interaction",
+        src: "relationship",
+        store: "narrative",
+        predicate: "interaction_in_person",
+        episode_id: null,
+        summary: "Coffee catch-up",
+      },
+    ],
+    total: 2,
+    limit: 200,
+    offset: 0,
+    degraded: false,
+    degraded_reason: null,
+  };
+}
+
 /** A relationship CompareFact (types.ts CompareFact). */
 function compareFact(
   id: string,
@@ -354,7 +386,13 @@ async function installDetailStubs(
   // 90-day sparkline
   await page.route(
     `**/api/relationship/entities/${ENTITY_ID}/activity**`,
-    (route) => json(route, activityBins()),
+    (route) => {
+      const requestUrl = new URL(route.request().url());
+      return json(
+        route,
+        requestUrl.searchParams.get("bins") === "daily" ? activityBins() : activityStream(),
+      );
+    },
   );
 
   // delta-since-last-visit (read) — the fact ids here also seed the fact list
@@ -674,6 +712,11 @@ test.describe("entity-v3: detail quick-refresh blocks", () => {
       timeout: TIMEOUT_MS,
     });
     await expect(page.getByTestId("sparkline-stick")).toHaveCount(90);
+
+    // The full stream uses the same page -> hook -> client transport and keeps
+    // Chronicle activity alongside exact Relationship summaries.
+    await expect(page.getByText("Lunch with Alice")).toBeVisible();
+    await expect(page.getByText("Coffee catch-up").first()).toBeVisible();
 
     // Core dates block + at least one row.
     await expect(page.getByTestId("core-dates-block")).toBeVisible();
