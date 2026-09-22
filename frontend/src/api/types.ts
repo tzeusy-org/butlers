@@ -9299,13 +9299,13 @@ export interface SecretsProbeAllResponse {
  * A CLI runtime token row as returned by GET /api/secrets/inventory.
  *
  * Maps to CliRuntimeSummary in the backend secrets_v2 router — the published
- * projection of CliRuntime. The probe's free-text `message` and the cached
- * `last_test_message` are not on the wire (bu-iph56); do not add them back.
+ * projection of CliRuntime. The inventory keeps the raw `key` but omits the
+ * operator-authored `category` and `description` labels (bu-y5uq4). The
+ * probe's free-text `message` and the cached `last_test_message` are not on
+ * the wire (bu-iph56); do not add them back.
  */
 export interface SecretsCliRaw {
   key: string;
-  category: string;
-  description: string | null;
   state: string;
   fingerprint: string | null;
   /** butler_secrets.created_at (real; bu-6v1hx). */
@@ -9321,13 +9321,12 @@ export interface SecretsCliRaw {
  *
  * Maps to SystemSecretSummary in the backend secrets_v2 router — the published
  * projection of SystemSecret. Probe messages and audit note free text are not
- * on the wire (bu-iph56); `key` / `category` / `description` are
- * operator-authored labels and deliberately still are.
+ * on the wire (bu-iph56); the raw `key` survives for operator identification,
+ * while the operator-authored `category` and `description` labels are omitted
+ * from this inventory projection (bu-y5uq4).
  */
 export interface SecretsSystemRaw {
   key: string;
-  category: string;
-  description: string | null;
   state: string;
   fingerprint: string | null;
   last_verified: string | null;
