@@ -98,6 +98,8 @@ export const EVENT_CACHE_COVERAGE_MANIFEST: CoverageEntry[] = [
   // entity.rebound.v1 — survivor/tombstone detail plus receipt cohort
   { eventType: "entity.rebound.v1", queryKey: ["memory-entity", "entity-1"], source: "use-memory.ts (useEntity)" },
   { eventType: "entity.rebound.v1", queryKey: ["relationship-entities"], source: "use-entities.ts (useRelationshipEntities)" },
+  { eventType: "entity.rebound.v1", queryKey: ["entity-activity", "entity-1"], source: "use-entities.ts (useEntityActivity)" },
+  { eventType: "entity.rebound.v1", queryKey: ["entity-activity-bins", "entity-1", "90d"], source: "use-entities.ts (useEntityActivityBins)" },
 ];
 
 /** Every event type in EVENT_CACHE_COVERAGE_MANIFEST -- used by the coverage

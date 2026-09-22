@@ -671,14 +671,31 @@ function timelineKindGlyph(kind: string): string {
 
 function ActivityTimeline({ entityId }: { entityId: string }) {
   const {
-    data: activity,
+    data: activityPages,
     isLoading,
     isError,
+    isRefetching,
     refetch,
-  } = useEntityActivity(entityId, { limit: 200, offset: 0 });
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useEntityActivity(entityId, { limit: 200 });
   const [filter, setFilter] = useState<TimelineFilter>("all");
-  const items = activity?.items ?? _EMPTY_ACTIVITY_ITEMS;
-  const isDegraded = activity?.degraded === true;
+  const pages = useMemo(() => activityPages?.pages ?? [], [activityPages?.pages]);
+  const items = useMemo(() => {
+    if (pages.length === 0) return _EMPTY_ACTIVITY_ITEMS;
+    const seen = new Set<string>();
+    return pages.flatMap((page) => page.items.filter((item) => {
+      const key = `${item.src}:${item.store ?? "none"}:${item.id}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }));
+  }, [pages]);
+  const total = pages.reduce((highest, page) => Math.max(highest, page.total), 0);
+  const isDegraded = pages.some((page) => page.degraded);
+  const hasUnloaded = items.length < total;
+  const retryActivity = () => void refetch({ cancelRefetch: false });
 
   const counts = useMemo(() => {
     const acc: Record<TimelineFilter, number> = {
@@ -715,7 +732,7 @@ function ActivityTimeline({ entityId }: { entityId: string }) {
       <div className="flex items-baseline justify-between gap-3">
         <h2 className="text-lg font-semibold">Activity</h2>
         <span className="text-muted-foreground text-xs">
-          {activity ? `${activity.total} entries` : ""}
+          {pages.length > 0 ? `Showing ${items.length} of ${total}` : ""}
         </span>
       </div>
 
@@ -723,11 +740,12 @@ function ActivityTimeline({ entityId }: { entityId: string }) {
         {_TIMELINE_FILTERS.map((f) => {
           const active = f.id === filter;
           const count = counts[f.id];
-          const disabled = count === 0 && f.id !== "all";
+          const disabled = count === 0 && f.id !== "all" && !hasUnloaded;
           return (
             <button
               key={f.id}
               type="button"
+              aria-label={`${f.label}${count > 0 || hasUnloaded ? ` ${count}${hasUnloaded ? "+" : ""}` : ""}`}
               onClick={() => setFilter(f.id)}
               disabled={disabled}
               className={
@@ -740,9 +758,9 @@ function ActivityTimeline({ entityId }: { entityId: string }) {
               }
             >
               {f.label}
-              {count > 0 && (
+              {(count > 0 || hasUnloaded) && (
                 <span className={"ml-1.5 tabular-nums " + (active ? "" : "text-muted-foreground")}>
-                  {count}
+                  {" "}{count}{hasUnloaded ? "+" : ""}
                 </span>
               )}
             </button>
@@ -765,8 +783,8 @@ function ActivityTimeline({ entityId }: { entityId: string }) {
           data-testid="entity-timeline-error"
         >
           <p className="text-destructive text-sm">Couldn&rsquo;t load activity. Retry.</p>
-          <Button variant="outline" size="sm" onClick={() => void refetch()}>
-            Retry
+          <Button variant="outline" size="sm" onClick={retryActivity} disabled={isRefetching}>
+            {isRefetching ? "Retrying…" : "Retry"}
           </Button>
         </div>
       ) : isError ? (
@@ -775,7 +793,7 @@ function ActivityTimeline({ entityId }: { entityId: string }) {
             testId="entity-activity-fetch-error"
             label="Activity"
             detail="unavailable"
-            onRetry={() => void refetch()}
+            onRetry={retryActivity}
           />
           {timelineRows}
         </>
@@ -785,7 +803,7 @@ function ActivityTimeline({ entityId }: { entityId: string }) {
             testId="entity-activity-degraded"
             label="Chronicle activity"
             detail="unavailable"
-            onRetry={() => void refetch()}
+            onRetry={retryActivity}
           />
           {timelineRows}
         </>
@@ -793,9 +811,29 @@ function ActivityTimeline({ entityId }: { entityId: string }) {
         <p className="text-muted-foreground py-8 text-center text-sm">
           {filter === "all"
             ? "No activity recorded yet."
-            : `No ${_TIMELINE_FILTERS.find((f) => f.id === filter)?.label.toLowerCase()} yet.`}
+            : hasUnloaded
+              ? `No ${_TIMELINE_FILTERS.find((f) => f.id === filter)?.label.toLowerCase()} loaded yet.`
+              : `No ${_TIMELINE_FILTERS.find((f) => f.id === filter)?.label.toLowerCase()} yet.`}
         </p>
       ) : timelineRows}
+
+      {hasNextPage && (
+        <div className="flex items-center justify-between gap-3 border-t pt-3">
+          <span className="text-muted-foreground text-xs tabular-nums">
+            {items.length} of {total} loaded
+          </span>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => void fetchNextPage()}
+            disabled={isFetchingNextPage}
+            data-testid="entity-activity-load-more"
+          >
+            {isFetchingNextPage ? "Loading…" : "Load more activity"}
+          </Button>
+        </div>
+      )}
     </section>
   );
 }

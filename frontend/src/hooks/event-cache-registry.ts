@@ -24,6 +24,7 @@
  */
 
 import type { QueryClient } from "@tanstack/react-query";
+import { invalidateEntityActivityFamily } from "@/hooks/entity-activity-cache";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -218,8 +219,7 @@ const calendarPatch: CachePatch = (qc) => {
  */
 const chroniclesPatch: CachePatch = (qc) => {
   qc.invalidateQueries({ queryKey: ["chronicles"] });
-  qc.invalidateQueries({ queryKey: ["entity-activity"] });
-  qc.invalidateQueries({ queryKey: ["entity-activity-bins"] });
+  invalidateEntityActivityFamily(qc);
 };
 
 /**
@@ -250,6 +250,7 @@ const entityReboundPatch: CachePatch = (qc, event) => {
   qc.invalidateQueries({ queryKey: ["relationship-entity-queue"] });
   qc.invalidateQueries({ queryKey: ["memory-entity"] });
   qc.invalidateQueries({ queryKey: ["relationship-entity"] });
+  invalidateEntityActivityFamily(qc);
   for (const key of ["source_entity_id", "target_entity_id"] as const) {
     const entityId = asString(event.data[key]);
     if (entityId) {

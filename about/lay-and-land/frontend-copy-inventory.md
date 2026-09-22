@@ -491,7 +491,6 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Profile
 - Activity
 - Couldn&rsquo;t load activity. Retry.
-- Retry
 - Gifts
 - Loans
 - Message threads
@@ -4376,4 +4375,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3433*
+*Total strings: 3432*

@@ -20,12 +20,14 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 const mockInvalidateQueries = vi.fn();
 const mockQueryClient = { invalidateQueries: mockInvalidateQueries };
 const mockUseQuery = vi.hoisted(() => vi.fn((opts: unknown) => opts));
+const mockUseInfiniteQuery = vi.hoisted(() => vi.fn((opts: unknown) => opts));
 
 vi.mock("@tanstack/react-query", async (importOriginal) => {
   const original = await importOriginal<typeof import("@tanstack/react-query")>();
   return {
     ...original,
     useMutation: vi.fn((opts: unknown) => opts),
+    useInfiniteQuery: mockUseInfiniteQuery,
     useQuery: mockUseQuery,
     useQueryClient: () => mockQueryClient,
   };
@@ -57,7 +59,9 @@ import {
   useCreateEntityGift,
   useCreateEntityInteraction,
   useCreateEntityNote,
+  useAddEntityContact,
   useEntityActivity,
+  useUpdateEntityDunbarTier,
   useMergeRelationshipEntities,
   useForgetRelationshipEntity,
 } from "@/hooks/use-entities.ts";
@@ -67,7 +71,7 @@ const mockUseMutation = vi.mocked(useMutation);
 
 describe("useEntityActivity", () => {
   beforeEach(() => {
-    mockUseQuery.mockClear();
+    mockUseInfiniteQuery.mockClear();
   });
 
   it("uses the canonical cache key and forwards TanStack cancellation", async () => {
@@ -82,16 +86,19 @@ describe("useEntityActivity", () => {
       degraded_reason: null,
     });
 
-    useEntityActivity("entity-001", { limit: 50, offset: 0 });
-    const options = mockUseQuery.mock.calls.at(-1)?.[0] as {
+    useEntityActivity("entity-001", { limit: 50 });
+    const options = mockUseInfiniteQuery.mock.calls.at(-1)?.[0] as {
       queryKey: unknown[];
-      queryFn: (context: { signal: AbortSignal }) => Promise<unknown>;
+      queryFn: (context: { signal: AbortSignal; pageParam: number }) => Promise<unknown>;
+      getNextPageParam: (page: { items: unknown[]; total: number; offset: number }) => number | undefined;
     };
     const signal = new AbortController().signal;
 
-    expect(options.queryKey).toEqual(["entity-activity", "entity-001", 50, 0]);
-    await options.queryFn({ signal });
-    expect(activity).toHaveBeenCalledWith("entity-001", { limit: 50, offset: 0, signal });
+    expect(options.queryKey).toEqual(["entity-activity", "entity-001", 50]);
+    await options.queryFn({ signal, pageParam: 200 });
+    expect(activity).toHaveBeenCalledWith("entity-001", { limit: 50, offset: 200, signal });
+    expect(options.getNextPageParam({ items: Array(200), total: 201, offset: 0 })).toBe(200);
+    expect(options.getNextPageParam({ items: [{}], total: 201, offset: 200 })).toBeUndefined();
   });
 });
 
@@ -168,6 +175,15 @@ describe("useMergeRelationshipEntities", () => {
       queryKey: ["entity-finder-search"],
     });
   });
+
+  it("onSuccess refreshes activity for survivor and tombstone", () => {
+    useMergeRelationshipEntities();
+    capturedMutationOptions().onSuccess(undefined, request, undefined);
+    for (const entityId of ["entity-a-uuid", "entity-b-uuid"]) {
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ["entity-activity", entityId] });
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ["entity-activity-bins", entityId] });
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -199,6 +215,13 @@ describe("useForgetRelationshipEntity (use-entities)", () => {
       queryKey: ["memory-entity", "forgotten-uuid"],
     });
   });
+
+  it("onSuccess refreshes the forgotten entity activity family", () => {
+    useForgetRelationshipEntity();
+    capturedMutationOptions().onSuccess(undefined, "forgotten-uuid", undefined);
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ["entity-activity", "forgotten-uuid"] });
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ["entity-activity-bins", "forgotten-uuid"] });
+  });
 });
 
 describe("entity activity mutation invalidation", () => {
@@ -222,5 +245,15 @@ describe("entity activity mutation invalidation", () => {
     expect(mockInvalidateQueries).toHaveBeenCalledWith({
       queryKey: ["entity-activity-bins", "entity-001"],
     });
+  });
+
+  it.each([
+    ["tier override", useUpdateEntityDunbarTier, { entityId: "entity-001", tier: 2 }],
+    ["contact add", useAddEntityContact, { entityId: "entity-001", request: {} }],
+  ])("%s refreshes the activity family", (_label, useHook, variables) => {
+    useHook();
+    capturedMutationOptions().onSuccess(undefined, variables, undefined);
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ["entity-activity", "entity-001"] });
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ["entity-activity-bins", "entity-001"] });
   });
 });

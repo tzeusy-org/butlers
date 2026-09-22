@@ -16,17 +16,19 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useSearchParams } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import EntityDetailPage from "@/pages/EntityDetailPage";
 import { useEntity } from "@/hooks/use-memory";
 import {
+  useEntityActivity,
   useEntityGifts,
   useEntityMessageThreads,
   useEntityNeighbours,
 } from "@/hooks/use-entities";
-import type { EntityDetail } from "@/api/types";
+import type { EntityActivityItem, EntityDetail } from "@/api/types";
 
 vi.mock("react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react-router")>();
@@ -86,7 +88,7 @@ vi.mock("@/hooks/use-entities", () => ({
     error: null,
   })),
   useEntityTimeline: vi.fn(() => ({ data: [], isLoading: false, isError: false })),
-  useEntityActivity: vi.fn(() => ({ data: { items: [], total: 0, limit: 50, offset: 0, degraded: false, degraded_reason: null }, isLoading: false, isError: false })),
+  useEntityActivity: vi.fn(() => ({ data: { pages: [{ items: [], total: 0, limit: 50, offset: 0, degraded: false, degraded_reason: null }], pageParams: [0] }, isLoading: false, isError: false, isRefetching: false, refetch: vi.fn(), fetchNextPage: vi.fn(), hasNextPage: false, isFetchingNextPage: false })),
   useEntityGifts: vi.fn(() => ({ data: [], isLoading: false, isError: false })),
   useEntityLoans: vi.fn(() => ({ data: [], isLoading: false, isError: false })),
   useEntityMessageThreads: vi.fn(() => ({ data: [], isLoading: false, isError: false })),
@@ -186,6 +188,41 @@ afterEach(() => {
 });
 
 describe("EntityDetailPage — supplementary section degraded states", () => {
+  it("loads activity beyond 200 while keeping totals and unloaded filters honest", async () => {
+    const user = userEvent.setup();
+    const fetchNextPage = vi.fn();
+    const items: EntityActivityItem[] = Array.from({ length: 200 }, (_, index) => ({
+      id: `note-${index}`, ts: "2026-05-01T00:00:00Z", kind: "note",
+      src: "relationship", store: "narrative", predicate: "contact_note",
+      episode_id: null, summary: `Note ${index}`,
+    }));
+    vi.mocked(useEntityActivity).mockReturnValue({
+      data: { pages: [{ items, total: 201, limit: 200, offset: 0, degraded: false, degraded_reason: null }], pageParams: [0] },
+      isLoading: false, isError: false, isRefetching: false, refetch: vi.fn(),
+      fetchNextPage, hasNextPage: true, isFetchingNextPage: false,
+    } as unknown as ReturnType<typeof useEntityActivity>);
+    renderPage();
+    expect(screen.getByText("Showing 200 of 201")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Gifts 0+" }) as HTMLButtonElement).disabled).toBe(false);
+    await user.click(screen.getByRole("button", { name: "Load more activity" }));
+    expect(fetchNextPage).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries activity without cancelling an in-flight repeat", async () => {
+    const user = userEvent.setup();
+    const refetch = vi.fn();
+    vi.mocked(useEntityActivity).mockReturnValue({
+      data: undefined, isLoading: false, isError: true, isRefetching: false,
+      refetch, fetchNextPage: vi.fn(), hasNextPage: false, isFetchingNextPage: false,
+    } as unknown as ReturnType<typeof useEntityActivity>);
+    renderPage();
+    const retry = screen.getByRole("button", { name: "Retry" });
+    await user.click(retry);
+    await user.click(retry);
+    expect(refetch).toHaveBeenNthCalledWith(1, { cancelRefetch: false });
+    expect(refetch).toHaveBeenNthCalledWith(2, { cancelRefetch: false });
+  });
+
   it("GiftsPanel: renders a degraded note on error instead of vanishing", () => {
     vi.mocked(useEntityGifts).mockReturnValue({
       data: undefined,

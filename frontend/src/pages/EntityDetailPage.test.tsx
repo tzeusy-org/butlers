@@ -90,17 +90,16 @@ vi.mock("@/hooks/use-entities", () => ({
   })),
   useEntityTimeline: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityActivity: vi.fn(() => ({
-    data: {
-      items: [],
-      total: 0,
-      limit: 50,
-      offset: 0,
-      degraded: false,
-      degraded_reason: null,
-    },
+    data: { pages: [{
+      items: [], total: 0, limit: 50, offset: 0, degraded: false, degraded_reason: null,
+    }], pageParams: [0] },
     isLoading: false,
     isError: false,
+    isRefetching: false,
     refetch: vi.fn(),
+    fetchNextPage: vi.fn(),
+    hasNextPage: false,
+    isFetchingNextPage: false,
   })),
   useEntityGifts: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityLoans: vi.fn(() => ({ data: [], isLoading: false })),
@@ -217,7 +216,7 @@ describe("EntityDetailPage — identity hero", () => {
   it("renders exact summaries for colliding source-qualified rows without predicate fallback", () => {
     setEntityState(BASE_ENTITY);
     vi.mocked(useEntityActivity).mockReturnValue({
-      data: {
+      data: { pages: [{
         items: [
           {
             id: "shared-id",
@@ -245,10 +244,14 @@ describe("EntityDetailPage — identity hero", () => {
         offset: 0,
         degraded: false,
         degraded_reason: null,
-      },
+      }], pageParams: [0] },
       isLoading: false,
       isError: false,
+      isRefetching: false,
       refetch: vi.fn(),
+      fetchNextPage: vi.fn(),
+      hasNextPage: false,
+      isFetchingNextPage: false,
     } as unknown as ReturnType<typeof useEntityActivity>);
 
     const html = renderPage();
@@ -261,7 +264,7 @@ describe("EntityDetailPage — identity hero", () => {
   it("keeps partial activity visible while naming unavailable Chronicle data", () => {
     setEntityState(BASE_ENTITY);
     vi.mocked(useEntityActivity).mockReturnValue({
-      data: {
+      data: { pages: [{
         items: [
           {
             id: "fact-1",
@@ -279,10 +282,14 @@ describe("EntityDetailPage — identity hero", () => {
         offset: 0,
         degraded: true,
         degraded_reason: "chronicler_activity_unavailable",
-      },
+      }], pageParams: [0] },
       isLoading: false,
       isError: false,
+      isRefetching: false,
       refetch: vi.fn(),
+      fetchNextPage: vi.fn(),
+      hasNextPage: false,
+      isFetchingNextPage: false,
     } as unknown as ReturnType<typeof useEntityActivity>);
 
     const html = renderPage();
@@ -295,7 +302,7 @@ describe("EntityDetailPage — identity hero", () => {
   it("keeps cached rows visible when a refetch fails", () => {
     setEntityState(BASE_ENTITY);
     vi.mocked(useEntityActivity).mockReturnValue({
-      data: {
+      data: { pages: [{
         items: [
           {
             id: "cached-1",
@@ -313,10 +320,14 @@ describe("EntityDetailPage — identity hero", () => {
         offset: 0,
         degraded: false,
         degraded_reason: null,
-      },
+      }], pageParams: [0] },
       isLoading: false,
       isError: true,
+      isRefetching: false,
       refetch: vi.fn(),
+      fetchNextPage: vi.fn(),
+      hasNextPage: false,
+      isFetchingNextPage: false,
     } as unknown as ReturnType<typeof useEntityActivity>);
 
     const html = renderPage();

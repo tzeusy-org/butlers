@@ -252,6 +252,15 @@ describe("EVENT_CACHE_REGISTRY", () => {
     );
   });
 
+  it("entity.rebound.v1 refreshes canonical activity and identity families", () => {
+    const { qc, invalidateQueries } = makeQc();
+    applyFleetEvent(qc, { type: "entity.rebound.v1", ts: 1, data: { source_entity_id: "entity-a", target_entity_id: "entity-b" } });
+    expect(keys(invalidateQueries)).toEqual(expect.arrayContaining([
+      ["memory-entity", "entity-a"], ["memory-entity", "entity-b"],
+      ["entity-activity"], ["entity-activity-bins"],
+    ]));
+  });
+
   it("heartbeat: is a no-op (no cache invalidation)", () => {
     const { qc, invalidateQueries } = makeQc();
     applyFleetEvent(qc, { type: "heartbeat", ts: 1, data: {} });
