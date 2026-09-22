@@ -90,9 +90,11 @@ connector-namespace migration, but the active Connectors dashboard renders its
 7-day routing distribution. Its `meta.aggregates_available` flag distinguishes
 a measured empty response from an unavailable aggregate source: when the route
 query returns no rows, the handler first probes the exact
-`switchboard_routed_messages_total` family. A family with at least one live
-series makes the empty result measured; an absent or unreadable family is
-degraded and never presented as an all-clear empty distribution.
+`butlers_switchboard_subroute_dispatched_total` family, restricted to attempted
+dispatches carrying the connector type and endpoint identity recorded from the
+ingest envelope. A fully labeled live series makes the empty result measured;
+an absent, unlabeled, or unreadable family is degraded and never presented as
+an all-clear empty distribution.
 
 ## Verification
 

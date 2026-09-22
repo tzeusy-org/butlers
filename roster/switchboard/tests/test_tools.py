@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import shutil
 from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
 from opentelemetry import trace
@@ -872,6 +873,49 @@ async def test_route_dispatch_span_contains_request_context(pool, otel_provider)
     assert span.attributes["routing.fanout_mode"] == "ordered"
     assert span.attributes["routing.attempt"] == 2
     assert span.attributes["routing.outcome"] == "success"
+
+
+async def test_route_dispatch_counter_carries_connector_provenance(pool, otel_provider):
+    """The Prometheus fanout source is labeled from canonical ingest provenance."""
+    from butlers.tools.switchboard import register_butler, route
+
+    await register_butler(pool, "metricattrs", "http://localhost:8610/sse")
+    telemetry = MagicMock()
+    telemetry.attrs.side_effect = lambda **attributes: attributes
+
+    async def ok_call(endpoint_url, tool_name, args):
+        return "ok"
+
+    with patch(
+        "butlers.tools.switchboard.routing.route.get_switchboard_telemetry",
+        return_value=telemetry,
+    ):
+        await route(
+            pool,
+            "metricattrs",
+            "get_data",
+            {
+                "source_metadata": {
+                    "channel": "email",
+                    "provider": "gmail",
+                    "identity": "gmail:account-1",
+                }
+            },
+            call_fn=ok_call,
+        )
+
+    telemetry.subroute_dispatched.add.assert_called_once_with(
+        1,
+        {
+            "source": "email",
+            "connector_type": "gmail",
+            "endpoint_identity": "gmail:account-1",
+            "destination_butler": "metricattrs",
+            "fanout_mode": "ordered",
+            "schema_version": "route.v1",
+            "outcome": "attempted",
+        },
+    )
 
 
 async def test_route_span_error_on_failure(pool, otel_provider):

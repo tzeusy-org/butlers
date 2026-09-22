@@ -18,6 +18,8 @@ _ERROR_CLASS_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(?::|$)")
 _ALLOWED_ATTRIBUTE_KEYS = frozenset(
     {
         "source",
+        "connector_type",
+        "endpoint_identity",
         "destination_butler",
         "outcome",
         "lifecycle_state",

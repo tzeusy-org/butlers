@@ -316,11 +316,20 @@ async def route(
         attempt = 1
     complexity = str(route_args.get("complexity") or Complexity.WORKHORSE.value)
 
+    source_metadata = route_args.get("source_metadata")
+    if not isinstance(source_metadata, dict):
+        source_metadata = {}
     source = str(
-        route_args.get("source_channel") or route_args.get("source") or source_butler or "unknown"
+        source_metadata.get("channel")
+        or route_args.get("source_channel")
+        or route_args.get("source")
+        or source_butler
+        or "unknown"
     )
     metric_base_attrs = telemetry.attrs(
         source=source,
+        connector_type=source_metadata.get("provider"),
+        endpoint_identity=source_metadata.get("identity"),
         destination_butler=target_butler,
         fanout_mode=fanout_mode,
         schema_version="route.v1",

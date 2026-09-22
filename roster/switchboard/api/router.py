@@ -111,8 +111,11 @@ logger = logging.getLogger(__name__)
 # Period literal for query parameter validation
 PeriodLiteral = Literal["24h", "7d", "30d"]
 _PERIOD_HOURS: dict[str, int] = {"24h": 24, "7d": 168, "30d": 720}
-_FANOUT_METRIC_NAME = "switchboard_routed_messages_total"
-_FANOUT_METRIC_AVAILABILITY_QUERY = f'count({{__name__="{_FANOUT_METRIC_NAME}"}})'
+_FANOUT_METRIC_NAME = "butlers_switchboard_subroute_dispatched_total"
+_FANOUT_METRIC_SELECTOR = (
+    f'{_FANOUT_METRIC_NAME}{{outcome="attempted",connector_type!="",endpoint_identity!=""}}'
+)
+_FANOUT_METRIC_AVAILABILITY_QUERY = f"count({_FANOUT_METRIC_SELECTOR})"
 
 
 def _parse_prometheus_fanout_total(
@@ -120,7 +123,7 @@ def _parse_prometheus_fanout_total(
 ) -> tuple[str, str, str, int] | None:
     """Parse one complete Prometheus fanout result without inventing a route.
 
-    The PromQL expression itself targets ``switchboard_routed_messages_total``,
+    The PromQL expression itself targets ``butlers_switchboard_subroute_dispatched_total``,
     so the HTTP API normally omits ``__name__`` after aggregation.  Alternate
     gateways may retain it; when present it must be that exact metric, not a
     sibling ``*_created`` or unrelated ``*_total`` family.  The source,
@@ -133,11 +136,11 @@ def _parse_prometheus_fanout_total(
     if not isinstance(labels, dict):
         return None
     metric_name = labels.get("__name__")
-    if metric_name is not None and metric_name != "switchboard_routed_messages_total":
+    if metric_name is not None and metric_name != _FANOUT_METRIC_NAME:
         return None
     connector_type = labels.get("connector_type")
     endpoint_identity = labels.get("endpoint_identity")
-    target_butler = labels.get("target_butler")
+    target_butler = labels.get("destination_butler")
     if not all(
         isinstance(label, str) and label
         for label in (connector_type, endpoint_identity, target_butler)
@@ -1522,7 +1525,7 @@ async def get_ingestion_fanout(
     over the requested period. Used to populate the fanout matrix table on the
     Overview tab.
 
-    Primary source: Prometheus (``switchboard_routed_messages_total`` metric).
+    Primary source: Prometheus (``butlers_switchboard_subroute_dispatched_total`` metric).
     An empty aggregate result is measured only after a separate exact-family
     availability probe confirms that Prometheus has at least one live series;
     an absent family is degraded, never a measured empty route set.
@@ -1532,16 +1535,16 @@ async def get_ingestion_fanout(
     including pass_through messages where ``triage_target`` is NULL.
 
     Prometheus metric name expected (primary):
-    - ``switchboard_routed_messages_total``
-      (labels: connector_type, endpoint_identity, target_butler, outcome)
+    - ``butlers_switchboard_subroute_dispatched_total``
+      (labels: connector_type, endpoint_identity, destination_butler, outcome)
     """
     prom_url = _get_prometheus_url()
     hours = _PERIOD_HOURS[period]
 
     if prom_url:
         q = (
-            f"sum by (connector_type, endpoint_identity, target_butler) "
-            f"(increase({_FANOUT_METRIC_NAME}[{hours}h]))"
+            f"sum by (connector_type, endpoint_identity, destination_butler) "
+            f"(increase({_FANOUT_METRIC_SELECTOR}[{hours}h]))"
         )
         results = await async_query(prom_url, q)
         # A successful Prometheus vector may contain no matching routes.  That

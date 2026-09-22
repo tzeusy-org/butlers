@@ -28,7 +28,8 @@ reports that the aggregate source is available.
 #### Scenario: An absent fanout metric is unavailable
 
 - **WHEN** the fanout query returns no rows and an exact-family availability
-  probe finds no live `switchboard_routed_messages_total` series
+  probe finds no live, fully connector-labeled
+  `butlers_switchboard_subroute_dispatched_total` series
 - **THEN** the API reports `meta.aggregates_available=false`
 - **AND** the dashboard renders the routing distribution as unavailable rather
   than a measured empty state

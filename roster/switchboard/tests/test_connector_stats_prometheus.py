@@ -348,7 +348,7 @@ async def test_get_ingestion_fanout_returns_matrix_from_prometheus():
             "metric": {
                 "connector_type": "telegram_bot",
                 "endpoint_identity": "bot@123",
-                "target_butler": "health",
+                "destination_butler": "health",
             },
             "value": [1740000000, "20"],
         },
@@ -356,16 +356,14 @@ async def test_get_ingestion_fanout_returns_matrix_from_prometheus():
             "metric": {
                 "connector_type": "email",
                 "endpoint_identity": "user@example.com",
-                "target_butler": "relationship",
+                "destination_butler": "relationship",
             },
             "value": [1740000000, "5"],
         },
     ]
 
-    with patch(
-        "butlers.modules.metrics.prometheus.async_query",
-        new=AsyncMock(return_value=fake_instant_result),
-    ):
+    async_query = AsyncMock(return_value=fake_instant_result)
+    with patch("butlers.modules.metrics.prometheus.async_query", new=async_query):
         with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
             sys.modules.pop("switchboard_api_models", None)
             import importlib
@@ -387,6 +385,11 @@ async def test_get_ingestion_fanout_returns_matrix_from_prometheus():
     connectors = [(r.connector_type, r.endpoint_identity, r.target_butler) for r in result.data]
     assert ("email", "user@example.com", "relationship") in connectors
     assert ("telegram_bot", "bot@123", "health") in connectors
+    assert async_query.await_args.args[1] == (
+        "sum by (connector_type, endpoint_identity, destination_butler) "
+        '(increase(butlers_switchboard_subroute_dispatched_total{outcome="attempted",'
+        'connector_type!="",endpoint_identity!=""}[24h]))'
+    )
 
 
 async def test_get_ingestion_fanout_prometheus_error_falls_back_to_db():
@@ -453,7 +456,7 @@ async def test_get_ingestion_fanout_empty_prometheus_vector_is_measured_empty():
     assert async_query.await_count == 2
     assert (
         async_query.await_args_list[1].args[1]
-        == 'count({__name__="switchboard_routed_messages_total"})'
+        == 'count(butlers_switchboard_subroute_dispatched_total{outcome="attempted",connector_type!="",endpoint_identity!=""})'
     )
 
 
@@ -493,7 +496,7 @@ async def test_get_ingestion_fanout_filters_zero_count_rows():
             "metric": {
                 "connector_type": "telegram_bot",
                 "endpoint_identity": "bot@123",
-                "target_butler": "health",
+                "destination_butler": "health",
             },
             "value": [1740000000, "0.4"],  # rounds to 0
         },
@@ -501,7 +504,7 @@ async def test_get_ingestion_fanout_filters_zero_count_rows():
             "metric": {
                 "connector_type": "telegram_bot",
                 "endpoint_identity": "bot@123",
-                "target_butler": "memory",
+                "destination_butler": "memory",
             },
             "value": [1740000000, "3.7"],  # rounds to 3
         },
@@ -541,46 +544,46 @@ async def test_get_ingestion_fanout_ignores_metadata_and_non_finite_samples():
     fake_instant_result = [
         {
             "metric": {
-                "__name__": "switchboard_routed_messages_total",
+                "__name__": "butlers_switchboard_subroute_dispatched_total",
                 "connector_type": "gmail",
                 "endpoint_identity": "gmail:user:owner@example.com",
-                "target_butler": "general",
+                "destination_butler": "general",
             },
             "value": [1740000000, "5"],
         },
         {
             "metric": {
-                "__name__": "switchboard_routed_messages_created",
+                "__name__": "butlers_switchboard_subroute_dispatched_created",
                 "connector_type": "gmail",
                 "endpoint_identity": "gmail:user:owner@example.com",
-                "target_butler": "general",
+                "destination_butler": "general",
             },
             "value": [1740000000, "1735689600"],
         },
         {
             "metric": {
-                "__name__": "switchboard_routed_messages_total",
+                "__name__": "butlers_switchboard_subroute_dispatched_total",
                 "connector_type": "gmail",
                 "endpoint_identity": "gmail:user:owner@example.com",
-                "target_butler": "health",
+                "destination_butler": "health",
             },
             "value": [1740000000, "NaN"],
         },
         {
             "metric": {
-                "__name__": "switchboard_routed_messages_total",
+                "__name__": "butlers_switchboard_subroute_dispatched_total",
                 "connector_type": "gmail",
                 "endpoint_identity": "gmail:user:owner@example.com",
-                "target_butler": "relationship",
+                "destination_butler": "relationship",
             },
             "value": [1740000000, "Infinity"],
         },
         {
             "metric": {
-                "__name__": "switchboard_routed_messages_total",
+                "__name__": "butlers_switchboard_subroute_dispatched_total",
                 "connector_type": "gmail",
                 "endpoint_identity": "gmail:user:owner@example.com",
-                "target_butler": "memory",
+                "destination_butler": "memory",
             },
             "value": [1740000000, "not-a-number"],
         },
@@ -589,7 +592,7 @@ async def test_get_ingestion_fanout_ignores_metadata_and_non_finite_samples():
                 "__name__": "unrelated_counter_total",
                 "connector_type": "gmail",
                 "endpoint_identity": "gmail:user:owner@example.com",
-                "target_butler": "finance",
+                "destination_butler": "finance",
             },
             "value": [1740000000, "97"],
         },
@@ -646,19 +649,19 @@ async def test_get_ingestion_fanout_reports_unavailable_when_no_total_is_usable(
     fake_instant_result = [
         {
             "metric": {
-                "__name__": "switchboard_routed_messages_created",
+                "__name__": "butlers_switchboard_subroute_dispatched_created",
                 "connector_type": "gmail",
                 "endpoint_identity": "gmail:user:owner@example.com",
-                "target_butler": "general",
+                "destination_butler": "general",
             },
             "value": [1740000000, "1735689600"],
         },
         {
             "metric": {
-                "__name__": "switchboard_routed_messages_total",
+                "__name__": "butlers_switchboard_subroute_dispatched_total",
                 "connector_type": "gmail",
                 "endpoint_identity": "gmail:user:owner@example.com",
-                "target_butler": "health",
+                "destination_butler": "health",
             },
             "value": [1740000000, "NaN"],
         },

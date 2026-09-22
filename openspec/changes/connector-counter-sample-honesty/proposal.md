@@ -19,16 +19,20 @@ distinguish an unreadable source from a measured empty matrix.
 - Make the Switchboard fanout projection ignore metadata, malformed, NaN, and
   infinity samples and return `meta.aggregates_available=false` when no usable
   total exists. When the aggregate query is empty, probe the exact
-  `switchboard_routed_messages_total` family first; an absent or unreadable
-  family is unavailable, while a live family with no matching increase remains
-  a measured empty result.
+  emitted `butlers_switchboard_subroute_dispatched_total` family first; an
+  absent, unlabeled, or unreadable family is unavailable, while a live,
+  connector-labeled family with no matching increase remains a measured empty
+  result.
+- Carry the canonical connector provider and endpoint identity from ingest
+  provenance onto the existing Switchboard subroute counter so the dashboard
+  query is grounded in a repository-owned producer.
 - Add additive OpenSpec coverage for sample validity and dashboard unavailable
   data states.
 
 ## Out of Scope
 
-- No connector metric producer, heartbeat schema, scrape configuration,
-  credentials, migration, or live telemetry action changes.
+- No new metric family, heartbeat schema, scrape configuration, credentials,
+  migration, or live telemetry action changes.
 
 ## Verification
 
