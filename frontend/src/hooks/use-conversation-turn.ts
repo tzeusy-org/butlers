@@ -42,6 +42,8 @@ import {
   sendMessage,
 } from "@/api/index.ts";
 import type {
+  ApiResponse,
+  ConversationSseMessageCompleteData,
   ConversationSsePhaseData,
   CreateConversationRequest,
   Message,
@@ -391,6 +393,32 @@ export function useConversationTurn({
             case "message_complete": {
               const cid = currentConversationId;
               if (cid) {
+                const completion = event.data as ConversationSseMessageCompleteData;
+                if (
+                  Array.isArray(completion.citations) &&
+                  (completion.routed_butler === null ||
+                    typeof completion.routed_butler === "string")
+                ) {
+                  queryClient.setQueryData<ApiResponse<Message[]>>(
+                    conversationKeys.messages(butlerName, cid),
+                    (current) =>
+                      current
+                        ? {
+                            ...current,
+                            data: current.data.map((message) =>
+                              message.id === completion.message_id
+                                ? {
+                                    ...message,
+                                    sources: completion.sources,
+                                    citations: completion.citations,
+                                    routed_butler: completion.routed_butler,
+                                  }
+                                : message,
+                            ),
+                          }
+                        : current,
+                  );
+                }
                 void queryClient.invalidateQueries({
                   queryKey: conversationKeys.all(butlerName),
                 });

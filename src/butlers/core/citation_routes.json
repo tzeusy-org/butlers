@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "routes": [
+    {"path": "/"},
+    {"path": "/chat"},
+    {"path": "/butlers"},
+    {"path": "/qa"},
+    {"path": "/ingestion", "query": {"event": {"pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"}}},
+    {"path": "/approvals"},
+    {"path": "/decisions"},
+    {"path": "/memory"},
+    {"path": "/entities"},
+    {"path": "/secrets"},
+    {"path": "/settings"},
+    {"path": "/education"},
+    {"path": "/health"},
+    {"path": "/calendar"},
+    {"path": "/chronicles"},
+    {"path": "/timeline"},
+    {"path": "/notifications"},
+    {"path": "/issues"},
+    {"path": "/sessions"},
+    {"path": "/spend"},
+    {"path": "/audit-log"},
+    {"path": "/system"},
+    {"path": "/health/measurements"},
+    {"path": "/health/medications"},
+    {"path": "/health/conditions"},
+    {"path": "/health/symptoms"},
+    {"path": "/health/meals"},
+    {"path": "/health/research"},
+    {"path": "/settings/permissions"},
+    {"path": "/settings/models"},
+    {"path": "/entities/index", "query": {"has": {"values": ["contact"]}}},
+    {"path": "/entities/concentration"},
+    {"path": "/entities/circles"},
+    {"path": "/ingestion/connectors"},
+    {"path": "/ingestion/filters"},
+    {"path": "/butlers/:name", "parameters": {"name": "^[a-z][a-z0-9_-]{0,62}$"}},
+    {"path": "/sessions/:id", "parameters": {"id": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"}},
+    {"path": "/entities/:entityId", "parameters": {"entityId": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"}},
+    {"path": "/memory/facts/:factId", "parameters": {"factId": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"}},
+    {"path": "/memory/rules/:ruleId", "parameters": {"ruleId": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"}},
+    {"path": "/memory/episodes/:episodeId", "parameters": {"episodeId": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"}},
+    {"path": "/approvals/:id", "parameters": {"id": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"}},
+    {"path": "/beads/:beadId", "parameters": {"beadId": "^bu-[a-z0-9.]+$"}},
+    {
+      "path": "/chat/:conversationId",
+      "parameters": {"conversationId": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},
+      "fragment": "^m-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    {
+      "path": "/ingestion/connectors/:connectorType/:endpointIdentity",
+      "parameters": {
+        "connectorType": "^[a-z][a-z0-9_-]{0,62}$",
+        "endpointIdentity": "^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,255}$"
+      }
+    },
+    {"path": "/qa/patrols/:patrolId", "parameters": {"patrolId": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"}},
+    {"path": "/qa/investigations/:attemptId", "parameters": {"attemptId": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"}}
+  ]
+}

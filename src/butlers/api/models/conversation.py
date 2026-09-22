@@ -226,6 +226,14 @@ class ConversationSummary(BaseModel):
     )
 
 
+class ConversationCitation(BaseModel):
+    """One server-normalized navigation citation for an assistant answer."""
+
+    label: str
+    target: str | None
+    kind: Literal["internal", "external", "unlinked"]
+
+
 class ConversationMessage(BaseModel):
     """Full message representation including attribution."""
 
@@ -242,6 +250,17 @@ class ConversationMessage(BaseModel):
     tool_calls: list[dict[str, Any]] | None = None
     error: str | None = None
     request_id: UUID | None = None
+    sources: list[str] = Field(
+        default_factory=list,
+        description="Deprecated string-only citation compatibility projection",
+    )
+    citations: list[ConversationCitation] = Field(
+        default_factory=list,
+        description="Canonical server-normalized answer citations",
+    )
+    routed_butler: str | None = Field(
+        None, description="Server-derived butler that authored this assistant message"
+    )
     page_context: dict[str, Any] | None = Field(
         None,
         description=(
@@ -252,6 +271,11 @@ class ConversationMessage(BaseModel):
     captured_at: datetime | None = Field(
         None, description="When page_context was captured; null when page_context is null"
     )
+
+    @field_validator("sources", "citations", mode="before")
+    @classmethod
+    def _absent_provenance_arrays_are_empty(cls, value: Any) -> Any:
+        return [] if value is None else value
 
 
 class ConversationDetail(BaseModel):

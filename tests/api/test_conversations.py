@@ -138,6 +138,47 @@ async def test_list_conversations_200_and_503(app):
     assert resp_503.status_code == 503
 
 
+async def test_list_messages_projects_canonical_provenance_and_empty_legacy_values(app):
+    message_id = uuid4()
+    row = {
+        "id": message_id,
+        "conversation_id": _CONV_ID,
+        "role": "assistant",
+        "content": "The budget is on track.",
+        "created_at": _NOW,
+        "session_id": None,
+        "model_name": None,
+        "input_tokens": None,
+        "output_tokens": None,
+        "duration_ms": None,
+        "tool_calls": None,
+        "error": None,
+        "request_id": None,
+        "sources": None,
+        "citations": [{"label": "Budget", "target": "/spend", "kind": "internal"}],
+        "routed_butler": "finance",
+        "page_context": None,
+        "captured_at": None,
+    }
+    _app_with_mock_db(
+        app,
+        fetch_rows=[row],
+        fetchval_result=1,
+        fetchrow_result=_make_conversation_row(),
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(f"/api/butlers/{_BUTLER}/conversations/{_CONV_ID}/messages")
+
+    assert response.status_code == 200
+    message = response.json()["data"][0]
+    assert message["sources"] == []
+    assert message["citations"] == [{"label": "Budget", "target": "/spend", "kind": "internal"}]
+    assert message["routed_butler"] == "finance"
+
+
 # ---------------------------------------------------------------------------
 # Cross-butler conversation lookup by id — GET /api/conversations/{id}
 # (bu-0ynlk.11 — /chat/:conversationId, cmdk recall)
@@ -660,12 +701,20 @@ async def test_message_find_reply_since_deserializes_tool_calls_json_string():
             "tool_calls": '[{"name": "conversation_reply"}]',
             "error": None,
             "request_id": None,
+            "sources": '["Budget detail"]',
+            "citations": ('[{"label":"Budget detail","target":"/spend","kind":"internal"}]'),
+            "routed_butler": "finance",
         }
     )
 
     result = await message_find_reply_since(pool, _CONV_ID, since=_NOW)
 
     assert result["tool_calls"] == [{"name": "conversation_reply"}]
+    assert result["sources"] == ["Budget detail"]
+    assert result["citations"] == [
+        {"label": "Budget detail", "target": "/spend", "kind": "internal"}
+    ]
+    assert result["routed_butler"] == "finance"
 
 
 # ---------------------------------------------------------------------------
@@ -1072,6 +1121,8 @@ async def test_create_conversation_streams_sources_on_the_message_complete_event
     reply_row = _make_reply_row(
         content="You spent $412 on groceries this month.",
         sources=["finance:transactions (category=groceries, month=2026-09)"],
+        citations=[{"label": "Spend", "target": "/spend", "kind": "internal"}],
+        routed_butler="finance",
     )
     app, shared_pool = _app_with_mock_db_and_mcp(app, mcp_manager=mgr, reply_row=reply_row)
 
@@ -1086,6 +1137,8 @@ async def test_create_conversation_streams_sources_on_the_message_complete_event
     assert resp.status_code == 200
     assert "event: message_complete" in resp.text
     assert '"sources": ["finance:transactions (category=groceries, month=2026-09)"]' in resp.text
+    assert '"citations": [{"label": "Spend", "target": "/spend", "kind": "internal"}]' in resp.text
+    assert '"routed_butler": "finance"' in resp.text
 
 
 async def test_create_conversation_defaults_sources_to_empty_list_when_absent(app):
@@ -1116,6 +1169,8 @@ async def test_create_conversation_defaults_sources_to_empty_list_when_absent(ap
 
     assert resp.status_code == 200
     assert '"sources": []' in resp.text
+    assert '"citations": []' in resp.text
+    assert '"routed_butler": null' in resp.text
 
 
 async def test_create_conversation_retry_reuses_original_conversation_for_message_id(app):

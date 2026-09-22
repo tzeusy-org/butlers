@@ -2164,10 +2164,15 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/components/chat/MessageThread.tsx`
 
+- Details
 - Cancelled by owner
 - Interrupted
+- Session →
 - View lineage
 - No messages yet. Start the conversation below.
+- Hide response details
+- Show response details
+- Response details
 - View session
 - Copied
 - Copy link ({})
@@ -2176,6 +2181,16 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 - Arguments
 - Result
+
+## `frontend/src/components/chat/answer/AnswerBody.tsx`
+
+- Code block
+- Answer table
+
+## `frontend/src/components/chat/answer/CitationRow.tsx`
+
+- Sources
+- External link
 
 ## `frontend/src/components/chat/send-error.tsx`
 
@@ -4360,4 +4375,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3423*
+*Total strings: 3432*
