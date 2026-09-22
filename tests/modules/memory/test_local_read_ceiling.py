@@ -1,4 +1,4 @@
-"""Tests for the local read ceiling on recall/search/memory_context (bu-2jtfw.3).
+"""Tests for the local memory read/action ceiling (bu-2jtfw.3, bu-h40h2b.5.3.3).
 
 Background: the cross-butler catalog (``search_catalog``) has always enforced
 a server-held sensitivity ceiling (``CatalogReadPolicy``/
@@ -9,6 +9,9 @@ fetches — had none: a confidential owner fact was returned by local recall
 and injected into every session's memory_context regardless of who or what
 triggered that session. This generalizes the SAME ceiling to every local
 read path, matching the catalog's existing SQL-level enforcement.
+
+Action-reference tests apply that same held ceiling to confirm/helpful/harmful
+mutations and prove denied or stale targets do not change.
 
 Unit tests (no DB) pin the policy-resolution fail-closed marker and the
 explicit-filter authorization guard. Integration tests (Docker + Postgres,
@@ -29,6 +32,7 @@ import pytest
 from butlers.db import register_jsonb_codec
 from butlers.modules.memory import search as _search
 from butlers.modules.memory.tools import context as _context
+from butlers.modules.memory.tools import feedback as _feedback
 from butlers.modules.memory.tools import reading as _reading
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
@@ -191,7 +195,12 @@ class TestWithheldMarkerBudget:
         prefix = "- [owner] [note]: "
         suffix = " (confidence: 1.00)\n"
         content = "x" * (profile_budget - len(header) - len(prefix) - len(suffix))
-        profile_fact = {"subject": "owner", "predicate": "note", "content": content}
+        profile_fact = {
+            "id": uuid.uuid4(),
+            "subject": "owner",
+            "predicate": "note",
+            "content": content,
+        }
 
         async def fake_profile_facts(*_args, **_kwargs):
             return [profile_fact], 1
@@ -291,6 +300,19 @@ async def _insert_fact(
         importance,
         subject,
         predicate,
+    )
+    return row["id"]
+
+
+async def _insert_rule(pool, *, content: str, sensitivity: str) -> uuid.UUID:
+    row = await pool.fetchrow(
+        """
+        INSERT INTO rules (content, sensitivity, search_vector, last_confirmed_at)
+        VALUES ($1, $2, to_tsvector('english', $1), now())
+        RETURNING id
+        """,
+        content,
+        sensitivity,
     )
     return row["id"]
 
@@ -488,3 +510,125 @@ class TestLocalCeilingEnforcedInSQL:
 
         assert "aortic valve regurgitation" in result
         assert "withheld:" not in result
+
+    async def test_rule_reference_feedback_cannot_mutate_above_ceiling_row(
+        self, ceiling_pool
+    ) -> None:
+        rule_id = await _insert_rule(
+            ceiling_pool,
+            content="confidential rule target",
+            sensitivity="confidential",
+        )
+        policy = _search.resolve_catalog_read_policy("normal")
+        fact_id = await _insert_fact(
+            ceiling_pool,
+            content="confidential fact target",
+            sensitivity="confidential",
+        )
+        fact_before = await ceiling_pool.fetchval(
+            "SELECT last_confirmed_at FROM facts WHERE id = $1", fact_id
+        )
+
+        helpful = await _feedback.memory_mark_helpful(
+            ceiling_pool,
+            memory_ref=f"rule:{rule_id}",
+            read_policy=policy,
+        )
+        confirmed = await _feedback.memory_confirm(
+            ceiling_pool,
+            memory_ref=f"fact:{fact_id}",
+            read_policy=policy,
+        )
+        harmful = await _feedback.memory_mark_harmful(
+            ceiling_pool,
+            memory_ref=f"rule:{rule_id}",
+            reason="must not persist",
+            read_policy=policy,
+        )
+
+        row = await ceiling_pool.fetchrow(
+            "SELECT applied_count, success_count, harmful_count, metadata FROM rules WHERE id = $1",
+            rule_id,
+        )
+        assert helpful == {"error": "Memory reference unavailable"}
+        assert harmful == {"error": "Memory reference unavailable"}
+        assert confirmed == {"confirmed": False, "error": "Memory reference unavailable"}
+        assert (
+            await ceiling_pool.fetchval(
+                "SELECT last_confirmed_at FROM facts WHERE id = $1", fact_id
+            )
+            == fact_before
+        )
+        assert dict(row) == {
+            "applied_count": 0,
+            "success_count": 0,
+            "harmful_count": 0,
+            "metadata": {},
+        }
+
+    async def test_deleted_and_missing_references_share_one_safe_refusal(
+        self, ceiling_pool
+    ) -> None:
+        rule_id = await _insert_rule(
+            ceiling_pool,
+            content="forgotten rule target",
+            sensitivity="normal",
+        )
+        await ceiling_pool.execute(
+            "UPDATE rules SET metadata = jsonb_build_object('forgotten', true) WHERE id = $1",
+            rule_id,
+        )
+        policy = _search.resolve_catalog_read_policy("normal")
+        fact_id = await _insert_fact(
+            ceiling_pool,
+            content="retracted fact target",
+            sensitivity="normal",
+        )
+        await ceiling_pool.execute(
+            "UPDATE facts SET validity = 'retracted' WHERE id = $1",
+            fact_id,
+        )
+        fact_before = await ceiling_pool.fetchval(
+            "SELECT last_confirmed_at FROM facts WHERE id = $1", fact_id
+        )
+
+        deleted = await _feedback.memory_mark_helpful(
+            ceiling_pool,
+            memory_ref=f"rule:{rule_id}",
+            read_policy=policy,
+        )
+        missing = await _feedback.memory_mark_helpful(
+            ceiling_pool,
+            memory_ref=f"rule:{uuid.uuid4()}",
+            read_policy=policy,
+        )
+        retracted_confirm = await _feedback.memory_confirm(
+            ceiling_pool,
+            memory_ref=f"fact:{fact_id}",
+            read_policy=policy,
+        )
+        missing_confirm = await _feedback.memory_confirm(
+            ceiling_pool,
+            memory_ref=f"fact:{uuid.uuid4()}",
+            read_policy=policy,
+        )
+
+        row = await ceiling_pool.fetchrow(
+            "SELECT applied_count, success_count FROM rules WHERE id = $1", rule_id
+        )
+        assert deleted == missing == {"error": "Memory reference unavailable"}
+        assert (
+            retracted_confirm
+            == missing_confirm
+            == {
+                "confirmed": False,
+                "error": "Memory reference unavailable",
+            }
+        )
+        assert dict(row) == {"applied_count": 0, "success_count": 0}
+        assert (
+            await ceiling_pool.fetchval(
+                "SELECT last_confirmed_at FROM facts WHERE id = $1", fact_id
+            )
+            == fact_before
+        )

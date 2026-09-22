@@ -142,8 +142,68 @@ class TestReadPolicyForwarding:
 
 class TestMemoryConfirm:
     async def test_confirmed_true(self, pool: AsyncMock, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(_helpers._storage, "confirm_memory", AsyncMock(return_value=True))
-        assert await memory_confirm(pool, "fact", SAMPLE_STR) == {"confirmed": True}
+        confirm = AsyncMock(return_value=True)
+        monkeypatch.setattr(_helpers._storage, "confirm_memory", confirm)
+        policy = _helpers._search.resolve_catalog_read_policy("normal")
+
+        assert await memory_confirm(pool, "fact", SAMPLE_STR, read_policy=policy) == {
+            "confirmed": True
+        }
+        confirm.assert_awaited_once_with(
+            pool,
+            "fact",
+            SAMPLE_UUID,
+            allowed_sensitivities=policy.allowed_sensitivities,
+        )
+
+    async def test_typed_reference_resolves_without_legacy_target_fields(
+        self, pool: AsyncMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        confirm = AsyncMock(return_value=True)
+        monkeypatch.setattr(_helpers._storage, "confirm_memory", confirm)
+
+        result = await memory_confirm(pool, memory_ref=f"fact:{SAMPLE_STR}")
+
+        assert result == {"confirmed": True}
+        assert confirm.await_args.args[1:3] == ("fact", SAMPLE_UUID)
+
+    @pytest.mark.parametrize(
+        "memory_ref",
+        [
+            f"episode:{SAMPLE_STR}",
+            f"FACT:{SAMPLE_STR}",
+            "fact:not-a-uuid",
+        ],
+    )
+    async def test_invalid_reference_refuses_without_storage_lookup(
+        self,
+        pool: AsyncMock,
+        monkeypatch: pytest.MonkeyPatch,
+        memory_ref: str,
+    ) -> None:
+        confirm = AsyncMock()
+        monkeypatch.setattr(_helpers._storage, "confirm_memory", confirm)
+
+        result = await memory_confirm(pool, memory_ref=memory_ref)
+
+        assert result == {"confirmed": False, "error": "Memory reference unavailable"}
+        confirm.assert_not_awaited()
+
+    async def test_reference_and_legacy_target_are_mutually_exclusive(
+        self, pool: AsyncMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        confirm = AsyncMock()
+        monkeypatch.setattr(_helpers._storage, "confirm_memory", confirm)
+
+        result = await memory_confirm(
+            pool,
+            "fact",
+            SAMPLE_STR,
+            memory_ref=f"fact:{SAMPLE_STR}",
+        )
+
+        assert result == {"confirmed": False, "error": "Memory reference unavailable"}
+        confirm.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -166,6 +226,58 @@ class TestMemoryFeedback:
             _helpers._storage, "mark_harmful", AsyncMock(return_value={"id": SAMPLE_UUID})
         )
         assert (await memory_mark_harmful(pool, SAMPLE_STR))["id"] == SAMPLE_STR
+
+    @pytest.mark.parametrize("action", [memory_mark_helpful, memory_mark_harmful])
+    async def test_rule_reference_resolves_with_held_policy(
+        self,
+        pool: AsyncMock,
+        monkeypatch: pytest.MonkeyPatch,
+        action,
+    ) -> None:
+        storage_action = AsyncMock(
+            return_value={
+                "id": SAMPLE_UUID,
+                "tenant_id": "private-tenant",
+                "source_butler": "private-source",
+                "sensitivity": "pii",
+                "content": "private rule content",
+                "metadata": {"private": "detail"},
+            }
+        )
+        storage_name = "mark_helpful" if action is memory_mark_helpful else "mark_harmful"
+        monkeypatch.setattr(_helpers._storage, storage_name, storage_action)
+        policy = _helpers._search.resolve_catalog_read_policy("internal")
+
+        result = await action(
+            pool,
+            memory_ref=f"rule:{SAMPLE_STR}",
+            read_policy=policy,
+        )
+
+        acknowledgement_key = "helpful" if action is memory_mark_helpful else "harmful"
+        assert result == {acknowledgement_key: True}
+        assert storage_action.await_args.args[:2] == (pool, SAMPLE_UUID)
+        assert storage_action.await_args.kwargs["allowed_sensitivities"] == (
+            "normal",
+            "pii",
+        )
+
+    @pytest.mark.parametrize("action", [memory_mark_helpful, memory_mark_harmful])
+    async def test_fact_reference_is_content_free_refusal_for_rule_feedback(
+        self,
+        pool: AsyncMock,
+        monkeypatch: pytest.MonkeyPatch,
+        action,
+    ) -> None:
+        storage_action = AsyncMock()
+        storage_name = "mark_helpful" if action is memory_mark_helpful else "mark_harmful"
+        monkeypatch.setattr(_helpers._storage, storage_name, storage_action)
+
+        result = await action(pool, memory_ref=f"fact:{SAMPLE_STR}")
+
+        assert result == {"error": "Memory reference unavailable"}
+        assert SAMPLE_STR not in str(result)
+        storage_action.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

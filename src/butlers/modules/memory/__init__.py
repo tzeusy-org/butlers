@@ -1334,36 +1334,48 @@ class MemoryModule(Module):
 
         @_tool("core")
         async def memory_confirm(
-            memory_type: str,
-            memory_id: str,
+            memory_type: str | None = None,
+            memory_id: str | None = None,
+            memory_ref: str | None = None,
         ) -> dict[str, Any]:
-            """Confirm a fact or rule is still accurate, resetting confidence decay."""
+            """Confirm a fact/rule by typed memory_ref or legacy type and ID."""
+            read_policy = await module._catalog_read_policy()
             return await _feedback.memory_confirm(
                 module._get_pool(),
                 memory_type,
                 memory_id,
+                memory_ref=memory_ref,
+                read_policy=read_policy,
             )
 
         @_tool("feedback")
         async def memory_mark_helpful(
-            rule_id: str,
+            rule_id: str | None = None,
+            memory_ref: str | None = None,
         ) -> dict[str, Any]:
-            """Report a rule was applied successfully."""
+            """Report helpful feedback by typed rule reference or legacy rule ID."""
+            read_policy = await module._catalog_read_policy()
             return await _feedback.memory_mark_helpful(
                 module._get_pool(),
                 rule_id,
+                memory_ref=memory_ref,
+                read_policy=read_policy,
             )
 
         @_tool("feedback")
         async def memory_mark_harmful(
-            rule_id: str,
+            rule_id: str | None = None,
             reason: str | None = None,
+            memory_ref: str | None = None,
         ) -> dict[str, Any]:
-            """Report a rule caused problems."""
+            """Report harmful feedback by typed rule reference or legacy rule ID."""
+            read_policy = await module._catalog_read_policy()
             return await _feedback.memory_mark_harmful(
                 module._get_pool(),
                 rule_id,
+                memory_ref=memory_ref,
                 reason=reason,
+                read_policy=read_policy,
             )
 
         # --- Management tools ---
@@ -1532,6 +1544,10 @@ class MemoryModule(Module):
             - ## Recent Episodes (15% of budget): opt-in via include_recent_episodes=True
             - ## Fleet Knowledge (10% of budget): opt-in via include_fleet_knowledge=True,
               cross-butler facts/rules discovered via public.memory_catalog
+
+            Local fact and rule lines include a typed ``memory_ref`` accepted by
+            the existing confirm/helpful/harmful tools. Reference text counts
+            inside the same section and total budgets.
 
             Same inputs always produce identical output (deterministic section compiler).
             """

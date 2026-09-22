@@ -188,19 +188,49 @@ class TestMemoryContext:
         assert result == "# Memory Context\n"
 
     async def test_facts_section_present(self) -> None:
-        result = await _call_context([_fact("dark mode")])
+        fact = _fact("dark mode")
+        result = await _call_context([fact])
         assert "## Task-Relevant Facts" in result
         assert "dark mode" in result
+        assert f"[memory_ref=fact:{fact['id']}]" in result
+
+        profile_result = await _call_context([], profile_rows=[fact])
+        assert "## Profile Facts" in profile_result
+        assert f"[memory_ref=fact:{fact['id']}]" in profile_result
 
     async def test_rules_section_present(self) -> None:
-        result = await _call_context([_rule("Be concise")])
+        rule = _rule("Be concise")
+        result = await _call_context([rule])
         assert "## Active Rules" in result
         assert "Be concise" in result
+        assert f"[memory_ref=rule:{rule['id']}]" in result
 
     async def test_token_budget_respected(self) -> None:
         big_items = [_fact("x" * 200) for _ in range(50)] + [_rule("y" * 200) for _ in range(20)]
         result = await _call_context(big_items, token_budget=500)
-        assert len(result) <= 500 * 4 + 50
+        assert len(result) <= 500 * 4
+
+    async def test_reference_overhead_can_omit_an_otherwise_fitting_line(self) -> None:
+        fact = _fact("x")
+        header = "\n## Task-Relevant Facts\n"
+        legacy_line = "- [User] [info]: x (confidence: 1.00)\n"
+        reference = f" [memory_ref=fact:{fact['id']}]"
+        # The section can afford the pre-reference representation but not the
+        # complete actionable line. Partial references are never emitted.
+        preamble_chars = len("# Memory Context\n")
+        token_budget = next(
+            budget
+            for budget in range(1, 1000)
+            if len(header) + len(legacy_line)
+            <= int((budget * 4 - preamble_chars) * 0.35)
+            < len(header) + len(legacy_line.rstrip("\n")) + len(reference) + 1
+        )
+
+        result = await _call_context([fact], token_budget=token_budget)
+
+        assert "Task-Relevant Facts" not in result
+        assert "memory_ref=" not in result
+        assert len(result) <= token_budget * 4
 
     async def test_proven_rules_before_candidate(self) -> None:
         candidate = _rule("cand", maturity="candidate")
@@ -298,6 +328,7 @@ class TestMemoryContextFleetKnowledge:
         assert "## Fleet Knowledge (cross-butler)" in result
         assert "Budget rule" in result
         assert "Own knowledge" not in result
+        assert "memory_ref=" not in result
 
     async def test_catalog_search_failure_degrades_to_empty_section(self) -> None:
         pool = await self._pool()
