@@ -184,6 +184,18 @@ async def test_dashboard_and_switchboard_authority_survive_bootstrap_replay(
     """The dashboard login and Switchboard can insert; another runtime cannot."""
     owner = await mapping_pool.fetchval("SELECT current_user")
     assert owner == await mapping_pool.fetchval("SELECT session_user")
+    posture = await mapping_pool.fetch(
+        "SELECT relrowsecurity, relforcerowsecurity FROM pg_class "
+        "WHERE oid = ANY($1::regclass[]) ORDER BY oid",
+        [
+            "public.ha_person_mapping_receipts",
+            "connectors.home_assistant_persons",
+        ],
+    )
+    assert [(row["relrowsecurity"], row["relforcerowsecurity"]) for row in posture] == [
+        (True, False),
+        (True, False),
+    ]
     owner_entity = await _person(mapping_pool, f"mapping-owner-authority-{uuid4()}")
     owner_decision, _ = await _decide_batch(
         mapping_pool,

@@ -6,9 +6,10 @@ Create Date: 2026-09-22 00:00:00.000000
 
 The shared relations are replayed by every schema-scoped core chain. Upgrade
 therefore converges DDL, policy, and grants idempotently under one lock.
-Forced row security survives ``init-db.sql`` broad regrants. It admits only
-Switchboard and the table owner used by the dashboard/migration pool; a caller
-that has assumed any other runtime role remains denied.
+Row security survives ``init-db.sql`` broad regrants. The trusted table owner
+used by the dashboard, migrations, and canonical pg_dump keeps PostgreSQL's
+owner bypass and therefore sees the complete recoverable dataset. A connection
+that assumes any runtime role is policy-fenced to Switchboard/Chronicler only.
 """
 
 from __future__ import annotations
@@ -171,53 +172,38 @@ def upgrade() -> None:
     )
     _for_existing_role(_CHRONICLER, f"GRANT SELECT ON TABLE {_MAPPINGS} TO {_CHRONICLER}")
 
-    # FORCE makes the policy apply to the owning dashboard/migration login too.
-    # That identity is admitted deliberately; assuming another runtime role
-    # changes current_user and closes the boundary even on the same connection.
+    # Deliberately do not FORCE: the trusted table owner is also the dashboard,
+    # migration, and canonical backup identity. PostgreSQL's owner bypass gives
+    # that identity a complete snapshot while SET ROLE changes current_user and
+    # subjects every runtime to the policies below.
     op.execute(f"ALTER TABLE {_RECEIPTS} ENABLE ROW LEVEL SECURITY")
-    op.execute(f"ALTER TABLE {_RECEIPTS} FORCE ROW LEVEL SECURITY")
+    op.execute(f"ALTER TABLE {_RECEIPTS} NO FORCE ROW LEVEL SECURITY")
     op.execute(f"DROP POLICY IF EXISTS ha_person_mapping_receipts_authority ON {_RECEIPTS}")
     op.execute(
         f"""
-        DO $$
-        DECLARE v_owner name;
-        BEGIN
-            SELECT pg_get_userbyid(relowner) INTO v_owner
-            FROM pg_class WHERE oid = '{_RECEIPTS}'::regclass;
-            EXECUTE format(
-                'CREATE POLICY ha_person_mapping_receipts_authority ON {_RECEIPTS} '
-                'FOR ALL TO PUBLIC USING (current_user IN (%L, %L)) '
-                'WITH CHECK (current_user IN (%L, %L))',
-                '{_SWITCHBOARD}', v_owner, '{_SWITCHBOARD}', v_owner
-            );
-        END
-        $$
+        CREATE POLICY ha_person_mapping_receipts_authority ON {_RECEIPTS}
+            FOR ALL TO PUBLIC
+            USING (current_user = '{_SWITCHBOARD}')
+            WITH CHECK (current_user = '{_SWITCHBOARD}')
         """
     )
 
     op.execute(f"ALTER TABLE {_MAPPINGS} ENABLE ROW LEVEL SECURITY")
-    op.execute(f"ALTER TABLE {_MAPPINGS} FORCE ROW LEVEL SECURITY")
+    op.execute(f"ALTER TABLE {_MAPPINGS} NO FORCE ROW LEVEL SECURITY")
     op.execute(f"DROP POLICY IF EXISTS ha_person_mappings_select ON {_MAPPINGS}")
     op.execute(f"DROP POLICY IF EXISTS ha_person_mappings_insert ON {_MAPPINGS}")
     op.execute(
         f"""
-        DO $$
-        DECLARE v_owner name;
-        BEGIN
-            SELECT pg_get_userbyid(relowner) INTO v_owner
-            FROM pg_class WHERE oid = '{_MAPPINGS}'::regclass;
-            EXECUTE format(
-                'CREATE POLICY ha_person_mappings_select ON {_MAPPINGS} '
-                'FOR SELECT TO PUBLIC USING (current_user IN (%L, %L, %L))',
-                '{_SWITCHBOARD}', '{_CHRONICLER}', v_owner
-            );
-            EXECUTE format(
-                'CREATE POLICY ha_person_mappings_insert ON {_MAPPINGS} '
-                'FOR INSERT TO PUBLIC WITH CHECK (current_user IN (%L, %L))',
-                '{_SWITCHBOARD}', v_owner
-            );
-        END
-        $$
+        CREATE POLICY ha_person_mappings_select ON {_MAPPINGS}
+            FOR SELECT TO PUBLIC
+            USING (current_user IN ('{_SWITCHBOARD}', '{_CHRONICLER}'))
+        """
+    )
+    op.execute(
+        f"""
+        CREATE POLICY ha_person_mappings_insert ON {_MAPPINGS}
+            FOR INSERT TO PUBLIC
+            WITH CHECK (current_user = '{_SWITCHBOARD}')
         """
     )
 

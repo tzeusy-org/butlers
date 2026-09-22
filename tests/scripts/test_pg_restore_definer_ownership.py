@@ -56,10 +56,14 @@ from urllib.parse import urlparse
 
 import pytest
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import DBAPIError
 
 from alembic import command
 from butlers.migrations import _build_alembic_config
-from butlers.testing.migration import create_migration_db, migration_db_name
+from butlers.testing.migration import (
+    create_migration_db,
+    migration_db_name,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _RESTORE_SCRIPT = _REPO_ROOT / "scripts" / "pg_restore.sh"
@@ -164,6 +168,24 @@ def source_db_url(postgres_container) -> str:
                 "(claim_id, state, unverifiable_reason) "
                 "VALUES (%s, 'unverifiable', 'no_account')",
                 (claim_id,),
+            )
+            conn.exec_driver_sql("RESET ROLE")
+            mapping_entity = conn.exec_driver_sql(
+                "INSERT INTO public.entities (canonical_name, entity_type) "
+                "VALUES ('Restore mapping fixture', 'person') RETURNING id"
+            ).scalar_one()
+            conn.exec_driver_sql(
+                "INSERT INTO connectors.home_assistant_persons (ha_entity_id, entity_id) "
+                "VALUES ('person.restore_mapping_fixture', %s)",
+                (mapping_entity,),
+            )
+            conn.exec_driver_sql(
+                "INSERT INTO public.ha_person_mapping_receipts "
+                "(key_digest, request_digest, receipt, complete, received_count, "
+                "created_count, unchanged_count, conflict_count, invalid_reference_count, "
+                "outcome) VALUES (decode(repeat('12', 32), 'hex'), "
+                "decode(repeat('34', 32), 'hex'), "
+                "'00000000-0000-4000-8000-000000000247', true, 1, 1, 0, 0, 0, 'success')"
             )
     finally:
         engine.dispose()
@@ -532,6 +554,67 @@ def test_certified_restore_leaves_no_definer_function_owned_by_restorer(
     )
 
     restored_url = target.url(db_name)
+
+    for relation in (
+        "connectors.home_assistant_persons",
+        "public.ha_person_mapping_receipts",
+    ):
+        source_count = _query(source_db_url, f"SELECT count(*)::text FROM {relation}")
+        restored_count = _query(restored_url, f"SELECT count(*)::text FROM {relation}")
+        assert source_count == restored_count and source_count != ["0"], (
+            f"{relation} did not round-trip through the canonical backup/restore: "
+            f"source={source_count} restored={restored_count}"
+        )
+        source_posture = _query(
+            source_db_url,
+            "SELECT relrowsecurity::text || '/' || relforcerowsecurity::text "
+            f"FROM pg_class WHERE oid = '{relation}'::regclass",
+        )
+        restored_posture = _query(
+            restored_url,
+            "SELECT relrowsecurity::text || '/' || relforcerowsecurity::text "
+            f"FROM pg_class WHERE oid = '{relation}'::regclass",
+        )
+        assert restored_posture == source_posture == ["true/false"]
+
+    assert _query(
+        restored_url,
+        "SELECT ha_entity_id FROM connectors.home_assistant_persons "
+        "WHERE ha_entity_id = 'person.restore_mapping_fixture'",
+    ) == ["person.restore_mapping_fixture"]
+    assert _query(
+        restored_url,
+        "SELECT receipt::text FROM public.ha_person_mapping_receipts "
+        "WHERE receipt = '00000000-0000-4000-8000-000000000247'",
+    ) == ["00000000-0000-4000-8000-000000000247"]
+
+    # The canonical restore preserves policy and ownership. The mapping
+    # authority integration test separately replays the full init-db source and
+    # proves its broad grants still cannot cross these same policies.
+    runtime_engine = create_engine(restored_url, isolation_level="AUTOCOMMIT")
+    try:
+        with runtime_engine.connect() as conn:
+            conn.exec_driver_sql('SET ROLE "butler_general_rw"')
+            for relation in (
+                "public.ha_person_mapping_receipts",
+                "connectors.home_assistant_persons",
+            ):
+                try:
+                    visible = conn.exec_driver_sql(f"SELECT count(*) FROM {relation}").scalar_one()
+                except DBAPIError:
+                    visible = 0
+                assert visible == 0
+            with pytest.raises(DBAPIError):
+                conn.exec_driver_sql(
+                    "INSERT INTO public.ha_person_mapping_receipts "
+                    "(key_digest, request_digest, receipt, complete, received_count, "
+                    "created_count, unchanged_count, conflict_count, invalid_reference_count, "
+                    "outcome) VALUES (decode(repeat('56', 32), 'hex'), "
+                    "decode(repeat('78', 32), 'hex'), gen_random_uuid(), "
+                    "true, 1, 1, 0, 0, 0, 'success')"
+                )
+    finally:
+        runtime_engine.dispose()
 
     for table in ("cost_claims", "cost_claim_resolutions", "cost_claim_events"):
         source_count = _query(source_db_url, f"SELECT count(*)::text FROM public.{table}")
