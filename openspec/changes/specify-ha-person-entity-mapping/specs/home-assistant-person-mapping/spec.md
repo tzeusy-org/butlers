@@ -8,45 +8,47 @@ SHALL have no mapping list, detail, update, delete, rollback, or remap endpoint.
 The route SHALL not be registered as an MCP/runtime tool or callable from an
 LLM session, CLI, connector, scheduled job, background retry, or direct-SQL
 operator workflow.
-
 Before any component reads or buffers the body, generates a receipt, acquires a
-database pool, or observes protected state, the route SHALL pass the existing
-fail-closed `require_dashboard_owner_control` contract or a separately
-owner-approved successor with equivalent guarantees. Absent owner-control
-configuration SHALL return `503`; a missing or mismatched owner credential
-SHALL return `401`. The optional fail-open `ApiKeyMiddleware` is insufficient
-for this route.
-
+database pool, or observes protected state, the route SHALL pass the landed
+central owner-auth boundary through `require_dashboard_owner_control` or a
+separately owner-approved successor with equivalent guarantees. Unavailable
+owner-auth state or configuration SHALL return `503`; a missing or mismatched
+owner credential SHALL return `401`. The optional fail-open `ApiKeyMiddleware`
+is insufficient for this route.
 After authentication, the audit actor SHALL be derived server-side through
 `authenticated_principal()`. The request SHALL expose no caller-asserted actor.
 `authenticated_principal()` is attribution only and SHALL NOT be treated as an
 authentication check.
+The central dashboard owner-auth boundary is closed, adopted, and landed. It
+supports configured-key browser sessions and host-authorized passkey sessions
+over canonical Tailscale Serve HTTPS, using expiring/revocable
+HttpOnly/Secure/SameSite=Strict cookies and CSRF protection for state-changing
+cookie requests while preserving `X-API-Key` for non-browser callers. Same-origin
+alone is never authentication. This mapping artifact SHALL consume that central
+boundary, SHALL select no alternate enrollment mechanism or credential transport,
+and SHALL not imply deployment or enrollment authority.
+The mapping UI and backend workflow SHALL be described as available only where
+the landed central owner-auth boundary is configured and proven for the target
+deployment. Its availability does not replace the independent privacy review,
+exact owner adoption, implementation, environment, or mapping-use gates below.
 
-The `bu-pb6oy` browser-session policy is closed and adopted: configured-key
-browser authentication uses an expiring/revocable server-managed
-HttpOnly/Secure/SameSite=Strict session over HTTPS with CSRF protection,
-preserves `X-API-Key` for non-browser callers, and does not treat same-origin as
-authentication. Its conforming configured-key session/CSRF implementation
-remains unimplemented and SHALL remain a prerequisite for this mapping UI.
+ID: REQ-home-assistant-person-mapping-001
+Source: RFC 0007 §Dashboard API Surface; docs/identity_and_secrets/dashboard-owner-auth.md; design.md Decision D2
+Scope: v1-mandatory
 
-Default keyless Compose/browser usability SHALL remain separately blocked on
-`bu-azqfpk`: the owner has not selected E1 host-authority transport or E2 HTTPS
-entry, nor adopted and implemented the resulting exact enrollment contract.
-This mapping artifact SHALL select neither E1 mechanism nor E2 mechanism and
-SHALL NOT imply that default keyless Compose is enrolled or browser-usable.
+#### Scenario: Unavailable owner-auth state fails before body access
 
-#### Scenario: Unconfigured owner control fails before body access
-
-- **WHEN** `DASHBOARD_API_KEY` is unavailable under the current owner-control
-  contract and a caller submits the mapping endpoint
+- **WHEN** the central owner-auth state or configuration is unavailable and a
+  caller submits the mapping endpoint
 - **THEN** the API SHALL return `503` with a fixed content-blind error
 - **AND** no layer SHALL read or buffer the request body, create a receipt,
   acquire a database pool, read mapping/entity state, or write audit/mapping
   state
 
-#### Scenario: Wrong credential is denied before body access
+#### Scenario: Wrong owner credential is denied before body access
 
-- **WHEN** owner control is configured but the credential is missing or wrong
+- **WHEN** the central owner-auth boundary is available but the credential is
+  missing or wrong
 - **THEN** the API SHALL return `401` after constant-time comparison
 - **AND** no layer SHALL read or buffer the body or perform a database,
   provider, mapping, receipt, or audit operation
@@ -60,22 +62,13 @@ SHALL NOT imply that default keyless Compose is enrolled or browser-usable.
 - **AND** the actor label alone SHALL never make an unauthenticated request
   eligible
 
-#### Scenario: Browser workflow waits for its authentication prerequisite
+#### Scenario: Central owner-auth boundary gates the mapping workflow
 
-- **WHEN** the adopted `bu-pb6oy` configured-key session/CSRF contract has not
-  been implemented and proven at the owner-control boundary
+- **WHEN** the landed central owner-auth boundary is unavailable, unconfigured,
+  or unproven for the target deployment
 - **THEN** the mapping UI SHALL NOT ship or be described as usable
-- **AND** no alternate credential transport or same-origin bypass SHALL be
-  introduced by this capability
-
-#### Scenario: Default keyless workflow waits for host enrollment choices
-
-- **WHEN** `bu-azqfpk` E1 host-authority transport and E2 HTTPS entry remain
-  unselected, unadopted, or unimplemented
-- **THEN** the mapping workflow SHALL NOT ship or be described as usable in
-  default keyless Compose
-- **AND** this capability SHALL NOT select a host code, browser challenge,
-  Tailscale Serve, loopback TLS, or any other enrollment mechanism
+- **AND** no alternate credential transport, enrollment mechanism, or
+  same-origin bypass SHALL be introduced by this capability
 
 ### Requirement: Exact bounded mapping request
 
@@ -89,7 +82,6 @@ chunks. It SHALL NOT use `Content-Length` as acceptance or rejection authority:
 an absent, understated, overstated, or otherwise misleading header and chunked
 delivery SHALL all be decided from the bytes actually read. Each decoded object
 SHALL contain exactly `ha_person_id` and `entity_id`.
-
 An authenticated body that exceeds 32,768 octets SHALL return HTTP `413` in the
 standard error envelope with exactly the fixed code `REQUEST_BODY_TOO_LARGE` and
 fixed message `Request body exceeds 32 KiB.` It SHALL not decode JSON, generate a
@@ -97,7 +89,6 @@ receipt, derive an actor, acquire or inspect a pool, read protected mapping/enti
 state, or emit generic or explicit audit evidence. The result SHALL contain no
 counts, details, submitted value, body fragment, measured size, header value, or
 other request-derived data.
-
 `ha_person_id` SHALL be at most 255 UTF-8 bytes and match
 `\Aperson\.[a-z0-9_]+\Z` byte-for-byte. It SHALL be an exact owner-supplied,
 already-observed Home Assistant identifier; the system SHALL not trim,
@@ -106,7 +97,6 @@ alias, display label, state snapshot, provider payload, or Home Assistant API.
 `entity_id` SHALL be a lowercase hyphenated RFC 4122 UUID string naming an existing live
 `public.entities` row with `entity_type = 'person'`. The route SHALL create,
 merge, promote, rename, or otherwise modify no entity.
-
 The request SHALL carry a required `Idempotency-Key` header generated by the
 dashboard from 32 random bytes and encoded as exactly 43 unpadded base64url
 characters. The owner SHALL not enter it. It SHALL be independent of both
@@ -115,10 +105,13 @@ emitted raw. Canonical request identity SHALL be the SHA-256 digest of canonical
 JSON whose pairs are sorted by the byte-for-byte Home Assistant ID and then the
 canonical UUID, making batch order immaterial. Neither digest SHALL leave the
 server-side receipt record.
-
 Each Home Assistant ID and entity UUID SHALL appear at most once in a batch. A
 duplicate on either side, including an identical duplicate pair, SHALL return a
 fixed content-blind `422` and perform zero mapping writes.
+
+ID: REQ-home-assistant-person-mapping-002
+Source: RFC 0007 §Dashboard API Surface and §Response Envelope; design.md Decision D1
+Scope: v1-mandatory
 
 #### Scenario: Exact bounded request is accepted for evaluation
 
@@ -164,7 +157,6 @@ reads, or mapping writes, it SHALL take the transaction-scoped PostgreSQL
 advisory lock derived from the fixed namespace
 `butlers:dashboard:ha-person-mapping:v1`. All batches in this workflow SHALL use
 that same mapping-specific lock.
-
 After a new idempotency decision and before reading mappings, the transaction
 SHALL select every submitted UUID from `public.entities` in ascending UUID
 order with `FOR UPDATE`, without filtering invalid rows out of the lock query.
@@ -174,7 +166,6 @@ whose `entity_type = 'person'`, `metadata->>'merged_into' IS NULL`, and
 `metadata->>'deleted_at' IS NULL`. Missing rows and rows failing any of those
 actual live predicates SHALL enter the one content-blind `INVALID_REFERENCE`
 category.
-
 If a concurrent merge, metadata tombstone/delete, physical delete, or
 `entity_type` change owns a referenced row first, mapping validation SHALL wait
 and then evaluate its committed state; an invalid result SHALL return
@@ -183,20 +174,17 @@ mutation SHALL wait until the mapping, receipt, and audit decision commits. A
 success receipt proves completeness at this serialization point and SHALL NOT
 claim to prevent a separately authorized later lifecycle mutation. A deadlock
 or aborted transaction SHALL commit no partial mapping or success receipt.
-
 Under the lock, the server SHALL classify an existing exact pair as unchanged.
 A Home Assistant ID mapped to a different or null entity, or an entity UUID
 mapped to a different Home Assistant ID, SHALL be a conflict. If any conflict
 exists, the complete batch SHALL return `409 MAPPING_CONFLICT` and commit zero
 mapping inserts, updates, or deletes. Legacy rows MAY be read for conflict
 detection but SHALL never be repaired, filled, or remapped by this endpoint.
-
 When no conflict exists, every new pair SHALL be inserted as an entity-only row
 and every exact pair SHALL remain untouched in the same transaction. The
 mapping writes, success receipt/idempotency record, and success audit SHALL
 commit atomically. A transaction failure SHALL leave no partial mapping and no
 success receipt.
-
 The durable idempotency record SHALL contain only a digest of the raw key, a
 canonical request digest, an opaque server-generated receipt, aggregate counts,
 completeness, outcome, a fixed failure category, and timestamps. It SHALL store
@@ -204,12 +192,15 @@ no raw key, body, or identifier copy and SHALL not expire in v1. The same key
 and canonical request SHALL return the stored terminal receipt without reading
 or writing mappings. The same key with a different request SHALL return
 `409 IDEMPOTENCY_CONFLICT` with zero mapping writes.
-
 Every authenticated, structurally valid request SHALL durably record its
 terminal aggregate receipt for success, invalid reference, or mapping conflict
 so an exact replay cannot change outcome after later database state changes.
 Structural validation failures SHALL not create durable idempotency state
 because no canonical mapping set exists.
+
+ID: REQ-home-assistant-person-mapping-003
+Source: design.md Decision D3
+Scope: v1-mandatory
 
 #### Scenario: New and identical pairs commit as one complete batch
 
@@ -318,7 +309,6 @@ hashed idempotency material, request digest, row ID, table name, field position,
 or submitted value. `complete` SHALL be true only when the whole submitted set
 exists after the transaction. A successful response SHALL have
 `received_count = created_count + unchanged_count` and zero refusal counts.
-
 A non-2xx response SHALL use RFC 0007's standard error envelope with a fixed
 code and message. Except for the pre-decode fixed `413 REQUEST_BODY_TOO_LARGE`
 result, every post-authentication terminal response SHALL include a receipt;
@@ -328,7 +318,6 @@ be `409`, invalid structure/duplicates/references SHALL be `422`, and database
 unavailability SHALL be `503`. The oversize result SHALL contain no receipt or
 details and SHALL touch no pool, protected state, or audit path. Mapping
 failures SHALL report `created_count = 0`.
-
 The endpoint SHALL be exempt from generic `DashboardAuditMiddleware` body
 reading and path-parameter capture. Post-read redaction is insufficient. Its
 explicit `home_assistant_person_mapping_batch` audit allowlist SHALL contain
@@ -338,7 +327,6 @@ summary/body, path parameters, free-text error, provider response, raw
 idempotency key, request digest, and both identifiers SHALL be absent.
 An oversize request SHALL emit no explicit audit event because rejection occurs
 before actor derivation, receipt creation, or pool access.
-
 Logs SHALL contain only the fixed route template, fixed outcome/failure
 category, and aggregate counts. Metrics and traces SHALL contain only fixed
 low-cardinality outcome/failure-category values and numeric aggregate counts.
@@ -346,12 +334,15 @@ No request URL as supplied, header, body, receipt, raw or hashed identifier,
 idempotency material, request digest, entity name, SQL argument, provider data,
 exception rendering, or dynamic string SHALL enter logs, metric names/labels,
 span attributes/events, baggage, or resource attributes.
-
 The request and all mapping details SHALL remain absent from prompts, model
 input/output, sessions, tool calls, MCP tools/resources, connector events,
 notifications, browser storage/query state, and Beads. There SHALL be no mapping
 read or verification endpoint; an exact replay returns only the stored aggregate
 receipt.
+
+ID: REQ-home-assistant-person-mapping-004
+Source: RFC 0007 §Response Envelope; design.md Decisions D4-D5
+Scope: v1-mandatory
 
 #### Scenario: Success publishes only the aggregate allowlist
 
@@ -398,15 +389,13 @@ receipt.
 
 This specification is authority to review the contract only. Implementation
 SHALL remain blocked until independent privacy/security review passes on the
-exact artifact, the owner separately approves that exact reviewed artifact, and
-the adopted `bu-pb6oy` configured-key session/CSRF contract is implemented and
-proven. Implementation or usability claims for default keyless Compose SHALL
-also remain blocked until the owner resolves `bu-azqfpk` E1/E2, the resulting
-exact host-authorized enrollment artifact is independently reviewed and
-adopted, and that enrollment/HTTPS path is implemented and proven. This mapping
-artifact selects neither enrollment mechanism. Any semantic edit invalidates
-prior review and approval.
-
+exact artifact and the owner separately approves that exact reviewed artifact.
+The implementation SHALL consume the landed central dashboard owner-auth
+boundary and prove that it authenticates before any body access, receipt
+creation, pool acquisition, or protected-state read in the target deployment.
+This mapping artifact alters neither that boundary nor enrollment and does not
+authorize deployment or mapping use. Any semantic edit invalidates prior review
+and approval.
 Implementation SHALL then require real-PostgreSQL tests at the migrated schema,
 API and browser-client tests, advisory-lock concurrency tests, transaction
 rollback tests, and positive-field plus absence-sentinel privacy tests. The
@@ -418,11 +407,14 @@ PostgreSQL concurrency tests SHALL force both orderings against merge,
 `metadata.deleted_at` tombstone, physical delete, and `entity_type` change, and
 SHALL force simultaneous same-key/same-request and same-key/different-request
 overlap before idempotency lookup/insert.
-
 Merge, queue, deployment/environment availability, actual private mapping
 submission (`bu-pvapy`), restart, replay, watermark change, synthetic/natural
 transition evidence, remap, delete, and rollback remain separate acts requiring
 their own authority.
+
+ID: REQ-home-assistant-person-mapping-005
+Source: heart-and-soul/security.md; docs/identity_and_secrets/dashboard-owner-auth.md; design.md Delivery gates
+Scope: v1-mandatory
 
 #### Scenario: Review and owner approval precede implementation
 
@@ -431,16 +423,14 @@ their own authority.
 - **THEN** no implementation, deployment, mapping operation, or private-data
   submission SHALL occur
 
-#### Scenario: Both browser authentication prerequisites precede implementation
+#### Scenario: Central owner-authentication precedes implementation
 
-- **WHEN** the configured-key session/CSRF path remains unimplemented or the
-  host-authorized E1/E2 enrollment path remains unresolved, unadopted, or
-  unimplemented
-- **THEN** the mapping UI SHALL remain blocked in configured-key deployments
-  while the session path is missing, and SHALL remain blocked in default
-  keyless Compose while the enrollment path is incomplete
-- **AND** neither same-origin access nor an arbitrary first visitor may supply
-  the missing authority
+- **WHEN** the landed central owner-auth boundary is unavailable,
+  unconfigured, or not proven to authenticate before protected body access in
+  the target deployment
+- **THEN** the mapping UI and backend workflow SHALL remain blocked
+- **AND** neither same-origin access, an arbitrary first visitor, nor an
+  alternate credential transport may supply the missing authority
 
 #### Scenario: Future verification exercises the real seams
 

@@ -7,9 +7,9 @@
   failure behavior.
 - [x] 1.2 Specify request-capture, URL, response/error, audit, log, telemetry,
   prompt/session, MCP, provider-read, and browser-persistence exclusions.
-- [x] 1.3 Record closed/adopted `bu-pb6oy` Option A without reopening it, keep
-  its configured-key session/CSRF implementation as the UI prerequisite, name
-  unresolved `bu-azqfpk` E1/E2 host enrollment, and keep
+- [x] 1.3 Record and consume the closed/adopted central dashboard owner-auth
+  boundary for configured-key and host-authorized passkey sessions over
+  canonical Tailscale Serve HTTPS, without altering enrollment, and keep
   `authenticated_principal()` limited to server-derived attribution.
 
 ## 2. Approval gates
@@ -23,15 +23,13 @@
 
 ## 3. Future implementation after approval (`bu-q364q`)
 
-- [ ] 3.1 Add the fail-closed dashboard route and browser client only after the
-  adopted `bu-pb6oy` configured-key session/CSRF mechanism is implemented. Do
-  not claim default keyless Compose usability until `bu-azqfpk` E1 host
-  authority and E2 HTTPS entry are selected, independently reviewed, adopted,
-  implemented, and proven; this mapping change selects neither choice. Prove
-  authentication finishes before body buffering, receipt creation, pool
-  acquisition, or protected reads. After authentication, enforce the 32,768-octet
-  raw encoded body maximum with a bounded streamed reader before UTF-8/JSON
-  decoding and without trusting `Content-Length`; oversize returns only fixed
+- [ ] 3.1 Add the fail-closed dashboard route and browser client only behind
+  the landed central owner-auth boundary for configured-key or host-authorized
+  passkey sessions over canonical Tailscale Serve HTTPS. Prove authentication
+  finishes before body buffering, receipt creation, pool acquisition, or
+  protected reads. After authentication, enforce the 32,768-octet raw encoded
+  body maximum with a bounded streamed reader before UTF-8/JSON decoding and
+  without trusting `Content-Length`; oversize returns only fixed
   `413 REQUEST_BODY_TOO_LARGE` and touches no receipt, actor, pool, protected
   state, or audit path.
 - [ ] 3.2 Add the content-blind durable idempotency/receipt representation and
@@ -71,9 +69,10 @@
   different requests must create exactly one winning terminal record; the loser
   must return fixed `IDEMPOTENCY_CONFLICT`, create no second terminal record,
   and perform zero mapping writes.
-- [ ] 4.6 API tests prove `503` when owner control is unconfigured, `401` for a
-  missing/wrong credential, no pre-auth body/pool access, exact size/count/field
-  validation, standard envelopes, aggregate-only `200/409/422/503` bodies, and
+- [ ] 4.6 API tests prove `503` when central owner-auth state/configuration is
+  unavailable, `401` for a missing/wrong credential, no pre-auth body/pool
+  access, exact size/count/field validation, standard envelopes, aggregate-only
+  `200/409/422/503` bodies, and
   byte-for-byte replay of the stored terminal receipt. At the raw-body seam,
   prove exactly 32,768 octets may proceed while 32,769 cannot; oversized bodies
   composed from whitespace or escaped JSON spellings are rejected before decode;
