@@ -55,6 +55,7 @@ verification or proof that an earlier finding is resolved. Query the
 
 | Run | Dossier |
 |---|---|
+| 14 (2026-09-22) | [2026-09-22-jarvis-pursuit.md](2026-09-22-jarvis-pursuit.md) |
 | 13 (2026-09-12) | [2026-09-12-jarvis-pursuit.md](2026-09-12-jarvis-pursuit.md) |
 | 12 (2026-09-05) | [2026-09-05-jarvis-pursuit.md](2026-09-05-jarvis-pursuit.md) |
 | 11 (2026-09-03) | [2026-09-03-jarvis-pursuit.md](2026-09-03-jarvis-pursuit.md) |

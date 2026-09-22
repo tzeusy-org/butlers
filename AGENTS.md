@@ -2546,3 +2546,7 @@ Two boundaries that are easy to get wrong in both directions (bu-5m67e):
 ### Ingestion refresh failures
 
 - TanStack Query can report `isError` while retaining successful data after a failed background refresh. Timeline error banners must not replace retained ledger rows; preserve row identity and report stale freshness separately. Histogram availability remains independent of row availability.
+
+### Beads lint evidence
+
+- On this repo's bd 1.0.4, a clean `bd lint <ids> --json` can return `total: 0` and `results: null` even when named issues were checked. Retain the text receipt (`N issues checked`) and read back structured fields and dependencies; do not infer inspected population from the JSON totals.
