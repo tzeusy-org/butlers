@@ -490,8 +490,8 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Link contact
 - Profile
 - Activity
+- Activity changed while loading.
 - Couldn&rsquo;t load activity. Retry.
-- Retry
 - Gifts
 - Loans
 - Message threads
@@ -538,6 +538,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Lives in
 - Works at
 - Family
+- Chronicle activity
 - Hide provenance
 - Reveal provenance
 - Fact validity
@@ -4375,4 +4376,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3432*
+*Total strings: 3433*

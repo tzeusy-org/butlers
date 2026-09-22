@@ -26,13 +26,14 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
 });
 
 import { useMutation } from "@tanstack/react-query";
-import { useConfirmFact, useRetractFact } from "@/hooks/use-memory";
+import { useConfirmFact, useForgetRelationshipEntity, useRetractFact } from "@/hooks/use-memory";
 
 const mockUseMutation = vi.mocked(useMutation);
 
 function capturedMutationOptions(): {
   mutationFn: (...args: unknown[]) => unknown;
   onSettled: (...args: unknown[]) => void;
+  onSuccess: (...args: unknown[]) => void;
 } {
   const calls = mockUseMutation.mock.calls;
   expect(calls.length).toBeGreaterThan(0);
@@ -59,6 +60,8 @@ describe("useConfirmFact", () => {
     expect(mockInvalidateQueries).toHaveBeenCalledWith({
       queryKey: ["memory-stats"],
     });
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ["entity-activity"] });
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ["entity-activity-bins"] });
   });
 });
 
@@ -82,5 +85,16 @@ describe("useRetractFact", () => {
     expect(mockInvalidateQueries).toHaveBeenCalledWith({
       queryKey: ["memory-stats"],
     });
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ["entity-activity"] });
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ["entity-activity-bins"] });
+  });
+});
+
+describe("useForgetRelationshipEntity", () => {
+  it("refreshes the forgotten entity activity family", () => {
+    useForgetRelationshipEntity();
+    capturedMutationOptions().onSuccess(undefined, "entity-001", undefined);
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ["entity-activity", "entity-001"] });
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ["entity-activity-bins", "entity-001"] });
   });
 });

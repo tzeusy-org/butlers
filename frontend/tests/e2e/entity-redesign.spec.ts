@@ -229,6 +229,35 @@ const MOCK_INTERACTION_ITEM = {
   metadata: {},
 };
 
+function activityResponse(items: unknown[]) {
+  return {
+    items: items.map((raw) => {
+      const item = raw as {
+        id: string;
+        kind: string;
+        content: string;
+        valid_at: string | null;
+        predicate: string;
+      };
+      return {
+        id: item.id,
+        ts: item.valid_at,
+        kind: item.kind,
+        src: "relationship",
+        store: "narrative",
+        predicate: item.predicate,
+        episode_id: null,
+        summary: item.content,
+      };
+    }),
+    total: items.length,
+    limit: 200,
+    offset: 0,
+    degraded: false,
+    degraded_reason: null,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Helper: install base entity API stubs (empty state)
 // ---------------------------------------------------------------------------
@@ -241,6 +270,7 @@ const MOCK_INTERACTION_ITEM = {
  */
 async function installEntityStubs(page: Page, overrides: {
   timeline?: unknown[];
+  activity?: unknown[];
   gifts?: unknown[];
   loans?: unknown[];
   linkedContacts?: unknown[];
@@ -279,6 +309,22 @@ async function installEntityStubs(page: Page, overrides: {
       },
     );
   }
+
+  const activityItems = overrides.activity ?? overrides.timeline ?? [];
+  await page.route(
+    `**/api/relationship/entities/${ENTITY_ID}/activity**`,
+    (route) => {
+      const requestUrl = new URL(route.request().url());
+      const body = requestUrl.searchParams.get("bins") === "daily"
+        ? { bins: [], degraded: false, degraded_reason: null }
+        : activityResponse(activityItems);
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(body),
+      });
+    },
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -402,7 +448,7 @@ test.describe("entity-redesign: entity detail page", () => {
     // Install all relationship sub-endpoint stubs with populated data.
     // PulseStrip, GiftsPanel, LoansPanel, and ActivityTimeline all share the
     // same timeline/gifts/loans endpoints — one stub each covers all consumers.
-    const subRoutes: Array<{ suffix: string; data: unknown[] }> = [
+    const subRoutes: Array<{ suffix: string; data: unknown }> = [
       { suffix: "timeline",        data: MOCK_TIMELINE_POPULATED },
       { suffix: "gifts",           data: MOCK_GIFTS_POPULATED },
       { suffix: "loans",           data: MOCK_LOANS_POPULATED },
@@ -423,6 +469,21 @@ test.describe("entity-redesign: entity detail page", () => {
         },
       );
     }
+
+    await page.route(
+      `**/api/relationship/entities/${ENTITY_ID}/activity**`,
+      (route) => {
+        const requestUrl = new URL(route.request().url());
+        const body = requestUrl.searchParams.get("bins") === "daily"
+            ? { bins: [], degraded: false, degraded_reason: null }
+            : activityResponse(MOCK_TIMELINE_POPULATED);
+        return route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify(body),
+        });
+      },
+    );
 
     await page.goto(`/entities/${ENTITY_ID}`, { timeout: TIMEOUT_MS });
 

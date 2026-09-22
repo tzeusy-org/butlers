@@ -22,16 +22,20 @@ import { toast } from "sonner";
 import { Time } from "@/components/ui/time";
 import { Tip } from "@/components/ui/tip";
 import { ENTITY_DETAIL_INITIAL_FACTS_LIMIT } from "@/lib/entity-detail-query";
+import {
+  entityActivityItemKey,
+  entityActivityNeedsRefresh,
+} from "@/lib/entity-activity-pages";
 import { getEntityGloss, DUNBAR_TIER_VALUES, ENTITY_TYPE_VALUES, CURATION_RAIL_GLOSSES } from "@/lib/entity-glosses";
 import type { DunbarTier, EntityState, EntityType, CurationRailAction } from "@/lib/entity-glosses";
 
 import type {
   ContactSummary,
+  EntityActivityItem,
   EntityFact,
   EntityFactStalenessBand,
   EntityFactsValidity,
   EntityRebindReceipt,
-  EntityTimelineItem,
   Fact,
   MessageThreadSummary,
   NeighbourEntry,
@@ -90,6 +94,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useContacts } from "@/hooks/use-contacts";
 import {
   useArchiveRelationshipEntity,
+  useEntityActivity,
   useEntityActivityBins,
   useEntityDeltaFacts,
   useEntityFacts,
@@ -97,7 +102,6 @@ import {
   useEntityLoans,
   useEntityMessageThreads,
   useEntityNeighbours,
-  useEntityTimeline,
   useRelationshipEntities,
   useRelationshipEntitiesByIds,
   useRelationshipEntityQueue,
@@ -648,6 +652,7 @@ const _TIMELINE_FILTERS: { id: TimelineFilter; label: string }[] = [
   { id: "loan", label: "Loans" },
   { id: "life_event", label: "Life events" },
 ];
+const _EMPTY_ACTIVITY_ITEMS: EntityActivityItem[] = [];
 
 function timelineKindGlyph(kind: string): string {
   switch (kind) {
@@ -669,19 +674,52 @@ function timelineKindGlyph(kind: string): string {
 }
 
 function ActivityTimeline({ entityId }: { entityId: string }) {
-  const { data: items, isLoading, isError, refetch } = useEntityTimeline(entityId);
+  const {
+    data: activityPages,
+    isLoading,
+    isError,
+    isRefetching,
+    refetch,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useEntityActivity(entityId, { limit: 200 });
   const [filter, setFilter] = useState<TimelineFilter>("all");
+  const loadMoreInFlightRef = useRef(false);
+  const pages = useMemo(() => activityPages?.pages ?? [], [activityPages?.pages]);
+  const items = useMemo(() => {
+    if (pages.length === 0) return _EMPTY_ACTIVITY_ITEMS;
+    const seen = new Set<string>();
+    return pages.flatMap((page) => page.items.filter((item) => {
+      const key = entityActivityItemKey(item);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }));
+  }, [pages]);
+  const total = pages[0]?.total ?? 0;
+  const isDegraded = pages.some((page) => page.degraded);
+  const hasUnloaded = items.length < total;
+  const activityChanged = entityActivityNeedsRefresh(pages, hasNextPage === true, items.length);
+  const retryActivity = () => void refetch({ cancelRefetch: false });
+  const loadMoreActivity = () => {
+    if (loadMoreInFlightRef.current) return;
+    loadMoreInFlightRef.current = true;
+    void Promise.resolve(fetchNextPage({ cancelRefetch: false })).finally(() => {
+      loadMoreInFlightRef.current = false;
+    });
+  };
 
   const counts = useMemo(() => {
     const acc: Record<TimelineFilter, number> = {
-      all: items?.length ?? 0,
+      all: items.length,
       interaction: 0,
       note: 0,
       gift: 0,
       loan: 0,
       life_event: 0,
     };
-    for (const it of items ?? []) {
+    for (const it of items) {
       if (it.kind in acc) {
         acc[it.kind as TimelineFilter] += 1;
       }
@@ -690,17 +728,24 @@ function ActivityTimeline({ entityId }: { entityId: string }) {
   }, [items]);
 
   const filtered = useMemo(() => {
-    if (!items) return [];
     if (filter === "all") return items;
     return items.filter((it) => it.kind === filter);
   }, [items, filter]);
+
+  const timelineRows = filtered.length > 0 && (
+    <ul className="divide-y divide-border border-y">
+      {filtered.map((item) => (
+        <TimelineRow key={`${item.src}:${item.store ?? "none"}:${item.id}`} item={item} />
+      ))}
+    </ul>
+  );
 
   return (
     <section className="space-y-3">
       <div className="flex items-baseline justify-between gap-3">
         <h2 className="text-lg font-semibold">Activity</h2>
         <span className="text-muted-foreground text-xs">
-          {items ? `${items.length} entries` : ""}
+          {pages.length > 0 ? `Showing ${items.length} of ${total}` : ""}
         </span>
       </div>
 
@@ -708,11 +753,12 @@ function ActivityTimeline({ entityId }: { entityId: string }) {
         {_TIMELINE_FILTERS.map((f) => {
           const active = f.id === filter;
           const count = counts[f.id];
-          const disabled = count === 0 && f.id !== "all";
+          const disabled = count === 0 && f.id !== "all" && !hasUnloaded;
           return (
             <button
               key={f.id}
               type="button"
+              aria-label={`${f.label}${count > 0 || hasUnloaded ? ` ${count}${hasUnloaded ? "+" : ""}` : ""}`}
               onClick={() => setFilter(f.id)}
               disabled={disabled}
               className={
@@ -725,9 +771,9 @@ function ActivityTimeline({ entityId }: { entityId: string }) {
               }
             >
               {f.label}
-              {count > 0 && (
+              {(count > 0 || hasUnloaded) && (
                 <span className={"ml-1.5 tabular-nums " + (active ? "" : "text-muted-foreground")}>
-                  {count}
+                  {" "}{count}{hasUnloaded ? "+" : ""}
                 </span>
               )}
             </button>
@@ -735,14 +781,27 @@ function ActivityTimeline({ entityId }: { entityId: string }) {
         })}
       </div>
 
+      {activityChanged && (
+        <div
+          role="alert"
+          className="border-border bg-muted/30 flex items-center justify-between gap-3 rounded border px-3 py-2"
+          data-testid="entity-activity-changed"
+        >
+          <p className="text-sm">Activity changed while loading.</p>
+          <Button variant="outline" size="sm" onClick={retryActivity} disabled={isRefetching}>
+            {isRefetching ? "Refreshing…" : "Refresh activity"}
+          </Button>
+        </div>
+      )}
+
       {isLoading ? (
         <div className="space-y-2 py-2">
           {Array.from({ length: 4 }, (_, i) => (
             <Skeleton key={i} className="h-10 w-full" />
           ))}
         </div>
-      ) : isError && (!items || items.length === 0) ? (
-        // A failed timeline fetch must not render "No activity recorded yet." —
+      ) : isError && items.length === 0 ? (
+        // A failed activity fetch must not render "No activity recorded yet." —
         // a down backend would read as a genuinely quiet history (bu-mkd5r).
         <div
           role="alert"
@@ -750,32 +809,70 @@ function ActivityTimeline({ entityId }: { entityId: string }) {
           data-testid="entity-timeline-error"
         >
           <p className="text-destructive text-sm">Couldn&rsquo;t load activity. Retry.</p>
-          <Button variant="outline" size="sm" onClick={() => void refetch()}>
-            Retry
+          <Button variant="outline" size="sm" onClick={retryActivity} disabled={isRefetching}>
+            {isRefetching ? "Retrying…" : "Retry"}
           </Button>
         </div>
+      ) : isError ? (
+        <>
+          <SourceDegradedNote
+            testId="entity-activity-fetch-error"
+            label="Activity"
+            detail="unavailable"
+            onRetry={retryActivity}
+          />
+          {timelineRows}
+        </>
+      ) : isDegraded ? (
+        <>
+          <SourceDegradedNote
+            testId="entity-activity-degraded"
+            label="Chronicle activity"
+            detail="unavailable"
+            onRetry={retryActivity}
+          />
+          {timelineRows}
+        </>
       ) : filtered.length === 0 ? (
         <p className="text-muted-foreground py-8 text-center text-sm">
           {filter === "all"
             ? "No activity recorded yet."
-            : `No ${_TIMELINE_FILTERS.find((f) => f.id === filter)?.label.toLowerCase()} yet.`}
+            : hasUnloaded
+              ? `No ${_TIMELINE_FILTERS.find((f) => f.id === filter)?.label.toLowerCase()} loaded yet.`
+              : `No ${_TIMELINE_FILTERS.find((f) => f.id === filter)?.label.toLowerCase()} yet.`}
         </p>
-      ) : (
-        <ul className="divide-y divide-border border-y">
-          {filtered.map((item) => (
-            <TimelineRow key={item.id} item={item} />
-          ))}
-        </ul>
+      ) : timelineRows}
+
+      {hasNextPage && !activityChanged && (
+        <div className="flex items-center justify-between gap-3 border-t pt-3">
+          <span className="text-muted-foreground text-xs tabular-nums">
+            {items.length} of {total} loaded
+          </span>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={loadMoreActivity}
+            disabled={isFetchingNextPage}
+            data-testid="entity-activity-load-more"
+          >
+            {isFetchingNextPage ? "Loading…" : "Load more activity"}
+          </Button>
+        </div>
       )}
     </section>
   );
 }
 
-function TimelineRow({ item }: { item: EntityTimelineItem }) {
-  const date = item.valid_at ? new Date(item.valid_at) : null;
-  const subtitle = item.predicate.startsWith("interaction_")
-    ? item.predicate.slice("interaction_".length).replaceAll("_", " ")
-    : item.predicate.replaceAll("_", " ");
+function TimelineRow({ item }: { item: EntityActivityItem }) {
+  const date = item.ts ? new Date(item.ts) : null;
+  const predicate = item.predicate ?? item.kind;
+  const subtitle =
+    item.src === "chronicler"
+      ? "Chronicle episode"
+      : predicate.startsWith("interaction_")
+        ? predicate.slice("interaction_".length).replaceAll("_", " ")
+        : predicate.replaceAll("_", " ");
 
   return (
     <li className="flex items-start gap-3 py-2.5">
@@ -787,11 +884,11 @@ function TimelineRow({ item }: { item: EntityTimelineItem }) {
         {timelineKindGlyph(item.kind)}
       </span>
       <div className="min-w-0 flex-1">
-        {item.content && (
-          <p className="text-sm leading-snug">{item.content}</p>
+        {item.summary && (
+          <p className="text-sm leading-snug">{item.summary}</p>
         )}
         <p className="text-muted-foreground mt-0.5 text-xs capitalize">
-          {subtitle}
+          {item.src === "chronicler" ? subtitle : `Relationship · ${subtitle}`}
         </p>
       </div>
       <span className="text-muted-foreground shrink-0 text-xs tabular-nums">

@@ -96,6 +96,8 @@ describe("EVENT_CACHE_REGISTRY", () => {
         ["session-detail", "home", "sess-1"],
         ["session-detail-global"],
         ["timeline"],
+        ["entity-activity"],
+        ["entity-activity-bins"],
       ]),
     );
   });
@@ -243,7 +245,22 @@ describe("EVENT_CACHE_REGISTRY", () => {
   it("chronicles: invalidates projection-backed chronicler data", () => {
     const { qc, invalidateQueries } = makeQc();
     applyFleetEvent(qc, { type: "chronicles", ts: 1, data: { kind: "projection" } });
-    expect(keys(invalidateQueries)).toEqual(expect.arrayContaining([["chronicles"]]));
+    expect(keys(invalidateQueries)).toEqual(
+      expect.arrayContaining([
+        ["chronicles"],
+        ["entity-activity"],
+        ["entity-activity-bins"],
+      ]),
+    );
+  });
+
+  it("entity.rebound.v1 refreshes canonical activity and identity families", () => {
+    const { qc, invalidateQueries } = makeQc();
+    applyFleetEvent(qc, { type: "entity.rebound.v1", ts: 1, data: { source_entity_id: "entity-a", target_entity_id: "entity-b" } });
+    expect(keys(invalidateQueries)).toEqual(expect.arrayContaining([
+      ["memory-entity", "entity-a"], ["memory-entity", "entity-b"],
+      ["entity-activity"], ["entity-activity-bins"],
+    ]));
   });
 
   it("heartbeat: is a no-op (no cache invalidation)", () => {

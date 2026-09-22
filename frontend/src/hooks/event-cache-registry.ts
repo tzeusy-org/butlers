@@ -24,6 +24,7 @@
  */
 
 import type { QueryClient } from "@tanstack/react-query";
+import { invalidateEntityActivityFamily } from "@/hooks/entity-activity-cache";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -132,6 +133,7 @@ const sessionPatch: CachePatch = (qc, event) => {
   qc.invalidateQueries({ queryKey: ["timeline"] });
   qc.invalidateQueries({ queryKey: ["session-detail-global"] });
   qc.invalidateQueries({ queryKey: ["session-stripe"] });
+  invalidateEntityActivityFamily(qc);
   // Session events do not carry an ingestion request ID. Refresh lifecycle
   // projections, but never repeat audited payload reads or replay history.
   qc.invalidateQueries(
@@ -218,6 +220,7 @@ const calendarPatch: CachePatch = (qc) => {
  */
 const chroniclesPatch: CachePatch = (qc) => {
   qc.invalidateQueries({ queryKey: ["chronicles"] });
+  invalidateEntityActivityFamily(qc);
 };
 
 /**
@@ -248,6 +251,7 @@ const entityReboundPatch: CachePatch = (qc, event) => {
   qc.invalidateQueries({ queryKey: ["relationship-entity-queue"] });
   qc.invalidateQueries({ queryKey: ["memory-entity"] });
   qc.invalidateQueries({ queryKey: ["relationship-entity"] });
+  invalidateEntityActivityFamily(qc);
   for (const key of ["source_entity_id", "target_entity_id"] as const) {
     const entityId = asString(event.data[key]);
     if (entityId) {

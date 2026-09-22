@@ -58,6 +58,10 @@ import {
   type ListSnapshot,
   useOptimisticMutation,
 } from "@/hooks/use-optimistic-mutation";
+import {
+  entityActivityInvalidationKeys,
+  invalidateEntityActivityFamily,
+} from "@/hooks/entity-activity-cache";
 
 /**
  * Primary poll intervals for memory API queries (bu-ep4ks.15). No fleet-bus event
@@ -196,6 +200,7 @@ export function useConfirmFact() {
       ["memory-fact", factId],
       ["memory-facts"],
       ["memory-stats"],
+      ...entityActivityInvalidationKeys(),
     ],
   });
 }
@@ -241,6 +246,7 @@ export function useRetractFact() {
       ["memory-fact", factId],
       ["memory-facts"],
       ["memory-stats"],
+      ...entityActivityInvalidationKeys(),
     ],
   });
 }
@@ -356,6 +362,7 @@ export function useUpdateEntity() {
     }) => updateEntity(entityId, request),
     onSuccess: (_, { entityId }) => {
       void queryClient.invalidateQueries({ queryKey: ["memory-entity", entityId] });
+      invalidateEntityActivityFamily(queryClient, entityId);
       void queryClient.invalidateQueries({ queryKey: ["memory-entities"] });
     },
   });
@@ -374,6 +381,7 @@ export function useForgetRelationshipEntity() {
       void queryClient.invalidateQueries({ queryKey: ["memory-entities"] });
       void queryClient.invalidateQueries({ queryKey: ["relationship-entities"] });
       void queryClient.invalidateQueries({ queryKey: ["memory-entity", entityId] });
+      invalidateEntityActivityFamily(queryClient, entityId);
     },
   });
 }
