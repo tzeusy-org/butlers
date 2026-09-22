@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import uuid
 from pathlib import Path
@@ -9,6 +10,11 @@ from unittest.mock import MagicMock, patch
 
 import asyncpg
 import pytest
+from sqlalchemy import create_engine
+
+from alembic import command
+from butlers.migrations import _build_alembic_config, run_migrations
+from butlers.testing.migration import create_migration_db, migration_db_name
 
 pytestmark = pytest.mark.integration
 
@@ -33,7 +39,11 @@ async def _apply(pool: asyncpg.Pool, fn_name: str) -> None:
     migration = _load_migration()
     mocked_op = MagicMock()
     mocked_op.execute.side_effect = statements.append
-    with patch.object(migration, "op", mocked_op):
+    with (
+        patch.object(migration, "op", mocked_op),
+        patch.object(migration, "_downgrade_crosses_core_198", return_value=False),
+        patch.object(migration, "_core_247_installation_count", return_value=1),
+    ):
         getattr(migration, fn_name)()
     for statement in statements:
         await pool.execute(statement)
@@ -124,3 +134,99 @@ async def test_migration_backfills_valid_sources_preserves_unknown_authors_and_r
     assert "citations" not in names
     assert "routed_butler" not in names
     assert "sources" in names
+
+
+def test_core_247_refuses_protected_deep_downgrade_before_shared_column_drop() -> None:
+    migration = _load_migration()
+    mocked_op = MagicMock()
+    bind = MagicMock()
+    mocked_op.get_bind.return_value = bind
+
+    with (
+        patch.object(migration, "op", mocked_op),
+        patch.object(migration, "_downgrade_crosses_core_198", return_value=True),
+        patch.object(migration, "_protected_rollback_preflight_passes", return_value=False),
+        pytest.raises(RuntimeError, match="protected core_198 rollback preflight failed"),
+    ):
+        migration.downgrade()
+
+    mocked_op.execute.assert_not_called()
+
+
+def test_core_247_shared_columns_drop_only_after_last_schema_and_reupgrade(
+    postgres_container,
+) -> None:
+    db_url = create_migration_db(postgres_container, migration_db_name())
+    asyncio.run(run_migrations(db_url, chain="core", schema="general"))
+    asyncio.run(run_migrations(db_url, chain="core", schema="switchboard"))
+    general = _build_alembic_config(db_url, chains=["core"], target_schema="general")
+    switchboard = _build_alembic_config(db_url, chains=["core"], target_schema="switchboard")
+    conversation_id = uuid.uuid4()
+    message_id = uuid.uuid4()
+
+    command.downgrade(general, "core_246")
+    engine = create_engine(db_url)
+    try:
+        with engine.begin() as connection:
+            columns = {
+                row[0]
+                for row in connection.exec_driver_sql(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND table_name = 'dashboard_messages'"
+                )
+            }
+            assert {"citations", "routed_butler"} <= columns
+            connection.exec_driver_sql(
+                "INSERT INTO public.dashboard_conversations (id, butler_name) "
+                "VALUES (%(conversation_id)s, 'switchboard')",
+                {"conversation_id": conversation_id},
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO public.dashboard_messages "
+                "(id, conversation_id, role, content, sources, citations, routed_butler) "
+                "VALUES (%(message_id)s, %(conversation_id)s, 'assistant', 'answer', "
+                "'[\"Budget\"]'::jsonb, "
+                '\'[{"label":"Budget","target":"/spend","kind":"internal"}]\'::jsonb, '
+                "'finance')",
+                {"message_id": message_id, "conversation_id": conversation_id},
+            )
+            assert connection.exec_driver_sql(
+                "SELECT citations IS NOT NULL AND routed_butler = 'finance' "
+                "FROM public.dashboard_messages WHERE id = %(message_id)s",
+                {"message_id": message_id},
+            ).scalar_one()
+    finally:
+        engine.dispose()
+
+    command.downgrade(switchboard, "core_246")
+    engine = create_engine(db_url)
+    try:
+        with engine.connect() as connection:
+            columns = {
+                row[0]
+                for row in connection.exec_driver_sql(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND table_name = 'dashboard_messages'"
+                )
+            }
+            assert "citations" not in columns
+            assert "routed_butler" not in columns
+            assert "sources" in columns
+    finally:
+        engine.dispose()
+
+    command.upgrade(general, "core@head")
+    engine = create_engine(db_url)
+    try:
+        with engine.connect() as connection:
+            restored = connection.exec_driver_sql(
+                "SELECT citations, routed_butler FROM public.dashboard_messages "
+                "WHERE id = %(message_id)s",
+                {"message_id": message_id},
+            ).one()
+            assert restored[0] == [{"kind": "unlinked", "label": "Budget", "target": None}]
+            assert restored[1] is None
+    finally:
+        engine.dispose()
+
+    command.upgrade(switchboard, "core@head")
