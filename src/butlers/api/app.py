@@ -77,6 +77,7 @@ from butlers.api.routers.general_settings import router as general_settings_rout
 from butlers.api.routers.google_health import router as google_health_router
 from butlers.api.routers.healing import router as healing_router
 from butlers.api.routers.home_assistant import router as home_assistant_router
+from butlers.api.routers.home_person_mappings import router as home_person_mappings_router
 from butlers.api.routers.identity import router as identity_router
 from butlers.api.routers.ingestion_connectors import router as ingestion_connectors_router
 from butlers.api.routers.ingestion_events import rollup_router as ingestion_rollup_router
@@ -734,6 +735,7 @@ def create_app(
     app.include_router(blob_storage_router)
     app.include_router(owntracks_router)
     app.include_router(home_assistant_router)
+    app.include_router(home_person_mappings_router)
     app.include_router(spotify_router)
     app.include_router(google_health_router)
     app.include_router(steam_router)

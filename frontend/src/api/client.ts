@@ -249,6 +249,8 @@ import type {
   HomeAssistantConfigResponse,
   HomeAssistantDeleteResponse,
   HomeAssistantStatusResponse,
+  HomePersonMappingInput,
+  HomePersonMappingReceipt,
   DunbarRankingResponse,
   ConversationSummary,
   ConversationListParams,
@@ -5415,6 +5417,18 @@ export function configureHomeAssistant(
 export function deleteHomeAssistantConfig(): Promise<HomeAssistantDeleteResponse> {
   return apiFetch<HomeAssistantDeleteResponse>("/settings/home-assistant", {
     method: "DELETE",
+  });
+}
+
+/** Submit exact private HA-person mappings as one atomic batch. */
+export function submitHomePersonMappings(
+  mappings: HomePersonMappingInput[],
+  idempotencyKey: string,
+): Promise<ApiResponse<HomePersonMappingReceipt>> {
+  return apiFetch<ApiResponse<HomePersonMappingReceipt>>("/home/person-mappings", {
+    method: "POST",
+    headers: { "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify({ mappings }),
   });
 }
 

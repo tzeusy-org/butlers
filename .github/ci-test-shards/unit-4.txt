@@ -31,6 +31,7 @@ tests/api/test_domain_events.py
 tests/api/test_google_health_grant_flow.py
 tests/api/test_google_userinfo_payload.py
 tests/api/test_home_dashboard.py
+tests/api/test_home_person_mappings.py
 tests/api/test_hourly_activity.py
 tests/api/test_ingestion_connector_lifecycle_phase4b.py
 tests/api/test_memory_episode_provenance.py

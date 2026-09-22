@@ -62,6 +62,10 @@ _MAX_BODY_BYTES: int = 16_384  # 16 KiB — generous but bounded
 # Path prefixes that are NOT interesting to audit (health probes, static files).
 _SKIP_PREFIXES: tuple[str, ...] = ("/health", "/api/health")
 
+# This route carries private household identity values.  Its handler emits an
+# explicit field-by-field audit row inside the mapping transaction.
+_EXACT_SKIP_ROUTES: frozenset[tuple[str, str]] = frozenset({("POST", "/api/home/person-mappings")})
+
 
 def _infer_butler(path: str) -> str:
     """Derive a butler name from the request path.
@@ -121,6 +125,9 @@ class DashboardAuditMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next) -> Response:
         # Only audit mutating methods
         if request.method not in _MUTATING_METHODS:
+            return await call_next(request)
+
+        if (request.method, request.url.path) in _EXACT_SKIP_ROUTES:
             return await call_next(request)
 
         path = request.url.path

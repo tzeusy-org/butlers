@@ -112,6 +112,21 @@ reader response must report `ha_source_available=true`, the health timestamp
 must be within the lease, and snapshot timestamps should advance after live HA
 contact resumes.
 
+### Private person mappings
+
+The Home dashboard's **Devices → Person mappings** form is the sole supported
+workflow for associating an exact `person.<slug>` Home Assistant ID with an
+existing person entity UUID. The form is available only through the configured
+dashboard owner-auth boundary. It keeps submitted values in component memory,
+clears them after the request settles, and returns only an opaque receipt and
+aggregate counts.
+
+Submission is a bounded, all-or-nothing batch. Existing exact pairs are no-ops;
+a conflict on either side refuses the whole batch. The workflow never queries
+Home Assistant, infers identity from names or aliases, creates an entity, or
+publishes a mapping read surface. Remap, delete, rollback, provider access,
+runtime migration, and deployment remain separate owner-authorized operations.
+
 **Destructive Action Confirmation.** The butler always asks for explicit confirmation before deleting scenes, disabling automations, or disarming security systems. It never automatically executes potentially destructive changes.
 
 **Discover Before Acting.** The butler uses `ha_list_entities` and `ha_list_services` to confirm entity IDs before calling services, since Home Assistant entity IDs are case-sensitive and vary by installation.

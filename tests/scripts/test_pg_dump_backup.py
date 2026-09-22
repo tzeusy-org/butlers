@@ -464,6 +464,24 @@ def test_script_produces_a_verifiable_artifact(
                 "VALUES (%s, 'unverifiable', 'no_account')",
                 (claim_id,),
             )
+            conn.exec_driver_sql("RESET ROLE")
+            mapping_entity = conn.exec_driver_sql(
+                "INSERT INTO public.entities (canonical_name, entity_type) "
+                "VALUES ('Backup mapping fixture', 'person') RETURNING id"
+            ).scalar_one()
+            conn.exec_driver_sql(
+                "INSERT INTO connectors.home_assistant_persons (ha_entity_id, entity_id) "
+                "VALUES ('person.backup_mapping_fixture', %s)",
+                (mapping_entity,),
+            )
+            conn.exec_driver_sql(
+                "INSERT INTO public.ha_person_mapping_receipts "
+                "(key_digest, request_digest, receipt, complete, received_count, "
+                "created_count, unchanged_count, conflict_count, invalid_reference_count, "
+                "outcome) VALUES (decode(repeat('ab', 32), 'hex'), "
+                "decode(repeat('cd', 32), 'hex'), "
+                "'00000000-0000-4000-8000-000000000246', true, 1, 1, 0, 0, 0, 'success')"
+            )
     finally:
         engine.dispose()
 
@@ -485,6 +503,10 @@ def test_script_produces_a_verifiable_artifact(
     # Ordinary application data is present ...
     assert "CREATE TABLE public.entities" in dump
     assert "CREATE TABLE public.sessions" in dump
+    assert "CREATE TABLE public.ha_person_mapping_receipts" in dump
+    assert "COPY connectors.home_assistant_persons" in dump
+    assert "person.backup_mapping_fixture" in dump
+    assert "00000000-0000-4000-8000-000000000246" in dump
     # ... and every fenced object stayed out.
     excluded_schemas, excluded_tables, scoped_data_tables = _read_backup_sets()
     for schema in excluded_schemas:
