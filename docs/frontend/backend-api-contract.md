@@ -637,13 +637,16 @@ models are not additional backend response contracts.
   `ApiResponse<ConnectorFanoutRow[]>`
   - Each row names a measured `connector_type`, `endpoint_identity`,
     `target_butler`, and `message_count` route.
-  - `meta.aggregates_available` is `true` for a readable Prometheus aggregate,
-    including a measured empty response. For an empty aggregate result, the
-    exact `switchboard_routed_messages_total` family availability probe must
-    also report at least one live series. It is `false` when that family is
-    absent/unreadable, no usable aggregate sample exists, or the endpoint uses
-    a degraded fallback; clients must name that state rather than render rows,
-    zeroes, or an all-clear distribution.
+  - `meta.aggregates_available` is `true` when the Prometheus producer signal
+    is readable and the DB projection is complete, including a measured empty
+    response. The exact connector and endpoint
+    dimensions come from the sessions-to-ingestion-events DB projection; the
+    emitted `butlers_switchboard_subroute_dispatched_total` family is the live
+    producer signal and carries only bounded `source="connector"`, non-empty
+    `destination_butler`, and `outcome="attempted"` labels. It is `false` when
+    that family is absent/unreadable, its destination label is incomplete, or
+    any DB fan-out leg fails; clients must name that state rather than render
+    rows, zeroes, or an all-clear distribution.
 
 ## Memory Domain Contract
 

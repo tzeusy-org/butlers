@@ -120,8 +120,6 @@ def test_switchboard_metric_namespace_contract() -> None:
     assert subroute_attributes == [
         {
             "source": "telegram",
-            "connector_type": "telegram",
-            "endpoint_identity": "bot-123",
             "destination_butler": "general",
             "outcome": "success",
             "lifecycle_state": "parsed",

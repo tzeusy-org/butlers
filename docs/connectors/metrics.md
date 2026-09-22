@@ -88,13 +88,15 @@ are not dashboard API surfaces. The separate cross-connector
 `GET /api/switchboard/ingestion/fanout` route remains outside this
 connector-namespace migration, but the active Connectors dashboard renders its
 7-day routing distribution. Its `meta.aggregates_available` flag distinguishes
-a measured empty response from an unavailable aggregate source: when the route
-query returns no rows, the handler first probes the exact
-`butlers_switchboard_subroute_dispatched_total` family, restricted to attempted
-dispatches carrying the connector type and endpoint identity recorded from the
-ingest envelope. A fully labeled live series makes the empty result measured;
-an absent, unlabeled, or unreadable family is degraded and never presented as
-an all-clear empty distribution.
+a measured empty response from an unavailable aggregate source. Exact
+connector and endpoint dimensions come from the sessions-to-ingestion-events
+DB projection. The handler separately probes the exact
+`butlers_switchboard_subroute_dispatched_total` family for attempted dispatches
+carrying bounded `source="connector"` provenance and a non-empty
+`destination_butler`; raw connector and endpoint identities never become OTel
+labels. A live producer plus a complete DB fan-out makes an empty result
+measured; an absent, incomplete, unreadable, or partially failed source is
+degraded and never presented as an all-clear empty distribution.
 
 ## Verification
 

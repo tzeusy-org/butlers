@@ -16,23 +16,22 @@ distinguish an unreadable source from a measured empty matrix.
   non-negative `*_total` samples with matching connector labels count.
 - Expose an internal typed counter-read availability state while preserving
   the existing `connector.heartbeat.v1` integer wire shape.
-- Make the Switchboard fanout projection ignore metadata, malformed, NaN, and
-  infinity samples and return `meta.aggregates_available=false` when no usable
-  total exists. When the aggregate query is empty, probe the exact
-  emitted `butlers_switchboard_subroute_dispatched_total` family first; an
-  absent, unlabeled, or unreadable family is unavailable, while a live,
-  connector-labeled family with no matching increase remains a measured empty
-  result.
-- Carry the canonical connector provider and endpoint identity from ingest
-  provenance onto the existing Switchboard subroute counter so the dashboard
-  query is grounded in a repository-owned producer.
+- Ground Switchboard fanout availability in the exact emitted
+  `butlers_switchboard_subroute_dispatched_total` family. The counter carries
+  only bounded `source="connector"` provenance and `destination_butler`; raw
+  connector/account identities stay out of OTel labels.
+- Source the exact connector and endpoint projection from the existing
+  sessions-to-ingestion-events DB join. A live producer plus a complete DB
+  fan-out permits a measured empty result; an absent producer or partial DB
+  fan-out remains unavailable.
 - Add additive OpenSpec coverage for sample validity and dashboard unavailable
   data states.
 
 ## Out of Scope
 
 - No new metric family, heartbeat schema, scrape configuration, credentials,
-  migration, or live telemetry action changes.
+  migration, or live telemetry action changes. The existing subroute counter's
+  provenance labels are narrowed to bounded RFC 0005-safe values.
 
 ## Verification
 

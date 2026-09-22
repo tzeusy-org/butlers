@@ -326,10 +326,19 @@ async def route(
         or source_butler
         or "unknown"
     )
+    provider = source_metadata.get("provider")
+    endpoint_identity = source_metadata.get("identity")
+    if provider not in (None, "") and endpoint_identity not in (None, ""):
+        metric_source = "connector"
+    elif source != "unknown":
+        metric_source = "channel"
+    else:
+        metric_source = "unknown"
     metric_base_attrs = telemetry.attrs(
-        source=source,
-        connector_type=source_metadata.get("provider"),
-        endpoint_identity=source_metadata.get("identity"),
+        # Metrics retain only a bounded provenance class. Exact connector and
+        # endpoint identities remain in the route/ingestion records, where
+        # they can be queried without creating one OTel series per account.
+        source=metric_source,
         destination_butler=target_butler,
         fanout_mode=fanout_mode,
         schema_version="route.v1",

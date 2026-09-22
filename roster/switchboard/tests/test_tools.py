@@ -907,9 +907,7 @@ async def test_route_dispatch_counter_carries_connector_provenance(pool, otel_pr
     telemetry.subroute_dispatched.add.assert_called_once_with(
         1,
         {
-            "source": "email",
-            "connector_type": "gmail",
-            "endpoint_identity": "gmail:account-1",
+            "source": "connector",
             "destination_butler": "metricattrs",
             "fanout_mode": "ordered",
             "schema_version": "route.v1",

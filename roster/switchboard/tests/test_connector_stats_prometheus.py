@@ -15,9 +15,8 @@ Tested behaviors:
   series and a meta.hourly_events_available degraded flag. Websocket connectors
   (e.g. home_assistant) that never write heartbeat counter-deltas still show
   non-zero volume via this DB path.
-- get_ingestion_fanout: queries Prometheus instant API for cross-connector matrix.
-  Falls back to DB-backed fan-out when PROMETHEUS_URL is not set or Prometheus
-  returns an error.
+- get_ingestion_fanout: uses the bounded Prometheus producer signal for
+  availability and the DB-backed fan-out for exact connector/account rows.
 """
 
 from __future__ import annotations
@@ -341,28 +340,31 @@ async def test_get_ingestion_fanout_no_prometheus_url_uses_db_fallback():
     assert result.meta.aggregates_available is False
 
 
-async def test_get_ingestion_fanout_returns_matrix_from_prometheus():
-    """get_ingestion_fanout returns cross-connector FanoutRow matrix from Prometheus."""
-    fake_instant_result = [
-        {
-            "metric": {
-                "connector_type": "telegram_bot",
-                "endpoint_identity": "bot@123",
-                "destination_butler": "health",
-            },
-            "value": [1740000000, "20"],
-        },
-        {
-            "metric": {
-                "connector_type": "email",
-                "endpoint_identity": "user@example.com",
-                "destination_butler": "relationship",
-            },
-            "value": [1740000000, "5"],
-        },
-    ]
+async def test_get_ingestion_fanout_returns_db_matrix_when_producer_is_available():
+    """The bounded metric proves availability; DB rows retain exact provenance."""
 
-    async_query = AsyncMock(return_value=fake_instant_result)
+    class _FanoutDB(_FakeDB):
+        async def fan_out_with_status(
+            self, query: str, args: tuple = (), butler_names=None
+        ) -> tuple[dict, list[str]]:
+            return {
+                "health": [
+                    {
+                        "connector_type": "telegram_bot",
+                        "endpoint_identity": "bot@123",
+                        "message_count": 20,
+                    }
+                ],
+                "relationship": [
+                    {
+                        "connector_type": "email",
+                        "endpoint_identity": "user@example.com",
+                        "message_count": 5,
+                    }
+                ],
+            }, []
+
+    async_query = AsyncMock(return_value=[{"metric": {}, "value": [1740000000, "1"]}])
     with patch("butlers.modules.metrics.prometheus.async_query", new=async_query):
         with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
             sys.modules.pop("switchboard_api_models", None)
@@ -376,7 +378,7 @@ async def test_get_ingestion_fanout_returns_matrix_from_prometheus():
 
             result = await mod.get_ingestion_fanout(
                 period="24h",
-                db=_FakeDB(),
+                db=_FanoutDB(),
             )
 
     assert result.data is not None
@@ -385,10 +387,10 @@ async def test_get_ingestion_fanout_returns_matrix_from_prometheus():
     connectors = [(r.connector_type, r.endpoint_identity, r.target_butler) for r in result.data]
     assert ("email", "user@example.com", "relationship") in connectors
     assert ("telegram_bot", "bot@123", "health") in connectors
+    assert result.meta.aggregates_available is True
     assert async_query.await_args.args[1] == (
-        "sum by (connector_type, endpoint_identity, destination_butler) "
-        '(increase(butlers_switchboard_subroute_dispatched_total{outcome="attempted",'
-        'connector_type!="",endpoint_identity!=""}[24h]))'
+        'count(butlers_switchboard_subroute_dispatched_total{outcome="attempted",'
+        'source="connector",destination_butler!=""})'
     )
 
 
@@ -421,25 +423,21 @@ async def test_get_ingestion_fanout_prometheus_error_falls_back_to_db():
     assert result.meta.aggregates_available is False
 
 
-async def test_get_ingestion_fanout_empty_prometheus_vector_is_measured_empty():
-    """An empty vector is measured only when the exact metric family exists."""
+async def test_get_ingestion_fanout_empty_db_projection_requires_complete_sources():
+    """A measured empty needs both a live producer and complete DB fan-out."""
 
     class _NoFallbackDB(_FakeDB):
         def __init__(self) -> None:
             self.fan_out_calls = 0
+            self.failed: list[str] = []
 
         async def fan_out_with_status(
             self, query: str, args: tuple = (), butler_names=None
         ) -> tuple[dict, list[str]]:
             self.fan_out_calls += 1
-            return {}, []
+            return {}, self.failed
 
-    async_query = AsyncMock(
-        side_effect=[
-            [],
-            [{"metric": {}, "value": [1740000000, "1"]}],
-        ]
-    )
+    async_query = AsyncMock(return_value=[{"metric": {}, "value": [1740000000, "1"]}])
     with patch("butlers.modules.metrics.prometheus.async_query", new=async_query):
         with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
             sys.modules.pop("switchboard_api_models", None)
@@ -449,18 +447,21 @@ async def test_get_ingestion_fanout_empty_prometheus_vector_is_measured_empty():
             spec.loader.exec_module(mod)
             db = _NoFallbackDB()
             result = await mod.get_ingestion_fanout(period="24h", db=db)
+            db.failed = ["health"]
+            partial_result = await mod.get_ingestion_fanout(period="24h", db=db)
 
     assert result.data == []
     assert result.meta.aggregates_available is True
-    assert db.fan_out_calls == 0
+    assert partial_result.data == []
+    assert partial_result.meta.aggregates_available is False
+    assert db.fan_out_calls == 2
     assert async_query.await_count == 2
-    assert (
-        async_query.await_args_list[1].args[1]
-        == 'count(butlers_switchboard_subroute_dispatched_total{outcome="attempted",connector_type!="",endpoint_identity!=""})'
+    assert async_query.await_args.args[1].endswith(
+        '{outcome="attempted",source="connector",destination_butler!=""})'
     )
 
 
-async def test_get_ingestion_fanout_empty_vector_degrades_when_metric_family_is_absent():
+async def test_get_ingestion_fanout_degrades_when_metric_family_is_absent():
     """An unproduced fanout metric must not masquerade as a measured empty route set."""
 
     class _NoFallbackDB(_FakeDB):
@@ -469,12 +470,7 @@ async def test_get_ingestion_fanout_empty_vector_degrades_when_metric_family_is_
         ) -> tuple[dict, list[str]]:
             raise AssertionError("an absent Prometheus metric must not use DB fallback")
 
-    async_query = AsyncMock(
-        side_effect=[
-            [],
-            [{"metric": {}, "value": [1740000000, "0"]}],
-        ]
-    )
+    async_query = AsyncMock(return_value=[{"metric": {}, "value": [1740000000, "0"]}])
     with patch("butlers.modules.metrics.prometheus.async_query", new=async_query):
         with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
             sys.modules.pop("switchboard_api_models", None)
@@ -486,203 +482,7 @@ async def test_get_ingestion_fanout_empty_vector_degrades_when_metric_family_is_
 
     assert result.data == []
     assert result.meta.aggregates_available is False
-    assert async_query.await_count == 2
-
-
-async def test_get_ingestion_fanout_filters_zero_count_rows():
-    """get_ingestion_fanout skips series where count rounds to 0."""
-    fake_instant_result = [
-        {
-            "metric": {
-                "connector_type": "telegram_bot",
-                "endpoint_identity": "bot@123",
-                "destination_butler": "health",
-            },
-            "value": [1740000000, "0.4"],  # rounds to 0
-        },
-        {
-            "metric": {
-                "connector_type": "telegram_bot",
-                "endpoint_identity": "bot@123",
-                "destination_butler": "memory",
-            },
-            "value": [1740000000, "3.7"],  # rounds to 3
-        },
-    ]
-
-    with patch(
-        "butlers.modules.metrics.prometheus.async_query",
-        new=AsyncMock(return_value=fake_instant_result),
-    ):
-        with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
-            sys.modules.pop("switchboard_api_models", None)
-            import importlib
-            from pathlib import Path
-
-            router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
-            spec = importlib.util.spec_from_file_location("_sw_router_ifanout_zero", router_path)
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-
-            result = await mod.get_ingestion_fanout(
-                period="24h",
-                db=_FakeDB(),
-            )
-
-    assert len(result.data) == 1
-    assert result.data[0].target_butler == "memory"
-    assert result.data[0].message_count == 3
-
-
-async def test_get_ingestion_fanout_ignores_metadata_and_non_finite_samples():
-    """Only finite ``*_total`` samples contribute to the matrix.
-
-    Prometheus Counter families also expose ``*_created`` timestamps.  A
-    timestamp-sized value must never become a routed-message count, and a
-    malformed/NaN/infinite sibling must not poison a valid total sample.
-    """
-    fake_instant_result = [
-        {
-            "metric": {
-                "__name__": "butlers_switchboard_subroute_dispatched_total",
-                "connector_type": "gmail",
-                "endpoint_identity": "gmail:user:owner@example.com",
-                "destination_butler": "general",
-            },
-            "value": [1740000000, "5"],
-        },
-        {
-            "metric": {
-                "__name__": "butlers_switchboard_subroute_dispatched_created",
-                "connector_type": "gmail",
-                "endpoint_identity": "gmail:user:owner@example.com",
-                "destination_butler": "general",
-            },
-            "value": [1740000000, "1735689600"],
-        },
-        {
-            "metric": {
-                "__name__": "butlers_switchboard_subroute_dispatched_total",
-                "connector_type": "gmail",
-                "endpoint_identity": "gmail:user:owner@example.com",
-                "destination_butler": "health",
-            },
-            "value": [1740000000, "NaN"],
-        },
-        {
-            "metric": {
-                "__name__": "butlers_switchboard_subroute_dispatched_total",
-                "connector_type": "gmail",
-                "endpoint_identity": "gmail:user:owner@example.com",
-                "destination_butler": "relationship",
-            },
-            "value": [1740000000, "Infinity"],
-        },
-        {
-            "metric": {
-                "__name__": "butlers_switchboard_subroute_dispatched_total",
-                "connector_type": "gmail",
-                "endpoint_identity": "gmail:user:owner@example.com",
-                "destination_butler": "memory",
-            },
-            "value": [1740000000, "not-a-number"],
-        },
-        {
-            "metric": {
-                "__name__": "unrelated_counter_total",
-                "connector_type": "gmail",
-                "endpoint_identity": "gmail:user:owner@example.com",
-                "destination_butler": "finance",
-            },
-            "value": [1740000000, "97"],
-        },
-    ]
-
-    with patch(
-        "butlers.modules.metrics.prometheus.async_query",
-        new=AsyncMock(return_value=fake_instant_result),
-    ):
-        with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
-            sys.modules.pop("switchboard_api_models", None)
-            router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
-            spec = importlib.util.spec_from_file_location("_sw_router_ifanout_hygiene", router_path)
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            result = await mod.get_ingestion_fanout(period="24h", db=_FakeDB())
-
-    assert [(row.target_butler, row.message_count) for row in result.data] == [("general", 5)]
-    assert result.meta.aggregates_available is True
-
-
-async def test_get_ingestion_fanout_rejects_samples_without_route_identity():
-    """A finite number without all route labels is unreadable, not an unknown route."""
-    fake_instant_result = [
-        {
-            "metric": {
-                "connector_type": "gmail",
-                "endpoint_identity": "gmail:user:owner@example.com",
-            },
-            "value": [1740000000, "5"],
-        }
-    ]
-
-    with patch(
-        "butlers.modules.metrics.prometheus.async_query",
-        new=AsyncMock(return_value=fake_instant_result),
-    ):
-        with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
-            sys.modules.pop("switchboard_api_models", None)
-            router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
-            spec = importlib.util.spec_from_file_location(
-                "_sw_router_ifanout_missing_identity", router_path
-            )
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            result = await mod.get_ingestion_fanout(period="24h", db=_FakeDB())
-
-    assert result.data == []
-    assert result.meta.aggregates_available is False
-
-
-async def test_get_ingestion_fanout_reports_unavailable_when_no_total_is_usable():
-    """Unreadable Prometheus samples are not a fabricated empty matrix."""
-    fake_instant_result = [
-        {
-            "metric": {
-                "__name__": "butlers_switchboard_subroute_dispatched_created",
-                "connector_type": "gmail",
-                "endpoint_identity": "gmail:user:owner@example.com",
-                "destination_butler": "general",
-            },
-            "value": [1740000000, "1735689600"],
-        },
-        {
-            "metric": {
-                "__name__": "butlers_switchboard_subroute_dispatched_total",
-                "connector_type": "gmail",
-                "endpoint_identity": "gmail:user:owner@example.com",
-                "destination_butler": "health",
-            },
-            "value": [1740000000, "NaN"],
-        },
-    ]
-
-    with patch(
-        "butlers.modules.metrics.prometheus.async_query",
-        new=AsyncMock(return_value=fake_instant_result),
-    ):
-        with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
-            sys.modules.pop("switchboard_api_models", None)
-            router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
-            spec = importlib.util.spec_from_file_location(
-                "_sw_router_ifanout_unavailable", router_path
-            )
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            result = await mod.get_ingestion_fanout(period="24h", db=_FakeDB())
-
-    assert result.data == []
-    assert result.meta.aggregates_available is False
+    assert async_query.await_count == 1
 
 
 # ---------------------------------------------------------------------------
