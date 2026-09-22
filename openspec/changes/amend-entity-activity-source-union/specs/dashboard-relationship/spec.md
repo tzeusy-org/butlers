@@ -15,7 +15,7 @@ The dashboard API SHALL expose `GET /api/relationship/entities/{id}/activity` as
 - **Daily bins:** When `bins=daily` is requested with a valid existing `window=<N>d`, the response MUST derive exactly `N` ascending UTC date bins from the same merged candidate set before stream pagination. Each entry with a timestamp inside the inclusive UTC window contributes exactly once to its date; out-of-window and null-timestamp entries contribute zero. Quiet dates MUST remain present with `count=0`. With `bins_only=true`, the response MUST omit stream items and totals but MUST retain the same bins and degradation fields. Binning MUST NOT perform another source read or use a different source set from the stream.
 - The Timeline tab (defined above) and the activity aggregator coexist; the Timeline tab renders the aggregator output as the merged stream.
 
-ID: REQ-dashboard-relationship-001
+ID: REQ-dashboard-relationship-002
 Source: Relationship Butler Role "CRUD-to-SPO migration"; Relationship Facts "Relationship entity facts triple store"; RFC 0006 schema isolation
 Scope: v1-mandatory
 
