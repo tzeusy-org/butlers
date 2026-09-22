@@ -819,6 +819,7 @@ export {
   configureHomeAssistant,
   deleteHomeAssistantConfig,
   getHomeAssistantStatus,
+  submitHomePersonMappings,
 } from "./client.ts";
 
 export type {
@@ -827,6 +828,8 @@ export type {
   HomeAssistantDeleteResponse,
   HomeAssistantState,
   HomeAssistantStatusResponse,
+  HomePersonMappingInput,
+  HomePersonMappingReceipt,
 } from "./types.ts";
 
 export {
