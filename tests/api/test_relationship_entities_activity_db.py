@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
@@ -131,8 +132,18 @@ async def test_direct_writes_and_identity_values_round_trip_through_activity(
     assert (note.status_code, interaction.status_code, gift.status_code) == (201, 201, 201)
 
     from butlers.tools.relationship.gifts import gift_update_status
+    from butlers.tools.relationship.loans import loan_create, loan_settle
 
     successor = await gift_update_status(pool, UUID(gift.json()["id"]), "purchased")
+    loan = await loan_create(
+        pool,
+        contact_id=entity_id,
+        amount=Decimal("12.50"),
+        direction="lent",
+        description="Exact loan summary",
+        currency="SGD",
+    )
+    loan_successor = await loan_settle(pool, UUID(str(loan["id"])))
     from butlers.tools.relationship.relationship_assert_fact import relationship_assert_fact
 
     asserted = await relationship_assert_fact(
@@ -157,6 +168,9 @@ async def test_direct_writes_and_identity_values_round_trip_through_activity(
     )
     assert by_id[("narrative", str(successor["id"]))]["summary"] == "Exact gift summary"
     assert ("narrative", gift.json()["id"]) not in by_id
+    assert by_id[("narrative", str(loan_successor["id"]))]["summary"] == "Exact loan summary"
+    assert ("narrative", str(loan["id"])) not in by_id
+    assert sum(item["predicate"] == "loan" for item in items) == 1
     assert by_id[("identity", str(identity_id))]["summary"] == "exact.identity@example.test"
     assert all(
         set(item) == {"id", "ts", "kind", "src", "store", "predicate", "episode_id", "summary"}
@@ -217,3 +231,52 @@ async def test_activity_preserves_cross_store_collisions_and_bins_before_paginat
         ("narrative", str(collision_id)),
     ]
     assert all_rows[0]["summary"] == str(entity_id)
+
+
+async def test_activity_materializes_more_than_500_rows_per_local_store(
+    pool: asyncpg.Pool,
+    activity_app: FastAPI,
+) -> None:
+    _, entity_id = await _seed_entities(pool)
+    now = datetime.now(UTC)
+    narrative_rows = await pool.fetch(
+        "INSERT INTO public.facts "
+        "(subject, predicate, content, validity, scope, entity_id, valid_at) "
+        "SELECT 'bulk-narrative-' || value, 'contact_note', "
+        "'Narrative ' || value, 'active', 'relationship', $1, $2 "
+        "FROM generate_series(1, 501) AS value RETURNING id",
+        entity_id,
+        now,
+    )
+    identity_rows = await pool.fetch(
+        "INSERT INTO relationship.entity_facts "
+        "(subject, predicate, object, object_kind, src, validity, observed_at) "
+        "SELECT $1, 'bulk-identity', 'Identity ' || value, 'literal', "
+        "'relationship', 'active', $2 FROM generate_series(1, 501) AS value RETURNING id",
+        entity_id,
+        now,
+    )
+
+    path = f"/api/relationship/entities/{entity_id}/activity"
+    items: list[dict] = []
+    totals: set[int] = set()
+    bin_total = None
+    for offset in range(0, 1200, 200):
+        response = await _request(
+            activity_app,
+            "GET",
+            path,
+            params={"limit": 200, "offset": offset, "bins": "daily", "window": "2d"},
+        )
+        body = response.json()
+        totals.add(body["total"])
+        items.extend(body["items"])
+        bin_total = sum(day["count"] for day in body["bins"])
+
+    assert totals == {1002}
+    assert len(items) == 1002
+    assert bin_total == 1002
+    assert {str(row["id"]) for row in identity_rows} <= {item["id"] for item in items}
+    assert {str(row["id"]) for row in narrative_rows} <= {item["id"] for item in items}
+    assert sum(item["store"] == "identity" for item in items) == 501
+    assert sum(item["store"] == "narrative" for item in items) == 501

@@ -6331,7 +6331,6 @@ _FACT_PREDICATE_KIND: dict[str, str] = {
     "dunbar_tier_override": "dunbar_tier_override",
 }
 
-_ACTIVITY_SOURCE_LIMIT = 500
 _NARRATIVE_ACTIVITY_PREDICATES = (
     "contact_note",
     "life_event",
@@ -6345,7 +6344,7 @@ async def _fetch_narrative_activity(
     pool: object,
     entity_id: UUID,
 ) -> list[ActivityEntry]:
-    """Fetch bounded active narrative facts from the local memory store."""
+    """Fetch every active narrative activity fact from the local memory store."""
     rows = await pool.fetch(
         """
         SELECT f.id, f.predicate, f.content, f.valid_at, f.created_at
@@ -6358,11 +6357,9 @@ async def _fetch_narrative_activity(
               OR f.predicate LIKE 'interaction_%'
           )
         ORDER BY COALESCE(f.valid_at, f.created_at) DESC NULLS LAST, f.id
-        LIMIT $3
         """,
         entity_id,
         list(_NARRATIVE_ACTIVITY_PREDICATES),
-        _ACTIVITY_SOURCE_LIMIT,
     )
     return [
         ActivityEntry(
@@ -6382,7 +6379,7 @@ async def _fetch_identity_activity(
     pool: object,
     entity_id: UUID,
 ) -> list[ActivityEntry]:
-    """Fetch bounded active identity triples for the given entity.
+    """Fetch every active identity triple for the given entity.
 
     Returns all facts where subject=$entity_id OR (object_kind='entity'
     AND object=$entity_id::text). The identity value is projected verbatim.
@@ -6405,10 +6402,8 @@ async def _fetch_identity_activity(
               OR (f.object_kind = 'entity' AND f.object = $1::text)
           )
         ORDER BY COALESCE(f.observed_at, f.last_seen, f.created_at) DESC NULLS LAST, f.id
-        LIMIT $2
         """,
         entity_id,
-        _ACTIVITY_SOURCE_LIMIT,
     )
 
     entries: list[ActivityEntry] = []

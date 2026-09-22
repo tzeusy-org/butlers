@@ -431,6 +431,64 @@ class TestMergedStreamSort:
         assert items[0]["episode_id"] == str(ep_new)
         assert items[1]["episode_id"] == str(ep_old)
 
+    async def test_timestamped_rows_precede_source_tuple_sorted_null_tail(self):
+        def record(data: dict) -> MagicMock:
+            row = MagicMock()
+            row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
+            return row
+
+        timestamped_id = UUID("00000000-0000-4000-8000-000000000010")
+        identity_id = UUID("00000000-0000-4000-8000-000000000003")
+        narrative_id = UUID("00000000-0000-4000-8000-000000000002")
+        chronicler_id = UUID("00000000-0000-4000-8000-000000000001")
+        narrative_rows = [
+            record(
+                {
+                    "id": timestamped_id,
+                    "predicate": "contact_note",
+                    "content": "Timestamped",
+                    "valid_at": _NOW,
+                    "created_at": _NOW,
+                }
+            ),
+            record(
+                {
+                    "id": narrative_id,
+                    "predicate": "contact_note",
+                    "content": "Null narrative",
+                    "valid_at": None,
+                    "created_at": None,
+                }
+            ),
+        ]
+        identity_rows = [
+            record(
+                {
+                    "id": identity_id,
+                    "predicate": "works-at",
+                    "object": "Null identity",
+                    "observed_at": None,
+                    "last_seen": None,
+                    "created_at": None,
+                }
+            )
+        ]
+        episodes = [{"id": str(chronicler_id), "canonical_title": "Null episode"}]
+        app, _, _ = _app_with_mocks(
+            narrative_rows=narrative_rows,
+            fact_rows=identity_rows,
+            chronicler_episodes=episodes,
+        )
+
+        items = (await _get(app)).json()["items"]
+
+        assert items[0]["id"] == str(timestamped_id)
+        assert [(item["src"], item["store"], item["id"]) for item in items[1:]] == [
+            ("chronicler", None, str(chronicler_id)),
+            ("relationship", "identity", str(identity_id)),
+            ("relationship", "narrative", str(narrative_id)),
+        ]
+
 
 # ---------------------------------------------------------------------------
 # Scenario: Chronicler unreachable — graceful degrade
