@@ -2840,6 +2840,7 @@ async def confirm_memory(
     memory_id: uuid.UUID,
     *,
     memory_schema: str | None = None,
+    allowed_sensitivities: tuple[str, ...] | list[str] | None = None,
 ) -> bool:
     """Confirm a fact or rule is still accurate, resetting confidence decay.
 
@@ -2855,6 +2856,8 @@ async def confirm_memory(
         memory_id: UUID of the memory to confirm.
         memory_schema: Explicit owning schema for dashboard callers. Normal
             daemon and MCP callers omit it and retain search-path behavior.
+        allowed_sensitivities: Optional server-held sensitivity set. When
+            supplied, the authorization predicate is part of the mutation.
 
     Returns:
         True if the memory was found and updated, False if not found.
@@ -2870,9 +2873,18 @@ async def confirm_memory(
         raise ValueError("Episodes cannot be confirmed — they don't have confidence decay")
 
     table = _memory_relation(memory_type, memory_schema)
+    conditions = ["id = $1"]
+    params: list[Any] = [memory_id]
+    if memory_type == "fact":
+        conditions.append("validity IN ('active', 'fading')")
+    else:
+        conditions.extend(["(metadata->>'forgotten')::boolean IS NOT TRUE", "retired_at IS NULL"])
+    if allowed_sensitivities is not None:
+        params.append(list(allowed_sensitivities))
+        conditions.append(f"COALESCE(sensitivity, '{_DEFAULT_CATALOG_SENSITIVITY}') = ANY($2)")
     result = await pool.execute(
-        f"UPDATE {table} SET last_confirmed_at = now() WHERE id = $1",
-        memory_id,
+        f"UPDATE {table} SET last_confirmed_at = now() WHERE {' AND '.join(conditions)}",
+        *params,
     )
     return result.endswith("1")
 
@@ -3017,6 +3029,8 @@ async def retire_rule(
 async def mark_helpful(
     pool: Pool,
     rule_id: uuid.UUID,
+    *,
+    allowed_sensitivities: tuple[str, ...] | list[str] | None = None,
 ) -> dict | None:
     """Mark a rule as having been applied successfully.
 
@@ -3037,6 +3051,8 @@ async def mark_helpful(
     Args:
         pool: asyncpg connection pool.
         rule_id: UUID of the rule.
+        allowed_sensitivities: Optional server-held sensitivity set. When
+            supplied, the authorization predicate is part of the mutation.
 
     Returns:
         Updated rule as dict, or None if rule not found.
@@ -3044,14 +3060,25 @@ async def mark_helpful(
     async with pool.acquire() as conn:
         async with conn.transaction():
             # Increment counts and update timestamp in one atomic UPDATE
+            conditions = [
+                "id = $1",
+                "(metadata->>'forgotten')::boolean IS NOT TRUE",
+                "retired_at IS NULL",
+            ]
+            params: list[Any] = [rule_id]
+            if allowed_sensitivities is not None:
+                params.append(list(allowed_sensitivities))
+                conditions.append(
+                    f"COALESCE(sensitivity, '{_DEFAULT_CATALOG_SENSITIVITY}') = ANY($2)"
+                )
             row = await conn.fetchrow(
                 "UPDATE rules "
                 "SET applied_count = applied_count + 1, "
                 "    success_count = success_count + 1, "
                 "    last_applied_at = now() "
-                "WHERE id = $1 "
+                f"WHERE {' AND '.join(conditions)} "
                 "RETURNING *",
-                rule_id,
+                *params,
             )
             if row is None:
                 return None
@@ -3097,6 +3124,8 @@ async def mark_harmful(
     pool: Pool,
     rule_id: uuid.UUID,
     reason: str | None = None,
+    *,
+    allowed_sensitivities: tuple[str, ...] | list[str] | None = None,
 ) -> dict | None:
     """Mark a rule as having caused problems.
 
@@ -3121,6 +3150,8 @@ async def mark_harmful(
         pool: asyncpg connection pool.
         rule_id: UUID of the rule.
         reason: Optional reason why the rule was harmful.
+        allowed_sensitivities: Optional server-held sensitivity set. When
+            supplied, the authorization predicate is part of the mutation.
 
     Returns:
         Updated rule as dict, or None if rule not found.
@@ -3128,14 +3159,25 @@ async def mark_harmful(
     async with pool.acquire() as conn:
         async with conn.transaction():
             # Increment counts
+            conditions = [
+                "id = $1",
+                "(metadata->>'forgotten')::boolean IS NOT TRUE",
+                "retired_at IS NULL",
+            ]
+            params: list[Any] = [rule_id]
+            if allowed_sensitivities is not None:
+                params.append(list(allowed_sensitivities))
+                conditions.append(
+                    f"COALESCE(sensitivity, '{_DEFAULT_CATALOG_SENSITIVITY}') = ANY($2)"
+                )
             row = await conn.fetchrow(
                 "UPDATE rules "
                 "SET applied_count = applied_count + 1, "
                 "    harmful_count = harmful_count + 1, "
                 "    last_applied_at = now() "
-                "WHERE id = $1 "
+                f"WHERE {' AND '.join(conditions)} "
                 "RETURNING *",
-                rule_id,
+                *params,
             )
             if row is None:
                 return None

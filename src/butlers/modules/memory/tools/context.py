@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from asyncpg import Pool
 
 from butlers.modules.memory.tools._helpers import _search, validate_tenant_id
+from butlers.modules.memory.tools.references import format_memory_ref
 
 logger = logging.getLogger(__name__)
 
@@ -240,14 +241,22 @@ def _format_fact_line(f: dict[str, Any]) -> str:
     predicate = f.get("predicate", "?")
     content = f.get("content", "")
     eff_conf = _effective_confidence(f)
-    return f"- [{subject}] [{predicate}]: {content} (confidence: {eff_conf:.2f})\n"
+    memory_ref = format_memory_ref("fact", f.get("id"))
+    return (
+        f"- [{subject}] [{predicate}]: {content} (confidence: {eff_conf:.2f}) "
+        f"[memory_ref={memory_ref}]\n"
+    )
 
 
 def _format_rule_line(r: dict[str, Any]) -> str:
     content = r.get("content", "")
     maturity = r.get("maturity", "?")
     effectiveness = r.get("effectiveness_score", 0.0)
-    return f"- {content} (maturity: {maturity}, effectiveness: {effectiveness:.2f})\n"
+    memory_ref = format_memory_ref("rule", r.get("id"))
+    return (
+        f"- {content} (maturity: {maturity}, effectiveness: {effectiveness:.2f}) "
+        f"[memory_ref={memory_ref}]\n"
+    )
 
 
 def _format_fleet_knowledge_line(r: dict[str, Any]) -> str:
@@ -359,7 +368,11 @@ async def memory_context(
     ``search_catalog`` already enforces, generalized to every local fetch in
     this assembly so a mid-assembly config change can never half-govern one
     block. Facts withheld from Profile Facts by the ceiling are reported as
-    a ``withheld: N`` marker rather than disappearing without a trace.
+    a ``withheld: N`` marker rather than disappearing without a trace. Every
+    rendered local fact/rule line carries a bounded typed UUID reference for
+    the existing feedback actions. Reference text participates in the same
+    section allocation as content. Episodes and cross-butler Fleet Knowledge
+    are intentionally non-actionable here.
 
     Args:
         pool: asyncpg connection pool.
