@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import shutil
+from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
 import asyncpg
@@ -11,6 +12,7 @@ import pytest
 import pytest_asyncio
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
 
 from alembic import command
 from butlers.api.owner_control import require_dashboard_owner_control
@@ -23,8 +25,13 @@ from butlers.api.routers.home_person_mappings import (
     router,
 )
 from butlers.db import register_jsonb_codec
-from butlers.migrations import _build_alembic_config
-from butlers.testing.migration import create_migration_db, migration_db_name
+from butlers.migrations import _build_alembic_config, run_migrations
+from butlers.testing.migration import (
+    create_migration_db,
+    init_db_sql_for_dbapi,
+    migration_bootstrap_db_url,
+    migration_db_name,
+)
 
 _DOCKER_AVAILABLE = shutil.which("docker") is not None
 
@@ -50,7 +57,28 @@ def mapping_db_url(postgres_container) -> str:
     return db_url
 
 
-@pytest_asyncio.fixture(loop_scope="session")
+def _replay_init_db(postgres_container, db_url: str) -> None:
+    parsed = urlparse(db_url)
+    migration_user = parsed.username
+    db_name = parsed.path.lstrip("/")
+    assert migration_user and db_name
+    engine = create_engine(
+        migration_bootstrap_db_url(postgres_container, db_name), isolation_level="AUTOCOMMIT"
+    )
+    raw_connection = engine.raw_connection()
+    try:
+        raw_connection.autocommit = True
+        with raw_connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT set_config('butlers.connecting_user', %s, false)", (migration_user,)
+            )
+            cursor.execute(init_db_sql_for_dbapi())
+    finally:
+        raw_connection.close()
+        engine.dispose()
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="session")
 async def mapping_pool(mapping_db_url: str):
     pool = await asyncpg.create_pool(
         mapping_db_url,
@@ -59,12 +87,6 @@ async def mapping_pool(mapping_db_url: str):
         init=register_jsonb_codec,
     )
     try:
-        async with pool.acquire() as connection:
-            await connection.execute("TRUNCATE public.ha_person_mapping_receipts")
-            await connection.execute("TRUNCATE connectors.home_assistant_persons")
-            await connection.execute(
-                "DELETE FROM public.audit_log WHERE action = 'home_assistant_person_mapping_batch'"
-            )
         yield pool
     finally:
         await pool.close()
@@ -154,6 +176,139 @@ def test_api_enforces_raw_body_boundary_without_pool_or_private_echo() -> None:
 @pytest.mark.integration
 @pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
+async def test_dashboard_and_switchboard_authority_survive_bootstrap_replay(
+    mapping_pool,
+    mapping_db_url: str,
+    postgres_container,
+) -> None:
+    """The dashboard login and Switchboard can insert; another runtime cannot."""
+    owner = await mapping_pool.fetchval("SELECT current_user")
+    assert owner == await mapping_pool.fetchval("SELECT session_user")
+    owner_entity = await _person(mapping_pool, f"mapping-owner-authority-{uuid4()}")
+    owner_decision, _ = await _decide_batch(
+        mapping_pool,
+        _batch(("person.owner_authority_fixture", owner_entity)),
+        _key(b"owner-authority"),
+        "owner",
+    )
+    assert owner_decision.outcome == "success"
+
+    async def _switchboard(connection: asyncpg.Connection) -> None:
+        await connection.execute('SET ROLE "butler_switchboard_rw"')
+
+    switchboard_pool = await asyncpg.create_pool(
+        mapping_db_url,
+        min_size=1,
+        max_size=2,
+        init=register_jsonb_codec,
+        setup=_switchboard,
+    )
+    switchboard_entity = await _person(mapping_pool, f"mapping-switchboard-authority-{uuid4()}")
+    try:
+        switchboard_decision, _ = await _decide_batch(
+            switchboard_pool,
+            _batch(("person.switchboard_authority_fixture", switchboard_entity)),
+            _key(b"switchboard-authority"),
+            "owner",
+        )
+        assert switchboard_decision.outcome == "success"
+    finally:
+        await switchboard_pool.close()
+
+    async def _assert_foreign_role_denied() -> None:
+        connection = await asyncpg.connect(mapping_db_url)
+        try:
+            await connection.execute('SET ROLE "butler_general_rw"')
+            for relation in (
+                "public.ha_person_mapping_receipts",
+                "connectors.home_assistant_persons",
+            ):
+                try:
+                    visible = await connection.fetchval(f"SELECT count(*) FROM {relation}")
+                except asyncpg.InsufficientPrivilegeError:
+                    visible = 0
+                assert visible == 0
+            with pytest.raises((asyncpg.InsufficientPrivilegeError, asyncpg.CheckViolationError)):
+                await connection.execute(
+                    "INSERT INTO public.ha_person_mapping_receipts "
+                    "(key_digest, request_digest, receipt, complete, received_count, "
+                    "created_count, unchanged_count, conflict_count, invalid_reference_count, "
+                    "outcome) VALUES ($1, $2, $3, true, 1, 1, 0, 0, 0, 'success')",
+                    hashlib.sha256(b"foreign-key").digest(),
+                    hashlib.sha256(b"foreign-request").digest(),
+                    uuid4(),
+                )
+            with pytest.raises((asyncpg.InsufficientPrivilegeError, asyncpg.CheckViolationError)):
+                await connection.execute(
+                    "INSERT INTO connectors.home_assistant_persons (ha_entity_id, entity_id) "
+                    "VALUES ('person.foreign_runtime_fixture', $1)",
+                    UUID(owner_entity),
+                )
+        finally:
+            await connection.close()
+
+    await _assert_foreign_role_denied()
+    _replay_init_db(postgres_container, mapping_db_url)
+    await _assert_foreign_role_denied()
+
+    privileges = await mapping_pool.fetchrow(
+        "SELECT "
+        "has_table_privilege('butler_switchboard_rw', $1, 'SELECT,INSERT') AS switchboard_ok, "
+        "has_table_privilege('butler_switchboard_rw', $1, 'UPDATE') AS switchboard_update, "
+        "has_table_privilege('butler_switchboard_rw', $1, 'DELETE') AS switchboard_delete",
+        "connectors.home_assistant_persons",
+    )
+    assert privileges["switchboard_ok"] is True
+    assert privileges["switchboard_update"] is False
+    assert privileges["switchboard_delete"] is False
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="Docker not available")
+def test_core_246_shared_ddl_replays_and_downgrades_only_with_the_last_schema(
+    postgres_container,
+) -> None:
+    db_url = create_migration_db(postgres_container, migration_db_name())
+    asyncio.run(run_migrations(db_url, chain="core", schema="general"))
+    asyncio.run(run_migrations(db_url, chain="core", schema="switchboard"))
+    engine = create_engine(db_url)
+    try:
+        with engine.connect() as connection:
+            assert connection.exec_driver_sql(
+                "SELECT to_regclass('public.ha_person_mapping_receipts') IS NOT NULL"
+            ).scalar_one()
+    finally:
+        engine.dispose()
+
+    general = _build_alembic_config(db_url, chains=["core"], target_schema="general")
+    switchboard = _build_alembic_config(db_url, chains=["core"], target_schema="switchboard")
+    command.downgrade(general, "core_245")
+    engine = create_engine(db_url)
+    try:
+        with engine.connect() as connection:
+            assert connection.exec_driver_sql(
+                "SELECT to_regclass('public.ha_person_mapping_receipts') IS NOT NULL"
+            ).scalar_one()
+    finally:
+        engine.dispose()
+
+    command.downgrade(switchboard, "core_245")
+    engine = create_engine(db_url)
+    try:
+        with engine.connect() as connection:
+            assert not connection.exec_driver_sql(
+                "SELECT to_regclass('public.ha_person_mapping_receipts') IS NOT NULL"
+            ).scalar_one()
+    finally:
+        engine.dispose()
+
+    command.upgrade(general, "core@head")
+    command.upgrade(switchboard, "core@head")
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
 async def test_real_postgres_batch_is_atomic_idempotent_and_content_blind(mapping_pool) -> None:
     first = await _person(mapping_pool, f"mapping-fixture-{uuid4()}")
     second = await _person(mapping_pool, f"mapping-fixture-{uuid4()}")
@@ -190,19 +345,24 @@ async def test_real_postgres_batch_is_atomic_idempotent_and_content_blind(mappin
     )
 
     stored = await mapping_pool.fetchval(
-        "SELECT jsonb_agg(to_jsonb(receipt_row))::text "
-        "FROM public.ha_person_mapping_receipts AS receipt_row"
+        "SELECT to_jsonb(receipt_row)::text "
+        "FROM public.ha_person_mapping_receipts AS receipt_row WHERE key_digest = $1",
+        _key_digest(key),
     )
     audits = await mapping_pool.fetchval(
         "SELECT jsonb_agg(metadata)::text FROM public.audit_log "
-        "WHERE action = 'home_assistant_person_mapping_batch'"
+        "WHERE action = 'home_assistant_person_mapping_batch' "
+        "AND metadata->>'receipt' = $1",
+        created.receipt.receipt,
     )
     for private_value in (private_ha, first, "person.second_fixture", second, key):
         assert private_value not in stored
         assert private_value not in audits
     audit_metadata = await mapping_pool.fetchval(
         "SELECT metadata FROM public.audit_log "
-        "WHERE action = 'home_assistant_person_mapping_batch' ORDER BY id LIMIT 1"
+        "WHERE action = 'home_assistant_person_mapping_batch' "
+        "AND metadata->>'receipt' = $1 ORDER BY id LIMIT 1",
+        created.receipt.receipt,
     )
     assert set(audit_metadata) == {
         "receipt",
