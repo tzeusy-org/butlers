@@ -430,6 +430,57 @@ async def test_unknown_post_start_handoff_is_ambiguous_without_resend(
     )
 
 
+@pytest.mark.parametrize(
+    "crash_boundary",
+    ["claimed", "handoff_started", "terminal_result_persisted"],
+)
+async def test_daemon_restart_crash_boundary_matrix_preserves_single_handoff_authority(
+    delivery_pool: asyncpg.Pool,
+    crash_boundary: str,
+) -> None:
+    """A restarted daemon resumes from each source-side durable boundary exactly once."""
+    admission = await _park(delivery_pool)
+    repository = ApprovalDeliveryRepository(delivery_pool)
+    claim = await repository.claim_next()
+    assert claim is not None
+    if crash_boundary != "claimed":
+        assert await repository.mark_handoff_started(claim) is True
+    if crash_boundary == "terminal_result_persisted":
+        assert await repository.complete_handoff(claim, HandoffResult("confirmed")) is True
+    else:
+        await delivery_pool.execute(
+            "UPDATE approval_delivery_presentations "
+            "SET claim_expires_at = clock_timestamp() - interval '1 second' WHERE id = $1",
+            claim.presentation_id,
+        )
+
+    runtime = _Runtime(reconcile_result=HandoffResult("confirmed"))
+    restarted = ApprovalDeliveryWorker(
+        ApprovalDeliveryRepository(delivery_pool), ApprovalDeliveryRenderer(), runtime
+    )
+    processed = await restarted.process_one()
+
+    if crash_boundary == "claimed":
+        assert processed is True
+        assert len(runtime.handoffs) == 1
+        assert runtime.reconciliations == []
+    elif crash_boundary == "handoff_started":
+        assert processed is True
+        assert runtime.handoffs == []
+        assert len(runtime.reconciliations) == 1
+    else:
+        assert processed is False
+        assert runtime.handoffs == runtime.reconciliations == []
+    assert (
+        await delivery_pool.fetchval(
+            "SELECT state FROM approval_delivery_presentations WHERE presentation_key = $1",
+            admission.presentation_key,
+        )
+        == "delivered"
+    )
+    assert await restarted.process_one() is False
+
+
 async def test_worker_cancels_only_delivery_when_action_expired(
     delivery_pool: asyncpg.Pool,
 ) -> None:
@@ -549,6 +600,49 @@ async def test_collapsed_action_never_handoffs_and_digest_uses_current_membershi
             collapsed_key,
         )
         == 0
+    )
+
+
+async def test_terminal_fourth_then_fifth_member_keeps_cohort_delivery_continuous(
+    delivery_pool: asyncpg.Pool,
+) -> None:
+    """Terminalizing the anchor cannot strand the next member in its durable cohort."""
+    admissions = [await _park(delivery_pool, ordinal=index) for index in range(4)]
+    fourth = admissions[3]
+    transition = await transition_pending_action(
+        delivery_pool,
+        action_id=fourth.action_id,
+        target_status=ActionStatus.REJECTED,
+        decided_by="owner",
+        event_actor="owner",
+        event_reason="synthetic terminal anchor",
+    )
+    assert transition.changed is True
+
+    fifth = await _park(delivery_pool, ordinal=4)
+    assert fifth.admission_mode == "collapsed"
+    assert fifth.cohort_key == fourth.cohort_key
+    cohort_presentations = await delivery_pool.fetch(
+        "SELECT presentation_generation, state FROM approval_delivery_presentations "
+        "WHERE cohort_id = (SELECT id FROM approval_delivery_cohorts WHERE cohort_key = $1) "
+        "ORDER BY presentation_generation",
+        fourth.cohort_key,
+    )
+    assert [tuple(row.values()) for row in cohort_presentations] == [
+        (1, "cancelled"),
+        (2, "ready"),
+    ]
+    assert (
+        await delivery_pool.fetchval(
+            """
+        SELECT m.eligible
+          FROM approval_delivery_cohort_members m
+          JOIN approval_delivery_intents i ON i.id = m.intent_id
+         WHERE i.action_id = $1
+        """,
+            fifth.action_id,
+        )
+        is True
     )
 
 

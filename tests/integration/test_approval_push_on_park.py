@@ -783,6 +783,98 @@ def test_approvals_migration_preserves_legacy_rows_and_refuses_nonempty_downgrad
         engine.dispose()
 
 
+@pytest.mark.parametrize("guarded_category", ["cohort", "attempt", "audit"])
+@pytest.mark.filterwarnings(
+    "ignore:The test .* is marked with '@pytest.mark.asyncio':pytest.PytestWarning"
+)
+def test_approvals_downgrade_refuses_selected_dependent_and_audit_categories(
+    postgres_container,
+    guarded_category: str,
+) -> None:
+    """The downgrade guard checks dependent recovery rows and terminal audit independently."""
+    from sqlalchemy import create_engine, exc, text
+
+    from alembic import command
+    from butlers.migrations import _build_alembic_config
+
+    db_url = create_migration_db(postgres_container, migration_db_name())
+    config = _build_alembic_config(db_url, chains=["approvals"])
+    command.upgrade(config, "approvals@head")
+    engine = create_engine(db_url)
+    try:
+        with engine.begin() as connection:
+            if guarded_category == "cohort":
+                cohort_id = uuid.uuid4()
+                connection.execute(
+                    text(
+                        "INSERT INTO approval_delivery_cohorts "
+                        "(id, cohort_key, owning_schema, window_started_at, window_ends_at) "
+                        "VALUES (:id, :key, 'public', now(), now() + interval '10 minutes')"
+                    ),
+                    {"id": cohort_id, "key": f"approval-cohort:public:{cohort_id}"},
+                )
+            elif guarded_category == "attempt":
+                action_id = uuid.uuid4()
+                intent_id = uuid.uuid4()
+                presentation_id = uuid.uuid4()
+                action_key = f"approval:public:{action_id}"
+                connection.execute(
+                    text(
+                        "INSERT INTO pending_actions (id, tool_name, tool_args, status) "
+                        "VALUES (:id, 'test', '{}'::jsonb, 'pending')"
+                    ),
+                    {"id": action_id},
+                )
+                connection.execute(
+                    text(
+                        "INSERT INTO approval_delivery_intents "
+                        "(id, action_id, action_key, owning_schema, origin_butler, admission_mode) "
+                        "VALUES (:id, :action, :key, 'public', 'relationship', 'single')"
+                    ),
+                    {"id": intent_id, "action": action_id, "key": action_key},
+                )
+                connection.execute(
+                    text(
+                        "INSERT INTO approval_delivery_presentations "
+                        "(id, intent_id, subject_key, subject_kind, presentation_mode, "
+                        "presentation_generation, presentation_key, state, not_before) "
+                        "VALUES (:id, :intent, :key, 'action', 'single', 1, "
+                        ":presentation_key, 'delivered', now())"
+                    ),
+                    {
+                        "id": presentation_id,
+                        "intent": intent_id,
+                        "key": action_key,
+                        "presentation_key": f"{action_key}:p:1",
+                    },
+                )
+                connection.execute(
+                    text(
+                        "INSERT INTO approval_delivery_attempts "
+                        "(presentation_id, presentation_generation, attempt_number, "
+                        "claim_fence, outcome) VALUES (:id, 1, 1, 1, 'started')"
+                    ),
+                    {"id": presentation_id},
+                )
+            else:
+                connection.execute(
+                    text(
+                        "INSERT INTO approval_events (event_type, actor) "
+                        "VALUES ('approval_delivery_terminal', 'test')"
+                    )
+                )
+
+        expected = (
+            "approval delivery audit data exists"
+            if guarded_category == "audit"
+            else "approval delivery recovery data exists"
+        )
+        with pytest.raises(exc.DBAPIError, match=expected):
+            command.downgrade(config, "approvals_014")
+    finally:
+        engine.dispose()
+
+
 @pytest.mark.filterwarnings(
     "ignore:The test .* is marked with '@pytest.mark.asyncio':pytest.PytestWarning"
 )

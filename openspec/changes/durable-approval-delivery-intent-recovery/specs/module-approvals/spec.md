@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Pending Actions Queue
-The `pending_actions` table SHALL provide a durable queue and audit log for approval-gated tool invocations, storing `id`, `tool_name`, `tool_args` (JSONB), `status`, `requested_at`, and optional `agent_summary`, `session_id`, `expires_at`, `decided_by`, `decided_at`, `execution_result`, `approval_rule_id`, `why`, `evidence`, and producer-opt-in `deduplication_key`; every newly admitted `pending` row SHALL commit in the same transaction as one unique, schema-local approval delivery-intent root whose immutable logical action key and admission classification are safe for end-to-end notification recovery. The first three actions receive direct presentations; the fourth `cohort_anchor` joins and creates the cohort-owned digest; later `collapsed` actions record a terminal non-sendable local presentation and join that cohort.
+The `pending_actions` table SHALL provide a durable queue and audit log for approval-gated tool invocations, storing `id`, `tool_name`, `tool_args` (JSONB), `status`, `requested_at`, and optional `agent_summary`, `session_id`, `expires_at`, `decided_by`, `decided_at`, `execution_result`, `approval_rule_id`, `why`, `evidence`, and producer-opt-in `deduplication_key`; every newly admitted `pending` row SHALL commit in the same transaction as one unique, schema-local approval delivery-intent root whose immutable logical action key and admission classification are safe for end-to-end notification recovery. The first three ordinary actions receive direct presentations; the fourth `cohort_anchor` joins and creates the cohort-owned digest; later ordinary `collapsed` actions record a terminal non-sendable local presentation and join that cohort. A digest-only `origin='prepared'` action uses the same durable representation with one standalone terminal `collapsed` action presentation, no cohort membership, no burst-count effect, and no provider or defer activation.
 
 ID: REQ-module-approvals-001
 Source: RFC-0021,RFC-0023
@@ -21,6 +21,12 @@ Scope: v1-mandatory
 - **WHEN** a producer admits a new action with status `pending`
 - **THEN** the pending row and one foreign-keyed intent with the action's immutable logical key plus its required direct presentation, cohort anchor/digest, or collapsed terminal presentation and membership commit together or both roll back
 - **AND** an unavailable notification runtime does not permit a pending row without its intent
+
+#### Scenario: Prepared action admission stays durable and silent
+- **WHEN** a relationship or travel producer admits a digest-only action with `origin='prepared'`
+- **THEN** the pending row, intent, and standalone terminal `collapsed` presentation commit atomically when admission is enabled
+- **AND** it creates no cohort membership, due work, legacy emission, provider call, or defer successor
+- **AND** default-off admission commits only the established prepared pending row
 
 #### Scenario: List pending actions with status filter
 - **WHEN** `list_pending_actions` is called with an optional status filter and limit
