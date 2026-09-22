@@ -546,15 +546,20 @@ class CalendarWorkspaceFindTimeResponse(BaseModel):
 
     Honest degraded contract (fail-open, never HTTP 500): finding time depends
     on a cross-source free/busy lookup dispatched to the calendar butler over
-    MCP, which may be unreachable.
+    MCP. The lookup may be unavailable because the butler/MCP transport cannot
+    be reached or because the module returned a structured provider
+    authentication/request error.
 
-    - ``available=True`` — the free/busy lookup ran. An empty ``slots`` list then
-      means the window genuinely had no gap long enough for ``duration_minutes``.
-    - ``available=False`` — the lookup could not run (butler unreachable / MCP
-      transport failure); ``slots`` is empty because nothing was checked, NOT
-      because the calendar is open. ``reason`` carries a human-readable
-      explanation and the UI must render "free/busy unavailable" rather than a
-      misleading "no open slots".
+    - ``available=True`` — the free/busy lookup completed. An empty ``slots``
+      list then means the window genuinely had no gap long enough for
+      ``duration_minutes``.
+    - ``available=False`` — the lookup could not produce availability
+      (butler/MCP transport failure or structured provider failure); ``slots`` is
+      empty because nothing was checked, NOT because the calendar is open.
+      ``reason`` is always the fixed, content-blind message:
+      ``Free/busy lookup unavailable; try again shortly.`` Raw provider
+      diagnostics are never exposed. The UI must render "free/busy unavailable"
+      rather than a misleading "no open slots".
     """
 
     slots: list[CalendarSuggestedSlot] = Field(default_factory=list)

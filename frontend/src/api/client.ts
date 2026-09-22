@@ -1659,7 +1659,15 @@ export function searchCalendarWorkspace(
   );
 }
 
-/** Find ranked open time slots for the "Find time" panel. */
+/**
+ * Find ranked open time slots for the "Find time" panel.
+ *
+ * `available: false` means the free/busy lookup was unavailable because of a
+ * transport failure or structured provider authentication/request failure, not
+ * that the window had no open slots. Its `reason` is the fixed, content-blind
+ * message `Free/busy lookup unavailable; try again shortly.`; callers should
+ * render the unavailable state rather than the empty success state.
+ */
 export function findCalendarWorkspaceTime(
   body: CalendarWorkspaceFindTimeRequest,
 ): Promise<ApiResponse<CalendarWorkspaceFindTimeResponse>> {

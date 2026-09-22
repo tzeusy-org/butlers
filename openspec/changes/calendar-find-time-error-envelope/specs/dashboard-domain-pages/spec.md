@@ -40,4 +40,3 @@ The page MUST contain:
 - **WHEN** the find-time response has `available=true` and an empty `slots` list
 - **THEN** the panel MUST render the existing "No open slots match those constraints in the selected window" empty state
 - **AND** it MUST NOT render the free/busy-unavailable state
-

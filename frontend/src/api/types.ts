@@ -1903,12 +1903,16 @@ export interface CalendarWorkspaceFindTimeResponse {
   calendar_ids: string[];
   /**
    * Honest degraded signal (fail-open). `false` when the cross-source free/busy
-   * lookup could not run (butler unreachable); `slots` is then empty because
-   * nothing was checked — NOT because the calendar is open. Render "free/busy
-   * unavailable" with `reason`, not "no open slots".
+   * lookup could not produce availability (butler/MCP transport failure or a
+   * structured provider authentication/request failure); `slots` is then empty
+   * because nothing was checked — NOT because the calendar is open. `reason` is
+   * always the fixed, content-blind message
+   * `Free/busy lookup unavailable; try again shortly.`; raw provider diagnostics
+   * are never exposed. Render "free/busy unavailable" with `reason`, not "no
+   * open slots".
    */
   available: boolean;
-  /** Human-readable explanation when `available` is `false`. */
+  /** Fixed, content-blind unavailable reason when `available` is `false`. */
   reason: string | null;
 }
 
