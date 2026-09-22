@@ -20,8 +20,9 @@ function totalConversationCost(
   let hasCost = false;
 
   for (const msg of messages) {
-    if (msg.role !== "assistant" || !msg.model) continue;
-    const pricing = pricingMap[msg.model];
+    const modelName = msg.model_name ?? msg.model ?? null;
+    if (msg.role !== "assistant" || !modelName) continue;
+    const pricing = pricingMap[modelName];
     if (!pricing) continue;
     const input = msg.input_tokens ?? 0;
     const output = msg.output_tokens ?? 0;

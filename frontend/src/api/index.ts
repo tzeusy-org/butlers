@@ -888,12 +888,14 @@ export type {
   ConversationListParams,
   Message,
   MessageToolCall,
+  Citation,
   MessageSearchResult,
   MessageSearchParams,
   CreateConversationRequest,
   SendMessageRequest,
   ConversationSseEventType,
   ConversationSseEvent,
+  ConversationSseMessageCompleteData,
 } from "./types.ts";
 
 export {

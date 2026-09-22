@@ -78,6 +78,7 @@ function useHarness() {
 function renderTurn() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
+  const setQueryData = vi.spyOn(queryClient, "setQueryData");
   const view = renderHook(() => useHarness(), {
     wrapper: ({ children }) => (
       <MemoryRouter initialEntries={["/"]}>
@@ -87,7 +88,28 @@ function renderTurn() {
       </MemoryRouter>
     ),
   });
-  return { ...view, invalidateQueries };
+  return { ...view, invalidateQueries, setQueryData };
+}
+
+function makeAssistantMessageForCompletion(): Message {
+  return {
+    id: "m1",
+    conversation_id: "c1",
+    role: "assistant",
+    content: "Budget reply",
+    tool_calls: null,
+    error: null,
+    model: null,
+    input_tokens: null,
+    output_tokens: null,
+    duration_ms: null,
+    session_id: null,
+    request_id: null,
+    sources: [],
+    citations: [],
+    routed_butler: null,
+    created_at: "2026-09-22T00:00:00Z",
+  };
 }
 
 beforeEach(() => {
@@ -140,16 +162,31 @@ describe("useConversationTurn", () => {
       { event: "conversation_created", data: { conversation_id: "c1", title: null } },
       {
         event: "message_complete",
-        data: { message_id: "m1", tool_calls: [], sources: [] },
+        data: {
+          message_id: "m1",
+          tool_calls: [],
+          sources: ["Budget"],
+          citations: [{ label: "Budget", target: "/spend", kind: "internal" }],
+          routed_butler: "finance",
+        },
       },
     ];
-    const { result, invalidateQueries } = renderTurn();
+    const { result, invalidateQueries, setQueryData } = renderTurn();
 
     await act(async () => {
       await result.current.sendText("hello");
     });
 
     expect(result.current.streaming).toBeNull();
+    expect(setQueryData).toHaveBeenCalled();
+    const updater = setQueryData.mock.calls[0]?.[1] as (
+      current: { data: Message[] },
+    ) => { data: Message[] };
+    const updated = updater({ data: [makeAssistantMessageForCompletion()] });
+    expect(updated.data[0]).toMatchObject({
+      citations: [{ label: "Budget", target: "/spend", kind: "internal" }],
+      routed_butler: "finance",
+    });
     expect(invalidateQueries).toHaveBeenCalled();
   });
 
