@@ -111,6 +111,8 @@ logger = logging.getLogger(__name__)
 # Period literal for query parameter validation
 PeriodLiteral = Literal["24h", "7d", "30d"]
 _PERIOD_HOURS: dict[str, int] = {"24h": 24, "7d": 168, "30d": 720}
+_FANOUT_METRIC_NAME = "switchboard_routed_messages_total"
+_FANOUT_METRIC_AVAILABILITY_QUERY = f'count({{__name__="{_FANOUT_METRIC_NAME}"}})'
 
 
 def _parse_prometheus_fanout_total(
@@ -154,6 +156,23 @@ def _parse_prometheus_fanout_total(
     if not math.isfinite(numeric) or numeric < 0:
         return None
     return connector_type, endpoint_identity, target_butler, int(numeric)
+
+
+def _parse_prometheus_scalar(result: Any) -> float | None:
+    """Parse one scalar vector result, returning ``None`` for unreadable data."""
+    if not isinstance(result, dict) or "error" in result:
+        return None
+    raw_value = result.get("value")
+    if not isinstance(raw_value, (list, tuple)) or len(raw_value) < 2:
+        return None
+    raw = raw_value[1]
+    if isinstance(raw, bool):
+        return None
+    try:
+        numeric = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return numeric if math.isfinite(numeric) else None
 
 
 def _get_prometheus_url() -> str | None:
@@ -1504,6 +1523,9 @@ async def get_ingestion_fanout(
     Overview tab.
 
     Primary source: Prometheus (``switchboard_routed_messages_total`` metric).
+    An empty aggregate result is measured only after a separate exact-family
+    availability probe confirms that Prometheus has at least one live series;
+    an absent family is degraded, never a measured empty route set.
     DB fallback: when ``PROMETHEUS_URL`` is not set or Prometheus returns an
     error, the matrix is computed from sessions fan-out joined against
     ``public.ingestion_events``.  This correctly handles all triage decisions,
@@ -1519,13 +1541,31 @@ async def get_ingestion_fanout(
     if prom_url:
         q = (
             f"sum by (connector_type, endpoint_identity, target_butler) "
-            f"(increase(switchboard_routed_messages_total[{hours}h]))"
+            f"(increase({_FANOUT_METRIC_NAME}[{hours}h]))"
         )
         results = await async_query(prom_url, q)
         # A successful Prometheus vector may contain no matching routes.  That
-        # is a measured empty aggregate, distinct from an unreadable counter
-        # source, and must not fall through to the degraded DB fallback.
+        # is a measured empty aggregate only when the exact metric family is
+        # present.  An unproduced family is an unavailable source, not a
+        # measured empty aggregate, and must not fall through to the DB path.
         if not results:
+            availability_results = await async_query(
+                prom_url,
+                _FANOUT_METRIC_AVAILABILITY_QUERY,
+            )
+            metric_count = (
+                _parse_prometheus_scalar(availability_results[0]) if availability_results else None
+            )
+            if metric_count is None or metric_count < 1:
+                logger.warning(
+                    "Prometheus fanout metric %s is absent or unreadable; "
+                    "reporting aggregates unavailable",
+                    _FANOUT_METRIC_NAME,
+                )
+                return ApiResponse[list[FanoutRow]](
+                    data=[],
+                    meta=ApiMeta(aggregates_available=False),
+                )
             return ApiResponse[list[FanoutRow]](
                 data=[],
                 meta=ApiMeta(aggregates_available=True),

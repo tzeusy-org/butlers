@@ -638,9 +638,12 @@ models are not additional backend response contracts.
   - Each row names a measured `connector_type`, `endpoint_identity`,
     `target_butler`, and `message_count` route.
   - `meta.aggregates_available` is `true` for a readable Prometheus aggregate,
-    including a measured empty response. It is `false` when no usable aggregate
-    sample exists or the endpoint uses a degraded fallback; clients must name
-    that state rather than render rows, zeroes, or an all-clear distribution.
+    including a measured empty response. For an empty aggregate result, the
+    exact `switchboard_routed_messages_total` family availability probe must
+    also report at least one live series. It is `false` when that family is
+    absent/unreadable, no usable aggregate sample exists, or the endpoint uses
+    a degraded fallback; clients must name that state rather than render rows,
+    zeroes, or an all-clear distribution.
 
 ## Memory Domain Contract
 

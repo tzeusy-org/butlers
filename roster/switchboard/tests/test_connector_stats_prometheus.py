@@ -419,7 +419,7 @@ async def test_get_ingestion_fanout_prometheus_error_falls_back_to_db():
 
 
 async def test_get_ingestion_fanout_empty_prometheus_vector_is_measured_empty():
-    """A successful empty vector is not a reason to substitute a degraded fallback."""
+    """An empty vector is measured only when the exact metric family exists."""
 
     class _NoFallbackDB(_FakeDB):
         def __init__(self) -> None:
@@ -431,10 +431,13 @@ async def test_get_ingestion_fanout_empty_prometheus_vector_is_measured_empty():
             self.fan_out_calls += 1
             return {}, []
 
-    with patch(
-        "butlers.modules.metrics.prometheus.async_query",
-        new=AsyncMock(return_value=[]),
-    ):
+    async_query = AsyncMock(
+        side_effect=[
+            [],
+            [{"metric": {}, "value": [1740000000, "1"]}],
+        ]
+    )
+    with patch("butlers.modules.metrics.prometheus.async_query", new=async_query):
         with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
             sys.modules.pop("switchboard_api_models", None)
             router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
@@ -447,6 +450,40 @@ async def test_get_ingestion_fanout_empty_prometheus_vector_is_measured_empty():
     assert result.data == []
     assert result.meta.aggregates_available is True
     assert db.fan_out_calls == 0
+    assert async_query.await_count == 2
+    assert (
+        async_query.await_args_list[1].args[1]
+        == 'count({__name__="switchboard_routed_messages_total"})'
+    )
+
+
+async def test_get_ingestion_fanout_empty_vector_degrades_when_metric_family_is_absent():
+    """An unproduced fanout metric must not masquerade as a measured empty route set."""
+
+    class _NoFallbackDB(_FakeDB):
+        async def fan_out_with_status(
+            self, query: str, args: tuple = (), butler_names=None
+        ) -> tuple[dict, list[str]]:
+            raise AssertionError("an absent Prometheus metric must not use DB fallback")
+
+    async_query = AsyncMock(
+        side_effect=[
+            [],
+            [{"metric": {}, "value": [1740000000, "0"]}],
+        ]
+    )
+    with patch("butlers.modules.metrics.prometheus.async_query", new=async_query):
+        with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
+            sys.modules.pop("switchboard_api_models", None)
+            router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
+            spec = importlib.util.spec_from_file_location("_sw_router_ifanout_absent", router_path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            result = await mod.get_ingestion_fanout(period="24h", db=_NoFallbackDB())
+
+    assert result.data == []
+    assert result.meta.aggregates_available is False
+    assert async_query.await_count == 2
 
 
 async def test_get_ingestion_fanout_filters_zero_count_rows():

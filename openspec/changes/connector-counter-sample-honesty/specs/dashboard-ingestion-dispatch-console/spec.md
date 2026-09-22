@@ -24,3 +24,11 @@ reports that the aggregate source is available.
 - **WHEN** the aggregate source is available and reports no matching events
 - **THEN** the dashboard may render the measured empty state or zero count
 - **AND** it does not replace that state with an unavailable error
+
+#### Scenario: An absent fanout metric is unavailable
+
+- **WHEN** the fanout query returns no rows and an exact-family availability
+  probe finds no live `switchboard_routed_messages_total` series
+- **THEN** the API reports `meta.aggregates_available=false`
+- **AND** the dashboard renders the routing distribution as unavailable rather
+  than a measured empty state

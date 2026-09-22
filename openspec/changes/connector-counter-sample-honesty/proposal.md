@@ -18,7 +18,10 @@ distinguish an unreadable source from a measured empty matrix.
   the existing `connector.heartbeat.v1` integer wire shape.
 - Make the Switchboard fanout projection ignore metadata, malformed, NaN, and
   infinity samples and return `meta.aggregates_available=false` when no usable
-  total exists.
+  total exists. When the aggregate query is empty, probe the exact
+  `switchboard_routed_messages_total` family first; an absent or unreadable
+  family is unavailable, while a live family with no matching increase remains
+  a measured empty result.
 - Add additive OpenSpec coverage for sample validity and dashboard unavailable
   data states.
 
