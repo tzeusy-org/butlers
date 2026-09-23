@@ -338,6 +338,17 @@ producer, Q4 owns the one public route and owner-auth exception, and k3s and
 Compose consume that route. This is internal control-plane observation, not a
 transactional target acceptance receipt or a new public monitor.
 
+The L1 staging migration `sw_035` stores policy, observation, compatibility,
+boot epoch and probe sequence separately while retaining the old
+`eligibility_state` as route authority until L3. Matching eligibility audit
+receipts distinguish TTL-derived from owner-directed legacy holds; an
+unmatched hold is `review_required` and remains denied. Runtime roles cannot
+directly update the new facts: narrow database operations fence boot
+registration and probe writes, and the authenticated owner API alone changes
+policy. Legacy automatic writers cannot clear a restrictive policy. Rollback
+retains the policy/provenance store and latest epoch; a code downgrade does not
+delete either or turn an ambiguous row active.
+
 ### Amendment 5 (2026-09-23) — Ingestion-to-Domain Delivery Intent
 
 **Status:** Approved target contract in

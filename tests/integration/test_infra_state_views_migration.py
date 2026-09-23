@@ -24,13 +24,23 @@ schema's same-named table.
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 from datetime import UTC, datetime, timedelta
+from urllib.parse import urlparse
+from uuid import uuid4
 
 import asyncpg
 import pytest
+from sqlalchemy import create_engine
 
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.db import register_jsonb_codec
+from butlers.testing.migration import (
+    create_migrated_test_db,
+    init_db_sql_for_dbapi,
+    migration_bootstrap_db_url,
+    migration_db_name,
+)
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -191,6 +201,543 @@ async def test_heartbeat_view_surfaces_registry_row(pool: asyncpg.Pool) -> None:
     assert row["liveness_ttl_seconds"] == 300
     assert row["quarantined_at"] is not None
     assert row["last_seen_at"] is not None
+
+
+async def _as_role(pool: asyncpg.Pool, role: str, sql: str, *args):
+    async with pool.acquire() as conn:
+        await conn.execute(f'SET ROLE "{role}"')
+        try:
+            return await conn.fetchval(sql, *args)
+        finally:
+            await conn.execute("RESET ROLE")
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_registry_boot_epochs_and_probe_fences_use_database_authority(
+    pool: asyncpg.Pool,
+) -> None:
+    from butlers.tools.switchboard.registry.registry import (
+        get_control_plane_state,
+        record_probe,
+        register_boot,
+        reserve_probe,
+    )
+
+    await pool.execute(
+        "INSERT INTO switchboard.butler_registry (name, endpoint_url) "
+        "VALUES ('finance', 'http://finance:41101/mcp') "
+        "ON CONFLICT (name) DO NOTHING"
+    )
+
+    async def boot():
+        async with pool.acquire() as conn:
+            await conn.execute('SET ROLE "butler_finance_rw"')
+            try:
+                return await register_boot(conn, "finance", uuid4())
+            finally:
+                await conn.execute("RESET ROLE")
+
+    first, second = await asyncio.gather(boot(), boot())
+    assert sorted((first, second)) == [1, 2]
+
+    # A rolled-back successor cannot become the current epoch.
+    async with pool.acquire() as conn:
+        await conn.execute('SET ROLE "butler_finance_rw"')
+        try:
+            with pytest.raises(RuntimeError, match="abort registration"):
+                async with conn.transaction():
+                    assert await register_boot(conn, "finance", uuid4()) == 3
+                    raise RuntimeError("abort registration")
+        finally:
+            await conn.execute("RESET ROLE")
+
+    state = await get_control_plane_state(pool, "finance")
+    assert state is not None and state["boot_epoch"] == 2
+
+    async with pool.acquire() as conn:
+        await conn.execute('SET ROLE "butler_switchboard_rw"')
+        try:
+            epoch, sequence = await reserve_probe(conn, "finance")
+            assert epoch == 2
+            server_before = await conn.fetchval("SELECT clock_timestamp()")
+            assert not await record_probe(
+                conn,
+                "finance",
+                boot_epoch=1,
+                probe_sequence=sequence,
+                healthy=True,
+                compatible=True,
+                accepting=True,
+            )
+            assert await record_probe(
+                conn,
+                "finance",
+                boot_epoch=epoch,
+                probe_sequence=sequence,
+                healthy=True,
+                compatible=True,
+                accepting=True,
+            )
+            server_after = await conn.fetchval("SELECT clock_timestamp()")
+        finally:
+            await conn.execute("RESET ROLE")
+
+    state = await get_control_plane_state(pool, "finance")
+    assert state is not None
+    healthy_at = state["healthy_observed_at"]
+    assert state["observed_state"] == "healthy"
+    assert state["observed_boot_epoch"] == 2
+    assert healthy_at is not None
+    assert server_before <= healthy_at <= server_after
+
+    async with pool.acquire() as conn:
+        await conn.execute('SET ROLE "butler_switchboard_rw"')
+        try:
+            _, older_sequence = await reserve_probe(conn, "finance")
+            _, newer_sequence = await reserve_probe(conn, "finance")
+            assert newer_sequence > older_sequence
+            assert not await record_probe(
+                conn,
+                "finance",
+                boot_epoch=2,
+                probe_sequence=older_sequence,
+                healthy=True,
+                compatible=True,
+                accepting=True,
+            )
+            assert await record_probe(
+                conn,
+                "finance",
+                boot_epoch=2,
+                probe_sequence=newer_sequence,
+                healthy=False,
+                compatible=None,
+                accepting=None,
+                failure_class="timeout",
+            )
+        finally:
+            await conn.execute("RESET ROLE")
+
+    failed = await get_control_plane_state(pool, "finance")
+    assert failed is not None
+    assert failed["observed_state"] == "unavailable"
+    assert failed["last_probe_at"] >= healthy_at
+    assert failed["healthy_observed_at"] == healthy_at
+    assert failed["probe_failure_class"] == "timeout"
+    assert failed["policy_state"] == "active"
+
+    assert (
+        await pool.fetchval("SELECT public.set_butler_registry_policy('finance', 'quarantined')")
+        == "quarantined"
+    )
+    successor = await boot()
+    assert successor == 3
+    async with pool.acquire() as conn:
+        await conn.execute('SET ROLE "butler_switchboard_rw"')
+        try:
+            epoch, sequence = await reserve_probe(conn, "finance")
+            assert epoch == successor
+            assert not await record_probe(
+                conn,
+                "finance",
+                boot_epoch=2,
+                probe_sequence=sequence,
+                healthy=True,
+                compatible=True,
+                accepting=True,
+            )
+            assert await record_probe(
+                conn,
+                "finance",
+                boot_epoch=successor,
+                probe_sequence=sequence,
+                healthy=True,
+                compatible=True,
+                accepting=True,
+            )
+        finally:
+            await conn.execute("RESET ROLE")
+    held = await get_control_plane_state(pool, "finance")
+    assert held is not None and held["policy_state"] == "quarantined"
+    assert held["observed_state"] == "healthy"
+    assert held["legacy_eligibility_state"] == "quarantined"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_registry_runtime_roles_cannot_forge_policy_or_observation(
+    pool: asyncpg.Pool,
+) -> None:
+    await pool.execute(
+        "INSERT INTO switchboard.butler_registry (name, endpoint_url) "
+        "VALUES ('health', 'http://health:41102/mcp') "
+        "ON CONFLICT (name) DO NOTHING"
+    )
+    assert (
+        await pool.fetchval(
+            "SELECT policy_state FROM switchboard.butler_registry_control_plane "
+            "WHERE name = 'health'"
+        )
+        == "active"
+    )
+    async with pool.acquire() as conn:
+        await conn.execute('SET ROLE "butler_health_rw"')
+        try:
+            with pytest.raises(asyncpg.PostgresError):
+                await conn.execute(
+                    "UPDATE switchboard.butler_registry_control_plane "
+                    "SET policy_state = 'active' WHERE name = 'health'"
+                )
+            with pytest.raises(asyncpg.PostgresError):
+                await conn.fetchval("SELECT public.reserve_butler_probe('health')")
+            with pytest.raises(asyncpg.PostgresError):
+                await conn.fetchval("SELECT public.set_butler_registry_policy('health', 'active')")
+            assert (
+                await conn.fetchval("SELECT public.register_butler_boot('health', $1)", uuid4())
+                == 1
+            )
+            with pytest.raises(asyncpg.PostgresError):
+                await conn.fetchval("SELECT public.register_butler_boot('finance', $1)", uuid4())
+        finally:
+            await conn.execute("RESET ROLE")
+
+    with pytest.raises(asyncpg.PostgresError):
+        await _as_role(
+            pool,
+            "butler_switchboard_rw",
+            "SELECT public.set_butler_registry_policy('health', 'active')",
+        )
+    assert await _as_role(
+        pool,
+        "butler_switchboard_rw",
+        "SELECT policy_state FROM switchboard.butler_registry_control_plane "
+        "WHERE name = 'health'",
+    ) == "active"
+    # RLS may reject with an error or silently filter the UPDATE to zero rows.
+    assert (
+        await _as_role(
+            pool,
+            "butler_switchboard_rw",
+            "UPDATE switchboard.butler_registry_control_plane "
+            "SET observed_state = 'healthy' WHERE name = 'health' RETURNING boot_epoch",
+        )
+        is None
+    )
+
+
+def test_registry_quarantine_migration_and_rollback_preserve_authority(
+    postgres_container,
+) -> None:
+    """Proven TTL, proven owner, and ambiguous histories remain distinct."""
+    from alembic import command
+    from butlers.migrations import _build_alembic_config
+    from butlers.tools.switchboard.registry.registry import register_butler
+    from butlers.tools.switchboard.registry.sweep import run_eligibility_sweep
+    from butlers.tools.switchboard.routing.route import _touch_registry_liveness
+
+    db_url = create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "switchboard"],
+        schemas={"switchboard": "switchboard"},
+        revisions={"switchboard": "sw_034"},
+    )
+    stamp = datetime.now(UTC) - timedelta(minutes=20)
+
+    async def seed_and_check() -> None:
+        p = await asyncpg.create_pool(db_url, min_size=1, max_size=3, init=register_jsonb_codec)
+        try:
+            for name, reason in (
+                ("finance", "operator_action"),
+                ("health", "liveness_ttl_2x_expired"),
+                ("general", None),
+            ):
+                await p.execute(
+                    """
+                    INSERT INTO switchboard.butler_registry (
+                        name, endpoint_url, eligibility_state, quarantined_at,
+                        eligibility_updated_at, last_seen_at
+                    ) VALUES ($1, $2, 'quarantined', $3, $3, $4)
+                    """,
+                    name,
+                    f"http://{name}:41100/mcp",
+                    stamp,
+                    stamp - timedelta(hours=1),
+                )
+                if reason:
+                    await p.execute(
+                        """
+                        INSERT INTO switchboard.butler_registry_eligibility_log (
+                            butler_name, previous_state, new_state, reason,
+                            observed_at
+                        ) VALUES ($1, 'stale', 'quarantined', $2, $3)
+                        """,
+                        name,
+                        reason,
+                        stamp,
+                    )
+            for name, reason in (
+                ("messenger", "operator_action"),
+                ("travel", "liveness_ttl_expired"),
+                ("home", None),
+            ):
+                await p.execute(
+                    """
+                    INSERT INTO switchboard.butler_registry (
+                        name, endpoint_url, eligibility_state,
+                        eligibility_updated_at, last_seen_at
+                    ) VALUES ($1, $2, 'stale', $3, $4)
+                    """,
+                    name,
+                    f"http://{name}:41100/mcp",
+                    stamp,
+                    stamp - timedelta(hours=1),
+                )
+                if reason:
+                    await p.execute(
+                        """
+                        INSERT INTO switchboard.butler_registry_eligibility_log (
+                            butler_name, previous_state, new_state, reason,
+                            observed_at
+                        ) VALUES ($1, 'active', 'stale', $2, $3)
+                        """,
+                        name,
+                        reason,
+                        stamp,
+                    )
+        finally:
+            await p.close()
+
+    asyncio.run(seed_and_check())
+    config = _build_alembic_config(db_url, chains=["switchboard"], target_schema="switchboard")
+    command.upgrade(config, "switchboard@sw_035")
+
+    async def assert_classification_and_writes() -> None:
+        p = await asyncpg.create_pool(db_url, min_size=1, max_size=3, init=register_jsonb_codec)
+        try:
+            rows = await p.fetch(
+                "SELECT name, policy_state, policy_provenance, observed_state, "
+                "legacy_evidence FROM switchboard.butler_registry_control_plane"
+            )
+            by_name = {row["name"]: row for row in rows}
+            assert by_name["finance"]["policy_state"] == "quarantined"
+            assert by_name["finance"]["policy_provenance"] == "legacy_operator"
+            assert by_name["health"]["policy_state"] == "active"
+            assert by_name["health"]["observed_state"] == "stale"
+            assert by_name["health"]["policy_provenance"] == "legacy_ttl"
+            assert by_name["general"]["policy_state"] == "review_required"
+            assert by_name["messenger"]["policy_state"] == "paused"
+            assert by_name["messenger"]["policy_provenance"] == "legacy_operator"
+            assert by_name["travel"]["policy_state"] == "active"
+            assert by_name["travel"]["observed_state"] == "stale"
+            assert by_name["home"]["policy_state"] == "review_required"
+            original_evidence = by_name["finance"]["legacy_evidence"]
+
+            await register_butler(p, "finance", "http://finance:41100/mcp")
+            await _touch_registry_liveness(p, "finance")
+            await register_butler(p, "general", "http://general:41100/mcp")
+            await register_butler(p, "messenger", "http://messenger:41100/mcp")
+            for name in ("finance", "general", "messenger", "home"):
+                assert (
+                    await p.fetchval(
+                        "SELECT eligibility_state FROM switchboard.butler_registry WHERE name = $1",
+                        name,
+                    )
+                    == "quarantined"
+                )
+
+            # A proven TTL transition does not become sticky operator policy.
+            await register_butler(p, "health", "http://health:41100/mcp")
+            assert (
+                await p.fetchval(
+                    "SELECT policy_state FROM switchboard.butler_registry_control_plane "
+                    "WHERE name = 'health'"
+                )
+                == "active"
+            )
+            await register_butler(p, "concierge", "http://concierge:41100/mcp")
+            await p.execute(
+                "UPDATE switchboard.butler_registry SET last_seen_at = $1 WHERE name = 'concierge'",
+                datetime.now(UTC) - timedelta(hours=1),
+            )
+            await run_eligibility_sweep(p)
+            assert (
+                await p.fetchval(
+                    "SELECT eligibility_state FROM switchboard.butler_registry "
+                    "WHERE name = 'concierge'"
+                )
+                == "quarantined"
+            )
+            assert (
+                await p.fetchval(
+                    "SELECT policy_state FROM switchboard.butler_registry_control_plane "
+                    "WHERE name = 'concierge'"
+                )
+                == "active"
+            )
+
+            # Simulate the old writer after Alembic rollback.  The table and
+            # trigger remain, so rollback cannot clear either restrictive row.
+            assert (
+                await _as_role(
+                    p,
+                    "butler_finance_rw",
+                    "SELECT public.register_butler_boot('finance', $1)",
+                    uuid4(),
+                )
+                == 1
+            )
+            assert (
+                await _as_role(
+                    p,
+                    "butler_finance_rw",
+                    "SELECT public.register_butler_boot('finance', $1)",
+                    uuid4(),
+                )
+                == 2
+            )
+            command.downgrade(config, "switchboard@sw_034")
+            await p.execute(
+                "UPDATE switchboard.butler_registry SET eligibility_state = 'active', "
+                "quarantined_at = NULL, quarantine_reason = NULL "
+                "WHERE name IN ('finance', 'general')"
+            )
+            for name in ("finance", "general"):
+                assert (
+                    await p.fetchval(
+                        "SELECT eligibility_state FROM switchboard.butler_registry WHERE name = $1",
+                        name,
+                    )
+                    == "quarantined"
+                )
+            reserved = await _as_role(
+                p,
+                "butler_switchboard_rw",
+                "SELECT probe_sequence FROM public.reserve_butler_probe('finance')",
+            )
+            assert reserved is not None
+            assert not await _as_role(
+                p,
+                "butler_switchboard_rw",
+                "SELECT public.record_butler_probe('finance', 1, $1, true, true, true, NULL)",
+                reserved,
+            )
+            with pytest.raises(asyncpg.PostgresError):
+                await _as_role(
+                    p,
+                    "butler_switchboard_rw",
+                    "SELECT public.record_butler_probe("
+                    "'finance', NULL, $1, true, true, true, NULL)",
+                    reserved,
+                )
+            command.upgrade(config, "switchboard@sw_035")
+            assert (
+                await p.fetchval(
+                    "SELECT legacy_evidence FROM switchboard.butler_registry_control_plane "
+                    "WHERE name = 'finance'"
+                )
+                == original_evidence
+            )
+            assert (
+                await p.fetchval("SELECT public.set_butler_registry_policy('general', 'active')")
+                == "active"
+            )
+            assert (
+                await p.fetchval(
+                    "SELECT eligibility_state FROM switchboard.butler_registry "
+                    "WHERE name = 'general'"
+                )
+                == "active"
+            )
+            assert (
+                await p.fetchval(
+                    "SELECT policy_provenance FROM switchboard.butler_registry_control_plane "
+                    "WHERE name = 'general'"
+                )
+                == "operator"
+            )
+        finally:
+            await p.close()
+
+    asyncio.run(assert_classification_and_writes())
+
+
+def test_registry_policy_rls_survives_bootstrap_grant_replay(postgres_container) -> None:
+    db_name = migration_db_name()
+    db_url = create_migrated_test_db(
+        postgres_container,
+        db_name,
+        chains=["core", "switchboard"],
+        schemas={"switchboard": "switchboard"},
+    )
+
+    async def seed() -> None:
+        p = await asyncpg.create_pool(db_url, min_size=1, max_size=1)
+        try:
+            await p.execute(
+                "INSERT INTO switchboard.butler_registry (name, endpoint_url) "
+                "VALUES ('health', 'http://health:41102/mcp')"
+            )
+            assert (
+                await p.fetchval(
+                    "SELECT public.set_butler_registry_policy('health', 'quarantined')"
+                )
+                == "quarantined"
+            )
+        finally:
+            await p.close()
+
+    asyncio.run(seed())
+
+    # Replay the production bootstrap that can re-widen table grants.  RLS and
+    # the role checks inside definer operations must remain the authority.
+    engine = create_engine(
+        migration_bootstrap_db_url(postgres_container, db_name),
+        isolation_level="AUTOCOMMIT",
+    )
+    raw = engine.raw_connection()
+    try:
+        raw.autocommit = True
+        with raw.cursor() as cursor:
+            cursor.execute(
+                "SELECT set_config('butlers.connecting_user', %s, false)",
+                (urlparse(db_url).username,),
+            )
+            cursor.execute(init_db_sql_for_dbapi())
+    finally:
+        raw.close()
+        engine.dispose()
+
+    async def assert_fence() -> None:
+        p = await asyncpg.create_pool(db_url, min_size=1, max_size=1)
+        try:
+            assert (
+                await _as_role(
+                    p,
+                    "butler_switchboard_rw",
+                    "UPDATE switchboard.butler_registry_control_plane "
+                    "SET policy_state = 'active' WHERE name = 'health' "
+                    "RETURNING policy_state",
+                )
+                is None
+            )
+            assert (
+                await p.fetchval(
+                    "SELECT policy_state FROM switchboard.butler_registry_control_plane "
+                    "WHERE name = 'health'"
+                )
+                == "quarantined"
+            )
+            assert (
+                await p.fetchval(
+                    "SELECT eligibility_state FROM switchboard.butler_registry "
+                    "WHERE name = 'health'"
+                )
+                == "quarantined"
+            )
+        finally:
+            await p.close()
+
+    asyncio.run(assert_fence())
 
 
 def test_downgrade_drops_both_views(postgres_container) -> None:

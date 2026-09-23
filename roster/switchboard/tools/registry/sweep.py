@@ -8,6 +8,9 @@ Scans all butler_registry rows and applies TTL-based eligibility transitions:
 - last_seen_at is NULL  → skipped (never reported, newly registered)
 
 All transitions are logged to butler_registry_eligibility_log.
+During the L1-to-L3 migration this remains a legacy eligibility projection:
+the sw_035 trigger prevents a TTL sweep from clearing separate operator policy,
+and the sweep never writes that protected policy itself.
 
 Issue: butlers-976.4
 """
