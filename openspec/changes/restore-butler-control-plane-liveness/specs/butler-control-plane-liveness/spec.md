@@ -12,6 +12,12 @@ Scope: v1-mandatory
 - **THEN** it records a fresh healthy observation with the database server's time only when the returned epoch equals the latest registered epoch
 - **AND** a later complete observation can establish continued freshness without a daemon POST to the dashboard API
 
+#### Scenario: Startup observation does not wait a full cadence
+- **WHEN** the Dashboard observer starts after its database pools are ready
+- **THEN** it begins a receiver-derived probe cycle promptly rather than waiting for the recurring TTL-based interval
+- **AND** if some expected daemons have not yet returned validated healthy responses, it retries at a bounded interval of at least the lesser of 30 seconds and the normal observer interval for no longer than that first normal interval
+- **AND** after a healthy fleet response or the startup retry window ends, it resumes the normal cadence without treating an incomplete or failed probe as healthy
+
 #### Scenario: Successor registration fences an older boot before probes race
 - **WHEN** a newer boot registers for the same Git-roster daemon while an earlier process or probe remains alive
 - **THEN** the database allocates a strictly higher durable epoch and returns it to the successor for its internal identity response
