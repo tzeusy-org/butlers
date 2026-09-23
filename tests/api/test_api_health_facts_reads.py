@@ -112,20 +112,24 @@ async def _request(app, method: str, path: str, **kwargs) -> httpx.Response:
 # ---------------------------------------------------------------------------
 
 
-def _med_fact_row(*, name="Vitamin D", active=True) -> _Row:
+def _med_fact_row(*, name="Vitamin D", active=True, quantity=None, include_quantity=False) -> _Row:
+    metadata = {
+        "name": name,
+        "dosage": "1000IU",
+        "frequency": "daily",
+        "schedule": ["08:00"],
+        "active": active,
+        "notes": "with breakfast",
+    }
+    if include_quantity:
+        metadata["quantity"] = quantity
+        metadata["quantity_updated_at"] = _NOW.isoformat() if quantity is not None else None
     return _row(
         {
             "id": uuid.uuid4(),
             "content": f"{name} 1000IU daily",
             "created_at": _NOW,
-            "metadata": {
-                "name": name,
-                "dosage": "1000IU",
-                "frequency": "daily",
-                "schedule": ["08:00"],
-                "active": active,
-                "notes": "with breakfast",
-            },
+            "metadata": metadata,
         }
     )
 
@@ -205,6 +209,18 @@ async def test_medications_returns_fact_based_entry():
     assert m["schedule"] == ["08:00"]
     assert m["active"] is True
     assert m["notes"] == "with breakfast"
+    assert m["quantity"] is None
+    assert m["quantity_updated_at"] is None
+
+
+async def test_medications_preserve_owner_recorded_supply_quantity():
+    row = _med_fact_row(name="Vitamin D", quantity=90, include_quantity=True)
+    app, _ = _make_app(fetch_rows=[row], fetchval_result=1)
+    resp = await _get(app, "/api/health/medications")
+    assert resp.status_code == 200
+    medication = resp.json()["data"][0]
+    assert medication["quantity"] == 90
+    assert medication["quantity_updated_at"] == _NOW.isoformat()
 
 
 async def test_doses_returns_fact_based_entry():
@@ -351,6 +367,8 @@ async def test_create_medication_delegates_to_medication_add():
             "schedule": ["08:00"],
             "active": True,
             "notes": "with breakfast",
+            "quantity": 90,
+            "quantity_updated_at": _NOW.isoformat(),
             "created_at": _NOW,
             "updated_at": _NOW,
         }
@@ -366,6 +384,7 @@ async def test_create_medication_delegates_to_medication_add():
                 "frequency": "daily",
                 "schedule": ["08:00"],
                 "notes": "with breakfast",
+                "quantity": 90,
             },
         )
     assert resp.status_code == 201
@@ -373,9 +392,12 @@ async def test_create_medication_delegates_to_medication_add():
     assert body["id"] == str(new_id)
     assert body["name"] == "Vitamin D"
     assert body["active"] is True
+    assert body["quantity"] == 90
+    assert body["quantity_updated_at"] == _NOW.isoformat()
     # The endpoint forwarded the validated request fields to the butler tool.
     fake_add.assert_awaited_once()
     assert fake_add.await_args.kwargs["name"] == "Vitamin D"
+    assert fake_add.await_args.kwargs["quantity"] == 90
 
 
 async def test_create_medication_validates_required_fields():
@@ -383,6 +405,25 @@ async def test_create_medication_validates_required_fields():
     # Missing required `dosage` / `frequency` — pydantic rejects before any tool call.
     resp = await _request(app, "POST", "/api/health/medications", json={"name": "Vitamin D"})
     assert resp.status_code == 422
+
+
+@pytest.mark.parametrize("quantity", [0, -1, "90", "90.5", 90.5, True, "not-a-count"])
+async def test_create_medication_rejects_non_positive_or_malformed_quantity(quantity):
+    app, _ = _make_app()
+    with patch(f"{_HEALTH_TOOLS}.medication_add", AsyncMock()) as fake_add:
+        resp = await _request(
+            app,
+            "POST",
+            "/api/health/medications",
+            json={
+                "name": "Vitamin D",
+                "dosage": "1000IU",
+                "frequency": "daily",
+                "quantity": quantity,
+            },
+        )
+    assert resp.status_code == 422
+    fake_add.assert_not_awaited()
 
 
 async def test_update_medication_delegates_to_medication_update():
@@ -410,6 +451,51 @@ async def test_update_medication_delegates_to_medication_update():
     fake_update.assert_awaited_once()
     # Only the supplied field is forwarded (exclude_none).
     assert fake_update.await_args.kwargs == {"dosage": "2000IU"}
+
+
+async def test_update_medication_same_quantity_payload_records_a_refill():
+    app, _ = _make_app()
+    med_id = uuid.uuid4()
+    fake_update = AsyncMock(
+        return_value={
+            "id": med_id,
+            "name": "Vitamin D",
+            "dosage": "1000IU",
+            "frequency": "daily",
+            "schedule": [],
+            "active": True,
+            "notes": None,
+            "quantity": 30,
+            "quantity_updated_at": _NOW.isoformat(),
+            "created_at": _NOW,
+            "updated_at": _NOW,
+        }
+    )
+    with patch(f"{_HEALTH_TOOLS}.medication_update", fake_update):
+        resp = await _request(
+            app, "PUT", f"/api/health/medications/{med_id}", json={"quantity": 30}
+        )
+    assert resp.status_code == 200
+    assert resp.json()["quantity"] == 30
+    assert resp.json()["quantity_updated_at"] == _NOW.isoformat()
+    fake_update.assert_awaited_once()
+    assert fake_update.await_args.args[1] == str(med_id)
+    assert fake_update.await_args.kwargs == {"quantity": 30}
+
+
+@pytest.mark.parametrize("quantity", [0, -1, "120", "120.5", 120.5, True, "not-a-count"])
+async def test_update_medication_rejects_non_positive_or_malformed_quantity(quantity):
+    app, _ = _make_app()
+    med_id = uuid.uuid4()
+    with patch(f"{_HEALTH_TOOLS}.medication_update", AsyncMock()) as fake_update:
+        resp = await _request(
+            app,
+            "PUT",
+            f"/api/health/medications/{med_id}",
+            json={"quantity": quantity},
+        )
+    assert resp.status_code == 422
+    fake_update.assert_not_awaited()
 
 
 async def test_update_medication_empty_body_is_422():
