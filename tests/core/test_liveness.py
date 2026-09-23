@@ -245,6 +245,43 @@ async def test_separated_route_resolver_uses_policy_and_current_epoch_without_wr
         assert admitted is not None and admitted.name == "health" and admitted.port == 41103
 
 
+async def test_receiver_candidates_ignore_old_legacy_heartbeat_and_preserve_policy():
+    from butlers.config import ButlerType
+    from butlers.tools.switchboard.registry.registry import list_control_plane_candidates
+
+    now = datetime.now(UTC)
+    instance_id = uuid.UUID(generate_uuid7_string())
+    configs = [
+        SimpleNamespace(
+            name=name,
+            port=port,
+            type=ButlerType.BUTLER,
+            description=name,
+            modules={"calendar": {}},
+            runtime_seed=SimpleNamespace(route_contract_min=1, route_contract_max=1),
+        )
+        for name, port in (("health", 41103), ("finance", 41107))
+    ]
+    pool = AsyncMock()
+    old_heartbeat = now - timedelta(hours=2)
+    pool.fetch.return_value = [
+        {"name": "health", "last_seen_at": old_heartbeat, "eligibility_state": "quarantined"},
+        {"name": "finance", "last_seen_at": old_heartbeat},
+    ]
+    ready = _ready_control_plane_row(instance_id, now=now)
+    pool.fetchrow.side_effect = lambda _query, name: {
+        **ready,
+        "name": name,
+        "policy_state": "active" if name == "health" else "quarantined",
+    }
+    with patch("butlers.config.list_butlers", return_value=configs):
+        candidates = await list_control_plane_candidates(pool, butler_only=True)
+
+    assert [candidate["name"] for candidate in candidates] == ["health"]
+    assert candidates[0]["modules"] == ["calendar"]
+    assert pool.execute.await_count == 0
+
+
 async def test_internal_route_preflight_coalesces_and_invalidates_cached_policy():
     from butlers.tools.switchboard.routing.preflight import RoutePreflight
 

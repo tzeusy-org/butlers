@@ -1119,7 +1119,7 @@ async def get_butlers_heartbeat(
 ) -> ApiResponse[HeartbeatFacts]:
     """Return per-butler liveness registry snapshots and session facts.
 
-    Reads from the switchboard's butler_registry table for heartbeat timestamps
+    Reads receiver-verified healthy timestamps from the Switchboard control plane
     and fans out to per-butler schema sessions tables for session facts. Does
     not issue live MCP calls to any butler.
 
@@ -1136,10 +1136,14 @@ async def get_butlers_heartbeat(
     except KeyError:
         raise HTTPException(status_code=503, detail="Switchboard database is not available")
 
-    # Fetch liveness registry: butler name -> last_seen_at
+    # A failed probe never advances this timestamp. Legacy daemon-authored
+    # last_seen_at is no longer a reliable liveness signal.
     try:
         registry_rows = await sw_pool.fetch(
-            "SELECT name, last_seen_at FROM butler_registry ORDER BY name ASC"
+            "SELECT r.name, c.healthy_observed_at AS last_seen_at"
+            " FROM butler_registry AS r"
+            " LEFT JOIN butler_registry_control_plane AS c USING (name)"
+            " ORDER BY r.name ASC"
         )
     except Exception as exc:
         logger.warning("Failed to query butler_registry: %s", exc)

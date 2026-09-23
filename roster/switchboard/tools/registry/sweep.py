@@ -29,6 +29,7 @@ from butlers.tools.switchboard.registry.registry import (
     ELIGIBILITY_STALE,
     _audit_eligibility_transition,
     _normalize_positive_int,
+    receiver_route_cutover_enabled,
 )
 
 logger = logging.getLogger(__name__)
@@ -167,6 +168,12 @@ async def run_eligibility_sweep(
         - transitioned: int — number of butlers whose state changed
         - transitions: list[dict] — details for each transition
     """
+    if receiver_route_cutover_enabled():
+        # The legacy reporter no longer renews last_seen_at. A TTL sweep here
+        # would manufacture a quarantine from obsolete evidence and leave a
+        # misleading rollback projection. The receiver observer owns liveness.
+        return {"evaluated": 0, "skipped": 0, "transitioned": 0, "transitions": []}
+
     if now is None:
         now = datetime.now(UTC)
 

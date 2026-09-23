@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import time
 from typing import Any
 
@@ -24,6 +23,7 @@ from butlers.tools.switchboard.registry.registry import (
     DEFAULT_ROUTE_CONTRACT_VERSION,
     ControlPlaneTargetDecision,
     expected_route_target,
+    receiver_route_cutover_enabled,
     resolve_control_plane_target,
     resolve_routing_target,
 )
@@ -45,13 +45,7 @@ from butlers.tools.switchboard.routing.transport import (
 logger = logging.getLogger(__name__)
 _ROUTER_CLIENTS: dict[str, tuple[MCPClient, Any]] = {}
 _ROUTER_CLIENT_LOCKS: dict[str, asyncio.Lock] = {}
-_RECEIVER_ROUTE_CUTOVER_ENV = "BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER"
 _ROUTE_RECHECK_DEADLINE_S = PROBE_DEADLINE_S + 2.0
-
-
-def _receiver_route_cutover_enabled() -> bool:
-    """Keep L3 routing shadowed until the separately approved live cutover."""
-    return os.environ.get(_RECEIVER_ROUTE_CUTOVER_ENV) == "1"
 
 
 async def _resolve_receiver_route_target(
@@ -470,7 +464,7 @@ async def route(
             # The separated-facts path is deliberately default-off until its
             # shadow comparison and deployment gate are reviewed.  Legacy
             # routing retains exactly its current authority in the meantime.
-            receiver_cutover = _receiver_route_cutover_enabled()
+            receiver_cutover = receiver_route_cutover_enabled()
             transient_refusal = False
             if receiver_cutover:
                 decision, resolve_error, transient_refusal = await _resolve_receiver_route_target(

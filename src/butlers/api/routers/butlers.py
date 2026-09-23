@@ -677,9 +677,13 @@ async def _fetch_board_row(
     if registry_source_error or reg is None:
         eligibility = "unavailable"
     else:
-        # Derive eligibility from freshness (TTL staleness) rather than raw stored state.
-        # This mirrors the freshness rule used in _derive_eligibility_state.
-        eligibility = _derive_eligibility_state(reg, now=now)
+        # Receiver state/compatibility can deny a target while its last good
+        # observation remains recent. Freshness can only narrow an active row.
+        eligibility = (
+            "stale"
+            if reg["eligibility_state"] == "stale"
+            else _derive_eligibility_state(reg, now=now)
+        )
 
     quarantine_reason = reg["quarantine_reason"] if reg else None
     quarantined_dt = (
@@ -872,9 +876,19 @@ async def get_butlers_board(
         sw_pool = db.pool("switchboard")
         registry_rows = await asyncio.wait_for(
             sw_pool.fetch(
-                "SELECT name, last_seen_at, eligibility_state, quarantined_at, quarantine_reason,"
-                " liveness_ttl_seconds"
-                " FROM butler_registry"
+                "SELECT r.name, c.healthy_observed_at AS last_seen_at,"
+                " CASE WHEN c.policy_state != 'active' THEN 'quarantined'"
+                " WHEN c.observed_state = 'healthy'"
+                " AND c.observed_boot_epoch = c.boot_epoch"
+                " AND c.route_compatible IS TRUE AND c.accepting_routes IS TRUE"
+                " THEN 'active' ELSE 'stale' END AS eligibility_state,"
+                " CASE WHEN c.policy_state != 'active' THEN c.policy_changed_at"
+                " ELSE NULL END AS quarantined_at,"
+                " CASE WHEN c.policy_state != 'active'"
+                " THEN 'protected_policy:' || c.policy_state"
+                " ELSE NULL END AS quarantine_reason, r.liveness_ttl_seconds"
+                " FROM butler_registry AS r"
+                " JOIN butler_registry_control_plane AS c USING (name)"
             ),
             timeout=_STATUS_TIMEOUT_S,
         )

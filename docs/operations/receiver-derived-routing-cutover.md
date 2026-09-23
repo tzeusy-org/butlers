@@ -1,10 +1,10 @@
 # Receiver-derived routing: staged cutover and rollback
 
 This is the L3 operator boundary for `REQ-butler-control-plane-liveness-002/004/008`
-and `REQ-butler-switchboard-002/004`. The code is staged with
-`BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER` **unset by default**. This document
-does not authorize a deployment, restart, live route probe, credential use, or
-cutover. Those effects require a separate exact-environment operator approval.
+and `REQ-butler-switchboard-002/004`. The code defaults to legacy routing when
+`BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER` is unset. Dev hotreload Compose sets
+it to `1`; the base daemon service, also used in production, defaults to `0`.
+Production activation remains a separate exact-environment decision.
 
 ## What is staged
 
@@ -19,6 +19,11 @@ cutover. Those effects require a separate exact-environment operator approval.
   current-epoch reread permits one target call. `not_attempted` is retained
   for pre-target refusal. Caller `allow_stale`/`allow_quarantined` overrides do
   not grant authority in this path.
+- Candidate classification uses separated policy and compatibility reads and
+  keeps otherwise eligible stale targets available for the bounded route probe.
+  Local schedules use administrative policy, while the old TTL sweep stops
+  mutating legacy state. This leaves stale legacy rows fail-closed on rollback.
+  The fleet board and heartbeat API show receiver-verified health.
 - The internal Switchboard backend endpoint
   `GET /internal/control-plane/route-preflight` is independent of that flag.
   It selects the lexically first configured non-paused domain target, uses the

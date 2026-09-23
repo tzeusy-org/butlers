@@ -1174,6 +1174,25 @@ class _FakeEligibilityPool:
 
 
 @_asyncio_session
+async def test_receiver_scheduler_gate_uses_policy_when_legacy_heartbeat_expired(monkeypatch):
+    from butlers.core.scheduler import _butler_dispatch_gated
+
+    monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", "1")
+    eligibility_pool = AsyncMock()
+    eligibility_pool.fetchrow.return_value = {"policy_state": "active"}
+    with patch(
+        "butlers.tools.switchboard.registry.registry.resolve_routing_target",
+        new_callable=AsyncMock,
+    ) as legacy:
+        assert await _butler_dispatch_gated(eligibility_pool, "health") is None
+    legacy.assert_not_awaited()
+    assert "butler_registry_control_plane" in eligibility_pool.fetchrow.await_args.args[0]
+
+    eligibility_pool.fetchrow.return_value = {"policy_state": "quarantined"}
+    assert "administrative policy" in await _butler_dispatch_gated(eligibility_pool, "health")
+
+
+@_asyncio_session
 async def test_tick_skips_dispatch_when_butler_quarantined(pool):
     """A paused/quarantined butler must NOT dispatch its due cron tick."""
     from butlers.core.scheduler import schedule_create, tick
