@@ -286,7 +286,7 @@ async def test_internal_route_preflight_coalesces_and_invalidates_cached_policy(
     assert not successor.ready
     assert len(requests) == 1
 
-    pool.fetchrow.return_value = row
+    pool.fetchrow.return_value = {**row, "policy_state": "quarantined"}
     pool.fetch.return_value = [{"name": "health", "policy_state": "quarantined"}]
     held = await preflight.check()
     assert not held.ready and held.failure_category == "policy_denied"
@@ -325,6 +325,16 @@ async def test_internal_preflight_fixed_target_malformed_and_timeout_fail_closed
     result = await preflight.check()
     assert not result.ready and result.failure_category == "invalid_identity"
     assert requests[0].url.port == 41103  # Git roster, never caller/registry endpoint
+
+    for held_policy in ("quarantined", "review_required"):
+        pool.fetch.return_value = [
+            {"name": "finance", "policy_state": held_policy},
+            {"name": "health", "policy_state": "active"},
+        ]
+        pool.fetchrow.return_value = {**row, "name": "finance", "policy_state": held_policy}
+        held = await preflight.check()
+        assert not held.ready and held.failure_category == "policy_denied"
+        assert len(requests) == 1  # the first non-paused domain is denied; no fallback GET
 
     pool.fetch.return_value = [
         {"name": "finance", "policy_state": "active"},

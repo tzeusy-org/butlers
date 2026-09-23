@@ -27,8 +27,8 @@ from butlers.tools.switchboard.registry.registry import (
 _MIN_IDENTITY_INTERVAL_S = 5.0
 
 
-class _NoActiveDomainTarget(Exception):
-    """The configured domain set is present but held by policy."""
+class _NoNonPausedDomainTarget(Exception):
+    """Every configured domain has an explicit pause."""
 
 
 @dataclass(frozen=True)
@@ -88,11 +88,14 @@ class RoutePreflight:
             raise ValueError("incomplete roster policy")
         for target in self._domains:
             policy = policy_by_name[target.name]
-            if policy == "active":
+            if policy == "paused":
+                continue
+            if policy in {"active", "quarantined", "review_required"}:
+                # Quarantine/review-required is the fixed target's refusal,
+                # not permission to substitute a later healthy domain.
                 return target
-            if policy not in {"paused", "quarantined", "review_required"}:
-                raise ValueError("invalid roster policy")
-        raise _NoActiveDomainTarget
+            raise ValueError("invalid roster policy")
+        raise _NoNonPausedDomainTarget
 
     @staticmethod
     def _fingerprint(decision: ControlPlaneTargetDecision) -> tuple[Any, ...]:
@@ -152,7 +155,7 @@ class RoutePreflight:
             except ProbeFailure as exc:
                 self._cached_fingerprint = None
                 return PreflightResult(False, exc.category)
-            except _NoActiveDomainTarget:
+            except _NoNonPausedDomainTarget:
                 self._cached_fingerprint = None
                 return PreflightResult(False, "policy_denied")
             except TimeoutError:
