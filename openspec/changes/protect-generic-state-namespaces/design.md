@@ -96,13 +96,19 @@ otherwise invalid body therefore receives the same fixed denial. The response
 does not echo the key, submitted or stored value, expected shape,
 specialized-route state, framework validation detail, or row existence.
 
-The policy middleware emits only a fixed content-blind denial audit/category
-after owner authentication; it does not forward or buffer the body. It is
-registered so central owner authentication remains outermost, the policy guard
-runs next, and `DashboardAuditMiddleware` plus FastAPI validation run only for
-allowed requests. Denied GET and DELETE use the same path-first seam. The MCP
-handler independently enforces the same registry because direct model/tool-tab
-calls do not traverse this HTTP guard.
+The policy middleware emits exactly one explicit content-blind denial audit
+after owner authentication because the ordinary `DashboardAuditMiddleware` is
+not entered. Its operation is the fixed `state_generic_policy_denied`; its
+allowlist is server-derived actor, effective roster butler, a fixed
+`state_operation` enum (`get`, `set`, or `delete`), and fixed
+`outcome=managed_state_key`. It contains no raw path, state key, body, submitted
+or stored value, version, validation detail, or exception. It does not emit the
+ordinary generic success audit. The middleware does not forward or buffer the
+body. It is registered so central owner authentication remains outermost, the
+policy guard runs next, and `DashboardAuditMiddleware` plus FastAPI validation
+run only for allowed requests. Denied GET and DELETE use the same path-first
+seam. The MCP handler independently enforces the same registry because direct
+model/tool-tab calls do not traverse this HTTP guard.
 
 Collection reads must not fetch a private value and discard it afterward.
 They first obtain only keys/timestamps, apply policy, then fetch values only for
@@ -179,8 +185,9 @@ owner editor or claim the route remains exclusive after its guard is removed.
   producer compatibility remain as adopted;
 - module/general/threshold specialized paths still work while raw mutations
   are denied;
-- no denied operation changes a value, version, timestamp, audit consequence,
-  or producer output.
+- no denied operation changes a managed-state value, version, row timestamp,
+  CAS outcome, producer output, or success audit; exactly one fixed denial audit
+  is emitted with only the reviewed allowlist.
 
 Report `Tests: +a ~b -c`, run the dirty-worktree test planner, focused mounted
 auth/API/MCP and real-Postgres cases, collection for any moved tests, Ruff,
