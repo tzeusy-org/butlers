@@ -34,6 +34,7 @@ docker_available = shutil.which("docker") is not None
 # ---------------------------------------------------------------------------
 
 pytestmark_unit = pytest.mark.unit
+pytest_plugins = ("tests.core.spawner_fixtures",)
 
 
 class MockAdapter(RuntimeAdapter):
@@ -78,7 +79,11 @@ class TestSpawnerResultSessionId:
         sid = uuid.uuid4()
         assert SpawnerResult(session_id=sid).session_id == sid
 
-    async def test_session_id_populated_on_success_error_and_no_pool(self, tmp_path: Path):
+    async def test_session_id_populated_on_success_error_and_no_pool(
+        self,
+        tmp_path: Path,
+        spawner_catalog_candidate,
+    ):
         """session_id set from pool on success and error; None without pool."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
