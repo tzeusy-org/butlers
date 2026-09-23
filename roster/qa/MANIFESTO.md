@@ -71,13 +71,16 @@ sits in a 320 px left rail; selecting a case opens the full dossier body.
 
 ## Retention Policy
 
-Raw evidence stored on `qa_findings.structured_evidence.evidence_lines[]` is
-purged after **30 days** (or 14 days after a case closes, whichever comes
-first). The daily cleanup job runs at 04:00 UTC. It strips only the
-`evidence_lines[]` field; all narrative payload (`headline`, `hypothesis`,
+Raw evidence is stored only at
+`qa_findings.structured_evidence.investigation_notes.evidence_lines[]`.
+The daily cleanup job runs at 04:00 UTC. It strips those lines 14 days after
+a linked investigation closes, or 30 days after creation for a finding with
+no linked investigation. A linked non-terminal case retains its raw evidence
+regardless of creation age until it closes and its 14-day period elapses.
+Cleanup preserves all other narrative fields (`headline`, `hypothesis`,
 `why_this_fix`, `diff_snapshot`, `counter_evidence`, `blurb_segments`,
-`claims`) is preserved **indefinitely**. Cases still in a non-terminal state
-are exempt from the 14-day clock until the attempt closes.
+`claims`). This retention rule is not permission to put raw lines in any
+other field or send them to GitHub.
 
 ---
 
@@ -152,7 +155,8 @@ variables. No butler DB credentials, API keys, or OAuth tokens leak in.
 
 All error event summaries extracted from session records must be anonymized
 before storage and PR submission. Bounded raw evidence lines may be retained
-only in private `qa_findings.structured_evidence.evidence_lines[]` under the
+only in private
+`qa_findings.structured_evidence.investigation_notes.evidence_lines[]` under the
 retention rule above; they never enter PRs, commit messages, or other egress.
 Fingerprints, exception types, call sites, and sanitized summaries remain the
 normal durable finding projection.

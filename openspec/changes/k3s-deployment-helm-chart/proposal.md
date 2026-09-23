@@ -30,7 +30,10 @@ Butlers currently runs on-prem via `scripts/dev.sh` (tmux orchestration) and `do
 - `core-skills`: `write_agents_md()` and `append_agents_md()` need a DB fallback when `AGENTS.md` path is not writable.
 - `healing-worktree`: Must be gracefully disableable via config flag (`healing.enabled = false`) without blocking butler startup.
 - `core-telemetry`: OTEL endpoint becomes a required env var in k8s (pointed at `http://alloy.lgtm:4318` via Helm values), optional in dev.
-- `dashboard-api`: Needs a `/ready` endpoint (distinct from `/health`) that checks functional fleet readiness under the approved `restore-butler-control-plane-liveness` contract for k8s readiness probes.
+- `dashboard-api`: Consumes Q4's single exact public `/ready` endpoint and
+  owner-auth exception under `restore-butler-control-plane-liveness`. The k3s
+  worker wires chart probes to that route and does not implement another
+  handler or exception.
 
 ## Impact
 
@@ -39,7 +42,8 @@ Butlers currently runs on-prem via `scripts/dev.sh` (tmux orchestration) and `do
   - `src/butlers/core/skills.py` — AGENTS.md DB fallback
   - `src/butlers/daemon.py` — healing disable flag, read-only roster handling
   - `src/butlers/core/healing/` — graceful disable
-  - `src/butlers/api/app.py` — `/ready` endpoint
+  - `src/butlers/api/app.py` — Q4-owned `/ready` endpoint consumed by the chart;
+    no duplicate k3s implementation
   - `Dockerfile` — verify production image is k8s-ready (writable `/tmp`, non-root user consideration)
 - **Dependencies**: No new Python dependencies. Helm chart uses standard k8s resources.
 - **Config**: New Helm `values.yaml` with per-butler enable/disable, resource limits, image tag, replica count, env overrides, ExternalSecret references, ingress hostname.

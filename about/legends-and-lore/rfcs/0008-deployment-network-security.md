@@ -240,11 +240,17 @@ Dashboard `/health` remains process liveness. The canonical public
 `GET /ready` keeps the boolean `ready` response shape from the active
 `k3s-deployment-helm-chart` change but adds content-blind checks for PostgreSQL,
 roster, observer freshness, fleet identity and routability, QA patrol age,
-supervised loops, and an effect-free Switchboard route preflight. That preflight
-checks fixed-target selection and reachability, not a transactional target
-acceptance receipt. Compose and production
-deployment completion use sustained readiness over more than one liveness
-TTL; a single successful process probe is insufficient. Public readiness
+supervised loops, and L3's effect-free internal Switchboard route preflight.
+Q4 alone owns public `/ready` and its exact owner-auth exception; the k3s chart
+and Compose launcher consume that route. The preflight checks fixed-target
+selection and reachability without target MCP calls or durable evidence
+writes, not transactional target acceptance. Compose and production deployment
+completion require two distinct complete observer cycles, two distinct
+qualifying scheduled QA patrol completions, and true sampled readiness over
+more than the longest fleet TTL. The finite default timeout covers two
+configured patrol cadences, that TTL, and a ten-minute margin (35 minutes at
+current defaults); shorter overrides fail configuration validation. A single
+successful process probe is insufficient. Public readiness
 exposes categories only and grants no control authority. The separate-host
 minimal `/api/health` pull monitor retains its already adopted scope; a new
 external functional monitor or public readiness consumption needs its own

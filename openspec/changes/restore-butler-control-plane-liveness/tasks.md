@@ -14,6 +14,16 @@
 
 - [ ] 3.1 Make Switchboard derive routing eligibility from receiver observation, administrative policy, and compatibility for butlers and staffers; confirm startup, route success, and probes cannot clear owner quarantine. (REQ-butler-control-plane-liveness-002; REQ-butler-switchboard-002)
 - [ ] 3.2 Add one bounded cross-process Switchboard stale-target recheck using its own exact-roster probe and narrow DB-reserved sequence/CAS, returning canonical `not_attempted` evidence when no target call occurs. Test Dashboard/Switchboard races, recovery without restart, no owner-auth bypass, and refusal without side effects. (REQ-butler-control-plane-liveness-004/008; REQ-butler-switchboard-002)
+- [ ] 3.2a In L3, extract the pure production target-selection/policy/
+  compatibility/endpoint resolver and expose Switchboard's internal read-only
+  `GET /internal/control-plane/route-preflight` for a server-selected fixed
+  domain target. Coalesce concurrent reads and rate-bound the internal identity
+  GET; stale cache fails closed. Reuse the shared identity verifier without reserve/record;
+  make no target tool call or durable evidence write. Test ready, no target,
+  denied policy, stale epoch, DB failure, mismatch, timeout, and zero writes
+  to routing log, registry, inbox, session, ingestion, and notification seams.
+  Q4 consumes this producer; D3 must preserve its read-only boundary.
+  (REQ-butler-switchboard-004; REQ-dashboard-api-063)
 - [ ] 3.3 Remove derived remote staleness from local cron/deadline and QA patrol admission while retaining explicit administrative stop. Test QA and eligibility-sweep progress during forced registry expiry. (REQ-staffer-qa-006)
 - [ ] 3.4 After the replacement passes cutover evidence, retire daemon heartbeat reporter and `POST /api/switchboard/heartbeat` mutation; retain owner auth and prove a legacy POST writes no observation or policy. (REQ-butler-control-plane-liveness-006)
 
@@ -29,9 +39,31 @@
 
 ## 5. Readiness and deployment
 
-- [ ] 5.1 Strengthen canonical public `GET /ready` with cached content-blind checks for DB, exact roster, observer progress, entire fleet, QA patrol, supervised loops, and effect-free fixed-target Switchboard route preflight through production selection/policy/compatibility/endpoint resolution and one bounded identity GET; retain process-only `/health` and narrow owner-auth allowlist. Test fixed target, timeout, failure, no private response data or side effects, and the explicit limit that preflight does not prove transactional target-inbox acceptance. (REQ-dashboard-api-063)
-- [ ] 5.2 Gate canonical deployment completion on multiple observer/QA advances and sustained semantic readiness beyond one liveness TTL; record a bounded failing-category receipt and rollback classification. Test the five-minute post-restart false-green window. (REQ-dashboard-api-064)
-- [ ] 5.3 Reconcile the active k3s `Readiness probe endpoint` delta with the stronger `/ready` semantics before either change archives; preserve the existing external minimal health monitor and require separate owner adoption for any external functional target. (REQ-dashboard-api-063/065)
+- [ ] 5.1 Q4 alone implements canonical exact public `GET /ready` and its
+  OwnerAuthMiddleware method/path exception in `src/butlers/api/app.py`. Its
+  Dashboard controller consumes L3's cached content-blind Switchboard
+  preflight along with DB, exact roster, observer, fleet, qualifying QA patrol,
+  and supervised-loop checks; the public request causes no network fanout or
+  write. Test mounted owner auth, fixed Boolean projection, stale/missing
+  preflight, no private content, process-only `/health`, and no transactional
+  target-acceptance claim. K3s/Compose only consume this route.
+  (REQ-dashboard-api-063; REQ-butler-switchboard-004)
+- [ ] 5.2 Q5 gates deployment completion on two distinct complete observer
+  cycles and two distinct current-config all-source-success scheduled QA
+  patrol completions after window start, while every sampled `/ready` result
+  remains true beyond the longest fleet TTL. Derive the finite timeout from
+  two configured patrol cadences plus that TTL and a ten-minute margin
+  (35 minutes at current defaults); reject shorter overrides. Test repeated
+  reads of one patrol, nonqualifying patrols, false-sample reset, timeout,
+  and the five-minute post-restart false-green window. Record only fixed
+  content-blind failure categories and rollback classification.
+  (REQ-dashboard-api-064)
+- [ ] 5.3 Reconcile the active k3s `Readiness probe endpoint` delta with the
+  stronger `/ready` semantics before either change archives. The k3s worker
+  wires its chart probes to Q4's route and does not author a second endpoint,
+  auth exception, or duplicate behavior gate. Preserve the existing external
+  minimal health monitor and require separate owner adoption for any external
+  functional target. (REQ-dashboard-api-063/065)
 
 ## 6. Contract and terminal verification
 

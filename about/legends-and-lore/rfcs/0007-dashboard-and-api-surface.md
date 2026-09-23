@@ -439,22 +439,29 @@ when ready, or HTTP 503 `{"ready":false,"checks":{...}}` otherwise. The
 fixed boolean check keys are `postgres`, `roster`, `observer`, `fleet`,
 `qa_patrol`, `supervisors`, and `route_canary`. `roster` means the exact
 configured expected set, `fleet` requires verified daemon identity,
-generation, compatibility, and acceptance, and `route_canary` is effect-free:
-it traverses Switchboard's production selection/policy/endpoint path and makes
-one bounded identity GET to a fixed configured domain target, creating no
-inbox, session, notification, or ingestion row. It proves that control-plane
-path, not a transactional `route.execute` receipt or downstream success. A bounded cached
-snapshot serves `/ready`; the public request cannot start probes or expensive
+generation, compatibility, and acceptance, and `route_canary` consumes L3's
+read-only internal Switchboard preflight. That producer traverses the pure
+production selection/policy/endpoint resolver and makes one bounded identity
+GET to a server-selected fixed domain target, without a target MCP call or
+durable evidence write. It proves that control-plane path, not a transactional
+`route.execute` receipt or downstream success. Q4 alone implements the public
+route and exact owner-auth exception; k3s and Compose only consume it. A
+bounded cached snapshot serves `/ready`; the public request cannot start probes or expensive
 database fanout. It reports no message content, credentials, internal
 endpoints, or unbounded diagnostic text. Partial or failed observations cannot
 be converted into a healthy aggregate. `qa_patrol` counts a completed
 scheduled `clean`, `findings_dispatched`, or genuine `suppressed` patrol only
 with current-config all-enabled-source success provenance; an `error`,
 `skipped_overlap`, synthetic `suppressed`, still-running, or ambiguous legacy
-record cannot renew freshness. A deployment
-may declare completion only after readiness has advanced through multiple
-probe and patrol cycles beyond a full liveness TTL, not after one process-health
-response.
+record cannot renew freshness. A deployment may declare completion only after
+two distinct complete receiver-observer cycles and two distinct qualifying
+scheduled QA patrol completions after its window starts, while every sampled
+readiness verdict remains true beyond the longest configured liveness TTL.
+Two reads of one patrol do not count. The finite default timeout is derived
+from two configured QA patrol cadences plus the longest fleet TTL and a
+ten-minute margin (35 minutes at current defaults); a shorter configured
+timeout fails validation rather than reporting an impossible successful
+deployment.
 `supervisors` consumes only the process-fenced Dashboard lifespan-loop health
 projection; Switchboard's runtime-attention delivery worker has a separate
 linked condition/outbox availability state and is not implied healthy by it.
