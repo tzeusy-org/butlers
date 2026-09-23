@@ -70,8 +70,22 @@ class _SyntheticResolution:
             "policy_version": "dispatch-fit-v1",
             "requested_intent": {"trigger_class": "route"},
             "effective_intent": {"trigger_class": "route"},
-            "winner": {"reason": "sole_candidate"},
-            "candidates": [],
+            "winner": {
+                "catalog_entry_id": str(_PRIMARY_CATALOG_ID),
+                "runtime_type": DEFAULT_RUNTIME_TYPE,
+                "model_id": "primary-model",
+                "effective_tier": "workhorse",
+                "reason": "sole_candidate",
+            },
+            "candidates": [
+                {
+                    "catalog_entry_id": str(_PRIMARY_CATALOG_ID),
+                    "runtime_type": DEFAULT_RUNTIME_TYPE,
+                    "model_id": "primary-model",
+                    "effective_tier": "workhorse",
+                    "outcome": "selected",
+                }
+            ],
         }
 
 

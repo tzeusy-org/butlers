@@ -48,7 +48,19 @@ export function CaseDossier({
 
   const dossier = caseQuery.data?.data;
   const notes = dossier?.investigation_notes ?? null;
-  const journalEvents = journalQuery.data?.data ?? dossier?.journal ?? [];
+  const hasUnpublishedProposal = dossier?.proposal_state === "unpublished";
+  const rawJournalEvents = journalQuery.data?.data ?? dossier?.journal ?? [];
+  const journalEvents = useMemo(
+    () =>
+      hasUnpublishedProposal
+        ? rawJournalEvents.map((event) =>
+            event.step === "concluded" && event.detail
+              ? { ...event, detail: "Proposal remained unpublished." }
+              : event,
+          )
+        : rawJournalEvents,
+    [hasUnpublishedProposal, rawJournalEvents],
+  );
 
   const claimOrder = useMemo(
     () => (notes ? getClaimOrderFromSegments(notes.blurb_segments) : []),
@@ -96,9 +108,15 @@ export function CaseDossier({
           {dossier.state_track_stage === "failed" ? (
             <div className="space-y-2" data-testid="qa-case-failure-banner">
               <DossierEyebrow>Failure</DossierEyebrow>
-              <p className="font-serif text-[17px] italic leading-8 text-destructive">
-                The investigation crashed before producing a fix.
-              </p>
+              {hasUnpublishedProposal ? (
+                <p className="font-serif text-[17px] italic leading-8 text-destructive">
+                  The investigation produced a local proposal, but publication failed.
+                </p>
+              ) : (
+                <p className="font-serif text-[17px] italic leading-8 text-destructive">
+                  The investigation crashed before producing a fix.
+                </p>
+              )}
               {dossier.error_detail ? (
                 // Raw crash text can be a long message or multi-line stack
                 // trace; keep it in a bounded, scrollable monospace box so it
@@ -116,29 +134,37 @@ export function CaseDossier({
             <>
               <div className="space-y-2">
                 <DossierEyebrow>Diagnosis</DossierEyebrow>
-                <ClaimAnchoredBlurb
-                  segments={notes.blurb_segments}
-                  claims={notes.claims}
-                  claimOrder={claimOrder}
-                  hoveredClaim={hoveredClaim}
-                  onClaimHover={setHoveredClaim}
-                />
+                {hasUnpublishedProposal ? (
+                  <p className="font-serif text-[17px] leading-8 text-foreground">
+                    {notes.hypothesis}
+                  </p>
+                ) : (
+                  <ClaimAnchoredBlurb
+                    segments={notes.blurb_segments}
+                    claims={notes.claims}
+                    claimOrder={claimOrder}
+                    hoveredClaim={hoveredClaim}
+                    onClaimHover={setHoveredClaim}
+                  />
+                )}
               </div>
 
-              <div className="space-y-2">
-                <DossierEyebrow>Hypothesis</DossierEyebrow>
-                <p className="font-mono text-[11px] leading-relaxed text-foreground tnum">
-                  {notes.hypothesis}
-                </p>
-              </div>
+              {!hasUnpublishedProposal ? (
+                <div className="space-y-2">
+                  <DossierEyebrow>Hypothesis</DossierEyebrow>
+                  <p className="font-mono text-[11px] leading-relaxed text-foreground tnum">
+                    {notes.hypothesis}
+                  </p>
+                </div>
+              ) : null}
 
               <div className="space-y-2">
                 <DossierEyebrow>Evidence · log fragments</DossierEyebrow>
                 <EvidenceLog
                   evidence={notes.evidence_lines}
-                  claims={notes.claims}
-                  claimOrder={claimOrder}
-                  hoveredClaim={hoveredClaim}
+                  claims={hasUnpublishedProposal ? {} : notes.claims}
+                  claimOrder={hasUnpublishedProposal ? [] : claimOrder}
+                  hoveredClaim={hasUnpublishedProposal ? null : hoveredClaim}
                   onRowHover={setHoveredClaim}
                 />
               </div>
@@ -173,8 +199,9 @@ export function CaseDossier({
           <PRPanel
             pr={dossier.pr}
             whyThisFix={notes?.why_this_fix ?? null}
-            diffSnapshot={notes?.diff_snapshot ?? null}
+            diffSnapshot={dossier.proposal_diff_snapshot}
             stage={dossier.state_track_stage}
+            proposalState={dossier.proposal_state}
           />
         </section>
       </div>

@@ -7,8 +7,8 @@ Covers:
 - Spawn proceeds when no limits configured (unlimited)
 - Ledger recorded on successful session with usage
 - No ledger recording when adapter crashes (no usage returned)
-- No ledger recording when catalog_entry_id is absent (TOML fallback)
-  [covered by test_quota_not_checked_without_pool_or_toml_fallback]
+- A live catalog miss fails before quota or ledger work
+  [covered by test_quota_not_checked_without_pool_or_catalog_selection]
 - No ledger recording when adapter reports no usage
 
 [bu-lm4m.1]
@@ -29,7 +29,8 @@ from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import Spawner
 
-pytestmark = pytest.mark.unit
+pytest_plugins = ("tests.core.spawner_fixtures",)
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("spawner_catalog_candidate")]
 
 # Fake catalog entry UUID used in resolve_model mock return values
 _FAKE_CATALOG_ID = uuid.UUID("aaaaaaaa-0000-0000-0000-000000000001")
@@ -251,8 +252,10 @@ class TestSpawnerQuotaEnforcement:
                 and adapter.invoke_calls == 1
             )
 
-    async def test_quota_not_checked_without_pool_or_toml_fallback(self, tmp_path: Path) -> None:
-        """Quota check skipped when pool=None or when catalog returns None (TOML fallback)."""
+    async def test_quota_not_checked_without_pool_or_catalog_selection(
+        self, tmp_path: Path
+    ) -> None:
+        """Pool-free direct mode runs; a live catalog miss refuses before quota."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
@@ -265,7 +268,7 @@ class TestSpawnerQuotaEnforcement:
         mock_quota.assert_not_called()
         assert result.success is True
 
-        # TOML fallback (catalog returns None) → quota check not called
+        # A live catalog miss fails before quota or runtime invocation.
         mock_pool = AsyncMock()
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
@@ -285,7 +288,8 @@ class TestSpawnerQuotaEnforcement:
                 runtime=_MockAdapter(result_text="ok"),
             ).trigger("hi", "tick")
         mock_quota2.assert_not_called()
-        assert result2.success is True
+        assert result2.success is False
+        assert result2.error == "ModelResolutionError: no_eligible_catalog_entries"
 
 
 # ---------------------------------------------------------------------------
@@ -299,8 +303,8 @@ class TestSpawnerLedgerRecording:
     async def test_ledger_recording_conditions(self, tmp_path: Path) -> None:
         """Ledger recorded on success; not recorded when adapter crashes or returns no usage.
 
-        Note: TOML fallback (catalog_entry_id absent) also skips ledger recording, but that
-        path is covered by TestSpawnerQuotaEnforcement.test_quota_not_checked_without_pool_or_toml_fallback.
+        A live catalog miss also skips ledger recording because no runtime is invoked; that
+        path is covered by the no-catalog-selection test above.
         """
         config = _make_config()
         mock_pool = AsyncMock()

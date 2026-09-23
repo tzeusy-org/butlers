@@ -19,15 +19,24 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-def _derive_llm_provider(model: str | None) -> str:
-    """Derive the LLM provider name from a model string.
+def _derive_llm_provider(model: str | None, runtime_type: str | None = None) -> str:
+    """Derive the provider from a qualified model id or its runtime adapter.
 
     The model string may be prefixed with a provider name separated by a
-    forward slash (e.g. ``"ollama/llama3"`` → ``"ollama"``).  If no prefix
-    is present the default runtime is the Anthropic API, so ``"anthropic"``
-    is returned.
+    forward slash (e.g. ``"ollama/llama3"`` → ``"ollama"``). Unqualified
+    and runtime-default models inherit the provider identity of the adapter
+    that actually invokes them rather than the project's historical Anthropic
+    default.
     """
-    return model.split("/", 1)[0] if model and "/" in model else "anthropic"
+    if model and "/" in model:
+        return model.split("/", 1)[0]
+    return {
+        "api": "anthropic",
+        "claude": "anthropic",
+        "codex": "openai",
+        "gemini": "google",
+        "opencode": "opencode",
+    }.get(runtime_type or "", "unknown")
 
 
 async def resolve_provider_config(

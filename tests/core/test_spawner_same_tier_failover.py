@@ -31,8 +31,16 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from butlers.config import ButlerConfig, RuntimeSeedConfig
+from butlers.core.dispatch_intent import FitCode, FitFinding
 from butlers.core.failover_classifier import FailoverDecision
-from butlers.core.model_routing import QuotaStatus, TierQuotaExhausted, price_ledger_usage_rows
+from butlers.core.model_routing import (
+    CandidateOutcome,
+    CandidateRecord,
+    DispatchResolution,
+    QuotaStatus,
+    TierQuotaExhausted,
+    price_ledger_usage_rows,
+)
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import Spawner
@@ -427,13 +435,53 @@ class TestAC2QuotaSkip:
         async def _next_side_effect(pool, butler_name, tier, attempted_ids):
             return next(next_iter)
 
+        async def _resolve_quota_candidates(*_args, intent, receipt_sink, **_kwargs):
+            resolution = DispatchResolution(
+                policy_version="test-policy",
+                requested_intent=intent,
+                effective_intent=intent,
+                candidates=(
+                    CandidateRecord(
+                        catalog_entry_id=_PRIMARY_CATALOG_ID,
+                        runtime_type=DEFAULT_RUNTIME_TYPE,
+                        model_id="primary-model",
+                        effective_tier="workhorse",
+                        effective_priority=30,
+                        outcome=CandidateOutcome.EXCLUDED_QUOTA,
+                    ),
+                    CandidateRecord(
+                        catalog_entry_id=_FALLBACK_CATALOG_ID,
+                        runtime_type=DEFAULT_RUNTIME_TYPE,
+                        model_id="second-model",
+                        effective_tier="workhorse",
+                        effective_priority=30,
+                        outcome=CandidateOutcome.EXCLUDED_QUOTA,
+                    ),
+                    CandidateRecord(
+                        catalog_entry_id=_THIRD_ID,
+                        runtime_type=DEFAULT_RUNTIME_TYPE,
+                        model_id="third-model",
+                        effective_tier="workhorse",
+                        effective_priority=20,
+                        outcome=CandidateOutcome.NOT_TOP_PRIORITY,
+                    ),
+                ),
+                selection=_catalog_primary(model="primary-model"),
+                winner_reason="round_robin",
+            )
+            receipt_sink.append(resolution)
+            raise TierQuotaExhausted(
+                effective_tier="workhorse",
+                representative=_catalog_primary(model="primary-model"),
+                resolution=resolution,
+            )
+
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
             patch(
                 "butlers.core.spawner.resolve_model_with_effective_tier",
-                new_callable=AsyncMock,
-                side_effect=_catalog_primary_quota_exhausted(model="primary-model"),
+                side_effect=_resolve_quota_candidates,
             ),
             patch(
                 "butlers.core.spawner.check_token_quota",
@@ -443,6 +491,10 @@ class TestAC2QuotaSkip:
                 "butlers.core.spawner.next_same_tier_candidate",
                 side_effect=_next_side_effect,
             ) as mock_next,
+            patch(
+                "butlers.core.spawner._write_dispatch_attempt",
+                new_callable=AsyncMock,
+            ) as write_attempt,
         ):
             mock_create.return_value = _SESSION_ID
             result = await Spawner(
@@ -457,6 +509,269 @@ class TestAC2QuotaSkip:
         second_call_attempted = mock_next.call_args_list[1][0][3]
         assert _PRIMARY_CATALOG_ID in second_call_attempted
         assert _FALLBACK_CATALOG_ID in second_call_attempted
+        second_attempt = next(
+            call
+            for call in write_attempt.await_args_list
+            if call.kwargs["catalog_entry_id"] == _FALLBACK_CATALOG_ID
+        )
+        assert second_attempt.kwargs["outcome"] == "quota_skip"
+
+    async def test_quota_failover_preserves_original_vision_fit(self, tmp_path: Path) -> None:
+        """Quota failover skips a same-tier candidate without proven vision support."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        mock_pool = AsyncMock()
+        adapter = _SuccessAdapter(result_text="vision-fallback")
+        no_vision_id = uuid.uuid4()
+        vision_id = uuid.uuid4()
+
+        async def resolve_quota_vision(*_args, intent, receipt_sink, **_kwargs):
+            resolution = DispatchResolution(
+                policy_version="test-policy",
+                requested_intent=intent,
+                effective_intent=intent,
+                candidates=(
+                    CandidateRecord(
+                        catalog_entry_id=_PRIMARY_CATALOG_ID,
+                        runtime_type=DEFAULT_RUNTIME_TYPE,
+                        model_id="primary-vision-model",
+                        effective_tier="workhorse",
+                        effective_priority=30,
+                        outcome=CandidateOutcome.EXCLUDED_QUOTA,
+                    ),
+                    CandidateRecord(
+                        catalog_entry_id=no_vision_id,
+                        runtime_type=DEFAULT_RUNTIME_TYPE,
+                        model_id="no-vision-model",
+                        effective_tier="workhorse",
+                        effective_priority=20,
+                        outcome=CandidateOutcome.EXCLUDED_HARD_FIT,
+                        exclusions=(FitFinding(FitCode.CAPABILITY_UNKNOWN, "vision"),),
+                    ),
+                    CandidateRecord(
+                        catalog_entry_id=vision_id,
+                        runtime_type=DEFAULT_RUNTIME_TYPE,
+                        model_id="vision-model",
+                        effective_tier="workhorse",
+                        effective_priority=10,
+                        outcome=CandidateOutcome.NOT_TOP_PRIORITY,
+                    ),
+                ),
+                selection=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "primary-vision-model",
+                    [],
+                    _PRIMARY_CATALOG_ID,
+                    1800,
+                    "workhorse",
+                ),
+                winner_reason="sole_candidate",
+            )
+            receipt_sink.append(resolution)
+            raise TierQuotaExhausted(
+                effective_tier="workhorse",
+                representative=resolution.selection,
+                resolution=resolution,
+            )
+
+        quota_responses = iter([_QUOTA_DENIED_24H, _QUOTA_ALLOWED])
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                side_effect=resolve_quota_vision,
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                side_effect=lambda *_args: next(quota_responses),
+            ) as check_quota,
+            patch(
+                "butlers.core.spawner.next_same_tier_candidate",
+                new_callable=AsyncMock,
+                side_effect=[
+                    (
+                        DEFAULT_RUNTIME_TYPE,
+                        "no-vision-model",
+                        [],
+                        no_vision_id,
+                        1800,
+                    ),
+                    (
+                        DEFAULT_RUNTIME_TYPE,
+                        "vision-model",
+                        [],
+                        vision_id,
+                        1800,
+                    ),
+                ],
+            ),
+            patch(
+                "butlers.core.spawner._write_dispatch_attempt",
+                new_callable=AsyncMock,
+            ) as write_attempt,
+        ):
+            create.return_value = _SESSION_ID
+            result = await Spawner(
+                config=_make_config(),
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=adapter,
+            ).trigger(
+                "inspect image",
+                "route",
+                attachments=[{"media_type": "image/png", "storage_ref": "blob:test"}],
+            )
+
+        assert result.success is True
+        assert result.model == "vision-model"
+        assert adapter.invoke_calls == 1
+        assert check_quota.await_count == 2
+        no_vision_attempt = next(
+            call
+            for call in write_attempt.await_args_list
+            if call.kwargs["catalog_entry_id"] == no_vision_id
+        )
+        assert no_vision_attempt.kwargs["outcome"] == "suppressed"
+        assert no_vision_attempt.kwargs["invoked"] is False
+        no_vision_receipt = no_vision_attempt.kwargs["resolution_receipt"]
+        assert no_vision_receipt["attempt_index"] == no_vision_attempt.kwargs["attempt_index"]
+        assert no_vision_receipt["failover"]["failure_class"] == "quota_exhausted"
+        no_vision_candidate = next(
+            candidate
+            for candidate in no_vision_receipt["candidates"]
+            if candidate["catalog_entry_id"] == str(no_vision_id)
+        )
+        assert no_vision_candidate["outcome"] == "excluded_hard_fit"
+        assert no_vision_candidate["exclusions"] == [
+            {"code": "capability_unknown", "detail": "vision"}
+        ]
+
+    async def test_quota_failover_skips_unregistered_runtime_before_valid_candidate(
+        self, tmp_path: Path
+    ) -> None:
+        """Quota failover continues past a non-invocable registered-catalog row."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        mock_pool = AsyncMock()
+        adapter = _SuccessAdapter(result_text="valid-fallback")
+        invalid_id = uuid.uuid4()
+        valid_id = uuid.uuid4()
+
+        async def _resolve_quota_candidates(*_args, intent, receipt_sink, **_kwargs):
+            resolution = DispatchResolution(
+                policy_version="test-policy",
+                requested_intent=intent,
+                effective_intent=intent,
+                candidates=(
+                    CandidateRecord(
+                        catalog_entry_id=_PRIMARY_CATALOG_ID,
+                        runtime_type=DEFAULT_RUNTIME_TYPE,
+                        model_id="quota-blocked-model",
+                        effective_tier="workhorse",
+                        effective_priority=30,
+                        outcome=CandidateOutcome.EXCLUDED_QUOTA,
+                    ),
+                    CandidateRecord(
+                        catalog_entry_id=invalid_id,
+                        runtime_type="unregistered-runtime",
+                        model_id="invalid-model",
+                        effective_tier="workhorse",
+                        effective_priority=20,
+                        outcome=CandidateOutcome.NOT_TOP_PRIORITY,
+                    ),
+                    CandidateRecord(
+                        catalog_entry_id=valid_id,
+                        runtime_type=DEFAULT_RUNTIME_TYPE,
+                        model_id="valid-model",
+                        effective_tier="workhorse",
+                        effective_priority=10,
+                        outcome=CandidateOutcome.NOT_TOP_PRIORITY,
+                    ),
+                ),
+                selection=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "quota-blocked-model",
+                    [],
+                    _PRIMARY_CATALOG_ID,
+                    1800,
+                    "workhorse",
+                ),
+                winner_reason="sole_candidate",
+            )
+            receipt_sink.append(resolution)
+            raise TierQuotaExhausted(
+                effective_tier="workhorse",
+                representative=resolution.selection,
+                resolution=resolution,
+            )
+
+        def _adapter_for(runtime_type: str, *_args, **_kwargs):
+            if runtime_type == "unregistered-runtime":
+                raise ValueError("unregistered runtime")
+            if runtime_type == DEFAULT_RUNTIME_TYPE:
+                return adapter
+            pytest.fail(f"unexpected adapter setup for {runtime_type}")
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                side_effect=_resolve_quota_candidates,
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                side_effect=[_QUOTA_DENIED_24H, _QUOTA_ALLOWED],
+            ) as check_quota,
+            patch(
+                "butlers.core.spawner.next_same_tier_candidate",
+                new_callable=AsyncMock,
+                side_effect=[
+                    (
+                        "unregistered-runtime",
+                        "invalid-model",
+                        [],
+                        invalid_id,
+                        1800,
+                    ),
+                    (
+                        DEFAULT_RUNTIME_TYPE,
+                        "valid-model",
+                        [],
+                        valid_id,
+                        1800,
+                    ),
+                ],
+            ) as next_candidate,
+            patch.object(Spawner, "_get_or_create_adapter", side_effect=_adapter_for),
+            patch(
+                "butlers.core.spawner._write_dispatch_attempt",
+                new_callable=AsyncMock,
+            ) as write_attempt,
+        ):
+            create.return_value = _SESSION_ID
+            result = await Spawner(
+                config=_make_config(),
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=adapter,
+            ).trigger("hello", "tick")
+
+        assert result.success is True
+        assert result.model == "valid-model"
+        assert adapter.invoke_calls == 1
+        assert check_quota.await_count == 2
+        assert next_candidate.await_count == 2
+        assert invalid_id in next_candidate.await_args_list[1].args[3]
+        invalid_attempt = next(
+            call
+            for call in write_attempt.await_args_list
+            if call.kwargs["catalog_entry_id"] == invalid_id
+        )
+        assert invalid_attempt.kwargs["outcome"] == "runtime_failure"
+        assert invalid_attempt.kwargs["invoked"] is False
 
 
 class TestAC3RuntimeFailureRetry:
@@ -596,7 +911,7 @@ class TestAC3RuntimeFailureRetry:
 
         assert result.success is False
         assert "PrivateContentModelUnavailable" in (result.error or "")
-        assert result.model == "ollama/private-fallback"
+        assert result.model == "ollama/private-primary"
         assert adapter.invoke_calls == 1
         assert next_candidate.await_args.kwargs == {"local_only": True}
         refusal = [
@@ -606,6 +921,225 @@ class TestAC3RuntimeFailureRetry:
         ]
         assert len(refusal) == 1
         assert refusal[0].args[3]["reason"] == "unregistered_private_runtime"
+
+    async def test_unregistered_failover_candidate_is_skipped_before_valid_candidate(
+        self, tmp_path: Path
+    ) -> None:
+        """An unregistered candidate is non-invoked provenance, not a false API call."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        mock_pool = AsyncMock()
+        adapter = _FailThenSuccessAdapter(
+            fail_count=1,
+            error=RuntimeError("connection refused: provider unavailable"),
+            result_text="valid-fallback",
+        )
+        invalid_id = uuid.uuid4()
+        valid_id = uuid.uuid4()
+
+        def adapter_for(runtime_type: str, *_args, **_kwargs):
+            if runtime_type == DEFAULT_RUNTIME_TYPE:
+                return adapter
+            if runtime_type == "unregistered-runtime":
+                raise ValueError("unregistered runtime")
+            pytest.fail(f"unexpected adapter setup for {runtime_type}")
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=_catalog_primary(model="primary-model"),
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=_QUOTA_ALLOWED,
+            ),
+            patch(
+                "butlers.core.spawner.next_same_tier_candidate",
+                new_callable=AsyncMock,
+                side_effect=[
+                    (
+                        "unregistered-runtime",
+                        "invalid-model",
+                        [],
+                        invalid_id,
+                        1800,
+                    ),
+                    (
+                        DEFAULT_RUNTIME_TYPE,
+                        "valid-model",
+                        [],
+                        valid_id,
+                        1800,
+                    ),
+                ],
+            ) as next_candidate,
+            patch.object(Spawner, "_get_or_create_adapter", side_effect=adapter_for),
+            patch(
+                "butlers.core.spawner._write_dispatch_attempt",
+                new_callable=AsyncMock,
+            ) as write_attempt,
+        ):
+            create.return_value = _SESSION_ID
+            result = await Spawner(
+                config=_make_config(),
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=adapter,
+            ).trigger("hello", "tick")
+
+        assert result.success is True
+        assert result.output == "valid-fallback"
+        assert result.model == "valid-model"
+        assert adapter.invoke_calls == 2
+        assert next_candidate.await_count == 2
+        assert invalid_id in next_candidate.await_args_list[1].args[3]
+        invalid_attempt = next(
+            call
+            for call in write_attempt.await_args_list
+            if call.kwargs["catalog_entry_id"] == invalid_id
+        )
+        assert invalid_attempt.kwargs["outcome"] == "runtime_failure"
+        assert invalid_attempt.kwargs["invoked"] is False
+        assert invalid_attempt.kwargs.get("duration_ms") is None
+
+    async def test_failover_preserves_original_vision_fit(self, tmp_path: Path) -> None:
+        """An image route skips same-tier candidates without proven vision support."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        mock_pool = AsyncMock()
+        adapter = _FailThenSuccessAdapter(
+            fail_count=1,
+            error=RuntimeError(
+                "The 'primary-model' model is not supported when using Codex "
+                "with a ChatGPT account."
+            ),
+            result_text="vision-fallback",
+        )
+        no_vision_id = uuid.uuid4()
+        valid_vision_id = uuid.uuid4()
+
+        async def resolve_with_receipt(*_args, intent, receipt_sink, **_kwargs):
+            receipt_sink.append(
+                DispatchResolution(
+                    policy_version="test-policy",
+                    requested_intent=intent,
+                    effective_intent=intent,
+                    candidates=(
+                        CandidateRecord(
+                            catalog_entry_id=_PRIMARY_CATALOG_ID,
+                            runtime_type=DEFAULT_RUNTIME_TYPE,
+                            model_id="primary-model",
+                            effective_tier="workhorse",
+                            effective_priority=30,
+                            outcome=CandidateOutcome.SELECTED,
+                        ),
+                        CandidateRecord(
+                            catalog_entry_id=no_vision_id,
+                            runtime_type=DEFAULT_RUNTIME_TYPE,
+                            model_id="no-vision-model",
+                            effective_tier="workhorse",
+                            effective_priority=20,
+                            outcome=CandidateOutcome.EXCLUDED_HARD_FIT,
+                            exclusions=(FitFinding(FitCode.CAPABILITY_UNKNOWN, "vision"),),
+                        ),
+                        CandidateRecord(
+                            catalog_entry_id=valid_vision_id,
+                            runtime_type=DEFAULT_RUNTIME_TYPE,
+                            model_id="vision-model",
+                            effective_tier="workhorse",
+                            effective_priority=10,
+                            outcome=CandidateOutcome.ELIGIBLE,
+                        ),
+                    ),
+                    selection=(
+                        DEFAULT_RUNTIME_TYPE,
+                        "primary-model",
+                        [],
+                        _PRIMARY_CATALOG_ID,
+                        1800,
+                        "workhorse",
+                    ),
+                    winner_reason="sole_candidate",
+                )
+            )
+            return _catalog_primary(model="primary-model")
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                side_effect=resolve_with_receipt,
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=_QUOTA_ALLOWED,
+            ),
+            patch(
+                "butlers.core.spawner.next_same_tier_candidate",
+                new_callable=AsyncMock,
+                side_effect=[
+                    (
+                        DEFAULT_RUNTIME_TYPE,
+                        "no-vision-model",
+                        [],
+                        no_vision_id,
+                        1800,
+                    ),
+                    (
+                        DEFAULT_RUNTIME_TYPE,
+                        "vision-model",
+                        [],
+                        valid_vision_id,
+                        1800,
+                    ),
+                ],
+            ) as next_candidate,
+            patch(
+                "butlers.core.spawner._write_dispatch_attempt",
+                new_callable=AsyncMock,
+            ) as write_attempt,
+        ):
+            create.return_value = _SESSION_ID
+            result = await Spawner(
+                config=_make_config(),
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=adapter,
+            ).trigger(
+                "inspect image",
+                "route",
+                attachments=[{"media_type": "image/png", "storage_ref": "blob:test"}],
+            )
+
+        assert result.success is True
+        assert result.model == "vision-model"
+        assert adapter.invoke_calls == 2
+        assert next_candidate.await_count == 2
+        no_vision_attempt = next(
+            call
+            for call in write_attempt.await_args_list
+            if call.kwargs["catalog_entry_id"] == no_vision_id
+        )
+        assert no_vision_attempt.kwargs["outcome"] == "suppressed"
+        assert no_vision_attempt.kwargs["invoked"] is False
+        no_vision_receipt = no_vision_attempt.kwargs["resolution_receipt"]
+        assert no_vision_receipt["attempt_index"] == no_vision_attempt.kwargs["attempt_index"]
+        assert no_vision_receipt["failover"]["failure_class"].startswith("provider_unavailable")
+        no_vision_candidate = next(
+            candidate
+            for candidate in no_vision_receipt["candidates"]
+            if candidate["catalog_entry_id"] == str(no_vision_id)
+        )
+        assert no_vision_candidate["outcome"] == "excluded_hard_fit"
+        assert no_vision_candidate["exclusions"] == [
+            {"code": "capability_unknown", "detail": "vision"}
+        ]
 
     async def test_fallback_gets_pristine_env_after_mutating_failed_attempt(
         self, tmp_path: Path

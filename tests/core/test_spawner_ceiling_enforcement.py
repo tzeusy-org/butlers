@@ -29,7 +29,8 @@ from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import Spawner
 
-pytestmark = pytest.mark.unit
+pytest_plugins = ("tests.core.spawner_fixtures",)
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("spawner_catalog_candidate")]
 
 _FAKE_CATALOG_ID = uuid.UUID("aaaaaaaa-0000-0000-0000-000000000001")
 _SESSION_ID = uuid.UUID("bbbbbbbb-0000-0000-0000-000000000002")
@@ -289,8 +290,10 @@ class TestSpawnerCeilingEnforcement:
         assert result.output == "unbounded output"
         assert adapter.invoke_calls == 1
 
-    async def test_ceiling_not_checked_without_pool_or_toml_fallback(self, tmp_path: Path) -> None:
-        """Ceiling check skipped when pool=None or catalog returns None (TOML fallback)."""
+    async def test_ceiling_not_checked_without_pool_or_catalog_selection(
+        self, tmp_path: Path
+    ) -> None:
+        """Pool-free direct mode runs; a live catalog miss refuses before ceiling."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
@@ -305,7 +308,7 @@ class TestSpawnerCeilingEnforcement:
         mock_ceiling.assert_not_called()
         assert result.success is True
 
-        # TOML fallback (catalog returns None) → ceiling check not called.
+        # A live catalog miss fails before ceiling or runtime invocation.
         mock_pool = AsyncMock()
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
@@ -327,4 +330,5 @@ class TestSpawnerCeilingEnforcement:
                 runtime=_MockAdapter(result_text="ok"),
             ).trigger("hi", "tick")
         mock_ceiling2.assert_not_called()
-        assert result2.success is True
+        assert result2.success is False
+        assert result2.error == "ModelResolutionError: no_eligible_catalog_entries"

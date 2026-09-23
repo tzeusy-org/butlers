@@ -29,6 +29,13 @@ import pytest
 
 from butlers.config import ButlerConfig, RuntimeSeedConfig
 from butlers.core.dashboard_turns import DashboardTurnResult
+from butlers.core.dispatch_intent import FitCode, FitFinding
+from butlers.core.model_routing import (
+    CandidateOutcome,
+    CandidateRecord,
+    DispatchResolution,
+    SpendRoutingResult,
+)
 from butlers.core.route_inbox import RouteInboxLeaseLost, route_inbox_wait_while_claimed
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter
@@ -41,7 +48,8 @@ from butlers.core.spawner import (
     _merge_tool_call_records,
 )
 
-pytestmark = pytest.mark.unit
+pytest_plugins = ("tests.core.spawner_fixtures",)
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("spawner_catalog_candidate")]
 
 # Fake catalog entry UUID used in resolve_model mock return values (4-tuple)
 _FAKE_CATALOG_ID = uuid.UUID("00000000-0000-0000-0000-000000000099")
@@ -606,7 +614,7 @@ class TestSpawnerInvocation:
     async def test_session_timeout_forwarded_to_runtime_invoke(self, tmp_path: Path):
         """Hard-coded fallback session timeout is forwarded when neither catalog nor
         override is set."""
-        from butlers.core.spawner import _FALLBACK_SESSION_TIMEOUT_S
+        from butlers.core.spawner import _DEFAULT_SESSION_TIMEOUT_S
 
         config_dir = tmp_path / "config"
         config_dir.mkdir()
@@ -651,10 +659,10 @@ class TestSpawnerInvocation:
         result = await spawner.trigger("hello", "tick")
 
         assert result.success is True
-        assert captured["timeout"] == _FALLBACK_SESSION_TIMEOUT_S
+        assert captured["timeout"] == _DEFAULT_SESSION_TIMEOUT_S
 
     async def test_timeout_override_takes_precedence(self, tmp_path: Path):
-        """timeout_override overrides both the catalog and the hard-coded fallback."""
+        """timeout_override wins over both catalog and pool-free direct defaults."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
@@ -1469,16 +1477,20 @@ class TestSessionLogging:
         config = _make_config()
         mock_pool = AsyncMock()
 
-        # Success path
-        from butlers.core.spawner import _FALLBACK_MODEL_ID
-
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock) as mock_complete,
             patch(
                 "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=None,
+                return_value=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "test-model",
+                    [],
+                    _FAKE_CATALOG_ID,
+                    1800,
+                    "workhorse",
+                ),
             ),
         ):
             fake_session_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
@@ -1495,7 +1507,7 @@ class TestSessionLogging:
             assert create_args[0] is mock_pool
             assert create_args[1] == "log me"
             assert create_args[2] == "schedule"
-            assert create_kwargs.get("model") == _FALLBACK_MODEL_ID
+            assert create_kwargs.get("model") == "test-model"
             effective_prompt = create_kwargs["effective_system_prompt"]
             assert adapter.calls[0]["system_prompt"] == effective_prompt
             assert (
@@ -1610,18 +1622,16 @@ class CapturingMockAdapter(MockAdapter):
 
 
 class TestModelPassthrough:
-    """Model string resolved by the catalog (or the static fallback) is passed
+    """The catalog model (or runtime-owned default) is passed
     through to ``invoke()`` kwargs and surfaced on :class:`SpawnerResult`."""
 
     async def test_model_passed_to_invoke_and_result(self, tmp_path: Path):
-        """Without a pool, the hard-coded fallback model is forwarded to invoke();
-        error results surface the same fallback model."""
-        from butlers.core.spawner import _FALLBACK_MODEL_ID
+        """Without a pool, the runtime chooses its account-compatible default."""
 
         config_dir = tmp_path / "config"
         config_dir.mkdir()
 
-        # No pool → catalog is skipped, spawner falls back to the constant
+        # No pool → catalog is skipped and no explicit model is forced.
         adapter = CapturingMockAdapter(result_text="ok")
         spawner = Spawner(
             config=_make_config(),
@@ -1629,10 +1639,10 @@ class TestModelPassthrough:
             runtime=adapter,
         )
         result = await spawner.trigger("test default", "tick")
-        assert adapter.captured_models[0] == _FALLBACK_MODEL_ID
-        assert result.model == _FALLBACK_MODEL_ID
+        assert adapter.captured_models[0] is None
+        assert result.model is None
 
-        # Error path still surfaces the fallback model
+        # Error path also reports that no explicit model was forced.
         spawner3 = Spawner(
             config=_make_config(),
             config_dir=config_dir,
@@ -1640,7 +1650,7 @@ class TestModelPassthrough:
         )
         result3 = await spawner3.trigger("fail", "tick")
         assert result3.error is not None
-        assert result3.model == _FALLBACK_MODEL_ID
+        assert result3.model is None
 
 
 # ---------------------------------------------------------------------------
@@ -1971,7 +1981,7 @@ class TestCatalogModelResolution:
 
     Covers:
     - Catalog resolution path (resolve_model returns a valid result)
-    - TOML fallback when catalog has no matching entries
+    - Fail-closed behavior when a live catalog has no matching entries
     - Complexity parameter propagated to resolve_model
     - extra_args merging: TOML args first, catalog args appended
     - Adapter pool lazy instantiation for new runtime types
@@ -1979,9 +1989,8 @@ class TestCatalogModelResolution:
     - Graceful fallback on catalog resolution errors
     """
 
-    async def test_catalog_and_static_fallback_model_selection(self, tmp_path: Path):
-        """Catalog model used when available; static constant used when catalog returns None."""
-        from butlers.core.spawner import _FALLBACK_MODEL_ID
+    async def test_catalog_selection_and_empty_catalog_refusal(self, tmp_path: Path):
+        """A catalog model wins; a live empty catalog fails before invocation."""
 
         config_dir = tmp_path / "config"
         config_dir.mkdir()
@@ -2035,7 +2044,7 @@ class TestCatalogModelResolution:
         assert captured["timeout"] == 2400
         assert result.model == "claude-opus-4-20250514"
 
-        # Catalog returns None → static fallback constant
+        # Catalog returns None with a live pool → no catalog-keyed gates can run.
         captured.clear()
         adapter2 = CapturingAdapter()
         spawner2 = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter2)
@@ -2050,9 +2059,292 @@ class TestCatalogModelResolution:
         ):
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
             result2 = await spawner2.trigger("prompt", "tick")
-        assert result2.success is True
-        assert captured["model"] == _FALLBACK_MODEL_ID
-        assert result2.model == _FALLBACK_MODEL_ID
+        assert result2.success is False
+        assert result2.error == "ModelResolutionError: no_eligible_catalog_entries"
+        assert captured == {}
+        assert result2.model is None
+
+    async def test_image_route_without_vision_candidate_fails_before_runtime(
+        self, tmp_path: Path
+    ) -> None:
+        """A populated catalog's no-fit receipt must not fall through to any adapter."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        candidate_id = uuid.uuid4()
+        long_detail = "vision" + ("x" * 5000)
+        adapter = MockAdapter(result_text="must not run", capture=True)
+        mock_pool = AsyncMock()
+
+        async def _resolve_no_fit(*_args, intent, receipt_sink, **_kwargs):
+            receipt_sink.append(
+                DispatchResolution(
+                    policy_version="test-policy",
+                    requested_intent=intent,
+                    effective_intent=intent,
+                    candidates=(
+                        CandidateRecord(
+                            catalog_entry_id=candidate_id,
+                            runtime_type=DEFAULT_RUNTIME_TYPE,
+                            model_id="gpt-test",
+                            effective_tier="workhorse",
+                            effective_priority=10,
+                            outcome=CandidateOutcome.EXCLUDED_HARD_FIT,
+                            exclusions=(FitFinding(FitCode.CAPABILITY_UNKNOWN, long_detail),),
+                        ),
+                    ),
+                )
+            )
+            return None
+
+        with (
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                side_effect=_resolve_no_fit,
+            ),
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as create,
+        ):
+            result = await Spawner(
+                config=_make_config(),
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=adapter,
+            ).trigger(
+                "inspect the attachment",
+                "route",
+                attachments=[{"media_type": "image/png", "storage_ref": "blob:test"}],
+            )
+
+        assert result.success is False
+        assert result.error is not None
+        assert result.error.startswith("ModelResolutionError: no_fitting_candidate")
+        assert "vision" in result.error
+        assert len(result.error) <= len("ModelResolutionError: ") + 1024
+        assert result.model is None
+        assert result.resolution_receipt is not None
+        assert result.resolution_receipt["candidates"][0]["exclusions"][0]["detail"] == (
+            long_detail
+        )
+        assert adapter.calls == []
+        create.assert_not_awaited()
+
+    async def test_pool_free_image_route_requires_proven_direct_runtime_vision(
+        self, tmp_path: Path
+    ) -> None:
+        """Pool-free harness mode must not assume its adapter can consume images."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        adapter = MockAdapter(result_text="must not run", capture=True)
+
+        result = await Spawner(
+            config=_make_config(),
+            config_dir=config_dir,
+            pool=None,
+            runtime=adapter,
+        ).trigger(
+            "inspect the attachment",
+            "route",
+            attachments=[{"media_type": "image/png", "storage_ref": "blob:test"}],
+        )
+
+        assert result.success is False
+        assert result.error is not None
+        assert result.error.startswith("ModelResolutionError: direct_runtime_unfit")
+        assert "vision" in result.error
+        assert result.model is None
+        assert adapter.calls == []
+
+    async def test_spend_rule_breaker_override_cannot_bypass_original_vision_fit(
+        self, tmp_path: Path
+    ) -> None:
+        """Breaker precedence cannot hide a target's retained hard-fit exclusions."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        selected_id = uuid.uuid4()
+        unfit_id = uuid.uuid4()
+        adapter = MockAdapter(result_text="must not run", capture=True)
+        spawner = Spawner(
+            config=_make_config(),
+            config_dir=config_dir,
+            pool=AsyncMock(),
+            runtime=adapter,
+        )
+
+        async def _resolve_with_unfit_override_target(*_args, intent, receipt_sink, **_kwargs):
+            resolution = DispatchResolution(
+                policy_version="test-policy",
+                requested_intent=intent,
+                effective_intent=intent,
+                candidates=(
+                    CandidateRecord(
+                        catalog_entry_id=selected_id,
+                        runtime_type=DEFAULT_RUNTIME_TYPE,
+                        model_id="vision-model",
+                        effective_tier="workhorse",
+                        effective_priority=20,
+                        outcome=CandidateOutcome.SELECTED,
+                    ),
+                    CandidateRecord(
+                        catalog_entry_id=unfit_id,
+                        runtime_type=DEFAULT_RUNTIME_TYPE,
+                        model_id="unproven-vision-model",
+                        effective_tier="workhorse",
+                        effective_priority=10,
+                        outcome=CandidateOutcome.EXCLUDED_BREAKER,
+                        exclusions=(FitFinding(FitCode.CAPABILITY_UNKNOWN, "vision"),),
+                    ),
+                ),
+                selection=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "vision-model",
+                    [],
+                    selected_id,
+                    1800,
+                    "workhorse",
+                ),
+                winner_reason="sole_candidate",
+            )
+            receipt_sink.append(resolution)
+            return resolution.selection
+
+        with (
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                side_effect=_resolve_with_unfit_override_target,
+            ),
+            patch(
+                "butlers.core.spawner.apply_spend_routing_rules",
+                new_callable=AsyncMock,
+                return_value=SpendRoutingResult(
+                    resolved=(
+                        DEFAULT_RUNTIME_TYPE,
+                        "unproven-vision-model",
+                        [],
+                        unfit_id,
+                        1800,
+                    ),
+                    matched_rule_id=uuid.uuid4(),
+                ),
+            ),
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as create,
+            patch.object(spawner, "_fire_speculative_prewarm") as prewarm,
+        ):
+            result = await spawner.trigger(
+                "inspect the attachment",
+                "route",
+                attachments=[{"media_type": "image/png", "storage_ref": "blob:test"}],
+            )
+
+        assert result.success is False
+        assert result.error is not None
+        assert result.error.startswith("ModelResolutionError: post_resolution_selection_unfit")
+        assert result.model == "unproven-vision-model"
+        assert result.resolution_receipt is not None
+        rejected = next(
+            candidate
+            for candidate in result.resolution_receipt["candidates"]
+            if candidate["catalog_entry_id"] == str(unfit_id)
+        )
+        assert rejected["outcome"] == "excluded_breaker"
+        assert rejected["exclusions"] == [{"code": "capability_unknown", "detail": "vision"}]
+        assert adapter.calls == []
+        create.assert_not_awaited()
+        prewarm.assert_not_called()
+
+    async def test_private_local_override_cannot_bypass_original_vision_fit(
+        self, tmp_path: Path
+    ) -> None:
+        """Private-content locality policy cannot select an unproven vision row."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        remote_id = uuid.uuid4()
+        local_unfit_id = uuid.uuid4()
+        adapter = MockAdapter(result_text="must not run", capture=True)
+        spawner = Spawner(
+            config=_make_config(),
+            config_dir=config_dir,
+            pool=AsyncMock(),
+            runtime=adapter,
+        )
+
+        async def _resolve_with_unfit_local_target(*_args, intent, receipt_sink, **_kwargs):
+            resolution = DispatchResolution(
+                policy_version="test-policy",
+                requested_intent=intent,
+                effective_intent=intent,
+                candidates=(
+                    CandidateRecord(
+                        catalog_entry_id=remote_id,
+                        runtime_type=DEFAULT_RUNTIME_TYPE,
+                        model_id="remote-vision-model",
+                        effective_tier="workhorse",
+                        effective_priority=20,
+                        outcome=CandidateOutcome.SELECTED,
+                    ),
+                    CandidateRecord(
+                        catalog_entry_id=local_unfit_id,
+                        runtime_type=DEFAULT_RUNTIME_TYPE,
+                        model_id="ollama/unproven-vision",
+                        effective_tier="workhorse",
+                        effective_priority=10,
+                        outcome=CandidateOutcome.EXCLUDED_HARD_FIT,
+                        exclusions=(FitFinding(FitCode.CAPABILITY_UNKNOWN, "vision"),),
+                    ),
+                ),
+                selection=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "remote-vision-model",
+                    [],
+                    remote_id,
+                    1800,
+                    "workhorse",
+                ),
+                winner_reason="sole_candidate",
+            )
+            receipt_sink.append(resolution)
+            return resolution.selection
+
+        with (
+            patch(
+                "butlers.core.spawner._capture_pipeline_routing_context",
+                return_value={"request_context": {"source_channel": "whatsapp_user_client"}},
+            ),
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                side_effect=_resolve_with_unfit_local_target,
+            ),
+            patch(
+                "butlers.core.spawner.enforce_private_content_selection",
+                new_callable=AsyncMock,
+                return_value=(
+                    (
+                        DEFAULT_RUNTIME_TYPE,
+                        "ollama/unproven-vision",
+                        [],
+                        local_unfit_id,
+                        1800,
+                    ),
+                    False,
+                    None,
+                    True,
+                ),
+            ),
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as create,
+            patch("butlers.core.spawner.write_audit_entry", new_callable=AsyncMock),
+            patch.object(spawner, "_fire_speculative_prewarm") as prewarm,
+        ):
+            result = await spawner.trigger(
+                "inspect the attachment",
+                "route",
+                attachments=[{"media_type": "image/png", "storage_ref": "blob:test"}],
+            )
+
+        assert result.success is False
+        assert result.error is not None
+        assert result.error.startswith("ModelResolutionError: post_resolution_selection_unfit")
+        assert result.model == "ollama/unproven-vision"
+        assert adapter.calls == []
+        create.assert_not_awaited()
+        prewarm.assert_not_called()
 
     async def test_private_routing_context_replaces_remote_before_adapter_setup(
         self, tmp_path: Path
@@ -2114,11 +2406,8 @@ class TestCatalogModelResolution:
         enforce_lane.assert_awaited_once()
         assert enforce_lane.await_args.kwargs["effective_tier"] == "specialty"
 
-    async def test_private_routing_context_refuses_remote_static_fallback(
-        self, tmp_path: Path
-    ) -> None:
-        """A catalog miss cannot silently send private content to the fallback."""
-        from butlers.core.model_routing import PrivateContentModelUnavailable
+    async def test_private_routing_context_refuses_live_catalog_miss(self, tmp_path: Path) -> None:
+        """A catalog miss cannot silently send private content to any runtime."""
 
         config_dir = tmp_path / "config"
         config_dir.mkdir()
@@ -2143,13 +2432,13 @@ class TestCatalogModelResolution:
             patch.object(spawner, "_get_or_create_adapter") as get_adapter,
             patch.object(spawner, "_fire_speculative_prewarm") as prewarm,
         ):
-            with pytest.raises(PrivateContentModelUnavailable):
-                await spawner.trigger("synthetic prompt", "route")
+            result = await spawner.trigger("synthetic prompt", "route")
 
+        assert result.success is False
+        assert result.error == "ModelResolutionError: no_eligible_catalog_entries"
         get_adapter.assert_not_called()
         prewarm.assert_not_called()
-        audit.assert_awaited_once()
-        assert audit.await_args.args[2] == "model.private_content_remote_refused"
+        audit.assert_not_awaited()
 
     async def test_private_routing_refuses_mismatched_ollama_runtime_before_adapter_setup(
         self, tmp_path: Path
@@ -2363,56 +2652,56 @@ class TestCatalogModelResolution:
         assert captured2["runtime_args"] is None
         assert captured2["timeout"] == 2400
 
-    async def test_catalog_error_and_unknown_runtime_fall_back_to_static(self, tmp_path: Path):
-        """Both catalog errors and unknown runtime types fall back to the static default."""
-        from butlers.core.spawner import _FALLBACK_MODEL_ID
-
+    async def test_catalog_error_and_unknown_runtime_fail_before_invocation(
+        self, tmp_path: Path
+    ) -> None:
+        """Catalog outage and a bad catalog runtime both fail closed."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
         mock_pool = AsyncMock()
 
-        for side_effect, return_value in [
-            (Exception("DB connection error"), None),
-            (None, ("nonexistent-runtime", "some-model", [], _FAKE_CATALOG_ID, 2400, "workhorse")),
-        ]:
-            captured: dict = {}
+        adapter = CapturingMockAdapter(result_text="must not run")
+        spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                side_effect=Exception("DB connection error"),
+            ),
+        ):
+            result = await spawner.trigger("prompt", "tick")
+        assert result.success is False
+        assert result.error == "ModelResolutionError: catalog_unavailable"
+        assert adapter.captured_models == []
+        assert result.model is None
+        create.assert_not_awaited()
 
-            class CapturingAdapter(MockAdapter):
-                async def invoke(
-                    self,
-                    prompt,
-                    system_prompt,
-                    mcp_servers,
-                    env,
-                    max_turns=20,
-                    model=None,
-                    runtime_args=None,
-                    cwd=None,
-                    timeout=None,
-                ):
-                    captured["model"] = model
-                    return "ok", [], None
-
-            adapter = CapturingAdapter()
-            spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
-            resolve_kwargs = (
-                {"side_effect": side_effect} if side_effect else {"return_value": return_value}
-            )
-            with (
-                patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
-                patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
-                patch(
-                    "butlers.core.spawner.resolve_model_with_effective_tier",
-                    new_callable=AsyncMock,
-                    **resolve_kwargs,
+        unknown = Spawner(
+            config=config, config_dir=config_dir, pool=mock_pool, runtime=MockAdapter()
+        )
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as create,
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=(
+                    "nonexistent-runtime",
+                    "some-model",
+                    [],
+                    _FAKE_CATALOG_ID,
+                    2400,
+                    "workhorse",
                 ),
-            ):
-                mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
-                result = await spawner.trigger("prompt", "tick")
-            assert result.success is True
-            assert captured["model"] == _FALLBACK_MODEL_ID
-            assert result.model == _FALLBACK_MODEL_ID
+            ),
+        ):
+            refused = await unknown.trigger("prompt", "tick")
+        assert refused.success is False
+        assert refused.error is not None
+        assert refused.error.startswith("ModelResolutionError: unregistered_runtime_type")
+        create.assert_not_awaited()
 
     async def test_audit_log_resolution_metadata(self, tmp_path: Path):
         """Audit log includes model, runtime_type, complexity, resolution_source."""
@@ -2461,37 +2750,27 @@ class TestCatalogModelResolution:
         assert session_entry["data"]["runtime_type"] == DEFAULT_RUNTIME_TYPE
         assert session_entry["data"]["complexity"] == "reasoning"
         assert session_entry["data"]["resolution_source"] == "catalog"
-        assert llm_entry["data"]["provider"] == "anthropic"
+        assert llm_entry["data"]["provider"] == "openai"
         assert llm_entry["data"]["model"] == "claude-opus-4-20250514"
 
-        # Also verify the static_fallback source
-        from butlers.core.spawner import _FALLBACK_MODEL_ID
-
+        # Also verify explicit pool-free direct-adapter mode.
         audit_entries.clear()
         spawner2 = Spawner(
             config=_make_config(),
             config_dir=config_dir,
-            pool=mock_pool,
             runtime=MockAdapter(result_text="ok"),
+            audit_pool=mock_pool,
         )
         with (
-            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
-            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
             patch("butlers.core.spawner.write_audit_entry", side_effect=fake_write_audit),
-            patch(
-                "butlers.core.spawner.resolve_model_with_effective_tier",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
         ):
-            mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
             await spawner2.trigger("prompt", "tick")
         assert len(audit_entries) == 2
         session_entry2 = next(e for e in audit_entries if e["data"].get("resolution_source"))
         llm_entry2 = next(e for e in audit_entries if "provider" in e["data"])
-        assert session_entry2["data"]["model"] == _FALLBACK_MODEL_ID
-        assert session_entry2["data"]["resolution_source"] == "static_fallback"
-        assert llm_entry2["data"]["provider"] == "anthropic"
+        assert session_entry2["data"]["model"] is None
+        assert session_entry2["data"]["resolution_source"] == "direct_runtime"
+        assert llm_entry2["data"]["provider"] == "openai"
 
 
 # ---------------------------------------------------------------------------
@@ -2795,7 +3074,14 @@ class TestIngestionEventIdPropagation:
             patch(
                 "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=None,
+                return_value=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "test-model",
+                    [],
+                    _FAKE_CATALOG_ID,
+                    1800,
+                    "workhorse",
+                ),
             ),
         ):
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
@@ -2973,7 +3259,7 @@ class TestSpendEventBusWiring:
             patch(
                 "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=None,  # static fallback — no catalog_entry_id
+                return_value=None,  # pool-free direct runtime — no catalog_entry_id
             ),
             patch(
                 "butlers.fleet_events.publish_fleet_event",

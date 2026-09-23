@@ -28,8 +28,15 @@ a catalog candidate is selected but cannot safely complete the invocation.
 - **THEN** the spawner SHALL retry the logical session with the next eligible same-tier
   model
 - **AND** it SHALL exclude the failed `catalog_entry_id` from the next-candidate query
+- **AND** it SHALL preserve the original dispatch intent and skip any same-tier candidate that was not fit-eligible for that intent before invoking an adapter
 - **AND** it SHALL preserve the original prompt, context, trigger source, request_id,
   and runtime session correlation for the logical session
+
+#### Scenario: Codex account cannot dispatch the selected provider model
+- **WHEN** a catalog-resolved Codex invocation performs no tool call and rejects the selected model with the exact account-compatibility phrase `not supported when using Codex with a ChatGPT account`
+- **THEN** the classifier treats the attempt as `provider_unavailable` and permits ordinary same-tier failover
+- **AND** a generic unsupported-operation message without that account-specific phrase remains an unknown runtime error and suppresses failover
+- **AND** this classification applies only after catalog selection; pool-free direct-adapter mode has no catalog tier and cannot enter same-tier failover
 
 #### Scenario: Empty returned attempt fails over after token accounting
 - **WHEN** a catalog-resolved runtime invocation returns no result text and no confirmed

@@ -645,6 +645,32 @@ class TestProviderAvailabilityErrorsSplitFromAuth:
         assert _eligible(dec)
         assert dec.reason.startswith("provider_unavailable"), dec.reason
 
+    def test_codex_chatgpt_account_model_incompatibility_is_eligible(self) -> None:
+        """An account/model rejection before work is provider unavailability."""
+        dec = classify_failover_eligibility(
+            _ctx(
+                RuntimeError(
+                    "Codex CLI exited with code 1: "
+                    '{"type":"error","status":400,"error":'
+                    '{"type":"invalid_request_error","message":'
+                    "\"The 'claude-haiku-4-5-20251001' model is not supported when using "
+                    'Codex with a ChatGPT account."}}'
+                )
+            )
+        )
+
+        assert _eligible(dec), dec.reason
+        assert dec.reason.startswith("provider_unavailable"), dec.reason
+
+    def test_generic_unsupported_runtime_error_remains_default_closed(self) -> None:
+        """The narrow account marker must not admit unrelated unsupported operations."""
+        dec = classify_failover_eligibility(
+            _ctx(RuntimeError("This operation is not supported for archived records"))
+        )
+
+        assert _suppressed(dec), dec.reason
+        assert dec.reason.startswith("unknown_runtime_error"), dec.reason
+
 
 class TestApiAdapterAnthropicSdkErrorsEligible:
     """bu-qvnce.12 (PR #2936) fail-open verification: ApiAdapter wraps every

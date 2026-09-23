@@ -22,7 +22,8 @@ from butlers.core.runtimes.codex import MCPToolDiscoveryError
 from butlers.core.spawner import Spawner
 from butlers.core.tool_call_capture import _captured_tool_calls
 
-pytestmark = pytest.mark.unit
+pytest_plugins = ("tests.core.spawner_fixtures",)
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("spawner_catalog_candidate")]
 
 
 def _make_config(name: str = "test-butler", port: int = 9100) -> ButlerConfig:
