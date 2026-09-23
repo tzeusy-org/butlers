@@ -600,8 +600,13 @@ async def _assert_l2_receiver_records_under_narrow_role_without_dashboard_owner_
     assert pool is not None
     try:
         await pool.execute(
-            "INSERT INTO switchboard.butler_registry (name, endpoint_url) "
-            "VALUES ('health', 'http://health:41103/mcp') ON CONFLICT (name) DO NOTHING"
+            "INSERT INTO switchboard.butler_registry (name, endpoint_url, capabilities) "
+            "VALUES ('health', 'http://health:41103/mcp', '[\"trigger\"]'::jsonb) "
+            "ON CONFLICT (name) DO NOTHING"
+        )
+        await pool.execute(
+            "UPDATE switchboard.butler_registry SET capabilities = '[\"trigger\"]'::jsonb "
+            "WHERE name = 'health'"
         )
         await pool.fetchval("SELECT public.set_butler_registry_policy('health', 'quarantined')")
         await pool.execute(
@@ -708,6 +713,90 @@ async def _assert_l2_receiver_records_under_narrow_role_without_dashboard_owner_
         )
         with pytest.raises(asyncpg.PostgresError):
             await receiver.fetchval("SELECT public.set_butler_registry_policy('health', 'active')")
+
+        # L3's prospective Switchboard route consumes the same CAS ledger as
+        # this Dashboard receiver, but only when its default-off cutover is
+        # explicitly enabled.  A late Dashboard result cannot undo the route
+        # probe, and an owner hold remains a separate terminal policy gate.
+        from unittest.mock import patch
+
+        from butlers.tools.switchboard.routing.route import route
+
+        await pool.fetchval("SELECT public.set_butler_registry_policy('health', 'active')")
+        older = await receiver.fetchrow(
+            "SELECT boot_epoch, probe_sequence FROM public.reserve_butler_probe('health')"
+        )
+
+        async def switchboard_role_setup(conn: asyncpg.Connection) -> None:
+            await conn.execute('SET ROLE "butler_switchboard_rw"')
+
+        route_pool = await asyncpg.create_pool(
+            migrated_db_url, min_size=1, max_size=2, setup=switchboard_role_setup
+        )
+        assert route_pool is not None
+        target_calls: list[str] = []
+
+        async def accepted_target(endpoint_url: str, _tool: str, _args: dict) -> dict:
+            target_calls.append(endpoint_url)
+            return {"status": "accepted"}
+
+        async def route_identity(request: httpx.Request) -> httpx.Response:
+            assert request.url.port == config.port
+            assert request.url.path == "/internal/control-plane/identity"
+            return httpx.Response(200, json=identity)
+
+        try:
+            route_client = httpx.AsyncClient(transport=httpx.MockTransport(route_identity))
+            with (
+                patch.dict("os.environ", {"BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER": "1"}),
+                patch(
+                    "butlers.tools.switchboard.routing.route.httpx.AsyncClient",
+                    return_value=route_client,
+                ),
+            ):
+                routed = await route(
+                    route_pool,
+                    "health",
+                    "route.execute",
+                    {},
+                    required_capability="trigger",
+                    call_fn=accepted_target,
+                )
+            assert routed["transport"]["outcome"] == "confirmed", routed
+            assert target_calls == [f"http://localhost:{config.port}/mcp"]
+            assert not await receiver.fetchval(
+                "SELECT public.record_butler_probe($1,$2,$3,$4,$5,$6,$7)",
+                "health",
+                epoch,
+                older["probe_sequence"],
+                False,
+                None,
+                None,
+                "timeout",
+            )
+            latest = await pool.fetchrow(
+                "SELECT policy_state, observed_state, recorded_probe_sequence "
+                "FROM switchboard.butler_registry_control_plane WHERE name = 'health'"
+            )
+            assert latest["policy_state"] == "active" and latest["observed_state"] == "healthy"
+            assert latest["recorded_probe_sequence"] > older["probe_sequence"]
+
+            await pool.fetchval("SELECT public.set_butler_registry_policy('health', 'quarantined')")
+            with patch.dict("os.environ", {"BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER": "1"}):
+                denied = await route(
+                    route_pool,
+                    "health",
+                    "route.execute",
+                    {},
+                    allow_stale=True,
+                    allow_quarantined=True,
+                    call_fn=accepted_target,
+                )
+            assert denied["transport"]["outcome"] == "not_attempted"
+            assert denied["retryable"] is False
+            assert len(target_calls) == 1
+        finally:
+            await route_pool.close()
         await _assert_l2_dashboard_probe_role_resets(migrated_db_url)
     finally:
         await pool.close()

@@ -148,6 +148,143 @@ class TestTransportVocabulary:
 
 
 class TestRouteTransportClassification:
+    async def test_default_route_retains_legacy_authority_without_cutover(
+        self, monkeypatch
+    ) -> None:
+        monkeypatch.delenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", raising=False)
+        pool = _mock_pool()
+        call_fn = AsyncMock(return_value={"status": "accepted"})
+        with (
+            _resolves_target(),
+            patch(
+                "butlers.tools.switchboard.routing.route.resolve_control_plane_target",
+                new_callable=AsyncMock,
+            ) as receiver_resolver,
+        ):
+            result = await route(pool, "finance", "route.execute", {}, call_fn=call_fn)
+
+        assert result["transport"]["outcome"] == "confirmed"
+        call_fn.assert_awaited_once()
+        receiver_resolver.assert_not_awaited()
+
+    async def test_flagged_stale_route_rechecks_once_without_policy_bypass(
+        self, monkeypatch
+    ) -> None:
+        from butlers.core.control_plane_identity import ExpectedDaemon, ProbeOutcome
+        from butlers.tools.switchboard.registry.registry import ControlPlaneTargetDecision
+
+        monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", "1")
+        expected = ExpectedDaemon("finance", 41107, "localhost")
+        stale = ControlPlaneTargetDecision(
+            "stale", "stale_observation", expected, endpoint_url="http://localhost:41107/mcp"
+        )
+        ready = ControlPlaneTargetDecision(
+            "ready", "ready", expected, endpoint_url="http://localhost:41107/mcp"
+        )
+        pool = _mock_pool()
+        call_fn = AsyncMock(return_value={"status": "accepted"})
+        with (
+            patch(
+                "butlers.tools.switchboard.routing.route.expected_route_target",
+                return_value=expected,
+            ),
+            patch(
+                "butlers.tools.switchboard.routing.route.resolve_control_plane_target",
+                new=AsyncMock(side_effect=[stale, ready]),
+            ) as receiver_resolver,
+            patch(
+                "butlers.tools.switchboard.routing.route.probe_once",
+                new=AsyncMock(return_value=ProbeOutcome("healthy", True)),
+            ) as probe,
+            patch("butlers.tools.switchboard.routing.route.httpx.AsyncClient"),
+        ):
+            result = await route(pool, "finance", "route.execute", {}, call_fn=call_fn)
+
+        assert result["transport"]["outcome"] == "confirmed"
+        assert receiver_resolver.await_count == 2
+        probe.assert_awaited_once()
+        call_fn.assert_awaited_once()
+        assert call_fn.await_args.args[0] == "http://localhost:41107/mcp"
+
+        denied = ControlPlaneTargetDecision("denied", "policy_denied", expected)
+        with (
+            patch(
+                "butlers.tools.switchboard.routing.route.expected_route_target",
+                return_value=expected,
+            ),
+            patch(
+                "butlers.tools.switchboard.routing.route.resolve_control_plane_target",
+                new=AsyncMock(return_value=denied),
+            ),
+            patch(
+                "butlers.tools.switchboard.routing.route.probe_once",
+                new_callable=AsyncMock,
+            ) as probe,
+        ):
+            refused = await route(
+                pool,
+                "finance",
+                "route.execute",
+                {},
+                allow_stale=True,
+                allow_quarantined=True,
+                call_fn=call_fn,
+            )
+        assert refused["transport"]["outcome"] == "not_attempted"
+        assert refused["retryable"] is False
+        probe.assert_not_awaited()
+        call_fn.assert_awaited_once()
+
+        with (
+            patch(
+                "butlers.tools.switchboard.routing.route.expected_route_target",
+                return_value=expected,
+            ),
+            patch(
+                "butlers.tools.switchboard.routing.route.resolve_control_plane_target",
+                new=AsyncMock(return_value=stale),
+            ),
+            patch(
+                "butlers.tools.switchboard.routing.route.probe_once",
+                new=AsyncMock(return_value=ProbeOutcome("timeout", False)),
+            ) as failed_probe,
+            patch("butlers.tools.switchboard.routing.route.httpx.AsyncClient"),
+        ):
+            unavailable = await route(pool, "finance", "route.execute", {}, call_fn=call_fn)
+        assert unavailable["transport"]["outcome"] == "not_attempted"
+        assert unavailable["error"] == "target_unavailable"
+        failed_probe.assert_awaited_once()
+        call_fn.assert_awaited_once()
+
+        with (
+            patch(
+                "butlers.tools.switchboard.routing.route.expected_route_target",
+                return_value=expected,
+            ),
+            patch(
+                "butlers.tools.switchboard.routing.route.resolve_control_plane_target",
+                new=AsyncMock(side_effect=[stale, denied]),
+            ),
+            patch(
+                "butlers.tools.switchboard.routing.route.probe_once",
+                new=AsyncMock(return_value=ProbeOutcome("healthy", True)),
+            ),
+            patch("butlers.tools.switchboard.routing.route.httpx.AsyncClient"),
+        ):
+            newly_held = await route(pool, "finance", "route.execute", {}, call_fn=call_fn)
+        assert newly_held["transport"]["outcome"] == "not_attempted"
+        assert newly_held["retryable"] is False
+        call_fn.assert_awaited_once()
+
+        with patch(
+            "butlers.tools.switchboard.routing.route.expected_route_target",
+            side_effect=ValueError("bad private roster path"),
+        ):
+            unknown = await route(pool, "finance", "route.execute", {}, call_fn=call_fn)
+        assert unknown["transport"]["outcome"] == "not_attempted"
+        assert "private roster path" not in unknown["error"]
+        call_fn.assert_awaited_once()
+
     async def test_internal_context_folds_into_route_envelope_without_target_keyword(self) -> None:
         pool = _mock_pool()
         routed_calls: list[dict[str, Any]] = []

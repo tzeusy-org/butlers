@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import asyncpg
 
+from butlers.core.control_plane_identity import ExpectedDaemon, expected_from_roster
 from butlers.core.liveness import CLOCK_SKEW_TOLERANCE, is_liveness_stale
 from butlers.core.mcp_urls import runtime_mcp_url
 
@@ -33,6 +35,160 @@ _AGENT_TYPES = frozenset({AGENT_TYPE_BUTLER, AGENT_TYPE_STAFFER})
 
 DEFAULT_LIVENESS_TTL_SECONDS = 300
 DEFAULT_ROUTE_CONTRACT_VERSION = 1
+
+
+@dataclass(frozen=True)
+class ControlPlaneTargetDecision:
+    """Read-only route admission facts from L1, with no legacy projection write."""
+
+    state: str  # ready | stale | denied
+    reason: str
+    expected: ExpectedDaemon
+    endpoint_url: str | None = None
+    boot_epoch: int | None = None
+    boot_instance_id: uuid.UUID | None = None
+    healthy_observed_at: datetime | None = None
+    state_updated_at: datetime | None = None
+
+
+def expected_route_target(
+    name: str,
+    *,
+    required_capability: str | None = None,
+    route_contract_version: int = DEFAULT_ROUTE_CONTRACT_VERSION,
+) -> ExpectedDaemon | None:
+    """Resolve exact Git authority, never a daemon-authored capability or URL."""
+    from butlers.config import list_butlers
+
+    configs = list_butlers()
+    targets = expected_from_roster(configs)
+    for config, target in zip(configs, targets, strict=True):
+        if target.name != name:
+            continue
+        if not (
+            config.runtime_seed.route_contract_min
+            <= route_contract_version
+            <= config.runtime_seed.route_contract_max
+        ):
+            return None
+        allowed = set(config.modules) | {"trigger"}
+        if required_capability and required_capability not in allowed:
+            return None
+        return target
+    return None
+
+
+async def resolve_control_plane_target(
+    pool: asyncpg.Pool,
+    expected: ExpectedDaemon,
+    *,
+    required_capability: str | None = None,
+    route_contract_version: int = DEFAULT_ROUTE_CONTRACT_VERSION,
+) -> ControlPlaneTargetDecision:
+    """Read separated policy/observation and select the Git-roster endpoint.
+
+    This is the same effect-free resolver used by the prospective route cutover
+    and the internal preflight.  In particular, it never calls the legacy
+    resolver, which reconciles and writes ``eligibility_state`` on reads.
+    """
+    row = await pool.fetchrow(
+        """
+        SELECT c.name, c.policy_state, c.observed_state, c.boot_instance_id,
+               c.boot_epoch, c.observed_boot_epoch, c.healthy_observed_at,
+               c.route_compatible, c.accepting_routes, c.updated_at,
+               r.liveness_ttl_seconds, r.route_contract_min, r.route_contract_max,
+               r.capabilities, clock_timestamp() AS server_now
+        FROM switchboard.butler_registry_control_plane AS c
+        JOIN switchboard.butler_registry AS r USING (name)
+        WHERE c.name = $1
+        """,
+        expected.name,
+    )
+    if row is None:
+        return ControlPlaneTargetDecision("denied", "missing_target", expected)
+    facts = dict(row)
+    if facts.get("name") != expected.name or facts.get("policy_state") not in {
+        "active",
+        "paused",
+        "quarantined",
+        "review_required",
+    }:
+        return ControlPlaneTargetDecision("denied", "invalid_record", expected)
+    if facts["policy_state"] != "active":
+        return ControlPlaneTargetDecision("denied", "policy_denied", expected)
+
+    minimum, maximum = facts.get("route_contract_min"), facts.get("route_contract_max")
+    if (
+        type(minimum) is not int
+        or type(maximum) is not int
+        or not minimum <= route_contract_version <= maximum
+    ):
+        return ControlPlaneTargetDecision("denied", "incompatible", expected)
+    if facts.get("route_compatible") is False:
+        return ControlPlaneTargetDecision("denied", "incompatible", expected)
+    if facts.get("accepting_routes") is False:
+        return ControlPlaneTargetDecision("denied", "not_accepting", expected)
+    if facts.get("route_compatible") not in (True, None) or facts.get("accepting_routes") not in (
+        True,
+        None,
+    ):
+        return ControlPlaneTargetDecision("denied", "invalid_record", expected)
+    capabilities = facts.get("capabilities")
+    if isinstance(capabilities, str):
+        try:
+            capabilities = json.loads(capabilities)
+        except json.JSONDecodeError:
+            capabilities = None
+    if not isinstance(capabilities, list) or any(not isinstance(v, str) for v in capabilities):
+        return ControlPlaneTargetDecision("denied", "invalid_record", expected)
+    if required_capability and required_capability.lower() not in {
+        value.lower() for value in capabilities
+    }:
+        return ControlPlaneTargetDecision("denied", "missing_capability", expected)
+
+    epoch = facts.get("boot_epoch")
+    instance_id = facts.get("boot_instance_id")
+    ttl = facts.get("liveness_ttl_seconds")
+    server_now = facts.get("server_now")
+    healthy_at = facts.get("healthy_observed_at")
+    if (
+        type(epoch) is not int
+        or epoch <= 0
+        or not isinstance(instance_id, uuid.UUID)
+        or instance_id.version != 7
+        or type(ttl) is not int
+        or ttl <= 0
+        or not isinstance(server_now, datetime)
+        or server_now.tzinfo is None
+        or (
+            healthy_at is not None
+            and (not isinstance(healthy_at, datetime) or healthy_at.tzinfo is None)
+        )
+    ):
+        return ControlPlaneTargetDecision("denied", "invalid_record", expected)
+    if healthy_at is not None and healthy_at > server_now:
+        return ControlPlaneTargetDecision("denied", "invalid_record", expected)
+    if facts.get("observed_state") not in {"healthy", "stale", "unavailable", "observer_unknown"}:
+        return ControlPlaneTargetDecision("denied", "invalid_record", expected)
+
+    ready = (
+        facts.get("observed_state") == "healthy"
+        and facts.get("observed_boot_epoch") == epoch
+        and facts.get("route_compatible") is True
+        and facts.get("accepting_routes") is True
+        and healthy_at is not None
+        and (server_now - healthy_at).total_seconds() <= ttl
+    )
+    return ControlPlaneTargetDecision(
+        "ready" if ready else "stale",
+        "ready" if ready else "stale_observation",
+        expected,
+        endpoint_url=runtime_mcp_url(expected.port),
+        boot_epoch=epoch,
+        boot_instance_id=instance_id,
+        healthy_observed_at=healthy_at,
+        state_updated_at=facts.get("updated_at"),
+    )
 
 
 def _normalize_string_list(raw: Any) -> list[str]:

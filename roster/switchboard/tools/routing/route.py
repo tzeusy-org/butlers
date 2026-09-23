@@ -5,13 +5,16 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from typing import Any
 
 import asyncpg
+import httpx
 from fastmcp import Client as MCPClient
 from opentelemetry import trace
 
+from butlers.core.control_plane_identity import PROBE_DEADLINE_S, probe_once
 from butlers.core.mcp_urls import canonical_runtime_mcp_url, resolve_cross_container_mcp_url
 from butlers.core.model_routing import Complexity
 from butlers.core.route_observability import opaque_route_ref
@@ -19,6 +22,9 @@ from butlers.core.telemetry import inject_trace_context
 from butlers.core_tools._switchboard_route_dispatch import is_retryable_route_exception
 from butlers.tools.switchboard.registry.registry import (
     DEFAULT_ROUTE_CONTRACT_VERSION,
+    ControlPlaneTargetDecision,
+    expected_route_target,
+    resolve_control_plane_target,
     resolve_routing_target,
 )
 from butlers.tools.switchboard.routing.telemetry import (
@@ -39,6 +45,66 @@ from butlers.tools.switchboard.routing.transport import (
 logger = logging.getLogger(__name__)
 _ROUTER_CLIENTS: dict[str, tuple[MCPClient, Any]] = {}
 _ROUTER_CLIENT_LOCKS: dict[str, asyncio.Lock] = {}
+_RECEIVER_ROUTE_CUTOVER_ENV = "BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER"
+_ROUTE_RECHECK_DEADLINE_S = PROBE_DEADLINE_S + 2.0
+
+
+def _receiver_route_cutover_enabled() -> bool:
+    """Keep L3 routing shadowed until the separately approved live cutover."""
+    return os.environ.get(_RECEIVER_ROUTE_CUTOVER_ENV) == "1"
+
+
+async def _resolve_receiver_route_target(
+    pool: asyncpg.Pool,
+    target_butler: str,
+    *,
+    required_capability: str | None,
+    route_contract_version: int,
+) -> tuple[ControlPlaneTargetDecision | None, str, bool]:
+    """Resolve policy first; give one otherwise-eligible stale target a fenced probe."""
+    try:
+        async with asyncio.timeout(_ROUTE_RECHECK_DEADLINE_S):
+            expected = expected_route_target(
+                target_butler,
+                required_capability=required_capability,
+                route_contract_version=route_contract_version,
+            )
+            if expected is None:
+                return None, "missing_target", False
+            decision = await resolve_control_plane_target(
+                pool,
+                expected,
+                required_capability=required_capability,
+                route_contract_version=route_contract_version,
+            )
+            if decision.state == "ready":
+                return decision, "ready", False
+            if decision.state != "stale":
+                return None, decision.reason, False
+
+            # The L2 operation reserves its sequence before this identity GET
+            # and conditionally records only the current boot/sequence.  No
+            # Dashboard API or owner credential enters this path.
+            async with httpx.AsyncClient(trust_env=False, timeout=PROBE_DEADLINE_S) as client:
+                outcome = await probe_once(pool, expected, client=client)
+            if outcome.category != "healthy" or not outcome.recorded:
+                return None, "target_unavailable", True
+
+            current = await resolve_control_plane_target(
+                pool,
+                expected,
+                required_capability=required_capability,
+                route_contract_version=route_contract_version,
+            )
+            if current.state == "ready":
+                return current, "ready", False
+            return None, current.reason, current.state == "stale"
+    except TimeoutError:
+        return None, "target_unavailable", True
+    except Exception:
+        # The failure category is fixed; a DB/HTTP exception may contain a
+        # private endpoint or credential and must not enter route evidence.
+        return None, "target_unavailable", True
 
 
 def _fold_internal_route_context(
@@ -401,15 +467,34 @@ async def route(
                         "transport": POLICY_DENIED.as_dict(),
                     }
 
-            # Resolve target with registry validation
-            target_row, resolve_error = await resolve_routing_target(
-                pool,
-                target_butler,
-                required_capability=required_capability,
-                route_contract_version=route_contract_version,
-                allow_stale=allow_stale,
-                allow_quarantined=allow_quarantined,
-            )
+            # The separated-facts path is deliberately default-off until its
+            # shadow comparison and deployment gate are reviewed.  Legacy
+            # routing retains exactly its current authority in the meantime.
+            receiver_cutover = _receiver_route_cutover_enabled()
+            transient_refusal = False
+            if receiver_cutover:
+                decision, resolve_error, transient_refusal = await _resolve_receiver_route_target(
+                    pool,
+                    target_butler,
+                    required_capability=required_capability,
+                    route_contract_version=route_contract_version,
+                )
+                target_row = (
+                    {"endpoint_url": decision.endpoint_url}
+                    if decision is not None and decision.state == "ready"
+                    else None
+                )
+                # Caller override flags belong to the legacy projection only;
+                # they cannot bypass an owner hold or an unverified receiver.
+            else:
+                target_row, resolve_error = await resolve_routing_target(
+                    pool,
+                    target_butler,
+                    required_capability=required_capability,
+                    route_contract_version=route_contract_version,
+                    allow_stale=allow_stale,
+                    allow_quarantined=allow_quarantined,
+                )
             if target_row is None:
                 error_msg = resolve_error or f"Butler '{target_butler}' not found in registry"
                 span.set_status(trace.StatusCode.ERROR, error_msg)
@@ -429,8 +514,12 @@ async def route(
                 )
                 return {
                     "error": error_msg,
-                    "retryable": False,
-                    "transport": RECIPIENT_UNAVAILABLE.as_dict(),
+                    "retryable": transient_refusal,
+                    "transport": (
+                        RECIPIENT_UNAVAILABLE
+                        if transient_refusal or not receiver_cutover
+                        else POLICY_DENIED
+                    ).as_dict(),
                 }
 
             # Registry endpoints are self-registered as http://localhost:<port>
