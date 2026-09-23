@@ -57,10 +57,11 @@ The initial registry SHALL implement exactly these decisions:
 - `home/home:thresholds:`: permit authenticated dashboard inspection, deny
   generic mutation, omit/deny MCP reads and lists, and deny MCP mutation; use
   `GET/PATCH /api/home/settings/thresholds` for changes.
-- `chronicler/chronicler/owntracks/ssid_places`: preserve centrally
-  authenticated generic dashboard list/get/set/delete temporarily, while
-  omitting/denying every MCP state operation. Dashboard denial SHALL wait for a
-  separately specified replacement owner editor.
+- `chronicler/chronicler/owntracks/ssid_places`: preserve all current generic
+  dashboard and MCP state operations as an explicit residual risk. Its generic
+  dashboard writes proxy the same MCP tools available to model sessions, so no
+  restriction SHALL activate until a separately specified trusted owner editor
+  can replace that transport without a caller-asserted provenance flag.
 
 No broader namespace SHALL become protected merely by resemblance to one of
 these keys. Additional workflow, checkpoint, deduplication, domain-content, or
@@ -83,19 +84,24 @@ Scope: v1-mandatory
 - **THEN** the mutation is denied without changing the row
 - **AND** the existing specialized API or tool remains the supported mutation path
 
-#### Scenario: Chronicler private editing is not stranded
+#### Scenario: Chronicler protection is deferred rather than fabricated
 
-- **WHEN** the authenticated owner uses generic dashboard state for `chronicler/owntracks/ssid_places`
-- **THEN** the current dashboard CRUD remains available during the transition
-- **AND** MCP list/get/set/delete cannot observe or change that mapping
+- **WHEN** no distinct trusted owner editor exists for `chronicler/owntracks/ssid_places`
+- **THEN** current generic dashboard and MCP behavior remains unchanged and is recorded as residual risk
+- **AND** no caller field, actor string, header, or tool argument is treated as proof that an MCP call came from the owner
 
 ### Requirement: [TARGET-STATE] Protected denials and collection reads are content-blind
 
-An exact denied dashboard operation SHALL return one fixed `409
-MANAGED_STATE_KEY` before pool, MCP-client, or state access. An MCP denial SHALL
-return one fixed tool error before a low-level state operation. Neither result
-SHALL echo a submitted or stored value, expected shape, row existence, driver
-detail, or replacement-surface state.
+After central owner authentication, a path-aware ASGI policy guard SHALL return
+one fixed `409 MANAGED_STATE_KEY` for an exact denied dashboard operation before
+the body-reading audit middleware, FastAPI request-model validation, target
+butler pool, MCP client, route handler, or state access. Valid, malformed,
+missing-field, duplicate-field, scalar, and oversized protected PUT bodies
+SHALL receive the same fixed refusal without being read or parsed by the guard.
+An MCP denial SHALL return one fixed tool error before a low-level state
+operation. Neither result SHALL echo a submitted or stored value, expected
+shape, row existence, validation detail, driver detail, or replacement-surface
+state.
 
 Dashboard and MCP collection reads SHALL obtain keys before values, apply the
 policy, and fetch values only for allowed entries. An omitted entry SHALL expose
@@ -112,8 +118,14 @@ Scope: v1-mandatory
 #### Scenario: Denial precedes protected state access
 
 - **WHEN** a generic caller requests a denied exact get, set, or delete
-- **THEN** the fixed refusal occurs before pool acquisition, MCP connection, or low-level state access
+- **THEN** the fixed refusal occurs before target pool acquisition, MCP connection, route-model validation, body buffering, or low-level state access
 - **AND** no value, version, timestamp, or audit consequence changes
+
+#### Scenario: Malformed protected PUT has the same fixed refusal
+
+- **WHEN** a denied protected-key PUT carries malformed JSON, a missing or duplicate `value`, a scalar body, an oversized body, or otherwise invalid request data
+- **THEN** the path-aware guard returns the same fixed `409 MANAGED_STATE_KEY` without invoking FastAPI request validation
+- **AND** no submitted content appears in the response, content-blind denial audit, logs, metrics, traces, pool calls, or MCP calls
 
 #### Scenario: List filtering never loads an omitted value
 

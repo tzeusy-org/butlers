@@ -33,10 +33,11 @@ while shipping only the route would preserve the generic CAS bypass.
   generic mutation while keeping their specialized surfaces. Keep their values
   visible only to the authenticated owner through the generic dashboard during
   compatibility rollout; omit them from MCP reads and lists.
-- Treat `chronicler/chronicler/owntracks/ssid_places` as private to MCP, but keep
-  its current centrally authenticated generic dashboard CRUD until a dedicated
-  validated owner surface exists. This explicit transitional exception avoids
-  stranding the only documented editor.
+- Defer all protection for `chronicler/chronicler/owntracks/ssid_places` until a
+  dedicated validated owner surface exists. Its generic dashboard writes proxy
+  the same MCP tools used by model sessions, so there is no trustworthy way to
+  deny MCP while retaining today's only editor. This residual risk is explicit,
+  bounded to follow-up work, and not misrepresented as protected.
 - Return fixed, content-blind denials before generic writes reach MCP or state
   storage. A denial never changes a row version, emits a value, or implies that
   the key exists.
