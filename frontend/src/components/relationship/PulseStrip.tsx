@@ -244,6 +244,17 @@ export function PulseStrip({
   const now = cadenceClock;
   const windowStarted = cadence ? Date.parse(cadence.window_started_at) : NaN;
   const windowEnded = cadence ? Date.parse(cadence.window_ended_at) : NaN;
+  useEffect(() => {
+    if (!Number.isFinite(windowEnded)) return;
+    // The polling clock can land exactly on the 90s boundary. Expire the
+    // observation one millisecond later rather than waiting for its next tick.
+    const delay = Math.max(
+      0,
+      windowEnded + ENTITY_CADENCE_MAX_AGE_MS - Date.now() + 1,
+    );
+    const expiryTimer = window.setTimeout(() => setCadenceClock(Date.now()), delay);
+    return () => window.clearTimeout(expiryTimer);
+  }, [windowEnded]);
   const cadenceWindowMatches =
     cadence?.window_days === cadenceWindowDays &&
     Number.isFinite(windowStarted) &&

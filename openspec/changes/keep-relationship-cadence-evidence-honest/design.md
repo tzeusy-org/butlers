@@ -40,9 +40,10 @@ timeline page as complete cadence evidence. Identifiers and interaction content 
 The PulseStrip query key includes both entity and window. The tile label uses the requested window,
 and its value is accepted only when the response echoes bounds spanning that same duration and
 its end is no more than 90 seconds old (allowing at most 30 seconds of future clock skew). The
-mounted query polls every 30 seconds and refetches on focus; a separate display clock ages out
-cached evidence even if a refresh stalls. A fresh complete count of zero renders "Quiet"; a
-positive complete count renders the existing interaction-count copy. A capped or mismatched
+mounted query polls every 30 seconds and refetches on focus. A one-shot timer scheduled from the
+echoed end removes cached calm at the 90-second boundary plus one millisecond, independently of
+the 30-second polling clock, even if a refresh stalls. A fresh complete count of zero renders
+"Quiet"; a positive complete count renders the existing interaction-count copy. A capped or mismatched
 response renders "Incomplete", an old response renders "Stale", and a failed query or refetch
 renders "Unavailable" even if a prior complete zero remains cached. Loading remains a placeholder
 and never renders a calm claim.
@@ -62,7 +63,7 @@ ranking, overdue evaluation, or any provider/runtime state.
 | Read reaches its cap | Response is incomplete; UI renders "Incomplete", never "Quiet" or an exact count. |
 | Response window differs from the active request | UI renders "Incomplete" until matching evidence arrives. |
 | Echoed end is older than 90 seconds or implausibly future-dated | UI renders "Stale" until a fresh matching result arrives. |
-| Open page crosses the freshness bound | The display clock removes "Quiet" even if the cached response has not been replaced. |
+| Open page crosses the freshness bound | The echoed-end expiry timer removes "Quiet" at 90 seconds plus one millisecond even if the cached response has not been replaced; fresh evidence reschedules the timer. |
 | API/query failure | UI renders "Unavailable", never "Quiet". |
 | Window changes | Query key changes; the label and eventual count are recomputed for that window. |
 | Concurrent reads | Each response is self-contained by its echoed bounds; no shared state is mutated. |

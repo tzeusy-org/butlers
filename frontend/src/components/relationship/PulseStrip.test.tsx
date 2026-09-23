@@ -95,10 +95,35 @@ describe("PulseStrip", () => {
     );
     expect(screen.getByText("Quiet")).toBeTruthy();
 
-    act(() => vi.advanceTimersByTime(120_000));
+    // Mounted at age 30s: the 30s polling ticks see ages 60s and 90s.
+    // One millisecond later, a cached zero must already have expired.
+    act(() => vi.advanceTimersByTime(60_000));
+    expect(screen.getByText("Quiet")).toBeTruthy();
+    act(() => vi.advanceTimersByTime(1));
 
     expect(screen.queryByText("Quiet")).toBeNull();
     expect(screen.getByText("Stale")).toBeTruthy();
+
+    const refreshedEnd = new Date(Date.now());
+    vi.mocked(useEntities.useEntityCadence).mockReturnValueOnce({
+      data: {
+        window_days: 30,
+        window_started_at: new Date(refreshedEnd.getTime() - 30 * 86_400_000).toISOString(),
+        window_ended_at: refreshedEnd.toISOString(),
+        interaction_count: 0,
+        completeness: "complete",
+        has_more: false,
+      },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useEntities.useEntityCadence>);
+    view.rerender(
+      <QueryClientProvider client={queryClient}>
+        <PulseStrip entityId="e-1" dunbarTier={null} isPinned={false} />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByText("Quiet")).toBeTruthy();
+
     view.unmount();
   });
 
