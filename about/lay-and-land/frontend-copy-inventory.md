@@ -3283,6 +3283,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Loading QA dossier…
 - QA dossier unavailable.
 - Failure
+- The investigation produced a local proposal, but publication failed.
 - The investigation crashed before producing a fix.
 - Diagnosis
 - Hypothesis
@@ -3329,12 +3330,17 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/components/qa/PRPanel.tsx`
 
+- Why this proposal
+- Why this fix
+- Unpublished diff
+- Diff preview
+- Local proposal
+- Publication failed; no PR was created.
 - No PR. Escalated to user.
 - No PR. Investigation failed.
 - No PR yet.
 - Open PR
-- Why this fix
-- Diff preview
+- Unpublished proposal
 - Pull request fix
 
 ## `frontend/src/components/qa/PatrolJournal.tsx`
@@ -4394,4 +4400,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3448*
+*Total strings: 3454*

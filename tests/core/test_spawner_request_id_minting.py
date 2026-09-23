@@ -20,7 +20,8 @@ from butlers.config import ButlerConfig
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import Spawner
 
-pytestmark = pytest.mark.unit
+pytest_plugins = ("tests.core.spawner_fixtures",)
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("spawner_catalog_candidate")]
 
 # UUID pattern for sanity-checking the minted IDs are valid UUIDs
 _UUID_RE = re.compile(

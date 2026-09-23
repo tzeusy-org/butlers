@@ -206,6 +206,7 @@ The QA Staffer SHALL operate with a least-privilege security model: dedicated cr
 - **AND** the token is scoped to: branch push, PR creation, PR labeling on `tzeusy-org/butlers`
 - **AND** the token SHALL NOT have merge/approve permissions — humans remain in the merge seat
 - **AND** if the secret is not found at any tier, the investigation completes but transitions to `failed` with reason `"no_gh_token"`
+- **AND** authentication or repository-authorization rejection transitions to `failed` with reason class `git_auth_failed` and content-blind remediation guidance; it does not claim the token is absent or unconfigured when GitHub authenticated an identity
 
 #### Scenario: Investigation agent sandbox
 - **WHEN** an investigation agent is spawned in a worktree

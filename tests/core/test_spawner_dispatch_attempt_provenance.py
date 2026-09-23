@@ -205,7 +205,22 @@ class _SyntheticResolution:
                 "effective_tier": "workhorse",
                 "reason": "sole_candidate",
             },
-            "candidates": [],
+            "candidates": [
+                {
+                    "catalog_entry_id": str(_PRIMARY_ID),
+                    "runtime_type": DEFAULT_RUNTIME_TYPE,
+                    "model_id": "claude-primary",
+                    "effective_tier": "workhorse",
+                    "outcome": "selected",
+                },
+                {
+                    "catalog_entry_id": str(_FALLBACK_ID),
+                    "runtime_type": DEFAULT_RUNTIME_TYPE,
+                    "model_id": "claude-fallback",
+                    "effective_tier": "workhorse",
+                    "outcome": "eligible",
+                },
+            ],
         }
 
 

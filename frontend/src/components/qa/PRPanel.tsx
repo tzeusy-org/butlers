@@ -14,14 +14,15 @@ interface PRPanelProps {
    */
   diffSnapshot?: DiffPreviewLine[] | null;
   /**
-   * "escalated" means the case was handed to the user without a fix;
-   * "failed" means the investigation crashed before ever reaching a fix.
-   * Every other pr-less stage (detect/diagnose/pr/landed) just hasn't
-   * produced a PR yet -- rendering either of those calmer messages for a
-   * dead or escalated case fabricates progress that was never made
-   * (bu-qvnce.2 / bu-hmdqz.9).
+   * "escalated" means the case was handed to the user without a published fix.
+   * "failed" means the workflow ended unsuccessfully, but proposalState may
+   * still identify a retained unpublished local proposal. Every other pr-less
+   * stage (detect/diagnose/pr/landed) has not produced a PR yet. Rendering a
+   * calmer in-progress message for a dead or escalated case fabricates progress
+   * that was never made (bu-qvnce.2 / bu-hmdqz.9).
    */
   stage: QaCaseDossier["state_track_stage"];
+  proposalState: QaCaseDossier["proposal_state"];
   className?: string;
 }
 
@@ -40,8 +41,76 @@ function prStateStyle(state: QaPrSummary["state"]) {
   };
 }
 
-export function PRPanel({ pr, whyThisFix, diffSnapshot, stage, className }: PRPanelProps) {
+function ProposalDetails({
+  whyThisFix,
+  diffSnapshot,
+  unpublished = false,
+}: Pick<PRPanelProps, "whyThisFix" | "diffSnapshot"> & { unpublished?: boolean }) {
+  return (
+    <>
+      {whyThisFix ? (
+        <div className="space-y-1">
+          {unpublished ? (
+            <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+              Why this proposal
+            </p>
+          ) : (
+            <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+              Why this fix
+            </p>
+          )}
+          <p className="font-serif italic text-[13px] leading-relaxed text-foreground">
+            {whyThisFix}
+          </p>
+        </div>
+      ) : null}
+
+      {diffSnapshot && diffSnapshot.length > 0 ? (
+        <div className="space-y-2">
+          {unpublished ? (
+            <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+              Unpublished diff
+            </p>
+          ) : (
+            <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+              Diff preview
+            </p>
+          )}
+          <DiffPreview lines={diffSnapshot} />
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+export function PRPanel({
+  pr,
+  whyThisFix,
+  diffSnapshot,
+  stage,
+  proposalState,
+  className,
+}: PRPanelProps) {
   if (!pr) {
+    if (proposalState === "unpublished") {
+      return (
+        <section className={cn("space-y-4", className)} aria-label="Unpublished proposal">
+          <div className="space-y-1 border-b border-border/60 pb-3">
+            <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+              Local proposal
+            </p>
+            <p className="font-serif text-sm italic text-muted-foreground">
+              Publication failed; no PR was created.
+            </p>
+          </div>
+          <ProposalDetails
+            whyThisFix={whyThisFix}
+            diffSnapshot={diffSnapshot}
+            unpublished
+          />
+        </section>
+      );
+    }
     if (stage === "escalated") {
       return (
         <p className={cn("font-serif text-sm italic text-muted-foreground", className)}>
@@ -98,23 +167,7 @@ export function PRPanel({ pr, whyThisFix, diffSnapshot, stage, className }: PRPa
         </p>
       </div>
 
-      {whyThisFix ? (
-        <div className="space-y-1">
-          <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-            Why this fix
-          </p>
-          <p className="font-serif italic text-[13px] leading-relaxed text-foreground">{whyThisFix}</p>
-        </div>
-      ) : null}
-
-      {diffSnapshot && diffSnapshot.length > 0 ? (
-        <div className="space-y-2">
-          <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-            Diff preview
-          </p>
-          <DiffPreview lines={diffSnapshot} />
-        </div>
-      ) : null}
+      <ProposalDetails whyThisFix={whyThisFix} diffSnapshot={diffSnapshot} />
 
       <p className="font-mono text-[10px] leading-none text-muted-foreground tnum">
         opened <Time value={pr.opened_at} mode="absolute" precision="time" /> ·{" "}

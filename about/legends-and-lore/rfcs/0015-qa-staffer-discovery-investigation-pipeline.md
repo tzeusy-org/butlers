@@ -177,11 +177,16 @@ instructions (`bd` usage, self-managed PR/push steps, etc.).
 4. PR created via `gh pr create` with labels `["self-healing", "automated"]`.
 5. PR body includes: root cause, affected butler(s), fix summary, patrol cycle reference, and
    (when `dashboard_base_url` is configured) a link to `/qa/investigations/<attempt_id>`.
+6. If publication fails after a commit exists, the bounded diff and notes remain internal evidence
+   with `proposal_state = "unpublished"`; the dashboard distinguishes that state from both a
+   published PR and an investigation that produced no proposal.
 
 **GitHub credentials:** scoped to branch push + PR creation + PR labeling only.
 Token SHALL NOT have merge or approve permissions — humans remain in the merge seat.
 Managed via the dashboard at `/settings` (QA Staffer card); if absent, the investigation
 completes but transitions to `failed` with reason `"no_gh_token"`.
+An authenticated-but-forbidden push or PR operation instead records `git_auth_failed` with
+content-blind repository-scope/organization-authorization guidance.
 
 **Phase sessions:** v1 uses a single `investigate` phase per investigation. The tracking
 infrastructure (`record_phase_session`, `update_phase_session_status`) is in place to support

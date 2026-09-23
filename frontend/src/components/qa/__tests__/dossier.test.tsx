@@ -145,6 +145,8 @@ const fullCase: QaCaseDossier = {
     ],
   },
   state_track_stage: "pr",
+  proposal_state: "published",
+  proposal_diff_snapshot: notes.diff_snapshot,
   fingerprint: "deadbeef" + "0".repeat(56),
   dismissal: null,
   investigation_notes: notes,
@@ -300,6 +302,77 @@ describe("QA case dossier composition", () => {
     expect(detail.className).toContain("overflow-auto");
     expect(detail.className).toContain("max-h-64");
     expect(detail.className).toContain("font-mono");
+  });
+
+  it("renders a retained local proposal honestly when publication failed", () => {
+    qaHookMocks.useQaCase.mockReturnValue(
+      caseResponse({
+        ...fullCase,
+        state_track_stage: "failed",
+        proposal_state: "unpublished",
+        investigation_notes: notes,
+        pr: null,
+        journal: [
+          {
+            ...journal[1],
+            detail: "The classifier now treats this failure as provider unavailable.",
+          },
+        ],
+        error_detail: "git_auth_failed: repository write authorization failed",
+      }),
+    );
+    qaHookMocks.useQaCaseJournal.mockReturnValue(
+      journalResponse([
+        {
+          ...journal[1],
+          detail: "The classifier now treats this failure as provider unavailable.",
+        },
+      ]),
+    );
+
+    renderDossier("case-1");
+
+    expect(
+      screen.getByText("The investigation produced a local proposal, but publication failed."),
+    ).toBeTruthy();
+    expect(screen.getByText("Local proposal")).toBeTruthy();
+    expect(screen.getByText("Why this proposal")).toBeTruthy();
+    expect(screen.getByText("Unpublished diff")).toBeTruthy();
+    expect(screen.getByText(notes.hypothesis)).toBeTruthy();
+    expect(screen.queryByText("The investigation found ")).toBeNull();
+    expect(screen.queryByText("No PR. Investigation failed.")).toBeNull();
+    expect(screen.getByTestId("qa-evidence-row-e-timeout-claims").textContent).toBe("");
+    expect(screen.getByText("Proposal remained unpublished.")).toBeTruthy();
+    expect(
+      screen.queryByText("The classifier now treats this failure as provider unavailable."),
+    ).toBeNull();
+  });
+
+  it("renders a retained diff when narrative notes were not recoverable", () => {
+    qaHookMocks.useQaCase.mockReturnValue(
+      caseResponse({
+        ...fullCase,
+        state_track_stage: "failed",
+        proposal_state: "unpublished",
+        proposal_diff_snapshot: notes.diff_snapshot,
+        investigation_notes: null,
+        pr: null,
+        journal: [],
+        error_detail: "git_auth_failed: repository write authorization failed",
+      }),
+    );
+    qaHookMocks.useQaCaseJournal.mockReturnValue(journalResponse([]));
+
+    renderDossier("case-1");
+
+    expect(screen.getByText("Local proposal")).toBeTruthy();
+    expect(screen.getByText("Unpublished diff")).toBeTruthy();
+    expect(
+      screen.getByText("No investigation notes were captured for this case."),
+    ).toBeTruthy();
+    expect(
+      screen.getByText("runtime.invoke(prompt, timeout=session_timeout_s)"),
+    ).toBeTruthy();
   });
 
   it("omits the raw-error box when a failed case has no error_detail", () => {

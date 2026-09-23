@@ -98,9 +98,13 @@ The system SHALL provide model resolution functions that select catalog entries 
 - **AND** any subsequent same-tier failover is restricted to the effective tier that produced that selected candidate
 
 #### Scenario: No candidates fallback
+- **NOTE** The scenario name is retained for archived-change compatibility. The retired, non-normative clause was: "- **AND** the caller (spawner) falls back to the module-private `_FALLBACK_MODEL_ID` constant in `butlers.core.spawner` (see `core-spawner` - Catalog empty fallback)". A live pooled caller fails closed.
 - **WHEN** `resolve_model()` finds no enabled qualifying entries in any tier
 - **THEN** the function returns `None`
-- **AND** the caller (spawner) falls back to the module-private `_FALLBACK_MODEL_ID` constant in `butlers.core.spawner` (see `core-spawner` - Catalog empty fallback)
+- **AND** a live Spawner with a database pool returns a pre-invocation `ModelResolutionError: no_eligible_catalog_entries` because catalog-keyed permission, budget, breaker, and provenance gates cannot run without an entry
+- **AND** only explicit pool-free direct-adapter harnesses may invoke `DEFAULT_RUNTIME_TYPE` with no model after the adapter baseline satisfies the dispatch intent
+- **AND** the caller SHALL NOT pair a hard-coded model from one provider with another provider's runtime
+- **AND** when the pool-free direct runtime cannot prove every required capability, the caller returns a pre-invocation `ModelResolutionError` without launching an adapter
 
 #### Scenario: Priority tie-breaking prefers evidence, falls back to round-robin
 - **WHEN** multiple enabled entries exist for the same butler+tier at the same effective priority
@@ -130,6 +134,7 @@ The system SHALL provide model resolution functions that select catalog entries 
   produced the original candidate
 - **AND** it SHALL apply global catalog values plus butler override COALESCE semantics
 - **AND** it SHALL exclude all previously attempted or skipped `catalog_entry_id` values
+- **AND** the Spawner SHALL admit only candidates recorded as fit-eligible for the original dispatch intent; a candidate excluded for a required capability is recorded as a non-invoked suppressed attempt and skipped
 - **AND** it SHALL return the next highest-priority enabled model in that same tier
 
 #### Scenario: Discretion quota skip uses the same effective tier
@@ -324,6 +329,13 @@ migration `core_204`.
 - **THEN** the window is treated as undeclared and therefore unproven, so a dispatch
   that requires a context floor excludes the entry rather than guessing a value
 
+#### Scenario: Vision capability requires exact-path evidence
+- **WHEN** a catalog row declares `capabilities.vision = true`
+- **THEN** the declaration is backed by an end-to-end probe of that exact `runtime_type`, `model_id`, runtime/CLI version, and account path
+- **AND** the probe proves an MCP image content block reaches inference by requiring an answer available only from the image bytes, not from prompt text or attachment metadata
+- **AND** a text-only model verification, model-brand claim, direct `attachment_view()` unit test, or adapter-wide capability assumption is insufficient evidence
+- **AND** rows without that evidence retain unknown vision support and remain excluded from image-bearing external dispatches
+
 ### Requirement: Fit Before Ranking
 When resolution is given a dispatch intent, the system SHALL exclude every candidate
 that cannot satisfy the intent's required capabilities, context floor, deadline, or
@@ -343,10 +355,16 @@ effective priority, and before the tie-break.
 
 #### Scenario: No fitting candidate anywhere returns no selection
 - **WHEN** eligible catalog entries exist but none of them fit the intent
-- **THEN** resolution yields no selection, and the caller's existing static-fallback
-  path applies
+- **THEN** resolution yields no selection and the caller returns a pre-invocation
+  `ModelResolutionError` without launching an adapter
 - **AND** the receipt records why each candidate was excluded, which a bare "no
   candidates" result cannot express
+
+#### Scenario: Override selection cannot bypass hard fit
+- **WHEN** a spend rule or private-content policy selects a different catalog entry after intent-aware resolution
+- **THEN** the caller SHALL verify that the replacement candidate was fit-eligible for the original intent and effective tier
+- **AND** a candidate recorded as `excluded_hard_fit` SHALL remain non-invocable even when an operator rule or locality policy selects it
+- **AND** the caller SHALL preserve the candidate's original fit exclusions rather than projecting it as selected
 
 #### Scenario: An intent requiring nothing resolves exactly as before
 - **WHEN** an intent requires no capabilities and sets no context floor, deadline,

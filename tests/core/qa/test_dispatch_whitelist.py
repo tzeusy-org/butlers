@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from butlers.core.qa.dispatch import _create_qa_pr
+from butlers.core.qa.dispatch import _classify_git_push_error, _create_qa_pr
 from butlers.core.qa.models import QaFinding
 from butlers.core.qa.repo_whitelist import RepoWhitelist
 
@@ -56,6 +56,17 @@ def _mock_git_remote(remote_url: str):
     mock_proc.communicate = AsyncMock(return_value=(remote_url.encode(), b""))
     mock_proc.returncode = 0
     return mock_proc
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        "remote: Permission to tzeusy-org/butlers.git denied to Tzeusy.",
+        "fatal: The requested URL returned error: 403",
+    ],
+)
+def test_git_push_authorization_failures_are_classified_as_auth(stderr: str) -> None:
+    assert _classify_git_push_error(stderr).startswith("git_auth_failed:")
 
 
 @pytest.mark.asyncio

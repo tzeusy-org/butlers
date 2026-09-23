@@ -302,10 +302,10 @@ async def test_accept_phase_and_background_dispatch(tmp_path: Path) -> None:
     assert call_kwargs["request_id"] == "018f6f4e-5b3b-7b2d-9c2f-7b7b6b6b6b6b"
 
 
-async def test_real_route_worker_preserves_private_channel_into_spawner_gate(
+async def test_real_route_worker_preserves_private_channel_into_fail_closed_resolution(
     tmp_path: Path,
 ) -> None:
-    """A production WhatsApp route cannot reach the remote static fallback."""
+    """A production WhatsApp route keeps its private channel at catalog resolution."""
     patches = _patch_infra("health")
     butler_dir = _make_butler_toml(tmp_path, butler_name="health")
     daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
@@ -320,6 +320,13 @@ async def test_real_route_worker_preserves_private_channel_into_spawner_gate(
     daemon.spawner.trigger = actual_spawner.trigger
     errored = AsyncMock(return_value=True)
     processed = AsyncMock(return_value=True)
+    captured_routing_contexts: list[dict[str, Any] | None] = []
+
+    async def _refuse_catalog_selection(*args, **kwargs):
+        from butlers.core.spawner_env import _capture_pipeline_routing_context
+
+        captured_routing_contexts.append(_capture_pipeline_routing_context())
+        return None
 
     with (
         patch(
@@ -342,8 +349,8 @@ async def test_real_route_worker_preserves_private_channel_into_spawner_gate(
         patch(
             "butlers.core.spawner.resolve_model_with_effective_tier",
             new_callable=AsyncMock,
-            return_value=None,
-        ),
+            side_effect=_refuse_catalog_selection,
+        ) as resolve_model,
         patch("butlers.core.spawner.write_audit_entry", new_callable=AsyncMock),
         patch.object(actual_spawner, "_get_or_create_adapter") as adapter_setup,
     ):
@@ -357,9 +364,17 @@ async def test_real_route_worker_preserves_private_channel_into_spawner_gate(
             await asyncio.gather(*tuple(daemon._route_inbox_tasks))
 
     adapter_setup.assert_not_called()
+    resolve_model.assert_awaited_once()
+    assert len(captured_routing_contexts) == 1
+    routing_context = captured_routing_contexts[0]
+    assert routing_context is not None
+    request_context = routing_context["request_context"]
+    assert request_context["source_channel"] == "whatsapp_user_client"
     processed.assert_not_awaited()
     errored.assert_awaited_once()
-    assert "PrivateContentModelUnavailable" in errored.await_args.args[2]
+    assert errored.await_args.args[2] == (
+        "route runtime returned unsuccessful result (ModelResolutionError)"
+    )
 
 
 async def test_dashboard_route_acceptance_atomically_claims_and_enqueues_before_spawning(
@@ -692,8 +707,10 @@ async def test_recovery_restores_structured_conceptual_message_context() -> None
     assert str(row_id) not in observability
 
 
-async def test_recovery_preserves_private_channel_into_real_spawner_gate(tmp_path: Path) -> None:
-    """Crash recovery cannot replay a private route through the remote fallback."""
+async def test_recovery_preserves_private_channel_into_fail_closed_resolution(
+    tmp_path: Path,
+) -> None:
+    """Crash recovery keeps the private channel when catalog resolution refuses."""
     from butlers.switchboard_wiring import recover_route_inbox
 
     patches = _patch_infra("health")
@@ -725,6 +742,14 @@ async def test_recovery_preserves_private_channel_into_real_spawner_gate(tmp_pat
 
     errored = AsyncMock(return_value=True)
     processed = AsyncMock(return_value=True)
+    captured_routing_contexts: list[dict[str, Any] | None] = []
+
+    async def _refuse_catalog_selection(*args, **kwargs):
+        from butlers.core.spawner_env import _capture_pipeline_routing_context
+
+        captured_routing_contexts.append(_capture_pipeline_routing_context())
+        return None
+
     with (
         patch("butlers.switchboard_wiring.route_inbox_recovery_sweep", _recover_once),
         patch(
@@ -737,17 +762,25 @@ async def test_recovery_preserves_private_channel_into_real_spawner_gate(tmp_pat
         patch(
             "butlers.core.spawner.resolve_model_with_effective_tier",
             new_callable=AsyncMock,
-            return_value=None,
-        ),
+            side_effect=_refuse_catalog_selection,
+        ) as resolve_model,
         patch("butlers.core.spawner.write_audit_entry", new_callable=AsyncMock),
         patch.object(actual_spawner, "_get_or_create_adapter") as adapter_setup,
     ):
         await recover_route_inbox(daemon, patches["mock_pool"])
 
     adapter_setup.assert_not_called()
+    resolve_model.assert_awaited_once()
+    assert len(captured_routing_contexts) == 1
+    routing_context = captured_routing_contexts[0]
+    assert routing_context is not None
+    request_context = routing_context["request_context"]
+    assert request_context["source_channel"] == "telegram_user_client"
     processed.assert_not_awaited()
     errored.assert_awaited_once()
-    assert "PrivateContentModelUnavailable" in errored.await_args.args[2]
+    assert errored.await_args.args[2] == (
+        "route runtime returned unsuccessful result (ModelResolutionError)"
+    )
 
 
 async def test_malformed_conceptual_recovery_log_omits_row_and_request_uuids() -> None:

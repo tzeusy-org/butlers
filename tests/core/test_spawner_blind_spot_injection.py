@@ -26,7 +26,8 @@ from butlers.core.expected_signals import BLIND_SPOT_QUERY_FAILED_TEXT
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import Spawner
 
-pytestmark = pytest.mark.unit
+pytest_plugins = ("tests.core.spawner_fixtures",)
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("spawner_catalog_candidate")]
 
 
 def _make_config(

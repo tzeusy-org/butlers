@@ -193,13 +193,24 @@ selects.
 It is carried on `TierQuotaExhausted.resolution` when quota blocks the tier. Catalog-backed
 Spawner and DiscretionDispatcher attempts persist a projection of that receipt. Discretion receipt
 capture observes the legacy winner without parsing capability envelopes or changing eligibility. A
-spend-rule or private-content policy override re-projects the final winner, candidate outcomes,
-exclusions, and reason together; failover projections carry the preceding failure class, while a
+spend-rule or private-content policy override may re-project the final winner only after the
+replacement is confirmed fit-eligible for the original intent and effective tier. A hard-fit
+exclusion remains non-invocable and is never cleared merely because an override selected it.
+Failover projections carry the preceding failure class, while a
 transparent retry of the same candidate after a failed resume handle is labeled
 `same_candidate_cold_retry` instead. The durable JSON is measured with the registered asyncpg JSONB
 encoder and bounded to 32 KiB across the entire projection, not only its candidate list; requested
 and effective intent remain present in the bounded fallback. The row and receipt share one
 monotonically increasing `attempt_index` across quota skips and runtime attempts.
+
+**Vision is an exact-path claim.** `capabilities.vision = true` means more than a model family
+advertising image support. Evidence must cover the exact catalog `runtime_type` + `model_id`, the
+runtime/CLI version and account path, MCP transport of the `attachment_view` image content block,
+and inference against a visual sentinel absent from prompt text and attachment metadata. The
+ordinary text-only model verification endpoint, a direct `attachment_view()` unit test, or an
+adapter-wide assumption does not establish that contract. Until such a canary passes, the row
+leaves vision undeclared and image-bearing external dispatch fails closed. The direct API adapter
+cannot satisfy this path because it does not accept the butler MCP server configuration.
 
 ## Token Quotas
 
@@ -228,11 +239,13 @@ The `effective_tier` is pinned at initial resolution and used to scope all same-
 1. Call `resolve_model_with_effective_tier(pool, butler_name, complexity, intent=...)` to query the
    catalog, where `intent` is the dispatch intent derived from the trigger source (see *Capability
    fit* above); candidates that cannot satisfy it are excluded before ranking.
-2. If found, set `resolution_source = "catalog"`. If not, fall back to TOML model with `resolution_source = "static_fallback"`.
-3. Call `check_token_quota()` for catalog-resolved models (see quota section above).
-4. If quota returns `allowed=False`, record a `quota_skip` row in `public.model_dispatch_attempts` and seek the next same-tier candidate via `next_same_tier_candidate()`.
-5. Invoke the selected adapter.
-6. After completion, call `record_token_usage()` to update the ledger.
+2. If found, set `resolution_source = "catalog"`.
+3. If a populated receipt has no winner, return `ModelResolutionError` before adapter setup and retain the receipt on the failed result.
+4. If the catalog is empty or unavailable on a live Spawner, return `ModelResolutionError` before invocation because catalog-keyed authorization, budget, breaker, and provenance gates cannot run. Pool-free direct-adapter harnesses alone may evaluate `DEFAULT_RUNTIME_TYPE`'s adapter baseline and invoke it with no explicit model under `resolution_source = "direct_runtime"`.
+5. Call `check_token_quota()` for catalog-resolved models (see quota section above).
+6. If quota returns `allowed=False`, record a `quota_skip` row in `public.model_dispatch_attempts` and seek the next same-tier candidate via `next_same_tier_candidate()`.
+7. Invoke the selected adapter.
+8. After completion, call `record_token_usage()` to update the ledger.
 
 Both `resolution_source` and `complexity` are recorded on the session row for observability.
 
@@ -248,6 +261,9 @@ The `next_same_tier_candidate()` function returns the next enabled catalog entry
 2. **Enabled** — `effective_enabled = true` after applying per-butler overrides.
 3. **Not already attempted** — the catalog entry UUID is not in the `_attempted_ids` list.
 4. **Priority ordering** — sorted by effective priority descending, then `created_at ASC` (stable tie-break).
+5. **Original intent fit** — the initial `DispatchResolution` recorded the candidate as selected,
+   eligible, or fit-but-lower-priority in the same effective tier. A candidate excluded for vision,
+   tool use, context, deadline, or budget is recorded as a non-invoked suppressed attempt and skipped.
 
 Butler-level overrides (`public.butler_model_overrides`) are applied via COALESCE: when an override field is NULL, the catalog value is used.
 
@@ -312,9 +328,9 @@ retries the same candidate cold instead records `retry.kind="same_candidate_cold
 model failover. Receipts are bounded to 32 KiB by retaining an ordered candidate prefix and setting
 `truncated=true` plus the original `candidate_count`; they are never silently dropped for size. The
 size check uses the exact registered JSONB serializer, including its default ASCII escaping, and
-the minimal projection retains both requested and effective intent. Historical and static-fallback
-attempts honestly expose a null receipt rather than reconstructing a decision from current catalog
-state.
+the minimal projection retains both requested and effective intent. Historical and explicit
+pool-free direct-runtime attempts honestly expose a null receipt rather than reconstructing a
+decision from current catalog state.
 
 Qualifying `runtime_failure` and `success` rows use one serialized recorder per
 catalog entry. The recorder takes the advisory transaction lock before assigning
@@ -454,8 +470,8 @@ psql -h localhost -U butlers -d butlers -c \
   "SELECT model, complexity, resolution_source, COUNT(*) as sessions
    FROM general.sessions WHERE completed_at IS NOT NULL
    GROUP BY model, complexity, resolution_source ORDER BY sessions DESC LIMIT 10;"
-# Expected: resolution_source is "catalog" for catalog-resolved sessions,
-#           "toml_fallback" when no catalog entry matched the tier
+# Expected: resolution_source is "catalog" for live catalog-resolved sessions;
+#           "direct_runtime" appears only in explicit pool-free harnesses
 
 # 3. Token quota ledger records usage
 psql -h localhost -U butlers -d butlers -c \

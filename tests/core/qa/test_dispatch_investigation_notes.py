@@ -356,6 +356,57 @@ async def test_create_qa_pr_uses_placeholder_when_notes_missing(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_create_qa_pr_classifies_gh_http_403_as_git_auth_failure(
+    tmp_path: Path,
+) -> None:
+    gh_process = MagicMock(returncode=1)
+    gh_process.communicate = AsyncMock(
+        return_value=(b"", b"HTTP 403: Resource not accessible by personal access token")
+    )
+
+    with (
+        patch(
+            "butlers.core.qa.dispatch._detect_no_op_branch",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
+            "butlers.core.qa.dispatch._get_remote_owner_repo",
+            new_callable=AsyncMock,
+            return_value="acme/repo",
+        ),
+        patch(
+            "butlers.core.qa.dispatch._push_branch_with_gh_auth",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            "butlers.core.qa.dispatch._delete_remote_branch_with_gh_auth",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            "butlers.core.qa.dispatch.asyncio.create_subprocess_exec",
+            return_value=gh_process,
+        ),
+    ):
+        pr_url, pr_number, _created_at, error = await _create_qa_pr(
+            repo_root=tmp_path,
+            branch_name="qa/test-branch",
+            finding=_make_finding(),
+            attempt_id=uuid.uuid4(),
+            labels=[],
+            gh_token="ghtoken",
+            whitelist=_make_loaded_whitelist(["acme/repo"]),
+            worktree_path=tmp_path,
+        )
+
+    assert pr_url is None
+    assert pr_number is None
+    assert error is not None and error.startswith("git_auth_failed:")
+
+
+@pytest.mark.asyncio
 async def test_create_qa_pr_partial_notes_mixes_agent_text_and_placeholder(tmp_path: Path):
     """Sections the agent omits use the placeholder; provided sections show real content."""
     worktree = tmp_path

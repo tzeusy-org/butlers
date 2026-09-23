@@ -256,9 +256,10 @@ The QA dashboard SHALL render any single case (either as the right-pane on `/qa?
 
 #### Scenario: Failure banner quotes the crash
 - **WHEN** the Case Dossier renders a case whose `state_track_stage` is `failed`
-- **THEN** the diagnosis column opens with a destructive (red) serif-italic banner quoting the attempt's `error_detail` verbatim (`The investigation crashed: "<error_detail>"`), or a generic crash line when `error_detail` is null
+- **THEN** the diagnosis column opens with a destructive (red) serif-italic banner and a bounded raw `error_detail` block
+- **AND** a failed case with `proposal_state = "unpublished"` says that a local proposal was produced but publication failed; other failed cases use the generic crash copy
 - **AND** the Diagnosis/Hypothesis/Evidence/Considered sections beneath it fall back to "No investigation notes were captured for this case." (the same fallback `pr`/`landed`/`escalated` use) rather than the in-flight "Diagnosing…" copy, since a `failed` case is terminal, not still working
-- **AND** the Proposed Fix column renders "No PR. Investigation failed." in the destructive color (not the calm "No PR yet." reserved for in-flight, pr-less stages, and not "No PR. Escalated to user.", which asserts a human hand-off that never happened for a crash)
+- **AND** a failed case with no retained proposal renders "No PR. Investigation failed." in the destructive color (not the calm "No PR yet." reserved for in-flight, pr-less stages, and not "No PR. Escalated to user.", which asserts a human hand-off that never happened for a crash)
 
 #### Scenario: Diagnosis column
 - **WHEN** the Case Dossier renders the left column
@@ -267,6 +268,7 @@ The QA dashboard SHALL render any single case (either as the right-pane on `/qa?
   - **Hypothesis** — single mono line rendered from `investigation_notes.hypothesis`
   - **Evidence · log fragments** — mono grid rows rendered from `investigation_notes.evidence_lines[]`; each row shows ts, level, butler, msg, and the bracketed claim numbers `[N]` it supports
   - **Considered & ruled out** — rendered from `investigation_notes.counter_evidence[]`; one row per entry showing hypothesis + reason + verdict
+- **AND** for `proposal_state = "unpublished"`, the diagnosis uses the root-cause `hypothesis` and does not render agent-authored `blurb_segments` that may describe proposed code in present tense
 - **AND** when the user hovers a claim segment in the Diagnosis paragraph, every evidence row whose id appears in that claim's `evidence_ids[]` is visually highlighted; when the user hovers an evidence row, the claim segments referencing that row's id are highlighted (bidirectional linkage)
 
 #### Scenario: Proposed fix column
@@ -280,6 +282,7 @@ The QA dashboard SHALL render any single case (either as the right-pane on `/qa?
   - "Diff preview" eyebrow followed by a line-kind-aware diff renderer for `investigation_notes.diff_snapshot[]`
   - Mono footer caption with `opened <HH:MM>` and optional `· merged <HH:MM>`
 - **AND** when `pr` is null, the column renders a single serif-italic line "No PR — escalated to user."
+- **AND** when `proposal_state = "unpublished"`, the column instead labels the artifact `Local proposal`, explains that publication failed and no PR was created, and retains `why_this_fix` plus the diff under proposal-specific labels
 
 #### Scenario: Session trace doors
 - **WHEN** the Case Dossier renders a case whose attempt carries a `healing_session_id` and/or a non-empty `session_ids[]`
@@ -290,6 +293,7 @@ The QA dashboard SHALL render any single case (either as the right-pane on `/qa?
 - **WHEN** the Case Dossier renders the full-width patrol journal section
 - **THEN** the section renders a mono row for each event from `/api/qa/cases/:id/journal`, in chronological order: ts (`HH:MM`), step name in step color (flagged/opened amber, sampled/cross-checked/drafted neutral, considered/wait/tick dim, concluded/merged green, escalated amber), text, and an optional dim detail line beneath
 - **AND** an eyebrow above the section reads "Patrol journal · every QA decision on this case" with a right-aligned `<count> entries · patrol every <P>m` caption
+- **AND** when `proposal_state = "unpublished"`, a `concluded` event's agent-authored proposal detail is replaced with the factual projection `Proposal remained unpublished.` so proposed behavior cannot read as deployed
 - **AND** when the case has no journal events yet, the section is hidden entirely
 
 ### Requirement: QA Cases API
@@ -303,7 +307,7 @@ The dashboard API SHALL expose case-shaped resources under `/api/qa/cases` for t
 
 #### Scenario: GET /api/qa/cases/:id
 - **WHEN** `GET /api/qa/cases/:id` is called with an attempt UUID
-- **THEN** it returns the full dossier payload: the case summary, `state_track_stage`, `investigation_notes` (or null when no notes have been emitted yet), a `pr` summary block (or null), the most recent 50 journal events, the attempt's `healing_session_id` (or null), its `session_ids[]` (empty when none), and `error_detail` (the raw `healing_attempts.error_detail` text, or null — populated regardless of state, but only rendered by the UI's failure banner in the `failed` state)
+- **THEN** it returns the full dossier payload: the case summary, `state_track_stage`, derived `proposal_state` (`none`, `unpublished`, or `published`), `proposal_diff_snapshot` (validated independently so a diff-only fallback remains visible), `investigation_notes` (or null when no notes have been emitted yet), a `pr` summary block (or null), the most recent 50 journal events, the attempt's `healing_session_id` (or null), its `session_ids[]` (empty when none), and `error_detail` (the raw `healing_attempts.error_detail` text, or null — populated regardless of state, but only rendered by the UI's failure banner in the `failed` state)
 - **AND** when the attempt id does not exist, it returns the standard 404 envelope from RFC 0007
 
 #### Scenario: GET /api/qa/cases/:id/journal
