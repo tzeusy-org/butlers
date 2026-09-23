@@ -3,7 +3,8 @@
 This is the L3 operator boundary for `REQ-butler-control-plane-liveness-002/004/008`
 and `REQ-butler-switchboard-002/004`. The code defaults to legacy routing when
 `BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER` is unset. Dev hotreload Compose sets
-it to `1`; the base daemon service, also used in production, defaults to `0`.
+it to `1` for both daemon and Dashboard API; their base services, also used in
+production, default to `0`.
 Production activation remains a separate exact-environment decision.
 
 ## Dev cutover behavior
@@ -45,7 +46,7 @@ Production activation remains a separate exact-environment decision.
 | Switchboard on-demand route probe | The same L2 reserve/record operations, behind the dev hotreload cutover flag and only after non-health gates pass. |
 | Authenticated owner eligibility API | Sole administrative policy mutation; neither probe nor confirmed route may clear its hold. |
 | Direct route, classifier and correction candidates, local scheduler, recovery notification admission | Read separated control-plane facts when the flag is `1`; a policy hold still denies the route. Legacy resolver remains for flag-off rollback. |
-| Fleet board and system heartbeat API | Project the receiver's last verified healthy observation and administrative policy. The board does not turn a failed probe into a fresh heartbeat. |
+| Fleet board and system heartbeat API | Follow the same cutover flag as the daemon. With `1`, project the receiver's last verified healthy observation and administrative policy; with `0`, retain the legacy projection. The board does not turn a failed probe into a fresh heartbeat. |
 | Generic `list_butlers`, QA heartbeat view | Still read legacy state and may show stale until separately cut over; neither is route authority under the flag. |
 | L3 pure resolver and route preflight | Exact-name Switchboard reads of control-plane facts and Git-roster endpoint; no database write. |
 

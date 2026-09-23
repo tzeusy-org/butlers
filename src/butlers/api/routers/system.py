@@ -1136,15 +1136,20 @@ async def get_butlers_heartbeat(
     except KeyError:
         raise HTTPException(status_code=503, detail="Switchboard database is not available")
 
-    # A failed probe never advances this timestamp. Legacy daemon-authored
-    # last_seen_at is no longer a reliable liveness signal.
+    # A failed receiver probe never advances the cutover timestamp. Flag-off
+    # deployments still report their legacy routing projection.
     try:
-        registry_rows = await sw_pool.fetch(
+        from butlers.tools.switchboard.registry.registry import receiver_route_cutover_enabled
+
+        registry_query = (
             "SELECT r.name, c.healthy_observed_at AS last_seen_at"
             " FROM butler_registry AS r"
             " LEFT JOIN butler_registry_control_plane AS c USING (name)"
             " ORDER BY r.name ASC"
+            if receiver_route_cutover_enabled()
+            else "SELECT name, last_seen_at FROM butler_registry ORDER BY name ASC"
         )
+        registry_rows = await sw_pool.fetch(registry_query)
     except Exception as exc:
         logger.warning("Failed to query butler_registry: %s", exc)
         raise HTTPException(status_code=503, detail="Butler registry query failed")

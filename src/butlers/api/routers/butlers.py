@@ -57,6 +57,7 @@ from butlers.core.pricing import PricingConfig, estimate_session_cost
 from butlers.core.sessions import sessions_summary
 from butlers.tools.switchboard.registry.registry import (
     _derive_eligibility_state,
+    receiver_route_cutover_enabled,
 )
 
 logger = logging.getLogger(__name__)
@@ -874,22 +875,26 @@ async def get_butlers_board(
     registry_source_error = False
     try:
         sw_pool = db.pool("switchboard")
+        registry_query = (
+            "SELECT r.name, c.healthy_observed_at AS last_seen_at,"
+            " CASE WHEN c.policy_state != 'active' THEN 'quarantined'"
+            " WHEN c.observed_state = 'healthy'"
+            " AND c.observed_boot_epoch = c.boot_epoch"
+            " AND c.route_compatible IS TRUE AND c.accepting_routes IS TRUE"
+            " THEN 'active' ELSE 'stale' END AS eligibility_state,"
+            " CASE WHEN c.policy_state != 'active' THEN c.policy_changed_at"
+            " ELSE NULL END AS quarantined_at,"
+            " CASE WHEN c.policy_state != 'active'"
+            " THEN 'protected_policy:' || c.policy_state"
+            " ELSE NULL END AS quarantine_reason, r.liveness_ttl_seconds"
+            " FROM butler_registry AS r"
+            " JOIN butler_registry_control_plane AS c USING (name)"
+            if receiver_route_cutover_enabled()
+            else "SELECT name, last_seen_at, eligibility_state, quarantined_at,"
+            " quarantine_reason, liveness_ttl_seconds FROM butler_registry"
+        )
         registry_rows = await asyncio.wait_for(
-            sw_pool.fetch(
-                "SELECT r.name, c.healthy_observed_at AS last_seen_at,"
-                " CASE WHEN c.policy_state != 'active' THEN 'quarantined'"
-                " WHEN c.observed_state = 'healthy'"
-                " AND c.observed_boot_epoch = c.boot_epoch"
-                " AND c.route_compatible IS TRUE AND c.accepting_routes IS TRUE"
-                " THEN 'active' ELSE 'stale' END AS eligibility_state,"
-                " CASE WHEN c.policy_state != 'active' THEN c.policy_changed_at"
-                " ELSE NULL END AS quarantined_at,"
-                " CASE WHEN c.policy_state != 'active'"
-                " THEN 'protected_policy:' || c.policy_state"
-                " ELSE NULL END AS quarantine_reason, r.liveness_ttl_seconds"
-                " FROM butler_registry AS r"
-                " JOIN butler_registry_control_plane AS c USING (name)"
-            ),
+            sw_pool.fetch(registry_query),
             timeout=_STATUS_TIMEOUT_S,
         )
         for row in registry_rows:
