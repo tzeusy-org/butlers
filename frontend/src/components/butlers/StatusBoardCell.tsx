@@ -10,8 +10,9 @@
 //   - KPI quartet: SESS 24H / SPEND / LOAD / LAST
 //   - 24h activity stripe pinned at the bottom
 //
-// Click-to-restore: when activity is 'quarantined' OR eligibility is 'stale',
-// the activity chip becomes a <button> that calls onRestore(name).
+// Click-to-restore: only projected `quarantined` eligibility makes the chip a
+// <button>. A stale receiver observation clears after a healthy probe, not an
+// operator policy change.
 //
 // Activity door (bu-27dxl.8.3): the 24h activity stripe is always its own
 // nested <button> that opens the butler's Activity tab
@@ -143,7 +144,7 @@ function KpiCell({ label, value }: { label: string; value: React.ReactNode }) {
 
 export interface StatusBoardCellProps {
   row: StatusBoardRow
-  /** Called with the butler name when the user clicks the restore chip. */
+  /** Called with the butler name when the user restores a policy-held row. */
   onRestore?: (name: string) => void
   /** True while the restore mutation for this specific butler is in flight. */
   isRestorePending?: boolean
@@ -160,7 +161,7 @@ export interface StatusBoardCellProps {
  *
  * The outer container always renders as <div role="link"> (never a real <a>)
  * because the cell always nests the activity-stripe door <button>, plus the
- * restore <button> on restorable (quarantined/stale) rows — nesting either
+ * restore <button> on quarantined rows — nesting either
  * inside interactive content is invalid HTML per spec. Root-tile navigation
  * (Overview) is handled via onClick/onKeyDown on the div; the nested activity
  * button opens the Activity tab instead, stopping propagation so a click on
@@ -193,7 +194,7 @@ export function StatusBoardCell({
     heartbeatUnavailable,
   } = row
 
-  const isRestorable = activity === "quarantined" || eligibility === "stale"
+  const isRestorable = eligibility === "quarantined"
   const railClass = eligibilityRailClass(eligibility)
   const markTone = activity === "running" ? "fill" : "neutral"
   // The router is configured with basename=BASE_URL (router-config.tsx), so
@@ -205,12 +206,17 @@ export function StatusBoardCell({
   // Use the same formatRelativeCompact helper that <Time mode="relative-compact">
   // renders so screen-reader users get the same truthful relative label.
   const lastRunLabel = lastRunISO ? formatRelativeCompact(new Date(lastRunISO)) : "unknown"
-  const ariaLabel = `${name}, ${heartbeatUnavailable ? "heartbeat unavailable" : activity}, last run ${lastRunLabel}, ${hourlyStripeLoading ? sessions24h : hourlyStripeError ? "unknown" : hourlyTotal} sessions in 24h`
+  const spokenStatus = heartbeatUnavailable ? "heartbeat unavailable" : eligibility === "stale" ? "stale health observation" : activity
+  const ariaLabel = `${name}, ${spokenStatus}, last run ${lastRunLabel}, ${hourlyStripeLoading ? sessions24h : hourlyStripeError ? "unknown" : hourlyTotal} sessions in 24h`
 
   // Cron-expectation tooltip on the chip -- "silent 3d, expected daily"
   // instead of a flat OVERDUE/IDLE that means the same thing regardless of
   // this butler's own schedule.
-  const chipTitle = !heartbeatUnavailable ? cadenceTooltip(row) : undefined
+  const chipTitle = heartbeatUnavailable
+    ? undefined
+    : eligibility === "stale"
+      ? "Health check is stale. A successful check clears this state."
+      : cadenceTooltip(row)
 
   const containerClass = [
     "group relative flex flex-col",
@@ -241,7 +247,7 @@ export function StatusBoardCell({
           {name}
         </span>
 
-        {/* Activity chip — plain span when not restorable.
+        {/* Activity chip — only projected quarantined eligibility offers Restore.
             When heartbeat data is unavailable (source down or schema_unreachable),
             the activity verdict is unreliable: show '—' instead of a false 'IDLE'. */}
         {isRestorable && onRestore ? (
@@ -256,6 +262,7 @@ export function StatusBoardCell({
           >
             <button
               type="button"
+              aria-label={isRestorePending ? `Restoring ${name} policy` : `Restore ${name} policy hold`}
               disabled={isRestorePending}
               onClick={(e) => {
                 e.stopPropagation()
@@ -266,10 +273,10 @@ export function StatusBoardCell({
                 isRestorePending
                   ? "cursor-not-allowed text-muted-foreground"
                   : "cursor-pointer underline underline-offset-2 decoration-current/50",
-                !isRestorePending && (heartbeatUnavailable ? "text-muted-foreground" : eligibility === "stale" ? "text-[var(--amber-text)]" : activityChipClasses(activity)),
+                !isRestorePending && "text-destructive",
               ].filter(Boolean).join(" ")}
             >
-              {isRestorePending ? "RESTORING…" : heartbeatUnavailable ? "—" : eligibility === "stale" ? "STALE" : activityLabel(activity)}
+              {isRestorePending ? "RESTORING…" : "QUARANTINED"}
             </button>
           </Tip>
         ) : (

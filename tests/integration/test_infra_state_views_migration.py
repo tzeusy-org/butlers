@@ -789,6 +789,7 @@ async def _assert_l2_receiver_records_under_narrow_role_without_dashboard_owner_
             prober = SingleFlightProber(receiver, client=client)
             cycle = await run_shadow_cycle(receiver, (expected,), prober)
         assert cycle.complete and cycle.recorded_count == 1
+        assert cycle.healthy_count == 1  # owner policy is separate from receiver health
         assert (
             await receiver.fetchval(
                 "SELECT observed_state FROM switchboard.butler_registry_control_plane "

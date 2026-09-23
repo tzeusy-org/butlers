@@ -23,10 +23,13 @@ from butlers.core.control_plane_identity import (
     ExpectedDaemon,
     ProbeFailure,
     ProbeOutcome,
+    ShadowCycle,
     SingleFlightProber,
     _effective_observer_interval_s,
+    _next_observer_delay_s,
     probe_once,
     run_shadow_cycle,
+    run_shadow_observer_loop,
     verify_identity,
 )
 from butlers.core.liveness import (
@@ -552,6 +555,7 @@ async def test_partial_shadow_cycle_cannot_claim_complete_fleet():
 
     assert cycle.complete is False
     assert cycle.expected_count == 1 and cycle.recorded_count == 0
+    assert cycle.healthy_count == 0
     assert cycle.mismatch_count == 1
 
     # A later operator TTL reduction wins over the Git seed; the observer
@@ -561,3 +565,65 @@ async def test_partial_shadow_cycle_cannot_claim_complete_fleet():
         await _effective_observer_interval_s(pool, (ExpectedDaemon("health", 41103, "butlers-up"),))
         == 15
     )
+
+
+async def test_shadow_cycle_does_not_count_a_superseded_boot_as_healthy():
+    pool = AsyncMock()
+    pool.fetch.return_value = [
+        {
+            "name": "health",
+            "policy_state": "active",
+            "observed_state": "observer_unknown",
+            "boot_epoch": 2,
+            "observed_boot_epoch": None,
+            "route_compatible": None,
+            "accepting_routes": None,
+            "healthy_observed_at": _NOW - timedelta(minutes=1),
+            "eligibility_state": "stale",
+            "liveness_ttl_seconds": 300,
+        }
+    ]
+    pool.fetchval.return_value = _NOW
+    prober = SimpleNamespace(probe=AsyncMock(return_value=ProbeOutcome("healthy", True)))
+
+    cycle = await run_shadow_cycle(pool, (ExpectedDaemon("health", 41103, "butlers-up"),), prober)
+
+    assert cycle.complete is True and cycle.recorded_count == 1
+    assert cycle.healthy_count == 0
+
+
+def test_observer_startup_retries_are_bounded_then_return_to_ttl_cadence():
+    unknown = ShadowCycle(True, 13, 13, 13, 0)
+    healthy = ShadowCycle(True, 13, 13, 13, 13)
+    incomplete = ShadowCycle(False, 13, 12, None, 13)
+
+    assert _next_observer_delay_s(unknown, interval_s=150, now=20, startup_retry_until=150) == 30
+    assert _next_observer_delay_s(incomplete, interval_s=150, now=20, startup_retry_until=150) == 30
+    assert _next_observer_delay_s(unknown, interval_s=15, now=20, startup_retry_until=150) == 15
+    assert _next_observer_delay_s(unknown, interval_s=150, now=140, startup_retry_until=150) == 150
+    assert _next_observer_delay_s(unknown, interval_s=150, now=150, startup_retry_until=150) == 150
+    assert _next_observer_delay_s(healthy, interval_s=150, now=20, startup_retry_until=150) == 150
+
+
+async def test_shadow_observer_runs_first_probe_without_waiting_for_ttl_interval():
+    observed = asyncio.Event()
+
+    async def observe(*_args):
+        observed.set()
+        return ShadowCycle(True, 1, 1, 0, 1)
+
+    configs = [SimpleNamespace(name="health", port=41103)]
+    with (
+        patch(
+            "butlers.core.control_plane_identity._effective_observer_interval_s",
+            new=AsyncMock(return_value=150),
+        ),
+        patch("butlers.core.control_plane_identity.run_shadow_cycle", side_effect=observe),
+    ):
+        task = asyncio.create_task(run_shadow_observer_loop(AsyncMock(), configs))
+        try:
+            await asyncio.wait_for(observed.wait(), timeout=1)
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task

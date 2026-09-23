@@ -25,6 +25,14 @@ Production activation remains a separate exact-environment decision.
   Local schedules use administrative policy, while the old TTL sweep stops
   mutating legacy state. This leaves stale legacy rows fail-closed on rollback.
   The fleet board and heartbeat API show receiver-verified health.
+- A new daemon boot invalidates its prior receiver observation. The Dashboard
+  observer probes promptly at startup and retries an unverified startup fleet
+  at a bounded cadence before returning to the normal TTL/2 interval. The
+  board's STALE chip reports that observation state; only a projected
+  policy-held row offers the administrative Restore action. The board
+  reconciles receiver liveness every 30 seconds even if the session event
+  socket is healthy, because receiver probes do not emit that event; both
+  loss and recovery of health must reach an open page promptly.
 - The internal Switchboard backend endpoint
   `GET /internal/control-plane/route-preflight` is independent of that flag.
   It selects the lexically first configured non-paused domain target, uses the

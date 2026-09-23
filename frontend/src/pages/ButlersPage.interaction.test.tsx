@@ -1,15 +1,14 @@
 // @vitest-environment jsdom
 /**
- * ButlersPage — click-interaction tests for quarantine/stale restore chip.
+ * ButlersPage — click-interaction tests for the quarantine restore chip.
  * (bu-p55gz)
  *
  * Complements the static-markup coverage in ButlersPage.test.tsx. Uses
  * @testing-library/react + fireEvent to exercise the restore chip click path
  * and assert that setEligibility.mutate is called with the correct payload.
  *
- * Two cases are tested:
- *   1. activity='quarantined' — chip shows QUARANTINED, mutate called with state='active'
- *   2. eligibility='stale'  — chip shows IDLE, mutate called with state='active'
+ * A quarantined policy can be restored; a stale receiver observation is
+ * informational and cannot schedule a policy mutation.
  *
  * Additional assertion: clicking the restore chip does NOT trigger navigation
  * (e.stopPropagation is called; window.location.href must not change).
@@ -288,7 +287,7 @@ describe("ButlersPage — keyboard board cursor", () => {
       renderKeyboardPage();
 
       fireEvent.keyDown(window, { key: "ArrowRight" });
-      const chip = screen.getByRole("button", { name: /quarantined/i });
+      const chip = screen.getByRole("button", { name: /restore .* policy hold/i });
       chip.focus();
       await userEvent.setup().keyboard("{Enter}");
 
@@ -317,8 +316,8 @@ describe("ButlersPage — quarantine restore chip (interaction)", () => {
 
     renderPage();
 
-    // The restore chip is a <button> with text QUARANTINED
-    const chip = screen.getByRole("button", { name: /quarantined/i });
+    // The restore chip is a <button> with visible text QUARANTINED and an explicit action name
+    const chip = screen.getByRole("button", { name: /restore .* policy hold/i });
     expect(chip).toBeDefined();
 
     // A click alone does not fire the mutation immediately -- it schedules it
@@ -345,7 +344,7 @@ describe("ButlersPage — quarantine restore chip (interaction)", () => {
 
     renderPage();
 
-    const chip = screen.getByRole("button", { name: /quarantined/i });
+    const chip = screen.getByRole("button", { name: /restore .* policy hold/i });
     fireEvent.click(chip);
 
     // The button's onClick calls e.stopPropagation() before calling onRestore.
@@ -356,11 +355,11 @@ describe("ButlersPage — quarantine restore chip (interaction)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Stale eligibility restore chip — click interaction
+// Stale receiver observation is not an operator policy action
 // ---------------------------------------------------------------------------
 
-describe("ButlersPage — stale eligibility restore chip (interaction)", () => {
-  it("calls setEligibility.mutate with { name, state: 'active' } once the undo window elapses", () => {
+describe("ButlersPage — stale eligibility chip (interaction)", () => {
+  it("does not offer Restore or schedule a policy mutation", () => {
     const rows = [
       makeRow({ name: "stale-butler", activity: "idle", eligibility: "stale" }),
     ];
@@ -368,31 +367,11 @@ describe("ButlersPage — stale eligibility restore chip (interaction)", () => {
 
     renderPage();
 
-    // Stale row: chip label is STALE (eligibility takes precedence over activity label).
-    const chip = screen.getByRole("button", { name: "STALE" });
-    expect(chip).toBeDefined();
-
-    clickAndCommitRestore(chip);
-
-    expect(mockMutate).toHaveBeenCalledOnce();
-    expect(mockMutate).toHaveBeenCalledWith(
-      { name: "stale-butler", state: "active" },
-      expect.objectContaining({ onSuccess: expect.any(Function), onError: expect.any(Function) }),
-    );
-  });
-
-  it("does not navigate when the stale restore chip is clicked (stopPropagation)", () => {
-    const rows = [
-      makeRow({ name: "stale-butler", activity: "idle", eligibility: "stale" }),
-    ];
-    setHookState(rows, makeAggregates({ total: 1, butlerCount: 1 }));
-
-    renderPage();
-
-    const chip = screen.getByRole("button", { name: "STALE" });
-    fireEvent.click(chip);
-
-    expect(locationHref).toBe("http://localhost/");
+    expect(screen.queryByRole("button", { name: "STALE" })).toBeNull();
+    fireEvent.click(screen.getByText("STALE"));
+    act(() => vi.advanceTimersByTime(RESTORE_UNDO_WINDOW_MS));
+    expect(mockMutate).not.toHaveBeenCalled();
+    expect(toast).not.toHaveBeenCalled();
   });
 });
 
@@ -412,7 +391,7 @@ describe("ButlersPage — restore toast feedback", () => {
     });
 
     renderPage();
-    clickAndCommitRestore(screen.getByRole("button", { name: /quarantined/i }));
+    clickAndCommitRestore(screen.getByRole("button", { name: /restore .* policy hold/i }));
 
     expect(toast.success).toHaveBeenCalledWith("quarant restored");
     expect(toast.error).not.toHaveBeenCalled();
@@ -429,7 +408,7 @@ describe("ButlersPage — restore toast feedback", () => {
     });
 
     renderPage();
-    clickAndCommitRestore(screen.getByRole("button", { name: /quarantined/i }));
+    clickAndCommitRestore(screen.getByRole("button", { name: /restore .* policy hold/i }));
 
     expect(toast.error).toHaveBeenCalledWith(
       "Failed to restore quarant",
@@ -451,7 +430,7 @@ describe("ButlersPage — restore undo action", () => {
     setHookState(rows, makeAggregates({ total: 1, butlerCount: 1, quarantined: 1 }));
 
     renderPage();
-    fireEvent.click(screen.getByRole("button", { name: /quarantined/i }));
+    fireEvent.click(screen.getByRole("button", { name: /restore .* policy hold/i }));
 
     expect(toast).toHaveBeenCalledWith(
       "Restoring quarant",
@@ -466,7 +445,7 @@ describe("ButlersPage — restore undo action", () => {
     setHookState(rows, makeAggregates({ total: 1, butlerCount: 1, quarantined: 1 }));
 
     renderPage();
-    fireEvent.click(screen.getByRole("button", { name: /quarantined/i }));
+    fireEvent.click(screen.getByRole("button", { name: /restore .* policy hold/i }));
 
     const toastCall = vi.mocked(toast).mock.calls[0];
     const onUndoClick = (
@@ -489,7 +468,7 @@ describe("ButlersPage — restore undo action", () => {
     setHookState(rows, makeAggregates({ total: 1, butlerCount: 1, quarantined: 1 }));
 
     renderPage();
-    fireEvent.click(screen.getByRole("button", { name: /quarantined/i }));
+    fireEvent.click(screen.getByRole("button", { name: /restore .* policy hold/i }));
 
     expect(mockMutate).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: /restoring/i })).toBeDefined();
@@ -510,7 +489,7 @@ describe("ButlersPage — restore undo action", () => {
     setHookState(rows, makeAggregates({ total: 1, butlerCount: 1, quarantined: 1 }));
 
     const { unmount } = renderPage();
-    fireEvent.click(screen.getByRole("button", { name: /quarantined/i }));
+    fireEvent.click(screen.getByRole("button", { name: /restore .* policy hold/i }));
     expect(mockMutate).not.toHaveBeenCalled();
 
     // Navigate away, then back, before the undo window elapses.
@@ -600,7 +579,7 @@ describe("ButlersPage — restore chip pending/disabled state", () => {
     expect((pendingChip as HTMLButtonElement).disabled).toBe(true);
 
     // "other" chip is still enabled with its normal label.
-    const otherChip = screen.getByRole("button", { name: /quarantined/i });
+    const otherChip = screen.getByRole("button", { name: /restore .* policy hold/i });
     expect((otherChip as HTMLButtonElement).disabled).toBe(false);
   });
 });

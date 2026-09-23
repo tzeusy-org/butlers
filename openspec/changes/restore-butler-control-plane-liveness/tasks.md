@@ -9,6 +9,7 @@
 - [ ] 2.1 Register the daemon boot after exact-port binding and before route acceptance; expose boot UUID and committed monotonic epoch with bounded identity/acceptance facts. Verify registration failure and old-binary rollback fail closed without authoring liveness. (REQ-butler-base-spec-002/003/004; REQ-butler-control-plane-liveness-001)
 - [ ] 2.2 Add a separately supervised roster-bound Dashboard periodic observer in shadow mode and shared Switchboard verifier/DB reserve-record functions, including exact endpoint validation, bounded fanout, deadline and response-size limits, DB-server time, and epoch-plus-sequence fencing. Verify wrong name/port, malformed response, forbidden daemon timestamp, older boot with higher sequence, and observer failure. (REQ-butler-control-plane-liveness-001/005/008)
 - [ ] 2.3 Compare old and new eligibility under auth-enabled operation across multiple TTL windows; publish content-blind mismatch evidence before switching route authority. (REQ-butler-control-plane-liveness-001/002)
+- [ ] 2.4 Probe promptly when the Dashboard observer starts, retry an unverified startup fleet at a bounded cadence for no longer than the first normal interval, then resume the TTL-based cadence. Preserve current-boot fencing and an operator TTL reduction during a scheduled wait. (REQ-butler-control-plane-liveness-001)
 
 ## 3. Route and scheduler cutover
 
@@ -26,6 +27,7 @@
   (REQ-butler-switchboard-004; REQ-dashboard-api-063)
 - [ ] 3.3 Remove derived remote staleness from local cron/deadline and QA patrol admission while retaining explicit administrative stop. Test QA and eligibility-sweep progress during forced registry expiry. (REQ-staffer-qa-006)
 - [ ] 3.4 After the replacement passes cutover evidence, retire daemon heartbeat reporter and `POST /api/switchboard/heartbeat` mutation; retain owner auth and prove a legacy POST writes no observation or policy. (REQ-butler-control-plane-liveness-006)
+- [ ] 3.5 Show receiver-observation `stale` as informational on the Butler status board, with 30-second board reconciliation for both loss and recovery of receiver health. Only projected policy-held `quarantined` eligibility offers an explicitly labeled Restore action and its existing undo; policy mutation refreshes the board query. Verify stale cannot write policy and that a healthy probe clears the chip. (dashboard-butler-management/Butler List Page; REQ-butler-control-plane-liveness-002)
 
 ## 4. QA, conditions, and owner visibility
 
