@@ -214,11 +214,14 @@ async def list_control_plane_candidates(
         row["name"] for row in await pool.fetch("SELECT name FROM switchboard.butler_registry")
     }
     candidates: list[dict[str, Any]] = []
-    for config in configs:
+    for config, expected in zip(configs, expected_from_roster(configs), strict=True):
         if config.name not in registered or (butler_only and config.type != ButlerType.BUTLER):
             continue
-        expected = expected_route_target(config.name)
-        if expected is None:
+        if not (
+            config.runtime_seed.route_contract_min
+            <= DEFAULT_ROUTE_CONTRACT_VERSION
+            <= config.runtime_seed.route_contract_max
+        ):
             continue
         decision = await resolve_control_plane_target(pool, expected)
         if decision.state == "denied":

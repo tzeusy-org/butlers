@@ -286,6 +286,65 @@ async def test_qa_receiver_view_exposes_current_boot_health_without_policy_autho
     assert any(f.source_butler == name for f in findings)
 
 
+@pytest.mark.asyncio(loop_scope="session")
+async def test_fleet_board_receiver_projection_ignores_legacy_heartbeat(
+    pool: asyncpg.Pool,
+) -> None:
+    """Execute the board's actual SQL against separated registry facts."""
+    from butlers.api.routers.butlers import _BOARD_RECEIVER_REGISTRY_SQL
+
+    now = datetime.now(UTC)
+    names = ("board_ready", "board_failed_probe", "board_old_boot", "board_held")
+    async with pool.acquire() as conn:
+        await conn.execute("SET search_path TO switchboard, public")
+        for name in names:
+            await conn.execute(
+                """
+                INSERT INTO switchboard.butler_registry
+                    (name, endpoint_url, eligibility_state, last_seen_at)
+                VALUES ($1, $2, 'stale', $3)
+                """,
+                name,
+                f"http://{name}:41100/mcp",
+                now - timedelta(hours=2),
+            )
+            await conn.execute(
+                """
+                UPDATE switchboard.butler_registry_control_plane
+                   SET observed_state = 'healthy', healthy_observed_at = $2,
+                       boot_epoch = 1, observed_boot_epoch = 1,
+                       route_compatible = true, accepting_routes = true
+                 WHERE name = $1
+                """,
+                name,
+                now,
+            )
+
+        await conn.execute(
+            "UPDATE switchboard.butler_registry_control_plane "
+            "SET observed_state = 'unavailable' WHERE name = 'board_failed_probe'"
+        )
+        await conn.execute(
+            "UPDATE switchboard.butler_registry_control_plane "
+            "SET observed_boot_epoch = 0 WHERE name = 'board_old_boot'"
+        )
+        await conn.fetchval("SELECT public.set_butler_registry_policy('board_held', 'quarantined')")
+
+        projected = {
+            row["name"]: row
+            for row in await conn.fetch(_BOARD_RECEIVER_REGISTRY_SQL)
+            if row["name"] in names
+        }
+
+    assert set(projected) == set(names)
+    assert projected["board_ready"]["eligibility_state"] == "active"
+    assert projected["board_ready"]["last_seen_at"] == now
+    assert projected["board_failed_probe"]["eligibility_state"] == "stale"
+    assert projected["board_old_boot"]["eligibility_state"] == "stale"
+    assert projected["board_held"]["eligibility_state"] == "quarantined"
+    assert projected["board_held"]["quarantine_reason"] == "protected_policy:quarantined"
+
+
 async def _as_role(pool: asyncpg.Pool, role: str, sql: str, *args):
     async with pool.acquire() as conn:
         await conn.execute(f'SET ROLE "{role}"')

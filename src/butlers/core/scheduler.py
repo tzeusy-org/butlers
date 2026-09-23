@@ -1985,12 +1985,10 @@ async def _butler_dispatch_gated(
     receiver-derived routing, remote observation staleness is not an authority
     to stop a healthy local scheduler.
 
-    The canonical eligibility decision lives in the Switchboard registry, so we
-    reuse :func:`resolve_routing_target` (the same accessor the routing path
-    uses) rather than re-deriving the state here.  A target is gated for
-    scheduled dispatch under exactly the same default policy the router applies
-    to inbound routing: ``quarantined`` and ``stale`` are both gated, ``active``
-    is allowed.
+    With the receiver cutover enabled, the administrative policy row gates
+    local dispatch; a missing row or non-active policy suppresses the tick.
+    With the flag disabled, the legacy route resolver also gates stale
+    heartbeat state.
 
     Returns ``None`` when dispatch should proceed (eligible, or no gating
     context available), or a human-readable reason string when dispatch must be

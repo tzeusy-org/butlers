@@ -249,7 +249,7 @@ async def test_receiver_candidates_ignore_old_legacy_heartbeat_and_preserve_poli
     from butlers.config import ButlerType
     from butlers.tools.switchboard.registry.registry import list_control_plane_candidates
 
-    now = datetime.now(UTC)
+    now = datetime(2026, 9, 23, 12, 0, tzinfo=UTC)
     instance_id = uuid.UUID(generate_uuid7_string())
     configs = [
         SimpleNamespace(
@@ -262,23 +262,35 @@ async def test_receiver_candidates_ignore_old_legacy_heartbeat_and_preserve_poli
         )
         for name, port in (("health", 41103), ("finance", 41107))
     ]
+    configs.append(
+        SimpleNamespace(
+            name="travel",
+            port=41112,
+            type=ButlerType.BUTLER,
+            description="travel",
+            modules={"calendar": {}},
+            runtime_seed=SimpleNamespace(route_contract_min=2, route_contract_max=2),
+        )
+    )
     pool = AsyncMock()
     old_heartbeat = now - timedelta(hours=2)
     pool.fetch.return_value = [
         {"name": "health", "last_seen_at": old_heartbeat, "eligibility_state": "quarantined"},
         {"name": "finance", "last_seen_at": old_heartbeat},
+        {"name": "travel", "last_seen_at": old_heartbeat},
     ]
     ready = _ready_control_plane_row(instance_id, now=now)
     pool.fetchrow.side_effect = lambda _query, name: {
         **ready,
         "name": name,
-        "policy_state": "active" if name == "health" else "quarantined",
+        "policy_state": "quarantined" if name == "finance" else "active",
     }
     with patch("butlers.config.list_butlers", return_value=configs):
         candidates = await list_control_plane_candidates(pool, butler_only=True)
 
     assert [candidate["name"] for candidate in candidates] == ["health"]
     assert candidates[0]["modules"] == ["calendar"]
+    assert pool.fetchrow.await_count == 2  # incompatible roster contract never reaches the DB
     assert pool.execute.await_count == 0
 
 

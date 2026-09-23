@@ -47,21 +47,22 @@ Production activation remains a separate exact-environment decision.
 | Authenticated owner eligibility API | Sole administrative policy mutation; neither probe nor confirmed route may clear its hold. |
 | Direct route, classifier and correction candidates, local scheduler, recovery notification admission | Read separated control-plane facts when the flag is `1`; a policy hold still denies the route. Legacy resolver remains for flag-off rollback. |
 | Fleet board and system heartbeat API | Follow the same cutover flag as the daemon. With `1`, project the receiver's last verified healthy observation and administrative policy; with `0`, retain the legacy projection. The board does not turn a failed probe into a fresh heartbeat. |
-| Generic `list_butlers`, QA heartbeat view | Still read legacy state and may show stale until separately cut over; neither is route authority under the flag. |
+| Generic `list_butlers` | Still reads legacy state and may show stale; it is not route authority under the flag. |
+| QA infra-state heartbeat discovery | With the flag set, reads receiver observations through the QA-only `public.v_qa_butler_receiver_state` view from `sw_037`. Its legacy view remains for flag-off deployments. QA cannot read the control-plane table directly. |
 | L3 pure resolver and route preflight | Exact-name Switchboard reads of control-plane facts and Git-roster endpoint; no database write. |
 
 ## Activation and rollback
 
-Dev activation requires migrated `sw_035` and the `sw_036` evidence repair,
-current boot registrations, fresh receiver observations, and active policy for
-the exact intended targets. Verify the internal route preflight, a real
+Dev activation requires `sw_035`, the `sw_036` evidence repair, the QA receiver
+view in `sw_037`, current boot registrations, fresh receiver observations,
+and active policy for the exact intended targets. Verify the internal route preflight, a real
 authenticated route, and policy-denied negative case; then observe health and
 route acceptance beyond two legacy TTL windows. The dev hotreload Compose
 default supplies the flag, but production's base service remains default-off.
 Production needs its own exact-environment verification and activation.
 
 For rollback, set the flag to `0` in the exact process deployment. Retain
-`sw_035`/`sw_036` policy and provenance, the restrictive
+`sw_035`/`sw_036` policy and provenance, the `sw_037` QA read view, the restrictive
 legacy trigger, boot-registration ledger, and latest epoch. Recheck that the
 legacy projection still denies every paused, quarantined, or review-required
 target before serving traffic; do not treat code downgrade, successful route,

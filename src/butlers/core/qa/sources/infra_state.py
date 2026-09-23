@@ -238,7 +238,7 @@ class InfraStateSource:
     pool:
         asyncpg connection pool. Must be able to SELECT
         ``public.v_qa_connector_state`` and the active butler-liveness view
-        (granted to ``butler_qa_rw`` by migration ``sw_024``) and
+        (granted to ``butler_qa_rw`` by ``sw_024`` or ``sw_037``) and
         ``public.audit_log`` (already granted to every butler role by core
         migrations).
     backup_dir_env:
@@ -493,7 +493,11 @@ class InfraStateSource:
             name = row["name"]
             healthy_at = _as_aware(row["healthy_observed_at"])
             registered_at = _as_aware(row["registered_at"])
-            if healthy_at is None and registered_at is not None:
+            if (
+                row["observed_state"] == "observer_unknown"
+                and healthy_at is None
+                and registered_at is not None
+            ):
                 if (now - registered_at) < _NEVER_SEEN_GRACE:
                     continue
 

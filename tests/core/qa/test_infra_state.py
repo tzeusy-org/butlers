@@ -315,6 +315,29 @@ async def test_receiver_failed_or_stale_observation_trips_finding(
     assert findings[0].source_butler == "finance"
 
 
+@pytest.mark.parametrize(
+    ("observed_state", "expected_findings"),
+    [("observer_unknown", 0), ("unavailable", 1)],
+)
+async def test_receiver_never_seen_grace_does_not_hide_a_failed_first_probe(
+    monkeypatch, observed_state, expected_findings
+):
+    monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", "1")
+    monkeypatch.delenv("BUTLERS_BACKUP_DIR", raising=False)
+    monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
+    row = _receiver_row(
+        observed_state=observed_state,
+        healthy_observed_at=None,
+        registered_at=datetime.now(UTC) - timedelta(minutes=1),
+    )
+
+    findings = await InfraStateSource(pool=_FakePool(receiver_rows=[row])).discover(
+        lookback_minutes=15
+    )
+
+    assert len(findings) == expected_findings
+
+
 async def test_stale_butler_heartbeat_trips_a_finding(monkeypatch):
     monkeypatch.delenv("BUTLERS_BACKUP_DIR", raising=False)
     monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
