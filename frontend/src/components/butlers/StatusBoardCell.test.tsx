@@ -132,6 +132,28 @@ describe("StatusBoardCell: activity=quarantined", () => {
     expect(html).toContain("QUARANTINED")
   })
 
+  it("labels the policy action QUARANTINED when the daemon is offline", () => {
+    const html = renderToStaticMarkup(
+      <StatusBoardCell
+        row={makeRow({ activity: "offline", status: "down", eligibility: "quarantined" })}
+        onRestore={() => void 0}
+      />,
+    )
+    expect(html).toMatch(/<button[^>]*>QUARANTINED<\/button>/)
+    expect(html).not.toMatch(/<button[^>]*>OFFLINE<\/button>/)
+  })
+
+  it("labels the policy action QUARANTINED when heartbeat data is unavailable", () => {
+    const html = renderToStaticMarkup(
+      <StatusBoardCell
+        row={makeRow({ activity: "unknown", eligibility: "quarantined", heartbeatUnavailable: true })}
+        onRestore={() => void 0}
+      />,
+    )
+    expect(html).toMatch(/<button[^>]*>QUARANTINED<\/button>/)
+    expect(html).not.toMatch(/<button[^>]*>—<\/button>/)
+  })
+
   it("renders red state rail for quarantined eligibility", () => {
     const html = renderToStaticMarkup(
       <StatusBoardCell
@@ -667,7 +689,7 @@ describe("StatusBoardCell: onRestore callback", () => {
         onRestore={onRestore}
       />,
     )
-    const btn = getByRole("button", { name: "QUARANTINED" })
+    const btn = getByRole("button", { name: "Restore qa quarantined policy" })
     fireEvent.click(btn)
     expect(onRestore).toHaveBeenCalledOnce()
     expect(onRestore).toHaveBeenCalledWith("qa")
@@ -798,7 +820,7 @@ describe("StatusBoardCell: heartbeatUnavailable=true renders honest state", () =
     expect(html).toContain("—")
   })
 
-  it("restorable button chip shows '—' (not activity label) when heartbeatUnavailable=true", () => {
+  it("restorable policy chip stays explicit when heartbeat data is unavailable", () => {
     const onRestore = vi.fn()
     const html = renderToStaticMarkup(
       <StatusBoardCell
@@ -806,7 +828,6 @@ describe("StatusBoardCell: heartbeatUnavailable=true renders honest state", () =
         onRestore={onRestore}
       />,
     )
-    expect(html).toContain("—")
-    expect(html).not.toContain("QUARANTINED")
+    expect(html).toMatch(/<button[^>]*>QUARANTINED<\/button>/)
   })
 })

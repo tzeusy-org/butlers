@@ -262,6 +262,7 @@ export function StatusBoardCell({
           >
             <button
               type="button"
+              aria-label={isRestorePending ? `Restoring ${name} policy` : `Restore ${name} quarantined policy`}
               disabled={isRestorePending}
               onClick={(e) => {
                 e.stopPropagation()
@@ -272,10 +273,10 @@ export function StatusBoardCell({
                 isRestorePending
                   ? "cursor-not-allowed text-muted-foreground"
                   : "cursor-pointer underline underline-offset-2 decoration-current/50",
-                !isRestorePending && (heartbeatUnavailable ? "text-muted-foreground" : activityChipClasses(activity)),
+                !isRestorePending && "text-destructive",
               ].filter(Boolean).join(" ")}
             >
-              {isRestorePending ? "RESTORING…" : heartbeatUnavailable ? "—" : activityLabel(activity)}
+              {isRestorePending ? "RESTORING…" : "QUARANTINED"}
             </button>
           </Tip>
         ) : (
