@@ -13,6 +13,7 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import shutil
@@ -1340,6 +1341,49 @@ async def test_schedule_update_and_delete(pool):
 
     await schedule_delete(pool, task_id)
     assert await pool.fetchrow("SELECT id FROM scheduled_tasks WHERE id = $1", task_id) is None
+
+
+@_asyncio_session
+async def test_schedule_toggle_requested_state_is_idempotent_under_concurrency(pool):
+    """Concurrent retries converge on one requested state, never double-flip."""
+    from butlers.core.scheduler import schedule_create, schedule_toggle
+
+    task_id = await schedule_create(pool, "toggle-concurrent", "0 9 * * *", "toggle me")
+
+    first, second = await asyncio.gather(
+        schedule_toggle(pool, task_id, enabled=False, stagger_key="test-butler"),
+        schedule_toggle(pool, task_id, enabled=False, stagger_key="test-butler"),
+    )
+
+    assert {first["status"], second["status"]} == {"updated", "unchanged"}
+    assert first["observed_enabled"] is False
+    assert second["observed_enabled"] is False
+    assert (
+        await pool.fetchval("SELECT enabled FROM scheduled_tasks WHERE id = $1", task_id) is False
+    )
+
+    retry = await schedule_toggle(pool, task_id, enabled=False, stagger_key="test-butler")
+    assert retry["status"] == "unchanged"
+    assert retry["outcome"] == "already_requested"
+
+
+@_asyncio_session
+async def test_schedule_toggle_reenable_recomputes_next_run(pool):
+    """Enabling a DB-owned row stores a fresh next occurrence."""
+    from butlers.core.scheduler import schedule_create, schedule_toggle
+
+    task_id = await schedule_create(pool, "toggle-reenable", "0 9 * * *", "toggle me")
+    await schedule_toggle(pool, task_id, enabled=False, stagger_key="test-butler")
+
+    result = await schedule_toggle(pool, task_id, enabled=True, stagger_key="test-butler")
+
+    assert result["status"] == "updated"
+    assert result["observed_enabled"] is True
+    assert result["next_run_at"] is not None
+    assert (
+        await pool.fetchval("SELECT next_run_at FROM scheduled_tasks WHERE id = $1", task_id)
+        is not None
+    )
 
 
 @_asyncio_session

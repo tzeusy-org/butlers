@@ -155,7 +155,7 @@ The complete merged-tree group inventory is:
 |-------|------:|-------|------------------------------|
 | `infra` | 11 | `status`, `trigger`, `tick`, `correct`, `memory_access`, `memory_catalog_fetch`, `conversation_reply`, `conversation_recall`, `conversation_thread_read`, `shutdown`, `chronicler_day_close_refresh` | `chronicler_day_close_refresh` requires `butler_name == "chronicler"`; the other ten have no type/name gate. |
 | `state` | 4 | `state_get`, `state_set`, `state_delete`, `state_list` | None. |
-| `scheduling` | 6 | `schedule_list`, `schedule_create`, `schedule_update`, `schedule_delete`, `schedule_trigger`, `schedule_costs` | `schedule_trigger` and `schedule_costs` require a non-staffer; the other four do not. |
+| `scheduling` | 7 | `schedule_list`, `schedule_create`, `schedule_update`, `schedule_toggle`, `schedule_delete`, `schedule_trigger`, `schedule_costs` | `schedule_trigger` and `schedule_costs` require a non-staffer; the other five do not. |
 | `sessions` | 5 | `sessions_list`, `sessions_get`, `sessions_summary`, `sessions_daily`, `top_sessions` | All five require a non-staffer. |
 | `notifications` | 2 | `remind`, `notify` | `notify` requires a non-staffer; `remind` does not. |
 | `media` | 1 | `get_attachment` | None. |

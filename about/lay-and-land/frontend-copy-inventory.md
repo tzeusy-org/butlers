@@ -1787,7 +1787,9 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Add schedule
 - Delete Schedule
 - Cancel
-- Schedule "{}" {}
+- {} (Schedule "{}" confirmed by server)
+- Event resumed
+- Event paused
 - Failed to toggle schedule: {}
 - Unknown error
 - Schedule "{}" triggered
@@ -4387,4 +4389,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3441*
+*Total strings: 3443*

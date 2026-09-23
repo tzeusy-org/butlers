@@ -182,7 +182,25 @@ async def test_list_503_when_db_unavailable(app):
 async def test_crud_endpoint_status_codes(app, method, path_tpl, body, exp_status):
     sid = uuid4()
     path = path_tpl.replace("{sid}", str(sid))
-    _wire_mcp(app, result=_mock_mcp_result({"id": str(sid), "ok": True}))
+    result = {"id": str(sid), "ok": True}
+    if method == "PATCH":
+        result = {
+            "id": str(sid),
+            "name": "daily_digest",
+            "source": "db",
+            "status": "updated",
+            "outcome": "applied",
+            "requested_enabled": False,
+            "observed_enabled": False,
+            "changed": True,
+            "next_run_at": None,
+            "audit": {
+                "action": "schedule.toggle",
+                "result": "success",
+                "target": f"schedule:{sid}",
+            },
+        }
+    _wire_mcp(app, result=_mock_mcp_result(result))
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -193,8 +211,90 @@ async def test_crud_endpoint_status_codes(app, method, path_tpl, body, exp_statu
         elif method == "DELETE":
             resp = await client.delete(path)
         else:
-            resp = await client.patch(path, json=body or {})
+            resp = await client.patch(path, json={"enabled": False})
     assert resp.status_code == exp_status
+
+
+async def test_toggle_returns_server_observed_receipt_and_requested_state(app):
+    sid = uuid4()
+    result = {
+        "id": str(sid),
+        "name": "daily_digest",
+        "source": "db",
+        "status": "unchanged",
+        "outcome": "already_requested",
+        "requested_enabled": False,
+        "observed_enabled": False,
+        "changed": False,
+        "next_run_at": None,
+        "audit": {
+            "action": "schedule.toggle",
+            "result": "success",
+            "target": f"schedule:{sid}",
+        },
+    }
+    app, client = _wire_mcp(app, result=_mock_mcp_result(result))
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as http:
+        resp = await http.patch(
+            f"/api/butlers/atlas/schedules/{sid}/toggle",
+            json={"enabled": False},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["observed_enabled"] is False
+    assert resp.json()["data"]["changed"] is False
+    assert client.call_tool.await_args.args == (
+        "schedule_toggle",
+        {"id": str(sid), "enabled": False},
+    )
+
+
+@pytest.mark.parametrize("body", [None, {}, {"enabled": None}, {"enabled": "false"}])
+async def test_toggle_requires_explicit_boolean_before_mcp(app, body):
+    sid = uuid4()
+    app, mcp_client = _wire_mcp(app)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as http:
+        response = await http.patch(
+            f"/api/butlers/atlas/schedules/{sid}/toggle",
+            json=body,
+        )
+
+    assert response.status_code == 422
+    mcp_client.call_tool.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("code", "status"),
+    [("SCHEDULE_NOT_FOUND", 404), ("SCHEDULE_TOML_MANAGED", 409), ("SCHEDULE_MANAGED", 409)],
+)
+async def test_toggle_returns_typed_refusal(app, code, status):
+    sid = uuid4()
+    app, _client = _wire_mcp(
+        app,
+        result=_mock_mcp_result(
+            {
+                "id": str(sid),
+                "status": "error",
+                "code": code,
+                "message": "bounded refusal",
+                "error": "bounded refusal",
+            }
+        ),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as http:
+        resp = await http.patch(
+            f"/api/butlers/atlas/schedules/{sid}/toggle",
+            json={"enabled": True},
+        )
+
+    assert resp.status_code == status
+    assert resp.json()["error"]["code"] == code
 
 
 @pytest.mark.parametrize(
@@ -207,7 +307,7 @@ async def test_crud_endpoint_status_codes(app, method, path_tpl, body, exp_statu
         ),
         ("PUT", "/api/butlers/atlas/schedules/{sid}", {"cron": "0 12 * * *"}),
         ("DELETE", "/api/butlers/atlas/schedules/{sid}", None),
-        ("PATCH", "/api/butlers/atlas/schedules/{sid}/toggle", None),
+        ("PATCH", "/api/butlers/atlas/schedules/{sid}/toggle", {"enabled": False}),
     ],
 )
 async def test_crud_503_when_butler_unreachable(app, method, path_tpl, body):
@@ -224,7 +324,7 @@ async def test_crud_503_when_butler_unreachable(app, method, path_tpl, body):
         elif method == "DELETE":
             resp = await client.delete(path)
         else:
-            resp = await client.patch(path)
+            resp = await client.patch(path, json=body)
     assert resp.status_code == 503
 
 
