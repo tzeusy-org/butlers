@@ -8,7 +8,7 @@ The spawner is responsible for:
 5. Enforcing serial dispatch (one instance at a time per butler)
 6. Logging sessions before and after invocation
 7. Passing the configured model to the SDK when set
-8. Resolving models dynamically from the catalog (with a runtime-owned degraded default)
+8. Resolving models dynamically from the catalog, failing closed for live dispatches
 9. Enforcing a process-wide global concurrency cap across all butlers
 
 Global concurrency cap
@@ -191,7 +191,7 @@ _cached_pricing: object | None = None  # PricingConfig when populated
 # Last-resort session timeout and null model sentinel for the explicit pool-free
 # direct-adapter mode used by isolated harnesses. Live daemons always supply a
 # database pool and fail closed when catalog resolution is unavailable.
-_FALLBACK_MODEL_ID: None = None
+_DIRECT_RUNTIME_MODEL_ID: None = None
 _DEFAULT_SESSION_TIMEOUT_S = 1800
 _MAX_FAILOVER_ATTEMPTS = 10
 _MAX_MODEL_RESOLUTION_ERROR_CHARS = 1024
@@ -302,6 +302,19 @@ class SpawnerResult:
     resolution_receipt: dict[str, Any] | None = None
 
 
+@dataclass(frozen=True)
+class _AdmittedFailoverCandidate:
+    """One same-tier candidate that passed intent fit and runtime preparation."""
+
+    runtime_type: str
+    model: str
+    extra_args: list[str]
+    catalog_entry_id: uuid.UUID
+    timeout_s: int
+    runtime: RuntimeAdapter
+    resolution_receipt: dict[str, Any] | None
+
+
 class ModelResolutionError(RuntimeError):
     """The model catalog could not produce a safe invocation candidate."""
 
@@ -355,7 +368,7 @@ def _no_selection_error(resolution: DispatchResolution) -> ModelResolutionError:
 
 
 _FIT_ELIGIBLE_RECEIPT_OUTCOMES = frozenset(
-    {"selected", "eligible", "not_top_priority", "excluded_quota"}
+    {"selected", "eligible", "not_top_priority", "excluded_quota", "excluded_breaker"}
 )
 
 
@@ -818,6 +831,161 @@ class Spawner:
         logger.debug("Lazily instantiated adapter for runtime_type=%s", runtime_type)
         return adapter
 
+    async def _next_admissible_failover_candidate(
+        self,
+        *,
+        effective_tier: str,
+        attempted_ids: list[uuid.UUID],
+        attempt_index: int,
+        previous_failure_class: str,
+        base_resolution_receipt: dict[str, Any] | None,
+        selection_reason: str | None,
+        session_id: uuid.UUID | None,
+        logical_session_id: str,
+        purpose_lane: PurposeLane,
+        private_local_failover_allowed: bool,
+        private_provider_config: dict[str, dict[str, Any]] | None,
+    ) -> tuple[_AdmittedFailoverCandidate | None, int]:
+        """Return the next fit-eligible, registered same-tier candidate.
+
+        Capability admission and non-invoked provenance are deliberately shared by
+        quota and runtime failover. Keeping those paths on one policy prevents a
+        candidate rejected for the original dispatch intent from becoming eligible
+        merely because the preceding attempt failed for a different reason.
+        """
+        if self._pool is None:
+            return None, attempt_index
+
+        while attempt_index < _MAX_FAILOVER_ATTEMPTS:
+            candidate = (
+                None
+                if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
+                and not private_local_failover_allowed
+                else await next_same_tier_candidate(
+                    self._pool,
+                    self._config.name,
+                    effective_tier,
+                    attempted_ids,
+                    **(
+                        {"local_only": True} if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT else {}
+                    ),
+                )
+            )
+            if candidate is None:
+                return None, attempt_index
+
+            runtime_type, model, extra_args, entry_id, timeout_s = candidate
+            fit_eligible = _receipt_candidate_fit_eligible(
+                base_resolution_receipt,
+                catalog_entry_id=entry_id,
+                effective_tier=effective_tier,
+            )
+            if fit_eligible is False:
+                failure_reason = (
+                    "intent_mismatch: candidate was not fit-eligible in the initial "
+                    "dispatch resolution"
+                )
+                logger.warning(
+                    "Skipping failover candidate that did not satisfy the original "
+                    "dispatch intent for butler=%s catalog_entry_id=%s tier=%s",
+                    self._config.name,
+                    entry_id,
+                    effective_tier,
+                )
+                attempted_ids.append(entry_id)
+                await _write_dispatch_attempt(
+                    self._pool,
+                    catalog_entry_id=entry_id,
+                    butler=self._config.name,
+                    outcome="suppressed",
+                    attempt_index=attempt_index,
+                    session_id=session_id,
+                    failure_reason=failure_reason,
+                    error_code="ModelResolutionError",
+                    error_message=failure_reason,
+                    tool_call_count=0,
+                    logical_session_id=logical_session_id,
+                    purpose_lane=purpose_lane,
+                    resolution_receipt=_suppressed_candidate_receipt(
+                        base_resolution_receipt,
+                        attempt_index=attempt_index,
+                        previous_failure_class=previous_failure_class,
+                    ),
+                    invoked=False,
+                )
+                attempt_index += 1
+                continue
+
+            resolution_receipt = _attempt_resolution_receipt(
+                base_resolution_receipt,
+                catalog_entry_id=entry_id,
+                runtime_type=runtime_type,
+                model_id=model,
+                effective_tier=effective_tier,
+                attempt_index=attempt_index,
+                previous_failure_class=previous_failure_class,
+                selection_reason=selection_reason,
+            )
+            provider_config = (
+                retarget_ollama_provider_config(private_provider_config, model)
+                if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
+                and model.startswith("ollama/")
+                and private_provider_config is not None
+                else await self._resolve_provider_config(model)
+            )
+            try:
+                runtime = self._get_or_create_adapter(runtime_type, provider_config).create_worker()
+            except ValueError:
+                if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT:
+                    await _refuse_unregistered_private_runtime(
+                        self._pool,
+                        effective_tier=effective_tier,
+                    )
+                failure_reason = (
+                    "runtime_config_error: unregistered failover runtime before invocation"
+                )
+                logger.warning(
+                    "Skipping unregistered failover runtime_type=%s for butler=%s "
+                    "catalog_entry_id=%s",
+                    runtime_type,
+                    self._config.name,
+                    entry_id,
+                )
+                attempted_ids.append(entry_id)
+                await _write_dispatch_attempt(
+                    self._pool,
+                    catalog_entry_id=entry_id,
+                    butler=self._config.name,
+                    outcome="runtime_failure",
+                    attempt_index=attempt_index,
+                    session_id=session_id,
+                    failure_reason=failure_reason,
+                    error_code="ModelResolutionError",
+                    error_message=failure_reason,
+                    tool_call_count=0,
+                    logical_session_id=logical_session_id,
+                    purpose_lane=purpose_lane,
+                    resolution_receipt=resolution_receipt,
+                    invoked=False,
+                )
+                attempt_index += 1
+                continue
+
+            return (
+                _AdmittedFailoverCandidate(
+                    runtime_type=runtime_type,
+                    model=model,
+                    extra_args=extra_args,
+                    catalog_entry_id=entry_id,
+                    timeout_s=timeout_s,
+                    runtime=runtime,
+                    resolution_receipt=resolution_receipt,
+                ),
+                attempt_index,
+            )
+
+        return None, attempt_index
+
     async def trigger(
         self,
         prompt: str,
@@ -865,7 +1033,8 @@ class Spawner:
         complexity:
             Task complexity tier used to select a model from the catalog.
             Defaults to ``Complexity.WORKHORSE``.  The catalog is queried with this
-            tier; when no catalog entry matches the TOML-configured model is used.
+            tier. Live pooled dispatches fail closed when no catalog entry fits;
+            only pool-free test harnesses use direct-adapter mode.
         cwd:
             Optional working directory for the runtime invocation. When ``None``,
             defaults to the butler's config directory. Used by the self-healing
@@ -1514,8 +1683,8 @@ class Spawner:
         # and still checks the adapter baseline against the required intent.
         # resolve_model_with_effective_tier returns a 6-tuple including the effective tier
         # needed to restrict same-tier failover attempts.
-        fallback_runtime_type = DEFAULT_RUNTIME_TYPE
-        fallback_model = _FALLBACK_MODEL_ID
+        direct_runtime_type = DEFAULT_RUNTIME_TYPE
+        direct_runtime_model = _DIRECT_RUNTIME_MODEL_ID
         catalog_result = None
         _resolution_receipts = []
         _catalog_resolution_error: Exception | None = None
@@ -1570,7 +1739,7 @@ class Spawner:
                 _catalog_resolution_error = exc
                 logger.warning(
                     "Catalog model resolution failed for butler=%s complexity=%s; "
-                    "considering the runtime-owned degraded default (error_class=%s)",
+                    "live dispatch will fail closed (error_class=%s)",
                     self._config.name,
                     complexity,
                     type(exc).__name__,
@@ -1590,7 +1759,7 @@ class Spawner:
         catalog_entry_id: uuid.UUID | None = None
         catalog_timeout_s: int | None = None
         # Effective tier pinned from initial resolution for same-tier failover.
-        # None when using the runtime-owned degraded default (no catalog tier).
+        # None in explicit pool-free direct-adapter mode (no catalog tier).
         _failover_effective_tier: str | None = None
         if _catalog_valid:
             assert catalog_result is not None  # narrowing for type checker
@@ -1645,16 +1814,17 @@ class Spawner:
                     resolution_receipt=_base_resolution_receipt,
                 )
 
-            fallback_fit = evaluate_fit(
+            direct_runtime_fit = evaluate_fit(
                 dispatch_intent,
-                adapter_capability_baseline(fallback_runtime_type),
+                adapter_capability_baseline(direct_runtime_type),
             )
-            if not fallback_fit.eligible:
+            if not direct_runtime_fit.eligible:
                 resolution_error = ModelResolutionError(
-                    f"direct_runtime_unfit: {_fit_summary(dispatch_intent, fallback_fit)}"
+                    f"direct_runtime_unfit: {_fit_summary(dispatch_intent, direct_runtime_fit)}"
                 )
                 logger.error(
-                    "Model resolution refused degraded invocation for butler=%s complexity=%s: %s",
+                    "Model resolution refused pool-free direct invocation for "
+                    "butler=%s complexity=%s: %s",
                     self._config.name,
                     complexity,
                     resolution_error,
@@ -1666,8 +1836,8 @@ class Spawner:
                     resolution_receipt=_base_resolution_receipt,
                 )
 
-            resolved_runtime_type = fallback_runtime_type
-            model = fallback_model
+            resolved_runtime_type = direct_runtime_type
+            model = direct_runtime_model
             catalog_extra_args = []
             catalog_timeout_s = None
             resolution_source = "direct_runtime"
@@ -1784,6 +1954,7 @@ class Spawner:
         # authorize the selected remote model.
         _private_provider_config: dict[str, dict[str, Any]] | None = None
         _private_local_failover_allowed = False
+        _private_remote_rule_id: uuid.UUID | None = None
         if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT:
             _pre_private_catalog_entry_id = catalog_entry_id
             if catalog_entry_id is None or self._pool is None:
@@ -1867,16 +2038,7 @@ class Spawner:
                     else "private_content_local_policy"
                 )
             if audited_remote_override:
-                await write_audit_entry(
-                    self._pool,
-                    "system:model_router",
-                    "model.private_content_remote_override",
-                    {
-                        "purpose_lane": purpose_lane,
-                        "rule_id": str(lane_result.matched_rule_id),
-                        "model_id": model[:256],
-                    },
-                )
+                _private_remote_rule_id = lane_result.matched_rule_id
             else:
                 # The initial quota-aware receipt belongs to the displaced
                 # remote entry, so the local candidate must run the ordinary
@@ -1884,9 +2046,60 @@ class Spawner:
                 _spend_rule_fired = True
                 _spend_rule_breaker_open = None
 
+        # Every post-resolution override remains subordinate to the original
+        # dispatch intent. Spend and private-content policy may change the winner,
+        # but they cannot turn a hard-fit exclusion into an invocable selection.
+        final_fit_eligible = (
+            None
+            if catalog_entry_id is None or _failover_effective_tier is None
+            else _receipt_candidate_fit_eligible(
+                _base_resolution_receipt,
+                catalog_entry_id=catalog_entry_id,
+                effective_tier=_failover_effective_tier,
+            )
+        )
+        if final_fit_eligible is False:
+            required = (
+                ",".join(sorted(str(feature) for feature in dispatch_intent.required_features))
+                or "none"
+            )
+            selection_reason = _receipt_selection_reason or "post_resolution_selection"
+            resolution_error = ModelResolutionError(
+                (
+                    "post_resolution_selection_unfit: "
+                    f"selection_reason={selection_reason}; required_features={required}"
+                )[:_MAX_MODEL_RESOLUTION_ERROR_CHARS]
+            )
+            logger.error(
+                "Post-resolution model selection refused invocation for "
+                "butler=%s complexity=%s selection_reason=%s: %s",
+                self._config.name,
+                complexity,
+                selection_reason,
+                resolution_error,
+            )
+            return await self._dashboard_preflight_failure(
+                dashboard_turn_id=dashboard_turn_id,
+                error=f"ModelResolutionError: {resolution_error}",
+                model=model,
+                resolution_receipt=_base_resolution_receipt,
+            )
+
+        if _private_remote_rule_id is not None:
+            await write_audit_entry(
+                self._pool,
+                "system:model_router",
+                "model.private_content_remote_override",
+                {
+                    "purpose_lane": purpose_lane,
+                    "rule_id": str(_private_remote_rule_id),
+                    "model_id": model[:256],
+                },
+            )
+
         # Speculative prewarm (bu-ep4ks.13 follow-up / bu-k9te9, slice 4): the runtime_type
-        # this dispatch will use is now fully settled (post spend-rule override), regardless
-        # of whether resolution came from the catalog or the runtime-owned default. Fire the
+        # this dispatch will use is now settled before quota failover, regardless of
+        # whether resolution came from the catalog or pool-free direct mode. Fire the
         # warmup speculatively here -- fire-and-forget, off the critical path -- so it
         # overlaps with the permission/quota/ceiling gates and pre-invocation context
         # fetches below instead of only starting right before the actual invoke() call.
@@ -1960,6 +2173,7 @@ class Spawner:
             )
 
         _attempted_ids: list[uuid.UUID] = []
+        _prepared_runtime: RuntimeAdapter | None = None
 
         # ---------------------------------------------------------------------------
         # Permissions-matrix enforcement (public.permissions)
@@ -2064,77 +2278,23 @@ class Spawner:
                         model=model,
                     )
 
-                next_candidate = None
-                next_receipt: dict[str, Any] | None = None
-                while _next_attempt_index < _MAX_FAILOVER_ATTEMPTS:
-                    next_candidate = (
-                        None
-                        if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
-                        and not _private_local_failover_allowed
-                        else await next_same_tier_candidate(
-                            self._pool,
-                            self._config.name,
-                            _failover_effective_tier,
-                            _attempted_ids,
-                            **(
-                                {"local_only": True}
-                                if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
-                                else {}
-                            ),
-                        )
-                    )
-                    if next_candidate is None:
-                        break
-                    (
-                        next_rt,
-                        next_model,
-                        next_extra_args,
-                        next_entry_id,
-                        next_timeout_s,
-                    ) = next_candidate
-                    fit_eligible = _receipt_candidate_fit_eligible(
-                        _base_resolution_receipt,
-                        catalog_entry_id=next_entry_id,
-                        effective_tier=_failover_effective_tier,
-                    )
-                    if fit_eligible is not False:
-                        break
-                    failure_reason = (
-                        "intent_mismatch: candidate was not fit-eligible in the initial "
-                        "dispatch resolution"
-                    )
-                    logger.warning(
-                        "Skipping quota failover candidate that did not satisfy the original "
-                        "dispatch intent for butler=%s catalog_entry_id=%s tier=%s",
-                        self._config.name,
-                        next_entry_id,
-                        _failover_effective_tier,
-                    )
-                    _attempted_ids.append(next_entry_id)
-                    await _write_dispatch_attempt(
-                        self._pool,
-                        catalog_entry_id=next_entry_id,
-                        butler=self._config.name,
-                        outcome="suppressed",
-                        attempt_index=_next_attempt_index,
-                        failure_reason=failure_reason,
-                        error_code="ModelResolutionError",
-                        error_message=failure_reason,
-                        tool_call_count=0,
-                        logical_session_id=effective_request_id,
-                        purpose_lane=purpose_lane,
-                        resolution_receipt=_suppressed_candidate_receipt(
-                            _base_resolution_receipt,
-                            attempt_index=_next_attempt_index,
-                            previous_failure_class="quota_exhausted",
-                        ),
-                        invoked=False,
-                    )
-                    _next_attempt_index += 1
-                    next_candidate = None
-                    next_receipt = None
-                    continue
-                if next_candidate is None:
+                (
+                    admitted_candidate,
+                    _next_attempt_index,
+                ) = await self._next_admissible_failover_candidate(
+                    effective_tier=_failover_effective_tier,
+                    attempted_ids=_attempted_ids,
+                    attempt_index=_next_attempt_index,
+                    previous_failure_class="quota_exhausted",
+                    base_resolution_receipt=_base_resolution_receipt,
+                    selection_reason=_receipt_selection_reason,
+                    session_id=None,
+                    logical_session_id=effective_request_id,
+                    purpose_lane=purpose_lane,
+                    private_local_failover_allowed=_private_local_failover_allowed,
+                    private_provider_config=_private_provider_config,
+                )
+                if admitted_candidate is None:
                     # No candidates remain: hard block.
                     self._metrics.record_failover_exhausted(tier=_failover_effective_tier)
                     logger.warning(
@@ -2152,28 +2312,18 @@ class Spawner:
                     )
 
                 # Advance to the next candidate.
-                next_receipt = _attempt_resolution_receipt(
-                    _base_resolution_receipt,
-                    catalog_entry_id=next_entry_id,
-                    runtime_type=next_rt,
-                    model_id=next_model,
-                    effective_tier=_failover_effective_tier,
-                    attempt_index=_next_attempt_index,
-                    previous_failure_class="quota_exhausted",
-                    selection_reason=_receipt_selection_reason,
-                )
-                assert next_receipt is not None or _base_resolution_receipt is None
                 self._metrics.record_failover_attempt(
                     from_model=model,
-                    to_model=next_model,
+                    to_model=admitted_candidate.model,
                     reason="quota_exhausted",
                 )
-                resolved_runtime_type = next_rt
-                model = next_model
-                catalog_extra_args = next_extra_args
-                catalog_entry_id = next_entry_id
-                catalog_timeout_s = next_timeout_s
-                _current_resolution_receipt = next_receipt
+                resolved_runtime_type = admitted_candidate.runtime_type
+                model = admitted_candidate.model
+                catalog_extra_args = admitted_candidate.extra_args
+                catalog_entry_id = admitted_candidate.catalog_entry_id
+                catalog_timeout_s = admitted_candidate.timeout_s
+                _prepared_runtime = admitted_candidate.runtime
+                _current_resolution_receipt = admitted_candidate.resolution_receipt
                 # Loop again to check quota for the new candidate.
 
         # ---------------------------------------------------------------------------
@@ -2295,40 +2445,43 @@ class Spawner:
 
         # Resolve provider config (e.g. Ollama base URL) for the model
         try:
-            provider_config = (
-                _private_provider_config
-                if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
-                and isinstance(model, str)
-                and model.startswith("ollama/")
-                else await self._resolve_provider_config(model)
-            )
+            if _prepared_runtime is not None:
+                runtime = _prepared_runtime
+            else:
+                provider_config = (
+                    _private_provider_config
+                    if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
+                    and isinstance(model, str)
+                    and model.startswith("ollama/")
+                    else await self._resolve_provider_config(model)
+                )
 
-            # Select adapter for the resolved runtime type (lazy instantiation on demand).
-            try:
-                runtime = self._get_or_create_adapter(
-                    resolved_runtime_type, provider_config
-                ).create_worker()
-            except ValueError:
-                if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT:
-                    await _refuse_unregistered_private_runtime(
-                        self._pool,
-                        effective_tier=_failover_effective_tier or str(complexity),
+                # Select adapter for the resolved runtime type (lazy instantiation on demand).
+                try:
+                    runtime = self._get_or_create_adapter(
+                        resolved_runtime_type, provider_config
+                    ).create_worker()
+                except ValueError:
+                    if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT:
+                        await _refuse_unregistered_private_runtime(
+                            self._pool,
+                            effective_tier=_failover_effective_tier or str(complexity),
+                        )
+                    resolution_error = ModelResolutionError(
+                        f"unregistered_runtime_type: runtime_type={resolved_runtime_type}"
                     )
-                resolution_error = ModelResolutionError(
-                    f"unregistered_runtime_type: runtime_type={resolved_runtime_type}"
-                )
-                logger.error(
-                    "Catalog resolved unregistered runtime_type=%s for butler=%s; "
-                    "refusing invocation",
-                    resolved_runtime_type,
-                    self._config.name,
-                )
-                return await self._dashboard_preflight_failure(
-                    dashboard_turn_id=dashboard_turn_id,
-                    error=f"ModelResolutionError: {resolution_error}",
-                    model=model,
-                    resolution_receipt=_base_resolution_receipt,
-                )
+                    logger.error(
+                        "Catalog resolved unregistered runtime_type=%s for butler=%s; "
+                        "refusing invocation",
+                        resolved_runtime_type,
+                        self._config.name,
+                    )
+                    return await self._dashboard_preflight_failure(
+                        dashboard_turn_id=dashboard_turn_id,
+                        error=f"ModelResolutionError: {resolution_error}",
+                        model=model,
+                        resolution_receipt=_base_resolution_receipt,
+                    )
         except Exception as exc:
             if dashboard_turn_id is not None:
                 return await self._dashboard_preflight_failure(
@@ -3072,139 +3225,24 @@ class Spawner:
                     preconsumed_runtime_tool_calls = _attempt_tool_calls
                     raise _attempt_exc
 
-                next_candidate = None
-                next_runtime: RuntimeAdapter | None = None
-                next_receipt: dict[str, Any] | None = None
-                while _next_attempt_index < _MAX_FAILOVER_ATTEMPTS:
-                    next_candidate = (
-                        None
-                        if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
-                        and not _private_local_failover_allowed
-                        else await next_same_tier_candidate(
-                            self._pool,
-                            self._config.name,
-                            _failover_effective_tier,
-                            _attempted_ids,
-                            **(
-                                {"local_only": True}
-                                if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
-                                else {}
-                            ),
-                        )
-                    )
-                    if next_candidate is None:
-                        break
+                (
+                    admitted_candidate,
+                    _next_attempt_index,
+                ) = await self._next_admissible_failover_candidate(
+                    effective_tier=_failover_effective_tier,
+                    attempted_ids=_attempted_ids,
+                    attempt_index=_next_attempt_index,
+                    previous_failure_class=_failover_decision.reason,
+                    base_resolution_receipt=_base_resolution_receipt,
+                    selection_reason=_receipt_selection_reason,
+                    session_id=session_id,
+                    logical_session_id=effective_request_id,
+                    purpose_lane=purpose_lane,
+                    private_local_failover_allowed=_private_local_failover_allowed,
+                    private_provider_config=_private_provider_config,
+                )
 
-                    (
-                        next_rt,
-                        next_model,
-                        next_extra_args,
-                        next_entry_id,
-                        next_timeout_s,
-                    ) = next_candidate
-                    fit_eligible = _receipt_candidate_fit_eligible(
-                        _base_resolution_receipt,
-                        catalog_entry_id=next_entry_id,
-                        effective_tier=_failover_effective_tier,
-                    )
-                    if fit_eligible is False:
-                        failure_reason = (
-                            "intent_mismatch: candidate was not fit-eligible in the initial "
-                            "dispatch resolution"
-                        )
-                        logger.warning(
-                            "Skipping failover candidate that did not satisfy the original "
-                            "dispatch intent for butler=%s catalog_entry_id=%s tier=%s",
-                            self._config.name,
-                            next_entry_id,
-                            _failover_effective_tier,
-                        )
-                        _attempted_ids.append(next_entry_id)
-                        await _write_dispatch_attempt(
-                            self._pool,
-                            catalog_entry_id=next_entry_id,
-                            butler=self._config.name,
-                            outcome="suppressed",
-                            attempt_index=_next_attempt_index,
-                            session_id=session_id,
-                            failure_reason=failure_reason,
-                            error_code="ModelResolutionError",
-                            error_message=failure_reason,
-                            tool_call_count=0,
-                            logical_session_id=effective_request_id,
-                            purpose_lane=purpose_lane,
-                            resolution_receipt=_suppressed_candidate_receipt(
-                                _base_resolution_receipt,
-                                attempt_index=_next_attempt_index,
-                                previous_failure_class=_failover_decision.reason,
-                            ),
-                            invoked=False,
-                        )
-                        _next_attempt_index += 1
-                        next_candidate = None
-                        next_receipt = None
-                        continue
-                    next_receipt = _attempt_resolution_receipt(
-                        _base_resolution_receipt,
-                        catalog_entry_id=next_entry_id,
-                        runtime_type=next_rt,
-                        model_id=next_model,
-                        effective_tier=_failover_effective_tier,
-                        attempt_index=_next_attempt_index,
-                        previous_failure_class=_failover_decision.reason,
-                        selection_reason=_receipt_selection_reason,
-                    )
-                    next_provider_config = (
-                        retarget_ollama_provider_config(_private_provider_config, next_model)
-                        if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
-                        and next_model.startswith("ollama/")
-                        and _private_provider_config is not None
-                        else await self._resolve_provider_config(next_model)
-                    )
-                    try:
-                        next_runtime = self._get_or_create_adapter(
-                            next_rt, next_provider_config
-                        ).create_worker()
-                    except ValueError:
-                        if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT:
-                            await _refuse_unregistered_private_runtime(
-                                self._pool,
-                                effective_tier=_failover_effective_tier,
-                            )
-                        failure_reason = (
-                            "runtime_config_error: unregistered failover runtime before invocation"
-                        )
-                        logger.warning(
-                            "Skipping unregistered failover runtime_type=%s for butler=%s "
-                            "catalog_entry_id=%s",
-                            next_rt,
-                            self._config.name,
-                            next_entry_id,
-                        )
-                        _attempted_ids.append(next_entry_id)
-                        await _write_dispatch_attempt(
-                            self._pool,
-                            catalog_entry_id=next_entry_id,
-                            butler=self._config.name,
-                            outcome="runtime_failure",
-                            attempt_index=_next_attempt_index,
-                            session_id=session_id,
-                            failure_reason=failure_reason,
-                            error_code="ModelResolutionError",
-                            error_message=failure_reason,
-                            tool_call_count=0,
-                            logical_session_id=effective_request_id,
-                            purpose_lane=purpose_lane,
-                            resolution_receipt=next_receipt,
-                            invoked=False,
-                        )
-                        _next_attempt_index += 1
-                        next_candidate = None
-                        next_receipt = None
-                        continue
-                    break
-
-                if next_candidate is None:
+                if admitted_candidate is None:
                     # All same-tier candidates exhausted — terminal failure.
                     self._metrics.record_failover_exhausted(tier=_failover_effective_tier)
                     logger.warning(
@@ -3251,29 +3289,28 @@ class Spawner:
                     preconsumed_runtime_tool_calls = _attempt_tool_calls
                     raise _attempt_exc
 
-                assert next_runtime is not None
                 self._metrics.record_failover_attempt(
                     from_model=model,
-                    to_model=next_model,
+                    to_model=admitted_candidate.model,
                     reason=_failover_decision.reason.split(":")[0],
                 )
                 logger.info(
                     "Same-tier failover for butler=%s: %s → %s (tier=%s, reason=%s)",
                     self._config.name,
                     model,
-                    next_model,
+                    admitted_candidate.model,
                     _failover_effective_tier,
                     _failover_decision.reason,
                 )
 
                 # Update candidate variables for the next attempt.
-                resolved_runtime_type = next_rt
-                model = next_model
-                merged_args = list(next_extra_args)
-                catalog_entry_id = next_entry_id
-                catalog_timeout_s = next_timeout_s
-                _current_resolution_receipt = next_receipt
-                runtime = next_runtime
+                resolved_runtime_type = admitted_candidate.runtime_type
+                model = admitted_candidate.model
+                merged_args = list(admitted_candidate.extra_args)
+                catalog_entry_id = admitted_candidate.catalog_entry_id
+                catalog_timeout_s = admitted_candidate.timeout_s
+                _current_resolution_receipt = admitted_candidate.resolution_receipt
+                runtime = admitted_candidate.runtime
                 # Loop back to try the next candidate.
 
             # End of failover loop — invocation succeeded.

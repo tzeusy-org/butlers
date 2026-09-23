@@ -193,8 +193,10 @@ selects.
 It is carried on `TierQuotaExhausted.resolution` when quota blocks the tier. Catalog-backed
 Spawner and DiscretionDispatcher attempts persist a projection of that receipt. Discretion receipt
 capture observes the legacy winner without parsing capability envelopes or changing eligibility. A
-spend-rule or private-content policy override re-projects the final winner, candidate outcomes,
-exclusions, and reason together; failover projections carry the preceding failure class, while a
+spend-rule or private-content policy override may re-project the final winner only after the
+replacement is confirmed fit-eligible for the original intent and effective tier. A hard-fit
+exclusion remains non-invocable and is never cleared merely because an override selected it.
+Failover projections carry the preceding failure class, while a
 transparent retry of the same candidate after a failed resume handle is labeled
 `same_candidate_cold_retry` instead. The durable JSON is measured with the registered asyncpg JSONB
 encoder and bounded to 32 KiB across the entire projection, not only its candidate list; requested
@@ -326,9 +328,9 @@ retries the same candidate cold instead records `retry.kind="same_candidate_cold
 model failover. Receipts are bounded to 32 KiB by retaining an ordered candidate prefix and setting
 `truncated=true` plus the original `candidate_count`; they are never silently dropped for size. The
 size check uses the exact registered JSONB serializer, including its default ASCII escaping, and
-the minimal projection retains both requested and effective intent. Historical and static-fallback
-attempts honestly expose a null receipt rather than reconstructing a decision from current catalog
-state.
+the minimal projection retains both requested and effective intent. Historical and explicit
+pool-free direct-runtime attempts honestly expose a null receipt rather than reconstructing a
+decision from current catalog state.
 
 Qualifying `runtime_failure` and `success` rows use one serialized recorder per
 catalog entry. The recorder takes the advisory transaction lock before assigning
@@ -468,8 +470,8 @@ psql -h localhost -U butlers -d butlers -c \
   "SELECT model, complexity, resolution_source, COUNT(*) as sessions
    FROM general.sessions WHERE completed_at IS NOT NULL
    GROUP BY model, complexity, resolution_source ORDER BY sessions DESC LIMIT 10;"
-# Expected: resolution_source is "catalog" for catalog-resolved sessions,
-#           "toml_fallback" when no catalog entry matched the tier
+# Expected: resolution_source is "catalog" for live catalog-resolved sessions;
+#           "direct_runtime" appears only in explicit pool-free harnesses
 
 # 3. Token quota ledger records usage
 psql -h localhost -U butlers -d butlers -c \

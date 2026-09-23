@@ -34,6 +34,7 @@ from butlers.core.model_routing import (
     CandidateOutcome,
     CandidateRecord,
     DispatchResolution,
+    SpendRoutingResult,
 )
 from butlers.core.route_inbox import RouteInboxLeaseLost, route_inbox_wait_while_claimed
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
@@ -2125,6 +2126,225 @@ class TestCatalogModelResolution:
         )
         assert adapter.calls == []
         create.assert_not_awaited()
+
+    async def test_pool_free_image_route_requires_proven_direct_runtime_vision(
+        self, tmp_path: Path
+    ) -> None:
+        """Pool-free harness mode must not assume its adapter can consume images."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        adapter = MockAdapter(result_text="must not run", capture=True)
+
+        result = await Spawner(
+            config=_make_config(),
+            config_dir=config_dir,
+            pool=None,
+            runtime=adapter,
+        ).trigger(
+            "inspect the attachment",
+            "route",
+            attachments=[{"media_type": "image/png", "storage_ref": "blob:test"}],
+        )
+
+        assert result.success is False
+        assert result.error is not None
+        assert result.error.startswith("ModelResolutionError: direct_runtime_unfit")
+        assert "vision" in result.error
+        assert result.model is None
+        assert adapter.calls == []
+
+    async def test_spend_rule_override_cannot_bypass_original_vision_fit(
+        self, tmp_path: Path
+    ) -> None:
+        """A spend rule cannot promote a hard-fit-excluded target to selected."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        selected_id = uuid.uuid4()
+        unfit_id = uuid.uuid4()
+        adapter = MockAdapter(result_text="must not run", capture=True)
+        spawner = Spawner(
+            config=_make_config(),
+            config_dir=config_dir,
+            pool=AsyncMock(),
+            runtime=adapter,
+        )
+
+        async def _resolve_with_unfit_override_target(*_args, intent, receipt_sink, **_kwargs):
+            resolution = DispatchResolution(
+                policy_version="test-policy",
+                requested_intent=intent,
+                effective_intent=intent,
+                candidates=(
+                    CandidateRecord(
+                        catalog_entry_id=selected_id,
+                        runtime_type=DEFAULT_RUNTIME_TYPE,
+                        model_id="vision-model",
+                        effective_tier="workhorse",
+                        effective_priority=20,
+                        outcome=CandidateOutcome.SELECTED,
+                    ),
+                    CandidateRecord(
+                        catalog_entry_id=unfit_id,
+                        runtime_type=DEFAULT_RUNTIME_TYPE,
+                        model_id="unproven-vision-model",
+                        effective_tier="workhorse",
+                        effective_priority=10,
+                        outcome=CandidateOutcome.EXCLUDED_HARD_FIT,
+                        exclusions=(FitFinding(FitCode.CAPABILITY_UNKNOWN, "vision"),),
+                    ),
+                ),
+                selection=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "vision-model",
+                    [],
+                    selected_id,
+                    1800,
+                    "workhorse",
+                ),
+                winner_reason="sole_candidate",
+            )
+            receipt_sink.append(resolution)
+            return resolution.selection
+
+        with (
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                side_effect=_resolve_with_unfit_override_target,
+            ),
+            patch(
+                "butlers.core.spawner.apply_spend_routing_rules",
+                new_callable=AsyncMock,
+                return_value=SpendRoutingResult(
+                    resolved=(
+                        DEFAULT_RUNTIME_TYPE,
+                        "unproven-vision-model",
+                        [],
+                        unfit_id,
+                        1800,
+                    ),
+                    matched_rule_id=uuid.uuid4(),
+                ),
+            ),
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as create,
+            patch.object(spawner, "_fire_speculative_prewarm") as prewarm,
+        ):
+            result = await spawner.trigger(
+                "inspect the attachment",
+                "route",
+                attachments=[{"media_type": "image/png", "storage_ref": "blob:test"}],
+            )
+
+        assert result.success is False
+        assert result.error is not None
+        assert result.error.startswith("ModelResolutionError: post_resolution_selection_unfit")
+        assert result.model == "unproven-vision-model"
+        assert result.resolution_receipt is not None
+        rejected = next(
+            candidate
+            for candidate in result.resolution_receipt["candidates"]
+            if candidate["catalog_entry_id"] == str(unfit_id)
+        )
+        assert rejected["outcome"] == "excluded_hard_fit"
+        assert rejected["exclusions"] == [{"code": "capability_unknown", "detail": "vision"}]
+        assert adapter.calls == []
+        create.assert_not_awaited()
+        prewarm.assert_not_called()
+
+    async def test_private_local_override_cannot_bypass_original_vision_fit(
+        self, tmp_path: Path
+    ) -> None:
+        """Private-content locality policy cannot select an unproven vision row."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        remote_id = uuid.uuid4()
+        local_unfit_id = uuid.uuid4()
+        adapter = MockAdapter(result_text="must not run", capture=True)
+        spawner = Spawner(
+            config=_make_config(),
+            config_dir=config_dir,
+            pool=AsyncMock(),
+            runtime=adapter,
+        )
+
+        async def _resolve_with_unfit_local_target(*_args, intent, receipt_sink, **_kwargs):
+            resolution = DispatchResolution(
+                policy_version="test-policy",
+                requested_intent=intent,
+                effective_intent=intent,
+                candidates=(
+                    CandidateRecord(
+                        catalog_entry_id=remote_id,
+                        runtime_type=DEFAULT_RUNTIME_TYPE,
+                        model_id="remote-vision-model",
+                        effective_tier="workhorse",
+                        effective_priority=20,
+                        outcome=CandidateOutcome.SELECTED,
+                    ),
+                    CandidateRecord(
+                        catalog_entry_id=local_unfit_id,
+                        runtime_type=DEFAULT_RUNTIME_TYPE,
+                        model_id="ollama/unproven-vision",
+                        effective_tier="workhorse",
+                        effective_priority=10,
+                        outcome=CandidateOutcome.EXCLUDED_HARD_FIT,
+                        exclusions=(FitFinding(FitCode.CAPABILITY_UNKNOWN, "vision"),),
+                    ),
+                ),
+                selection=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "remote-vision-model",
+                    [],
+                    remote_id,
+                    1800,
+                    "workhorse",
+                ),
+                winner_reason="sole_candidate",
+            )
+            receipt_sink.append(resolution)
+            return resolution.selection
+
+        with (
+            patch(
+                "butlers.core.spawner._capture_pipeline_routing_context",
+                return_value={"request_context": {"source_channel": "whatsapp_user_client"}},
+            ),
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                side_effect=_resolve_with_unfit_local_target,
+            ),
+            patch(
+                "butlers.core.spawner.enforce_private_content_selection",
+                new_callable=AsyncMock,
+                return_value=(
+                    (
+                        DEFAULT_RUNTIME_TYPE,
+                        "ollama/unproven-vision",
+                        [],
+                        local_unfit_id,
+                        1800,
+                    ),
+                    False,
+                    None,
+                    True,
+                ),
+            ),
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as create,
+            patch("butlers.core.spawner.write_audit_entry", new_callable=AsyncMock),
+            patch.object(spawner, "_fire_speculative_prewarm") as prewarm,
+        ):
+            result = await spawner.trigger(
+                "inspect the attachment",
+                "route",
+                attachments=[{"media_type": "image/png", "storage_ref": "blob:test"}],
+            )
+
+        assert result.success is False
+        assert result.error is not None
+        assert result.error.startswith("ModelResolutionError: post_resolution_selection_unfit")
+        assert result.model == "ollama/unproven-vision"
+        assert adapter.calls == []
+        create.assert_not_awaited()
+        prewarm.assert_not_called()
 
     async def test_private_routing_context_replaces_remote_before_adapter_setup(
         self, tmp_path: Path

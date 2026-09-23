@@ -407,13 +407,12 @@ The spawner SHALL resolve the model dynamically at spawn time using the model ca
 #### Scenario: Catalog resolution overrides static fallback model
 - **WHEN** `resolve_model()` returns a result
 - **THEN** the returned `runtime_type`, `model_id`, and `extra_args` are used for the invocation
-- **AND** the module-private `_FALLBACK_MODEL_ID` constant in `butlers.core.spawner` is ignored
 
 #### Scenario: Catalog empty fallback to static defaults
+- **NOTE** The scenario name is retained for archived-change compatibility; live pooled dispatch no longer has a static model fallback.
 - **WHEN** `resolve_model()` returns `None` (no matching entries) or fails
-- **THEN** the spawner falls back to the module-private `_FALLBACK_MODEL_ID` constant paired with `DEFAULT_RUNTIME_TYPE` from `butlers.core.runtimes`; these are hard-coded last-resort constants, not butler-scoped config
-- **AND** for a live Spawner with a database pool, that legacy fallback contract returns `ModelResolutionError: catalog_unavailable` or `ModelResolutionError: no_eligible_catalog_entries` before invocation because catalog-keyed permission, quota, ceiling, breaker, and provenance gates cannot run
-- **AND** `_FALLBACK_MODEL_ID` is a null sentinel used only by an explicit pool-free direct-adapter harness after `DEFAULT_RUNTIME_TYPE`'s adapter baseline satisfies the dispatch intent
+- **THEN** a live Spawner with a database pool returns `ModelResolutionError: catalog_unavailable` or `ModelResolutionError: no_eligible_catalog_entries` before invocation because catalog-keyed permission, quota, ceiling, breaker, and provenance gates cannot run
+- **AND** an explicit pool-free direct-adapter harness may invoke `DEFAULT_RUNTIME_TYPE` with no explicit model only after its adapter baseline satisfies the dispatch intent
 - **AND** it never pairs a hard-coded provider model with a different provider's runtime
 
 #### Scenario: Populated catalog with no fitting candidate fails closed
@@ -428,6 +427,12 @@ The spawner SHALL resolve the model dynamically at spawn time using the model ca
 - **AND** an unregistered failover candidate records a non-invoked `runtime_failure` attempt, excludes that catalog entry, and continues the bounded same-tier search
 - **AND** if no registered same-tier candidate remains, the logical session ends with ordinary failover exhaustion
 - **AND** it does not substitute the default runtime while retaining the incompatible catalog model
+
+#### Scenario: Post-resolution overrides preserve original intent fit
+- **WHEN** a spend rule or private-content policy replaces the initially selected catalog entry
+- **THEN** the spawner verifies that the replacement was fit-eligible for the original dispatch intent and effective tier before receipt projection, prewarm, session creation, or runtime invocation
+- **AND** a replacement recorded as `excluded_hard_fit` returns `ModelResolutionError: post_resolution_selection_unfit`
+- **AND** its original capability exclusions remain present in the failed result's resolution receipt
 
 #### Scenario: Runtime args sourced only from the catalog
 - **WHEN** catalog resolution returns `extra_args`
@@ -445,10 +450,12 @@ The spawner SHALL resolve the model dynamically at spawn time using the model ca
 - **AND** subsequent automatic failover attempts SHALL use only that exact tier
 
 #### Scenario: Catalog resolution failure uses static fallback
+- **NOTE** The scenario name is retained for archived-change compatibility. The retired, non-normative clause was: "- **THEN** the spawner SHALL use the existing static fallback behavior". The required live behavior is fail-closed refusal.
 - **WHEN** initial catalog resolution returns `None` for every eligible tier or raises
   before a catalog candidate is selected
-- **THEN** the spawner SHALL use the existing static fallback behavior
+- **THEN** a live pooled spawner SHALL refuse invocation with a `ModelResolutionError`
 - **AND** same-tier model failover SHALL NOT run because no catalog tier was established
+- **AND** explicit pool-free direct-adapter mode remains a test-harness path, not a live fallback
 
 ### Requirement: Runtime Failure Classification
 The spawner SHALL classify runtime failures before deciding whether automatic model
@@ -574,10 +581,11 @@ Source: RFC 0001 §Trigger Pipeline, RFC 0002 §Core Tools, migration core_073
 Scope: v1-mandatory
 
 #### Scenario: Model resolved from the catalog with a constant fallback
+- **NOTE** The scenario name is retained for archived-change compatibility; only pool-free harnesses may use direct-adapter mode.
 - **WHEN** `trigger()` is called
 - **THEN** the Spawner SHALL resolve the model from `public.model_catalog` via `resolve_model_with_effective_tier()`
-- **AND** if catalog resolution fails or returns no result, the Spawner SHALL fall back to the module-level `_FALLBACK_MODEL_ID` constant (`src/butlers/core/spawner.py`), not the toml config
-- **AND** a live Spawner with a database pool interprets that null sentinel as a pre-invocation `ModelResolutionError`, while only explicit pool-free direct-adapter mode may invoke the registered runtime with no explicit model after capability fit
+- **AND** if catalog resolution fails or returns no result, a live Spawner with a database pool SHALL return a pre-invocation `ModelResolutionError`
+- **AND** only explicit pool-free direct-adapter mode may invoke the registered runtime with no explicit model after capability fit
 - **AND** a populated no-winner receipt SHALL return a pre-invocation `ModelResolutionError`
 
 #### Scenario: Runtime type from the catalog

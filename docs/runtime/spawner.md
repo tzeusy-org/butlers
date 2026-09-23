@@ -64,10 +64,16 @@ The spawner resolves the model dynamically via the catalog using `resolve_model_
 
 The resolution source (`"catalog"`; `"direct_runtime"` only in pool-free harnesses) is recorded on the session row. An unregistered catalog runtime fails closed instead of combining that entry's model ID with another runtime.
 
+Spend-rule and private-content overrides remain subordinate to the original dispatch intent. Before
+prewarm or session creation, the final catalog entry must have been fit-eligible in the original
+resolution receipt for the same effective tier. An override cannot erase an `excluded_hard_fit`
+vision, tool-use, context, deadline, or budget finding.
+
 **Quota-skip loop:** After initial resolution, the spawner enters a quota-skip loop before invoking the adapter:
 
 - Call `check_token_quota()` for the current candidate.
-- If quota is exhausted: write a `quota_skip` row to `public.model_dispatch_attempts`, then call `next_same_tier_candidate()` to find the next eligible model in the same effective tier.
+- If quota is exhausted: write a `quota_skip` row to `public.model_dispatch_attempts`, then call the shared failover-admission path to find the next model in the same effective tier that satisfied the original intent and has a registered runtime.
+- Candidates that failed original intent fit are recorded as non-invoked `suppressed` attempts. Candidates naming unregistered runtimes are recorded as non-invoked `runtime_failure` attempts. The bounded search continues past both.
 - If no next candidate exists: emit `butlers.spawner.failover_exhausted_total` metric and return failure.
 - Repeat until a candidate with remaining quota is found.
 
@@ -107,7 +113,8 @@ The appropriate `RuntimeAdapter` is selected based on the resolved `runtime_type
 4. **Eligible path** (`eligible=True`):
    - Write a `runtime_failure` row to `public.model_dispatch_attempts` for the current candidate.
    - Append the current `catalog_entry_id` to `_attempted_ids`.
-   - Call `next_same_tier_candidate(pool, butler_name, effective_tier, _attempted_ids)`.
+   - Call the same shared failover-admission path used by quota failover.
+   - Record and skip candidates that failed original intent fit or name an unregistered runtime.
    - If a next candidate exists: emit `butlers.spawner.failover_attempts_total`, swap `model`/`runtime_type`/`catalog_entry_id`, re-create the adapter, and loop back to **Runtime Invocation**.
    - If no candidate remains: emit `butlers.spawner.failover_exhausted_total`, re-raise the last exception.
 
@@ -183,7 +190,8 @@ To confirm the spawner behavior described here matches the running system:
 psql -h localhost -U butlers -d butlers -c \
   "SELECT id, model, trigger_source, resolution_source, complexity, success
    FROM general.sessions ORDER BY started_at DESC LIMIT 5;"
-# Expected: model populated, resolution_source is "catalog" or "toml_fallback"
+# Expected: live sessions use resolution_source "catalog";
+#           "direct_runtime" appears only in explicit pool-free harnesses
 
 # 2. Dispatch attempt provenance is recorded
 psql -h localhost -U butlers -d butlers -c \

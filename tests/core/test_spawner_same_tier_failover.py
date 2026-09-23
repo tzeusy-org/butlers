@@ -648,6 +648,131 @@ class TestAC2QuotaSkip:
             {"code": "capability_unknown", "detail": "vision"}
         ]
 
+    async def test_quota_failover_skips_unregistered_runtime_before_valid_candidate(
+        self, tmp_path: Path
+    ) -> None:
+        """Quota failover continues past a non-invocable registered-catalog row."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        mock_pool = AsyncMock()
+        adapter = _SuccessAdapter(result_text="valid-fallback")
+        invalid_id = uuid.uuid4()
+        valid_id = uuid.uuid4()
+
+        async def _resolve_quota_candidates(*_args, intent, receipt_sink, **_kwargs):
+            resolution = DispatchResolution(
+                policy_version="test-policy",
+                requested_intent=intent,
+                effective_intent=intent,
+                candidates=(
+                    CandidateRecord(
+                        catalog_entry_id=_PRIMARY_CATALOG_ID,
+                        runtime_type=DEFAULT_RUNTIME_TYPE,
+                        model_id="quota-blocked-model",
+                        effective_tier="workhorse",
+                        effective_priority=30,
+                        outcome=CandidateOutcome.EXCLUDED_QUOTA,
+                    ),
+                    CandidateRecord(
+                        catalog_entry_id=invalid_id,
+                        runtime_type="unregistered-runtime",
+                        model_id="invalid-model",
+                        effective_tier="workhorse",
+                        effective_priority=20,
+                        outcome=CandidateOutcome.NOT_TOP_PRIORITY,
+                    ),
+                    CandidateRecord(
+                        catalog_entry_id=valid_id,
+                        runtime_type=DEFAULT_RUNTIME_TYPE,
+                        model_id="valid-model",
+                        effective_tier="workhorse",
+                        effective_priority=10,
+                        outcome=CandidateOutcome.NOT_TOP_PRIORITY,
+                    ),
+                ),
+                selection=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "quota-blocked-model",
+                    [],
+                    _PRIMARY_CATALOG_ID,
+                    1800,
+                    "workhorse",
+                ),
+                winner_reason="sole_candidate",
+            )
+            receipt_sink.append(resolution)
+            raise TierQuotaExhausted(
+                effective_tier="workhorse",
+                representative=resolution.selection,
+                resolution=resolution,
+            )
+
+        def _adapter_for(runtime_type: str, *_args, **_kwargs):
+            if runtime_type == "unregistered-runtime":
+                raise ValueError("unregistered runtime")
+            if runtime_type == DEFAULT_RUNTIME_TYPE:
+                return adapter
+            pytest.fail(f"unexpected adapter setup for {runtime_type}")
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                side_effect=_resolve_quota_candidates,
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                side_effect=[_QUOTA_DENIED_24H, _QUOTA_ALLOWED],
+            ) as check_quota,
+            patch(
+                "butlers.core.spawner.next_same_tier_candidate",
+                new_callable=AsyncMock,
+                side_effect=[
+                    (
+                        "unregistered-runtime",
+                        "invalid-model",
+                        [],
+                        invalid_id,
+                        1800,
+                    ),
+                    (
+                        DEFAULT_RUNTIME_TYPE,
+                        "valid-model",
+                        [],
+                        valid_id,
+                        1800,
+                    ),
+                ],
+            ) as next_candidate,
+            patch.object(Spawner, "_get_or_create_adapter", side_effect=_adapter_for),
+            patch(
+                "butlers.core.spawner._write_dispatch_attempt",
+                new_callable=AsyncMock,
+            ) as write_attempt,
+        ):
+            create.return_value = _SESSION_ID
+            result = await Spawner(
+                config=_make_config(),
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=adapter,
+            ).trigger("hello", "tick")
+
+        assert result.success is True
+        assert result.model == "valid-model"
+        assert adapter.invoke_calls == 1
+        assert check_quota.await_count == 2
+        assert next_candidate.await_count == 2
+        assert invalid_id in next_candidate.await_args_list[1].args[3]
+        invalid_attempt = next(
+            call
+            for call in write_attempt.await_args_list
+            if call.kwargs["catalog_entry_id"] == invalid_id
+        )
+        assert invalid_attempt.kwargs["outcome"] == "runtime_failure"
+        assert invalid_attempt.kwargs["invoked"] is False
+
 
 class TestAC3RuntimeFailureRetry:
     """AC3: Eligible runtime failures retry same-tier candidates."""

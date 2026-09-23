@@ -98,13 +98,13 @@ The system SHALL provide model resolution functions that select catalog entries 
 - **AND** any subsequent same-tier failover is restricted to the effective tier that produced that selected candidate
 
 #### Scenario: No candidates fallback
+- **NOTE** The scenario name is retained for archived-change compatibility. The retired, non-normative clause was: "- **AND** the caller (spawner) falls back to the module-private `_FALLBACK_MODEL_ID` constant in `butlers.core.spawner` (see `core-spawner` - Catalog empty fallback)". A live pooled caller fails closed.
 - **WHEN** `resolve_model()` finds no enabled qualifying entries in any tier
 - **THEN** the function returns `None`
-- **AND** the caller (spawner) falls back to the module-private `_FALLBACK_MODEL_ID` constant in `butlers.core.spawner` (see `core-spawner` - Catalog empty fallback)
-- **AND** for a live Spawner with a database pool, that legacy fallback contract resolves to a pre-invocation `ModelResolutionError: no_eligible_catalog_entries` because catalog-keyed permission, budget, breaker, and provenance gates cannot run without an entry
-- **AND** `_FALLBACK_MODEL_ID` is a null sentinel used only by explicit pool-free direct-adapter harnesses after the adapter baseline satisfies the dispatch intent
+- **AND** a live Spawner with a database pool returns a pre-invocation `ModelResolutionError: no_eligible_catalog_entries` because catalog-keyed permission, budget, breaker, and provenance gates cannot run without an entry
+- **AND** only explicit pool-free direct-adapter harnesses may invoke `DEFAULT_RUNTIME_TYPE` with no model after the adapter baseline satisfies the dispatch intent
 - **AND** the caller SHALL NOT pair a hard-coded model from one provider with another provider's runtime
-- **AND** when the runtime-owned default cannot prove every required capability, the caller returns a pre-invocation `ModelResolutionError` without launching an adapter
+- **AND** when the pool-free direct runtime cannot prove every required capability, the caller returns a pre-invocation `ModelResolutionError` without launching an adapter
 
 #### Scenario: Priority tie-breaking prefers evidence, falls back to round-robin
 - **WHEN** multiple enabled entries exist for the same butler+tier at the same effective priority
@@ -359,6 +359,12 @@ effective priority, and before the tie-break.
   `ModelResolutionError` without launching an adapter
 - **AND** the receipt records why each candidate was excluded, which a bare "no
   candidates" result cannot express
+
+#### Scenario: Override selection cannot bypass hard fit
+- **WHEN** a spend rule or private-content policy selects a different catalog entry after intent-aware resolution
+- **THEN** the caller SHALL verify that the replacement candidate was fit-eligible for the original intent and effective tier
+- **AND** a candidate recorded as `excluded_hard_fit` SHALL remain non-invocable even when an operator rule or locality policy selects it
+- **AND** the caller SHALL preserve the candidate's original fit exclusions rather than projecting it as selected
 
 #### Scenario: An intent requiring nothing resolves exactly as before
 - **WHEN** an intent requires no capabilities and sets no context floor, deadline,
