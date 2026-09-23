@@ -3,6 +3,10 @@
 Internal and external dependencies, startup ordering constraints, and failure
 blast radius analysis.
 
+The fleet-observer edges below are the approved target contract in
+`restore-butler-control-plane-liveness`. Until its cutover, deployed daemons
+still send the legacy heartbeat POST and the observer does not exist.
+
 ---
 
 ## Internal Dependency Graph
@@ -46,18 +50,37 @@ graph LR
     MSG["messenger :41104"] -- "MCP client" --> SW
     FIN["finance :41105"] -- "MCP client" --> SW
 
-    GEN -- "liveness POST /api/switchboard/heartbeat" --> SW
-    REL -- "liveness POST /api/switchboard/heartbeat" --> SW
-    HLT -- "liveness POST /api/switchboard/heartbeat" --> SW
+    OBS["supervised dashboard fleet observer"] -- "bounded internal GET" --> GEN
+    OBS -- "bounded internal GET" --> REL
+    OBS -- "bounded internal GET" --> HLT
+    OBS -- "bounded internal GET" --> SW
+    OBS -- "reserved probe + DB-server observation" --> REG["Switchboard registry"]
+    SW -- "one stale-route probe + conditional observation" --> REG
 ```
 
-Every non-switchboard butler:
+In the approved target state, every non-switchboard butler:
+
 1. Opens an MCP client connection to the Switchboard during startup phase 12.
-2. Launches a liveness reporter that periodically POSTs to the Switchboard
-   heartbeat endpoint (step 17).
+2. Exposes bounded identity and route-readiness facts on its existing internal
+   port. The supervised observer probes the exact Git-roster endpoint. The
+   Switchboard daemon is observed by the same mechanism.
+   Each boot obtains a server-allocated durable epoch before advertising route
+   acceptance. The Dashboard observer and Switchboard stale-route recheck
+   share the exact-response verifier and reserve probe sequences in the
+   database; conditional writes fence old boots and overlapping receivers.
+
+The observer's DB-server timestamp is liveness evidence; daemon-authored
+heartbeat POSTs are retired after the approved cutover. Connector MCP
+heartbeats remain independent. Routing requires observed health, administrative
+policy, and route compatibility. A stale target gets one bounded on-demand
+probe before refusal; no probe, route success, or registration clears an
+administrative quarantine.
 
 **Failure mode**: If the Switchboard is down, domain butlers cannot receive
-routed messages. Their schedulers and direct MCP triggers still work.
+routed messages. Their local deterministic schedules and direct MCP triggers
+continue unless a separate administrative policy disables them. If the
+observer stops, the fleet becomes observer-unknown and semantic readiness
+fails; a failed observation cannot assert recovery.
 
 ### Candidate voice-egress dependency chain (not implemented)
 
@@ -113,6 +136,15 @@ graph LR
 The dashboard backend creates connection pools to each butler's schema on
 startup. It reads directly from butler databases -- it does not go through
 butler MCP servers.
+
+The approved control-plane observer is a separate, supervised Dashboard
+dependency on exact backend-network daemon identity/readiness endpoints. It
+uses the database for durable observations and condition evidence, and an
+independent patrol-age check so QA cannot be the only watcher of its own
+scheduler. Only a completed successful patrol with all enabled discovery
+sources completed renews that age. The canonical `/ready` requires this observer, expected fleet,
+patrol freshness, supervised loops, and an effect-free route canary in addition
+to PostgreSQL and roster discovery; `/health` remains process-only.
 
 **Failure mode**: If PostgreSQL is down, the dashboard returns 500 errors.
 Butler daemons also fail to start.
@@ -193,16 +225,28 @@ errors. Connectors cannot resolve credentials.
 
 ### Switchboard down
 
-- Domain butlers continue running (schedulers work, direct MCP calls work).
+- Domain butlers continue running (local schedulers work, direct MCP calls work).
 - No new external messages are routed to domain butlers.
 - Connectors block or fail at ingestion.
-- Butler liveness reporting fails (butlers may be marked stale in registry).
+- The observer records Switchboard unavailability; related target impacts
+  correlate into one fleet condition rather than one QA investigation per
+  butler.
 
 ### Single domain butler down
 
-- Switchboard routes to that butler fail; messages enter dead letter.
+- Switchboard probes a stale target once; a proven pre-accept no-effect
+  attempt remains durably retryable for ordinary ingestion-to-domain delivery.
+  Ambiguous and policy-terminal outcomes remain visible for review.
 - Other butlers are unaffected.
-- Dashboard shows the butler as offline.
+- Dashboard shows the observer-derived unavailable state, distinct from
+  administrative quarantine or route incompatibility.
+
+### QA patrol or control-plane observer down
+
+- The independently supervised observer checks the age of completed QA
+  patrols, so a missed patrol remains visible without QA executing.
+- A stopped observer yields unknown fleet observation and failed semantic
+  readiness. A process-health 200 cannot close the condition.
 
 ### Connector down
 

@@ -144,11 +144,13 @@ expected-infinite loop: `secrets_lifecycle`, `model_verify`, `fleet_events_bridg
 deadman registration remains conditional on its configured URL.
 
 That conditional registration does not turn an unconfigured target into a
-failure signal. The existing `staffer-qa` `infra_state`
+failed-ping signal. The existing `staffer-qa` `infra_state`
 `external-deadman-stale` contract treats an unconfigured
-`EXTERNAL_DEADMAN_URL` as a legitimate absence with no finding; this change
-preserves that boundary and neither provisions an external monitor nor creates
-a synthetic condition for missing configuration.
+`EXTERNAL_DEADMAN_URL` as a legitimate absence with no QA finding. The
+implemented `infra_state` snapshot also retains a separate, content-blind
+`ExternalDeadmanUnconfigured` assurance condition, which records the missing
+external witness without LLM execution or an invented outage. This change
+preserves both meanings and does not provision an external monitor.
 
 An ordinary return or exception is unexpected: the supervisor logs the loop
 name and restarts it after bounded backoff, without allowing concurrent

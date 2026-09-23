@@ -211,11 +211,26 @@ The QA Staffer's scheduler drives a patrol loop at a configurable interval (defa
 Each patrol cycle is a discrete unit of work with its own `public.qa_patrols` record:
 
 ```
-status: running | clean | findings_dispatched | error | skipped_overlap
+status: running | clean | findings_dispatched | suppressed | error | skipped_overlap
 columns: id (UUIDv7), started_at, completed_at, status,
          findings_count, novel_count, dispatched_count,
-         log_lookback_minutes, sources_polled (text[]), error_detail
+         log_lookback_minutes, sources_polled (text[]), error_detail,
+         origin (scheduled | operator_synthetic), enabled_sources_snapshot (text[]),
+         enabled_sources_config_digest, discovery_complete (boolean)
 ```
+
+The local patrol scheduler continues when only the remote Switchboard registry
+observation of QA is stale; an explicit administrative pause or quarantine is
+a separate policy gate. An independent supervised control-plane observer checks
+patrol age, because QA cannot discover a patrol that never ran.
+Only a completed scheduled `clean`, `findings_dispatched`, or genuine
+filtered-finding `suppressed` patrol with every source enabled under the
+current configuration successfully completed renews the assurance clock.
+The origin, captured enabled set/config digest, and completion marker prove
+that claim. An `error`, `skipped_overlap`, dashboard-created synthetic
+`suppressed`, still-running, older-configuration, or ambiguous legacy row does
+not. Existing historical rows remain readable but are not backfilled as
+qualifying from a status or free-text error alone.
 
 **Overlap prevention:** if a patrol tick fires while the previous cycle is still running, the
 tick is skipped and recorded as `status = "skipped_overlap"`.
@@ -259,7 +274,7 @@ router is unchanged.
 | `GET /api/qa/patrols/:patrolId` | Full patrol record with nested findings |
 | `GET /api/qa/patrols/:patrolId/findings` | All findings for a patrol, with dedup reasons and source types |
 | `GET /api/qa/investigations` | Paginated QA-originated `healing_attempts`; `?status=` filter |
-| `GET /api/qa/known-issues` | Active/open issues (`dispatch_pending`, `investigating`, `pr_open`) grouped by fingerprint |
+| `GET /api/qa/known-issues` | Active/open issues (`investigating`, `pr_open`) grouped by fingerprint; `dispatch_pending` is not a persisted attempt status |
 | `GET /api/qa/meta-review` | QA-self-recursive findings routed to operator lane; never auto-investigated |
 | `POST /api/qa/dismiss` | Add a fingerprint to the dismissal cache with configurable duration |
 | `GET /api/qa/dismissals` | List active dismissals |
@@ -439,3 +454,32 @@ Option (b) is recommended for three reasons:
 - `openspec/specs/healing-model-tier/` — `self_healing` model tier (reused by QA).
 - `openspec/specs/healing-session-tracking/` — `healing_attempts` table schema (extended by QA).
 - `openspec/specs/healing-worktree/` — Worktree lifecycle infrastructure (reused by QA).
+
+## Amendment (2026-09-23): Independent Patrol Assurance and Fleet Correlation
+
+**Status:** Approved target contract in
+`openspec/changes/restore-butler-control-plane-liveness`; implementation
+remains separate from this design amendment.
+
+Derived remote registry staleness cannot suppress QA's local deterministic
+patrol. A separately supervised control-plane observer checks both fleet
+readiness and the age of the latest completed patrol. If QA stops scheduling,
+the observer still records durable, content-blind overdue evidence and the
+semantic `/ready` response becomes false. Observer failure itself is
+distinguishable from a healthy fleet; failed or partial observation cannot
+resolve an open condition.
+
+One correlated fleet expiry produces one condition episode and attention
+stream with bounded per-butler impact evidence, rather than one autonomous QA
+investigation for each stale agent. Its source and fingerprint use the
+infrastructure condition ledger's explicit canonical identity, and resolution
+requires a complete successful snapshot. QA discovery can continue recording
+findings while model or GitHub authority is unavailable; investigation
+dispatch remains subject to its existing gates. The observer is deterministic
+infrastructure, not a second QA LLM agent or a replacement for the five
+`DiscoverySource` implementations in §D1.
+At cutover, legacy per-butler liveness episodes remain historically readable,
+their impact is linked to the fleet condition, and duplicate investigation or
+owner pages are suppressed. They resolve only when a complete receiver-observed
+snapshot proves recovery for the affected daemon, never merely because the
+fleet condition replaced their producer.

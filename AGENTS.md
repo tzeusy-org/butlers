@@ -2550,3 +2550,9 @@ Two boundaries that are easy to get wrong in both directions (bu-5m67e):
 ### Beads lint evidence
 
 - On this repo's bd 1.0.4, a clean `bd lint <ids> --json` can return `total: 0` and `results: null` even when named issues were checked. Retain the text receipt (`N issues checked`) and read back structured fields and dependencies; do not infer inspected population from the JSON totals.
+
+### Reliability recovery boundaries
+
+- QA `suppressed` is not synonymous with synthetic: the scheduled patrol uses it when complete discovery findings are filtered, while the dashboard can create a synthetic placeholder with the same status. Assurance must use durable origin, enabled-source/config snapshot, and all-source completion evidence; a newer nonqualifying row does not erase an earlier still-fresh qualifying patrol.
+- `public.ingestion_events.received_at` is not an immutable target-delivery dedupe fence under the current broad runtime UPDATE grants. Keep accepted delivery key/target/digest/receipt identity in an append-only, non-prunable content-blind ledger until a separate database-enforced non-reacceptance design exists; pruning source or inbox payload cannot reopen acceptance.
+- `bu-c6wjr`'s process-fenced supervised-job health covers Dashboard lifespan loops, not Switchboard's runtime-attention delivery worker. Readiness may consume the former; the latter's pending/failed/uncertain/unavailable truth belongs to the linked attention condition/outbox evidence.

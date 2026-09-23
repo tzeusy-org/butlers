@@ -7,6 +7,9 @@ environment configuration.
 
 ## Process Model
 
+The observer edges in this diagram show the approved target contract. The
+current deployment still uses daemon-authored heartbeat POSTs until cutover.
+
 ```mermaid
 graph TB
     subgraph Host["Deployment Host"]
@@ -34,6 +37,7 @@ graph TB
 
         subgraph Dashboard["Dashboard"]
             API["FastAPI :41200"]
+            OBS["supervised fleet observer"]
             Vite["Vite dev :41173"]
         end
     end
@@ -46,6 +50,8 @@ graph TB
 
     ConnProcs -- "MCP" --> SW
     SW -- "MCP" --> Daemons
+    OBS -- "exact backend-network GET" --> Daemons
+    OBS -- "observations / conditions" --> PG
     Dashboard -- "SQL" --> PG
     Daemons -- "SQL" --> PG
     Daemons -- "S3" --> MinIO
@@ -54,7 +60,9 @@ graph TB
 
 Each butler daemon is an independent process serving a FastMCP SSE/HTTP server
 on its assigned port. Connectors are separate processes that run alongside the
-butler fleet.
+butler fleet. The observer edge in this diagram is the approved 2026-09-23
+target contract; the current runtime still uses daemon-authored heartbeat
+POSTs until the control-plane change cuts over.
 
 ---
 
@@ -294,3 +302,37 @@ while separate trust requires distinct hostnames. Network membership does not
 identify the dashboard owner. See the
 [operator runbook](../../docs/identity_and_secrets/dashboard-owner-auth.md) and
 [adopted design](../../openspec/changes/specify-host-authorized-dashboard-enrollment/design.md).
+
+## Approved control-plane readiness topology (2026-09-23)
+
+`restore-butler-control-plane-liveness` adds a separately supervised observer
+inside the Dashboard/control-plane deployment. It reads the exact daemon
+host:port entries from Git roster configuration and calls
+`GET /internal/control-plane/identity` over the backend network on each
+existing daemon port. The bounded `butler.control.v1` response carries name,
+boot UUIDv7, route-contract range, and `accepting_routes`. The observer writes
+DB-server-timed observations and durable condition evidence; no daemon-authored
+timestamp, arbitrary caller URL, old boot generation, or owner credential can
+assert a healthy fleet. Connector heartbeats remain connector-owned MCP calls.
+
+Docker's `/health` probe remains a process-liveness signal. The canonical
+public `GET /ready` retains the k3s change's boolean `ready` response shape.
+Its checks cover PostgreSQL, roster, observer freshness, expected fleet,
+QA-patrol age, supervised loops, and an effect-free route canary. It returns
+503 with content-blind boolean check results when any required proof is
+missing. The canary tests Switchboard selection and exact-target reachability without
+an inbox write; it cannot certify target transactional acceptance, which is
+represented by actual delivery receipts and conditions.
+
+The Compose launcher and production deploy completion must observe
+fresh progress across multiple probe/patrol cycles beyond one full daemon
+liveness TTL, rather than accepting one Docker `healthy` state. The existing
+`scripts/compose.sh` currently waits for container process health; that is
+the implementation seam the approved change must replace.
+
+The separate-host pull monitor already authorized for minimal `/api/health`
+does not imply authority to expose semantic readiness externally. A new
+functional monitor and exact historic ingestion replay set require their own
+owner decision. The delivery-intent worker in
+`recover-ingestion-target-deliveries` runs in the Switchboard control plane,
+while each target retains its own `route_inbox` processing and crash recovery.

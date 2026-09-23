@@ -148,12 +148,18 @@ Scope: v1-mandatory
 - **WHEN** the `infra_state` source is enabled
 - **THEN** it checks four infra health signals every patrol tick, ignoring `lookback_minutes` (each check is a point-in-time liveness/staleness comparison against a fixed cadence, not a rolling scan window):
   - **connector-offline**: queries `public.v_qa_connector_state` (sanctioned cross-schema view per RFC 0010, over `switchboard.connector_registry`) and flags a connector whose derived liveness (`butlers.core.liveness.derive_liveness`) is `"offline"` — excluding a `state = 'paused'` connector (a deliberate operator action), excluding a connector within a 15-minute grace window of its first registration, and excluding a storage-only row that has a checkpoint cursor but has never acquired either a process instance or a heartbeat
-  - **heartbeat-stale**: queries `public.v_qa_butler_heartbeat` (same migration, over `switchboard.butler_registry`) and flags a butler whose `last_seen_at` plus its own `liveness_ttl_seconds` has elapsed, or that is quarantined (`quarantined_at IS NOT NULL`) — recomputed independently of the stored `eligibility_state` column, which is only reconciled lazily on routing calls and can go stale forever for a butler nobody routes to; the TTL-liveness window is bounded against clock skew — a `last_seen_at` reported further than a 5-minute tolerance into the future is untrustworthy (clock skew / bad writer) and is treated as stale rather than allowed to keep liveness asserted indefinitely
+  - **fleet-control**: reads the independently produced fleet condition and its receiver-observed per-butler impact, recording one condition-linked finding for the affected fleet rather than treating `last_seen_at`, `quarantined_at`, or a lazily updated `eligibility_state` as independent liveness authority; observer failure and owner policy remain distinct evidence
   - **backup-stale**: reads `BUTLERS_BACKUP_DIR`; an unset env var is a legitimate absence (no finding); a configured-but-unreachable directory, one with no backup on record, or a most-recent backup older than 36 hours produces a finding
   - **external-deadman-stale**: reads the last successful external-deadman ping recorded by `butlers.jobs.external_deadman` in `public.audit_log`; an unconfigured `EXTERNAL_DEADMAN_URL` is a legitimate absence (no finding); a last-success timestamp older than 3x the configured ping interval (or no successful ping ever) produces a finding
-- **AND** each check's finding fingerprint is derived from a stable identity (connector type/identity, butler name, or a fixed backup/deadman call-site) via the same sanitize-then-hash pattern the other sources use, so the fingerprint stays stable across patrol ticks even though the human-readable `event_summary` carries the live timestamp/age
+- **AND** each check's finding fingerprint is derived from a stable identity (connector type/identity, the fleet-condition identity, or a fixed backup/deadman call-site) via the same sanitize-then-hash pattern the other sources use, so the fingerprint stays stable across patrol ticks even though the human-readable `event_summary` carries live timestamp/age
 - **AND** all filtering is tool-based (SQL queries, env var reads, filesystem stat calls); no LLM invocation
-- **AND** a health-check query against both views runs before row processing; a failure (e.g. a revoked grant) is raised and logged rather than silently returning an empty (falsely clean) result
+- **AND** health-check queries against the connector view and fleet-condition source run before row processing; a failure (e.g. a revoked grant) is raised and logged rather than silently returning an empty (falsely clean) result
+
+#### Scenario: Legacy per-butler liveness conditions are covered without false recovery
+
+- **WHEN** control-plane cutover finds active per-butler `heartbeat-stale` findings or infrastructure-condition episodes for an outage now represented by the fleet condition
+- **THEN** it links their bounded impact evidence to that fleet condition and suppresses duplicate per-butler investigation or owner pages
+- **AND** an active legacy episode remains historically readable and is resolved only after a complete receiver-observed snapshot proves recovery for its affected butler; cutover alone is not recovery
 
 ## ADDED Requirements
 

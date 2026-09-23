@@ -30,7 +30,7 @@ Butlers currently runs on-prem via `scripts/dev.sh` (tmux orchestration) and `do
 - `core-skills`: `write_agents_md()` and `append_agents_md()` need a DB fallback when `AGENTS.md` path is not writable.
 - `healing-worktree`: Must be gracefully disableable via config flag (`healing.enabled = false`) without blocking butler startup.
 - `core-telemetry`: OTEL endpoint becomes a required env var in k8s (pointed at `http://alloy.lgtm:4318` via Helm values), optional in dev.
-- `dashboard-api`: Needs a `/ready` endpoint (distinct from `/health`) that checks DB connectivity and switchboard reachability for k8s readiness probes.
+- `dashboard-api`: Needs a `/ready` endpoint (distinct from `/health`) that checks functional fleet readiness under the approved `restore-butler-control-plane-liveness` contract for k8s readiness probes.
 
 ## Impact
 
