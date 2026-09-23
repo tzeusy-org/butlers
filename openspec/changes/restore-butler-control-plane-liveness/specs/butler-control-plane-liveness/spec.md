@@ -32,6 +32,11 @@ Scope: v1-mandatory
 - **THEN** missing healthy responses become unavailable or observer-unknown according to the last complete observation and freshness boundary
 - **AND** the pass cannot resolve an active fleet condition or preserve freshness indefinitely
 
+#### Scenario: Failed probe does not renew last healthy time
+- **WHEN** a bounded receiver probe fails after a previously healthy response
+- **THEN** the receiver records a new attempt time and failure state without advancing the last successfully verified healthy time
+- **AND** no legacy heartbeat-age projection or UI row may treat the failed attempt time as healthy freshness
+
 ### Requirement: [TARGET-STATE] Separate routability dimensions
 The registry SHALL retain observed health (`healthy`, `stale`, `unavailable`, `observer_unknown`), administrative policy (`active`, `paused`, `quarantined`, `review_required`), and route compatibility as separate dimensions. Routability SHALL require a fresh observation matching the latest durable boot epoch, an accepting compatible daemon, and active administrative policy; observation alone SHALL never revoke policy.
 
@@ -137,7 +142,7 @@ Scope: v1-mandatory
 - **AND** no blanket daemon or heartbeat path exemption is introduced
 
 ### Requirement: [TARGET-STATE] Durable independent owner attention for fleet and QA failure
-The independently supervised control-plane producer SHALL create one content-blind runtime-attention outbox episode for each active fleet-control or QA-patrol-overdue condition episode that reaches its first owner-attention threshold. With the database and controller available, that threshold and durable append SHALL occur within ten minutes of the first failing fleet observation or observed overdue QA patrol. A qualifying QA patrol SHALL have a completed successful status and evidence that every enabled discovery source completed; `running`, `error`, `skipped_overlap`, and synthetic `suppressed` rows SHALL NOT renew patrol freshness. The append SHALL use a fixed server-derived condition identity and narrowly authorized producer operation; no QA patrol, routable QA daemon, model session, or browser request is needed to create it. Switchboard SHALL deliver it through the existing fenced at-most-once runtime-attention worker. Later condition escalation SHALL remain bounded by the infrastructure-condition lifecycle and SHALL NOT duplicate the outbox episode or automatically resend an uncertain transport effect.
+The independently supervised control-plane producer SHALL create one content-blind runtime-attention outbox episode for each active fleet-control or QA-patrol-overdue condition episode that reaches its first owner-attention threshold. With the database and controller available, that threshold and durable append SHALL occur within ten minutes of the first failing fleet observation or observed overdue QA patrol. A qualifying QA patrol SHALL be a completed `clean`, `findings_dispatched`, or genuinely scheduled `suppressed` cycle with durable proof that every source enabled under the current configuration completed successfully. The `origin`, enabled-source snapshot/config digest, and completion marker in `REQ-staffer-qa-008` SHALL distinguish genuine filtered findings from a synthetic placeholder. `running`, `error`, `skipped_overlap`, synthetic `suppressed`, incomplete-source, and ambiguous legacy rows SHALL NOT renew patrol freshness. The append SHALL use a fixed server-derived condition identity and narrowly authorized producer operation; no QA patrol, routable QA daemon, model session, or browser request is needed to create it. Switchboard SHALL deliver it through the existing fenced at-most-once runtime-attention worker. Later condition escalation SHALL remain bounded by the infrastructure-condition lifecycle and SHALL NOT duplicate the outbox episode or automatically resend an uncertain transport effect.
 
 ID: REQ-butler-control-plane-liveness-007
 Source: heart-and-soul/vision.md:51-53,120-137; openspec/changes/define-infrastructure-reliability-lifecycle/specs/infrastructure-reliability/spec.md §Bounded lifecycle escalation; openspec/changes/harden-runtime-auth-and-breaker-attention/specs/runtime-attention-outbox/spec.md §Switchboard-Owned At-Most-Once Attention Delivery; docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md §5.2 and §7
@@ -154,9 +159,9 @@ Scope: v1-mandatory
 - **AND** repeated controller scans or concurrent producers return the same episode rather than creating more messages
 
 #### Scenario: Incomplete or synthetic patrol does not hide overdue QA
-- **WHEN** the newest patrol is `running`, `error`, `skipped_overlap`, synthetic `suppressed`, or reports a failed or missing enabled discovery source
+- **WHEN** the newest patrol is `running`, `error`, `skipped_overlap`, synthetic `suppressed`, a legacy row without provenance, a row from an older source configuration, or reports a failed or missing enabled discovery source
 - **THEN** it does not advance the last qualifying QA patrol time or resolve an overdue condition
-- **AND** only a completed `clean` or `findings_dispatched` patrol with all enabled sources successful can renew that time
+- **AND** a completed scheduled `clean`, `findings_dispatched`, or genuine `suppressed` patrol with current-config all-source-success evidence can renew that time
 
 #### Scenario: Interrupted append is repaired without a duplicate
 - **WHEN** a condition's first attention transition commits but its outbox episode is absent after a controller or database interruption

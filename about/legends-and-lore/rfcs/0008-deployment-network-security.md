@@ -240,7 +240,9 @@ Dashboard `/health` remains process liveness. The canonical public
 `GET /ready` keeps the boolean `ready` response shape from the active
 `k3s-deployment-helm-chart` change but adds content-blind checks for PostgreSQL,
 roster, observer freshness, fleet identity and routability, QA patrol age,
-supervised loops, and an effect-free route canary. Compose and production
+supervised loops, and an effect-free Switchboard route preflight. That preflight
+checks fixed-target selection and reachability, not a transactional target
+acceptance receipt. Compose and production
 deployment completion use sustained readiness over more than one liveness
 TTL; a single successful process probe is insufficient. Public readiness
 exposes categories only and grants no control authority. The separate-host

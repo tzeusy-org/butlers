@@ -34,7 +34,7 @@ Scope: v1-mandatory
 
 ### Requirement: Stable atomic target acceptance
 
-Each intent SHALL carry a stable `(ingestion_event_id, target_butler, segment_id)` delivery identity and canonical immutable payload digest. The target SHALL atomically associate that identity, target binding, and digest with one accepted route-inbox row and return the same acceptance receipt on matching duplicate calls, including concurrent calls and recovery after a lost response.
+Each intent SHALL carry a stable `(ingestion_event_id, target_butler, segment_id)` delivery identity and canonical immutable payload digest. The target SHALL atomically associate that identity, target binding, and digest with one accepted route-inbox row and return the same acceptance receipt on matching duplicate calls, including concurrent calls and recovery after a lost response. The acceptance-key/target/digest/receipt ledger SHALL be append-only and content-blind in v1: payload and processing rows MAY be pruned, but acceptance identities and receipts SHALL NOT be deleted or rewritten. A duplicate SHALL be resolved against that durable ledger even if its source event or inbox payload has aged out. A future bounded-retention design requires a separate database-enforced non-reacceptance fence before any acceptance key may be pruned; mutable source timestamps, UUID age, and tombstone absence are not such proof.
 
 ID: REQ-ingestion-target-delivery-recovery-002
 Source: heart-and-soul/vision.md Rules 3 and 4; RFC 0003 §route.execute Envelope; design.md Decision 2
@@ -68,6 +68,18 @@ Scope: v1-mandatory
 - **WHEN** a second call reuses an accepted delivery identity with a different canonical payload or target binding
 - **THEN** the target SHALL return a conflict without creating another inbox row or returning the earlier receipt as acceptance of the changed work
 - **AND** the original receipt and payload SHALL remain unchanged
+
+#### Scenario: Pruning cannot reopen an accepted key
+
+- **WHEN** a target inbox payload, processing row, or source event is pruned after acceptance
+- **THEN** a same-key duplicate SHALL find the retained content-blind acceptance receipt and SHALL NOT create another inbox row or session
+- **AND** a changed target binding or digest SHALL still conflict
+
+#### Scenario: Retention cannot weaken uniqueness
+
+- **WHEN** an inbox or source retention job runs, a migration is replayed, or the service rolls back after accepting a delivery key
+- **THEN** the accepted key, receiving target, immutable digest, and receipt remain in the unique ledger and cannot be deleted or rewritten by that operation
+- **AND** no missing source row, changed source timestamp, or owner historical approval authorizes a second acceptance for that key
 
 ### Requirement: Closed delivery state and ownership
 
@@ -219,7 +231,7 @@ Scope: v1-mandatory
 
 ### Requirement: Exact owner-gated historical late delivery
 
-Historical recovery SHALL begin with a content-blind dry run identifying only retained, provably pre-acceptance failed target deliveries. No historical delivery SHALL be queued until the owner approves the exact event-target-segment set and its bounded age and channel policy.
+Historical recovery SHALL begin with a content-blind dry run identifying only retained, provably pre-acceptance failed target deliveries. Target acceptance evidence SHALL come from bounded, target-owned same-key/same-target/same-digest receipt lookup through the existing internal route surface, not cross-schema SELECT; an unavailable, conflicting, or unsupported lookup SHALL exclude the candidate as unprovable. No historical delivery SHALL be queued until the owner approves the exact event-target-segment set and bounded age/channel policy in an immutable server-side owner-authenticated approval record with preview evidence version, canonical set/policy digest, expiry, and revocation. The admission operation SHALL accept only that record's opaque ID, SHALL derive its exact keys/policy from server storage, and SHALL refuse before approval or after expiry/revocation. Consumption SHALL be atomic with safe intent admission and idempotent on repeats. A Beads decision or owner session alone SHALL NOT authorize an arbitrary replay set.
 
 ID: REQ-ingestion-target-delivery-recovery-007
 Source: heart-and-soul/vision.md Rule 1; design.md Decision 6
@@ -230,12 +242,25 @@ Scope: v1-mandatory
 - **WHEN** an operator runs a historical eligibility preview
 - **THEN** it SHALL group counts by time bucket, channel, target, and safe failure class and identify the exact eligible delivery keys for private owner review
 - **AND** it SHALL exclude missing payloads, acknowledged targets, pruned rows, canonical `rejected`, `uncertain` attempts, and rows lacking both a receipt and independent proof of pre-accept no-effect; absence of a receipt alone SHALL NOT prove eligibility
+- **AND** an unavailable or conflicting target-owned receipt lookup SHALL classify the candidate as unprovable without cross-schema read authority
 
 #### Scenario: Exact approval admits only selected work
 
 - **WHEN** the owner approves a bounded age and channel policy and an exact set of eligible delivery keys
-- **THEN** only that set SHALL be admitted into durable delivery intents after rechecking current evidence and policy
+- **THEN** the owner-authenticated approval record SHALL bind that exact set, policy, preview version, digest, and expiry; only its opaque ID may be consumed to admit intents after rechecking current evidence, policy, and bounded target-owned receipts
 - **AND** changed, missing, or newly ambiguous keys SHALL remain unqueued and be reported as exclusions
+
+#### Scenario: Approval cannot be forged or broadened by an operator
+
+- **WHEN** an admission request supplies no approval, a revoked or expired approval, a changed set or policy, or only a Beads signoff
+- **THEN** no target intent SHALL be queued and no generic owner-authenticated replay path SHALL be opened
+- **AND** only the owner-authenticated creation of the immutable server record may establish the exact admission authority
+
+#### Scenario: Approval consumption is idempotent
+
+- **WHEN** an approved exact set is admitted and the same approval ID is submitted again after a timeout or retry
+- **THEN** the server SHALL return the first consumed result without creating new intents, widening the set, or resetting a target
+- **AND** unused approval revocation or expiry SHALL prevent later consumption
 
 #### Scenario: No approval means no historical delivery
 

@@ -253,6 +253,9 @@ A single conversation message may appear in the excerpts of more than one concep
 Amendment 5 supersedes the call-before-outcome-persistence order for ordinary
 ingestion fan-out: the immutable decomposition plan and all target intents
 commit before the first call, with one stable segment identity per concept.
+The worker preserves concept order for first attempts within one event; a
+failed, waiting, or ambiguous first attempt releases the next concept, while
+later safe retries and receipt reconciliation proceed independently per intent.
 
 **Empty-decomposition short-circuit (design decision D6).** When signal extraction returns an empty array, the pipeline logs the outcome and terminates without invoking any LLM classification or `route()` call. The `message_inbox` row is updated with `decomposition_output = {"signals": [], "reason": "no_signals_extracted"}` and `lifecycle_state = "decomposed_empty"`. A counter metric `butlers.pipeline.decomposition_empty` is incremented with `source_channel` and `connector_type` labels for dashboard visibility.
 
@@ -334,6 +337,10 @@ concurrent duplicates cannot create a second inbox row or target session.
 Receipt lookup also compares receiving target and digest, and a same-key change
 returns conflict rather than proof of acceptance. This extends, rather than replaces, the target
 inbox's post-acceptance crash recovery in RFC 0001.
+The content-blind acceptance key/target/digest/receipt ledger is append-only
+and non-prunable in v1, even when source or inbox payload rows age out.
+Mutable source timestamps and an absent receipt are not non-acceptance proof;
+ledger compaction requires a later database-enforced non-reacceptance fence.
 
 Switchboard owns intent states `pending`, `attempting`, `retry_wait`,
 `ambiguous`, `accepted`, and `terminal_failed`. `accepted` is terminal for
@@ -360,7 +367,15 @@ without dispatch must stop presenting itself as replay. A row reports queued
 recovery only when durable work exists. Historic recovery begins with a
 content-blind dry run; exact late delivery requires owner review. No provider
 cursor rewind, broad email replay, or automatic historic replay follows from
-this amendment. Connector ingress replay and the domain-event bus retain
+this amendment. Preview and admission obtain target acceptance evidence only
+through bounded target-owned same-key/same-target/same-digest receipt lookup on
+the existing trusted-host route surface, not cross-schema SELECT. An
+unavailable or conflicting lookup excludes a historical key as unprovable.
+The owner must create an immutable, private server-side approval record binding
+the exact key set, policy, preview version, digest, expiry, and revocation;
+admission accepts only its opaque ID and consumes it idempotently. Beads
+signoff or owner authentication alone cannot create a generic replay set.
+Connector ingress replay and the domain-event bus retain
 their own contracts and storage; this intent is not a second domain-event bus.
 
 ## Amendments Applied
