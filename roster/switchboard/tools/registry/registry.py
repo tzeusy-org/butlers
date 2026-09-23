@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -331,7 +332,7 @@ async def register_butler(
     )
     previous_last_seen_at = existing["last_seen_at"] if existing is not None else None
 
-    await pool.execute(
+    stored = await pool.fetchrow(
         """
         INSERT INTO switchboard.butler_registry (
             name,
@@ -379,6 +380,7 @@ async def register_butler(
             capabilities = EXCLUDED.capabilities,
             eligibility_updated_at = EXCLUDED.eligibility_updated_at,
             agent_type = EXCLUDED.agent_type
+        RETURNING eligibility_state, last_seen_at
         """,
         name,
         endpoint_url,
@@ -394,17 +396,98 @@ async def register_butler(
         normalized_type,
     )
 
-    if previous_state is not None and previous_state != ELIGIBILITY_ACTIVE:
+    # sw_035's compatibility trigger can retain a restrictive operator policy
+    # even though this legacy UPSERT requests "active".  Audit the committed
+    # projection, not the request we attempted.
+    stored_state = _normalize_eligibility_state(stored["eligibility_state"])
+    if previous_state is not None and previous_state != stored_state:
         await _audit_eligibility_transition(
             pool,
             name=name,
             previous_state=previous_state,
-            new_state=ELIGIBILITY_ACTIVE,
-            reason=_transition_reason(previous_state, ELIGIBILITY_ACTIVE),
+            new_state=stored_state,
+            reason=_transition_reason(previous_state, stored_state),
             previous_last_seen_at=previous_last_seen_at,
-            new_last_seen_at=now,
+            new_last_seen_at=stored["last_seen_at"],
             observed_at=now,
         )
+
+
+async def register_boot(
+    pool: asyncpg.Pool,
+    name: str,
+    instance_id: uuid.UUID,
+) -> int:
+    """Commit a successor epoch through the role-bound database operation."""
+    return int(
+        await pool.fetchval(
+            "SELECT public.register_butler_boot($1, $2)",
+            name,
+            instance_id,
+        )
+    )
+
+
+async def reserve_probe(pool: asyncpg.Pool, name: str) -> tuple[int, int] | None:
+    """Reserve one database-owned sequence for a receiver observation."""
+    row = await pool.fetchrow(
+        "SELECT boot_epoch, probe_sequence FROM public.reserve_butler_probe($1)",
+        name,
+    )
+    if row is None:
+        return None
+    return int(row["boot_epoch"]), int(row["probe_sequence"])
+
+
+async def record_probe(
+    pool: asyncpg.Pool,
+    name: str,
+    *,
+    boot_epoch: int,
+    probe_sequence: int,
+    healthy: bool,
+    compatible: bool | None,
+    accepting: bool | None,
+    failure_class: str | None = None,
+) -> bool:
+    """Record a fenced attempt without accepting caller-authored timestamps."""
+    return bool(
+        await pool.fetchval(
+            "SELECT public.record_butler_probe($1, $2, $3, $4, $5, $6, $7)",
+            name,
+            boot_epoch,
+            probe_sequence,
+            healthy,
+            compatible,
+            accepting,
+            failure_class,
+        )
+    )
+
+
+async def set_operator_policy(pool: asyncpg.Pool, name: str, policy: str) -> str:
+    """Set server-attributed policy and return the legacy eligibility projection."""
+    return str(
+        await pool.fetchval(
+            "SELECT public.set_butler_registry_policy($1, $2)",
+            name,
+            policy,
+        )
+    )
+
+
+async def get_control_plane_state(pool: asyncpg.Pool, name: str) -> dict[str, Any] | None:
+    """Read separated facts alongside the unchanged legacy route projection."""
+    row = await pool.fetchrow(
+        """
+        SELECT c.*, r.eligibility_state AS legacy_eligibility_state
+        FROM switchboard.butler_registry_control_plane AS c
+        JOIN switchboard.butler_registry AS r USING (name)
+        WHERE c.name = $1
+        """,
+        name,
+    )
+    return dict(row) if row is not None else None
 
 
 async def resolve_routing_target(

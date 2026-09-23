@@ -47,6 +47,9 @@ from butlers.modules.metrics.prometheus import async_query
 from butlers.tools.switchboard.registry.registry import (
     _derive_eligibility_state as _derive_butler_eligibility_state,
 )
+from butlers.tools.switchboard.registry.registry import (
+    set_operator_policy as _set_operator_policy,
+)
 
 # Dynamically load models module from the same directory
 _models_path = Path(__file__).parent / "models.py"
@@ -827,8 +830,8 @@ async def receive_heartbeat(
 
     Updates ``last_seen_at`` and manages eligibility state transitions:
     - ``stale`` → ``active``: transition logged with reason ``health_restored``
-    - ``quarantined`` → ``active``: auto-recovery logged with reason ``heartbeat_recovery``,
-      clears ``quarantined_at`` and ``quarantine_reason``
+    - ``quarantined`` → ``active``: legacy auto-recovery only when no
+      protected operator policy retains the quarantine
     - ``active``: ``last_seen_at`` updated, state unchanged
     """
     pool = _pool(db)
@@ -908,21 +911,21 @@ async def receive_heartbeat(
             )
             new_state = current_state
     elif current_state == "quarantined":
-        # Transition quarantined → active: CAS guard on eligibility_state to avoid
-        # TOCTOU race with a concurrent operator re-quarantine.
-        result = await pool.execute(
+        # The sw_035 policy trigger may retain a protected quarantine.  Return
+        # and audit the row actually committed, not the attempted recovery.
+        updated = await pool.fetchrow(
             "UPDATE switchboard.butler_registry"
             " SET last_seen_at = $1, eligibility_state = 'active',"
             "     eligibility_updated_at = $1,"
             "     quarantined_at = NULL, quarantine_reason = NULL,"
             "     agent_type = $3"
-            " WHERE name = $2 AND eligibility_state = 'quarantined'",
+            " WHERE name = $2 AND eligibility_state = 'quarantined'"
+            " RETURNING eligibility_state",
             now,
             body.butler_name,
             agent_type,
         )
-        rows_affected = int(result.split(" ")[-1]) if result else 0
-        if rows_affected > 0:
+        if updated is not None and updated["eligibility_state"] == "active":
             await pool.execute(
                 "INSERT INTO switchboard.butler_registry_eligibility_log"
                 " (butler_name, previous_state, new_state, reason,"
@@ -938,7 +941,7 @@ async def receive_heartbeat(
             )
             new_state = "active"
         else:
-            # Row was concurrently modified; re-read and fall through to last_seen_at
+            # A concurrent operator action or policy fence kept the denial.
             re_read = await pool.fetchrow(
                 "SELECT eligibility_state FROM switchboard.butler_registry WHERE name = $1",
                 body.butler_name,
@@ -1018,8 +1021,6 @@ async def set_butler_eligibility(
     PATCH /api/butlers/{name}/eligibility route).
     """
     pool = _pool(db)
-    now = datetime.datetime.now(datetime.UTC)
-
     row = await pool.fetchrow(
         "SELECT eligibility_state, last_seen_at FROM switchboard.butler_registry WHERE name = $1",
         name,
@@ -1028,37 +1029,10 @@ async def set_butler_eligibility(
         raise HTTPException(status_code=404, detail=f"Butler '{name}' not found in registry")
 
     previous_state: str = row["eligibility_state"]
-    if previous_state == body.eligibility_state:
-        return ApiResponse[SetEligibilityResponse](
-            data=SetEligibilityResponse(
-                name=name,
-                previous_state=previous_state,
-                new_state=previous_state,
-            )
-        )
-
-    # Build update fields
-    update_fields = {
-        "eligibility_state": body.eligibility_state,
-        "eligibility_updated_at": now,
-    }
-    if body.eligibility_state != "quarantined":
-        update_fields["quarantined_at"] = None
-        update_fields["quarantine_reason"] = None
-
-    await pool.execute(
-        "UPDATE switchboard.butler_registry"
-        " SET eligibility_state = $1,"
-        "     eligibility_updated_at = $2,"
-        "     quarantined_at = $3,"
-        "     quarantine_reason = $4"
-        " WHERE name = $5",
-        body.eligibility_state,
-        now,
-        update_fields.get("quarantined_at", now),
-        update_fields.get("quarantine_reason"),
-        name,
-    )
+    # The old "stale" operator action was a manual stop, not a receiver
+    # observation.  Preserve its restrictive meaning as paused policy.
+    policy = "paused" if body.eligibility_state == "stale" else body.eligibility_state
+    new_state = await _set_operator_policy(pool, name, policy)
 
     # Audit the transition
     try:
@@ -1068,14 +1042,13 @@ async def set_butler_eligibility(
                 butler_name, previous_state, new_state, reason,
                 previous_last_seen_at, new_last_seen_at, observed_at
             )
-            VALUES ($1, $2, $3, $4, $5, $5, $6)
+            VALUES ($1, $2, $3, $4, $5, $5, now())
             """,
             name,
             previous_state,
-            body.eligibility_state,
+            new_state,
             "operator_action",
             row["last_seen_at"],
-            now,
         )
     except Exception:
         logger.warning("Failed to write eligibility audit log for %s", name, exc_info=True)
@@ -1092,7 +1065,7 @@ async def set_butler_eligibility(
         "Operator eligibility transition for butler %r: %s → %s",
         name,
         previous_state,
-        body.eligibility_state,
+        new_state,
     )
 
     # Explicit audit — middleware also fires; this carries the semantic operation label.
@@ -1103,7 +1076,7 @@ async def set_butler_eligibility(
         method="POST",
         path=f"/api/switchboard/registry/{name}/eligibility",
         path_params={"name": name},
-        body={"previous_state": previous_state, "new_state": body.eligibility_state},
+        body={"previous_state": previous_state, "new_state": new_state},
         response_status=200,
         request=request,
     )
@@ -1112,7 +1085,7 @@ async def set_butler_eligibility(
         data=SetEligibilityResponse(
             name=name,
             previous_state=previous_state,
-            new_state=body.eligibility_state,
+            new_state=new_state,
         )
     )
 
