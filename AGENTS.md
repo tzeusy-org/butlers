@@ -2550,3 +2550,4 @@ Two boundaries that are easy to get wrong in both directions (bu-5m67e):
 ### Beads lint evidence
 
 - On this repo's bd 1.0.4, a clean `bd lint <ids> --json` can return `total: 0` and `results: null` even when named issues were checked. Retain the text receipt (`N issues checked`) and read back structured fields and dependencies; do not infer inspected population from the JSON totals.
+- `bd create --parent` inherits the epic's labels, including `complexity:epic`. Pass `--no-inherit-labels` when assigning a child its own complexity tier, or remove the inherited tier and verify exactly one `complexity:*` label by readback.
