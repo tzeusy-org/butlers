@@ -5,11 +5,11 @@
 - [ ] 1.3 Add `healing.enabled` config field to `ButlerConfig` (default: `true`). Support `BUTLERS_HEALING_ENABLED` env var override.
 - [ ] 1.4 Guard healing module initialization in daemon startup — skip self-healing module load, worktree reaping, and healing tool registration when `healing.enabled = false`.
 - [ ] 1.5 Guard `create_healing_worktree()` and `reap_stale_worktrees()` — return early/no-op when healing is disabled, without requiring a `.git` directory.
-- [ ] 1.6 Add `GET /ready` endpoint to dashboard-api (`src/butlers/api/app.py`). Check DB pool connectivity (`SELECT 1`) and roster discovery. Return 200/503 with structured JSON. Add `/ready` to `_PUBLIC_PATHS`.
+- [ ] 1.6 Add `GET /ready` endpoint to dashboard-api (`src/butlers/api/app.py`) after the `restore-butler-control-plane-liveness` observer contract lands. Check DB connectivity, expected roster, fresh complete observer snapshot, fleet identity/advertised route acceptance, QA patrol freshness, supervised control-plane loops, and the effect-free fixed-target Switchboard route preflight defined by `REQ-dashboard-api-063`. It exercises selection/policy/endpoint resolution and a bounded identity GET, not transactional target acceptance. Return 200 only when all checks pass, otherwise 503 with fixed content-blind boolean checks. Allow the exact `GET /ready` pair through `OwnerAuthMiddleware`.
 - [ ] 1.7 Verify Dockerfile works with read-only `/etc/butler` mount — test `butlers run --config /etc/butler` with a read-only bind mount locally.
 - [ ] 1.8 Write tests for AGENTS.md DB fallback (read-only mock, merge behavior, no-pool degradation).
 - [ ] 1.9 Write tests for healing disable flag (daemon startup with `healing.enabled=false`, worktree no-op).
-- [ ] 1.10 Write test for `/ready` endpoint (healthy and unhealthy DB scenarios).
+- [ ] 1.10 Extend the owning `/ready` behavior tests for a healthy current fleet, DB failure, stale or incomplete observer snapshot, stale QA patrol, failed route canary, and exact public method/path authorization. Reuse the control-plane change's behavior tests rather than adding a parallel gate for the same invariant.
 
 ## 2. CNPG Database Integration (homelab repo)
 

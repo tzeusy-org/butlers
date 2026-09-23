@@ -34,8 +34,12 @@ The daemon executes these phases in strict order. A failure at a fatal phase abo
 | 13 | Create FastMCP server and register core tools | Fatal |
 | 14 | Register module MCP tools; apply approval gates; wire module runtime | Module tool failures are non-fatal |
 | 15 | Start FastMCP SSE server on configured port | Fatal |
-| 16 | Launch route recovery, Switchboard heartbeat, and internal scheduler loop | Background services are non-fatal |
-| 17 | Start liveness reporter and mark the daemon accepting connections | Non-fatal |
+| 16 | Launch route recovery and the internal scheduler loop; commit the server-allocated boot epoch | Background services are non-fatal; epoch registration is required for route acceptance |
+| 17 | Expose bounded internal instance facts and mark the daemon accepting connections | Non-fatal |
+
+The 2026-09-23 liveness amendment below supersedes the former daemon-authored
+Switchboard heartbeat and dashboard liveness reporter in phases 16-17. Startup
+registration advertises configuration; it is not proof of continuing health.
 
 ### Graceful Shutdown
 
@@ -44,12 +48,10 @@ Shutdown executes in this order:
 1. Stop the MCP server (stop accepting new connections).
 2. Stop accepting new triggers.
 3. Drain in-flight runtime sessions up to a configurable timeout.
-4. Cancel Switchboard heartbeat task.
+4. Cancel scheduler loop (wait for in-progress `tick()` to finish).
 5. Close Switchboard MCP client.
-6. Cancel scheduler loop (wait for in-progress `tick()` to finish).
-7. Cancel liveness reporter loop.
-8. Shut down modules in **reverse** topological order via `on_shutdown()`.
-9. Close database pool.
+6. Shut down modules in **reverse** topological order via `on_shutdown()`.
+7. Close database pool.
 
 ### Trigger Sources
 
@@ -65,6 +67,10 @@ Two trigger sources converge at the Spawner:
 - The scheduler evaluates cron expressions on every tick. Due tasks dispatch through the spawner with trigger source `"schedule:<task-name>"`.
 - TOML-to-DB sync on startup: new tasks are inserted, changed tasks are updated, removed tasks are disabled. Runtime-created tasks (source `"db"`) are preserved.
 - Deterministic stagger offset: SHA-256 of butler name, bounded by `min(max_stagger_seconds, cadence - 1s)`. Default `max_stagger_seconds` is 900 (15 minutes).
+- A local scheduler's deterministic cron and deadline work MUST NOT be disabled
+  solely because the remote Switchboard registry reports that same daemon as
+  stale. Explicit administrative pause or quarantine MAY suppress work under
+  its own policy. See the liveness amendment below.
 
 ### Route Inbox State Machine
 
@@ -150,6 +156,32 @@ Every session carries a `request_id` in UUIDv7 format. Connector-sourced session
 - **RFC 0003:** `route.execute` triggers arrive from the Switchboard via the route inbox.
 - **RFC 0005:** Telemetry is initialized at phase 2; trace context is injected into spawned processes.
 - **RFC 0006:** Database provisioning and migrations execute at phases 6-8.
+
+## Amendment (2026-09-23): Receiver-Derived Daemon Liveness
+
+**Status:** Approved target contract; implementation is tracked by
+`restore-butler-control-plane-liveness`. This amendment supersedes daemon-authored
+registry heartbeat writes and the dashboard heartbeat reporter; connector
+heartbeats remain governed by RFC 0003.
+
+Each running daemon exposes `GET /internal/control-plane/identity` on its
+existing internal port, returning bounded `butler.control.v1` facts: exact
+roster name, UUIDv7 boot instance ID, the durable boot epoch allocated by its
+registration transaction, supported route-contract minimum and maximum, and
+whether it can accept `route.execute` work. A daemon does not advertise route
+acceptance until that epoch is committed. The response carries
+no liveness timestamp. The observer defined in RFC 0003 probes those facts
+through exact Git-roster endpoints, then records DB-server observation time.
+Neither the daemon nor an LLM child may assert its own registry liveness by
+HTTP POST or receive the dashboard owner credential.
+A prior boot generation cannot refresh a successor's observation, including
+when an old process is still reachable during a probe race or code rollback.
+
+The scheduler is local deterministic infrastructure. Derived remote staleness
+is evidence about inbound routability, not authority to stop local cron,
+deadline, or QA patrol work. An explicit administrative pause or quarantine is
+a distinct policy decision. Loss of the observer or Switchboard must be
+diagnosable without making the daemon itself stop scheduling.
 
 ## Alternatives Considered
 
