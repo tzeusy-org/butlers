@@ -64,14 +64,18 @@ surface error before MCP/storage access.
 | any butler `module::` prefix with `::enabled` or `::disabled_by` suffix | `inspect` | `deny` | `omit` / `deny` | `deny` / `deny` | `module.states` and `module.set_enabled` retain their existing contract |
 | `general` exact `settings.general` | `inspect` | `deny` | `omit` / `deny` | `deny` / `deny` | `GET/PUT /api/settings/general` |
 | `home` prefix `home:thresholds:` | `inspect` | `deny` | `omit` / `deny` | `deny` / `deny` | `GET/PATCH /api/home/settings/thresholds` |
-| `chronicler` exact `chronicler/owntracks/ssid_places` | `allow` | `allow` | `omit` / `deny` | `deny` / `deny` | Transitional owner-authenticated generic dashboard editor; future dedicated route required before dashboard denial |
+| `chronicler` exact `chronicler/owntracks/ssid_places` | `allow` | `allow` | `allow` | `allow` | Explicitly deferred residual risk; future dedicated owner route required before any generic restriction |
 | all other keys | `allow` | `allow` | `allow` | `allow` | Existing behavior |
 
-The Chronicler row is deliberately not labelled fully protected while its only
-documented editor is generic dashboard state. Central owner authentication and
-generic audit redaction still apply, but validation/CAS remain absent and must
-be described honestly. Removing that dashboard access requires a separately
-specified replacement; MCP access need not remain open for compatibility.
+The Chronicler row is deliberately deferred while its only documented editor
+is generic dashboard state. Dashboard PUT and DELETE proxy the same MCP tools
+used by a model session, and those tools receive no trustworthy server-derived
+owner provenance. A caller field, actor string, header, or tool argument cannot
+bridge that boundary. Central owner authentication and generic audit redaction
+still apply to the dashboard, but validation/CAS and MCP privacy remain absent
+and must be described honestly. A separately reviewed direct owner write seam
+must replace the MCP-proxied editor before dashboard and MCP restrictions can
+activate together.
 
 Workflow/checkpoint, deduplication, domain-content, and additional owner-config
 namespaces found during the content-blind inventory are candidates, not silently
@@ -81,11 +85,24 @@ that needs a replacement surface.
 
 ## Read/list mechanics and content blindness
 
-An exact denied GET checks policy before acquiring a pool. A denied dashboard
-write checks policy before acquiring an MCP client or parsing/forwarding the
-submitted value beyond central authentication/audit handling. It returns one
-fixed `409 MANAGED_STATE_KEY`; the response does not echo the key, submitted or
-stored value, expected shape, specialized-route state, or row existence.
+An exact denied request is intercepted by a path-aware ASGI middleware between
+the outer central `OwnerAuthMiddleware` and the inner body-reading audit/FastAPI
+layers. The middleware resolves only method, decoded route path, effective
+butler name, and key policy. For a denied PUT it returns one fixed `409
+MANAGED_STATE_KEY` without calling `request.body()`, constructing
+`StateSetRequest`, acquiring the target butler pool or MCP client, or invoking
+the route. A malformed, missing, duplicate-field, oversized, scalar, or
+otherwise invalid body therefore receives the same fixed denial. The response
+does not echo the key, submitted or stored value, expected shape,
+specialized-route state, framework validation detail, or row existence.
+
+The policy middleware emits only a fixed content-blind denial audit/category
+after owner authentication; it does not forward or buffer the body. It is
+registered so central owner authentication remains outermost, the policy guard
+runs next, and `DashboardAuditMiddleware` plus FastAPI validation run only for
+allowed requests. Denied GET and DELETE use the same path-first seam. The MCP
+handler independently enforces the same registry because direct model/tool-tab
+calls do not traverse this HTTP guard.
 
 Collection reads must not fetch a private value and discard it afterward.
 They first obtain only keys/timestamps, apply policy, then fetch values only for
@@ -140,15 +157,18 @@ owner editor or claim the route remains exclusive after its guard is removed.
 ### Mounted API and MCP tests
 
 - central owner auth still rejects unauthenticated generic reads and writes;
-- denied exact GET/set/delete fail before pool/MCP/storage access with the
-  fixed content-blind category;
+- denied exact GET/set/delete fail in the path-aware ASGI guard before target
+  pool/MCP/storage access, body buffering, or FastAPI model validation;
+- malformed, missing-field, duplicate-field, scalar, oversized, and valid
+  protected PUT bodies all return the identical fixed category without
+  submitted content in response, audit, or logs;
 - collection listing never selects or serializes an omitted value;
 - MCP get/set/delete and both list modes omit/refuse protected data before
   calling low-level state helpers;
 - direct dashboard tool invocation cannot bypass the MCP check;
 - inspectable managed rows remain owner-readable but raw writes are denied;
-- the Chronicler transitional owner editor remains usable while every MCP
-  operation is denied.
+- the Chronicler owner editor and MCP behavior both remain unchanged and are
+  labelled residual risk until a distinct trusted owner seam exists.
 
 ### Real PostgreSQL and Home contract tests
 
