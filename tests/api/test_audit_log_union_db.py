@@ -45,7 +45,7 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import MCPClientManager, get_mcp_manager
+from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
 from butlers.api.routers import audit as audit_module
 from butlers.api.routers import model_settings as model_settings_module
 from butlers.api.routers import schedules as schedules_module
@@ -215,6 +215,108 @@ async def test_schedule_toggle_audit_attributes_owner_and_records_outcome(
     else:
         assert row["metadata"]["observed_enabled"] is False
         assert row["metadata"]["outcome"] == "already_requested"
+
+
+@pytest.mark.parametrize(
+    ("operation", "mode"),
+    [
+        ("create", "success"),
+        ("update", "success"),
+        ("delete", "success"),
+        ("trigger", "success"),
+        ("create", "refused"),
+        ("update", "refused"),
+        ("delete", "refused"),
+        ("trigger", "refused"),
+        ("trigger", "unreachable"),
+    ],
+)
+async def test_legacy_schedule_mutation_audits_owner_and_observed_outcome(
+    pool: asyncpg.Pool, audit_app: FastAPI, operation: str, mode: str
+) -> None:
+    schedule_id = uuid.uuid4()
+    method = {"create": "POST", "update": "PUT", "delete": "DELETE", "trigger": "POST"}[operation]
+    path = (
+        "/api/butlers/atlas/schedules"
+        if operation == "create"
+        else f"/api/butlers/atlas/schedules/{schedule_id}"
+    )
+    if operation == "trigger":
+        path += "/trigger"
+    body = {
+        "create": {
+            "name": "private-schedule-name",
+            "cron": "0 9 * * *",
+            "prompt": "private-prompt",
+            "actor": "forged",
+        },
+        "update": {"prompt": "private-prompt", "actor": "forged"},
+    }.get(operation)
+    expected_status = {
+        "create": "created",
+        "update": "updated",
+        "delete": "deleted",
+        "trigger": "triggered",
+    }[operation]
+    mcp_result = (
+        {"id": str(schedule_id), "status": "error", "error": "private-provider-failure"}
+        if mode == "refused"
+        else {"id": str(schedule_id), "status": expected_status}
+    )
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = pool
+    audit_app.dependency_overrides[schedules_module._get_db_manager] = lambda: mock_db
+    mock_client = AsyncMock()
+    mock_client.call_tool.return_value = [MagicMock(text=json.dumps(mcp_result))]
+    mock_manager = AsyncMock(spec=MCPClientManager)
+    if mode == "unreachable":
+        mock_manager.get_client.side_effect = ButlerUnreachableError(
+            "atlas", cause=ConnectionRefusedError()
+        )
+    else:
+        mock_manager.get_client.return_value = mock_client
+    audit_app.dependency_overrides[get_mcp_manager] = lambda: mock_manager
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=audit_app), base_url=BASE_URL
+    ) as client:
+        response = await client.request(method, f"{path}?actor=forged", json=body)
+
+    expected_http_status = 503 if mode == "unreachable" else (201 if operation == "create" else 200)
+    assert response.status_code == expected_http_status
+    if mode != "unreachable":
+        assert response.json()["data"]["status"] == (
+            "error" if mode == "refused" else expected_status
+        )
+    row = await pool.fetchrow(
+        "SELECT actor, target, metadata, result, error FROM public.audit_log WHERE action = $1",
+        f"schedule.{operation}",
+    )
+    assert row is not None
+    assert row["actor"] == "owner"
+    expected_target = (
+        "butler:atlas/schedules"
+        if operation == "create" and mode == "refused"
+        else f"schedule:{schedule_id}"
+    )
+    assert row["target"] == expected_target
+    summary = row["metadata"]["request_summary"]
+    assert summary["butler"] == "atlas"
+    expected_observed_status = {
+        "success": expected_status,
+        "refused": "error",
+        "unreachable": "unavailable",
+    }[mode]
+    assert summary["observed_status"] == expected_observed_status
+    if operation != "create" or mode != "refused":
+        assert summary["schedule_id"] == str(schedule_id)
+    assert row["result"] == ("success" if mode == "success" else "error")
+    expected_error = {"success": None, "refused": "MCP_REFUSED", "unreachable": "MCP call failed"}[
+        mode
+    ]
+    assert row["error"] == expected_error
+    assert "private" not in json.dumps(row["metadata"])
+    assert "forged" not in json.dumps(row["metadata"])
 
 
 # NOTE: the pre-sw_026 "genuinely legacy dashboard_audit_log row not read live"
