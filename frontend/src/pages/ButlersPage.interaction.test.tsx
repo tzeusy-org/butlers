@@ -1,15 +1,14 @@
 // @vitest-environment jsdom
 /**
- * ButlersPage — click-interaction tests for quarantine/stale restore chip.
+ * ButlersPage — click-interaction tests for the quarantine restore chip.
  * (bu-p55gz)
  *
  * Complements the static-markup coverage in ButlersPage.test.tsx. Uses
  * @testing-library/react + fireEvent to exercise the restore chip click path
  * and assert that setEligibility.mutate is called with the correct payload.
  *
- * Two cases are tested:
- *   1. activity='quarantined' — chip shows QUARANTINED, mutate called with state='active'
- *   2. eligibility='stale'  — chip shows IDLE, mutate called with state='active'
+ * A quarantined policy can be restored; a stale receiver observation is
+ * informational and cannot schedule a policy mutation.
  *
  * Additional assertion: clicking the restore chip does NOT trigger navigation
  * (e.stopPropagation is called; window.location.href must not change).
@@ -356,11 +355,11 @@ describe("ButlersPage — quarantine restore chip (interaction)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Stale eligibility restore chip — click interaction
+// Stale receiver observation is not an operator policy action
 // ---------------------------------------------------------------------------
 
-describe("ButlersPage — stale eligibility restore chip (interaction)", () => {
-  it("calls setEligibility.mutate with { name, state: 'active' } once the undo window elapses", () => {
+describe("ButlersPage — stale eligibility chip (interaction)", () => {
+  it("does not offer Restore or schedule a policy mutation", () => {
     const rows = [
       makeRow({ name: "stale-butler", activity: "idle", eligibility: "stale" }),
     ];
@@ -368,31 +367,11 @@ describe("ButlersPage — stale eligibility restore chip (interaction)", () => {
 
     renderPage();
 
-    // Stale row: chip label is STALE (eligibility takes precedence over activity label).
-    const chip = screen.getByRole("button", { name: "STALE" });
-    expect(chip).toBeDefined();
-
-    clickAndCommitRestore(chip);
-
-    expect(mockMutate).toHaveBeenCalledOnce();
-    expect(mockMutate).toHaveBeenCalledWith(
-      { name: "stale-butler", state: "active" },
-      expect.objectContaining({ onSuccess: expect.any(Function), onError: expect.any(Function) }),
-    );
-  });
-
-  it("does not navigate when the stale restore chip is clicked (stopPropagation)", () => {
-    const rows = [
-      makeRow({ name: "stale-butler", activity: "idle", eligibility: "stale" }),
-    ];
-    setHookState(rows, makeAggregates({ total: 1, butlerCount: 1 }));
-
-    renderPage();
-
-    const chip = screen.getByRole("button", { name: "STALE" });
-    fireEvent.click(chip);
-
-    expect(locationHref).toBe("http://localhost/");
+    expect(screen.queryByRole("button", { name: "STALE" })).toBeNull();
+    fireEvent.click(screen.getByText("STALE"));
+    act(() => vi.advanceTimersByTime(RESTORE_UNDO_WINDOW_MS));
+    expect(mockMutate).not.toHaveBeenCalled();
+    expect(toast).not.toHaveBeenCalled();
   });
 });
 

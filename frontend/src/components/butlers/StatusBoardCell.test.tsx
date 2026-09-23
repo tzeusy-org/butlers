@@ -246,14 +246,16 @@ describe("StatusBoardCell: quarantine reason", () => {
 // ---------------------------------------------------------------------------
 
 describe("StatusBoardCell: eligibility=stale", () => {
-  it("renders chip as a <button> when eligibility is stale and onRestore provided", () => {
+  it("renders stale as information even when onRestore is provided", () => {
     const html = renderToStaticMarkup(
       <StatusBoardCell
         row={makeRow({ activity: "idle", eligibility: "stale" })}
         onRestore={() => void 0}
       />,
     )
-    expect(html).toContain("<button")
+    const chipRegion = html.slice(0, html.indexOf("SESS 24H"))
+    expect(chipRegion).toContain("STALE")
+    expect(chipRegion).not.toContain("<button")
   })
 
   it("renders amber state rail for stale eligibility", () => {
@@ -644,31 +646,17 @@ describe("StatusBoardCell: ActivityStripe embedded", () => {
 // ---------------------------------------------------------------------------
 
 describe("StatusBoardCell: onRestore callback", () => {
-  it("chip renders as button for stale eligibility", () => {
+  it("stale observation cannot invoke the policy restore action", () => {
     const onRestore = vi.fn()
-    const html = renderToStaticMarkup(
+    const { getByText, queryByRole } = render(
       <StatusBoardCell
         row={makeRow({ eligibility: "stale", activity: "idle" })}
         onRestore={onRestore}
       />,
     )
-    expect(html).toContain("<button")
-  })
-
-  it("clicking the restore chip invokes onRestore with the butler name", () => {
-    // Two buttons render per cell now (bu-27dxl.8.3 activity door + restore
-    // chip) — select the chip specifically by its visible label.
-    const onRestore = vi.fn()
-    const { getByRole } = render(
-      <StatusBoardCell
-        row={makeRow({ eligibility: "stale", activity: "idle", name: "finance" })}
-        onRestore={onRestore}
-      />,
-    )
-    const btn = getByRole("button", { name: "STALE" })
-    fireEvent.click(btn)
-    expect(onRestore).toHaveBeenCalledOnce()
-    expect(onRestore).toHaveBeenCalledWith("finance")
+    expect(queryByRole("button", { name: "STALE" })).toBeNull()
+    fireEvent.click(getByText("STALE"))
+    expect(onRestore).not.toHaveBeenCalled()
   })
 
   it("clicking the restore chip for quarantined activity invokes onRestore", () => {
@@ -714,7 +702,7 @@ describe("StatusBoardCell: isRestorePending", () => {
     expect(html).not.toContain("QUARANTINED")
   })
 
-  it("stale chip shows RESTORING and is disabled when isRestorePending=true", () => {
+  it("stale chip stays informational even if a restore pending flag is passed", () => {
     const html = renderToStaticMarkup(
       <StatusBoardCell
         row={makeRow({ activity: "idle", eligibility: "stale" })}
@@ -722,9 +710,10 @@ describe("StatusBoardCell: isRestorePending", () => {
         isRestorePending={true}
       />,
     )
-    expect(html).toContain("RESTORING")
-    expect(html).toContain('disabled=""')
-    expect(html).not.toContain("STALE")
+    const chipRegion = html.slice(0, html.indexOf("SESS 24H"))
+    expect(chipRegion).toContain("STALE")
+    expect(chipRegion).not.toContain("RESTORING")
+    expect(chipRegion).not.toContain("<button")
   })
 
   it("button is not disabled when isRestorePending=false (default)", () => {
