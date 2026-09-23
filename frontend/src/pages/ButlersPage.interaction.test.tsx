@@ -287,7 +287,7 @@ describe("ButlersPage — keyboard board cursor", () => {
       renderKeyboardPage();
 
       fireEvent.keyDown(window, { key: "ArrowRight" });
-      const chip = screen.getByRole("button", { name: /quarantined/i });
+      const chip = screen.getByRole("button", { name: /restore .* policy hold/i });
       chip.focus();
       await userEvent.setup().keyboard("{Enter}");
 
@@ -316,8 +316,8 @@ describe("ButlersPage — quarantine restore chip (interaction)", () => {
 
     renderPage();
 
-    // The restore chip is a <button> with text QUARANTINED
-    const chip = screen.getByRole("button", { name: /quarantined/i });
+    // The restore chip is a <button> with visible text QUARANTINED and an explicit action name
+    const chip = screen.getByRole("button", { name: /restore .* policy hold/i });
     expect(chip).toBeDefined();
 
     // A click alone does not fire the mutation immediately -- it schedules it
@@ -344,7 +344,7 @@ describe("ButlersPage — quarantine restore chip (interaction)", () => {
 
     renderPage();
 
-    const chip = screen.getByRole("button", { name: /quarantined/i });
+    const chip = screen.getByRole("button", { name: /restore .* policy hold/i });
     fireEvent.click(chip);
 
     // The button's onClick calls e.stopPropagation() before calling onRestore.
@@ -391,7 +391,7 @@ describe("ButlersPage — restore toast feedback", () => {
     });
 
     renderPage();
-    clickAndCommitRestore(screen.getByRole("button", { name: /quarantined/i }));
+    clickAndCommitRestore(screen.getByRole("button", { name: /restore .* policy hold/i }));
 
     expect(toast.success).toHaveBeenCalledWith("quarant restored");
     expect(toast.error).not.toHaveBeenCalled();
@@ -408,7 +408,7 @@ describe("ButlersPage — restore toast feedback", () => {
     });
 
     renderPage();
-    clickAndCommitRestore(screen.getByRole("button", { name: /quarantined/i }));
+    clickAndCommitRestore(screen.getByRole("button", { name: /restore .* policy hold/i }));
 
     expect(toast.error).toHaveBeenCalledWith(
       "Failed to restore quarant",
@@ -430,7 +430,7 @@ describe("ButlersPage — restore undo action", () => {
     setHookState(rows, makeAggregates({ total: 1, butlerCount: 1, quarantined: 1 }));
 
     renderPage();
-    fireEvent.click(screen.getByRole("button", { name: /quarantined/i }));
+    fireEvent.click(screen.getByRole("button", { name: /restore .* policy hold/i }));
 
     expect(toast).toHaveBeenCalledWith(
       "Restoring quarant",
@@ -445,7 +445,7 @@ describe("ButlersPage — restore undo action", () => {
     setHookState(rows, makeAggregates({ total: 1, butlerCount: 1, quarantined: 1 }));
 
     renderPage();
-    fireEvent.click(screen.getByRole("button", { name: /quarantined/i }));
+    fireEvent.click(screen.getByRole("button", { name: /restore .* policy hold/i }));
 
     const toastCall = vi.mocked(toast).mock.calls[0];
     const onUndoClick = (
@@ -468,7 +468,7 @@ describe("ButlersPage — restore undo action", () => {
     setHookState(rows, makeAggregates({ total: 1, butlerCount: 1, quarantined: 1 }));
 
     renderPage();
-    fireEvent.click(screen.getByRole("button", { name: /quarantined/i }));
+    fireEvent.click(screen.getByRole("button", { name: /restore .* policy hold/i }));
 
     expect(mockMutate).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: /restoring/i })).toBeDefined();
@@ -489,7 +489,7 @@ describe("ButlersPage — restore undo action", () => {
     setHookState(rows, makeAggregates({ total: 1, butlerCount: 1, quarantined: 1 }));
 
     const { unmount } = renderPage();
-    fireEvent.click(screen.getByRole("button", { name: /quarantined/i }));
+    fireEvent.click(screen.getByRole("button", { name: /restore .* policy hold/i }));
     expect(mockMutate).not.toHaveBeenCalled();
 
     // Navigate away, then back, before the undo window elapses.
@@ -579,7 +579,7 @@ describe("ButlersPage — restore chip pending/disabled state", () => {
     expect((pendingChip as HTMLButtonElement).disabled).toBe(true);
 
     // "other" chip is still enabled with its normal label.
-    const otherChip = screen.getByRole("button", { name: /quarantined/i });
+    const otherChip = screen.getByRole("button", { name: /restore .* policy hold/i });
     expect((otherChip as HTMLButtonElement).disabled).toBe(false);
   });
 });
