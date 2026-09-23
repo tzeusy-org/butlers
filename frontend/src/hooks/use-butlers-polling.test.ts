@@ -138,21 +138,15 @@ describe("useButlersBoard -- receiver liveness polling", () => {
     vi.mocked(useQuery).mockClear();
   });
 
-  it("uses a bounded 30s interval only while a board row is stale", () => {
+  it("bounds both healthy-to-stale and stale-to-healthy updates to 30s", () => {
     useButlersBoard();
 
     expect(vi.mocked(useQuery)).toHaveBeenCalledTimes(1);
     const options = vi.mocked(useQuery).mock.calls[0][0];
     expect(options.queryKey).toEqual(["butlers", "board"]);
-    const intervalFor = options.refetchInterval as (query: {
-      state: { data?: { data: { rows: { eligibility: string }[] } } };
-    }) => number;
-
-    expect(intervalFor({ state: {} })).toBe(5 * 60_000);
-    expect(intervalFor({ state: { data: { data: { rows: [{ eligibility: "active" }] } } } })).toBe(5 * 60_000);
-    expect(intervalFor({ state: { data: { data: { rows: [{ eligibility: "active" }, { eligibility: "stale" }] } } } })).toBe(30_000);
-    expect(intervalFor({ state: { data: { data: { rows: [{ eligibility: "active" }] } } } })).toBe(5 * 60_000);
-    expect(intervalFor({ state: { data: { data: { rows: [{ eligibility: "quarantined" }] } } } })).toBe(5 * 60_000);
+    // One fixed interval is independent of the prior cached state, so it
+    // detects a new stale verdict and a recovery on the next poll.
+    expect(options.refetchInterval).toBe(30_000);
   });
 
   it("leaves the separate butlers list polling at its established cadence", () => {
