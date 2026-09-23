@@ -201,6 +201,15 @@ encoder and bounded to 32 KiB across the entire projection, not only its candida
 and effective intent remain present in the bounded fallback. The row and receipt share one
 monotonically increasing `attempt_index` across quota skips and runtime attempts.
 
+**Vision is an exact-path claim.** `capabilities.vision = true` means more than a model family
+advertising image support. Evidence must cover the exact catalog `runtime_type` + `model_id`, the
+runtime/CLI version and account path, MCP transport of the `attachment_view` image content block,
+and inference against a visual sentinel absent from prompt text and attachment metadata. The
+ordinary text-only model verification endpoint, a direct `attachment_view()` unit test, or an
+adapter-wide assumption does not establish that contract. Until such a canary passes, the row
+leaves vision undeclared and image-bearing external dispatch fails closed. The direct API adapter
+cannot satisfy this path because it does not accept the butler MCP server configuration.
+
 ## Token Quotas
 
 The quota system prevents runaway costs by limiting token consumption per model on rolling time windows.
@@ -228,11 +237,13 @@ The `effective_tier` is pinned at initial resolution and used to scope all same-
 1. Call `resolve_model_with_effective_tier(pool, butler_name, complexity, intent=...)` to query the
    catalog, where `intent` is the dispatch intent derived from the trigger source (see *Capability
    fit* above); candidates that cannot satisfy it are excluded before ranking.
-2. If found, set `resolution_source = "catalog"`. If not, fall back to TOML model with `resolution_source = "static_fallback"`.
-3. Call `check_token_quota()` for catalog-resolved models (see quota section above).
-4. If quota returns `allowed=False`, record a `quota_skip` row in `public.model_dispatch_attempts` and seek the next same-tier candidate via `next_same_tier_candidate()`.
-5. Invoke the selected adapter.
-6. After completion, call `record_token_usage()` to update the ledger.
+2. If found, set `resolution_source = "catalog"`.
+3. If a populated receipt has no winner, return `ModelResolutionError` before adapter setup and retain the receipt on the failed result.
+4. If the catalog is empty or unavailable on a live Spawner, return `ModelResolutionError` before invocation because catalog-keyed authorization, budget, breaker, and provenance gates cannot run. Pool-free direct-adapter harnesses alone may evaluate `DEFAULT_RUNTIME_TYPE`'s adapter baseline and invoke it with no explicit model under `resolution_source = "direct_runtime"`.
+5. Call `check_token_quota()` for catalog-resolved models (see quota section above).
+6. If quota returns `allowed=False`, record a `quota_skip` row in `public.model_dispatch_attempts` and seek the next same-tier candidate via `next_same_tier_candidate()`.
+7. Invoke the selected adapter.
+8. After completion, call `record_token_usage()` to update the ledger.
 
 Both `resolution_source` and `complexity` are recorded on the session row for observability.
 
@@ -248,6 +259,9 @@ The `next_same_tier_candidate()` function returns the next enabled catalog entry
 2. **Enabled** — `effective_enabled = true` after applying per-butler overrides.
 3. **Not already attempted** — the catalog entry UUID is not in the `_attempted_ids` list.
 4. **Priority ordering** — sorted by effective priority descending, then `created_at ASC` (stable tie-break).
+5. **Original intent fit** — the initial `DispatchResolution` recorded the candidate as selected,
+   eligible, or fit-but-lower-priority in the same effective tier. A candidate excluded for vision,
+   tool use, context, deadline, or budget is recorded as a non-invoked suppressed attempt and skipped.
 
 Butler-level overrides (`public.butler_model_overrides`) are applied via COALESCE: when an override field is NULL, the catalog value is used.
 

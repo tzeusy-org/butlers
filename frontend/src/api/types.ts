@@ -6333,6 +6333,10 @@ export interface QaCaseDossier {
   case: QaCaseSummary;
   state_track_stage:
     "detect" | "diagnose" | "pr" | "landed" | "escalated" | "failed";
+  /** Whether a committed proposal was published as a PR, retained locally after publication failure, or absent. */
+  proposal_state: "none" | "unpublished" | "published";
+  /** Retained commit diff, projected independently so malformed narrative notes cannot hide a real local proposal. */
+  proposal_diff_snapshot: QaInvestigationNotes["diff_snapshot"];
   /** Finding fingerprint for dismiss/undismiss actions. Null when no finding is linked yet. */
   fingerprint: string | null;
   dismissal: QaActiveDismissal | null;

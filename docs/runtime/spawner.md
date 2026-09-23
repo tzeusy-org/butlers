@@ -59,9 +59,10 @@ The spawner resolves the model dynamically via the catalog using `resolve_model_
 
 1. Query `public.model_catalog` with optional `public.butler_model_overrides` for the butler's name and the requested complexity tier.
 2. If the catalog returns a result: use that model's `runtime_type`, `model_id`, and `extra_args`. Pin the **effective tier** for the logical session — all same-tier failover candidates must match this tier.
-3. If the catalog returns nothing: fall back to the hard-coded `_FALLBACK_MODEL_ID` (no same-tier failover in this path).
+3. If a populated catalog returns no fitting candidate: fail before runtime invocation and retain the prompt-free resolution receipt on the failed result.
+4. If the catalog is empty or unavailable on a live daemon: fail before invocation because catalog-keyed permission, quota, ceiling, breaker, and provenance gates cannot run. Explicit pool-free direct-adapter harnesses may use `DEFAULT_RUNTIME_TYPE` with no model only after adapter capability fit.
 
-The resolution source (`"catalog"` or `"static_fallback"`) is recorded on the session row.
+The resolution source (`"catalog"`; `"direct_runtime"` only in pool-free harnesses) is recorded on the session row. An unregistered catalog runtime fails closed instead of combining that entry's model ID with another runtime.
 
 **Quota-skip loop:** After initial resolution, the spawner enters a quota-skip loop before invoking the adapter:
 

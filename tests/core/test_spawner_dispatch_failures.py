@@ -5,7 +5,7 @@ a session fails and a catalog entry was resolved.
 
 Coverage:
 - Failure row inserted when adapter raises and catalog_entry_id is available
-- No row inserted when catalog_entry_id is None (TOML fallback path)
+- No row inserted when live catalog resolution refuses before selecting an entry
 - Insert failure does not propagate (best-effort write)
 - error_code matches the exception class name
 - error_message is truncated to 4096 chars
@@ -193,15 +193,15 @@ class TestSpawnerDispatchFailures:
         assert positional[4] == "test-butler"  # butler
         assert positional[5] == _SESSION_ID  # session_id
 
-    async def test_no_failure_row_on_toml_fallback(self, tmp_path: Path) -> None:
-        """No dispatch_failures row when catalog_entry_id is None (TOML fallback)."""
+    async def test_no_failure_row_when_catalog_has_no_selection(self, tmp_path: Path) -> None:
+        """No dispatch_failures row exists when no catalog entry was selected or invoked."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
         mock_pool = AsyncMock()
 
         with (
-            # resolve_model returns None → TOML fallback, no catalog_entry_id
+            # No selection means no catalog_entry_id and no runtime invocation.
             patch(
                 "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
@@ -216,14 +216,14 @@ class TestSpawnerDispatchFailures:
                 config=config,
                 config_dir=config_dir,
                 pool=mock_pool,
-                runtime=_FailingAdapter(msg="toml path crash"),
+                runtime=_FailingAdapter(msg="must not run"),
             ).trigger("hello", "tick")
 
         assert result.success is False
         execute_calls = [str(c) for c in mock_pool.execute.call_args_list]
         insert_calls = [c for c in execute_calls if _INSERT_SQL_FRAGMENT in c]
         assert len(insert_calls) == 0, (
-            f"Expected no dispatch_failures INSERT on TOML fallback, got: {execute_calls}"
+            f"Expected no dispatch_failures INSERT without a selection, got: {execute_calls}"
         )
 
     async def test_insert_failure_does_not_propagate(self, tmp_path: Path) -> None:

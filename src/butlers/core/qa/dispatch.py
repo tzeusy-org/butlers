@@ -583,12 +583,27 @@ _AUTH_ERROR_MARKERS: tuple[str, ...] = (
     "authentication failed",
     "repository not found",
     "access denied",
+    "permission to ",
+    "requested url returned error: 403",
+    "http 403:",
 )
 """Lowercase substrings that identify authentication-related git/gh errors.
 
 Shared by :func:`_classify_git_push_error` and the ``gh pr create`` error
 classifier so that both code paths remain consistent without duplication.
 """
+
+_GIT_AUTH_FAILURE_DETAIL = (
+    "git_auth_failed: QA GitHub authentication or repository write authorization failed; "
+    "verify the configured token's repository scope and organization authorization"
+)
+
+
+def _content_blind_git_error(error: str) -> str:
+    """Collapse auth failures before they reach logs or durable QA state."""
+    if error.startswith("git_auth_failed:"):
+        return _GIT_AUTH_FAILURE_DETAIL
+    return error[:_MAX_FOLLOWUP_ERROR_LEN]
 
 
 def _classify_git_push_error(push_err: str) -> str:
@@ -957,7 +972,7 @@ async def _emit_investigation_notes_journal_events(
         attempt_id=attempt_id,
         step="concluded",
         text=notes.hypothesis,
-        detail=f"confidence n/a: {why_this_fix}",
+        detail=f"proposal rationale: {why_this_fix}",
     )
 
 
@@ -1744,7 +1759,15 @@ async def _run_investigation_session(
                 )
 
         if not result.success:
-            error_detail = result.error or "Investigation agent returned non-success result"
+            raw_error_detail = result.error or "Investigation agent returned non-success result"
+            no_model_available = result.session_id is None and raw_error_detail.startswith(
+                "ModelResolutionError:"
+            )
+            error_detail = (
+                f"no_model_available: {raw_error_detail}"
+                if no_model_available
+                else raw_error_detail
+            )
             logger.warning(
                 "QA investigation agent failed (attempt=%s): %s", attempt_id, error_detail
             )
@@ -1759,7 +1782,7 @@ async def _run_investigation_session(
                 metrics.record_recovery_execution_failure(
                     workflow="qa",
                     phase="investigate",
-                    error_class="agent_failure",
+                    error_class="no_model_available" if no_model_available else "agent_failure",
                 )
             if phase_session_id is not None:
                 try:
@@ -1961,7 +1984,7 @@ async def _run_investigation_session(
                         pool,
                         phase_session_id,
                         "failed",
-                        error_detail=pr_error,
+                        error_detail=_GIT_AUTH_FAILURE_DETAIL,
                     )
                 except Exception as _pss_exc:
                     logger.debug("Failed to mark phase session failed: %s", _pss_exc)
@@ -1969,20 +1992,14 @@ async def _run_investigation_session(
                 pool,
                 attempt_id,
                 "failed",
-                error_detail=(
-                    "git_auth_failed: QA GitHub token is present but git-over-HTTPS "
-                    "authentication is not configured for subprocess pushes"
-                ),
+                error_detail=_GIT_AUTH_FAILURE_DETAIL,
                 healing_session_id=investigation_session_id,
             )
             await _record_escalation_for_terminal(
                 pool,
                 attempt_id=attempt_id,
                 status="failed",
-                error_detail=(
-                    "git_auth_failed: QA GitHub token is present but git-over-HTTPS "
-                    "authentication is not configured for subprocess pushes"
-                ),
+                error_detail=_GIT_AUTH_FAILURE_DETAIL,
             )
             await _persist_notes_and_remove_worktree(
                 pool,
@@ -3114,9 +3131,10 @@ async def _run_review_followup_session(
                 repo_root, followup_branch, owner_repo, sandbox_env
             )
         if push_error is not None:
+            safe_push_error = _content_blind_git_error(push_error)
             logger.warning(
                 "QA review follow-up: %s (attempt=%s)",
-                push_error,
+                safe_push_error,
                 attempt_id,
             )
             await pool.execute(
@@ -3130,7 +3148,7 @@ async def _run_review_followup_session(
                 """,
                 attempt_id,
                 followup_session_id,
-                push_error[:_MAX_FOLLOWUP_ERROR_LEN],
+                safe_push_error,
             )
         else:
             logger.info(

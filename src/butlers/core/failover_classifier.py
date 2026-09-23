@@ -156,6 +156,10 @@ _PROVIDER_AVAILABILITY_MARKERS: tuple[str, ...] = (
     "service unavailable",
     "backend unavailable",
     "no such model",
+    # Codex rejects a provider model that the active ChatGPT account cannot
+    # dispatch before session work starts. Keep the full account-specific
+    # phrase so generic unsupported-operation failures remain default-closed.
+    "not supported when using codex with a chatgpt account",
     "api error",
     # Anthropic Messages API (ApiAdapter, bu-qvnce.12): the SDK's own
     # APIStatusError embeds a JSON error envelope whose `error.type` field

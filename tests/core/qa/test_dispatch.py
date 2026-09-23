@@ -33,6 +33,7 @@ from butlers.core.qa.dispatch import (
     _persist_notes_and_remove_worktree,
     _prepare_agent_workspace,
     _run_investigation_session,
+    _run_review_followup_session,
     build_sandbox_env,
     check_open_pr_statuses,
     dispatch_novel_findings,
@@ -564,6 +565,56 @@ async def test_run_investigation_no_commit_persists_empty_snapshot_without_git_d
     create_pr.assert_awaited_once()
     assert persist_and_remove.await_args.kwargs["diff_snapshot"] == []
     assert persist_and_remove.await_args.kwargs["delete_branch"] is True
+
+
+@pytest.mark.asyncio
+async def test_run_investigation_reports_model_resolution_refusal_as_no_model(
+    tmp_path: Path,
+) -> None:
+    attempt_id = uuid.uuid4()
+    spawner = MagicMock()
+    spawner.trigger = AsyncMock(
+        return_value=MagicMock(
+            success=False,
+            session_id=None,
+            error="ModelResolutionError: no_fitting_candidate: required_features=vision",
+        )
+    )
+
+    with (
+        patch(
+            "butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock
+        ) as update_status,
+        patch(
+            "butlers.core.qa.dispatch._record_escalation_for_terminal",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "butlers.core.qa.dispatch._persist_notes_and_remove_worktree",
+            new_callable=AsyncMock,
+        ),
+    ):
+        await _run_investigation_session(
+            pool=_make_pool(),
+            repo_root=tmp_path,
+            attempt_id=attempt_id,
+            finding_id=uuid.uuid4(),
+            branch_name="qa/finance/abcdef123456",
+            worktree_path=tmp_path,
+            finding=_make_finding(),
+            config=QaDispatchConfig(repo_whitelist=MagicMock()),
+            spawner=spawner,
+            gh_token="ghtoken",
+        )
+
+    assert update_status.await_args.args[:3] == (
+        ANY,
+        attempt_id,
+        "failed",
+    )
+    assert update_status.await_args.kwargs["error_detail"].startswith(
+        "no_model_available: ModelResolutionError: no_fitting_candidate"
+    )
 
 
 @pytest.mark.asyncio
@@ -1249,3 +1300,50 @@ async def test_dispatch_pr_review_followup_fails_before_worktree_when_ref_fetch_
     )
     run_followup.assert_not_awaited()
     pool.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_review_followup_persists_content_blind_git_auth_failure(tmp_path: Path) -> None:
+    pool = _make_pool()
+    attempt_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    spawner = MagicMock()
+    spawner.trigger = AsyncMock(
+        return_value=MagicMock(success=True, session_id=session_id, error=None)
+    )
+    raw_error = (
+        "git_auth_failed: remote: Permission to tzeusy-org/butlers.git denied to Tzeusy. "
+        "token=secret-shaped-value"
+    )
+
+    with (
+        patch("butlers.core.qa.dispatch._prepare_agent_workspace", return_value=tmp_path),
+        patch(
+            "butlers.core.qa.dispatch._get_remote_owner_repo",
+            new_callable=AsyncMock,
+            return_value="tzeusy-org/butlers",
+        ),
+        patch(
+            "butlers.core.qa.dispatch._push_branch_with_gh_auth",
+            new_callable=AsyncMock,
+            return_value=raw_error,
+        ),
+        patch("butlers.core.qa.dispatch.remove_healing_worktree", new_callable=AsyncMock),
+    ):
+        await _run_review_followup_session(
+            pool=pool,
+            repo_root=tmp_path,
+            attempt_id=attempt_id,
+            pr_number=42,
+            followup_branch="qa/general/followup",
+            worktree_path=tmp_path,
+            prompt="review feedback",
+            config=QaDispatchConfig(),
+            spawner=spawner,
+            sandbox_env={"PATH": "/usr/bin", "GH_TOKEN": "not-logged"},
+        )
+
+    persisted_error = pool.execute.await_args.args[3]
+    assert persisted_error.startswith("git_auth_failed: QA GitHub authentication")
+    assert "Tzeusy" not in persisted_error
+    assert "secret-shaped-value" not in persisted_error

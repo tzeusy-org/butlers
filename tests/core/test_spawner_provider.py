@@ -13,9 +13,22 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from butlers.core.spawner_provider import resolve_provider_config
+from butlers.core.spawner_provider import _derive_llm_provider, resolve_provider_config
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize(
+    ("model", "runtime_type", "expected"),
+    [
+        (None, "codex", "openai"),
+        ("ollama/qwen3:8b", "opencode", "ollama"),
+    ],
+)
+def test_derive_llm_provider_uses_qualified_model_or_invoking_runtime(
+    model: str | None, runtime_type: str, expected: str
+) -> None:
+    assert _derive_llm_provider(model, runtime_type) == expected
 
 
 def _pool_with_ollama_config(base_url: str) -> AsyncMock:

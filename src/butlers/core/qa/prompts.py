@@ -43,8 +43,10 @@ Fields:
 - ``schema_version``: Always the integer ``1``.
 - ``headline``: One concise operator-facing title for the case.
 - ``hypothesis``: The final technical root-cause hypothesis you accepted.
-- ``blurb_segments``: Ordered narrative chunks; use strings for glue text and \
-objects with ``claim`` and ``text`` when a sentence should point at a claim.
+- ``blurb_segments``: Ordered diagnosis chunks; use strings for glue text and \
+objects with ``claim`` and ``text`` when a sentence should point at a claim. \
+These diagnosis fields must describe only observed behavior and established \
+causes, never proposed code as though it were already active.
 - ``claims``: Object keyed by claim id; each value has ``evidence_ids`` and a \
 short ``note`` explaining what those evidence lines establish.
 - ``evidence_lines``: Array of raw internal evidence objects with ``id``, \
@@ -52,8 +54,10 @@ short ``note`` explaining what those evidence lines establish.
 - ``counter_evidence``: Array of hypotheses you considered, each with \
 ``hypothesis``, ``verdict`` (``rejected``, ``accepted``, or ``pending``), and \
 ``reason``.
-- ``why_this_fix``: One or two sentences explaining why the committed change \
-addresses the accepted hypothesis.
+- ``why_this_fix``: One or two sentences explaining why the committed change is \
+intended to address the accepted hypothesis. Always use proposal language (for \
+example, "would" or "is intended to"): this artifact is written before publication \
+and must never claim proposed code is active or landed.
 - ``diff_snapshot``: Array of diff line objects with ``kind`` (``meta``, \
 ``+``, ``-``, or a single space) and ``text``.
 
@@ -66,7 +70,7 @@ Small example:
   "hypothesis": "A hard-coded Spotify scope string drifted from the provider contract.",
   "blurb_segments": [
     {{"claim": "c1", "text": "The connector now receives scope_mismatch from Spotify."}},
-    " Updating the requested scope and surfacing reauthorization resolves the failure."
+    " The provider response isolates the mismatch from token expiry."
   ],
   "claims": {{
     "c1": {{"evidence_ids": ["e1"], "note": "The failing call reached scope validation."}}
@@ -87,7 +91,7 @@ Small example:
       "reason": "Refresh reached scope validation before token validation."
     }}
   ],
-  "why_this_fix": "Renaming the scope and showing reauth clears the connector failure.",
+  "why_this_fix": "Renaming the scope and showing reauth would clear the connector failure.",
   "diff_snapshot": [
     {{"kind": "meta", "text": "src/butlers/connectors/spotify.py"}},
     {{"kind": "-", "text": "scope=user-read-currently-playing"}},
