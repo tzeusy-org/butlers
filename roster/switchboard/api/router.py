@@ -1418,7 +1418,7 @@ async def _ingestion_fanout_from_db(
     the target butler from which butler's sessions table actually contains a
     row for the ingestion_event_id, rather than from the triage_target column.
 
-    Returns a list of FanoutRow-compatible dicts.
+    Returns rows and whether at least one target was queried without failures.
     """
     # Each butler schema has shared in its search_path, so the join against
     # public.ingestion_events works from any butler pool.
@@ -1468,7 +1468,7 @@ async def _ingestion_fanout_from_db(
             )
 
     data.sort(key=lambda r: (r.connector_type, r.endpoint_identity, -r.message_count))
-    return data, not failed
+    return data, bool(fan_results) and not failed
 
 
 @router.get("/ingestion/fanout", response_model=ApiResponse[list[FanoutRow]])

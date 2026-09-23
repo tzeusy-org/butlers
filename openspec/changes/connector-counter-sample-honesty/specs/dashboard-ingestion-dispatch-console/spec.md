@@ -41,3 +41,10 @@ reports that the aggregate source is available.
   projection
 - **AND** raw connector or endpoint identities do not become OTel metric labels
 - **AND** a failed DB fan-out leg reports `meta.aggregates_available=false`
+
+#### Scenario: A routing distribution requires queried DB targets
+
+- **WHEN** the producer is live but no DB target was queried
+- **THEN** the API reports `meta.aggregates_available=false`, not a measured empty distribution
+- **AND** one or more successful target queries returning zero rows, with no failed targets, reports a measured empty distribution
+- **AND** a failed target query reports `meta.aggregates_available=false` while preserving rows from successful targets

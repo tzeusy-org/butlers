@@ -94,9 +94,11 @@ DB projection. The handler separately probes the exact
 `butlers_switchboard_subroute_dispatched_total` family for attempted dispatches
 carrying bounded `source="connector"` provenance and a non-empty
 `destination_butler`; raw connector and endpoint identities never become OTel
-labels. A live producer plus a complete DB fan-out makes an empty result
-measured; an absent, incomplete, unreadable, or partially failed source is
-degraded and never presented as an all-clear empty distribution.
+labels. A live producer plus at least one successfully queried DB target and
+no failed targets makes an empty result measured. Zero queried targets, an
+absent or unreadable producer, or any failed target is degraded and never
+presented as an all-clear empty distribution. Successful target rows remain
+in the API response when another target fails.
 
 ## Verification
 

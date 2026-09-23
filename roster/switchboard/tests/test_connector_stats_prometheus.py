@@ -423,19 +423,20 @@ async def test_get_ingestion_fanout_prometheus_error_falls_back_to_db():
     assert result.meta.aggregates_available is False
 
 
-async def test_get_ingestion_fanout_empty_db_projection_requires_complete_sources():
-    """A measured empty needs both a live producer and complete DB fan-out."""
+async def test_get_ingestion_fanout_availability_requires_queried_complete_sources():
+    """Only a queried, complete DB projection can report a measured empty."""
 
     class _NoFallbackDB(_FakeDB):
         def __init__(self) -> None:
             self.fan_out_calls = 0
+            self.results: dict[str, list[dict]] = {}
             self.failed: list[str] = []
 
         async def fan_out_with_status(
             self, query: str, args: tuple = (), butler_names=None
         ) -> tuple[dict, list[str]]:
             self.fan_out_calls += 1
-            return {}, self.failed
+            return self.results, self.failed
 
     async_query = AsyncMock(return_value=[{"metric": {}, "value": [1740000000, "1"]}])
     with patch("butlers.modules.metrics.prometheus.async_query", new=async_query):
@@ -446,16 +447,31 @@ async def test_get_ingestion_fanout_empty_db_projection_requires_complete_source
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
             db = _NoFallbackDB()
-            result = await mod.get_ingestion_fanout(period="24h", db=db)
-            db.failed = ["health"]
+            no_targets_result = await mod.get_ingestion_fanout(period="24h", db=db)
+            db.results = {"health": []}
+            measured_empty_result = await mod.get_ingestion_fanout(period="24h", db=db)
+            db.results = {
+                "health": [
+                    {
+                        "connector_type": "telegram_bot",
+                        "endpoint_identity": "bot@123",
+                        "message_count": 2,
+                    }
+                ]
+            }
+            db.failed = ["relationship"]
             partial_result = await mod.get_ingestion_fanout(period="24h", db=db)
 
-    assert result.data == []
-    assert result.meta.aggregates_available is True
-    assert partial_result.data == []
+    assert no_targets_result.data == []
+    assert no_targets_result.meta.aggregates_available is False
+    assert measured_empty_result.data == []
+    assert measured_empty_result.meta.aggregates_available is True
+    assert len(partial_result.data) == 1
+    assert partial_result.data[0].target_butler == "health"
+    assert partial_result.data[0].message_count == 2
     assert partial_result.meta.aggregates_available is False
-    assert db.fan_out_calls == 2
-    assert async_query.await_count == 2
+    assert db.fan_out_calls == 3
+    assert async_query.await_count == 3
     assert async_query.await_args.args[1].endswith(
         '{outcome="attempted",source="connector",destination_butler!=""})'
     )
