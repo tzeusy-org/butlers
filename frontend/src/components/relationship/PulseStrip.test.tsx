@@ -1,10 +1,14 @@
-import { describe, expect, it, vi } from "vitest";
+// @vitest-environment jsdom
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, render as renderDom, screen } from "@testing-library/react";
 
 import { PulseStrip } from "@/components/relationship/PulseStrip";
 
 vi.mock("@/hooks/use-entities", () => ({
+  ENTITY_CADENCE_REFRESH_MS: 30_000,
+  ENTITY_CADENCE_MAX_AGE_MS: 90_000,
   useEntityTimeline: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityCadence: vi.fn(() => ({
     data: {
@@ -43,6 +47,15 @@ function render(props: {
 }
 
 describe("PulseStrip", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-16T00:00:30Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("renders all four stat tiles", () => {
     const html = render({ entityId: "e-1", dunbarTier: null, isPinned: false });
     expect(html).toContain("Dunbar tier");
@@ -73,6 +86,22 @@ describe("PulseStrip", () => {
     expect(html).not.toContain(">Incomplete<");
   });
 
+  it("ages out a cached complete zero while the page stays open", () => {
+    const queryClient = new QueryClient();
+    const view = renderDom(
+      <QueryClientProvider client={queryClient}>
+        <PulseStrip entityId="e-1" dunbarTier={null} isPinned={false} />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByText("Quiet")).toBeTruthy();
+
+    act(() => vi.advanceTimersByTime(120_000));
+
+    expect(screen.queryByText("Quiet")).toBeNull();
+    expect(screen.getByText("Stale")).toBeTruthy();
+    view.unmount();
+  });
+
   it.each([
     {
       name: "paginated evidence",
@@ -94,6 +123,38 @@ describe("PulseStrip", () => {
       name: "query failure",
       result: { data: undefined, isLoading: false, isError: true },
       expected: "Unavailable",
+    },
+    {
+      name: "failed refresh with an old complete zero still cached",
+      result: {
+        data: {
+          window_days: 30,
+          window_started_at: "2026-08-17T00:00:00Z",
+          window_ended_at: "2026-09-16T00:00:00Z",
+          interaction_count: 0,
+          completeness: "complete",
+          has_more: false,
+        },
+        isLoading: false,
+        isError: true,
+      },
+      expected: "Unavailable",
+    },
+    {
+      name: "same-duration but old-window evidence",
+      result: {
+        data: {
+          window_days: 30,
+          window_started_at: "2026-08-15T00:00:00Z",
+          window_ended_at: "2026-09-14T00:00:00Z",
+          interaction_count: 0,
+          completeness: "complete",
+          has_more: false,
+        },
+        isLoading: false,
+        isError: false,
+      },
+      expected: "Stale",
     },
     {
       name: "mismatched-window evidence",

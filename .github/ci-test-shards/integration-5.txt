@@ -1,5 +1,6 @@
 roster/concierge/tests/test_dashboard_read.py
 roster/finance/tests/test_claim_reconciliation.py
+roster/relationship/tests/test_entity_cadence_db.py
 roster/relationship/tests/test_loans_currency_honesty.py
 roster/relationship/tests/test_tools.py
 roster/travel/tests/test_connections.py

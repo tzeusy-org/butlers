@@ -140,11 +140,17 @@ export function useEntityActivity(
 }
 
 /** Fetch cadence evidence scoped to the exact window represented by the tile label. */
+export const ENTITY_CADENCE_REFRESH_MS = 30_000;
+export const ENTITY_CADENCE_MAX_AGE_MS = 90_000;
+
 export function useEntityCadence(entityId: string | undefined, windowDays: number) {
   return useQuery({
     queryKey: ["entity-cadence", entityId, windowDays],
     queryFn: () => getEntityCadence(entityId!, windowDays),
     enabled: !!entityId,
+    refetchInterval: ENTITY_CADENCE_REFRESH_MS,
+    refetchIntervalInBackground: true,
+    refetchOnWindowFocus: "always",
   });
 }
 

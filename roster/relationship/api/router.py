@@ -3568,7 +3568,9 @@ async def get_entity_cadence(
         SELECT id
         FROM facts
         WHERE entity_id = $1
-          AND predicate LIKE 'interaction_%'
+          AND starts_with(predicate, 'interaction_')
+          AND predicate NOT IN ('interaction_', 'interaction_note')
+          AND permanence = 'stable'
           AND validity = 'active'
           AND scope = 'relationship'
           AND valid_at >= $2

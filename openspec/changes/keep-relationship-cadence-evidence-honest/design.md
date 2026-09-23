@@ -25,7 +25,9 @@ an exact 30-day window and renders a zero as "Quiet".
 ### D1 - Use a dedicated bounded cadence projection
 
 `GET /api/relationship/entities/{entity_id}/cadence` accepts `window_days` and a bounded `limit`.
-It queries active relationship-scoped `interaction_*` facts inside one server-captured half-open
+It queries active stable relationship-scoped interaction-event facts with a literal
+`interaction_` predicate prefix, excluding the episodic `interaction_note` annotation,
+inside one server-captured half-open
 window and fetches `limit + 1` identifiers. The response echoes the window, returns the observed
 count capped at `limit`, and marks `completeness='incomplete'` plus `has_more=true` when the extra
 row exists.
@@ -36,10 +38,14 @@ timeline page as complete cadence evidence. Identifiers and interaction content 
 ### D2 - Make calm conditional on matching complete evidence
 
 The PulseStrip query key includes both entity and window. The tile label uses the requested window,
-and its value is accepted only when the response echoes that same window. A complete count of zero
-renders "Quiet"; a positive complete count renders the existing interaction-count copy. A capped
-or mismatched response renders "Incomplete", while a failed query renders "Unavailable". Loading
-remains a placeholder and never renders a calm claim.
+and its value is accepted only when the response echoes bounds spanning that same duration and
+its end is no more than 90 seconds old (allowing at most 30 seconds of future clock skew). The
+mounted query polls every 30 seconds and refetches on focus; a separate display clock ages out
+cached evidence even if a refresh stalls. A fresh complete count of zero renders "Quiet"; a
+positive complete count renders the existing interaction-count copy. A capped or mismatched
+response renders "Incomplete", an old response renders "Stale", and a failed query or refetch
+renders "Unavailable" even if a prior complete zero remains cached. Loading remains a placeholder
+and never renders a calm claim.
 
 ### D3 - Preserve existing authority and behavior
 
@@ -55,6 +61,8 @@ ranking, overdue evaluation, or any provider/runtime state.
 | Complete window, positive count | Label names the echoed window; value is the existing count copy. |
 | Read reaches its cap | Response is incomplete; UI renders "Incomplete", never "Quiet" or an exact count. |
 | Response window differs from the active request | UI renders "Incomplete" until matching evidence arrives. |
+| Echoed end is older than 90 seconds or implausibly future-dated | UI renders "Stale" until a fresh matching result arrives. |
+| Open page crosses the freshness bound | The display clock removes "Quiet" even if the cached response has not been replaced. |
 | API/query failure | UI renders "Unavailable", never "Quiet". |
 | Window changes | Query key changes; the label and eventual count are recomputed for that window. |
 | Concurrent reads | Each response is self-contained by its echoed bounds; no shared state is mutated. |

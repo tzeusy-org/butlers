@@ -10,6 +10,8 @@
 - [x] 2.1 Add the bounded, read-only entity cadence response and endpoint.
 - [x] 2.2 Echo server-captured window bounds and expose complete versus capped evidence.
 - [x] 2.3 Add focused Relationship API coverage for complete and incomplete evidence.
+- [x] 2.4 Count only active stable interaction events with a literal predicate prefix; exclude
+  ephemeral notes and lookalikes in a real-PostgreSQL row test.
 
 ## 3. PulseStrip truthfulness
 
@@ -18,6 +20,8 @@
 - [x] 3.2 Render "Quiet" only for matching complete zero evidence and typed attention for
   incomplete, mismatched, or failed evidence.
 - [x] 3.3 Extend PulseStrip tests for calm, attention, and window-refresh behavior.
+- [x] 3.4 Poll an open page, age cached calm by echoed bounds, and retain unavailable attention
+  after a failed refresh.
 
 ## 4. Verification and handoff
 

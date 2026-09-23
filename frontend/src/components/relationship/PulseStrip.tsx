@@ -9,7 +9,7 @@
  * assignment.
  */
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Check, ChevronDown, Loader2, Lock } from "lucide-react";
 import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
@@ -23,6 +23,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
+  ENTITY_CADENCE_MAX_AGE_MS,
+  ENTITY_CADENCE_REFRESH_MS,
   useEntityGifts,
   useEntityLoans,
   useEntityCadence,
@@ -226,6 +228,46 @@ export function PulseStrip({
     isLoading: cadenceLoading,
     isError: cadenceError,
   } = useEntityCadence(entityId, cadenceWindowDays);
+  const [cadenceClock, setCadenceClock] = useState(() => Date.now());
+  useEffect(() => {
+    const tick = () => setCadenceClock(Date.now());
+    const timer = window.setInterval(tick, ENTITY_CADENCE_REFRESH_MS);
+    window.addEventListener("focus", tick);
+    document.addEventListener("visibilitychange", tick);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", tick);
+      document.removeEventListener("visibilitychange", tick);
+    };
+  }, []);
+
+  const now = cadenceClock;
+  const windowStarted = cadence ? Date.parse(cadence.window_started_at) : NaN;
+  const windowEnded = cadence ? Date.parse(cadence.window_ended_at) : NaN;
+  const cadenceWindowMatches =
+    cadence?.window_days === cadenceWindowDays &&
+    Number.isFinite(windowStarted) &&
+    Number.isFinite(windowEnded) &&
+    Math.abs(windowEnded - windowStarted - cadenceWindowDays * 86_400_000) <= 1_000;
+  const cadenceFresh =
+    cadenceWindowMatches &&
+    windowEnded >= now - ENTITY_CADENCE_MAX_AGE_MS &&
+    windowEnded <= now + ENTITY_CADENCE_REFRESH_MS;
+  const cadenceCanClaim =
+    !cadenceLoading &&
+    !cadenceError &&
+    cadenceFresh &&
+    cadence?.completeness === "complete" &&
+    !cadence.has_more;
+  const cadenceCount = cadence?.interaction_count ?? 0;
+  let cadenceValue: string;
+  if (cadenceLoading) cadenceValue = "...";
+  else if (cadenceError) cadenceValue = "Unavailable";
+  else if (!cadenceWindowMatches) cadenceValue = "Incomplete";
+  else if (!cadenceFresh) cadenceValue = "Stale";
+  else if (!cadenceCanClaim) cadenceValue = "Incomplete";
+  else if (cadenceCount === 0) cadenceValue = "Quiet";
+  else cadenceValue = `${cadenceCount} interaction${cadenceCount === 1 ? "" : "s"}`;
 
   const lastInteraction = useMemo(() => {
     if (!timelineItems) return null;
@@ -280,28 +322,8 @@ export function PulseStrip({
       />
       <PulseTile
         label={`Last ${cadenceWindowDays} days`}
-        value={
-          cadenceLoading
-            ? "..."
-            : cadenceError
-              ? "Unavailable"
-              : !cadence ||
-                  cadence.window_days !== cadenceWindowDays ||
-                  cadence.completeness !== "complete" ||
-                  cadence.has_more
-                ? "Incomplete"
-                : cadence.interaction_count === 0
-                  ? "Quiet"
-                  : `${cadence.interaction_count} interaction${cadence.interaction_count === 1 ? "" : "s"}`
-        }
-        muted={
-          cadenceError ||
-          !cadence ||
-          cadence.window_days !== cadenceWindowDays ||
-          cadence.completeness !== "complete" ||
-          cadence.has_more ||
-          cadence.interaction_count === 0
-        }
+        value={cadenceValue}
+        muted={!cadenceCanClaim || cadenceCount === 0}
       />
       <PulseTile
         label="Open loops"
