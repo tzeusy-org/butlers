@@ -20,6 +20,12 @@ and SHALL return typed bounded refusals. A missing row SHALL return a typed
 missing refusal. These refusal results SHALL not include prompts, job
 arguments, or other schedule runtime payload.
 
+#### Scenario: Toggle requires an explicit boolean request
+
+- **WHEN** a caller omits `enabled` or supplies a non-boolean value
+- **THEN** the canonical action rejects the request before loading or changing a schedule row
+- **AND** the dashboard API rejects the invalid body with HTTP 422 before calling MCP
+
 #### Scenario: Runtime row applies the requested disabled state
 
 - **WHEN** `schedule_toggle(task_id, enabled=false)` addresses an enabled

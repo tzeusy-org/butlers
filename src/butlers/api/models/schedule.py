@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, model_validator
+from pydantic import AwareDatetime, BaseModel, StrictBool, model_validator
 
 _DISPATCH_MODE_PROMPT: Literal["prompt"] = "prompt"
 _DISPATCH_MODE_JOB: Literal["job"] = "job"
@@ -162,7 +162,7 @@ class ScheduleUpdate(BaseModel):
 class ScheduleToggleRequest(BaseModel):
     """Requested enabled state for the idempotent schedule-toggle action."""
 
-    enabled: bool
+    enabled: StrictBool
 
 
 class ScheduleToggleAudit(BaseModel):

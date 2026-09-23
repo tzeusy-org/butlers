@@ -251,6 +251,22 @@ async def test_toggle_returns_server_observed_receipt_and_requested_state(app):
     )
 
 
+@pytest.mark.parametrize("body", [None, {}, {"enabled": None}, {"enabled": "false"}])
+async def test_toggle_requires_explicit_boolean_before_mcp(app, body):
+    sid = uuid4()
+    app, mcp_client = _wire_mcp(app)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as http:
+        response = await http.patch(
+            f"/api/butlers/atlas/schedules/{sid}/toggle",
+            json=body,
+        )
+
+    assert response.status_code == 422
+    mcp_client.call_tool.assert_not_awaited()
+
+
 @pytest.mark.parametrize(
     ("code", "status"),
     [("SCHEDULE_NOT_FOUND", 404), ("SCHEDULE_TOML_MANAGED", 409), ("SCHEDULE_MANAGED", 409)],
@@ -291,7 +307,7 @@ async def test_toggle_returns_typed_refusal(app, code, status):
         ),
         ("PUT", "/api/butlers/atlas/schedules/{sid}", {"cron": "0 12 * * *"}),
         ("DELETE", "/api/butlers/atlas/schedules/{sid}", None),
-        ("PATCH", "/api/butlers/atlas/schedules/{sid}/toggle", None),
+        ("PATCH", "/api/butlers/atlas/schedules/{sid}/toggle", {"enabled": False}),
     ],
 )
 async def test_crud_503_when_butler_unreachable(app, method, path_tpl, body):
@@ -308,7 +324,7 @@ async def test_crud_503_when_butler_unreachable(app, method, path_tpl, body):
         elif method == "DELETE":
             resp = await client.delete(path)
         else:
-            resp = await client.patch(path)
+            resp = await client.patch(path, json=body)
     assert resp.status_code == 503
 
 

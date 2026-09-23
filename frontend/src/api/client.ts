@@ -1222,13 +1222,11 @@ export function triggerButlerSchedule(
 export function toggleButlerSchedule(
   name: string,
   scheduleId: string,
-  body?: ScheduleToggleRequest,
+  body: ScheduleToggleRequest,
 ): Promise<ApiResponse<ScheduleToggleResult>> {
-  const options: RequestInit = { method: "PATCH" };
-  if (body) options.body = JSON.stringify(body);
   return apiFetch<ApiResponse<ScheduleToggleResult>>(
     `/butlers/${encodeURIComponent(name)}/schedules/${encodeURIComponent(scheduleId)}/toggle`,
-    options,
+    { method: "PATCH", body: JSON.stringify(body) },
   );
 }
 

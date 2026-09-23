@@ -9,12 +9,13 @@ explicit refusal because their authority remains the checked-in configuration.
 ## What Changes
 
 - Register a canonical `schedule_toggle` core action in the scheduling group.
-- Accept an explicit requested `enabled` state and serialize the row transition
+- Require an explicit boolean `enabled` state and serialize the row transition
   so retries and concurrent same-state requests converge idempotently.
 - Return bounded typed outcomes for missing, TOML-managed, and other managed
   schedules, plus a server-observed success receipt.
-- Make the dashboard API pass the requested state through MCP, map refusals to
-  typed HTTP errors, and record only safe control-plane audit evidence.
+- Make the dashboard API pass the requested state through MCP, reject missing or
+  non-boolean requests with 422, map managed refusals to typed HTTP errors, and
+  record owner-attributed, content-blind control-plane audit evidence.
 - Make `ButlerSchedulesTab` wait for the real response, refresh server truth,
   and show the observed state and audit action instead of claiming optimistic
   success.

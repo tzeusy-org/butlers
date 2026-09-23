@@ -9,12 +9,12 @@ the named MCP action is absent from the scheduling registration.
 
 ### D1: Requested state, not an implicit flip, is canonical
 
-The dashboard sends `enabled: bool`. The butler locks the target row, rejects
-non-runtime sources, and updates `enabled` plus `next_run_at` in one transaction.
+The dashboard and MCP callers must send an explicit `enabled: bool`; omission
+and non-boolean values are rejected before a row is changed. The butler locks
+the target row, rejects non-runtime sources, and updates `enabled` plus
+`next_run_at` in one transaction.
 Repeated requests for the same desired state return `status='unchanged'` and
-`outcome='already_requested'`; they do not schedule a second transition. A
-body-less legacy MCP call may still derive the inverse while holding the same
-row lock, but new callers use the explicit form.
+`outcome='already_requested'`; they do not schedule a second transition.
 
 ### D2: Refusals are bounded and typed
 
@@ -28,7 +28,9 @@ remain the existing unavailable path.
 Successful results include requested and observed booleans, whether a change
 landed, the next-run projection, and `{action, result, target}` audit evidence.
 The dashboard records a safe summary containing schedule identity and those
-control-plane fields, never schedule prompt or job arguments.
+control-plane fields, never schedule prompt or job arguments. Its audit row
+attributes the authenticated owner as actor; butler and schedule are target
+context, separate from the actor. A refusal records its bounded code.
 
 ### D4: The UI is honest-pending
 

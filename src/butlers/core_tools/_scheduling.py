@@ -220,14 +220,14 @@ def register_scheduling_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
     async def schedule_toggle(
         task_id: str | None = None,
         id: str | None = None,
-        enabled: bool | None = None,
+        *,
+        enabled: bool,
     ) -> dict:
         """Set a runtime schedule's enabled state and return the observed receipt.
 
-        ``enabled`` is the desired state, so retries are idempotent.  Omitting
-        it preserves the legacy flip behavior for older MCP callers; the
-        dashboard always supplies it explicitly.  TOML- and subsystem-managed
-        rows return bounded typed refusals rather than claiming success.
+        ``enabled`` is required, so retries are idempotent. TOML- and
+        subsystem-managed rows return bounded typed refusals rather than
+        claiming success.
         """
         resolved_id = _resolve_schedule_tool_id(task_id, id, "schedule_toggle")
         try:

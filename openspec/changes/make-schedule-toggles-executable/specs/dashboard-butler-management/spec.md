@@ -5,6 +5,8 @@ The schedules tab SHALL provide full CRUD management of a butler's scheduled tas
 
 The enabled badge SHALL send an explicit requested `enabled` state through the dashboard schedules API and the canonical `schedule_toggle` MCP action. The tab SHALL wait for the server response rather than claim an optimistic state. A successful response SHALL provide the observed state and safe `schedule.toggle` audit evidence. Missing or managed refusals SHALL appear as errors, never as pause/resume successes. Each row SHALL remain pending until its own toggle request settles, even when another row's request settles first.
 
+The dashboard SHALL attribute each schedule-toggle audit row to the authenticated owner, not the addressed butler. It SHALL retain the butler and schedule as target context and record the observed outcome for success or the bounded refusal code for failure.
+
 #### Scenario: Schedule table columns
 - **WHEN** schedules are loaded
 - **THEN** a table displays: Name, Cron expression (monospace badge), Mode (prompt/job badge), Prompt/Job details (truncated to 80 chars), Complexity (tier badge), Enabled toggle (On/Off badge, clickable), Source, Next Run (relative time with absolute tooltip), Last Run (relative time with absolute tooltip), and Actions (Edit, Delete)
@@ -40,6 +42,12 @@ The enabled badge SHALL send an explicit requested `enabled` state through the d
 - **WHEN** a toggle response reports an observed state and `audit.action="schedule.toggle"`
 - **THEN** the schedules tab renders the observed enabled/disabled state
 - **AND** it exposes the safe audit action/result as a local receipt
+
+#### Scenario: Schedule toggle audit distinguishes actor from target
+- **WHEN** the owner requests a schedule toggle that succeeds or receives a managed refusal
+- **THEN** the audit row records the authenticated owner as actor
+- **AND** it records the addressed butler and schedule separately as target context
+- **AND** it records the observed outcome on success or the bounded refusal code on failure
 
 #### Scenario: Managed or missing toggle refusal remains an error
 - **WHEN** the canonical action returns `SCHEDULE_NOT_FOUND`, `SCHEDULE_TOML_MANAGED`, or `SCHEDULE_MANAGED`

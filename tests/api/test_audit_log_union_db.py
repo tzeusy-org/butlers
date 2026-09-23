@@ -32,6 +32,7 @@ a live-UNION-absent assertion — those negative tests were removed with the dro
 
 from __future__ import annotations
 
+import json
 import shutil
 import uuid
 from datetime import UTC, datetime
@@ -44,8 +45,10 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import MCPClientManager, get_mcp_manager
 from butlers.api.routers import audit as audit_module
 from butlers.api.routers import model_settings as model_settings_module
+from butlers.api.routers import schedules as schedules_module
 from butlers.api.routers.audit import AuditTableNotAvailableError, log_audit_entry
 from butlers.core.state import state_set
 from butlers.db import register_jsonb_codec
@@ -146,6 +149,72 @@ async def test_log_audit_entry_lands_in_canonical_audit_log(
     entry = next(e for e in body["data"] if e["action"] == "schedule.create")
     assert entry["actor"] == "qa"  # actor <- butler
     assert entry["target"] == "/api/qa/schedules"  # target <- request_summary.path
+
+
+@pytest.mark.parametrize("refused", [False, True])
+async def test_schedule_toggle_audit_attributes_owner_and_records_outcome(
+    pool: asyncpg.Pool, audit_app: FastAPI, refused: bool
+) -> None:
+    schedule_id = uuid.uuid4()
+    result = (
+        {
+            "id": str(schedule_id),
+            "status": "error",
+            "code": "SCHEDULE_MANAGED",
+            "message": "managed schedule",
+        }
+        if refused
+        else {
+            "id": str(schedule_id),
+            "name": "daily_digest",
+            "source": "db",
+            "status": "unchanged",
+            "outcome": "already_requested",
+            "requested_enabled": False,
+            "observed_enabled": False,
+            "changed": False,
+            "next_run_at": None,
+            "audit": {
+                "action": "schedule.toggle",
+                "result": "success",
+                "target": f"schedule:{schedule_id}",
+            },
+        }
+    )
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = pool
+    audit_app.dependency_overrides[schedules_module._get_db_manager] = lambda: mock_db
+    mock_client = AsyncMock()
+    mock_client.call_tool.return_value = [MagicMock(text=json.dumps(result))]
+    mock_manager = AsyncMock(spec=MCPClientManager)
+    mock_manager.get_client.return_value = mock_client
+    audit_app.dependency_overrides[get_mcp_manager] = lambda: mock_manager
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=audit_app), base_url=BASE_URL
+    ) as client:
+        response = await client.patch(
+            f"/api/butlers/atlas/schedules/{schedule_id}/toggle", json={"enabled": False}
+        )
+
+    assert response.status_code == (409 if refused else 200)
+    row = await pool.fetchrow(
+        "SELECT actor, target, metadata, result, error FROM public.audit_log "
+        "WHERE action = 'schedule.toggle'"
+    )
+    assert row is not None
+    assert row["actor"] == "owner"
+    assert row["target"] == f"schedule:{schedule_id}"
+    assert row["metadata"]["butler"] == "atlas"
+    assert row["metadata"]["schedule_id"] == str(schedule_id)
+    assert row["metadata"]["requested_enabled"] is False
+    assert row["result"] == ("error" if refused else "success")
+    assert row["error"] == ("SCHEDULE_MANAGED" if refused else None)
+    if refused:
+        assert row["metadata"]["code"] == "SCHEDULE_MANAGED"
+    else:
+        assert row["metadata"]["observed_enabled"] is False
+        assert row["metadata"]["outcome"] == "already_requested"
 
 
 # NOTE: the pre-sw_026 "genuinely legacy dashboard_audit_log row not read live"

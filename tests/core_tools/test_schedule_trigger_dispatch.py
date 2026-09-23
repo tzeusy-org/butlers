@@ -301,9 +301,20 @@ async def test_schedule_toggle_is_registered_and_returns_observed_receipt(pool):
         await pool.fetchval("SELECT enabled FROM scheduled_tasks WHERE id = $1", task_id) is False
     )
 
+    retry = await toggle(task_id=str(task_id), enabled=False)
+    assert retry["status"] == "unchanged"
+    assert retry["outcome"] == "already_requested"
+    assert retry["observed_enabled"] is False
+
+    with pytest.raises(TypeError):
+        await toggle(task_id=str(task_id))
+    assert (
+        await pool.fetchval("SELECT enabled FROM scheduled_tasks WHERE id = $1", task_id) is False
+    )
+
 
 async def test_schedule_toggle_returns_typed_refusals(pool):
-    """Missing and TOML-managed rows never impersonate a successful toggle."""
+    """Missing, TOML, and other managed rows never impersonate a toggle."""
     from butlers.core.scheduler import schedule_create
 
     toggle = _register_and_grab_schedule_toggle(pool, _RecordingDaemon())
@@ -317,3 +328,20 @@ async def test_schedule_toggle_returns_typed_refusals(pool):
     assert managed["status"] == "error"
     assert managed["code"] == "SCHEDULE_TOML_MANAGED"
     assert await pool.fetchval("SELECT enabled FROM scheduled_tasks WHERE id = $1", task_id) is True
+
+    for source in ("module", ""):
+        other_id = await schedule_create(
+            pool, f"managed-toggle-{source or 'empty'}", "0 9 * * *", "managed"
+        )
+        await pool.execute("UPDATE scheduled_tasks SET source = $2 WHERE id = $1", other_id, source)
+        before = await pool.fetchrow(
+            "SELECT enabled, next_run_at FROM scheduled_tasks WHERE id = $1", other_id
+        )
+        other_managed = await toggle(task_id=str(other_id), enabled=False)
+        after = await pool.fetchrow(
+            "SELECT enabled, next_run_at FROM scheduled_tasks WHERE id = $1", other_id
+        )
+        assert other_managed["status"] == "error"
+        assert other_managed["code"] == "SCHEDULE_MANAGED"
+        assert after["enabled"] == before["enabled"] is True
+        assert after["next_run_at"] == before["next_run_at"]

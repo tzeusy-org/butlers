@@ -2859,22 +2859,20 @@ async def schedule_toggle(
     pool: asyncpg.Pool,
     task_id: uuid.UUID,
     *,
-    enabled: bool | None = None,
+    enabled: bool,
     stagger_key: str | None = None,
     max_stagger_seconds: int = _DEFAULT_MAX_STAGGER_SECONDS,
 ) -> dict[str, Any]:
     """Set one runtime schedule to the requested enabled state.
 
-    ``enabled`` is the canonical, retry-safe request: repeating the same
+    ``enabled`` is the required, retry-safe request: repeating the same
     request returns an unchanged receipt instead of flipping the row again.
-    ``None`` is retained only for legacy MCP callers and derives the inverse
-    while holding the row lock; new callers must send the desired state.
 
     TOML and other non-DB rows are configuration- or subsystem-managed and
     cannot be changed through this interactive action.  Every refusal is a
     bounded result rather than a false success.
     """
-    if enabled is not None and not isinstance(enabled, bool):
+    if not isinstance(enabled, bool):
         return _schedule_toggle_error(
             task_id,
             "SCHEDULE_TOGGLE_INVALID",
@@ -2899,7 +2897,7 @@ async def schedule_toggle(
                     f"Schedule {task_id} not found",
                 )
 
-            source = str(row["source"] or "db")
+            source = str(row["source"])
             if source == "toml":
                 return _schedule_toggle_error(
                     task_id,
@@ -2916,7 +2914,7 @@ async def schedule_toggle(
                 )
 
             current_enabled = bool(row["enabled"])
-            requested_enabled = not current_enabled if enabled is None else enabled
+            requested_enabled = enabled
             if current_enabled == requested_enabled:
                 observed_next_run_at = row["next_run_at"]
                 changed = False
