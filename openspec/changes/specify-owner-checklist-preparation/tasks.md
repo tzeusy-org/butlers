@@ -10,8 +10,10 @@
 - [ ] 0.3 Reconcile owner-confirmation boundaries with draft custody PR #4211
   without treating its proposed receipt as adopted or conflating physical
   custody with checklist coverage. Allocate a Switchboard-owned, separately
-  reviewed owner-confirmation/validation seam and authenticated Dashboard
-  forwarding contract before any complete receipt is enabled.
+  reviewed pre-read owner selection grant and final owner-confirmation seam,
+  with an authenticated Dashboard forwarding contract. Verify grant issue and
+  source-owner validation before any specialist fact read; verify final
+  confirmation before any complete receipt is enabled.
 - [ ] 0.4 Allocate Finance and Travel source reads/fences to their owning
   butlers under separate bounded MCP contracts. General cannot mark those
   sources covered until each owner proves immutable version, current read
@@ -20,9 +22,10 @@
 ## 1. General-local owner checklist and review
 
 - [ ] 1.1 Add opt-in General-local packet/revision/ordered-clause storage
-  through an approved module and migration, preserving immutable prior
-  revisions. Enforce 200 clauses, 500 selected links, and 10 accepted links
-  per clause without truncation. No canonical General capture rewrite.
+  and separately named owner-confirmed exclusion provenance through an
+  approved module and migration, preserving immutable prior revisions.
+  Enforce 200 active-plus-excluded clauses, 500 selected links, and 10 accepted
+  links per clause without truncation. No canonical General capture rewrite.
 - [ ] 1.2 Add owner-only draft/review/status tool surfaces. Keep model match
   proposals non-authoritative and derive only `missing`, `needs_review`,
   `unavailable`, or `covered` with typed next steps. Declined clauses require
@@ -31,17 +34,23 @@
   or CAS admission seam compatible with the settled collection-item update
   path. A mutable item ID, filename, or timestamp alone is unavailable.
 - [ ] 1.4 Add the server-held owner confirmation record, binding exact
-  checklist revision, ordered accepted match manifest, source versions,
-  canonical digest, operation ID, owner provenance and expiry. An LLM-supplied
-  actor or receipt-shaped payload has no confirmation authority.
+  checklist revision, ordered accepted match manifest, exclusion provenance,
+  source versions, canonical digest, operation ID, owner provenance and expiry.
+  An LLM-supplied actor or receipt-shaped payload has no confirmation
+  authority.
 
 ## 2. Specialist evidence and immutable receipt
 
 - [ ] 2.1 If Finance/Travel evidence is in an adopted implementation slice,
   add owner-selected, read-only, minimal source resolution through Switchboard
-  MCP. Source-owning tests must prove no raw receipt/document copy and no
-  direct General peer-schema access. Absence of an immutable source version
-  yields `unavailable` with reason `version_unverifiable`.
+  MCP. Before any source lookup, Switchboard must validate a server-held
+  owner selection grant against General's packet/revision/match manifest and
+  issue an unforgeable, request-bound assertion the source owner verifies.
+  Source-owning tests must prove no label, existence signal, fact, or version
+  leaks on an absent, forged, unselected, mismatched, revoked, or unreadable
+  grant; no raw receipt/document copy; and no direct General peer-schema
+  access. Absence of an immutable source version yields `unavailable` with
+  reason `version_unverifiable`.
 - [ ] 2.2 Specify and independently review each source owner's version/read
   fence, source-side mutation/revocation serialization, bounded lease/ack,
   crash expiry, and failure categories before enabling `covered` for that
@@ -53,9 +62,9 @@
   Store one immutable receipt/index only for current complete coverage; keep
   partial status as typed evidence without a complete receipt.
 - [ ] 2.4 Implement idempotent operation identity, owner-only bounded index
-  export, archive/reopen, historical receipt/supersession read, and rollback
-  preservation. Do not create a PDF, external send, or submission status as a
-  side effect.
+  export with active clauses and confirmed exclusions, archive/reopen,
+  historical receipt/supersession read, and rollback preservation. Do not
+  create a PDF, external send, or submission status as a side effect.
 - [ ] 2.5 Link an existing deadline or commitment only on explicit owner
   request. Only a preparation-specific commitment may close from the exact
   receipt; submission and outcome obligations retain separate closure proof.
@@ -63,8 +72,10 @@
 ## 3. Future behavior-executing verification and handoff
 
 - [ ] 3.1 Extend the nearest General tool tests for exact owner-entered
-  revision/order, four clause states, ambiguous proposal, typed limits,
-  owner-only export, and forged confirmation refusal. Prefer one
+  revision/order, four active-clause states, first-intake routing without a
+  preexisting revision, exclusion-to-complete receipt/export provenance,
+  ambiguous proposal, typed limits, owner-only export, and forged confirmation
+  refusal. Prefer one
   parametrized failure matrix over duplicated fixture setup.
 - [ ] 3.2 Run real-PostgreSQL revision races: r1 versus r2 preparation has one
   current winner; keep r1 unchanged while one accepted General-local source
@@ -94,7 +105,8 @@
 - [ ] 4.1 Only after the owner adopts the exact text and `bu-2jtfw.9` is
   reconciled, apply one canonical General manifesto/tool-inventory amendment
   and any separately approved Switchboard routing contract. Update user-facing
-  copy to say complete against the supplied list, never official/eligible.
+  copy to say complete against the active clauses of the owner-confirmed list
+  with explicit exclusions disclosed, never official/eligible.
 - [ ] 4.2 Before archive, audit other active MODIFIED blocks for whole-
   requirement overwrite risk, verify source-owner contracts and migrations,
   stage a read-compatible rollback target that preserves old receipt

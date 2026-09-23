@@ -17,7 +17,8 @@ amendment adds a different verb: owner-reviewed checklist preparation.
 > review, or cannot currently be checked, and produce a source-linked index
 > after you confirm exact matches. A preparation receipt names the exact
 > checklist and evidence versions reviewed. It says only that the packet was
-> complete against *your supplied list at that preparation time*.
+> complete against *the active clauses of your confirmed list revision at that
+> preparation time*, and separately lists any clauses you explicitly excluded.
 
 ## General: addition to What We Refuse to Hold
 
@@ -39,21 +40,27 @@ itself. Neither proposal grants owner-confirmation authority to an LLM.
 
 ## Proposed Switchboard routing additions
 
-- Route an owner-supplied *general administrative checklist* and a question
-  about clause/evidence preparation to General, after asking for the exact
-  checklist revision and selected sources. If the owner asks General to
-  discover official requirements, decide eligibility, or submit, refuse that
-  claim and request the authoritative list or an explicitly authorized
-  external workflow; do not fabricate one.
+- Route first intake of an owner-supplied *general administrative checklist*
+  to General without requiring a packet ID, existing revision, or selected
+  sources: General creates the draft and seeks owner confirmation of its
+  ordered r1 clauses. For follow-up status or preparation against an existing
+  packet, identify the exact revision and owner-selected sources; ask when
+  either is missing or ambiguous, without substituting a guessed revision or
+  caller-asserted selection. If the owner asks General to discover official
+  requirements, decide eligibility, or submit, refuse that claim and request
+  the authoritative list or an explicitly authorized external workflow; do
+  not fabricate one.
 - Route a trip-specific pre-departure checklist, visa/passport validity, or
   destination admissibility question to Travel. General may link a
   Travel-owned document door into an owner-supplied generic packet only under
-  a separately reviewed minimal MCP read/version fence; it does not replace
-  Travel's trip document registry.
+  a separately reviewed pre-read owner selection grant and minimal MCP
+  read/version fence; it does not replace Travel's trip document registry.
 - Route receipt, invoice, transaction, refund, and financial-loan truth to
   Finance. General may request an owner-selected minimal receipt fact through
-  Switchboard MCP only after Finance admits that bounded read and version
-  fence. A Finance record ID or payment alone never satisfies a clause.
+  Switchboard MCP only after Finance verifies a server-held pre-read owner
+  selection grant for the exact packet/revision/match/source and admits that
+  bounded read and version fence. A Finance record ID or payment alone never
+  satisfies a clause.
 - Route an identified personal item's last *reported* whereabouts, borrow,
   lend, or return to General's separate proposed custody capability if that
   proposal is adopted. A request that could mean either physical custody or

@@ -5,14 +5,17 @@
 General SHALL prepare only against an exact, owner-supplied and confirmed
 checklist revision. A model-segmented pasted list MUST remain a draft until
 the owner confirms its ordered clauses. Each revision MUST retain the owner's
-ordered clauses and any explicit
+ordered active clauses and a separately visible manifest of any explicit
 owner-confirmed exclusion without rewriting an earlier revision. The owner
-MUST be able to inspect every clause as exactly one of `missing`,
-`needs_review`, `unavailable`, or `covered`; no model proposal, ambiguous
-match, unreadable source, or silent waiver may become `covered`. The system
+MUST be able to inspect every active clause as exactly one of `missing`,
+`needs_review`, `unavailable`, or `covered`; excluded clauses retain their
+prior identity/text and confirmation provenance but have no coverage state.
+No model proposal, ambiguous match, unreadable source, or silent waiver may
+become `covered`. The system
 MUST NOT present the supplied list as an official or exhaustive requirements
-list. A packet SHALL refuse more than 200 clauses, 500 selected evidence
-links, or 10 accepted links for one clause instead of silently truncating.
+list. A packet SHALL refuse more than 200 active-plus-excluded clauses, 500
+selected evidence links, or 10 accepted links for one clause instead of
+silently truncating.
 
 ID: REQ-owner-checklist-preparation-001
 Source: heart-and-soul/vision.md Rules 1 and 6; specify-owner-checklist-preparation/design.md §State and source vocabulary
@@ -22,6 +25,11 @@ Scope: v1-mandatory
 - **WHEN** the owner confirms the exact ordered clauses of a supplied checklist
 - **THEN** General MUST create an immutable revision with its exact clause order and digest
 - **AND** the response MUST say that official requirements have not been discovered or verified
+
+#### Scenario: First checklist intake does not require an existing revision
+- **WHEN** the verified owner supplies a new general administrative checklist with no packet or selected sources yet
+- **THEN** Switchboard MUST route bounded intake to General so it can draft the list and seek owner confirmation for revision r1
+- **AND** neither a preexisting revision nor source selection MAY be a prerequisite to that initial route
 
 #### Scenario: No selected match is missing rather than silently covered
 - **WHEN** a clause has no selected or proposed source match
@@ -41,6 +49,8 @@ Scope: v1-mandatory
 #### Scenario: An edit or declined clause creates a new revision
 - **WHEN** the owner changes, reorders, or explicitly excludes a clause
 - **THEN** General MUST create a successor revision and retain the prior revision unchanged
+- **AND** the successor MUST retain the excluded clause's prior identity/text and owner-confirmation provenance separately from active clause states
+- **AND** later revisions MUST keep that exclusion visible until the owner explicitly reintroduces the clause
 - **AND** an LLM or silent filter MUST NOT exclude a clause from the current list
 
 #### Scenario: Packet limits refuse without losing supplied clauses
@@ -61,7 +71,14 @@ locator, row ID, filename, or fetch time alone MUST yield `unavailable` with
 reason `version_unverifiable`. Finance receipt and transaction truth SHALL
 remain Finance-owned, and trip document truth SHALL remain Travel-owned;
 General MUST use Switchboard MCP for any specialist resolution and MUST NOT
-read peer schemas or copy raw specialist documents into its packet.
+read peer schemas or copy raw specialist documents into its packet. Before
+even a minimal specialist label, fact, existence signal, or version is
+returned, the source owner MUST verify an unforgeable server-held owner
+selection grant bound to the exact owner, packet, current revision/digest,
+clause/match, source owner/ID, read purpose, and request. A caller-supplied
+opaque ID or selection claim MUST NOT authorize that read. Until both this
+pre-read proof and a source-owned version/read fence exist, a Finance or Travel
+match MUST remain `unavailable` for coverage.
 
 ID: REQ-owner-checklist-preparation-002
 Source: heart-and-soul/architecture.md §Why MCP as the Universal Interface; specify-owner-checklist-preparation/design.md §Evidence authority and commit fence
@@ -81,7 +98,12 @@ Scope: v1-mandatory
 #### Scenario: Specialist source without a commit fence stays unavailable
 - **WHEN** Finance or Travel can return a record but has no reviewed source-owned version/read fence through General's commit
 - **THEN** General MUST keep that selected source `unavailable` for current completeness
-- **AND** it MAY display a minimal owner-only source door without copying a receipt image or travel document body
+- **AND** it MAY display only an owner-supplied opaque door until a separately validated pre-read grant permits a source-derived label or fact, without copying a receipt image or travel document body
+
+#### Scenario: Forged or unselected specialist source is refused before disclosure
+- **WHEN** an MCP caller presents a known opaque source ID without a live server-held grant for this owner, packet, revision, clause/match, source, and read request
+- **THEN** the source owner MUST refuse before returning even a specialist label, existence signal, clause fact, or version
+- **AND** absent, mismatched, revoked, expired, unreadable, or fabricated grants MUST yield only a content-blind typed refusal with packet revision and history unchanged
 
 #### Scenario: Specialist read failure does not become coverage
 - **WHEN** Switchboard MCP or the owning specialist refuses, times out, loses read authority, or reports a changed version
@@ -98,11 +120,13 @@ Scope: v1-mandatory
 An LLM MAY propose matches but MUST NOT mint an owner-confirmed preparation
 receipt. General SHALL issue one immutable receipt and exportable index only
 after a server-held confirmation from a verified owner boundary binds the
-exact checklist revision, ordered clause decisions, accepted source versions,
-operation identity, and canonical payload digest. A caller-supplied actor,
-confirmation flag, source reference, or receipt-shaped object MUST NOT supply
+exact checklist revision, ordered active clause decisions, excluded-clause
+provenance, accepted source versions, operation identity, and canonical
+payload digest. A caller-supplied actor, confirmation flag, source reference,
+or receipt-shaped object MUST NOT supply
 that authority. The receipt MUST mean only **complete against the
-owner-supplied checklist and pinned evidence versions at preparation time**;
+active clauses of the owner-confirmed supplied-list revision and pinned
+evidence versions at preparation time, with explicit exclusions disclosed**;
 it MUST NOT mean submitted, accepted, eligible, legally sufficient, or
 compliant. Receipt and index content SHALL remain owner-only.
 
@@ -114,6 +138,11 @@ Scope: v1-mandatory
 - **WHEN** the verified owner confirms the exact current revision and every clause is `covered` at commit
 - **THEN** General MUST return one immutable receipt and structured index naming the revision digest and every accepted source version
 - **AND** the displayed completion wording MUST be limited to the supplied list and preparation time
+
+#### Scenario: Excluded supplied clause remains visible after completion
+- **WHEN** the owner confirms r2 with active clauses A and C after explicitly excluding B from r1 containing A, B, and C
+- **THEN** a complete r2 receipt and owner-only export MUST list A and C as active with their states and B separately with its prior identity/text and verified owner-exclusion provenance
+- **AND** the completion claim MUST name the active r2 list and its explicit exclusion rather than imply that B was covered or never supplied
 
 #### Scenario: Partial or unverifiable packet has no complete receipt
 - **WHEN** any current clause is `missing`, `needs_review`, or `unavailable`
@@ -127,7 +156,7 @@ Scope: v1-mandatory
 
 #### Scenario: Export retains source trace without public disclosure
 - **WHEN** the owner exports a confirmed packet index
-- **THEN** the export MUST retain exact checklist revision, ordered clause states, source doors, and immutable versions
+- **THEN** the export MUST retain exact checklist revision, ordered active clause states, separately confirmed exclusions, source doors, and immutable versions
 - **AND** private checklist text and specialist details MUST NOT enter a public catalog, broad cross-butler summary, or unauthenticated status route
 
 ### Requirement: [TARGET-STATE] Current completion is revision-fenced and replay-safe
