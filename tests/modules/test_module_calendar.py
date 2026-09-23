@@ -117,11 +117,13 @@ class _ProviderDouble(CalendarProvider):
         event: CalendarEvent | None = None,
         conflicts: list[CalendarEvent] | None = None,
         busy: list[BusyWindow] | None = None,
+        free_busy_error: Exception | None = None,
     ) -> None:
         self._events = events or []
         self._event = event
         self._conflicts = conflicts or []
         self._busy = busy
+        self._free_busy_error = free_busy_error
         self.free_busy_calls: list[dict] = []
         self.list_calls: list[dict] = []
         self.get_calls: list[dict] = []
@@ -175,6 +177,8 @@ class _ProviderDouble(CalendarProvider):
                 "timezone": timezone,
             }
         )
+        if self._free_busy_error is not None:
+            raise self._free_busy_error
         if self._busy is not None:
             return list(self._busy)
         return [BusyWindow(start_at=c.start_at, end_at=c.end_at) for c in self._conflicts]
@@ -2483,6 +2487,24 @@ class TestFindFreeSlotsTool:
             search_end=_dt(17),
         )
         assert result["slots"] == []
+
+    async def test_tool_returns_structured_error_on_provider_failure(self):
+        provider = _ProviderDouble(
+            free_busy_error=CalendarAuthError("access_token=provider-secret expired")
+        )
+        _, mcp = await self._module(provider)
+
+        result = await mcp.tools["calendar_find_free_slots"](
+            duration_minutes=60,
+            search_start=_dt(9),
+            search_end=_dt(12),
+        )
+
+        assert result["status"] == "error"
+        assert result["slots"] == []
+        assert result["duration_minutes"] == 60
+        assert result["calendar_ids"] == ["primary"]
+        assert "provider-secret" not in result["error"]
 
     async def test_tool_rejects_bad_duration(self):
         provider = _ProviderDouble(busy=[])

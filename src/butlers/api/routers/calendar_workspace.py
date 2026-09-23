@@ -165,6 +165,7 @@ _RRULE_FREQ_UNIT = {
 # Keyset pagination bounds for the workspace read.
 _WORKSPACE_DEFAULT_LIMIT = 200
 _WORKSPACE_MAX_LIMIT = 1000
+_FIND_TIME_UNAVAILABLE_REASON = "Free/busy lookup unavailable; try again shortly."
 
 # Allowed values for the server-side facets. ``status`` mirrors the computed
 # values produced by ``_entry_status`` / ``STATUS_SQL``; ``source_type`` mirrors
@@ -2982,6 +2983,29 @@ async def find_time(
             else list(body.calendar_ids or [])
         )
 
+        if result.get("status") == "error":
+            # Calendar tools fail closed with a structured result so the MCP
+            # caller can diagnose the provider failure. The dashboard owns a
+            # content-blind availability contract: never forward the raw
+            # provider/error fields into the owner-facing response.
+            await log_audit_entry(
+                db,
+                body.butler_name,
+                "calendar.workspace.find_time",
+                summary,
+                result="error",
+                error="MCP call failed",
+            )
+            return ApiResponse[CalendarWorkspaceFindTimeResponse](
+                data=CalendarWorkspaceFindTimeResponse(
+                    slots=[],
+                    duration_minutes=body.duration_minutes,
+                    calendar_ids=calendar_ids,
+                    available=False,
+                    reason=_FIND_TIME_UNAVAILABLE_REASON,
+                )
+            )
+
         response_payload = CalendarWorkspaceFindTimeResponse(
             slots=slots,
             duration_minutes=body.duration_minutes,
@@ -2990,11 +3014,10 @@ async def find_time(
         )
         await log_audit_entry(db, body.butler_name, "calendar.workspace.find_time", summary)
         return ApiResponse[CalendarWorkspaceFindTimeResponse](data=response_payload)
-    except HTTPException as exc:
+    except HTTPException:
         # Fail-open + explicit-degraded: a free/busy lookup that cannot reach the
         # butler must NOT 500 the panel. Return an honest degraded envelope so the
         # UI renders "free/busy unavailable" instead of a misleading "no slots".
-        reason = exc.detail if isinstance(exc.detail, str) else "free/busy lookup unavailable"
         await log_audit_entry(
             db,
             body.butler_name,
@@ -3009,7 +3032,7 @@ async def find_time(
                 duration_minutes=body.duration_minutes,
                 calendar_ids=list(body.calendar_ids or []),
                 available=False,
-                reason=reason,
+                reason=_FIND_TIME_UNAVAILABLE_REASON,
             )
         )
 
