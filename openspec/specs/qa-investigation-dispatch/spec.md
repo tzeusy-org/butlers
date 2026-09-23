@@ -306,11 +306,13 @@ The dispatcher SHALL emit structured journal events into `public.qa_investigatio
 - **THEN** the dispatcher inserts a `qa_investigation_events` row with `step = 'escalated'`, `text` summarizing the reason, and a `detail` referencing the user-action surface (e.g., `"surfaced on /overview attention"`)
 
 ### Requirement: Raw Log Retention and Cleanup
-QA SHALL purge raw log content from `qa_findings.structured_evidence.evidence_lines[]` on a documented schedule, while preserving the narrative payload indefinitely.
+QA SHALL purge raw log content from
+`qa_findings.structured_evidence.investigation_notes.evidence_lines[]` on a
+documented schedule, while preserving the other narrative fields indefinitely.
 
 #### Scenario: Daily retention cleanup
 - **WHEN** the daily QA cleanup job runs (configured by `[modules.qa].retention_cleanup_hour`, default 04:00 UTC)
-- **THEN** for every `qa_findings` row whose linked `healing_attempts.closed_at` is non-null AND older than 14 days, OR whose own `created_at` is older than 30 days, the `evidence_lines[]` field is stripped from `structured_evidence.investigation_notes`
+- **THEN** for every `qa_findings` row whose linked `healing_attempts.closed_at` is non-null and older than 14 days, OR which has no linked attempt and `created_at` older than 30 days, the `evidence_lines[]` field is stripped from `structured_evidence.investigation_notes`
 - **AND** all other narrative fields (`headline`, `hypothesis`, `why_this_fix`, `diff_snapshot`, `counter_evidence`, `blurb_segments`, `claims`) are preserved
 - **AND** the `qa_findings_retention_purged_total` Prometheus counter is incremented by the number of rows updated in the run
 

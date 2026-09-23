@@ -5,11 +5,19 @@
 - [ ] 1.3 Add `healing.enabled` config field to `ButlerConfig` (default: `true`). Support `BUTLERS_HEALING_ENABLED` env var override.
 - [ ] 1.4 Guard healing module initialization in daemon startup — skip self-healing module load, worktree reaping, and healing tool registration when `healing.enabled = false`.
 - [ ] 1.5 Guard `create_healing_worktree()` and `reap_stale_worktrees()` — return early/no-op when healing is disabled, without requiring a `.git` directory.
-- [ ] 1.6 Add `GET /ready` endpoint to dashboard-api (`src/butlers/api/app.py`) after the `restore-butler-control-plane-liveness` observer contract lands. Check DB connectivity, expected roster, fresh complete observer snapshot, fleet identity/advertised route acceptance, QA patrol freshness, supervised control-plane loops, and the effect-free fixed-target Switchboard route preflight defined by `REQ-dashboard-api-063`. It exercises selection/policy/endpoint resolution and a bounded identity GET, not transactional target acceptance. Return 200 only when all checks pass, otherwise 503 with fixed content-blind boolean checks. Allow the exact `GET /ready` pair through `OwnerAuthMiddleware`.
+- [ ] 1.6 After Q4 (`bu-fvw4ap.4`) lands its one public exact `GET /ready`
+  handler and OwnerAuthMiddleware exception, configure the k3s readiness probe
+  to consume that route and keep `/health` for process liveness. The chart
+  MUST NOT register a second endpoint, owner-auth exception, or independent
+  readiness implementation. A missing Q4 route is an integration hold, not a
+  reason to restore the old DB-and-one-roster shortcut.
 - [ ] 1.7 Verify Dockerfile works with read-only `/etc/butler` mount — test `butlers run --config /etc/butler` with a read-only bind mount locally.
 - [ ] 1.8 Write tests for AGENTS.md DB fallback (read-only mock, merge behavior, no-pool degradation).
 - [ ] 1.9 Write tests for healing disable flag (daemon startup with `healing.enabled=false`, worktree no-op).
-- [ ] 1.10 Extend the owning `/ready` behavior tests for a healthy current fleet, DB failure, stale or incomplete observer snapshot, stale QA patrol, failed route canary, and exact public method/path authorization. Reuse the control-plane change's behavior tests rather than adding a parallel gate for the same invariant.
+- [ ] 1.10 Verify the Helm readiness probe targets Q4's exact route and the
+  liveness probe retains `/health`. Reuse Q4's mounted behavior and exact
+  owner-auth tests for readiness states; do not add a second gate species for
+  those same invariants.
 
 ## 2. CNPG Database Integration (homelab repo)
 

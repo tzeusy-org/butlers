@@ -22,6 +22,7 @@ graph TB
         Classify["classify()"]
         Intent["per-target delivery intents"]
         Route["route.execute()"]
+        Preflight["internal read-only route preflight"]
     end
 
     subgraph DomainButler["Domain Butler"]
@@ -51,6 +52,8 @@ graph TB
     Intent -- "fenced route.v1 attempt" --> Route
     Route -- "route.v1 / MCP SSE" --> RouteInbox
     Observer -- "exact roster endpoint / bounded GET" --> Identity
+    Observer -- "bounded internal GET" --> Preflight
+    Preflight -- "identity GET only" --> Identity
     Observer -- "DB-server observation" --> Shared
     RouteInbox --> Spawner
     Spawner -- "ephemeral MCP config / subprocess" --> CLI
@@ -298,6 +301,15 @@ probe before a typed `not_attempted` refusal. A healthy probe or restart never
 clears administrative quarantine. The old dashboard heartbeat POST is retired
 after cutover; owner auth does not make it anonymous. This is an approved
 target contract, not a claim that the current runtime has cut over.
+
+L3's separate Switchboard-owned internal route preflight chooses the fixed
+domain target from Git roster and traverses the pure production resolver,
+then performs only a bounded identity GET. It makes no target MCP call or
+durable evidence write and returns a content-blind result to the Dashboard
+controller. Q4's public `/ready` reads the controller's cached result without
+calling Switchboard per request; k3s and Compose consume the one Q4-owned
+route and owner-auth exception. A positive preflight does not certify target
+inbox acceptance.
 
 ---
 

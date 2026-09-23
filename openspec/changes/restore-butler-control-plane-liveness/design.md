@@ -51,6 +51,33 @@ The scheduler's local cron/deadline decision checks explicit administrative poli
 
 Alternative rejected: restarting every daemon after expiry. Startup registration can briefly make rows look fresh but cannot repair a rejected heartbeat or prove sustained health.
 
+### 3.1. Give the route preflight one read-only Switchboard owner
+
+L3 owns an internal `GET /internal/control-plane/route-preflight` producer on
+Switchboard's existing backend port. It has no caller-selected target or URL.
+The Switchboard process chooses the lexically first configured non-paused
+domain target from its exact Git roster and extracts the pure selection,
+policy, eligibility, compatibility, and endpoint-resolution portion of
+production routing. It then uses L2's response verifier in read-only mode for
+one bounded target identity GET. Read-only mode does not reserve or record a
+probe sequence or refresh liveness. It does not invoke `route.execute` or any
+other target MCP tool, create an intent, or write `routing_log`, registry,
+inbox, session, ingestion, notification, or condition evidence. An unavailable
+Switchboard, DB/policy read, target, verifier, or deadline gives a fixed
+content-blind false result. Switchboard coalesces concurrent requests and
+rate-bounds its identity GET with a cached result; stale cache fails closed
+rather than manufacturing ready state. The internal result contains no target
+name or endpoint and grants no owner-auth or public routing authority.
+
+Q4's separately supervised Dashboard controller samples this internal result
+on a bounded cadence and stores it in its existing cached readiness snapshot.
+The public exact `GET /ready` only reads that snapshot; it performs no network
+fanout or DB mutation. L3 tests the producer against the real production
+resolver and proves absence of target calls and durable writes. Q4 tests the
+mounted public projection and exact owner-auth exception. D3 may later reuse
+L3's pure resolver but must not replace this preflight with its side-effecting
+intent-dispatch worker.
+
 ### 4. Observe QA and correlate fleet failure outside QA
 
 The Dashboard/control-plane supervisor schedules fleet reconciliation and QA patrol-age checks independently of QA's own scheduler. Its expected set comes from the Git roster. A complete snapshot may resolve a condition; failed or partial snapshots may add evidence only, following the active infrastructure reliability lifecycle. A common observer/control failure is one condition identity with an affected-daemon set in evidence, not one identity per daemon. At cutover the QA `infra_state` source in the active `durable-dashboard-terminal-action-recovery` change reads that condition instead of deriving per-butler failures from old `last_seen_at`/`quarantined_at`. Existing per-butler condition episodes remain linked and historically readable, but do not page or dispatch duplicate investigations; they resolve only after a complete receiver-observed snapshot proves that specific daemon recovered. QA discovery persists even if LLM/GitHub dispatch is unavailable.
@@ -73,9 +100,25 @@ Alternative rejected: each stale daemon opening its own notification or QA inves
 
 `GET /health` and `GET /api/health` remain process-only. The public exact `GET /ready` introduced by active `k3s-deployment-helm-chart` is the single semantic readiness endpoint in both Compose and k3s. Retain its response shape: HTTP 200 `{"ready":true}` only when fully ready; HTTP 503 with `{"ready":false,"checks":{"postgres":false,"roster":true,"observer":false,"fleet":false,"qa_patrol":false,"supervisors":false,"route_canary":false}}` as an illustrative failure. Check keys are a fixed allowlist of booleans; no daemon names, endpoint addresses, payloads, secrets, or private state. The exact public path has no owner session; other API paths retain owner authentication.
 
-`roster` means the exact configured expected set was loaded, not merely that one row exists. `observer` means a complete controller cycle advanced; `fleet` means every expected non-paused daemon is fresh, correctly identified, latest-epoch, accepting, and compatible under active policy. Explicit owner pause is an intentional exclusion; quarantine and ambiguous review are not. `qa_patrol` means a completed scheduled `clean`, `findings_dispatched`, or genuine filtered-finding `suppressed` cycle with current-config all-enabled-source success provenance within twice configured cadence; `running`, `error`, `skipped_overlap`, synthetic `suppressed`, and ambiguous legacy rows do not count. `supervisors` consumes the existing process-fenced supervised-job health projection only for named Dashboard lifespan loops, including the periodic observer and condition/attention producer when registered there; unavailable, unknown, stale, or stopped evidence is false. The Switchboard runtime-attention delivery worker is outside that projection and reports availability through the linked condition/outbox delivery state, not a falsely healthy Dashboard supervisor. The readiness implementation does not create a competing job-health store or System surface; the owning `bu-c6wjr` work must land first. `route_canary` runs a fixed, content-free Switchboard preflight for the lexically first non-paused configured domain target: it traverses the production route policy, registry eligibility, compatibility, and exact endpoint resolver, then makes one bounded identity GET through the shared verifier with a fixed timeout and schema. It requires a matching current-epoch, accepting response and a successful no-side-effect preflight result. If no such domain target exists or any step fails, the check is false. It creates no route inbox, session, notification, or ingestion record. This check proves the control-plane selection/reachability path, **not** transactional `route.execute` acceptance or downstream session success; target-delivery receipts and failure conditions provide separate evidence. The controller computes one bounded, cached readiness snapshot; an unauthenticated request does not trigger probes or expensive database fanout. If the snapshot is stale or absent, readiness fails closed.
+`roster` means the exact configured expected set was loaded, not merely that one row exists. `observer` means a complete controller cycle advanced; `fleet` means every expected non-paused daemon is fresh, correctly identified, latest-epoch, accepting, and compatible under active policy. Explicit owner pause is an intentional exclusion; quarantine and ambiguous review are not. `qa_patrol` means a completed scheduled `clean`, `findings_dispatched`, or genuine filtered-finding `suppressed` cycle with current-config all-enabled-source success provenance within twice configured cadence; `running`, `error`, `skipped_overlap`, synthetic `suppressed`, and ambiguous legacy rows do not count. `supervisors` consumes the existing process-fenced supervised-job health projection only for named Dashboard lifespan loops, including the periodic observer and condition/attention producer when registered there; unavailable, unknown, stale, or stopped evidence is false. The Switchboard runtime-attention delivery worker is outside that projection and reports availability through the linked condition/outbox delivery state, not a falsely healthy Dashboard supervisor. The readiness implementation does not create a competing job-health store or System surface; the owning `bu-c6wjr` work must land first. `route_canary` consumes the cached outcome of L3's read-only Switchboard internal preflight from Decision 3.1. It requires a matching current-epoch, accepting fixed-target identity response and a successful no-side-effect result. If no such domain target exists or any step fails, the check is false. It proves the control-plane selection/reachability path, **not** transactional `route.execute` acceptance or downstream session success; target-delivery receipts and failure conditions provide separate evidence. The controller computes one bounded, cached readiness snapshot; an unauthenticated request does not trigger probes or expensive database fanout. If the snapshot is stale or absent, readiness fails closed. Q4 alone implements exact public `GET /ready` and its owner-auth method/path exception in `src/butlers/api/app.py`; the active k3s change consumes that route for chart readiness wiring and does not create a second handler or exception.
 
-The canonical launcher may keep Docker `/health` for process management, but deployment completion waits for at least two observer advances, multiple QA/controller checks, and a sustained interval longer than one liveness TTL with a passing dry-run canary. It emits a content-blind receipt identifying failed check categories, then classifies rollback. A green process during a five-minute post-restart registry window cannot pass. The exact timing and timeout are configurable with safe defaults; the acceptance invariant is the full-TTL boundary.
+The canonical launcher may keep Docker `/health` for process management, but
+deployment completion waits for at least two distinct complete observer
+cycles and two distinct qualifying scheduled QA patrol completions after the
+deployment window starts, under the current enabled-source configuration.
+Those cycles are proven by increasing receiver sequence and separate patrol
+IDs/completion times, not repeated reads of one row. Every sampled semantic
+readiness result must remain true across a sustained interval longer than the
+longest expected liveness TTL; a false/unavailable sample restarts that window.
+The passing route canary is the cached effect-free result, never an executed
+target route. A finite default timeout is derived as two configured QA patrol
+cadences plus the longest configured fleet TTL plus ten minutes of startup and
+probe margin: 35 minutes at today's ten-minute cadence and five-minute TTL.
+Overrides below that derived minimum fail configuration validation. Timeout
+or failure emits a content-blind receipt naming fixed failed check categories
+and classifies rollback; a green process during a five-minute post-restart
+registry window cannot pass. This adopts RFC 0007's distinct patrol-cycle
+contract without changing external-monitor authority.
 
 The active k3s delta's `Readiness probe endpoint` requirement is being reconciled to this stronger contract before both changes can archive. This changeset uses a differently titled requirement to avoid concurrent same-name `MODIFIED` overwrite. Existing external minimal `/api/health` polling remains its own approved operation. The separately specified unconfigured-deadman assurance condition records missing independent monitoring without inventing a failed ping or QA finding. A second external semantic monitor or synthetic route target is an explicit owner gate, not a side effect of this implementation.
 
@@ -90,16 +133,16 @@ Alternative rejected: creating another internal readiness endpoint. It would lea
 - QA intentional pause may make readiness false → show it as an explicit policy reason, not a healthy patrol; this is the honest deployment gate.
 - Switchboard worker or delivery target is unavailable during a control-plane incident → retain one pending/failed episode and expose its status; independently supervise producer and worker progress, while external functional monitoring remains a separate owner gate.
 - External send is uncertain → preserve terminal `uncertain` without automatic replay or a new escalation page; manual reissue retains the existing owner confirmation and lineage contract.
-- A synthetic route can accidentally create effects or falsely imply delivery → use the fixed-target selection/policy/endpoint preflight and bounded identity GET with no inbox or session write; test negative side effects and keep transactional target acceptance as a separate receipt claim.
+- A synthetic route can accidentally create effects or falsely imply delivery → use L3's fixed-target read-only preflight and bounded identity GET with no target tool call or durable evidence write; test negative side effects and keep transactional target acceptance as a separate receipt claim.
 
 ## Migration Plan
 
 1. Add durable server-allocated per-daemon boot epoch registration plus separated state, policy provenance, and DB-reserved probe sequence. Preserve old fields as a read projection. Test bootstrap GRANT/RLS replay, monotonic registration, crash/retry, and rollback on real PostgreSQL.
 2. Add daemon identity endpoint and Dashboard periodic observer in shadow mode; give Switchboard the narrow shared verifier and DB reserve/record path for one bounded on-demand probe. Verify exact roster binding, malformed/wrong identity, old epoch even with larger probe sequence, failure, and concurrent cross-process probes without changing route authority.
 3. Classify legacy quarantine by provenance and review ambiguous rows. Compare old and new eligibility; do not cut over while unresolved rows are silently active.
-4. Switch routing to receiver observation and bounded stale recheck; decouple local scheduler; enable fleet/QA conditions. Verify auth-enabled cross-layer routing across multiple TTL windows.
+4. Switch routing to receiver observation and bounded stale recheck; add the separate L3-owned read-only route preflight, decouple local scheduler, and enable fleet/QA conditions. Verify auth-enabled cross-layer routing across multiple TTL windows.
 5. Extend the fenced runtime-attention outbox schema, fixed producer, and Switchboard formatter for fleet and QA condition episodes. Start the independent producer and missing-intent reconciler; verify one content-blind episode per condition under concurrent/restart/worker-down faults and all terminal delivery outcomes.
-6. Strengthen `/ready`, launcher receipt, and sustained canary. Reconcile the active k3s `/ready` delta and owner-auth route allowlist before archive. Retire the old heartbeat POST/reporter only after the new path passes cutover tests.
+6. Let Q4 implement the one public `/ready` and auth exception from the cached L3 preflight result. Let k3s consume that route; gate launcher completion on distinct observer and QA patrol cycles with the validated timeout. Retire the old heartbeat POST/reporter only after the new path passes cutover tests.
 7. Roll back code using the preserved schema/projection if required. Keep sticky policy, quarantine provenance, and any already-issued attention episode; rollback cannot authorize a previously denied target or resend an uncertain notification. Roll forward to retire old columns after all consumers migrate.
 
 ## Open Questions

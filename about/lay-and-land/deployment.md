@@ -318,15 +318,21 @@ assert a healthy fleet. Connector heartbeats remain connector-owned MCP calls.
 Docker's `/health` probe remains a process-liveness signal. The canonical
 public `GET /ready` retains the k3s change's boolean `ready` response shape.
 Its checks cover PostgreSQL, roster, observer freshness, expected fleet,
-QA-patrol age, supervised loops, and an effect-free route canary. It returns
+QA-patrol age, supervised loops, and the cached result of L3's internal
+read-only Switchboard route preflight. Q4 alone implements this public route
+and its exact owner-auth exception; k3s and Compose consume it. It returns
 503 with content-blind boolean check results when any required proof is
 missing. The canary tests Switchboard selection and exact-target reachability without
-an inbox write; it cannot certify target transactional acceptance, which is
+an identity-changing write, target MCP call, or inbox write; it cannot certify target transactional acceptance, which is
 represented by actual delivery receipts and conditions.
 
 The Compose launcher and production deploy completion must observe
-fresh progress across multiple probe/patrol cycles beyond one full daemon
-liveness TTL, rather than accepting one Docker `healthy` state. The existing
+two distinct complete observer cycles and two distinct qualifying scheduled
+QA patrol completions after the deploy window starts, with true sampled
+readiness beyond the longest configured daemon TTL. The finite default
+deadline is at least two configured patrol cadences plus that TTL and ten
+minutes (35 minutes at current defaults); shorter overrides fail validation.
+One Docker `healthy` state is insufficient. The existing
 `scripts/compose.sh` currently waits for container process health; that is
 the implementation seam the approved change must replace.
 
