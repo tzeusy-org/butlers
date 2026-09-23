@@ -338,6 +338,15 @@ producer, Q4 owns the one public route and owner-auth exception, and k3s and
 Compose consume that route. This is internal control-plane observation, not a
 transactional target acceptance receipt or a new public monitor.
 
+The L3 implementation keeps receiver-derived route admission behind the
+default-off `BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER=1` switch until the L2
+shadow mismatch ledger and exact-environment rollout gate are separately
+verified. The internal preflight is staged on Switchboard's backend port even
+while legacy routing remains authoritative; its positive cache is invalidated
+by a policy, boot, or observation change and never advances durable liveness.
+See `docs/operations/receiver-derived-routing-cutover.md` for the writer/read
+inventory and rollback boundary. This staging is not live activation.
+
 The L1 staging migration `sw_035` stores policy, observation, compatibility,
 boot epoch and probe sequence separately while retaining the old
 `eligibility_state` as route authority until L3. Matching eligibility audit

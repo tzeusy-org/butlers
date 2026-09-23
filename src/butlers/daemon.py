@@ -596,6 +596,7 @@ class ButlerDaemon:
             approval_push_runtime=self._approval_push_runtime,
             runtime_probe_coordinator=self._build_runtime_probe_coordinator(),
             identity_provider=self._identity_facts,
+            route_preflight=self._build_route_preflight(),
         )
         config = uvicorn.Config(
             app,
@@ -705,6 +706,16 @@ class ButlerDaemon:
         # never infer authority from the pool it happens to hold.
         return RuntimeProbeCoordinator(pool, codex_auth_authority=self._credential_store)
 
+    def _build_route_preflight(self) -> Any | None:
+        """Mount the effect-free route canary only on Switchboard's backend port."""
+        if self.config.name != "switchboard" or self.db is None or self.db.pool is None:
+            return None
+
+        from butlers.config import list_butlers
+        from butlers.tools.switchboard.routing.preflight import RoutePreflight
+
+        return RoutePreflight(self.db.pool, list_butlers(self.config_dir.parent))
+
     @classmethod
     def _build_mcp_http_app(
         cls,
@@ -714,6 +725,7 @@ class ButlerDaemon:
         approval_push_runtime: Any | None = None,
         runtime_probe_coordinator: Any | None = None,
         identity_provider: Any | None = None,
+        route_preflight: Any | None = None,
     ) -> Any:
         """Build a unified ASGI app exposing streamable HTTP and legacy SSE MCP routes."""
         apply_streamable_http_disconnect_patch()
@@ -765,6 +777,13 @@ class ButlerDaemon:
             )
             if not cls._attach_route_via_public_api(streamable_app, identity_route):
                 streamable_app.routes.append(identity_route)
+
+        if butler_name == "switchboard" and route_preflight is not None:
+            from butlers.tools.switchboard.routing.preflight import build_route_preflight_route
+
+            preflight_route = build_route_preflight_route(route_preflight)
+            if not cls._attach_route_via_public_api(streamable_app, preflight_route):
+                streamable_app.routes.append(preflight_route)
 
         # Switchboard's private runtime-probe control plane.  Attached beside
         # /health rather than registered as an MCP tool, so it is invisible to
