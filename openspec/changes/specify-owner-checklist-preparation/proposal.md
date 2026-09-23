@@ -18,13 +18,19 @@ General memory task. Neither package is adopted by this proposal.
 
 - Let the owner supply and revise an exact checklist, select specific source
   doors, review proposed clause-to-evidence matches, and see each clause as
-  `missing`, `needs_review`, `unavailable`, or `covered`.
+  `missing`, `needs_review`, `unavailable`, or `covered`. First intake needs no
+  existing packet revision; an owner-confirmed exclusion stays separately
+  visible rather than silently disappearing from a later complete export.
 - Define an owner-confirmed immutable preparation receipt and exportable index
-  pinned to the exact checklist revision and accepted evidence versions. Its
-  only completion claim is **complete against the owner-supplied list**.
+  pinned to the exact checklist revision, its active and excluded clauses,
+  and accepted evidence versions. Its only completion claim is **complete
+  against the active clauses of the owner-confirmed supplied-list revision,
+  with explicit exclusions disclosed**.
 - Require an authoritative immutable source version, current read authority,
-  and a commit-valid version fence. A filename, mutable locator, row ID, or
-  fetched timestamp alone never qualifies evidence.
+  a server-held pre-read owner selection grant verified by the source owner,
+  and a commit-valid version fence. A caller-asserted source ID, filename,
+  mutable locator, row ID, or fetched timestamp alone never qualifies evidence
+  or authorizes release of a minimal specialist fact.
 - Keep Finance receipts and transactions in Finance, trip documents in Travel,
   and all cross-butler specialist reads through Switchboard MCP. General keeps
   only minimal source doors and owner-reviewed coverage decisions.
