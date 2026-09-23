@@ -98,6 +98,7 @@ if _models_path.exists():
         EntityGift = _models_module.EntityGift
         EntityLoan = _models_module.EntityLoan
         EntityTimelineItem = _models_module.EntityTimelineItem
+        EntityCadenceResponse = _models_module.EntityCadenceResponse
         CreateEntityNoteRequest = _models_module.CreateEntityNoteRequest
         CreateEntityInteractionRequest = _models_module.CreateEntityInteractionRequest
         CreateEntityGiftRequest = _models_module.CreateEntityGiftRequest
@@ -3474,6 +3475,9 @@ async def list_entity_loans(
 # ---------------------------------------------------------------------------
 
 _TIMELINE_PREDICATES = ("contact_note", "life_event", "gift", "loan", "dunbar_tier_override")
+_CADENCE_DEFAULT_WINDOW_DAYS = 30
+_CADENCE_DEFAULT_LIMIT = 200
+_CADENCE_MAX_LIMIT = 1000
 
 
 @router.get("/entities/{entity_id}/timeline", response_model=list[EntityTimelineItem])
@@ -3538,6 +3542,56 @@ async def list_entity_timeline(
         )
         for r in rows
     ]
+
+
+@router.get("/entities/{entity_id}/cadence", response_model=EntityCadenceResponse)
+async def get_entity_cadence(
+    entity_id: UUID,
+    window_days: int = Query(_CADENCE_DEFAULT_WINDOW_DAYS, ge=1, le=365),
+    limit: int = Query(_CADENCE_DEFAULT_LIMIT, ge=1, le=_CADENCE_MAX_LIMIT),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> EntityCadenceResponse:
+    """Return evidence for the interaction count in one rolling window.
+
+    The read is intentionally bounded. Fetching one row beyond ``limit`` lets
+    the response distinguish an exact count from a paginated subset without
+    loading an unbounded interaction history. The echoed bounds keep the UI's
+    label tied to the evidence it actually received.
+    """
+    pool = _pool(db)
+    await _assert_entity_exists(pool, entity_id)
+
+    window_ended_at = datetime.now(UTC)
+    window_started_at = window_ended_at - timedelta(days=window_days)
+    rows = await pool.fetch(
+        """
+        SELECT id
+        FROM facts
+        WHERE entity_id = $1
+          AND starts_with(predicate, 'interaction_')
+          AND predicate NOT IN ('interaction_', 'interaction_note')
+          AND permanence = 'stable'
+          AND validity = 'active'
+          AND scope = 'relationship'
+          AND valid_at >= $2
+          AND valid_at < $3
+        ORDER BY valid_at DESC, created_at DESC
+        LIMIT $4
+        """,
+        entity_id,
+        window_started_at,
+        window_ended_at,
+        limit + 1,
+    )
+    has_more = len(rows) > limit
+    return EntityCadenceResponse(
+        window_days=window_days,
+        window_started_at=window_started_at,
+        window_ended_at=window_ended_at,
+        interaction_count=min(len(rows), limit),
+        completeness="incomplete" if has_more else "complete",
+        has_more=has_more,
+    )
 
 
 # ---------------------------------------------------------------------------

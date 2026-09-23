@@ -1,11 +1,27 @@
-import { describe, expect, it, vi } from "vitest";
+// @vitest-environment jsdom
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, render as renderDom, screen } from "@testing-library/react";
 
 import { PulseStrip } from "@/components/relationship/PulseStrip";
 
 vi.mock("@/hooks/use-entities", () => ({
+  ENTITY_CADENCE_REFRESH_MS: 30_000,
+  ENTITY_CADENCE_MAX_AGE_MS: 90_000,
   useEntityTimeline: vi.fn(() => ({ data: [], isLoading: false })),
+  useEntityCadence: vi.fn(() => ({
+    data: {
+      window_days: 30,
+      window_started_at: "2026-08-17T00:00:00Z",
+      window_ended_at: "2026-09-16T00:00:00Z",
+      interaction_count: 0,
+      completeness: "complete",
+      has_more: false,
+    },
+    isLoading: false,
+    isError: false,
+  })),
   useEntityGifts: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityLoans: vi.fn(() => ({ data: [], isLoading: false })),
   useUpdateEntityDunbarTier: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
@@ -16,7 +32,12 @@ import * as useEntities from "@/hooks/use-entities";
 
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 
-function render(props: { entityId: string; dunbarTier: number | null; isPinned: boolean }): string {
+function render(props: {
+  entityId: string;
+  dunbarTier: number | null;
+  isPinned: boolean;
+  cadenceWindowDays?: number;
+}): string {
   const queryClient = new QueryClient();
   return renderToStaticMarkup(
     <QueryClientProvider client={queryClient}>
@@ -26,6 +47,15 @@ function render(props: { entityId: string; dunbarTier: number | null; isPinned: 
 }
 
 describe("PulseStrip", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-16T00:00:30Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("renders all four stat tiles", () => {
     const html = render({ entityId: "e-1", dunbarTier: null, isPinned: false });
     expect(html).toContain("Dunbar tier");
@@ -47,6 +77,159 @@ describe("PulseStrip", () => {
   it("shows None recorded when there are no timeline items", () => {
     const html = render({ entityId: "e-1", dunbarTier: null, isPinned: false });
     expect(html).toContain("None recorded");
+  });
+
+  it("renders Quiet only for complete zero-interaction evidence", () => {
+    const html = render({ entityId: "e-1", dunbarTier: null, isPinned: false });
+    expect(html).toContain("Last 30 days");
+    expect(html).toContain(">Quiet<");
+    expect(html).not.toContain(">Incomplete<");
+  });
+
+  it("ages out a cached complete zero while the page stays open", () => {
+    const queryClient = new QueryClient();
+    const view = renderDom(
+      <QueryClientProvider client={queryClient}>
+        <PulseStrip entityId="e-1" dunbarTier={null} isPinned={false} />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByText("Quiet")).toBeTruthy();
+
+    // Mounted at age 30s: the 30s polling ticks see ages 60s and 90s.
+    // One millisecond later, a cached zero must already have expired.
+    act(() => vi.advanceTimersByTime(60_000));
+    expect(screen.getByText("Quiet")).toBeTruthy();
+    act(() => vi.advanceTimersByTime(1));
+
+    expect(screen.queryByText("Quiet")).toBeNull();
+    expect(screen.getByText("Stale")).toBeTruthy();
+
+    const refreshedEnd = new Date(Date.now());
+    vi.mocked(useEntities.useEntityCadence).mockReturnValueOnce({
+      data: {
+        window_days: 30,
+        window_started_at: new Date(refreshedEnd.getTime() - 30 * 86_400_000).toISOString(),
+        window_ended_at: refreshedEnd.toISOString(),
+        interaction_count: 0,
+        completeness: "complete",
+        has_more: false,
+      },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useEntities.useEntityCadence>);
+    view.rerender(
+      <QueryClientProvider client={queryClient}>
+        <PulseStrip entityId="e-1" dunbarTier={null} isPinned={false} />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByText("Quiet")).toBeTruthy();
+
+    view.unmount();
+  });
+
+  it.each([
+    {
+      name: "paginated evidence",
+      result: {
+        data: {
+          window_days: 30,
+          window_started_at: "2026-08-17T00:00:00Z",
+          window_ended_at: "2026-09-16T00:00:00Z",
+          interaction_count: 200,
+          completeness: "incomplete",
+          has_more: true,
+        },
+        isLoading: false,
+        isError: false,
+      },
+      expected: "Incomplete",
+    },
+    {
+      name: "query failure",
+      result: { data: undefined, isLoading: false, isError: true },
+      expected: "Unavailable",
+    },
+    {
+      name: "failed refresh with an old complete zero still cached",
+      result: {
+        data: {
+          window_days: 30,
+          window_started_at: "2026-08-17T00:00:00Z",
+          window_ended_at: "2026-09-16T00:00:00Z",
+          interaction_count: 0,
+          completeness: "complete",
+          has_more: false,
+        },
+        isLoading: false,
+        isError: true,
+      },
+      expected: "Unavailable",
+    },
+    {
+      name: "same-duration but old-window evidence",
+      result: {
+        data: {
+          window_days: 30,
+          window_started_at: "2026-08-15T00:00:00Z",
+          window_ended_at: "2026-09-14T00:00:00Z",
+          interaction_count: 0,
+          completeness: "complete",
+          has_more: false,
+        },
+        isLoading: false,
+        isError: false,
+      },
+      expected: "Stale",
+    },
+    {
+      name: "mismatched-window evidence",
+      result: {
+        data: {
+          window_days: 14,
+          window_started_at: "2026-09-02T00:00:00Z",
+          window_ended_at: "2026-09-16T00:00:00Z",
+          interaction_count: 0,
+          completeness: "complete",
+          has_more: false,
+        },
+        isLoading: false,
+        isError: false,
+      },
+      expected: "Incomplete",
+    },
+  ])("shows typed attention for $name instead of Quiet", ({ result, expected }) => {
+    vi.mocked(useEntities.useEntityCadence).mockReturnValueOnce(
+      result as unknown as ReturnType<typeof useEntities.useEntityCadence>,
+    );
+    const html = render({ entityId: "e-1", dunbarTier: null, isPinned: false });
+    expect(html).toContain(`>${expected}<`);
+    expect(html).not.toContain(">Quiet<");
+  });
+
+  it("uses the refreshed window's label and matching count", () => {
+    vi.mocked(useEntities.useEntityCadence).mockReturnValueOnce({
+      data: {
+        window_days: 14,
+        window_started_at: "2026-09-02T00:00:00Z",
+        window_ended_at: "2026-09-16T00:00:00Z",
+        interaction_count: 2,
+        completeness: "complete",
+        has_more: false,
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useEntities.useEntityCadence>);
+
+    const html = render({
+      entityId: "e-1",
+      dunbarTier: null,
+      isPinned: false,
+      cadenceWindowDays: 14,
+    });
+    expect(useEntities.useEntityCadence).toHaveBeenLastCalledWith("e-1", 14);
+    expect(html).toContain("Last 14 days");
+    expect(html).toContain(">2 interactions<");
+    expect(html).not.toContain("Last 30 days");
   });
 
   it("shows None for open loops when gifts and loans are empty", () => {

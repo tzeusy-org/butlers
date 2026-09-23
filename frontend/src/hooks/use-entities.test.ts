@@ -42,6 +42,7 @@ vi.mock("@/api/index.ts", async (importOriginal) => {
   return {
     ...original,
     getEntityActivity: vi.fn(),
+    getEntityCadence: vi.fn(),
     createEntityNote: vi.fn(),
     createEntityInteraction: vi.fn(),
     createEntityGift: vi.fn(),
@@ -61,6 +62,7 @@ import {
   useCreateEntityNote,
   useAddEntityContact,
   useEntityActivity,
+  useEntityCadence,
   useUpdateEntityDunbarTier,
   useMergeRelationshipEntities,
   useForgetRelationshipEntity,
@@ -68,6 +70,28 @@ import {
 import type { MergeRelationshipEntitiesRequest } from "@/api/index.ts";
 
 const mockUseMutation = vi.mocked(useMutation);
+
+describe("useEntityCadence", () => {
+  it("requeries the selected window while the page stays open", async () => {
+    const { getEntityCadence } = await import("@/api/index.ts");
+    mockUseQuery.mockClear();
+    useEntityCadence("entity-001", 30);
+
+    const options = mockUseQuery.mock.calls.at(-1)?.[0] as {
+      queryKey: unknown[];
+      queryFn: () => Promise<unknown>;
+      refetchInterval: number;
+      refetchIntervalInBackground: boolean;
+      refetchOnWindowFocus: string;
+    };
+    expect(options.queryKey).toEqual(["entity-cadence", "entity-001", 30]);
+    expect(options.refetchInterval).toBe(30_000);
+    expect(options.refetchIntervalInBackground).toBe(true);
+    expect(options.refetchOnWindowFocus).toBe("always");
+    await options.queryFn();
+    expect(getEntityCadence).toHaveBeenCalledWith("entity-001", 30);
+  });
+});
 
 describe("useEntityActivity", () => {
   beforeEach(() => {

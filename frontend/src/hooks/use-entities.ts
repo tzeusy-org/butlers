@@ -37,6 +37,7 @@ import {
   getEntityNeighbours,
   getPlexHalo,
   getEntityTimeline,
+  getEntityCadence,
   getRelationshipEntityQueue,
   listRelationshipEntities,
   markEntityView,
@@ -135,6 +136,21 @@ export function useEntityActivity(
       return lastPage.items.length > 0 && nextOffset < lastPage.total ? nextOffset : undefined;
     },
     enabled: !!entityId,
+  });
+}
+
+/** Fetch cadence evidence scoped to the exact window represented by the tile label. */
+export const ENTITY_CADENCE_REFRESH_MS = 30_000;
+export const ENTITY_CADENCE_MAX_AGE_MS = 90_000;
+
+export function useEntityCadence(entityId: string | undefined, windowDays: number) {
+  return useQuery({
+    queryKey: ["entity-cadence", entityId, windowDays],
+    queryFn: () => getEntityCadence(entityId!, windowDays),
+    enabled: !!entityId,
+    refetchInterval: ENTITY_CADENCE_REFRESH_MS,
+    refetchIntervalInBackground: true,
+    refetchOnWindowFocus: "always",
   });
 }
 
@@ -1014,6 +1030,7 @@ export function useCreateEntityInteraction() {
     onSuccess: (_, { entityId }) => {
       invalidateEntityActivityFamily(queryClient, entityId);
       void queryClient.invalidateQueries({ queryKey: ["entity-timeline", entityId] });
+      void queryClient.invalidateQueries({ queryKey: ["entity-cadence", entityId] });
       void queryClient.invalidateQueries({ queryKey: ["entity-message-threads", entityId] });
     },
   });

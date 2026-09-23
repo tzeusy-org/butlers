@@ -9,7 +9,7 @@
  * assignment.
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Check, ChevronDown, Loader2, Lock } from "lucide-react";
 import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
@@ -23,8 +23,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
+  ENTITY_CADENCE_MAX_AGE_MS,
+  ENTITY_CADENCE_REFRESH_MS,
   useEntityGifts,
   useEntityLoans,
+  useEntityCadence,
   useEntityTimeline,
   useUpdateEntityDunbarTier,
 } from "@/hooks/use-entities";
@@ -205,15 +208,77 @@ export interface PulseStripProps {
   entityId: string;
   dunbarTier: number | null;
   isPinned: boolean;
+  cadenceWindowDays?: number;
 }
 
-export function PulseStrip({ entityId, dunbarTier, isPinned }: PulseStripProps) {
+export function PulseStrip({
+  entityId,
+  dunbarTier,
+  isPinned,
+  cadenceWindowDays = 30,
+}: PulseStripProps) {
   const { data: timelineItems, isLoading: timelineLoading, isError: timelineError } =
     useEntityTimeline(entityId);
   const { data: gifts, isLoading: giftsLoading, isError: giftsError } =
     useEntityGifts(entityId);
   const { data: loans, isLoading: loansLoading, isError: loansError } =
     useEntityLoans(entityId);
+  const {
+    data: cadence,
+    isLoading: cadenceLoading,
+    isError: cadenceError,
+  } = useEntityCadence(entityId, cadenceWindowDays);
+  const [cadenceClock, setCadenceClock] = useState(() => Date.now());
+  useEffect(() => {
+    const tick = () => setCadenceClock(Date.now());
+    const timer = window.setInterval(tick, ENTITY_CADENCE_REFRESH_MS);
+    window.addEventListener("focus", tick);
+    document.addEventListener("visibilitychange", tick);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", tick);
+      document.removeEventListener("visibilitychange", tick);
+    };
+  }, []);
+
+  const now = cadenceClock;
+  const windowStarted = cadence ? Date.parse(cadence.window_started_at) : NaN;
+  const windowEnded = cadence ? Date.parse(cadence.window_ended_at) : NaN;
+  useEffect(() => {
+    if (!Number.isFinite(windowEnded)) return;
+    // The polling clock can land exactly on the 90s boundary. Expire the
+    // observation one millisecond later rather than waiting for its next tick.
+    const delay = Math.max(
+      0,
+      windowEnded + ENTITY_CADENCE_MAX_AGE_MS - Date.now() + 1,
+    );
+    const expiryTimer = window.setTimeout(() => setCadenceClock(Date.now()), delay);
+    return () => window.clearTimeout(expiryTimer);
+  }, [windowEnded]);
+  const cadenceWindowMatches =
+    cadence?.window_days === cadenceWindowDays &&
+    Number.isFinite(windowStarted) &&
+    Number.isFinite(windowEnded) &&
+    Math.abs(windowEnded - windowStarted - cadenceWindowDays * 86_400_000) <= 1_000;
+  const cadenceFresh =
+    cadenceWindowMatches &&
+    windowEnded >= now - ENTITY_CADENCE_MAX_AGE_MS &&
+    windowEnded <= now + ENTITY_CADENCE_REFRESH_MS;
+  const cadenceCanClaim =
+    !cadenceLoading &&
+    !cadenceError &&
+    cadenceFresh &&
+    cadence?.completeness === "complete" &&
+    !cadence.has_more;
+  const cadenceCount = cadence?.interaction_count ?? 0;
+  let cadenceValue: string;
+  if (cadenceLoading) cadenceValue = "...";
+  else if (cadenceError) cadenceValue = "Unavailable";
+  else if (!cadenceWindowMatches) cadenceValue = "Incomplete";
+  else if (!cadenceFresh) cadenceValue = "Stale";
+  else if (!cadenceCanClaim) cadenceValue = "Incomplete";
+  else if (cadenceCount === 0) cadenceValue = "Quiet";
+  else cadenceValue = `${cadenceCount} interaction${cadenceCount === 1 ? "" : "s"}`;
 
   const lastInteraction = useMemo(() => {
     if (!timelineItems) return null;
@@ -221,21 +286,6 @@ export function PulseStrip({ entityId, dunbarTier, isPinned }: PulseStripProps) 
       (it: EntityTimelineItem) => it.kind === "interaction" && it.valid_at,
     );
   }, [timelineItems]);
-
-  // `now` is captured once at mount via lazy state init — Date.now() is impure
-  // and would trip react-hooks/purity inside useMemo. The cadence window only
-  // needs to be approximate, so a per-mount snapshot is fine.
-  const [mountedAt] = useState(() => Date.now());
-  const cadence30d = useMemo(() => {
-    if (!timelineItems) return null;
-    const cutoff = mountedAt - 30 * 24 * 60 * 60 * 1000;
-    return timelineItems.filter(
-      (it: EntityTimelineItem) =>
-        it.kind === "interaction" &&
-        it.valid_at &&
-        new Date(it.valid_at).getTime() >= cutoff,
-    ).length;
-  }, [timelineItems, mountedAt]);
 
   const openLoops = useMemo(() => {
     const giftOpen = (gifts ?? []).filter(
@@ -282,17 +332,9 @@ export function PulseStrip({ entityId, dunbarTier, isPinned }: PulseStripProps) 
         muted={timelineError || (!isLoading && !lastInteraction)}
       />
       <PulseTile
-        label="Last 30 days"
-        value={
-          isLoading
-            ? "..."
-            : timelineError
-              ? "Unavailable"
-              : cadence30d === null || cadence30d === 0
-                ? "Quiet"
-                : `${cadence30d} interaction${cadence30d === 1 ? "" : "s"}`
-        }
-        muted={timelineError || cadence30d === 0}
+        label={`Last ${cadenceWindowDays} days`}
+        value={cadenceValue}
+        muted={!cadenceCanClaim || cadenceCount === 0}
       />
       <PulseTile
         label="Open loops"
