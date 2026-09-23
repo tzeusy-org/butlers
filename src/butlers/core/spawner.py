@@ -395,9 +395,13 @@ def _receipt_candidate_fit_eligible(
             continue
         if candidate.get("catalog_entry_id") != expected_id:
             continue
+        exclusions = candidate.get("exclusions", [])
+        if not isinstance(exclusions, list):
+            return False
         return (
             candidate.get("effective_tier") == effective_tier
             and candidate.get("outcome") in _FIT_ELIGIBLE_RECEIPT_OUTCOMES
+            and not exclusions
         )
     return False
 
@@ -3794,7 +3798,7 @@ class Spawner:
             # Record dispatch failure in public.dispatch_failures (best-effort).
             # Gated only on pool and catalog_entry_id — session_id is nullable so
             # early-stage failures (e.g. session_create raising) are still tracked.
-            # TOML-fallback dispatches have no catalog_entry_id and are not tracked.
+            # Pool-free direct-runtime dispatches have no catalog entry and are not tracked.
             if self._pool is not None and catalog_entry_id is not None:
                 try:
                     _error_code = type(exc).__name__

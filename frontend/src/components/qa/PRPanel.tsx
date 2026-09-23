@@ -14,12 +14,12 @@ interface PRPanelProps {
    */
   diffSnapshot?: DiffPreviewLine[] | null;
   /**
-   * "escalated" means the case was handed to the user without a fix;
-   * "failed" means the investigation crashed before ever reaching a fix.
-   * Every other pr-less stage (detect/diagnose/pr/landed) just hasn't
-   * produced a PR yet -- rendering either of those calmer messages for a
-   * dead or escalated case fabricates progress that was never made
-   * (bu-qvnce.2 / bu-hmdqz.9).
+   * "escalated" means the case was handed to the user without a published fix.
+   * "failed" means the workflow ended unsuccessfully, but proposalState may
+   * still identify a retained unpublished local proposal. Every other pr-less
+   * stage (detect/diagnose/pr/landed) has not produced a PR yet. Rendering a
+   * calmer in-progress message for a dead or escalated case fabricates progress
+   * that was never made (bu-qvnce.2 / bu-hmdqz.9).
    */
   stage: QaCaseDossier["state_track_stage"];
   proposalState: QaCaseDossier["proposal_state"];

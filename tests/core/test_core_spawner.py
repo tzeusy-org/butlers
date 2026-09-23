@@ -2153,10 +2153,10 @@ class TestCatalogModelResolution:
         assert result.model is None
         assert adapter.calls == []
 
-    async def test_spend_rule_override_cannot_bypass_original_vision_fit(
+    async def test_spend_rule_breaker_override_cannot_bypass_original_vision_fit(
         self, tmp_path: Path
     ) -> None:
-        """A spend rule cannot promote a hard-fit-excluded target to selected."""
+        """Breaker precedence cannot hide a target's retained hard-fit exclusions."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         selected_id = uuid.uuid4()
@@ -2189,7 +2189,7 @@ class TestCatalogModelResolution:
                         model_id="unproven-vision-model",
                         effective_tier="workhorse",
                         effective_priority=10,
-                        outcome=CandidateOutcome.EXCLUDED_HARD_FIT,
+                        outcome=CandidateOutcome.EXCLUDED_BREAKER,
                         exclusions=(FitFinding(FitCode.CAPABILITY_UNKNOWN, "vision"),),
                     ),
                 ),
@@ -2244,7 +2244,7 @@ class TestCatalogModelResolution:
             for candidate in result.resolution_receipt["candidates"]
             if candidate["catalog_entry_id"] == str(unfit_id)
         )
-        assert rejected["outcome"] == "excluded_hard_fit"
+        assert rejected["outcome"] == "excluded_breaker"
         assert rejected["exclusions"] == [{"code": "capability_unknown", "detail": "vision"}]
         assert adapter.calls == []
         create.assert_not_awaited()

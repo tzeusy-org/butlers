@@ -36,7 +36,7 @@ a catalog candidate is selected but cannot safely complete the invocation.
 - **WHEN** a catalog-resolved Codex invocation performs no tool call and rejects the selected model with the exact account-compatibility phrase `not supported when using Codex with a ChatGPT account`
 - **THEN** the classifier treats the attempt as `provider_unavailable` and permits ordinary same-tier failover
 - **AND** a generic unsupported-operation message without that account-specific phrase remains an unknown runtime error and suppresses failover
-- **AND** this classification cannot create failover for a runtime-owned degraded default because no catalog tier was selected
+- **AND** this classification applies only after catalog selection; pool-free direct-adapter mode has no catalog tier and cannot enter same-tier failover
 
 #### Scenario: Empty returned attempt fails over after token accounting
 - **WHEN** a catalog-resolved runtime invocation returns no result text and no confirmed
