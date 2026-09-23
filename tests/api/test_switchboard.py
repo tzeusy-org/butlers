@@ -248,6 +248,28 @@ async def test_heartbeat_stale_transitions_to_active_and_logs(app):
     assert any("butler_registry_eligibility_log" in s for s in sql_calls)
 
 
+async def test_heartbeat_cannot_report_recovery_when_policy_retains_quarantine(app):
+    """The legacy heartbeat reports the stored projection after the L1 fence."""
+    app, mock_pool = _app_with_mock(
+        app,
+        fetchrow_side_effects=[
+            {"eligibility_state": "quarantined", "last_seen_at": None},
+            {"eligibility_state": "quarantined"},  # UPDATE ... RETURNING after trigger
+            {"eligibility_state": "quarantined"},  # current projection reread
+        ],
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post("/api/switchboard/heartbeat", json={"butler_name": "health"})
+    assert resp.status_code == 200
+    assert resp.json()["eligibility_state"] == "quarantined"
+    assert not any(
+        "butler_registry_eligibility_log" in call.args[0]
+        for call in mock_pool.execute.await_args_list
+    )
+
+
 async def test_heartbeat_unknown_butler_404(app):
     _app_with_mock(app, fetchrow_result=None)
     async with httpx.AsyncClient(
@@ -372,15 +394,26 @@ async def test_set_eligibility_to_active_invalidates_cache(app):
     assert cache.get(owner_id) is None
 
 
-async def test_set_eligibility_to_quarantined_invalidates_cache(app):
-    """POST eligibility to 'quarantined' (unhealthy) invalidates the cache."""
+@pytest.mark.parametrize(
+    ("requested_policy", "stored_policy"),
+    [
+        ("quarantined", "quarantined"),
+        ("paused", "paused"),
+        ("review_required", "review_required"),
+        ("stale", "paused"),
+    ],
+)
+async def test_set_eligibility_to_quarantined_invalidates_cache(
+    app, requested_policy, stored_policy
+):
+    """Every restrictive owner policy uses the protected write boundary."""
     from butlers.api.briefing.cache import BriefingCache
 
     owner_id = "owner-eligibility-002"
     cache = BriefingCache(ttl_seconds=300)
     cache.set(owner_id, {"state_class": "quiet"})
 
-    app, _pool = _app_with_cache(
+    app, mock_pool = _app_with_cache(
         app,
         fetchrow_side_effects=[
             {"eligibility_state": "active", "last_seen_at": None},
@@ -388,16 +421,27 @@ async def test_set_eligibility_to_quarantined_invalidates_cache(app):
         ],
         cache=cache,
     )
+    mock_pool.fetchval.return_value = "quarantined"
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         resp = await client.post(
             "/api/switchboard/registry/health/eligibility",
-            json={"eligibility_state": "quarantined"},
+            json={"eligibility_state": requested_policy},
         )
 
     assert resp.status_code == 200
+    assert resp.json()["data"]["new_state"] == "quarantined"
+    assert any(
+        call.args
+        == (
+            "SELECT public.set_butler_registry_policy($1, $2)",
+            "health",
+            stored_policy,
+        )
+        for call in mock_pool.fetchval.await_args_list
+    )
     assert cache.get(owner_id) is None
 
 

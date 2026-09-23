@@ -82,7 +82,8 @@ class SetEligibilityRequest(BaseModel):
     @field_validator("eligibility_state")
     @classmethod
     def state_valid(cls, v: str) -> str:
-        allowed = {"active", "stale", "quarantined"}
+        # "stale" remains a legacy operator alias for an explicit pause.
+        allowed = {"active", "stale", "paused", "quarantined", "review_required"}
         if v not in allowed:
             raise ValueError(f"eligibility_state must be one of {sorted(allowed)}")
         return v

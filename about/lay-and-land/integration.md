@@ -311,6 +311,56 @@ calling Switchboard per request; k3s and Compose consume the one Q4-owned
 route and owner-auth exception. A positive preflight does not certify target
 inbox acceptance.
 
+### L1 registry representation and rollback
+
+Switchboard migration `sw_035` adds
+`switchboard.butler_registry_control_plane` beside the existing registry.
+It stores administrative policy and its provenance separately from observed
+health, route compatibility, the latest committed boot UUID/epoch, reserved and
+recorded probe sequences, last probe attempt, and last verified healthy time.
+The migration copies original legacy quarantine fields and the matching
+eligibility-log receipt into `legacy_evidence`. A matching TTL transition
+becomes stale observation; a matching owner transition becomes restrictive
+policy. Missing or contradictory evidence becomes `review_required`, never
+an inferred owner release. The same classification applies to legacy manual
+and TTL-derived `stale` rows.
+
+The new table has runtime RLS with no direct write policy, including after an
+`init-db.sql` grant replay. Fixed `public.register_butler_boot`,
+`reserve_butler_probe`, and `record_butler_probe` operations allocate epochs
+and sequences under database locks and stamp attempts with database time.
+An immutable `butler_boot_registrations` ledger binds each boot UUID to its
+original epoch: a lost-response retry of the current UUID returns that epoch,
+while an older UUID cannot register again after a successor. The ledger,
+latest epoch, and its runtime RLS fence survive downgrade and bootstrap replay.
+New legacy registry inserts initialize an unknown control row without
+claiming health or releasing a retained policy for a reused name.
+`public.set_butler_registry_policy` is reserved for the authenticated owner
+API's database login; the Switchboard runtime role cannot invoke it. A legacy
+registry trigger retains `eligibility_state='quarantined'` for paused,
+quarantined, or review-required policy despite automatic registrations, sweeps,
+heartbeat writes, or confirmed-route touches. A failed probe advances its
+attempt/failure state without advancing `healthy_observed_at`.
+The existing eligibility endpoint accepts explicit `paused` and
+`review_required`; its older operator `stale` request means a manual pause
+and maps to `paused` policy. Its response reports the actual restrictive
+legacy `quarantined` projection, not an invented receiver-stale observation.
+
+L1 does not switch route authority. The legacy writers still include the
+`register_butler` upsert, `run_eligibility_sweep`,
+`_reconcile_eligibility_state`, the heartbeat API, and routing's
+confirmed-success touch; only the owner eligibility API now writes protected
+policy. `resolve_routing_target`, `list_butlers`, the Switchboard registry
+API, the Dashboard butler status read, and the QA heartbeat view still consume
+the legacy registry/projection. L3 must audit and move each reader and writer
+before cutover; L4 retires the heartbeat writer. On code rollback,
+disable any new observer first and retain the `sw_035` table, RLS, trigger,
+functions, provenance and highest boot epoch; its Alembic downgrade is
+intentionally non-destructive. An operator must release a restrictive policy
+through the authenticated eligibility action, never by editing the old
+`eligibility_state` column. Do not drop the new representation while a
+reader, rollback path, or old-process fence still relies on it.
+
 ---
 
 ## 8. Connector Heartbeat: Liveness Reporting
