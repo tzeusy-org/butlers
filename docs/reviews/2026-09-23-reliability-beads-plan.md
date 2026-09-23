@@ -1,15 +1,15 @@
 # Reliability recovery: Beads materialization plan
 
-Date: 2026-09-23. Status: specification and packet review complete (R1–R4); the four-category Beads graph is materialized against spec commit `a359b42c8f80c8d673741c66b638031054496834`, pending PR #4210's protected landing. This document defines issue content and dependency edges. It does not authorize a deployment, external monitor, historical delivery, or provider replay.
+Date: 2026-09-23. Status: specification and packet review complete (R1–R4); the four-category Beads graph is materialized against reviewed spec-content commit `a359b42c8f80c8d673741c66b638031054496834` and landed main commit `d60de95e49c5ebffdd9801af5b03bb5e1d0123f5` (PR #4210). This document defines issue content and dependency edges. It does not authorize a deployment, external monitor, historical delivery, or provider replay.
 
-| Category | Epic | Implementation / reconciliation / report children | Spec-landing gate |
+| Category | Epic | Implementation / reconciliation / report children | Spec-landing gate (closed) |
 |---|---|---|---|
 | Fleet liveness | `bu-wh5gr1` | `bu-wh5gr1.1`–`.6` (L1–L4, LR, LP) | `bu-t79b7s.1` |
 | QA and readiness | `bu-fvw4ap` | `bu-fvw4ap.1`–`.7` (Q1–Q5, QR, QP) | inherits fleet gate through L1/L2/L3 |
 | Ordinary target delivery | `bu-mmax8j` | `bu-mmax8j.1`–`.7` (D1–D5, DRc, DP) | `bu-oiuipm.1` |
 | Historical late delivery | `bu-luowmj` | `bu-luowmj.1`–`.6` (H1–H4, HR, HP) | inherits delivery gate through DRc; H3 is a separate exact owner decision |
 
-Live Beads readback verified 30 new issues, 67 blocking edges, all structured fields/parents/complexity labels, four epic trees, no dependency cycles, and clean `bd lint`. The two earlier compressed planning epics (`bu-t79b7s`, `bu-oiuipm`) and their overlapping implementation children were closed as superseded with explicit replacement links; only their two adopted-spec landing children were reparented as open PR gates. Q4 additionally depends on existing supervised-job projection `bu-c6wjr`. Materialized packets are complete, but no implementation child is dispatch-ready before its spec gate and other blockers clear.
+Live Beads readback verified 30 new issues, 67 blocking edges, all structured fields/parents/complexity labels, four epic trees, no dependency cycles, and clean `bd lint`. The two earlier compressed planning epics (`bu-t79b7s`, `bu-oiuipm`) and their overlapping implementation children were closed as superseded with explicit replacement links; their two adopted-spec landing children were reparented and then closed after protected merge-group CI `35807903082` passed. The reviewed patch ID and all 40 changed blobs match landed main. Q4 additionally depends on existing supervised-job projection `bu-c6wjr`. L1 and D1 are now the first implementation candidates; every dispatch still requires fresh ownership and dependency readback. H3 remains a separate exact owner decision, not an implied approval from spec landing.
 
 The governing mandates are reliable continuous operation and deterministic infrastructure routing (`about/heart-and-soul/vision.md`, Rules 3–5, lines 51–53 and 120–137), Switchboard-mediated cross-butler work (Rule 4), and narrow process-bound authority (`about/heart-and-soul/security.md`, lines 161–195). The incident evidence and exclusions are in `docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md` §§4–12. The two changesets and their `design.md` and `tasks.md` files are the approved behavior contract:
 
