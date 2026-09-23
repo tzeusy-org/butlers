@@ -274,6 +274,7 @@ async def lifespan(app: FastAPI):
     external_deadman_task: asyncio.Task | None = None
     fleet_events_bridge_task: asyncio.Task | None = None
     model_verify_task: asyncio.Task | None = None
+    shadow_observer_task: asyncio.Task | None = None
     try:
         await init_db_manager(butler_configs)
         # Wire DB dependencies for both static and dynamic routers
@@ -281,6 +282,21 @@ async def lifespan(app: FastAPI):
         dynamic_modules = [module for _, module in dynamic_routers]
         wire_db_dependencies(app, dynamic_modules=dynamic_modules)
         logger.info("DatabaseManager initialized for %d butler(s)", len(butler_configs))
+
+        # L2 receiver observation runs independently of QA and of browser
+        # requests.  It writes only the separated sw_035 shadow facts; L3 alone
+        # may make them route authority.  The same core prober is reused by
+        # Switchboard's later on-demand path without owner credentials.
+        from butlers.core.control_plane_identity import run_shadow_observer_loop
+
+        shadow_observer_task = _track_background_task(
+            supervise_lifespan_loop(
+                "fleet_shadow_observer",
+                lambda: run_shadow_observer_loop(
+                    get_db_manager().pool("switchboard"), butler_configs
+                ),
+            )
+        )
 
         # The Telegram connector authenticates only the approval-callback
         # detail/decision routes with this Tier-1 DB credential. It is separate
@@ -535,6 +551,10 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     app.state.ready = False
+    if shadow_observer_task is not None:
+        shadow_observer_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await shadow_observer_task
     if secrets_lifecycle_task is not None:
         secrets_lifecycle_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):

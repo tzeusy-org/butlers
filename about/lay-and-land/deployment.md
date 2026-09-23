@@ -315,6 +315,21 @@ DB-server-timed observations and durable condition evidence; no daemon-authored
 timestamp, arbitrary caller URL, old boot generation, or owner credential can
 assert a healthy fleet. Connector heartbeats remain connector-owned MCP calls.
 
+L2 stages the identity route and a separately supervised Dashboard shadow
+observer. The observer probes no more than four Git-roster endpoints at once,
+reserves a database sequence before I/O, compares the response UUID and epoch
+to the committed L1 registration, and conditionally records success or a
+bounded failure category. It logs only aggregate legacy-versus-shadow
+eligibility mismatches; compare those aggregates over multiple configured TTL
+windows before L3 changes route authority. A partial or DB-failed cycle is
+incomplete, never an all-clear. Probe cadence and shadow freshness use the
+current operator-tuned registry TTL, while only Git roster chooses identity
+and endpoint. This is not a live rollout instruction: this
+source change requires separately authorized deployment and observation.
+Rollback stops the observer and returns to legacy route reads while retaining
+`sw_035` policy, provenance, boot ledger, epoch, trigger, and RLS. An old binary
+without the identity interface cannot produce new positive receiver evidence.
+
 Docker's `/health` probe remains a process-liveness signal. The canonical
 public `GET /ready` retains the k3s change's boolean `ready` response shape.
 Its checks cover PostgreSQL, roster, observer freshness, expected fleet,

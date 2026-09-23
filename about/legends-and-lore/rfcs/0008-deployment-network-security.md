@@ -231,6 +231,17 @@ receiver broad registry or administrative-policy write authority. It does
 not follow a caller-supplied URL. A later split-host topology needs a new
 trust-design amendment before these same-host observations become authority.
 
+L2's shared receiver constructs only the configured `BUTLERS_HOST` plus each
+Git-roster port and the fixed identity path. It does not use environment proxy
+settings or follow redirects, caps the response at 2 KiB, and separately
+bounds reserve-plus-network and record phases at three seconds each. The
+entire response shape is closed:
+timestamps, endpoint claims, extra fields, an unregistered UUID, a mismatched
+epoch, and unsupported route contracts cannot advance healthy observation.
+Dashboard's supervised periodic pass and Switchboard's later on-demand caller
+share this verifier and the L1 reserve/record database CAS; neither receives
+an owner cookie or general registry/policy write permission.
+
 The daemon does not receive a dashboard owner cookie, API key, approval token,
 or runtime-probe signing key for liveness. `POST /api/switchboard/heartbeat`
 is retired after cutover; owner-auth middleware must not exempt it as an

@@ -534,8 +534,17 @@ async def run_startup(daemon: Any) -> None:
     # 17. Start liveness reporter (all butlers, including switchboard)
     daemon._liveness_reporter_task = asyncio.create_task(daemon._liveness_reporter_loop())
 
-    # Mark as accepting connections and record startup time
-    daemon._accepting_connections = True
+    # The port is bound and local services are ready, but receiver-visible
+    # route acceptance requires a committed L1 epoch.  A daemon that started
+    # before Switchboard seeded its registry row stays not-ready and retries
+    # with the *same* process UUID; it never invents success from a failed DB
+    # call or turns a later retry into a phantom successor.
+    registered = await daemon._register_boot_epoch()
+    daemon._accepting_connections = registered
+    if not registered:
+        daemon._boot_registration_task = asyncio.create_task(
+            daemon._retry_boot_registration(), name=f"boot-register-{daemon.config.name}"
+        )
     daemon._started_at = time.monotonic()
 
     failed_count = sum(1 for s in daemon._module_statuses.values() if s.status != "active")
@@ -582,6 +591,7 @@ async def run_shutdown(daemon: Any) -> None:
     This is the implementation body of :meth:`ButlerDaemon.shutdown`.  It is
     extracted here so that ``daemon.py`` remains a thinner orchestration file.
 
+    0. Stop advertising route acceptance and cancel registration retry
     1. Stop MCP server
     2. Stop durable buffer (drain queue, cancel workers)
     2b. Cancel in-flight route_inbox background tasks
@@ -596,6 +606,16 @@ async def run_shutdown(daemon: Any) -> None:
         "Shutting down butler: %s",
         daemon.config.name if daemon.config else "unknown",
     )
+
+    daemon._shutting_down = True
+    daemon._accepting_connections = False
+    if daemon._boot_registration_task is not None:
+        daemon._boot_registration_task.cancel()
+        try:
+            await daemon._boot_registration_task
+        except asyncio.CancelledError:
+            pass
+        daemon._boot_registration_task = None
 
     # 1. Stop MCP server
     if daemon._server is not None:
