@@ -50,10 +50,12 @@ present the missing source as verified evidence or erase the report.
 
 General SHALL offer a typed `possession_record` operation for an opted-in
 existing item. Each accepted transition MUST contain the item UUID,
-`operation_id`, expected profile revision, action, explicit owner-statement
-source reference, `observed_at`, server `recorded_at`, and a durable event ID.
-Missing source or ambiguous item identity MUST refuse the typed write. The
-receipt MUST state what the owner reported, not that General performed a
+`operation_id`, expected profile revision, action, validated server-held
+owner-report receipt, server-derived source reference, `observed_at`, server
+`recorded_at`, and a durable event ID. An LLM-supplied source reference or
+owner label MUST NOT authorize the write. Missing validated provenance or
+ambiguous item identity MUST refuse the typed write. The receipt MUST state
+what the owner reported, not that General performed a
 physical action. The reserved versioned profile and its event history SHALL
 remain attached to that item UUID; legacy items SHALL NOT be auto-enrolled.
 
@@ -190,8 +192,8 @@ published into public entity graph, public memory catalog, broad cross-butler
 summaries, or a provider payload. Recording and locating SHALL perform no
 external action, notification, financial write, or Home physical operation.
 The typed write MUST be tied to an authenticated owner report through the
-existing request boundary; a caller-supplied label cannot assert owner
-attribution, and model inference alone cannot create a transition.
+server-held confirmation seam below; a caller-supplied label cannot assert
+owner attribution, and model inference alone cannot create a transition.
 
 #### Scenario: Receipt failure cannot change custody
 
@@ -204,3 +206,41 @@ attribution, and model inference alone cannot create a transition.
 - **WHEN** an owner names a borrower or place that cannot be resolved to a canonical entity
 - **THEN** the label MUST remain unresolved and the locate answer MUST state its owner-reported status
 - **AND** General MUST NOT create a Relationship identity, publish a private location, or invoke Home action
+
+### Requirement: Typed custody writes require a server-held owner confirmation receipt
+
+Before `possession_record` is enabled, Switchboard SHALL provide a narrow
+server-held owner-report confirmation and read-only validation seam. An LLM
+MAY propose a structured report, but only a server-handled confirmation from
+an authenticated owner dashboard request or an ingress message independently
+resolved to the owner MAY mint an immutable receipt. The server-held receipt
+MUST bind the original owner statement and confirmation locators, verified
+owner identity, item UUID, action, episode ID if any, operation ID, expected
+profile revision, canonical report payload digest including observed time,
+issue time, and expiry. A caller-supplied `source_ref`, role, quoted text, or
+receipt-shaped object MUST NOT mint or alter it.
+
+For a new write, General MUST validate the opaque receipt ID and exact
+argument digest through Switchboard MCP, not through direct Switchboard SQL.
+Validation MUST confirm owner identity, source and confirmation readability,
+unexpired receipt, and exact item/action/episode/operation/revision/payload match. It
+MUST return only a content-blind verdict and server-held source locator;
+General SHALL derive the stored `source_ref` from that result. Absent,
+fabricated, mismatched, unreadable, expired, non-owner, or unavailable
+validation MUST fail closed before any item revision, event, episode, or
+projection mutation. A receipt MAY authorize only its bound operation; a
+second operation ID cannot reuse it. An identical replay of an already
+committed operation MAY return the original General-held receipt without
+revalidating external provenance because it does not write.
+
+#### Scenario: Confirmed owner report authorizes only its exact transition
+
+- **WHEN** an owner confirms the displayed item, action, episode, operation, expected revision, report fields, and observed time through the trusted confirmation path
+- **THEN** Switchboard MAY mint one immutable receipt bound to that exact payload and the original owner statement
+- **AND** General MUST accept a new transition only after the read-only validator confirms that binding and supplies the server-held source locator
+
+#### Scenario: Spoofed or unavailable owner report cannot mutate custody
+
+- **WHEN** an LLM supplies an invented source ID, a non-owner message, a receipt for different fields, or a receipt whose source cannot be read
+- **THEN** Switchboard validation MUST refuse or report unavailable and General MUST leave revision, history, episode state, and projection unchanged
+- **AND** a caller-asserted owner label, source reference, or statement quote MUST NOT bypass the validation seam

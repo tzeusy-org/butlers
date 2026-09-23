@@ -35,15 +35,51 @@ ownership proof. An older report remains visible with its age. An unavailable
 source is labelled unavailable, not treated as proof of absence.
 
 `possession_record` accepts the existing item UUID, caller-stable
-`operation_id`, `expected_revision`, a typed action, explicit owner statement
-source reference, and an `observed_at` time. If the owner says "now", the
+`operation_id`, `expected_revision`, a typed action, an opaque
+`owner_report_receipt_id`, and an `observed_at` time. It does not accept a
+caller-supplied `source_ref` as authority. If the owner says "now", the
 server may use its receipt time for `observed_at`; otherwise it must retain
 the owner-stated time rather than fabricate one. The service sets
 `recorded_at` and `event_id`. The receipt returns the same item, event,
 operation, accepted revision, recorded time, and resulting qualified
 projection. It never claims the assistant performed the physical action.
-An absent source reference or unresolved item identity prevents a typed
-transition; it may remain an ordinary unqualified note.
+An absent validated owner-report receipt or unresolved item identity prevents
+a typed transition; it may remain an ordinary unqualified note.
+
+## Server-held owner-report authority
+
+The current General MCP tool boundary does not authenticate an owner report:
+an LLM can pass arbitrary arguments and can invent a nonempty source ID.
+Before enabling `possession_record`, add a narrow Switchboard-owned
+confirmation seam using its existing durable message inbox and state store.
+General may submit a proposed canonical report for confirmation, but that
+proposal has no write authority. Only a server-handled owner confirmation
+from an authenticated dashboard request or an ingress message whose sender
+Switchboard resolved to the owner may turn the pending proposal into an
+immutable receipt. The confirmation must display or quote the exact item UUID,
+action, episode ID when applicable, operation ID, reported place/custodian,
+observed time and expected profile revision. Switchboard binds those fields'
+canonical digest to the original owner-statement source locator, confirming
+message locator, verified owner identity, issue time, and short expiry.
+Neither an MCP caller nor an
+LLM-supplied `source_ref`, sender role, or quote may mint or alter this receipt.
+
+Before any new typed write, the General handler invokes a narrow read-only
+Switchboard MCP validator with the opaque receipt ID and digest of the exact
+`possession_record` arguments. The validator re-reads the server-held receipt
+and its owner-statement source, checks the verified owner identity and
+confirmation, exact item/action/episode/operation/revision/payload digest,
+expiry, and source readability, and returns only a content-blind match result plus the
+server-held source locator. General derives the event's `source_ref` from that
+validated result; it never stores the caller's source assertion as proof.
+Missing, invented, mismatched, expired, unreadable, non-owner, or unavailable
+validation fails closed before event/revision/projection mutation. The
+receipt ID is unique to one accepted operation on the item, so the same
+confirmation cannot authorize a second event with a different operation ID.
+An already committed identical operation replay may return its General-held
+original receipt without a new provenance read because it performs no write.
+This seam is a future Switchboard plus General prerequisite; this spec PR does
+not activate it or add a table, tool, route, or migration.
 
 | Action | Required report | Projection effect |
 | --- | --- | --- |
@@ -111,10 +147,10 @@ owner deletion contract would require its own review.
 
 ## Specialist and privacy boundaries
 
-General records what the owner reported. It never queries `finance.*` or
-`relationship.*`, copies a receipt image, publishes a private object location
-into `public.entities` or the public memory catalog, or operates a Home
-device. Optional Finance evidence uses a Switchboard-brokered, read-only
+General records what the owner reported. It never queries `finance.*`,
+`relationship.*`, or `switchboard.*`, copies a receipt image, publishes a
+private object location into `public.entities` or the public memory catalog,
+or operates a Home device. Optional Finance evidence uses a Switchboard-brokered, read-only
 Finance MCP result with a minimal reference, verification status, and source
 version. If an existing Finance tool cannot provide that bounded result,
 design and review that tool separately before linking receipts. A receipt

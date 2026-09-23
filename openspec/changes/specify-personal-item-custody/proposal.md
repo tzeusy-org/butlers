@@ -18,7 +18,8 @@ worker's General baseline spec or manifesto.
   opt-in, versioned owner-reported custody history inside the item.
 - Propose `possession_locate` and `possession_record` as narrow General tools.
   Recording requires the selected item UUID, operation identity, expected
-  revision, and an owner statement with time and source reference.
+  revision, and an immutable server-held receipt for an owner-confirmed
+  statement. A caller-supplied source reference is not owner authority.
 - Define move, borrow, lend, return, retire, and superseding correction without
   claiming that Butlers moved an object, obtained a receipt, or performed a
   physical return.
@@ -54,6 +55,10 @@ graph publication of private object locations.
 General owns the remembered personal-item report. Finance owns transaction and
 receipt truth; optional receipt references are resolved only through
 Switchboard-brokered Finance MCP under separately reviewed read authority.
+Switchboard must also attest owner-statement provenance through a narrow
+server-held confirmation and read-only validation seam before a typed General
+transition can be enabled. The LLM may propose fields but cannot mint that
+attestation.
 Relationship owns canonical person identity, and Home owns connected-device
 automation while refusing physical installation and maintenance. A freeform
 name never grants any of those authorities.

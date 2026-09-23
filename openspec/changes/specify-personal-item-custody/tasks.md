@@ -9,6 +9,10 @@
 - [ ] 0.3 Allocate any minimal Finance receipt-resolution read to Finance's
   owner under a separate bounded MCP contract. Do not gate owner-statement
   locate on receipt integration or grant General Finance SQL access.
+- [ ] 0.4 Allocate the owner-report confirmation and read-only validation
+  seam to Switchboard's owner before any typed transition can be enabled.
+  Reconcile with its durable message inbox and state store; the LLM proposal
+  path must never mint an owner confirmation receipt.
 
 ## 1. General-local locate and profile behavior after adoption
 
@@ -19,7 +23,9 @@
 - [ ] 1.2 Implement the opt-in versioned profile and typed
   `possession_locate`/`possession_record` tools in a narrow General-owned module
   such as `roster/general/tools/possessions.py`, registered through the
-  existing General module. No new item table, page, or transport lane.
+  existing General module. `possession_record` must validate the exact
+  server-held owner-report receipt through Switchboard MCP and derive its
+  source reference from that result. No new item table, page, or transport lane.
 - [ ] 1.3 Implement move, borrow, lend, named-episode return, retire, and
   superseding correction with explicit owner source/time evidence and
   separate observed/recorded times. Enforce one active episode per item and
@@ -60,6 +66,12 @@
   Race generic `item_update` reading revision 1 against a typed transition
   committing revision 2; both an unrelated JSON key update and a tag-only
   update must preserve revision-2 history or fail stale.
+- [ ] 3.2a Add a behavior-executing spoofing case at the General tool seam:
+  invented source ID, caller-asserted owner role, a non-owner message,
+  mismatched payload digest, unreadable source, and Switchboard validator
+  outage all refuse a new transition with item revision, history, episode,
+  and projection unchanged. Prove a confirmed exact report succeeds and an
+  identical committed replay returns its original receipt without a new write.
 - [ ] 3.3 Exercise direct item deletion, collection cascade deletion, and
   concurrent opt-in with real PostgreSQL, plus full-profile export. Cover
   read-model qualification near `tests/api/test_general_stats.py` without
