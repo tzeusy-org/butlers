@@ -674,3 +674,42 @@ async def discover_butlers(
             except Exception:
                 logger.exception("Failed to discover butler in %s", config_dir)
     return discovered
+
+
+async def seed_missing_roster_butlers(pool: asyncpg.Pool, butlers_dir: Path) -> int:
+    """Insert only absent Git-roster identities before L2 boot registration.
+
+    Existing legacy rows, policy projections, and boot epochs are never updated
+    here.  A concurrent daemon registration can safely retry after this INSERT
+    commits; sw_035's insert trigger creates its unknown control-plane row.
+    """
+    from butlers.config import load_config
+
+    inserted = 0
+    for config_dir in sorted(Path(butlers_dir).iterdir()):
+        if not (config_dir / "butler.toml").is_file():
+            continue
+        config = load_config(config_dir)
+        modules = sorted(config.modules)
+        capabilities = sorted(set(modules) | {"trigger"})
+        status = await pool.execute(
+            """
+            INSERT INTO switchboard.butler_registry (
+                name, endpoint_url, description, modules, capabilities,
+                liveness_ttl_seconds, route_contract_min, route_contract_max,
+                agent_type
+            ) VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9)
+            ON CONFLICT (name) DO NOTHING
+            """,
+            config.name,
+            runtime_mcp_url(config.port),
+            config.description,
+            modules,
+            capabilities,
+            config.runtime_seed.liveness_ttl_seconds,
+            config.runtime_seed.route_contract_min,
+            config.runtime_seed.route_contract_max,
+            config.type.value,
+        )
+        inserted += int(status.endswith(" 1"))
+    return inserted

@@ -110,7 +110,7 @@ def _make_stub_module(
     return _Stub
 
 
-def _make_mock_pool() -> tuple[Any, Any]:
+def _make_mock_pool(*, boot_receipt: object = 1) -> tuple[Any, Any]:
     """Build a minimal asyncpg pool mock (no real DB)."""
     conn = AsyncMock()
     conn.execute = AsyncMock(return_value=None)
@@ -122,7 +122,13 @@ def _make_mock_pool() -> tuple[Any, Any]:
     pool.acquire.return_value.__aenter__ = AsyncMock(return_value=conn)
     pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
     pool.execute = AsyncMock(return_value=None)
-    pool.fetchval = AsyncMock(return_value=None)
+
+    async def _fetchval(query: str, *_args: Any) -> object:
+        if "public.register_butler_boot" in query:
+            return boot_receipt
+        return None
+
+    pool.fetchval = AsyncMock(side_effect=_fetchval)
     pool.fetch = AsyncMock(return_value=[])
     pool.fetchrow = AsyncMock(return_value=None)
     return pool, conn
@@ -226,12 +232,14 @@ def _build_infra_patches(
 async def _start_smoke_daemon(
     config_dir: Path,
     registry: ModuleRegistry | None = None,
+    *,
+    boot_receipt: object = 1,
 ) -> tuple[ButlerDaemon, Any, MagicMock]:
     """Start a ButlerDaemon with all infra mocked.
 
     Returns (daemon, mock_pool, mock_spawner).
     """
-    pool, _ = _make_mock_pool()
+    pool, _ = _make_mock_pool(boot_receipt=boot_receipt)
     mock_db = _make_db_mock(pool)
     audit_db = _make_db_mock(pool)
     patches = _build_infra_patches(pool, mock_db, audit_db)
@@ -275,8 +283,12 @@ async def test_daemon_start_reaches_accepting_state(tmp_path: Path) -> None:
     of whether any modules are loaded.
     """
     config_dir = _write_butler_toml(tmp_path / "smoke-butler")
-    daemon, _pool, _ = await _start_smoke_daemon(config_dir)
+    daemon, pool, _ = await _start_smoke_daemon(config_dir)
 
+    assert any(
+        "public.register_butler_boot" in call.args[0] for call in pool.fetchval.await_args_list
+    )
+    assert daemon._boot_epoch == 1
     assert daemon._accepting_connections is True, (
         "Daemon must set _accepting_connections=True at the end of start()"
     )
@@ -288,6 +300,24 @@ async def test_daemon_start_reaches_accepting_state(tmp_path: Path) -> None:
     assert daemon.db.pool is not None, "daemon.db.pool must be connected after start()"
 
     await daemon.shutdown()
+
+
+async def test_invalid_boot_receipt_keeps_daemon_non_accepting(tmp_path: Path) -> None:
+    """A missing, non-positive, or boolean receipt cannot authorize routes."""
+    for index, receipt in enumerate((None, 0, True)):
+        config_dir = _write_butler_toml(tmp_path / f"invalid-receipt-{index}")
+        daemon, pool, _ = await _start_smoke_daemon(config_dir, boot_receipt=receipt)
+        try:
+            assert any(
+                "public.register_butler_boot" in call.args[0]
+                for call in pool.fetchval.await_args_list
+            )
+            assert daemon._boot_epoch is None
+            assert daemon._accepting_connections is False
+            assert daemon._identity_facts()["accepting_routes"] is False
+            assert daemon._boot_registration_task is not None
+        finally:
+            await daemon.shutdown()
 
 
 # ---------------------------------------------------------------------------

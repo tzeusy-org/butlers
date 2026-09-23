@@ -21,16 +21,18 @@ The ButlerDaemon manages the lifecycle of a butler:
 14. Start FastMCP SSE server on configured port
 15. Launch switchboard heartbeat (non-switchboard butlers)
 16. Start internal scheduler loop (calls tick() every tick_interval_seconds)
-17. Start liveness reporter (non-switchboard butlers — POST to Switchboard heartbeat endpoint)
+17. Start legacy liveness reporter (retained until L4 retirement)
+18. Commit the L1 boot epoch before the same-port identity route advertises acceptance
 
 On startup failure, already-initialized modules get on_shutdown() called.
 
-Graceful shutdown: (a) stops the MCP server, (b) stops accepting new triggers,
-(c) drains in-flight runtime sessions up to a configurable timeout,
-(d) cancels switchboard heartbeat, (e) closes Switchboard MCP client,
-(f) cancels scheduler loop (waits for in-progress tick() to finish),
-(g) cancels liveness reporter loop, (h) shuts down modules in reverse topological order,
-(i) closes DB pool.
+Graceful shutdown: (a) stops advertising route acceptance, (b) stops the MCP server,
+(c) stops accepting new triggers,
+(d) drains in-flight runtime sessions up to a configurable timeout,
+(e) cancels switchboard heartbeat, (f) closes Switchboard MCP client,
+(g) cancels scheduler loop (waits for in-progress tick() to finish),
+(h) cancels liveness reporter loop, (i) shuts down modules in reverse topological order,
+(j) closes DB pool.
 """
 
 from __future__ import annotations
@@ -72,6 +74,7 @@ from butlers.core.state import state_set as _state_set
 from butlers.core.tool_call_capture import (
     get_current_runtime_session_id,
 )
+from butlers.core.utils import generate_uuid7_string
 from butlers.credential_store import (
     CredentialStore,
     ensure_secrets_schema,
@@ -223,6 +226,10 @@ class ButlerDaemon:
         self._tool_registration_failures: dict[str, dict[str, str]] = {}
         self._started_at: float | None = None
         self._accepting_connections = False
+        self._shutting_down = False
+        self._boot_instance_id = uuid.UUID(generate_uuid7_string())
+        self._boot_epoch: int | None = None
+        self._boot_registration_task: asyncio.Task | None = None
         self._server: uvicorn.Server | None = None
         self._server_task: asyncio.Task | None = None
         self._mcp_socket: socket.socket | None = None
@@ -513,6 +520,66 @@ class ButlerDaemon:
 
         await recover_route_inbox(self, pool)
 
+    def _identity_facts(self) -> dict[str, Any]:
+        """Expose bounded process facts, never a self-authored liveness time."""
+        contract = self.config.runtime_seed
+        server_running = self._server_task is not None and not self._server_task.done()
+        accepting = (
+            self._boot_epoch is not None
+            and self._accepting_connections
+            and not self._shutting_down
+            and server_running
+            and self.spawner is not None
+            and self.spawner._accepting
+        )
+        return {
+            "schema_version": "butler.control.v1",
+            "butler_name": self.config.name,
+            "boot_instance_id": str(self._boot_instance_id),
+            "boot_epoch": self._boot_epoch or 0,
+            "route_contract": {
+                "min": contract.route_contract_min,
+                "max": contract.route_contract_max,
+            },
+            "accepting_routes": bool(accepting),
+        }
+
+    async def _register_boot_epoch(self) -> bool:
+        """Commit one UUIDv7 boot epoch via the L1 role-bound operation."""
+        if self._shutting_down or self.db is None or self.db.pool is None:
+            return False
+        try:
+            if self.config.name == "switchboard":
+                from butlers.tools.switchboard.registry.registry import seed_missing_roster_butlers
+
+                # The Switchboard alone owns legacy registry INSERTs.  A
+                # transient failure is retried with this same boot UUID; the
+                # seed never updates an existing policy/provenance/epoch row.
+                await seed_missing_roster_butlers(self.db.pool, self.config_dir.parent)
+            epoch = await self.db.pool.fetchval(
+                "SELECT public.register_butler_boot($1, $2)",
+                self.config.name,
+                self._boot_instance_id,
+            )
+            if type(epoch) is not int or epoch <= 0:
+                raise ValueError("invalid boot registration receipt")
+        except Exception:
+            logger.warning("Boot registration unavailable for butler=%s", self.config.name)
+            return False
+        self._boot_epoch = epoch
+        return True
+
+    async def _retry_boot_registration(self) -> None:
+        """Recover startup-order races without inventing a new process UUID."""
+        delay_s = 5
+        while not self._shutting_down and self._boot_epoch is None:
+            await asyncio.sleep(delay_s)
+            if await self._register_boot_epoch() and not self._shutting_down:
+                self._accepting_connections = True
+                logger.info("Boot epoch committed for butler=%s", self.config.name)
+                return
+            delay_s = min(delay_s * 2, 60)
+
     async def _start_mcp_server(self) -> None:
         """Start the FastMCP SSE server as a background asyncio task.
 
@@ -528,6 +595,7 @@ class ButlerDaemon:
             butler_name=self.config.name,
             approval_push_runtime=self._approval_push_runtime,
             runtime_probe_coordinator=self._build_runtime_probe_coordinator(),
+            identity_provider=self._identity_facts,
         )
         config = uvicorn.Config(
             app,
@@ -645,6 +713,7 @@ class ButlerDaemon:
         butler_name: str,
         approval_push_runtime: Any | None = None,
         runtime_probe_coordinator: Any | None = None,
+        identity_provider: Any | None = None,
     ) -> Any:
         """Build a unified ASGI app exposing streamable HTTP and legacy SSE MCP routes."""
         apply_streamable_http_disconnect_patch()
@@ -685,6 +754,17 @@ class ButlerDaemon:
         health_route = Route("/health", _health_endpoint, methods=["GET"])
         if not cls._attach_route_via_public_api(streamable_app, health_route):
             streamable_app.routes.append(health_route)
+
+        if identity_provider is not None:
+
+            async def _identity_endpoint(request: Request) -> JSONResponse:
+                return JSONResponse(identity_provider())
+
+            identity_route = Route(
+                "/internal/control-plane/identity", _identity_endpoint, methods=["GET"]
+            )
+            if not cls._attach_route_via_public_api(streamable_app, identity_route):
+                streamable_app.routes.append(identity_route)
 
         # Switchboard's private runtime-probe control plane.  Attached beside
         # /health rather than registered as an MCP tool, so it is invisible to
