@@ -11,13 +11,13 @@
 ## 2. Dashboard
 
 - [x] 2.1 Send the requested state through the real toggle action.
-- [x] 2.2 Remove optimistic success claims and render observed state plus audit
-      receipt after the mutation settles.
+- [x] 2.2 Remove optimistic success claims, retain pending state per row, and
+      render observed state plus audit receipt after that row's mutation settles.
 
 ## 3. Verification
 
 - [x] 3.1 Add scheduler, API, and ButlerSchedulesTab behavior tests covering
-      registration, missing/managed refusals, idempotence/concurrency, and the
-      observed UI receipt.
-- [ ] 3.2 Run targeted tests, test-plan, guards, OpenSpec strict validation,
+      registration, missing/managed refusals, idempotence/concurrency,
+      observed UI receipt, and overlapping row completion/refusal order.
+- [x] 3.2 Run targeted tests, test-plan, guards, OpenSpec strict validation,
       and the applicable frontend CI order before handoff.

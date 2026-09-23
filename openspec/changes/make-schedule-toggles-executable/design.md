@@ -32,8 +32,9 @@ control-plane fields, never schedule prompt or job arguments.
 
 ### D4: The UI is honest-pending
 
-The schedule list does not optimistically flip. While the action is pending,
-the selected control is disabled. On success the query is invalidated and the
+The schedule list does not optimistically flip. Each row's control stays
+disabled until its own action settles, even when another row settles first.
+On success the query is invalidated and the
 tab renders the server-observed state with the `schedule.toggle` receipt; on a
 typed refusal it renders the API error and makes no success claim.
 

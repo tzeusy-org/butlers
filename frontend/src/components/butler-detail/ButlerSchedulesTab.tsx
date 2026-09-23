@@ -63,7 +63,7 @@ export default function ButlerSchedulesTab({ butlerName }: ButlerSchedulesTabPro
 
   // Track which schedule is currently being triggered
   const [triggeringId, setTriggeringId] = useState<string | null>(null);
-  const [togglingId, setTogglingId] = useState<string | null>(null);
+  const [togglingIds, setTogglingIds] = useState<ReadonlySet<string>>(new Set());
   const [toggleReceipt, setToggleReceipt] = useState<ScheduleToggleResult | null>(null);
 
   // ---------------------------------------------------------------------------
@@ -80,24 +80,29 @@ export default function ButlerSchedulesTab({ butlerName }: ButlerSchedulesTabPro
     setFormOpen(true);
   }
 
-  function handleToggle(schedule: Schedule) {
+  async function handleToggle(schedule: Schedule) {
     const requestedEnabled = !schedule.enabled;
-    setTogglingId(schedule.id);
+    setTogglingIds((pending) => new Set(pending).add(schedule.id));
     setToggleReceipt(null);
-    toggleMutation.mutate({ scheduleId: schedule.id, enabled: requestedEnabled }, {
-      onSuccess: (response) => {
-        const receipt = response.data;
-        setTogglingId(null);
-        setToggleReceipt(receipt);
-        toast.success(
-          `${receipt.observed_enabled ? "Event resumed" : "Event paused"} (Schedule "${schedule.name}" confirmed by server)`,
-        );
-      },
-      onError: (err) => {
-        setTogglingId(null);
-        toast.error(`Failed to toggle schedule: ${err instanceof Error ? err.message : "Unknown error"}`);
-      },
-    });
+    try {
+      const response = await toggleMutation.mutateAsync({
+        scheduleId: schedule.id,
+        enabled: requestedEnabled,
+      });
+      const receipt = response.data;
+      setToggleReceipt(receipt);
+      toast.success(
+        `${receipt.observed_enabled ? "Event resumed" : "Event paused"} (Schedule "${schedule.name}" confirmed by server)`,
+      );
+    } catch (err) {
+      toast.error(`Failed to toggle schedule: ${err instanceof Error ? err.message : "Unknown error"}`);
+    } finally {
+      setTogglingIds((pending) => {
+        const remaining = new Set(pending);
+        remaining.delete(schedule.id);
+        return remaining;
+      });
+    }
   }
 
   function handleTrigger(schedule: Schedule) {
@@ -203,7 +208,7 @@ export default function ButlerSchedulesTab({ butlerName }: ButlerSchedulesTabPro
             onEdit={handleEdit}
             onDelete={handleDeleteClick}
             triggeringId={triggeringId}
-            togglingId={togglingId}
+            togglingIds={togglingIds}
           />
         </CardContent>
       </Card>

@@ -1,6 +1,6 @@
 ## Why
 
-The schedule table already offers a pause/resume control and the dashboard API
+The Schedules Tab already offers a pause/resume control and the dashboard API
 already names `schedule_toggle`, but that MCP action is not registered. The
 button therefore cannot change a schedule and the existing optimistic cache
 update can present a state that never landed. TOML-owned rows also need an
@@ -28,5 +28,5 @@ schedule execution, or unrelated Calendar UX is part of this change.
 
 Implementation touches the core scheduler/tool registration, schedule API
 models/router, schedule client/hook/tab, and behavior tests. The OpenSpec
-delta updates the core scheduler CRUD contract and Calendar butler toggle
-contract. No migration or live-data action is required.
+delta updates the core scheduler CRUD contract and the butler-management
+Schedules Tab toggle contract. No migration or live-data action is required.
