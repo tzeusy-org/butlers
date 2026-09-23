@@ -177,6 +177,18 @@ HTTP POST or receive the dashboard owner credential.
 A prior boot generation cannot refresh a successor's observation, including
 when an old process is still reachable during a probe race or code rollback.
 
+In the L2 staging implementation, the same-port identity route is attached
+before the server binds but reports `accepting_routes=false` until local
+startup services are ready and `public.register_butler_boot` has committed.
+Switchboard first inserts only missing exact Git-roster registry identities;
+existing operator policy, provenance, and boot history are never rewritten by
+that seed. A daemon that wins the startup race before its row is committed
+keeps one UUIDv7 for bounded retries and does not advertise acceptance in the
+meantime. Shutdown flips acceptance to false before server draining. The L2
+identity and receiver observation remain shadow evidence: legacy route
+eligibility is not switched until L3, and the old heartbeat writer is not
+retired until L4.
+
 The scheduler is local deterministic infrastructure. Derived remote staleness
 is evidence about inbound routability, not authority to stop local cron,
 deadline, or QA patrol work. An explicit administrative pause or quarantine is

@@ -27,10 +27,12 @@ from __future__ import annotations
 import asyncio
 import shutil
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from urllib.parse import urlparse
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import asyncpg
+import httpx
 import pytest
 from sqlalchemy import create_engine
 
@@ -419,6 +421,7 @@ async def test_boot_registration_retry_cannot_reclaim_after_successor(
 @pytest.mark.asyncio(loop_scope="session")
 async def test_registry_runtime_roles_cannot_forge_policy_or_observation(
     pool: asyncpg.Pool,
+    migrated_db_url: str,
 ) -> None:
     await pool.execute(
         "INSERT INTO switchboard.butler_registry (name, endpoint_url) "
@@ -478,6 +481,265 @@ async def test_registry_runtime_roles_cannot_forge_policy_or_observation(
         )
         is None
     )
+    await _assert_l2_roster_seed_and_boot_retry_preserve_existing_authority(migrated_db_url)
+
+
+async def _assert_l2_roster_seed_and_boot_retry_preserve_existing_authority(
+    migrated_db_url: str,
+) -> None:
+    """A daemon can start before classification without seeding over owner policy."""
+    from butlers.tools.switchboard.registry.registry import seed_missing_roster_butlers
+
+    roster_dir = Path(__file__).resolve().parents[2] / "roster"
+    pool = await asyncpg.create_pool(
+        migrated_db_url, min_size=1, max_size=4, init=register_jsonb_codec
+    )
+    assert pool is not None
+    try:
+        await pool.execute(
+            "INSERT INTO switchboard.butler_registry (name, endpoint_url) "
+            "VALUES ('health', 'http://health:41103/mcp') ON CONFLICT (name) DO NOTHING"
+        )
+        previous_endpoint = await pool.fetchval(
+            "SELECT endpoint_url FROM switchboard.butler_registry WHERE name = 'health'"
+        )
+        await pool.fetchval("SELECT public.set_butler_registry_policy('health', 'quarantined')")
+        previous_epoch = await pool.fetchval(
+            "SELECT boot_epoch FROM switchboard.butler_registry_control_plane WHERE name = 'health'"
+        )
+        old_uuid = uuid4()
+        health_epoch = await _as_role(
+            pool,
+            "butler_health_rw",
+            "SELECT public.register_butler_boot('health', $1)",
+            old_uuid,
+        )
+        assert health_epoch == previous_epoch + 1
+
+        education_uuid = uuid4()
+        # No classification request has populated Education yet.  The narrow
+        # operation refuses to invent its row; Switchboard's insert-only seed
+        # creates it and a retry with the same UUID commits exactly one epoch.
+        with pytest.raises(asyncpg.PostgresError):
+            await _as_role(
+                pool,
+                "butler_education_rw",
+                "SELECT public.register_butler_boot('education', $1)",
+                education_uuid,
+            )
+
+        async def register_after_seed() -> int:
+            for _ in range(100):
+                try:
+                    return await _as_role(
+                        pool,
+                        "butler_education_rw",
+                        "SELECT public.register_butler_boot('education', $1)",
+                        education_uuid,
+                    )
+                except asyncpg.PostgresError:
+                    await asyncio.sleep(0.01)
+            raise AssertionError("boot registration never observed committed roster seed")
+
+        _, registered_epoch = await asyncio.gather(
+            seed_missing_roster_butlers(pool, roster_dir), register_after_seed()
+        )
+        assert registered_epoch == 1
+        assert (
+            await _as_role(
+                pool,
+                "butler_education_rw",
+                "SELECT public.register_butler_boot('education', $1)",
+                education_uuid,
+            )
+            == 1
+        )
+        await seed_missing_roster_butlers(pool, roster_dir)
+        rows = await pool.fetch(
+            "SELECT c.name, c.policy_state, c.boot_epoch, r.endpoint_url "
+            "FROM switchboard.butler_registry_control_plane AS c "
+            "JOIN switchboard.butler_registry AS r USING (name) "
+            "WHERE c.name IN ('health', 'education')"
+        )
+        by_name = {row["name"]: row for row in rows}
+        assert by_name["health"]["policy_state"] == "quarantined"
+        assert by_name["health"]["boot_epoch"] == health_epoch
+        assert by_name["health"]["endpoint_url"] == previous_endpoint
+        assert by_name["education"]["boot_epoch"] == 1
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM switchboard.butler_boot_registrations "
+                "WHERE name = 'education'"
+            )
+            == 1
+        )
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_l2_receiver_records_under_narrow_role_without_dashboard_owner_session(
+    migrated_db_url: str,
+) -> None:
+    """Mounted owner auth stays closed while Switchboard's probe uses its DB role."""
+    from butlers.api.app import create_app
+    from butlers.config import load_config
+    from butlers.core.control_plane_identity import (
+        DashboardProbeRoleView,
+        ExpectedDaemon,
+        SingleFlightProber,
+        run_shadow_cycle,
+    )
+    from butlers.core.utils import generate_uuid7_string
+
+    config = load_config(Path(__file__).resolve().parents[2] / "roster" / "health")
+    expected = ExpectedDaemon(config.name, config.port, "butlers-up")
+    pool = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=3)
+    assert pool is not None
+    try:
+        await pool.execute(
+            "INSERT INTO switchboard.butler_registry (name, endpoint_url) "
+            "VALUES ('health', 'http://health:41103/mcp') ON CONFLICT (name) DO NOTHING"
+        )
+        await pool.fetchval("SELECT public.set_butler_registry_policy('health', 'quarantined')")
+        await pool.execute(
+            "UPDATE switchboard.butler_registry SET endpoint_url = "
+            "'http://stored-registry-is-not-roster:49999/mcp' WHERE name = 'health'"
+        )
+        boot_uuid = UUID(generate_uuid7_string())
+        epoch = await _as_role(
+            pool,
+            "butler_health_rw",
+            "SELECT public.register_butler_boot('health', $1)",
+            boot_uuid,
+        )
+        identity = {
+            "schema_version": "butler.control.v1",
+            "butler_name": config.name,
+            "boot_instance_id": str(boot_uuid),
+            "boot_epoch": epoch,
+            "route_contract": {"min": 1, "max": 1},
+            "accepting_routes": True,
+        }
+        app = create_app(api_key="synthetic-mounted-owner-key")
+        app.state.ready = True
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="https://butlers.example.test"
+        ) as browser:
+            assert (await browser.get("/api/butlers")).status_code in (401, 503)
+            public_health = await browser.get("/api/health")
+            assert "boot_instance_id" not in public_health.text
+            assert "boot_epoch" not in public_health.text
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            assert str(request.url) == expected.url
+            assert "cookie" not in request.headers
+            assert "x-api-key" not in request.headers
+            return httpx.Response(200, json=identity)
+
+        receiver = DashboardProbeRoleView(pool)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            prober = SingleFlightProber(receiver, client=client)
+            cycle = await run_shadow_cycle(receiver, (expected,), prober)
+        assert cycle.complete and cycle.recorded_count == 1
+        assert (
+            await receiver.fetchval(
+                "SELECT observed_state FROM switchboard.butler_registry_control_plane "
+                "WHERE name = 'health'"
+            )
+            == "healthy"
+        )
+        healthy_at = await receiver.fetchval(
+            "SELECT healthy_observed_at FROM switchboard.butler_registry_control_plane "
+            "WHERE name = 'health'"
+        )
+        older = await receiver.fetchrow(
+            "SELECT boot_epoch, probe_sequence FROM public.reserve_butler_probe('health')"
+        )
+        # Another process using the Switchboard runtime role reserves a newer
+        # sequence and records a failed attempt before the Dashboard result.
+        async with pool.acquire() as conn:
+            await conn.execute('SET ROLE "butler_switchboard_rw"')
+            try:
+                newer = await conn.fetchrow(
+                    "SELECT boot_epoch, probe_sequence FROM public.reserve_butler_probe('health')"
+                )
+                assert newer["probe_sequence"] > older["probe_sequence"]
+                assert await conn.fetchval(
+                    "SELECT public.record_butler_probe($1,$2,$3,$4,$5,$6,$7)",
+                    "health",
+                    epoch,
+                    newer["probe_sequence"],
+                    False,
+                    None,
+                    None,
+                    "timeout",
+                )
+            finally:
+                await conn.execute("RESET ROLE")
+        assert not await receiver.fetchval(
+            "SELECT public.record_butler_probe($1,$2,$3,$4,$5,$6,$7)",
+            "health",
+            epoch,
+            older["probe_sequence"],
+            True,
+            True,
+            True,
+            None,
+        )
+        state = await pool.fetchrow(
+            "SELECT observed_state, healthy_observed_at, policy_state "
+            "FROM switchboard.butler_registry_control_plane WHERE name = 'health'"
+        )
+        assert state["observed_state"] == "unavailable"
+        assert state["healthy_observed_at"] == healthy_at
+        assert state["policy_state"] == "quarantined"
+        # No owner cookie or key was involved, but raw policy writes are still
+        # denied to the observer's effective role on each pool operation.
+        assert (
+            await receiver.fetchval(
+                "UPDATE switchboard.butler_registry_control_plane "
+                "SET policy_state = 'active' WHERE name = 'health' "
+                "RETURNING policy_state"
+            )
+            is None
+        )
+        with pytest.raises(asyncpg.PostgresError):
+            await receiver.fetchval("SELECT public.set_butler_registry_policy('health', 'active')")
+        await _assert_l2_dashboard_probe_role_resets(migrated_db_url)
+    finally:
+        await pool.close()
+
+
+async def _assert_l2_dashboard_probe_role_resets(
+    migrated_db_url: str,
+) -> None:
+    from butlers.core.control_plane_identity import DashboardProbeRoleView
+
+    pool = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=1)
+    assert pool is not None
+
+    async def assert_reused_connection_is_unprivileged() -> None:
+        async with pool.acquire() as conn:
+            assert await conn.fetchval("SELECT current_setting('role')") == "none"
+
+    try:
+        receiver = DashboardProbeRoleView(pool)
+        assert await receiver.fetchval("SELECT current_user") == "butler_switchboard_rw"
+        await assert_reused_connection_is_unprivileged()
+
+        with pytest.raises(asyncpg.PostgresError):
+            await receiver.fetchval("SELECT 1 / 0")
+        await assert_reused_connection_is_unprivileged()
+
+        in_flight = asyncio.create_task(receiver.fetchval("SELECT pg_sleep(5)"))
+        await asyncio.sleep(0.05)
+        in_flight.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await in_flight
+        await assert_reused_connection_is_unprivileged()
+    finally:
+        await pool.close()
 
 
 def test_registry_quarantine_migration_and_rollback_preserve_authority(
