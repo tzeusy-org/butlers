@@ -395,7 +395,8 @@ class TestButlerStartupIntegration:
 
         # Exercise the actual daemon dispatcher rather than comparing it with
         # another mutable production catalog.
-        assert len(set(registered_tools)) == 71
+        assert len(set(registered_tools)) == 72
+        assert "schedule_toggle" in registered_tools
         assert {
             "cost_claim_assert",
             "cost_claim_amend",

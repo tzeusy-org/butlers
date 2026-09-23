@@ -18,11 +18,20 @@ import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 
+from butlers.api.audit_emit import authenticated_principal
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
-from butlers.api.models import ApiResponse
-from butlers.api.models.schedule import Schedule, ScheduleCreate, ScheduleUpdate
+from butlers.api.models import ApiResponse, ErrorDetail, ErrorResponse
+from butlers.api.models.schedule import (
+    Schedule,
+    ScheduleCreate,
+    ScheduleToggleRequest,
+    ScheduleToggleResult,
+    ScheduleUpdate,
+)
+from butlers.api.routers.audit import append as audit_append
 from butlers.api.routers.audit import log_audit_entry
 from butlers.api.routers.model_settings import _validate_complexity_tier
 from butlers.core.model_routing import coerce_complexity_tier
@@ -341,24 +350,96 @@ async def trigger_schedule(
         raise
 
 
+async def _log_schedule_toggle_audit(
+    db: DatabaseManager,
+    butler: str,
+    schedule_id: UUID,
+    summary: dict[str, object],
+    *,
+    result: str = "success",
+    error: str | None = None,
+) -> None:
+    """Record the owner action with butler and schedule as target context."""
+    actor = authenticated_principal()
+    try:
+        await audit_append(
+            db.pool("switchboard"),
+            actor,
+            "schedule.toggle",
+            target=f"schedule:{schedule_id}",
+            metadata={"butler": butler, **summary},
+            result=result,
+            error=error,
+        )
+    except Exception:
+        logger.warning("Failed to record schedule.toggle audit", exc_info=True)
+
+
 @router.patch(
     "/{name}/schedules/{schedule_id}/toggle",
-    response_model=ApiResponse[dict],
+    response_model=ApiResponse[ScheduleToggleResult],
 )
 async def toggle_schedule(
     name: str,
     schedule_id: UUID,
+    body: ScheduleToggleRequest,
     mgr: MCPClientManager = Depends(get_mcp_manager),
     db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[dict]:
-    """Toggle a scheduled task's enabled/disabled state via MCP."""
-    summary = {"schedule_id": str(schedule_id)}
+) -> ApiResponse[ScheduleToggleResult] | JSONResponse:
+    """Persist and report a requested schedule state via the canonical MCP action."""
+    summary: dict[str, object] = {
+        "schedule_id": str(schedule_id),
+        "requested_enabled": body.enabled,
+    }
+    arguments: dict[str, object] = {"id": str(schedule_id), "enabled": body.enabled}
     try:
-        result = await _call_mcp_tool(mgr, name, "schedule_toggle", {"id": str(schedule_id)})
-        await log_audit_entry(db, name, "schedule.toggle", summary)
-        return ApiResponse[dict](data=result)
+        result = await _call_mcp_tool(mgr, name, "schedule_toggle", arguments)
+        if result.get("status") == "error":
+            code = str(result.get("code") or "SCHEDULE_TOGGLE_FAILED")
+            message = str(result.get("message") or result.get("error") or "Schedule toggle failed")
+            summary["code"] = code
+            await _log_schedule_toggle_audit(
+                db, name, schedule_id, summary, result="error", error=code
+            )
+            return _schedule_toggle_error_response(code, message, name, schedule_id)
+
+        typed_result = ScheduleToggleResult.model_validate(result)
+        summary.update(
+            {
+                "observed_enabled": typed_result.observed_enabled,
+                "changed": typed_result.changed,
+                "outcome": typed_result.outcome,
+            }
+        )
+        await _log_schedule_toggle_audit(db, name, schedule_id, summary)
+        return ApiResponse[ScheduleToggleResult](data=typed_result)
     except HTTPException:
-        await log_audit_entry(
-            db, name, "schedule.toggle", summary, result="error", error="MCP call failed"
+        await _log_schedule_toggle_audit(
+            db, name, schedule_id, summary, result="error", error="MCP call failed"
         )
         raise
+
+
+def _schedule_toggle_error_response(
+    code: str,
+    message: str,
+    butler: str,
+    schedule_id: UUID,
+) -> JSONResponse:
+    """Return the typed public refusal for a failed schedule toggle."""
+    status_code = {
+        "SCHEDULE_NOT_FOUND": 404,
+        "SCHEDULE_TOML_MANAGED": 409,
+        "SCHEDULE_MANAGED": 409,
+    }.get(code, 400)
+    return JSONResponse(
+        status_code=status_code,
+        content=ErrorResponse(
+            error=ErrorDetail(
+                code=code,
+                message=message,
+                butler=butler,
+                details={"schedule_id": str(schedule_id)},
+            )
+        ).model_dump(mode="json"),
+    )

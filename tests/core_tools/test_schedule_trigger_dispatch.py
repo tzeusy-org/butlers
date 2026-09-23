@@ -98,8 +98,8 @@ class _RecordingDaemon:
         return self._runtime_context
 
 
-def _register_and_grab_schedule_trigger(pool, daemon):
-    """Register the scheduling tool group and return the ``schedule_trigger`` closure.
+def _register_and_grab_scheduling_tool(pool, daemon, tool_name: str):
+    """Register the scheduling group and return one named action closure.
 
     Mirrors the register-and-grab idiom in ``tests/core_tools/test_infra_trigger.py``:
     a fake ``_core_tool`` captures each registered handler by name. ``schedule_trigger``
@@ -125,7 +125,17 @@ def _register_and_grab_schedule_trigger(pool, daemon):
         route_metrics=None,
     )
     register_scheduling_tools(ctx, SimpleNamespace(), _core_tool)
-    return registered["schedule_trigger"]
+    return registered[tool_name]
+
+
+def _register_and_grab_schedule_trigger(pool, daemon):
+    """Register the scheduling group and return the ``schedule_trigger`` closure."""
+    return _register_and_grab_scheduling_tool(pool, daemon, "schedule_trigger")
+
+
+def _register_and_grab_schedule_toggle(pool, daemon):
+    """Register the scheduling group and return the canonical toggle action."""
+    return _register_and_grab_scheduling_tool(pool, daemon, "schedule_toggle")
 
 
 # ---------------------------------------------------------------------------
@@ -267,3 +277,71 @@ async def test_schedule_trigger_missing_row_returns_error_without_dispatch(pool)
     assert result["status"] == "error"
     assert result["error"] == "Schedule not found"
     assert daemon.calls == []
+
+
+async def test_schedule_toggle_is_registered_and_returns_observed_receipt(pool):
+    """The dashboard-facing action is on the canonical scheduling group."""
+    from butlers.core.scheduler import schedule_create
+
+    toggle = _register_and_grab_schedule_toggle(pool, _RecordingDaemon())
+    task_id = await schedule_create(pool, "toggle-task", "0 9 * * *", "toggle me")
+
+    result = await toggle(task_id=str(task_id), enabled=False)
+
+    assert result["status"] == "updated"
+    assert result["requested_enabled"] is False
+    assert result["observed_enabled"] is False
+    assert result["changed"] is True
+    assert result["audit"] == {
+        "action": "schedule.toggle",
+        "result": "success",
+        "target": f"schedule:{task_id}",
+    }
+    assert (
+        await pool.fetchval("SELECT enabled FROM scheduled_tasks WHERE id = $1", task_id) is False
+    )
+
+    retry = await toggle(task_id=str(task_id), enabled=False)
+    assert retry["status"] == "unchanged"
+    assert retry["outcome"] == "already_requested"
+    assert retry["observed_enabled"] is False
+
+    with pytest.raises(TypeError):
+        await toggle(task_id=str(task_id))
+    assert (
+        await pool.fetchval("SELECT enabled FROM scheduled_tasks WHERE id = $1", task_id) is False
+    )
+
+
+async def test_schedule_toggle_returns_typed_refusals(pool):
+    """Missing, TOML, and other managed rows never impersonate a toggle."""
+    from butlers.core.scheduler import schedule_create
+
+    toggle = _register_and_grab_schedule_toggle(pool, _RecordingDaemon())
+    missing = await toggle(task_id=str(uuid.uuid4()), enabled=False)
+    assert missing["status"] == "error"
+    assert missing["code"] == "SCHEDULE_NOT_FOUND"
+
+    task_id = await schedule_create(pool, "toml-toggle-task", "0 9 * * *", "managed")
+    await pool.execute("UPDATE scheduled_tasks SET source = 'toml' WHERE id = $1", task_id)
+    managed = await toggle(task_id=str(task_id), enabled=False)
+    assert managed["status"] == "error"
+    assert managed["code"] == "SCHEDULE_TOML_MANAGED"
+    assert await pool.fetchval("SELECT enabled FROM scheduled_tasks WHERE id = $1", task_id) is True
+
+    for source in ("module", ""):
+        other_id = await schedule_create(
+            pool, f"managed-toggle-{source or 'empty'}", "0 9 * * *", "managed"
+        )
+        await pool.execute("UPDATE scheduled_tasks SET source = $2 WHERE id = $1", other_id, source)
+        before = await pool.fetchrow(
+            "SELECT enabled, next_run_at FROM scheduled_tasks WHERE id = $1", other_id
+        )
+        other_managed = await toggle(task_id=str(other_id), enabled=False)
+        after = await pool.fetchrow(
+            "SELECT enabled, next_run_at FROM scheduled_tasks WHERE id = $1", other_id
+        )
+        assert other_managed["status"] == "error"
+        assert other_managed["code"] == "SCHEDULE_MANAGED"
+        assert after["enabled"] == before["enabled"] is True
+        assert after["next_run_at"] == before["next_run_at"]

@@ -419,7 +419,9 @@ Grouped result keys required by frontend:
 - `POST /api/butlers/{name}/schedules` -> `ApiResponse<...>`
 - `PUT /api/butlers/{name}/schedules/{scheduleId}` -> `ApiResponse<...>`
 - `DELETE /api/butlers/{name}/schedules/{scheduleId}` -> `ApiResponse<...>`
-- `PATCH /api/butlers/{name}/schedules/{scheduleId}/toggle` -> `ApiResponse<...>`
+- `PATCH /api/butlers/{name}/schedules/{scheduleId}/toggle` requires JSON
+  `{ "enabled": true|false }` -> `ApiResponse<ScheduleToggleResult>`; missing or
+  non-boolean state returns 422.
 
 Schedule execution semantics (dashboard-facing):
 
