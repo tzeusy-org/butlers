@@ -725,10 +725,58 @@ async def test_bad_configured_key_attempts_share_budget_and_do_not_mint_sessions
         with pytest.raises(AuthError) as denied:
             await (store if i % 2 else second).key_session("wrong-synthetic-key")
         assert denied.value.code == "UNAUTHORIZED"
-    with pytest.raises(AuthError) as limited:
-        await second.key_session("synthetic-current-key")
-    assert limited.value.code == "RATE_LIMITED"
     assert await store.pool.fetchval("SELECT count(*) FROM dashboard_auth.sessions") == 0
+
+    # A prior minute's exhausted bucket must reset for a new wrong-key attempt.
+    await store.pool.execute(
+        "UPDATE dashboard_auth.rate_buckets "
+        "SET minute=date_trunc('minute',clock_timestamp())-interval '1 minute',count=120 "
+        "WHERE kind='finish'"
+    )
+    with pytest.raises(AuthError) as after_rollover:
+        await store.key_session("wrong-synthetic-key")
+    assert after_rollover.value.code == "UNAUTHORIZED"
+    assert (
+        await store.pool.fetchval(
+            "SELECT count FROM dashboard_auth.rate_buckets WHERE kind='finish'"
+        )
+        == 1
+    )
+
+    # Charge one attempt on each service against the same nearly full bucket.
+    for _ in range(3):
+        seeded_minute = await store.pool.fetchval(
+            "UPDATE dashboard_auth.rate_buckets "
+            "SET minute=date_trunc('minute',clock_timestamp()),count=119 "
+            "WHERE kind='finish' RETURNING minute"
+        )
+        with pytest.raises(AuthError) as denied:
+            await store.key_session("wrong-synthetic-key")
+        assert denied.value.code == "UNAUTHORIZED"
+        minute, count = await store.pool.fetchrow(
+            "SELECT minute,count FROM dashboard_auth.rate_buckets WHERE kind='finish'"
+        )
+        if minute > seeded_minute:
+            assert count == 1
+            continue
+        assert minute == seeded_minute and count == 120
+        with pytest.raises(AuthError) as limited:
+            await second.key_session("wrong-synthetic-key")
+        if limited.value.code == "RATE_LIMITED":
+            break
+        assert limited.value.code == "UNAUTHORIZED"
+        minute, count = await store.pool.fetchrow(
+            "SELECT minute,count FROM dashboard_auth.rate_buckets WHERE kind='finish'"
+        )
+        assert minute > seeded_minute and count == 1
+    else:
+        pytest.fail("finish bucket rolled over during all three cap attempts")
+    minute, count = await store.pool.fetchrow(
+        "SELECT minute,count FROM dashboard_auth.rate_buckets WHERE kind='finish'"
+    )
+    assert minute == seeded_minute and count == 121
+    assert await store.pool.fetchval("SELECT count(*) FROM dashboard_auth.sessions") == 0
+
     await store.pool.execute("UPDATE dashboard_auth.rate_buckets SET count=0")
     await store.key_session("synthetic-current-key")
     assert (
