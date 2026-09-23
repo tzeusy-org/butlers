@@ -1237,7 +1237,7 @@ class TestMessagePipelineRoutingVerdictLog:
                 "butlers.tools.switchboard.routing.route.route",
                 new_callable=AsyncMock,
                 return_value={"status": "ok"},
-            ),
+            ) as mock_route,
             patch(
                 "butlers.modules.pipeline.record_routing_verdict",
                 new_callable=AsyncMock,
@@ -1247,6 +1247,7 @@ class TestMessagePipelineRoutingVerdictLog:
                 "some finance email",
                 tool_args={
                     "source_channel": "email",
+                    "source_provider": "gmail",
                     "source_identity": "gmail:acct-1",
                     "request_context": {
                         "triage_decision": "route_to",
@@ -1260,6 +1261,13 @@ class TestMessagePipelineRoutingVerdictLog:
             )
 
         assert result.target_butler == "finance"
+        route_envelope = mock_route.await_args.kwargs["args"]
+        assert route_envelope["source_metadata"] == {
+            "channel": "email",
+            "identity": "gmail:acct-1",
+            "tool_name": "route.execute",
+            "provider": "gmail",
+        }
         mock_record.assert_awaited_once()
         kwargs = mock_record.await_args.kwargs
         assert kwargs["ingestion_event_id"] == "00000000-0000-0000-0000-000000000002"

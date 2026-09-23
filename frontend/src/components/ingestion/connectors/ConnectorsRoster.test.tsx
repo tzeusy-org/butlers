@@ -31,6 +31,12 @@ const unarchiveMutate = vi.fn()
 vi.mock('@/hooks/use-ingestion', () => ({
   useConnectorSummaries: vi.fn(),
   useAvailableConnectors: vi.fn(),
+  useConnectorFanout: vi.fn(() => ({
+    data: { data: [], meta: { aggregates_available: true } },
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  })),
   // ArchiveCandidatesList (bu-u19yv) calls this unconditionally; return a stable
   // idle mutation so the roster mounts without a real QueryClient.
   useArchiveConnector: vi.fn(() => ({
@@ -243,6 +249,13 @@ describe('AC1: dense roster layout', () => {
     // Must NOT render shadcn Card elements (card grid rejected by spec)
     const cards = container.querySelectorAll('[data-slot="card"]')
     expect(cards.length).toBe(0)
+  })
+
+  it('mounts the routing distribution as an independent aggregate surface', () => {
+    mockHooks([HEALTHY_CONNECTOR])
+    renderRoster(container, root)
+
+    expect(container.querySelector('[data-testid="connector-fanout-empty"]')).not.toBeNull()
   })
 
   it('renders roster rows for each connector', () => {

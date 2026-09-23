@@ -98,6 +98,7 @@ tests/connectors/test_cursor_store_fakes.py
 tests/connectors/test_discord_user_connector.py
 tests/connectors/test_gmail_charset_parsing.py
 tests/connectors/test_google_health_connector.py
+tests/connectors/test_heartbeat_counters.py
 tests/connectors/test_home_assistant_connector.py
 tests/connectors/test_home_assistant_global_skip.py
 tests/connectors/test_home_assistant_wellness.py

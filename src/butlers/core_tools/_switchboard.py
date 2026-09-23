@@ -381,6 +381,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         _tool_args: dict[str, Any] = {
             "source": channel,
             "source_channel": channel,
+            "source_provider": source.get("provider", channel),
             "source_identity": endpoint_identity,
             "source_endpoint_identity": f"{channel}:{endpoint_identity}",
             "sender_identity": _sender_identity,
@@ -589,6 +590,8 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             "identity": str(source_metadata.get("identity", "unknown")),
             "tool_name": str(source_metadata.get("tool_name", tool_label)),
         }
+        if source_metadata.get("provider") not in (None, ""):
+            normalized_source_metadata["provider"] = str(source_metadata["provider"])
         if source_metadata.get("source_id") not in (None, ""):
             normalized_source_metadata["source_id"] = str(source_metadata["source_id"])
         try:

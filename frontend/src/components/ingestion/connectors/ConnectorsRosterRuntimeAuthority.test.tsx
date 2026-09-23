@@ -36,6 +36,12 @@ import { MemoryRouter } from 'react-router'
 vi.mock('@/hooks/use-ingestion', () => ({
   useConnectorSummaries: vi.fn(),
   useAvailableConnectors: vi.fn(),
+  useConnectorFanout: vi.fn(() => ({
+    data: { data: [], meta: { aggregates_available: true } },
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  })),
   useArchiveConnector: vi.fn(() => ({
     mutate: vi.fn(),
     isPending: false,

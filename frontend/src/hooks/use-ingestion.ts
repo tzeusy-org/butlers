@@ -6,6 +6,7 @@
  * - ingestionKeys.connectorDetail(type, id)           → ConnectorDetail
  * - ingestionKeys.connectorStats(type, id, period)  → ConnectorStats timeseries
  * - ingestionKeys.pipelineStats(window)               → PipelineStats
+ * - ingestionKeys.connectorFanout(period)              → ConnectorFanoutResponse
  *
  * Timeline, System, and Connectors views share the canonical summaries key so
  * switching surfaces reuses the same role-aware response.
@@ -17,6 +18,7 @@ import {
   archiveConnector,
   getConnectorDetail,
   getConnectorEvents,
+  getConnectorFanout,
   getConnectorIncidents,
   getConnectorRoutingRules,
   getConnectorStats,
@@ -62,6 +64,8 @@ export const ingestionKeys = {
     ] as const,
   pipelineStats: (window: string) =>
     [...ingestionKeys.all, "pipeline-stats", window] as const,
+  connectorFanout: (period: IngestionPeriod) =>
+    [...ingestionKeys.all, "fanout", period] as const,
   connectorEvents: (connectorType: string, endpointIdentity: string, limit: number) =>
     [
       ...ingestionKeys.all,
@@ -247,6 +251,22 @@ export function usePipelineStats(
     queryFn: () => getPipelineStats(window),
     refetchInterval: INGESTION_POLL_MS,
     enabled: options?.enabled !== false,
+  });
+}
+
+/**
+ * Cross-butler routing distribution. The 120-second cadence matches the
+ * dashboard contract for this Prometheus-backed aggregate.
+ */
+export function useConnectorFanout(
+  period: IngestionPeriod = "7d",
+  options?: { enabled?: boolean },
+) {
+  return useQuery({
+    queryKey: ingestionKeys.connectorFanout(period),
+    queryFn: () => getConnectorFanout(period),
+    enabled: options?.enabled !== false,
+    refetchInterval: INGESTION_POLL_SLOW_MS,
   });
 }
 

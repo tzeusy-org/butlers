@@ -4225,6 +4225,29 @@ export interface PipelineStats {
   backlog_available: boolean;
 }
 
+/** One measured connector-to-butler route in the fanout distribution. */
+export interface ConnectorFanoutRow {
+  connector_type: string;
+  endpoint_identity: string;
+  target_butler: string;
+  message_count: number;
+}
+
+/** Availability authority for the Prometheus-backed routing distribution. */
+export interface ConnectorFanoutMeta extends ApiMeta {
+  /**
+   * True only when Prometheus supplied a readable routing aggregate. False
+   * means the rows, if any, are a degraded fallback and must not be rendered
+   * as a confirmed routing distribution.
+   */
+  aggregates_available: boolean;
+}
+
+/** GET /api/switchboard/ingestion/fanout?period=7d. */
+export interface ConnectorFanoutResponse extends ApiResponse<ConnectorFanoutRow[]> {
+  meta: ConnectorFanoutMeta;
+}
+
 /**
  * Connector list (GET /api/ingestion/connectors/summaries).
  *

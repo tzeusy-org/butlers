@@ -633,6 +633,21 @@ models are not additional backend response contracts.
 - `GET /api/general/entities/{entityId}` -> `ApiResponse<GeneralEntity>`
 - `GET /api/switchboard/routing-log` -> `PaginatedResponse<RoutingEntry>`
 - `GET /api/switchboard/registry` -> `ApiResponse<RegistryEntry[]>`
+- `GET /api/switchboard/ingestion/fanout?period=24h|7d|30d` ->
+  `ApiResponse<ConnectorFanoutRow[]>`
+  - Each row names a measured `connector_type`, `endpoint_identity`,
+    `target_butler`, and `message_count` route.
+  - `meta.aggregates_available` is `true` when the Prometheus producer signal
+    is readable and at least one DB target was queried with no failed targets,
+    including successful queries returning zero rows. The exact connector and
+    endpoint dimensions come from the sessions-to-ingestion-events DB projection; the
+    emitted `butlers_switchboard_subroute_dispatched_total` family is the live
+    producer signal and carries only bounded `source="connector"`, non-empty
+    `destination_butler`, and `outcome="attempted"` labels. It is `false` when
+    that family is absent/unreadable, its destination label is incomplete, or
+    no DB target was queried, or any DB fan-out leg fails. Successful target
+    rows remain in the API response during a partial failure; clients must
+    name the degraded state rather than render an all-clear distribution.
 
 ## Memory Domain Contract
 

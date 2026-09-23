@@ -36,6 +36,7 @@ function mockResponse(data: unknown, status = 200) {
 
 import {
   getConnectorDetail,
+  getConnectorFanout,
   getConnectorSummaries,
   getConnectorStats,
   updateConnectorSettings,
@@ -86,6 +87,14 @@ describe("connector API path prefixes", () => {
     const url: string = mockFetch.mock.calls[0][0];
     expect(url).toContain("/api/ingestion/connectors/gmail/user%40example.com/stats");
     expect(url).not.toContain("/api/switchboard/connectors");
+  });
+
+  it("getConnectorFanout calls the Switchboard aggregate route with its period", async () => {
+    mockResponse({ data: [], meta: { aggregates_available: true } });
+    const response = await getConnectorFanout("7d");
+    const url: string = mockFetch.mock.calls[0][0];
+    expect(url).toBe("/api/switchboard/ingestion/fanout?period=7d");
+    expect(response.meta.aggregates_available).toBe(true);
   });
 
   it("updateConnectorSettings calls the canonical settings route", async () => {
