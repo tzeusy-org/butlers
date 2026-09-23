@@ -249,7 +249,7 @@ async def test_internal_route_preflight_coalesces_and_invalidates_cached_policy(
     from butlers.tools.switchboard.routing.preflight import RoutePreflight
 
     instance_id = uuid.UUID(generate_uuid7_string())
-    row = _ready_control_plane_row(instance_id, now=datetime.now(UTC))
+    row = _ready_control_plane_row(instance_id, now=_NOW)
     pool = AsyncMock()
     pool.fetch.return_value = [{"name": "health", "policy_state": "active"}]
     pool.fetchrow.return_value = row
@@ -299,7 +299,7 @@ async def test_internal_preflight_fixed_target_malformed_and_timeout_fail_closed
     from butlers.tools.switchboard.routing.preflight import RoutePreflight
 
     instance_id = uuid.UUID(generate_uuid7_string())
-    row = _ready_control_plane_row(instance_id, now=datetime.now(UTC))
+    row = _ready_control_plane_row(instance_id, now=_NOW)
     configs = [
         SimpleNamespace(name="health", port=41103, type=SimpleNamespace(value="butler")),
         SimpleNamespace(name="finance", port=41107, type=SimpleNamespace(value="butler")),
@@ -363,7 +363,7 @@ async def test_internal_route_preflight_is_mounted_only_on_switchboard_backend()
     instance_id = uuid.UUID(generate_uuid7_string())
     pool = AsyncMock()
     pool.fetch.return_value = [{"name": "health", "policy_state": "active"}]
-    pool.fetchrow.return_value = _ready_control_plane_row(instance_id, now=datetime.now(UTC))
+    pool.fetchrow.return_value = _ready_control_plane_row(instance_id, now=_NOW)
     requests: list[httpx.Request] = []
 
     def respond(request: httpx.Request) -> httpx.Response:
