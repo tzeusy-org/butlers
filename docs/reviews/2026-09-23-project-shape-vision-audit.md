@@ -37,20 +37,25 @@ The [v1 status matrix](../../about/heart-and-soul/v1-status.md) requires a compl
 
 ## Work graph and gates
 
-| Epic | Priority | Cohesive outcome | Gate before implementation or claim |
+| Epic | Priority | Intended outcome | Gate before implementation or claim |
 |---|---:|---|---|
-| `bu-t79b7s` | P0 | Receiver-observed fleet health, policy separation, QA continuity, independent attention, semantic readiness | Exact adoption of `restore-butler-control-plane-liveness` draft; `bu-t79b7s.1` blocks implementation children. |
-| `bu-oiuipm` | P1 | Durable target plans/receipts, safe dispatch, truthful recovery, bounded historical path | Exact adoption of `recover-ingestion-target-deliveries` draft; `bu-oiuipm.1` blocks implementation. Historical exact-key decision is separate at `.5` before `.6`. |
+| `bu-t79b7s` | P0 | Receiver-observed fleet health, policy separation, QA continuity, independent attention, semantic readiness | Exact adoption of `restore-butler-control-plane-liveness` draft. Its current Liveness/QA compression needs separate packet ownership before dispatch. |
+| `bu-oiuipm` | P1 | Durable target plans/receipts, safe dispatch, truthful recovery, bounded historical path | Exact adoption of `recover-ingestion-target-deliveries` draft. Its delivery/historical compression and mixed preview/owner-decision child need correction before dispatch. |
 | `bu-xwpg6e` | P1 | Current routing and field evidence against the eight v1 success criteria | Seven-day receipt `.3` depends on fleet-liveness reconciliation; content-blind evidence and owner input are required for `.4`. |
 | `bu-qjm94x` | P2 | Binding scope, status, testing and topology guidance agree | Doctrine amendment needs owner adoption; current foreign RFC/OpenSpec edits remain untouched. |
 | `bu-xjs98p` | P2 | Verifiable source lineage across RFCs and active specs | Inventory first; no fabricated `Source:` lines or unsafe archive overwrite. |
 
-Each epic has 4-6 substantive children plus one terminal `gen-1` reconciliation child depending on the other children. The new Beads are planning commitments, not permission to adopt drafts, activate a runtime, inspect private content, or send old messages.
-`bd ready` lists candidates, including spec-preparation and evidence-method tasks that end at an owner gate. It is not authorization to close an adoption task, inspect private field data, or execute its dependent implementation. Those boundaries are recorded in the Bead acceptance criteria and `owner-gated` labels.
+Each epic has 4-6 substantive children plus one terminal `gen-1` reconciliation child depending on the other children. That is a graph-shape check, not dispatch readiness. The Beads are planning commitments, not permission to adopt drafts, activate a runtime, inspect private content, or send old messages.
+
+### Beads writer quality review (2026-09-23)
+
+**Verdict: the 34 issues do not yet meet the `beads-writer` cold-start packet standard.** `bd lint` found no template warnings, but most children omit exact adopted spec IDs and baseline commit, a complete owned-surface and failure/rollback map, documentation impact, named existing behavior tests, and expected net test delta. The two recovery epics compress distinct Liveness/QA and Delivery/Historical gates; the v1 evidence and status-matrix children initially overlapped ownership, so the evidence children now hand findings to `bu-qjm94x.2` as the sole matrix writer; the traceability backfill children still have undefined, oversized file sets. In particular, `bu-oiuipm.5` makes a read-only preview wait for an owner decision, while `.6` combines mechanism and historical execution. A separate draft reliability packet in the actively edited root worktree is more detailed but remains subject to spec reconciliation; it has not been adopted as a replacement graph.
+
+All 34 issues were marked `blocked` with concrete packet-repair notes after this review. They must be rewritten or superseded and read back against the live graph before any child is reopened. `bd ready` had listed some of them as candidates before the hold; dependency readiness did not grant spec adoption, private field access, or implementation authority.
 
 ## Verification and limits
 
 - Ran the canonical `project-shape` scanner against the dirty audit root and compared its corpus to the isolated committed review base; read `SHAPE_LEVEL`, traceability counts, and navigator results, then inspected the scanner's maturity rubric before interpreting them.
 - Read doctrine, v1 success/status, representative RFCs/specs, runtime and UI paths, test/CI configuration, existing focused review, active draft changes, and live Beads/PR titles. Three independent read-only vertical reviewers checked doctrine/contracts, topology/runtime, and execution standards; findings were reconciled against existing Beads to avoid duplicate work.
-- Did not run a full bidirectional spec-versus-code reconciliation across 400 active spec files or repeat the dated live review. Those narrower verification claims are assigned to terminal epic reconciliation children. The audit's shape coverage is repo-wide; its implementation evidence is deliberately scoped to the named mandate paths.
+- Did not run a full bidirectional spec-versus-code reconciliation across the active corpus or repeat the dated live review. Those narrower verification claims need a corrected terminal epic reconciliation graph. The audit's shape coverage is repo-wide; its implementation evidence is deliberately scoped to the named mandate paths.
 - Current root worktree was dirty and actively edited on `agent/reliability-specs-20260923`; the two candidate recovery changes were untracked at inspection. This report was written from an isolated branch to preserve that work. Recheck the drafts and their adoption state before any child executes.
