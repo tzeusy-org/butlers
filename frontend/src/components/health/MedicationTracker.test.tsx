@@ -17,11 +17,26 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
+import { MedicationForm } from "@/components/health/MedicationForm";
 import MedicationTracker from "@/components/health/MedicationTracker";
 
 const createMutate = vi.fn().mockResolvedValue({});
 const updateMutate = vi.fn().mockResolvedValue({});
 const deleteMutate = vi.fn().mockResolvedValue(undefined);
+
+const knownSupplyMedication = {
+  id: "med-known-supply",
+  name: "Vitamin D",
+  dosage: "1000IU",
+  frequency: "daily",
+  schedule: ["08:00"],
+  active: true,
+  notes: "with breakfast",
+  quantity: 30,
+  quantity_updated_at: "2026-01-01T00:00:00Z",
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-01T00:00:00Z",
+};
 
 vi.mock("@/hooks/use-health", () => ({
   useMedications: () => ({
@@ -164,6 +179,52 @@ describe("MedicationTracker — direct CRUD", () => {
     fireEvent.click(confirm);
 
     await waitFor(() => expect(deleteMutate).toHaveBeenCalledWith("med-1"));
+  });
+});
+
+describe("MedicationForm — supply intent", () => {
+  it("omits quantity when a blank edit saves other changes", async () => {
+    render(
+      <MedicationForm medication={knownSupplyMedication} onDone={vi.fn()} onCancel={vi.fn()} />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Dosage"), { target: { value: "2000IU" } });
+    fireEvent.change(screen.getByLabelText(/supply quantity/i), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+
+    await waitFor(() => expect(updateMutate).toHaveBeenCalledTimes(1));
+    expect(updateMutate.mock.calls[0][0].body).toEqual(
+      expect.objectContaining({ dosage: "2000IU" }),
+    );
+    expect(updateMutate.mock.calls[0][0].body).not.toHaveProperty("quantity");
+  });
+
+  it("omits quantity when an unrelated edit leaves the supply field untouched", async () => {
+    render(
+      <MedicationForm medication={knownSupplyMedication} onDone={vi.fn()} onCancel={vi.fn()} />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Dosage"), { target: { value: "2000IU" } });
+    fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+
+    await waitFor(() => expect(updateMutate).toHaveBeenCalledTimes(1));
+    expect(updateMutate.mock.calls[0][0].body).not.toHaveProperty("quantity");
+  });
+
+  it("sends an explicitly re-entered same count as a refill", async () => {
+    render(
+      <MedicationForm medication={knownSupplyMedication} onDone={vi.fn()} onCancel={vi.fn()} />,
+    );
+
+    const quantity = screen.getByLabelText(/supply quantity/i);
+    fireEvent.change(quantity, { target: { value: "" } });
+    fireEvent.change(quantity, { target: { value: "30" } });
+    fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+
+    await waitFor(() => expect(updateMutate).toHaveBeenCalledTimes(1));
+    expect(updateMutate.mock.calls[0][0].body).toEqual(
+      expect.objectContaining({ quantity: 30 }),
+    );
   });
 });
 

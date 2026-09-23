@@ -2670,6 +2670,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - e.g. 1000IU
 - e.g. daily
 - Comma-separated times, e.g. 08:00, 20:00
+- Leave blank to keep current supply
 - Leave blank if unknown
 - Anything worth remembering about this medication.
 - Name, dosage, and frequency are required.
@@ -4391,4 +4392,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3445*
+*Total strings: 3446*

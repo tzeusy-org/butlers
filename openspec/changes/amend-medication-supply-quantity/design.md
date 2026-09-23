@@ -15,10 +15,12 @@ The dashboard form keeps the quantity input as text with numeric input mode so
 malformed text is retained for an explicit validation message rather than
 browser-sanitized into an empty value that could be mistaken for unknown. A
 blank create value omits `quantity`; a blank edit value preserves an existing
-recorded quantity. Entering a new positive value on an existing medication
-forwards it as the existing refill/current-supply update, which stamps the
-server timestamp. The list row renders only the server value: a null/absent
-value is `Supply: unknown`, never `0` or a guessed standard supply.
+recorded quantity. Editing or re-entering a positive value on an existing
+medication forwards it as the existing refill/current-supply update, including
+when the numerical count is unchanged, which stamps the server timestamp.
+Leaving the prefilled field untouched omits quantity so an unrelated edit does
+not impersonate a refill. The list row renders only the server value: a
+null/absent value is `Supply: unknown`, never `0` or a guessed standard supply.
 
 The OpenSpec delta uses only `## ADDED Requirements` blocks. It does not
 replace a whole baseline requirement, so it remains archive-safe if unrelated

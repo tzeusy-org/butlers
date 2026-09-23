@@ -453,7 +453,7 @@ async def test_update_medication_delegates_to_medication_update():
     assert fake_update.await_args.kwargs == {"dosage": "2000IU"}
 
 
-async def test_update_medication_quantity_records_a_refill():
+async def test_update_medication_same_quantity_payload_records_a_refill():
     app, _ = _make_app()
     med_id = uuid.uuid4()
     fake_update = AsyncMock(
@@ -465,7 +465,7 @@ async def test_update_medication_quantity_records_a_refill():
             "schedule": [],
             "active": True,
             "notes": None,
-            "quantity": 120,
+            "quantity": 30,
             "quantity_updated_at": _NOW.isoformat(),
             "created_at": _NOW,
             "updated_at": _NOW,
@@ -473,14 +473,14 @@ async def test_update_medication_quantity_records_a_refill():
     )
     with patch(f"{_HEALTH_TOOLS}.medication_update", fake_update):
         resp = await _request(
-            app, "PUT", f"/api/health/medications/{med_id}", json={"quantity": 120}
+            app, "PUT", f"/api/health/medications/{med_id}", json={"quantity": 30}
         )
     assert resp.status_code == 200
-    assert resp.json()["quantity"] == 120
+    assert resp.json()["quantity"] == 30
     assert resp.json()["quantity_updated_at"] == _NOW.isoformat()
     fake_update.assert_awaited_once()
     assert fake_update.await_args.args[1] == str(med_id)
-    assert fake_update.await_args.kwargs == {"quantity": 120}
+    assert fake_update.await_args.kwargs == {"quantity": 30}
 
 
 @pytest.mark.parametrize("quantity", [0, -1, "120", "120.5", 120.5, True, "not-a-count"])

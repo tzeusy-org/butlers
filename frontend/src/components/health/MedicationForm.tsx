@@ -84,6 +84,7 @@ export function MedicationForm({ medication, onDone, onCancel }: MedicationFormP
   const [quantity, setQuantity] = useState(
     medication?.quantity != null ? String(medication.quantity) : "",
   );
+  const [quantityTouched, setQuantityTouched] = useState(false);
   const [quantityError, setQuantityError] = useState<string | null>(null);
 
   const createMutation = useCreateMedication();
@@ -116,12 +117,6 @@ export function MedicationForm({ medication, onDone, onCancel }: MedicationFormP
       toast.error(parsedQuantity.error);
       return;
     }
-    if (isEdit && medication.quantity != null && parsedQuantity.value == null) {
-      const message = "Keep the current supply count or enter a new positive whole number.";
-      setQuantityError(message);
-      toast.error(message);
-      return;
-    }
     setQuantityError(null);
 
     try {
@@ -133,7 +128,7 @@ export function MedicationForm({ medication, onDone, onCancel }: MedicationFormP
           schedule: scheduleList,
           active,
           notes: trimmedNotes === "" ? null : trimmedNotes,
-          ...(parsedQuantity.value != null && parsedQuantity.value !== medication.quantity
+          ...(quantityTouched && parsedQuantity.value != null
             ? { quantity: parsedQuantity.value }
             : {}),
         };
@@ -214,15 +209,17 @@ export function MedicationForm({ medication, onDone, onCancel }: MedicationFormP
           value={quantity}
           onChange={(e) => {
             setQuantity(e.target.value);
+            setQuantityTouched(true);
             if (quantityError) setQuantityError(null);
           }}
-          placeholder="Leave blank if unknown"
+          placeholder={isEdit ? "Leave blank to keep current supply" : "Leave blank if unknown"}
           aria-invalid={quantityError != null}
           aria-describedby={quantityError ? "med-quantity-error" : "med-quantity-help"}
         />
         <p id="med-quantity-help" className="text-xs text-muted-foreground">
-          Enter the owner-recorded count in the current supply. Saving a new count on an existing
-          medication records a refill; blank means unknown.
+          {isEdit
+            ? "Change or re-enter the count to record a refill. Leave blank to keep the existing supply unchanged."
+            : "Enter the owner-recorded count in the current supply. Leave blank if unknown."}
         </p>
         {quantityError && (
           <p id="med-quantity-error" role="alert" className="text-xs text-[var(--red-text)]">

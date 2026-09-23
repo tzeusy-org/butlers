@@ -41,6 +41,14 @@ from dosage, frequency, or adherence data.
 - **THEN** the dashboard SHALL preserve the existing quantity by omitting the
   quantity field from the update payload
 
+#### Scenario: Re-entering the same count records a refill
+
+- **WHEN** an existing medication has a recorded quantity and the owner
+  explicitly edits or re-enters that same positive whole-number count
+- **THEN** the dashboard SHALL send `quantity` in the update payload
+- **AND** an unrelated edit that leaves the prefilled supply field untouched
+  SHALL omit `quantity` and SHALL NOT advance the refill timestamp
+
 #### Scenario: Invalid form values are refused before submission
 
 - **WHEN** the owner enters zero, a negative number, a decimal, or malformed
