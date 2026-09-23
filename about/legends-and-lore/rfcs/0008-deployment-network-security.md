@@ -209,3 +209,41 @@ owns the exact wire/lifecycle contract; the
 [operator runbook](../../../docs/identity_and_secrets/dashboard-owner-auth.md)
 owns procedures. Its adoption is not a live proxy, credential, migration or
 deployment action. Existing network isolation and egress rules remain binding.
+
+## Amendment (2026-09-23): Internal Observer and Deployment Readiness Boundary
+
+**Status:** Approved target contract in
+`openspec/changes/restore-butler-control-plane-liveness`; deployment and
+external-monitor activation remain separate operations.
+
+The dashboard/control-plane observer reaches only exact same-host,
+backend-network daemon endpoints from the Git roster. Each daemon exposes
+`GET /internal/control-plane/identity` on its existing port with a bounded
+`butler.control.v1` response: `butler_name`, UUIDv7 `boot_instance_id`,
+the server-allocated durable `boot_epoch`, `route_contract` minimum/maximum,
+and `accepting_routes`. It is not a public
+discovery service. The observer verifies the expected host, port, path, name,
+generation, and contract before writing liveness with DB-server time. Both the
+periodic Dashboard observer and Switchboard's bounded stale-route recheck use
+the same verifier and DB-reserved per-daemon probe sequence; the conditional
+write fences old boot epochs and overlapping probes without granting either
+receiver broad registry or administrative-policy write authority. It does
+not follow a caller-supplied URL. A later split-host topology needs a new
+trust-design amendment before these same-host observations become authority.
+
+The daemon does not receive a dashboard owner cookie, API key, approval token,
+or runtime-probe signing key for liveness. `POST /api/switchboard/heartbeat`
+is retired after cutover; owner-auth middleware must not exempt it as an
+anonymous mutation. Connector MCP heartbeats keep their separate protocol.
+
+Dashboard `/health` remains process liveness. The canonical public
+`GET /ready` keeps the boolean `ready` response shape from the active
+`k3s-deployment-helm-chart` change but adds content-blind checks for PostgreSQL,
+roster, observer freshness, fleet identity and routability, QA patrol age,
+supervised loops, and an effect-free route canary. Compose and production
+deployment completion use sustained readiness over more than one liveness
+TTL; a single successful process probe is insufficient. Public readiness
+exposes categories only and grants no control authority. The separate-host
+minimal `/api/health` pull monitor retains its already adopted scope; a new
+external functional monitor or public readiness consumption needs its own
+owner authorization.

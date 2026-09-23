@@ -461,6 +461,14 @@
       "excerpt": "- **AND** `tool_metadata()` declares `context` and `event_summary` as sensitive on `report_finding` (may contain agen..."
     }
   ],
+  "durable-dashboard-terminal-action-recovery/staffer-qa/V1 Discovery Sources": [
+    {
+      "kind": "clause",
+      "scenario": "Infra state source",
+      "digest": "f523edb68dd6",
+      "excerpt": "- **heartbeat-stale**: queries `public.v_qa_butler_heartbeat` (same migration, over `switchboard.butler_registry`) an..."
+    }
+  ],
   "education-mind-map-lifecycle-integrity/butler-education/Scheduled Tasks": [
     {
       "kind": "clause",
@@ -1015,6 +1023,14 @@
       "excerpt": "- **AND** UUID7 ordering can substitute for a separate `received_at` index for recency queries"
     }
   ],
+  "recover-ingestion-target-deliveries/dashboard-ingestion-dispatch-console/Timeline Ledger": [
+    {
+      "kind": "clause",
+      "scenario": "Row status never renders as a filled pill",
+      "digest": "d99c462ae67d",
+      "excerpt": "- **AND** `failed` (a routing failure recorded after the event was already ingested — see `ingestion_event_mark_faile..."
+    }
+  ],
   "relational-edges-single-home/relationship-facts/Predicate catalog": [
     {
       "kind": "prose",
@@ -1041,6 +1057,62 @@
       "scenario": "Conceptual message structure",
       "digest": "e323266b5652",
       "excerpt": "- `excerpts`: array of `{sender, text, timestamp, message_id}` cherry-picked from the conversation"
+    }
+  ],
+  "restore-butler-control-plane-liveness/butler-base-spec/Butler as Architectural Primitive": [
+    {
+      "kind": "clause",
+      "scenario": "Graceful shutdown",
+      "digest": "fa3b31515f7e",
+      "excerpt": "- **AND** cancels background tasks (scheduler, heartbeat, liveness) in reverse startup order"
+    }
+  ],
+  "restore-butler-control-plane-liveness/butler-base-spec/Instance Facts Internal Interface": [
+    {
+      "kind": "prose",
+      "scenario": null,
+      "digest": "0e2d94c2b073",
+      "excerpt": "Each butler daemon SHALL expose an internal interface by which the dashboard API layer can read instance-level facts ..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Heartbeat registration is kept current",
+      "digest": "c8f61eaffe81",
+      "excerpt": "- **THEN** its heartbeat task fires at least once every `liveness_ttl_seconds / 2` seconds"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Heartbeat registration is kept current",
+      "digest": "328d76835ff9",
+      "excerpt": "- **AND** each heartbeat upserts the butler's liveness record in the switchboard liveness registry with the current U..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Heartbeat registration is kept current",
+      "digest": "d955a3ba0c0c",
+      "excerpt": "- **AND** if the heartbeat task fails, the butler logs the failure but does not shut down -- liveness degradation is ..."
+    }
+  ],
+  "restore-butler-control-plane-liveness/butler-base-spec/Staffers vs Domain Butlers": [
+    {
+      "kind": "clause",
+      "scenario": "Domain butlers (extensible roster)",
+      "digest": "87a797a2a4e4",
+      "excerpt": "- **AND** it launches a heartbeat task and liveness reporter to maintain its registration"
+    }
+  ],
+  "restore-butler-control-plane-liveness/system-overview-page/Per-Butler Heartbeat Facts": [
+    {
+      "kind": "prose",
+      "scenario": null,
+      "digest": "d9b4fa36bd12",
+      "excerpt": "The `/api/system/butlers/heartbeat` endpoint SHALL return the last-known heartbeat timestamp and session activity sum..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Heartbeat endpoint returns per-butler status",
+      "digest": "eae6a221c59b",
+      "excerpt": "- `last_heartbeat_at: string | null` -- ISO 8601 UTC timestamp of the most recent liveness heartbeat recorded in the ..."
     }
   ],
   "restore-drill-recovery-truthfulness/core-notify/Attention Ledger Reader": [

@@ -3,6 +3,10 @@
 How subsystems connect at their boundaries: wire protocols, envelope schemas,
 and transport details.
 
+The observer and per-target intent edges in the overview are approved target
+contracts in `restore-butler-control-plane-liveness` and
+`recover-ingestion-target-deliveries`; they are not current runtime claims.
+
 ---
 
 ## Overview
@@ -16,11 +20,13 @@ graph TB
     subgraph Switchboard
         Ingest["ingest() tool"]
         Classify["classify()"]
+        Intent["per-target delivery intents"]
         Route["route.execute()"]
     end
 
     subgraph DomainButler["Domain Butler"]
         RouteInbox["route_inbox"]
+        Identity["internal identity/readiness facts"]
         Spawner["Spawner"]
         MCP["FastMCP Server"]
     end
@@ -31,6 +37,7 @@ graph TB
 
     subgraph Dashboard
         FastAPI["FastAPI Backend"]
+        Observer["supervised fleet observer"]
     end
 
     subgraph DB["PostgreSQL"]
@@ -40,8 +47,11 @@ graph TB
 
     C -- "ingest.v1 / MCP SSE" --> Ingest
     Ingest --> Classify
-    Classify -- "route.v1 / MCP SSE" --> Route
+    Classify -- "durable classified targets" --> Intent
+    Intent -- "fenced route.v1 attempt" --> Route
     Route -- "route.v1 / MCP SSE" --> RouteInbox
+    Observer -- "exact roster endpoint / bounded GET" --> Identity
+    Observer -- "DB-server observation" --> Shared
     RouteInbox --> Spawner
     Spawner -- "ephemeral MCP config / subprocess" --> CLI
     CLI -- "MCP tool calls / SSE or HTTP" --> MCP
@@ -120,6 +130,23 @@ claim and re-dispatch ordinary accepted work (and recoverable stale work), but
 an already-processing dashboard turn first reconciles its durable predecessor.
 If that predecessor is not provably terminal, recovery marks the route row for
 operator attention and does not automatically replay a second runtime.
+
+**Approved ingestion recovery target (2026-09-23):** Ordinary non-dashboard
+ingestion-to-domain routing has a Switchboard-owned durable per-target intent
+before the first `route.execute` call. Its stable acceptance identity is
+`(ingestion_event_id, target_butler, segment_id)`; the target atomically
+upserts this identity with the canonical immutable payload digest and returns
+the same receipt on exact duplicates. Receipt lookup compares both receiving
+target and digest; changed work conflicts rather than appearing accepted. The
+Switchboard retries only proven pre-acceptance no-effect attempts and settles
+at `accepted` when the target owns its inbox row. Ambiguous attempts reconcile
+by the same key and never create a second target row. Its per-segment intent
+state is authoritative; the legacy per-butler dispatch outcome cannot collapse
+two segments to one success. Source `ingested` status does not imply universal
+target acceptance. Connector ingress replay,
+dashboard turn recovery, Messenger delivery, and domain-event subscriptions
+keep their distinct ownership and stores. Historic failed rows need a
+content-blind dry run and exact owner-reviewed recovery policy.
 
 ---
 
@@ -248,16 +275,29 @@ no live endpoint until separate implementation and activation authority exists.
 
 ## 7. Non-Switchboard Butler to Switchboard: Registration
 
-**Transport**: MCP client connection + HTTP POST
+**Transport**: MCP client connection for dispatch; backend-network HTTP GET
+from the control-plane observer to each daemon's existing port for liveness
 
-On startup, each non-switchboard butler:
-1. Opens an MCP client to `{switchboard_url}/mcp` during daemon startup phase 12.
-2. Launches a liveness reporter that POSTs to
-   `{switchboard_url}/api/switchboard/heartbeat` every
-   `heartbeat_interval_seconds` (default 120s).
+On startup, each non-switchboard butler opens an MCP client to
+`{switchboard_url}/mcp` during daemon startup phase 12 and advertises its
+configured endpoint. Every daemon, including Switchboard, exposes
+`GET /internal/control-plane/identity` on its existing port. Its bounded
+`butler.control.v1` response carries `butler_name`, UUIDv7
+`boot_instance_id`, a server-allocated durable `boot_epoch`, `route_contract` minimum/maximum, and
+`accepting_routes`. The separately supervised Dashboard/control-plane
+observer probes only exact Git-roster host:port/path entries, checks the
+response against expected identity, generation, and compatibility, and
+records DB-server observation time. Switchboard may perform one bounded
+stale-route recheck using the same verifier. Both receivers reserve a shared
+per-daemon probe sequence in the database and conditionally write against the
+latest boot epoch; neither gains owner-auth or administrative-policy authority.
 
-The Switchboard uses this to maintain a butler registry with liveness state,
-capability declarations, and last-seen timestamps.
+The registry keeps observed health, administrative policy, and route
+compatibility separately. A stale target receives one bounded on-demand
+probe before a typed `not_attempted` refusal. A healthy probe or restart never
+clears administrative quarantine. The old dashboard heartbeat POST is retired
+after cutover; owner auth does not make it anonymous. This is an approved
+target contract, not a claim that the current runtime has cut over.
 
 ---
 
@@ -309,5 +349,6 @@ classification, routing, and session execution.
 | Dashboard -> Database | SQL | asyncpg queries | TCP |
 | Butler -> Database | SQL | asyncpg queries | TCP |
 | Connector -> Switchboard (heartbeat) | MCP | `connector.heartbeat` | SSE |
-| Butler -> Switchboard (liveness) | HTTP POST | JSON heartbeat | HTTP |
+| Control plane -> daemon (liveness) | backend-network HTTP GET | `butler.control.v1` bounded facts | HTTP |
+| Switchboard -> target (ingestion delivery) | MCP | stable per-target acceptance identity and receipt | Streamable HTTP or SSE |
 | All -> OTel | OTLP | Traces + metrics | gRPC |
