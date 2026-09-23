@@ -2860,6 +2860,47 @@ async def test_find_time_available_true_on_success(app):
     assert data["reason"] is None
 
 
+async def test_find_time_maps_structured_module_error_to_safe_unavailable(app):
+    """A structured Calendar-module failure is not a successful empty search."""
+    mcp_result = {
+        "status": "error",
+        "error": "access_token=provider-secret expired",
+        "error_type": "CalendarAuthError",
+        "provider": "google",
+        "calendar_id": "primary",
+        "slots": [],
+        "duration_minutes": 60,
+        "calendar_ids": ["primary"],
+    }
+    mock_client = AsyncMock()
+    mock_client.call_tool = AsyncMock(return_value=_mock_mcp_result(mcp_result))
+
+    app, _, mock_mgr = _build_app(app)
+    mock_mgr.get_client = AsyncMock(return_value=mock_client)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/calendar/workspace/find-time",
+            json={
+                "butler_name": "general",
+                "duration_minutes": 60,
+                "search_start": "2026-06-22T08:00:00Z",
+                "search_end": "2026-06-22T18:00:00Z",
+            },
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["available"] is False
+    assert data["slots"] == []
+    assert data["duration_minutes"] == 60
+    assert data["calendar_ids"] == ["primary"]
+    assert data["reason"] == "Free/busy lookup unavailable; try again shortly."
+    assert "provider-secret" not in resp.text
+
+
 # ---------------------------------------------------------------------------
 # Butler-event recurrence dry-run preview (bu-15srd1)
 #
