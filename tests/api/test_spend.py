@@ -391,6 +391,7 @@ def _ledger_row(
     output_tokens: int = 0,
     cached_input_tokens: int = 0,
     cache_creation_tokens: int = 0,
+    has_session: bool = True,
 ) -> dict:
     """Return one grouped executed-model ledger fixture row."""
     return {
@@ -404,6 +405,7 @@ def _ledger_row(
         "output_tokens": output_tokens,
         "cached_input_tokens": cached_input_tokens,
         "cache_creation_tokens": cache_creation_tokens,
+        "has_session": has_session,
     }
 
 
@@ -642,8 +644,26 @@ async def test_ledger_session_divergence_deadman_reports_material_day_butler_dri
     }
 
 
-async def test_ledger_session_divergence_deadman_marks_missing_butler_evidence_degraded():
-    """A ledger butler absent from the session pool map is not a clean comparison."""
+@pytest.mark.parametrize(
+    ("ledger_identity", "has_session", "expected_source_error"),
+    [
+        pytest.param("retired-butler", True, True, id="unknown-roster-butler"),
+        pytest.param("wa:122204922638508@lid", False, False, id="whatsapp-lid"),
+        pytest.param("tg:987654321", False, False, id="connector-identity"),
+        pytest.param(
+            "__dashboard_briefing__",
+            False,
+            False,
+            id="declared-sessionless-runtime",
+        ),
+    ],
+)
+async def test_ledger_session_divergence_deadman_classifies_non_roster_sources(
+    ledger_identity: str,
+    has_session: bool,
+    expected_source_error: bool,
+):
+    """Only real or ambiguous unknown butlers require a roster session pool."""
     day = date(2026, 7, 11)
     divergences, source_error = await _ledger_session_divergences(
         MagicMock(),
@@ -653,15 +673,16 @@ async def test_ledger_session_divergence_deadman_marks_missing_butler_evidence_d
         [
             _ledger_row(
                 day=day,
-                butler_name="retired-butler",
+                butler_name=ledger_identity,
                 model_id="executed-model",
                 input_tokens=100,
+                has_session=has_session,
             )
         ],
     )
 
     assert divergences == []
-    assert source_error is True
+    assert source_error is expected_source_error
 
 
 async def test_cost_breakdown_by_purpose_prices_ledger_rows(app):
