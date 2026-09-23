@@ -205,6 +205,87 @@ async def test_heartbeat_view_surfaces_registry_row(pool: asyncpg.Pool) -> None:
     assert row["last_seen_at"] is not None
 
 
+@pytest.mark.asyncio(loop_scope="session")
+async def test_qa_receiver_view_exposes_current_boot_health_without_policy_authority(
+    pool: asyncpg.Pool,
+) -> None:
+    from butlers.core.qa.sources.infra_state import InfraStateSource
+
+    now = datetime.now(UTC)
+    name = "qa_receiver_health"
+    await pool.execute(
+        """
+        INSERT INTO switchboard.butler_registry
+            (name, endpoint_url, last_seen_at, liveness_ttl_seconds)
+        VALUES ($1, 'http://localhost:41100/mcp', $2, 300)
+        """,
+        name,
+        now - timedelta(hours=2),
+    )
+    await pool.execute(
+        """
+        UPDATE switchboard.butler_registry_control_plane
+           SET policy_state = 'quarantined',
+               observed_state = 'healthy',
+               boot_epoch = 2,
+               observed_boot_epoch = 2,
+               healthy_observed_at = $2
+         WHERE name = $1
+        """,
+        name,
+        now,
+    )
+
+    async with pool.acquire() as conn:
+        await conn.execute('SET ROLE "butler_qa_rw"')
+        try:
+            row = await conn.fetchrow(
+                "SELECT * FROM public.v_qa_butler_receiver_state WHERE name = $1", name
+            )
+            assert row is not None
+            assert row["observed_state"] == "healthy"
+            assert row["current_boot_observed"] is True
+            assert row["healthy_observed_at"] == now
+            assert "policy_state" not in row.keys()
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await conn.fetchval(
+                    "SELECT policy_state FROM switchboard.butler_registry_control_plane "
+                    "WHERE name = $1",
+                    name,
+                )
+        finally:
+            await conn.execute("RESET ROLE")
+
+    source = InfraStateSource(pool=pool)
+    findings = await source._check_receiver_heartbeats(now)
+    assert not any(f.source_butler == name for f in findings)
+
+    await pool.execute(
+        "UPDATE switchboard.butler_registry_control_plane "
+        "SET observed_state = 'unavailable' WHERE name = $1",
+        name,
+    )
+    failed = await pool.fetchrow(
+        "SELECT * FROM public.v_qa_butler_receiver_state WHERE name = $1", name
+    )
+    assert failed["observed_state"] == "unavailable"
+    assert failed["healthy_observed_at"] == now
+    findings = await source._check_receiver_heartbeats(now)
+    assert any(f.source_butler == name for f in findings)
+
+    await pool.execute(
+        "UPDATE switchboard.butler_registry_control_plane "
+        "SET observed_state = 'healthy', observed_boot_epoch = 1 WHERE name = $1",
+        name,
+    )
+    old_boot = await pool.fetchrow(
+        "SELECT * FROM public.v_qa_butler_receiver_state WHERE name = $1", name
+    )
+    assert old_boot["current_boot_observed"] is False
+    findings = await source._check_receiver_heartbeats(now)
+    assert any(f.source_butler == name for f in findings)
+
+
 async def _as_role(pool: asyncpg.Pool, role: str, sql: str, *args):
     async with pool.acquire() as conn:
         await conn.execute(f'SET ROLE "{role}"')

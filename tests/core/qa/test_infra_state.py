@@ -67,11 +67,13 @@ class _FakePool:
         *,
         connector_rows: list | None = None,
         heartbeat_rows: list | None = None,
+        receiver_rows: list | None = None,
         deadman_ts: datetime | None = None,
         health_check_error: Exception | None = None,
     ) -> None:
         self._connector_rows = connector_rows or []
         self._heartbeat_rows = heartbeat_rows or []
+        self._receiver_rows = receiver_rows or []
         self._deadman_ts = deadman_ts
         self._health_check_error = health_check_error
 
@@ -85,6 +87,8 @@ class _FakePool:
             return self._connector_rows
         if "v_qa_butler_heartbeat" in sql:
             return self._heartbeat_rows
+        if "v_qa_butler_receiver_state" in sql:
+            return self._receiver_rows
         raise AssertionError(f"Unexpected fetch: {sql}")
 
     async def fetchrow(self, sql: str, *args):
@@ -129,6 +133,27 @@ def _heartbeat_row(
             "registered_at": registered_at or (datetime.now(UTC) - timedelta(days=30)),
             "liveness_ttl_seconds": liveness_ttl_seconds,
             "quarantined_at": quarantined_at,
+        }
+    )
+
+
+def _receiver_row(
+    *,
+    name: str = "finance",
+    observed_state: str = "healthy",
+    healthy_observed_at: datetime | None = None,
+    current_boot_observed: bool = True,
+    registered_at: datetime | None = None,
+    liveness_ttl_seconds: int = 300,
+) -> MagicMock:
+    return _row(
+        {
+            "name": name,
+            "observed_state": observed_state,
+            "healthy_observed_at": healthy_observed_at,
+            "current_boot_observed": current_boot_observed,
+            "registered_at": registered_at or (datetime.now(UTC) - timedelta(days=30)),
+            "liveness_ttl_seconds": liveness_ttl_seconds,
         }
     )
 
@@ -245,6 +270,49 @@ async def test_never_heartbeated_connector_past_grace_trips_a_finding(monkeypatc
 # ---------------------------------------------------------------------------
 # heartbeat-stale
 # ---------------------------------------------------------------------------
+
+
+async def test_receiver_health_ignores_expired_legacy_heartbeat(monkeypatch):
+    monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", "1")
+    monkeypatch.delenv("BUTLERS_BACKUP_DIR", raising=False)
+    monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
+    pool = _FakePool(
+        heartbeat_rows=[_heartbeat_row(last_seen_at=datetime.now(UTC) - timedelta(hours=2))],
+        receiver_rows=[
+            _receiver_row(healthy_observed_at=datetime.now(UTC) - timedelta(seconds=10))
+        ],
+    )
+
+    assert await InfraStateSource(pool=pool).discover(lookback_minutes=15) == []
+
+
+@pytest.mark.parametrize(
+    ("observed_state", "current_boot_observed", "healthy_age_seconds"),
+    [
+        ("unavailable", True, 10),
+        ("healthy", False, 10),
+        ("healthy", True, 301),
+    ],
+)
+async def test_receiver_failed_or_stale_observation_trips_finding(
+    monkeypatch, observed_state, current_boot_observed, healthy_age_seconds
+):
+    monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", "1")
+    monkeypatch.delenv("BUTLERS_BACKUP_DIR", raising=False)
+    monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
+    row = _receiver_row(
+        observed_state=observed_state,
+        current_boot_observed=current_boot_observed,
+        healthy_observed_at=datetime.now(UTC) - timedelta(seconds=healthy_age_seconds),
+    )
+
+    findings = await InfraStateSource(pool=_FakePool(receiver_rows=[row])).discover(
+        lookback_minutes=15
+    )
+
+    assert len(findings) == 1
+    assert findings[0].exception_type == "ButlerHeartbeatStale"
+    assert findings[0].source_butler == "finance"
 
 
 async def test_stale_butler_heartbeat_trips_a_finding(monkeypatch):
