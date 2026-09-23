@@ -364,6 +364,59 @@ async def test_registry_boot_epochs_and_probe_fences_use_database_authority(
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_boot_registration_retry_cannot_reclaim_after_successor(
+    pool: asyncpg.Pool,
+) -> None:
+    """The immutable UUID ledger makes lost-response retries harmless."""
+    from butlers.tools.switchboard.registry.registry import register_boot
+
+    await pool.execute(
+        "INSERT INTO switchboard.butler_registry (name, endpoint_url) "
+        "VALUES ('general', 'http://general:41101/mcp') "
+        "ON CONFLICT (name) DO NOTHING"
+    )
+
+    async def boot(instance_id):
+        async with pool.acquire() as conn:
+            await conn.execute('SET ROLE "butler_general_rw"')
+            try:
+                return await register_boot(conn, "general", instance_id)
+            finally:
+                await conn.execute("RESET ROLE")
+
+    first_instance = uuid4()
+    assert await asyncio.gather(boot(first_instance), boot(first_instance)) == [1, 1]
+    assert (
+        await pool.fetchval(
+            "SELECT count(*) FROM switchboard.butler_boot_registrations WHERE name = 'general'"
+        )
+        == 1
+    )
+
+    successor_instance = uuid4()
+    assert await boot(successor_instance) == 2
+    with pytest.raises(asyncpg.PostgresError):
+        await boot(first_instance)
+    assert await boot(successor_instance) == 2
+
+    row = await pool.fetchrow(
+        "SELECT boot_epoch, boot_instance_id FROM "
+        "switchboard.butler_registry_control_plane WHERE name = 'general'"
+    )
+    assert row["boot_epoch"] == 2
+    assert row["boot_instance_id"] == successor_instance
+    ledger = await pool.fetch(
+        "SELECT boot_instance_id, boot_epoch FROM "
+        "switchboard.butler_boot_registrations WHERE name = 'general' "
+        "ORDER BY boot_epoch"
+    )
+    assert [(row["boot_instance_id"], row["boot_epoch"]) for row in ledger] == [
+        (first_instance, 1),
+        (successor_instance, 2),
+    ]
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_registry_runtime_roles_cannot_forge_policy_or_observation(
     pool: asyncpg.Pool,
 ) -> None:
@@ -406,12 +459,15 @@ async def test_registry_runtime_roles_cannot_forge_policy_or_observation(
             "butler_switchboard_rw",
             "SELECT public.set_butler_registry_policy('health', 'active')",
         )
-    assert await _as_role(
-        pool,
-        "butler_switchboard_rw",
-        "SELECT policy_state FROM switchboard.butler_registry_control_plane "
-        "WHERE name = 'health'",
-    ) == "active"
+    assert (
+        await _as_role(
+            pool,
+            "butler_switchboard_rw",
+            "SELECT policy_state FROM switchboard.butler_registry_control_plane "
+            "WHERE name = 'health'",
+        )
+        == "active"
+    )
     # RLS may reject with an error or silently filter the UPDATE to zero rows.
     assert (
         await _as_role(
@@ -577,12 +633,14 @@ def test_registry_quarantine_migration_and_rollback_preserve_authority(
 
             # Simulate the old writer after Alembic rollback.  The table and
             # trigger remain, so rollback cannot clear either restrictive row.
+            old_instance = uuid4()
+            current_instance = uuid4()
             assert (
                 await _as_role(
                     p,
                     "butler_finance_rw",
                     "SELECT public.register_butler_boot('finance', $1)",
-                    uuid4(),
+                    old_instance,
                 )
                 == 1
             )
@@ -591,11 +649,34 @@ def test_registry_quarantine_migration_and_rollback_preserve_authority(
                     p,
                     "butler_finance_rw",
                     "SELECT public.register_butler_boot('finance', $1)",
-                    uuid4(),
+                    current_instance,
                 )
                 == 2
             )
             command.downgrade(config, "switchboard@sw_034")
+            with pytest.raises(asyncpg.PostgresError):
+                await _as_role(
+                    p,
+                    "butler_finance_rw",
+                    "SELECT public.register_butler_boot('finance', $1)",
+                    old_instance,
+                )
+            assert (
+                await _as_role(
+                    p,
+                    "butler_finance_rw",
+                    "SELECT public.register_butler_boot('finance', $1)",
+                    current_instance,
+                )
+                == 2
+            )
+            assert (
+                await p.fetchval(
+                    "SELECT count(*) FROM switchboard.butler_boot_registrations "
+                    "WHERE name = 'finance'"
+                )
+                == 2
+            )
             await p.execute(
                 "UPDATE switchboard.butler_registry SET eligibility_state = 'active', "
                 "quarantined_at = NULL, quarantine_reason = NULL "
@@ -720,6 +801,15 @@ def test_registry_policy_rls_survives_bootstrap_grant_replay(postgres_container)
                 )
                 is None
             )
+            with pytest.raises(asyncpg.PostgresError):
+                await _as_role(
+                    p,
+                    "butler_switchboard_rw",
+                    "INSERT INTO switchboard.butler_boot_registrations "
+                    "(name, boot_instance_id, boot_epoch) "
+                    "VALUES ('health', $1, 99) RETURNING boot_epoch",
+                    uuid4(),
+                )
             assert (
                 await p.fetchval(
                     "SELECT policy_state FROM switchboard.butler_registry_control_plane "

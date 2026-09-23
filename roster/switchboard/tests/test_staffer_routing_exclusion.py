@@ -274,8 +274,9 @@ class TestRegisterButlerAgentType:
         from butlers.tools.switchboard.registry.registry import register_butler
 
         pool = AsyncMock()
-        pool.fetchrow = AsyncMock(return_value=None)
-        pool.execute = AsyncMock(return_value=None)
+        pool.fetchrow = AsyncMock(
+            side_effect=[None, {"eligibility_state": "active", "last_seen_at": None}]
+        )
 
         await register_butler(
             pool,
@@ -285,21 +286,19 @@ class TestRegisterButlerAgentType:
             agent_type="staffer",
         )
 
-        # Verify execute was called with the agent_type='staffer' parameter
-        execute_calls = pool.execute.call_args_list
-        # At least one INSERT/UPSERT call should include 'staffer'
-        call_args_flat = [str(call) for call in execute_calls]
-        assert any("staffer" in args for args in call_args_flat), (
-            "Expected 'staffer' to appear in an execute() call for the INSERT/UPSERT"
-        )
+        # The atomic INSERT ... RETURNING seam carries the staffer role.
+        upsert_args = pool.fetchrow.await_args_list[-1].args
+        assert "INSERT INTO switchboard.butler_registry" in upsert_args[0]
+        assert "staffer" in upsert_args[1:]
 
     async def test_butler_registration_uses_butler_default(self) -> None:
         """register_butler without agent_type defaults to 'butler'."""
         from butlers.tools.switchboard.registry.registry import register_butler
 
         pool = AsyncMock()
-        pool.fetchrow = AsyncMock(return_value=None)
-        pool.execute = AsyncMock(return_value=None)
+        pool.fetchrow = AsyncMock(
+            side_effect=[None, {"eligibility_state": "active", "last_seen_at": None}]
+        )
 
         await register_butler(
             pool,
@@ -307,12 +306,9 @@ class TestRegisterButlerAgentType:
             "http://localhost:41101/sse",
         )
 
-        execute_calls = pool.execute.call_args_list
-        call_args_flat = [str(call) for call in execute_calls]
-        # 'butler' should appear in the INSERT call
-        assert any("butler" in args for args in call_args_flat), (
-            "Expected 'butler' to appear in an execute() call for the INSERT/UPSERT"
-        )
+        upsert_args = pool.fetchrow.await_args_list[-1].args
+        assert "INSERT INTO switchboard.butler_registry" in upsert_args[0]
+        assert "butler" in upsert_args[1:]
 
 
 # ---------------------------------------------------------------------------

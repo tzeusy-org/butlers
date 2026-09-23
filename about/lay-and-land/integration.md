@@ -329,6 +329,10 @@ The new table has runtime RLS with no direct write policy, including after an
 `init-db.sql` grant replay. Fixed `public.register_butler_boot`,
 `reserve_butler_probe`, and `record_butler_probe` operations allocate epochs
 and sequences under database locks and stamp attempts with database time.
+An immutable `butler_boot_registrations` ledger binds each boot UUID to its
+original epoch: a lost-response retry of the current UUID returns that epoch,
+while an older UUID cannot register again after a successor. The ledger,
+latest epoch, and its runtime RLS fence survive downgrade and bootstrap replay.
 New legacy registry inserts initialize an unknown control row without
 claiming health or releasing a retained policy for a reused name.
 `public.set_butler_registry_policy` is reserved for the authenticated owner

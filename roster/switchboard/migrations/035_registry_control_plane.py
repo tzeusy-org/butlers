@@ -5,8 +5,8 @@ Revises: sw_034
 Create Date: 2026-09-23 00:00:00.000000
 
 The legacy registry remains the routing projection until the L3 cutover.  The
-new table is deliberately retained on downgrade: discarding an owner hold or a
-committed boot epoch would make rollback an authority escalation.
+new tables are deliberately retained on downgrade: discarding an owner hold,
+boot registration history, or a committed epoch would escalate rollback authority.
 """
 
 from __future__ import annotations
@@ -93,6 +93,16 @@ def upgrade() -> None:
             created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
             CHECK (recorded_probe_sequence <= probe_sequence)
+        )
+    """)
+    _execute("""
+        CREATE TABLE IF NOT EXISTS switchboard.butler_boot_registrations (
+            name TEXT NOT NULL,
+            boot_instance_id UUID NOT NULL,
+            boot_epoch BIGINT NOT NULL CHECK (boot_epoch > 0),
+            registered_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+            PRIMARY KEY (name, boot_instance_id),
+            UNIQUE (name, boot_epoch)
         )
     """)
 
@@ -201,11 +211,13 @@ def upgrade() -> None:
     # below can mutate these facts.  Non-FORCE preserves pg_dump under the
     # migration login (the same pattern as core_201).
     _execute("REVOKE ALL ON switchboard.butler_registry_control_plane FROM PUBLIC")
+    _execute("REVOKE ALL ON switchboard.butler_boot_registrations FROM PUBLIC")
     _execute("""
         GRANT SELECT ON switchboard.butler_registry_control_plane
         TO butler_switchboard_rw
     """)
     _execute("ALTER TABLE switchboard.butler_registry_control_plane ENABLE ROW LEVEL SECURITY")
+    _execute("ALTER TABLE switchboard.butler_boot_registrations ENABLE ROW LEVEL SECURITY")
     _execute("""
         DROP POLICY IF EXISTS registry_control_read ON
             switchboard.butler_registry_control_plane
@@ -302,7 +314,11 @@ def upgrade() -> None:
         LANGUAGE plpgsql SECURITY DEFINER
         SET search_path = pg_catalog, switchboard, pg_temp
         AS $fn$
-        DECLARE v_epoch bigint;
+        DECLARE
+            v_epoch bigint;
+            v_current_epoch bigint;
+            v_current_instance uuid;
+            v_prior_epoch bigint;
         BEGIN
             IF p_instance IS NULL OR p_name IS NULL
                OR current_setting('role', true) IS DISTINCT FROM
@@ -318,8 +334,28 @@ def upgrade() -> None:
             END IF;
             INSERT INTO switchboard.butler_registry_control_plane (name)
             VALUES (p_name) ON CONFLICT (name) DO NOTHING;
+            SELECT boot_epoch, boot_instance_id
+              INTO v_current_epoch, v_current_instance
+              FROM switchboard.butler_registry_control_plane
+             WHERE name = p_name
+             FOR UPDATE;
+            SELECT boot_epoch INTO v_prior_epoch
+              FROM switchboard.butler_boot_registrations
+             WHERE name = p_name AND boot_instance_id = p_instance;
+            IF v_prior_epoch IS NOT NULL THEN
+                IF v_prior_epoch = v_current_epoch
+                   AND v_current_instance = p_instance THEN
+                    RETURN v_prior_epoch;
+                END IF;
+                RAISE EXCEPTION 'superseded boot registration cannot become current'
+                    USING ERRCODE = '55000';
+            END IF;
+            v_epoch := v_current_epoch + 1;
+            INSERT INTO switchboard.butler_boot_registrations (
+                name, boot_instance_id, boot_epoch
+            ) VALUES (p_name, p_instance, v_epoch);
             UPDATE switchboard.butler_registry_control_plane
-               SET boot_epoch = boot_epoch + 1,
+               SET boot_epoch = v_epoch,
                    boot_instance_id = p_instance,
                    observed_state = 'observer_unknown',
                    observed_boot_epoch = NULL,
@@ -327,8 +363,7 @@ def upgrade() -> None:
                    accepting_routes = NULL,
                    probe_failure_class = NULL,
                    updated_at = clock_timestamp()
-             WHERE name = p_name
-             RETURNING boot_epoch INTO v_epoch;
+             WHERE name = p_name;
             RETURN v_epoch;
         END;
         $fn$
@@ -495,7 +530,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # A downgrade changes code, not authority history.  Retain the new table,
-    # triggers, functions, grants and RLS fence so old code cannot clear an
+    # A downgrade changes code, not authority history.  Retain both tables,
+    # triggers, functions, grants and RLS fences so old code cannot clear an
     # owner quarantine or resurrect a previously fenced boot epoch.
     pass
