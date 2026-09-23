@@ -482,6 +482,9 @@ async def test_registry_runtime_roles_cannot_forge_policy_or_observation(
         is None
     )
     await _assert_l2_roster_seed_and_boot_retry_preserve_existing_authority(migrated_db_url)
+    await _assert_l2_receiver_records_under_narrow_role_without_dashboard_owner_session(
+        migrated_db_url
+    )
 
 
 async def _assert_l2_roster_seed_and_boot_retry_preserve_existing_authority(
@@ -577,8 +580,7 @@ async def _assert_l2_roster_seed_and_boot_retry_preserve_existing_authority(
         await pool.close()
 
 
-@pytest.mark.asyncio(loop_scope="session")
-async def test_l2_receiver_records_under_narrow_role_without_dashboard_owner_session(
+async def _assert_l2_receiver_records_under_narrow_role_without_dashboard_owner_session(
     migrated_db_url: str,
 ) -> None:
     """Mounted owner auth stays closed while Switchboard's probe uses its DB role."""
