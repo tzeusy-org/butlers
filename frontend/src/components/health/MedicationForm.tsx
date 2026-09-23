@@ -48,6 +48,28 @@ function parseSchedule(raw: string): string[] {
     .filter((s) => s.length > 0);
 }
 
+type QuantityParseResult = { value?: number; error?: string };
+
+/**
+ * Parse the owner-entered supply count without silently rounding or coercing.
+ * The API accepts only a positive JSON integer, so decimal/scientific text,
+ * zero, negative values, and values outside JavaScript's safe integer range
+ * stay client-side validation errors instead of becoming fabricated counts.
+ */
+function parseQuantity(raw: string): QuantityParseResult {
+  const trimmed = raw.trim();
+  if (trimmed === "") return {};
+  if (!/^\d+$/.test(trimmed)) {
+    return { error: "Supply quantity must be a positive whole number." };
+  }
+
+  const value = Number(trimmed);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    return { error: "Supply quantity must be a positive whole number." };
+  }
+  return { value };
+}
+
 export function MedicationForm({ medication, onDone, onCancel }: MedicationFormProps) {
   const isEdit = medication != null;
 
@@ -59,6 +81,11 @@ export function MedicationForm({ medication, onDone, onCancel }: MedicationFormP
   );
   const [notes, setNotes] = useState(medication?.notes ?? "");
   const [active, setActive] = useState(medication?.active ?? true);
+  const [quantity, setQuantity] = useState(
+    medication?.quantity != null ? String(medication.quantity) : "",
+  );
+  const [quantityTouched, setQuantityTouched] = useState(false);
+  const [quantityError, setQuantityError] = useState<string | null>(null);
 
   const createMutation = useCreateMedication();
   const updateMutation = useUpdateMedication();
@@ -84,29 +111,42 @@ export function MedicationForm({ medication, onDone, onCancel }: MedicationFormP
 
     const scheduleList = parseSchedule(schedule);
     const trimmedNotes = notes.trim();
+    const parsedQuantity = parseQuantity(quantity);
+    if (parsedQuantity.error) {
+      setQuantityError(parsedQuantity.error);
+      toast.error(parsedQuantity.error);
+      return;
+    }
+    setQuantityError(null);
 
     try {
       if (isEdit) {
+        const body = {
+          name: trimmedName,
+          dosage: trimmedDosage,
+          frequency: trimmedFrequency,
+          schedule: scheduleList,
+          active,
+          notes: trimmedNotes === "" ? null : trimmedNotes,
+          ...(quantityTouched && parsedQuantity.value != null
+            ? { quantity: parsedQuantity.value }
+            : {}),
+        };
         await updateMutation.mutateAsync({
           id: medication.id,
-          body: {
-            name: trimmedName,
-            dosage: trimmedDosage,
-            frequency: trimmedFrequency,
-            schedule: scheduleList,
-            active,
-            notes: trimmedNotes === "" ? null : trimmedNotes,
-          },
+          body,
         });
         toast.success("Medication updated.");
       } else {
-        await createMutation.mutateAsync({
+        const body = {
           name: trimmedName,
           dosage: trimmedDosage,
           frequency: trimmedFrequency,
           schedule: scheduleList,
           notes: trimmedNotes === "" ? null : trimmedNotes,
-        });
+          ...(parsedQuantity.value != null ? { quantity: parsedQuantity.value } : {}),
+        };
+        await createMutation.mutateAsync(body);
         toast.success("Medication added.");
       }
       onDone();
@@ -157,6 +197,35 @@ export function MedicationForm({ medication, onDone, onCancel }: MedicationFormP
           onChange={(e) => setSchedule(e.target.value)}
           placeholder="Comma-separated times, e.g. 08:00, 20:00"
         />
+      </div>
+
+      <div className="space-y-2">
+        <Label htmlFor="med-quantity">Supply quantity (optional)</Label>
+        {/* Text preserves malformed input for explicit validation instead of browser sanitization. */}
+        <Input
+          id="med-quantity"
+          type="text"
+          inputMode="numeric"
+          value={quantity}
+          onChange={(e) => {
+            setQuantity(e.target.value);
+            setQuantityTouched(true);
+            if (quantityError) setQuantityError(null);
+          }}
+          placeholder={isEdit ? "Leave blank to keep current supply" : "Leave blank if unknown"}
+          aria-invalid={quantityError != null}
+          aria-describedby={quantityError ? "med-quantity-error" : "med-quantity-help"}
+        />
+        <p id="med-quantity-help" className="text-xs text-muted-foreground">
+          {isEdit
+            ? "Change or re-enter the count to record a refill. Leave blank to keep the existing supply unchanged."
+            : "Enter the owner-recorded count in the current supply. Leave blank if unknown."}
+        </p>
+        {quantityError && (
+          <p id="med-quantity-error" role="alert" className="text-xs text-[var(--red-text)]">
+            {quantityError}
+          </p>
+        )}
       </div>
 
       <div className="space-y-2">
