@@ -103,6 +103,14 @@ operation. Neither result SHALL echo a submitted or stored value, expected
 shape, row existence, validation detail, driver detail, or replacement-surface
 state.
 
+Because the path-aware guard bypasses `DashboardAuditMiddleware`, it SHALL emit
+exactly one explicit denial audit with operation
+`state_generic_policy_denied`. Its field allowlist is server-derived actor,
+effective roster butler, fixed `state_operation` (`get`, `set`, or `delete`),
+and fixed `outcome=managed_state_key`. It SHALL contain no raw path, state key,
+body, submitted or stored value, version, validation detail, or exception. A
+denied operation SHALL NOT also emit the ordinary generic success audit.
+
 Dashboard and MCP collection reads SHALL obtain keys before values, apply the
 policy, and fetch values only for allowed entries. An omitted entry SHALL expose
 neither its key nor a placeholder. Audit rows, logs, metrics, traces, sessions,
@@ -119,7 +127,8 @@ Scope: v1-mandatory
 
 - **WHEN** a generic caller requests a denied exact get, set, or delete
 - **THEN** the fixed refusal occurs before target pool acquisition, MCP connection, route-model validation, body buffering, or low-level state access
-- **AND** no value, version, timestamp, or audit consequence changes
+- **AND** no managed-state value, version, row timestamp, CAS outcome, producer output, or success audit changes
+- **AND** exactly one `state_generic_policy_denied` audit is emitted with only the fixed reviewed allowlist
 
 #### Scenario: Malformed protected PUT has the same fixed refusal
 

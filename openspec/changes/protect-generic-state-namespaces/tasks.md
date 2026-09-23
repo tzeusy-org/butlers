@@ -43,7 +43,8 @@
 - [ ] 3.2 Run mounted owner-auth/API and MCP tests proving pre-validation
   denials for valid and malformed protected bodies, keys-before-values listing,
   direct tool-call resistance, truthful State-tab controls, and content-blind
-  errors/audit/logs/telemetry.
+  errors/audit/logs/telemetry. Assert exactly one fixed denial audit and no
+  ordinary success audit for each denied dashboard operation.
 - [ ] 3.3 Run focused migrated-PostgreSQL Home route/CAS/race/rollback/producer
   tests and specialized module/settings/threshold compatibility tests.
 - [ ] 3.4 Report `Tests: +a ~b -c`; run test-plan, collection when topology moves,
