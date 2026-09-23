@@ -20,6 +20,7 @@ import datetime
 import importlib.util
 import json
 import logging
+import math
 import os
 import sys
 import uuid
@@ -33,6 +34,7 @@ from butlers.api.audit_emit import authenticated_principal, emit_dashboard_audit
 from butlers.api.briefing.cache import BriefingCache, get_cache, resolve_owner_id
 from butlers.api.db import DatabaseManager
 from butlers.api.models import (
+    ApiMeta,
     ApiResponse,
     CursorPaginatedResponse,
     CursorPaginationMeta,
@@ -109,6 +111,28 @@ logger = logging.getLogger(__name__)
 # Period literal for query parameter validation
 PeriodLiteral = Literal["24h", "7d", "30d"]
 _PERIOD_HOURS: dict[str, int] = {"24h": 24, "7d": 168, "30d": 720}
+_FANOUT_METRIC_NAME = "butlers_switchboard_subroute_dispatched_total"
+_FANOUT_METRIC_SELECTOR = (
+    f'{_FANOUT_METRIC_NAME}{{outcome="attempted",source="connector",destination_butler!=""}}'
+)
+_FANOUT_METRIC_AVAILABILITY_QUERY = f"count({_FANOUT_METRIC_SELECTOR})"
+
+
+def _parse_prometheus_scalar(result: Any) -> float | None:
+    """Parse one scalar vector result, returning ``None`` for unreadable data."""
+    if not isinstance(result, dict) or "error" in result:
+        return None
+    raw_value = result.get("value")
+    if not isinstance(raw_value, (list, tuple)) or len(raw_value) < 2:
+        return None
+    raw = raw_value[1]
+    if isinstance(raw, bool):
+        return None
+    try:
+        numeric = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return numeric if math.isfinite(numeric) else None
 
 
 def _get_prometheus_url() -> str | None:
@@ -1380,7 +1404,7 @@ async def get_ingestion_volume(
 async def _ingestion_fanout_from_db(
     db: DatabaseManager,
     hours: int,
-) -> list[Any]:
+) -> tuple[list[Any], bool]:
     """Compute the fanout matrix from the DB when Prometheus is unavailable.
 
     Fans out to every butler's sessions table and joins each session's
@@ -1394,7 +1418,7 @@ async def _ingestion_fanout_from_db(
     the target butler from which butler's sessions table actually contains a
     row for the ingestion_event_id, rather than from the triage_target column.
 
-    Returns a list of FanoutRow-compatible dicts.
+    Returns rows and whether at least one target was queried without failures.
     """
     # Each butler schema has shared in its search_path, so the join against
     # public.ingestion_events works from any butler pool.
@@ -1418,7 +1442,7 @@ async def _ingestion_fanout_from_db(
             ie.source_endpoint_identity
     """
 
-    fan_results, _failed = await db.fan_out_with_status(sql, args=(hours,))
+    fan_results, failed = await db.fan_out_with_status(sql, args=(hours,))
 
     # Aggregate across butlers: accumulate counts per
     # (connector_type, endpoint_identity, butler_name)
@@ -1444,7 +1468,7 @@ async def _ingestion_fanout_from_db(
             )
 
     data.sort(key=lambda r: (r.connector_type, r.endpoint_identity, -r.message_count))
-    return data
+    return data, bool(fan_results) and not failed
 
 
 @router.get("/ingestion/fanout", response_model=ApiResponse[list[FanoutRow]])
@@ -1458,61 +1482,65 @@ async def get_ingestion_fanout(
     over the requested period. Used to populate the fanout matrix table on the
     Overview tab.
 
-    Primary source: Prometheus (``switchboard_routed_messages_total`` metric).
-    DB fallback: when ``PROMETHEUS_URL`` is not set or Prometheus returns an
-    error, the matrix is computed from sessions fan-out joined against
-    ``public.ingestion_events``.  This correctly handles all triage decisions,
-    including pass_through messages where ``triage_target`` is NULL.
+    Exact connector and endpoint dimensions come from the sessions fan-out
+    joined against ``public.ingestion_events``. Prometheus supplies only the
+    live producer signal: the repository-owned subroute counter must expose a
+    bounded ``source=connector`` series with a non-empty destination. This
+    avoids placing raw account identities in OTel labels while distinguishing
+    a measured empty DB projection from an absent producer.
 
     Prometheus metric name expected (primary):
-    - ``switchboard_routed_messages_total``
-      (labels: connector_type, endpoint_identity, target_butler, outcome)
+    - ``butlers_switchboard_subroute_dispatched_total``
+      (labels: source, destination_butler, outcome)
     """
     prom_url = _get_prometheus_url()
     hours = _PERIOD_HOURS[period]
 
     if prom_url:
-        q = (
-            f"sum by (connector_type, endpoint_identity, target_butler) "
-            f"(increase(switchboard_routed_messages_total[{hours}h]))"
-        )
-        results = await async_query(prom_url, q)
-        if results and not (isinstance(results[0], dict) and "error" in results[0]):
-            data = []
-            for series in results:
-                m = series.get("metric", {})
+        availability_results = await async_query(prom_url, _FANOUT_METRIC_AVAILABILITY_QUERY)
+        if availability_results and not (
+            isinstance(availability_results[0], dict) and "error" in availability_results[0]
+        ):
+            metric_count = _parse_prometheus_scalar(availability_results[0])
+            if metric_count is not None and metric_count >= 1:
                 try:
-                    count = int(float(series["value"][1]))
-                except (KeyError, IndexError, TypeError, ValueError):
-                    count = 0
-                if count > 0:
-                    data.append(
-                        FanoutRow(
-                            connector_type=m.get("connector_type", "unknown"),
-                            endpoint_identity=m.get("endpoint_identity", "unknown"),
-                            target_butler=m.get("target_butler", "unknown"),
-                            message_count=count,
-                        )
-                    )
-            data.sort(key=lambda r: (r.connector_type, r.endpoint_identity, -r.message_count))
-            return ApiResponse[list[FanoutRow]](data=data)
+                    data, complete = await _ingestion_fanout_from_db(db, hours)
+                except Exception:
+                    logger.warning("DB fanout projection failed", exc_info=True)
+                    data, complete = [], False
+                return ApiResponse[list[FanoutRow]](
+                    data=data,
+                    meta=ApiMeta(aggregates_available=complete),
+                )
+            logger.warning(
+                "Prometheus fanout metric %s is absent or unreadable; "
+                "reporting aggregates unavailable",
+                _FANOUT_METRIC_NAME,
+            )
+            return ApiResponse[list[FanoutRow]](
+                data=[],
+                meta=ApiMeta(aggregates_available=False),
+            )
 
-        if results:
+        if availability_results:
             logger.warning(
                 "Prometheus query error for ingestion fanout; falling back to DB: %s",
-                results[0]["error"],
+                availability_results[0]["error"],
             )
     else:
         logger.debug("PROMETHEUS_URL not set; using DB fallback for ingestion fanout")
 
     # DB-backed fallback: derive fanout from sessions × ingestion_events join
     try:
-        data = await _ingestion_fanout_from_db(db, hours)
+        data, _complete = await _ingestion_fanout_from_db(db, hours)
     except Exception:
         logger.warning("DB fallback for ingestion fanout failed", exc_info=True)
         data = []
 
-    return ApiResponse[list[FanoutRow]](data=data)
+    return ApiResponse[list[FanoutRow]](
+        data=data,
+        meta=ApiMeta(aggregates_available=False),
+    )
 
 
 # ---------------------------------------------------------------------------

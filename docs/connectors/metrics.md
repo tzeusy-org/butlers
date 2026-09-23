@@ -85,8 +85,20 @@ route reports `aggregates_available: false` when its Prometheus-backed metrics
 cannot be read; callers must render that as unavailable rather than zero. The
 retired Switchboard connector namespace and its per-connector fanout endpoint
 are not dashboard API surfaces. The separate cross-connector
-`GET /api/switchboard/ingestion/fanout` overview matrix remains outside this
-connector-namespace migration.
+`GET /api/switchboard/ingestion/fanout` route remains outside this
+connector-namespace migration, but the active Connectors dashboard renders its
+7-day routing distribution. Its `meta.aggregates_available` flag distinguishes
+a measured empty response from an unavailable aggregate source. Exact
+connector and endpoint dimensions come from the sessions-to-ingestion-events
+DB projection. The handler separately probes the exact
+`butlers_switchboard_subroute_dispatched_total` family for attempted dispatches
+carrying bounded `source="connector"` provenance and a non-empty
+`destination_butler`; raw connector and endpoint identities never become OTel
+labels. A live producer plus at least one successfully queried DB target and
+no failed targets makes an empty result measured. Zero queried targets, an
+absent or unreadable producer, or any failed target is degraded and never
+presented as an all-clear empty distribution. Successful target rows remain
+in the API response when another target fails.
 
 ## Verification
 

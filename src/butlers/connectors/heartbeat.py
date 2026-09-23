@@ -21,12 +21,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 from uuid import UUID, uuid4
 
 if TYPE_CHECKING:
@@ -100,6 +101,31 @@ class HeartbeatConfig:
             interval_s=interval_s,
             enabled=enabled,
         )
+
+
+class CounterRead(dict[str, int]):
+    """Counter values plus the authority state of the registry read.
+
+    The heartbeat v1 wire contract still requires integer counter fields, so
+    the mapping retains the established zero placeholders for fields whose
+    source could not be observed.  Callers that need to distinguish a real
+    zero from an unreadable source can use ``availability`` and
+    ``unavailable_fields``; the state is deliberately kept out of the wire
+    payload to avoid a protocol change.
+    """
+
+    availability: Literal["available", "unavailable"]
+    unavailable_fields: frozenset[str]
+
+    def __init__(
+        self,
+        values: dict[str, int],
+        *,
+        unavailable_fields: frozenset[str],
+    ) -> None:
+        super().__init__(values)
+        self.unavailable_fields = unavailable_fields
+        self.availability = "unavailable" if unavailable_fields else "available"
 
 
 class ConnectorHeartbeat:
@@ -253,7 +279,17 @@ class ConnectorHeartbeat:
 
         # Collect counter values from Prometheus metrics
         # Note: Prometheus counters are cumulative, so we read the raw counter values
-        counters = self._collect_counters()
+        counter_read = self._collect_counters()
+        if counter_read.availability == "unavailable":
+            logger.warning(
+                "Heartbeat counter source unavailable for %s/%s: fields=%s",
+                self._config.connector_type,
+                self._config.endpoint_identity,
+                ",".join(sorted(counter_read.unavailable_fields)),
+            )
+        # ``CounterRead`` is a dict subclass so the v1 wire payload remains
+        # exactly the established integer-only counters mapping.
+        counters = dict(counter_read)
 
         # Build heartbeat envelope
         envelope = {
@@ -318,7 +354,7 @@ class ConnectorHeartbeat:
                 self._config.endpoint_identity,
             )
 
-    def _collect_counters(self) -> dict[str, int]:
+    def _collect_counters(self) -> CounterRead:
         """Collect current counter values from Prometheus metrics.
 
         Returns a dict matching the connector.heartbeat.v1 counters schema.
@@ -335,49 +371,111 @@ class ConnectorHeartbeat:
             "checkpoint_saves": 0,
             "dedupe_accepted": 0,
         }
+        observed_fields: set[str] = set()
+
+        def sample_value(sample: object, family: str) -> int | None:
+            """Return a finite non-negative ``*_total`` sample value.
+
+            ``prometheus_client`` exposes a Counter family as the base name
+            (without ``_total``), while its samples include both the real
+            ``<family>_total`` counter and metadata such as
+            ``<family>_created``.  The metadata sample is a Unix timestamp and
+            must never become an operational count.
+
+            The sample name is the authority, even when the surrounding family
+            is recognizable.  An unnamed or malformed sample might be a
+            ``*_created`` timestamp supplied by an alternate collector, so it
+            cannot be promoted to an operational count.  Values are parsed as
+            finite, non-negative numbers before the integer wire conversion so
+            malformed, NaN, and infinity samples are ignored rather than
+            raising or fabricating a count.
+            """
+            sample_name = getattr(sample, "name", None)
+            expected_name = f"{family}_total"
+            if sample_name != expected_name:
+                return None
+
+            raw = getattr(sample, "value", None)
+            if isinstance(raw, bool):
+                return None
+            try:
+                numeric = float(raw)
+            except (TypeError, ValueError, OverflowError):
+                return None
+            if not math.isfinite(numeric) or numeric < 0:
+                return None
+            return int(numeric)
 
         # Read counter values from Prometheus registry.
         # NOTE: prometheus_client strips the ``_total`` suffix from Counter
         # names when returning MetricFamily objects via ``collect()``, so we
         # must compare against the *base* name (without ``_total``).
         for metric in REGISTRY.collect():
+            metric_name = getattr(metric, "name", None)
+            if not isinstance(metric_name, str):
+                continue
+            # ``collect()`` normally returns the base family name.  Accept the
+            # explicit suffix too for registry fakes and alternate collectors.
+            family = (
+                metric_name[: -len("_total")] if metric_name.endswith("_total") else metric_name
+            )
             # Ingest submissions
-            if metric.name == "connector_ingest_submissions":
+            if family == "connector_ingest_submissions":
                 for sample in metric.samples:
-                    labels = sample.labels
+                    labels = getattr(sample, "labels", None)
+                    if not isinstance(labels, Mapping):
+                        continue
                     if (
                         labels.get("connector_type") == self._config.connector_type
                         and labels.get("endpoint_identity") == self._config.endpoint_identity
                     ):
                         status = labels.get("status", "")
-                        value = int(sample.value)
+                        value = sample_value(sample, family)
+                        if value is None:
+                            continue
 
                         if status == "success":
                             counters["messages_ingested"] += value
+                            observed_fields.add("messages_ingested")
                         elif status == "error":
                             counters["messages_failed"] += value
+                            observed_fields.add("messages_failed")
                         elif status == "duplicate":
                             counters["dedupe_accepted"] += value
+                            observed_fields.add("dedupe_accepted")
 
             # Source API calls
-            elif metric.name == "connector_source_api_calls":
+            elif family == "connector_source_api_calls":
                 for sample in metric.samples:
-                    labels = sample.labels
+                    labels = getattr(sample, "labels", None)
+                    if not isinstance(labels, Mapping):
+                        continue
                     if (
                         labels.get("connector_type") == self._config.connector_type
                         and labels.get("endpoint_identity") == self._config.endpoint_identity
                     ):
-                        counters["source_api_calls"] += int(sample.value)
+                        value = sample_value(sample, family)
+                        if value is not None:
+                            counters["source_api_calls"] += value
+                            observed_fields.add("source_api_calls")
 
             # Checkpoint saves
-            elif metric.name == "connector_checkpoint_saves":
+            elif family == "connector_checkpoint_saves":
                 for sample in metric.samples:
-                    labels = sample.labels
+                    labels = getattr(sample, "labels", None)
+                    if not isinstance(labels, Mapping):
+                        continue
                     if (
                         labels.get("connector_type") == self._config.connector_type
                         and labels.get("endpoint_identity") == self._config.endpoint_identity
                         and labels.get("status") == "success"
                     ):
-                        counters["checkpoint_saves"] += int(sample.value)
+                        value = sample_value(sample, family)
+                        if value is not None:
+                            counters["checkpoint_saves"] += value
+                            observed_fields.add("checkpoint_saves")
 
-        return counters
+        return CounterRead(
+            counters,
+            unavailable_fields=frozenset(set(counters) - observed_fields),
+        )

@@ -1534,6 +1534,8 @@ class MessagePipeline:
             "identity": str(source_metadata.get("identity") or "unknown"),
             "tool_name": str(source_metadata.get("tool_name") or "decomposition"),
         }
+        if source_metadata.get("provider") not in (None, ""):
+            route_source_metadata["provider"] = str(source_metadata["provider"])
         if source_metadata.get("source_id") not in (None, ""):
             route_source_metadata["source_id"] = str(source_metadata["source_id"])
 
@@ -1808,6 +1810,8 @@ class MessagePipeline:
             "identity": identity,
             "tool_name": source_tool,
         }
+        if args.get("source_provider") not in (None, ""):
+            metadata["provider"] = str(args["source_provider"])
         if args.get("source_id") not in (None, ""):
             metadata["source_id"] = str(args["source_id"])
         if args.get("dashboard_message_id") not in (None, ""):

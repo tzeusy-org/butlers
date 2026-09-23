@@ -2878,6 +2878,17 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - 24h throughput
 - last checkpoint
 
+## `frontend/src/components/ingestion/connectors/ConnectorFanoutMatrix.tsx`
+
+- Loading routing distribution…
+- routing distribution · 7d
+- Observed routes from each connector to its destination butler.
+- Counter observations
+- No routed messages recorded in the last 7 days.
+- Connector-to-butler routing distribution for the last 7 days
+- routing metrics
+- {} messages from {} to {}
+
 ## `frontend/src/components/ingestion/connectors/ConnectorHistogram.tsx`
 
 - no throughput recorded
@@ -4376,4 +4387,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3433*
+*Total strings: 3441*

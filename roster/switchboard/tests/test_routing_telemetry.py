@@ -32,6 +32,18 @@ def _metric_names(metric_reader: InMemoryMetricReader) -> set[str]:
     return names
 
 
+def _metric_point_attributes(
+    metric_reader: InMemoryMetricReader, metric_name: str
+) -> list[dict[str, object]]:
+    data = metric_reader.get_metrics_data()
+    for resource_metric in data.resource_metrics:
+        for scope_metric in resource_metric.scope_metrics:
+            for metric in scope_metric.metrics:
+                if metric.name == metric_name:
+                    return [dict(point.attributes) for point in metric.data.data_points]
+    return []
+
+
 def test_switchboard_metric_namespace_contract() -> None:
     _reset_otel_meter_global_state()
     metric_reader = InMemoryMetricReader()
@@ -42,6 +54,8 @@ def test_switchboard_metric_namespace_contract() -> None:
 
     attrs = telemetry.attrs(
         source="telegram",
+        connector_type="telegram",
+        endpoint_identity="bot-123",
         destination_butler="general",
         outcome="success",
         lifecycle_state="parsed",
@@ -75,6 +89,9 @@ def test_switchboard_metric_namespace_contract() -> None:
     telemetry.set_circuit_open_targets(2)
     with telemetry.track_inflight_requests():
         names = _metric_names(metric_reader)
+        subroute_attributes = _metric_point_attributes(
+            metric_reader, "butlers.switchboard.subroute_dispatched"
+        )
     provider.shutdown()
     _reset_otel_meter_global_state()
     reset_switchboard_telemetry_for_tests()
@@ -100,3 +117,17 @@ def test_switchboard_metric_namespace_contract() -> None:
         "butlers.switchboard.inflight_requests",
         "butlers.switchboard.circuit_open_targets",
     }
+    assert subroute_attributes == [
+        {
+            "source": "telegram",
+            "destination_butler": "general",
+            "outcome": "success",
+            "lifecycle_state": "parsed",
+            "error_class": "none",
+            "policy_tier": "default",
+            "fanout_mode": "ordered",
+            "model_family": "claude",
+            "prompt_version": "switchboard.v1",
+            "schema_version": "route.v1",
+        }
+    ]
