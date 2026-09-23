@@ -1031,6 +1031,14 @@
       "excerpt": "- **AND** `failed` (a routing failure recorded after the event was already ingested — see `ingestion_event_mark_faile..."
     }
   ],
+  "recover-ingestion-target-deliveries/module-pipeline/Decomposition-to-Routing Fan-Out": [
+    {
+      "kind": "clause",
+      "scenario": "Sequential fan-out routing",
+      "digest": "e7dd1119548f",
+      "excerpt": "- **THEN** `route()` is called sequentially for each conceptual message"
+    }
+  ],
   "relational-edges-single-home/relationship-facts/Predicate catalog": [
     {
       "kind": "prose",
@@ -1113,6 +1121,12 @@
       "scenario": "Heartbeat endpoint returns per-butler status",
       "digest": "eae6a221c59b",
       "excerpt": "- `last_heartbeat_at: string | null` -- ISO 8601 UTC timestamp of the most recent liveness heartbeat recorded in the ..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Heartbeat endpoint returns per-butler status",
+      "digest": "91a257d96242",
+      "excerpt": "- `heartbeat_age_seconds: number | null` -- seconds since `last_heartbeat_at`, or `null`; the frontend uses this to c..."
     }
   ],
   "restore-drill-recovery-truthfulness/core-notify/Attention Ledger Reader": [

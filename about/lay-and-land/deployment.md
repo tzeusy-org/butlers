@@ -320,7 +320,11 @@ public `GET /ready` retains the k3s change's boolean `ready` response shape.
 Its checks cover PostgreSQL, roster, observer freshness, expected fleet,
 QA-patrol age, supervised loops, and an effect-free route canary. It returns
 503 with content-blind boolean check results when any required proof is
-missing. The Compose launcher and production deploy completion must observe
+missing. The canary tests Switchboard selection and exact-target reachability without
+an inbox write; it cannot certify target transactional acceptance, which is
+represented by actual delivery receipts and conditions.
+
+The Compose launcher and production deploy completion must observe
 fresh progress across multiple probe/patrol cycles beyond one full daemon
 liveness TTL, rather than accepting one Docker `healthy` state. The existing
 `scripts/compose.sh` currently waits for container process health; that is

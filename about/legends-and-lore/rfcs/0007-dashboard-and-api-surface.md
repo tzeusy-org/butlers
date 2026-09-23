@@ -337,7 +337,7 @@ Five ownership-fact endpoints are registered under `/api/system/`. Each endpoint
 | `GET /api/system/database` | `ApiResponse<DatabaseFacts>` | Total database size in bytes (`total_size_bytes`), per-butler-schema size breakdown (`schemas: SchemaSize[]`), and the ten largest tables (`largest_tables: TableSize[]`). `growth_rate_bytes_per_day` is always `null` in v1 (deferred to v2). Derived from PostgreSQL catalog queries (`pg_database_size`, `pg_total_relation_size`, `information_schema.tables`). Returns HTTP 503 if the catalog query fails. |
 | `GET /api/system/backups` | `ApiResponse<BackupFacts>` | Backup recency (`last_backup_at`, `last_backup_size_bytes`), source reachability (`backup_source_reachable: bool`), and recent backup history (`backup_history: BackupEvent[]`). Degrades gracefully: always returns HTTP 200 with `backup_source_reachable: false` and null fields when no backup strategy is configured. |
 | `GET /api/system/egress` | `ApiResponse<EgressCatalog>` | External-actor egress catalog: which external endpoints have received data from this instance, with `last_seen_at` and `total_calls` per actor (`actors: EgressActor[]`). `catalog_covers_from` communicates the oldest audit record used to build the catalog. **Owner-only**: returns HTTP 403 when the owner contact cannot be asserted. |
-| `GET /api/system/butlers/heartbeat` | `ApiResponse<HeartbeatFacts>` | Per-butler registry snapshot (`butlers: ButlerHeartbeat[]`) with session facts. The 2026-09-23 Amendment 3 supersedes daemon-authored heartbeat time as liveness authority; the endpoint remains a read projection, not a live probe. Degrades per butler when a schema is unreachable (`error: "schema_unreachable"`). |
+| `GET /api/system/butlers/heartbeat` | `ApiResponse<HeartbeatFacts>` | Per-butler registry snapshot (`butlers: ButlerHeartbeat[]`) with session facts. The 2026-09-23 Amendment 3 supersedes daemon-authored heartbeat time as liveness authority: legacy `last_heartbeat_at`/age mean last successfully verified healthy receiver observation, `last_probe_at` means latest attempt, and effective status uses observation/policy rather than age alone. The endpoint remains a read projection, not a live probe. Degrades per butler when a schema is unreachable (`error: "schema_unreachable"`). |
 
 System-specific Pydantic response models (`InstanceFacts`, `DatabaseFacts`, `SchemaSize`, `TableSize`, `EgressCatalog`, `EgressActor`, `HeartbeatFacts`, `ButlerHeartbeat`) are defined in `src/butlers/api/routers/system.py`. The DB-free backup models and artifact/run-receipt reader (`BackupFacts`, `BackupEvent`, `BackupRunFacts`, `RestoreDrillFacts`) are owned by `src/butlers/core/backup_facts.py`; both the system route and QA infrastructure checks consume that lower-layer reader. The system router owns API composition and overlays the DB-backed restore-drill result. The router is registered in `src/butlers/api/app.py` (explicit include; the system router lives in the core `src/butlers/api/routers/` package rather than in a butler-specific `roster/*/api/` directory and is therefore not subject to butler auto-discovery).
 
@@ -440,16 +440,24 @@ fixed boolean check keys are `postgres`, `roster`, `observer`, `fleet`,
 `qa_patrol`, `supervisors`, and `route_canary`. `roster` means the exact
 configured expected set, `fleet` requires verified daemon identity,
 generation, compatibility, and acceptance, and `route_canary` is effect-free:
-it creates no inbox, session, notification, or ingestion row. A bounded cached
+it traverses Switchboard's production selection/policy/endpoint path and makes
+one bounded identity GET to a fixed configured domain target, creating no
+inbox, session, notification, or ingestion row. It proves that control-plane
+path, not a transactional `route.execute` receipt or downstream success. A bounded cached
 snapshot serves `/ready`; the public request cannot start probes or expensive
 database fanout. It reports no message content, credentials, internal
 endpoints, or unbounded diagnostic text. Partial or failed observations cannot
-be converted into a healthy aggregate. `qa_patrol` counts only a completed
-successful patrol with all enabled discovery sources completed, not an `error`,
-`skipped_overlap`, synthetic `suppressed`, or still-running record. A deployment
+be converted into a healthy aggregate. `qa_patrol` counts a completed
+scheduled `clean`, `findings_dispatched`, or genuine `suppressed` patrol only
+with current-config all-enabled-source success provenance; an `error`,
+`skipped_overlap`, synthetic `suppressed`, still-running, or ambiguous legacy
+record cannot renew freshness. A deployment
 may declare completion only after readiness has advanced through multiple
 probe and patrol cycles beyond a full liveness TTL, not after one process-health
 response.
+`supervisors` consumes only the process-fenced Dashboard lifespan-loop health
+projection; Switchboard's runtime-attention delivery worker has a separate
+linked condition/outbox availability state and is not implied healthy by it.
 
 Owner authentication remains the central boundary for `/api/*`. The daemon
 observer consumes exact internal roster endpoints and cannot use an owner

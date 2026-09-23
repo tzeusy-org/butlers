@@ -32,6 +32,9 @@ sits in a 320 px left rail; selecting a case opens the full dossier body.
 - **Patrol independence:** Continue local patrols when only remote registry
   observation of QA is stale. A separately supervised control-plane observer
   records overdue patrols and fleet-wide expiry even when QA cannot run.
+  Genuine completed `suppressed` patrols with all enabled discovery sources
+  successful count as healthy discovery; dashboard-created synthetic
+  `suppressed` placeholders and legacy rows without source provenance do not.
 - **Triage:** Deduplicate findings against active investigations, dismissals,
   and cooldown windows before dispatching.
 - **Investigation dispatch:** Create worktrees with a `qa/` prefix, spawn

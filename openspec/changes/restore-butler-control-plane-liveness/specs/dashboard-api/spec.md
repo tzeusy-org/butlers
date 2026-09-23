@@ -1,20 +1,30 @@
 ## ADDED Requirements
 
 ### Requirement: [TARGET-STATE] Semantic fleet readiness
-The canonical `GET /ready` SHALL report content-blind semantic readiness separately from lightweight `GET /health`. Success SHALL require a working database, complete and fresh controller observation of every configured expected non-paused daemon at its latest registered boot epoch, route compatibility and acceptance, a qualifying completed QA patrol whose enabled sources all succeeded, supervised control-loop progress, and an effect-free Switchboard route canary. An intentional QA pause remains separately visible but does not satisfy readiness. A database connection and nonempty roster alone SHALL NOT make `/ready` successful.
+The canonical `GET /ready` SHALL report content-blind control-plane readiness separately from lightweight `GET /health`. Success SHALL require a working database, complete and fresh controller observation of every configured expected non-paused daemon at its latest registered boot epoch, advertised route acceptance and compatibility, a qualifying completed QA patrol whose enabled sources all succeeded, progress from the existing process-fenced supervised-job health projection for the named Dashboard lifespan control loops, and an effect-free Switchboard route preflight. Unavailable, unknown, stale, or stopped Dashboard supervisor evidence SHALL fail closed; this requirement consumes the existing projection and does not define a second job-health store. The Switchboard runtime-attention delivery worker is not covered by that Dashboard projection; its pending, failed, uncertain, or unavailable delivery state SHALL remain separately visible through the linked condition/outbox evidence and SHALL NOT be implied healthy by `/ready.checks.supervisors`. The preflight SHALL traverse production target selection, route policy, registry eligibility, compatibility, and exact endpoint resolution for a fixed configured non-paused domain target, then perform one bounded shared-verifier identity GET. It SHALL fail when no such target exists, an expected step fails, or the response is not current and accepting. It SHALL create no inbox, session, notification, or ingestion row. It proves control-plane selection and reachability, not transactional `route.execute` acceptance or target-session success; delivery receipts and conditions are separate evidence. An intentional QA pause remains separately visible but does not satisfy readiness. A database connection and nonempty roster alone SHALL NOT make `/ready` successful.
 
 ID: REQ-dashboard-api-063
 Source: RFC 0007 §API Surface; openspec/changes/k3s-deployment-helm-chart/specs/dashboard-api/spec.md §Readiness probe endpoint; docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md §5.4
 Scope: v1-mandatory
 
-#### Scenario: Fleet is functionally ready
-- **WHEN** all required observations and dependencies are fresh, the QA patrol is current, and the synthetic route confirms acceptance without creating an inbox or session
+#### Scenario: Control plane is ready
+- **WHEN** all required observations and dependencies are fresh, the QA patrol is current, and the bounded route preflight confirms fixed-target selection, reachability, and current advertised acceptance without creating an inbox or session
 - **THEN** `GET /ready` returns HTTP 200 with a content-blind ready result
 
+#### Scenario: Preflight has no transactional acceptance claim
+- **WHEN** the fixed target is reachable and advertises route acceptance but a separate `route.execute` inbox transaction would fail
+- **THEN** the preflight does not claim an accepted delivery receipt or downstream session success
+- **AND** the failure remains detectable through actual target-delivery evidence rather than being hidden as a passed end-to-end canary
+
 #### Scenario: Incomplete patrol cannot make deployment ready
-- **WHEN** the latest QA row is `running`, `error`, `skipped_overlap`, synthetic `suppressed`, or lacks successful completion evidence for any enabled discovery source
-- **THEN** the `qa_patrol` readiness check remains false even if that row has a recent timestamp
-- **AND** only a completed `clean` or `findings_dispatched` all-source-success patrol can renew it
+- **WHEN** a recent QA row is `running`, `error`, `skipped_overlap`, synthetic `suppressed`, legacy-provenance-unknown, from an older enabled-source configuration, or lacks successful completion evidence for any enabled discovery source, and no earlier qualifying patrol remains fresh
+- **THEN** the `qa_patrol` readiness check remains false even if that nonqualifying row has a recent timestamp
+- **AND** a completed scheduled `clean`, `findings_dispatched`, or genuine filtered-finding `suppressed` patrol with current-config all-source-success provenance can renew it
+
+#### Scenario: Nonqualifying row does not erase a still-fresh completed patrol
+- **WHEN** a synthetic, skipped, running, or failed row is newer than a still-fresh qualifying patrol under the current enabled-source configuration
+- **THEN** the newer row does not advance the freshness clock or itself establish readiness
+- **AND** the earlier qualifying patrol remains valid until its own cadence bound expires
 
 #### Scenario: Explicitly paused domain daemon does not fabricate fleet failure
 - **WHEN** an expected domain daemon is explicitly paused by the owner while all non-paused expected daemons satisfy the functional checks

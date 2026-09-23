@@ -211,19 +211,26 @@ The QA Staffer's scheduler drives a patrol loop at a configurable interval (defa
 Each patrol cycle is a discrete unit of work with its own `public.qa_patrols` record:
 
 ```
-status: running | clean | findings_dispatched | error | skipped_overlap
+status: running | clean | findings_dispatched | suppressed | error | skipped_overlap
 columns: id (UUIDv7), started_at, completed_at, status,
          findings_count, novel_count, dispatched_count,
-         log_lookback_minutes, sources_polled (text[]), error_detail
+         log_lookback_minutes, sources_polled (text[]), error_detail,
+         origin (scheduled | operator_synthetic), enabled_sources_snapshot (text[]),
+         enabled_sources_config_digest, discovery_complete (boolean)
 ```
 
 The local patrol scheduler continues when only the remote Switchboard registry
 observation of QA is stale; an explicit administrative pause or quarantine is
 a separate policy gate. An independent supervised control-plane observer checks
 patrol age, because QA cannot discover a patrol that never ran.
-Only a completed successful patrol with every enabled discovery source
-completed renews the assurance clock; an `error`, `skipped_overlap`, synthetic
-`suppressed`, or still-running row does not.
+Only a completed scheduled `clean`, `findings_dispatched`, or genuine
+filtered-finding `suppressed` patrol with every source enabled under the
+current configuration successfully completed renews the assurance clock.
+The origin, captured enabled set/config digest, and completion marker prove
+that claim. An `error`, `skipped_overlap`, dashboard-created synthetic
+`suppressed`, still-running, older-configuration, or ambiguous legacy row does
+not. Existing historical rows remain readable but are not backfilled as
+qualifying from a status or free-text error alone.
 
 **Overlap prevention:** if a patrol tick fires while the previous cycle is still running, the
 tick is skipped and recorded as `status = "skipped_overlap"`.

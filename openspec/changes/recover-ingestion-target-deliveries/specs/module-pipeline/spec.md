@@ -2,7 +2,7 @@
 
 ### Requirement: Decomposition-to-Routing Fan-Out
 
-After decomposition produces conceptual messages, the pipeline SHALL call `route()` for each target butler, tracking outcomes in `dispatch_outcomes`. For ordinary non-dashboard `route.execute` concepts, it SHALL commit the complete decomposed target plan and all segment intents before the first such call. Per-butler `dispatch_outcomes` remain a compatibility aggregate; the durable intents retain authoritative per-segment state when several concepts name the same butler.
+After decomposition produces conceptual messages, the pipeline SHALL call `route()` for each target butler, tracking outcomes in `dispatch_outcomes`. For ordinary non-dashboard `route.execute` concepts, it SHALL commit the complete decomposed target plan and all segment intents before the first such call. The first dispatch attempt for each segment of one event SHALL follow committed concept ordinal sequentially; a failed, waiting, or ambiguous first attempt SHALL release the next segment rather than block unrelated fan-out indefinitely. Later safe retries and receipt reconciliation SHALL be independent per intent and need not repeat the original sequence. Per-butler `dispatch_outcomes` remain a compatibility aggregate; the durable intents retain authoritative per-segment state when several concepts name the same butler.
 
 ID: REQ-module-pipeline-002
 Source: RFC 0003 §Conversation-History Decomposition and Fan-Out; design.md Decisions 1 and 4
@@ -11,9 +11,10 @@ Scope: v1-mandatory
 #### Scenario: Sequential fan-out routing
 
 - **WHEN** decomposition produces N conceptual messages targeting different butlers
-- **THEN** `route()` is called sequentially for each conceptual message
+- **THEN** the first `route()` attempt is made sequentially in committed concept order for each conceptual message of that event
 - **AND** each call passes the cherry-picked excerpts as the routed payload
 - **AND** ordinary `route.execute` calls begin only after all of their segment intents and the complete decomposition result commit
+- **AND** a prior segment's failed, waiting, or ambiguous first attempt does not prevent the next segment's first attempt; subsequent retries are independently fenced
 
 #### Scenario: Dispatch outcomes recorded
 
