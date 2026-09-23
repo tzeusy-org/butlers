@@ -19,6 +19,11 @@ from butlers.core.approval_delivery_transport import (
 )
 from butlers.core.tool_call_capture import get_current_runtime_session_id
 from butlers.tools.switchboard.notification.log import log_notification
+from butlers.tools.switchboard.registry.registry import (
+    expected_route_target,
+    receiver_route_cutover_enabled,
+    resolve_control_plane_target,
+)
 from butlers.tools.switchboard.routing.contracts import (
     NotifyRequestV1,
     RouteRequestContextV1,
@@ -446,16 +451,24 @@ async def _authenticate_recovery_request(
         return None
 
     try:
-        registered = await pool.fetchval(
-            """
-            SELECT name FROM switchboard.butler_registry
-            WHERE name = $1 AND eligibility_state = 'active'
-            """,
-            trusted_source,
-        )
+        if receiver_route_cutover_enabled():
+            expected = expected_route_target(trusted_source)
+            if expected is None:
+                return None
+            decision = await resolve_control_plane_target(pool, expected)
+            if decision.state != "ready":
+                return None
+        else:
+            registered = await pool.fetchval(
+                """
+                SELECT name FROM switchboard.butler_registry
+                WHERE name = $1 AND eligibility_state = 'active'
+                """,
+                trusted_source,
+            )
+            if registered != trusted_source:
+                return None
     except Exception:
-        return None
-    if registered != trusted_source:
         return None
 
     request_context = notify_request.request_context or _default_notify_request_context(

@@ -9,6 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from butlers.tools.switchboard.registry import discover_butlers, list_butlers
+from butlers.tools.switchboard.registry.registry import (
+    list_control_plane_candidates,
+    receiver_route_cutover_enabled,
+)
 
 logger = logging.getLogger(__name__)
 _DEFAULT_ROSTER_DIR = Path(__file__).resolve().parents[3]
@@ -221,6 +225,11 @@ async def _load_available_butlers(pool: Any) -> list[dict[str, Any]]:
     never valid targets for user-message classification.  They remain
     reachable via butler-to-staffer routing paths (e.g., notify → messenger).
     """
+    if receiver_route_cutover_enabled():
+        # Receiver-derived admission keeps an otherwise eligible stale target
+        # visible so route() can perform its single bounded identity recheck.
+        return await list_control_plane_candidates(pool, butler_only=True)
+
     butlers = await list_butlers(pool, routable_only=True, butler_only=True)
     if butlers:
         return butlers

@@ -12,7 +12,6 @@ export {
   getGoogleCredentialStatus,
   getGoogleHealthStatus,
   getGoogleOAuthStartUrl,
-  GOOGLE_HEALTH_SCOPES,
   setPrimaryAccount,
   upsertGoogleCredentials,
   createButlerSchedule,

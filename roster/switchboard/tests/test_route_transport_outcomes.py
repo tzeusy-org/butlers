@@ -599,6 +599,125 @@ def _recovery_envelope() -> dict[str, Any]:
 
 
 class TestDeliverPostSendBookkeeping:
+    @pytest.mark.parametrize(
+        ("decision_state", "reason", "admitted"),
+        [
+            ("ready", "ready", True),
+            ("stale", "stale_observation", False),
+            ("denied", "policy_denied", False),
+            ("denied", "missing_target", False),
+            (None, None, False),  # No roster authority for this sender.
+        ],
+    )
+    async def test_flagged_recovery_admits_only_ready_sender_without_generic_effects(
+        self, monkeypatch, decision_state: str | None, reason: str | None, admitted: bool
+    ) -> None:
+        from butlers.core.control_plane_identity import ExpectedDaemon
+        from butlers.tools.switchboard.registry.registry import ControlPlaneTargetDecision
+
+        monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", "1")
+        expected = ExpectedDaemon("relationship", 41107, "localhost")
+        decision = (
+            ControlPlaneTargetDecision(decision_state, reason, expected)
+            if decision_state is not None and reason is not None
+            else None
+        )
+        pool = _mock_pool()
+        route_result = {"result": {"notify_response": {"handoff": {"classification": "confirmed"}}}}
+        with (
+            patch(
+                "butlers.tools.switchboard.notification.deliver.expected_route_target",
+                return_value=None if decision_state is None else expected,
+            ) as expected_target,
+            patch(
+                "butlers.tools.switchboard.notification.deliver.resolve_control_plane_target",
+                new=AsyncMock(return_value=decision),
+            ) as resolve_target,
+            patch(
+                "butlers.tools.switchboard.notification.deliver.route",
+                new=AsyncMock(return_value=route_result),
+            ) as routed,
+            patch(
+                "butlers.tools.switchboard.notification.deliver.log_notification",
+                new=AsyncMock(),
+            ) as logged,
+            patch(
+                "butlers.tools.switchboard.notification.deliver._write_outbound_message_inbox",
+                new=AsyncMock(),
+            ) as inbox,
+        ):
+            result = await deliver(
+                pool,
+                notify_request=_recovery_envelope(),
+                source_butler="relationship",
+                trusted_source="relationship",
+            )
+
+        expected_target.assert_called_once_with("relationship")
+        if admitted:
+            assert result == {"status": "recovery", "handoff": {"classification": "confirmed"}}
+            resolve_target.assert_awaited_once_with(pool, expected)
+            routed.assert_awaited_once()
+        else:
+            assert result == {
+                "status": "failed",
+                "error": "Approval recovery authority rejected.",
+                "retryable": False,
+            }
+            if decision_state is None:
+                resolve_target.assert_not_awaited()
+            else:
+                resolve_target.assert_awaited_once_with(pool, expected)
+            routed.assert_not_awaited()
+        logged.assert_not_awaited()
+        inbox.assert_not_awaited()
+        assert pool.method_calls == []
+
+    async def test_flagged_recovery_fails_closed_when_receiver_lookup_fails(self, monkeypatch):
+        from butlers.core.control_plane_identity import ExpectedDaemon
+
+        monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", "1")
+        pool = _mock_pool()
+        expected = ExpectedDaemon("relationship", 41107, "localhost")
+        with (
+            patch(
+                "butlers.tools.switchboard.notification.deliver.expected_route_target",
+                return_value=expected,
+            ),
+            patch(
+                "butlers.tools.switchboard.notification.deliver.resolve_control_plane_target",
+                new=AsyncMock(side_effect=RuntimeError("private receiver failure")),
+            ),
+            patch(
+                "butlers.tools.switchboard.notification.deliver.route", new=AsyncMock()
+            ) as routed,
+            patch(
+                "butlers.tools.switchboard.notification.deliver.log_notification",
+                new=AsyncMock(),
+            ) as logged,
+            patch(
+                "butlers.tools.switchboard.notification.deliver._write_outbound_message_inbox",
+                new=AsyncMock(),
+            ) as inbox,
+        ):
+            result = await deliver(
+                pool,
+                notify_request=_recovery_envelope(),
+                source_butler="relationship",
+                trusted_source="relationship",
+            )
+
+        assert result == {
+            "status": "failed",
+            "error": "Approval recovery authority rejected.",
+            "retryable": False,
+        }
+        assert "private receiver failure" not in repr(result)
+        routed.assert_not_awaited()
+        logged.assert_not_awaited()
+        inbox.assert_not_awaited()
+        assert pool.method_calls == []
+
     async def test_recovery_uses_trusted_internal_context_and_bypasses_generic_records(
         self,
     ) -> None:

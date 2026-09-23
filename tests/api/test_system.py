@@ -19,7 +19,7 @@ import json
 import logging
 import os
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -1595,6 +1595,44 @@ async def test_heartbeat_happy_path_fields():
         "heartbeat_age_seconds",
     ):
         assert field in general
+
+
+@pytest.mark.parametrize("receiver_observation_present", [True, False])
+async def test_heartbeat_cutover_uses_receiver_observation_even_with_old_legacy_timestamp(
+    monkeypatch, receiver_observation_present: bool
+):
+    monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", "1")
+    now = datetime.now(UTC)
+    old_legacy_timestamp = now - timedelta(days=3)
+    fresh_receiver_timestamp = now - timedelta(seconds=5)
+    mock_db = _make_heartbeat_db()
+    switchboard_pool = mock_db.pool("switchboard")
+
+    async def _registry_rows(sql, *args):
+        if "healthy_observed_at AS last_seen_at" in sql:
+            observed = fresh_receiver_timestamp if receiver_observation_present else None
+        else:
+            observed = old_legacy_timestamp
+        return [_make_record({"name": "general", "last_seen_at": observed})]
+
+    switchboard_pool.fetch.side_effect = _registry_rows
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_heartbeat_app(mock_db, ["general"])),
+        base_url="http://test",
+    ) as client:
+        resp = await client.get("/api/system/butlers/heartbeat")
+
+    assert resp.status_code == 200
+    general = next(b for b in resp.json()["data"]["butlers"] if b["name"] == "general")
+    assert "healthy_observed_at AS last_seen_at" in switchboard_pool.fetch.await_args.args[0]
+    if receiver_observation_present:
+        assert general["last_heartbeat_at"] == fresh_receiver_timestamp.isoformat()
+        assert 0 <= general["heartbeat_age_seconds"] < 30
+    else:
+        assert general["last_heartbeat_at"] is None
+        assert general["heartbeat_age_seconds"] is None
+    assert general["active_session_count"] == 0
+    assert general["error"] is None
 
 
 async def test_heartbeat_schema_unreachable_sets_error():

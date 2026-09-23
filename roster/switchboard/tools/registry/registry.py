@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -35,6 +36,12 @@ _AGENT_TYPES = frozenset({AGENT_TYPE_BUTLER, AGENT_TYPE_STAFFER})
 
 DEFAULT_LIVENESS_TTL_SECONDS = 300
 DEFAULT_ROUTE_CONTRACT_VERSION = 1
+_RECEIVER_ROUTE_CUTOVER_ENV = "BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER"
+
+
+def receiver_route_cutover_enabled() -> bool:
+    """Use the separated receiver observations for route admission."""
+    return os.environ.get(_RECEIVER_ROUTE_CUTOVER_ENV) == "1"
 
 
 @dataclass(frozen=True)
@@ -189,6 +196,45 @@ async def resolve_control_plane_target(
         healthy_observed_at=healthy_at,
         state_updated_at=facts.get("updated_at"),
     )
+
+
+async def list_control_plane_candidates(
+    pool: asyncpg.Pool, *, butler_only: bool = False
+) -> list[dict[str, Any]]:
+    """List configured targets that pass non-health route gates.
+
+    Stale observations remain candidates: the route dispatcher owns the one
+    bounded recheck before a target call. Legacy eligibility is never read or
+    reconciled here, and a registry row cannot introduce an unconfigured target.
+    """
+    from butlers.config import ButlerType, list_butlers
+
+    configs = list_butlers()
+    registered = {
+        row["name"] for row in await pool.fetch("SELECT name FROM switchboard.butler_registry")
+    }
+    candidates: list[dict[str, Any]] = []
+    for config, expected in zip(configs, expected_from_roster(configs), strict=True):
+        if config.name not in registered or (butler_only and config.type != ButlerType.BUTLER):
+            continue
+        if not (
+            config.runtime_seed.route_contract_min
+            <= DEFAULT_ROUTE_CONTRACT_VERSION
+            <= config.runtime_seed.route_contract_max
+        ):
+            continue
+        decision = await resolve_control_plane_target(pool, expected)
+        if decision.state == "denied":
+            continue
+        candidates.append(
+            {
+                "name": config.name,
+                "description": config.description,
+                "modules": list(config.modules),
+                "agent_type": config.type.value,
+            }
+        )
+    return candidates
 
 
 def _normalize_string_list(raw: Any) -> list[str]:

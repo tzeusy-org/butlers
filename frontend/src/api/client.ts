@@ -4092,20 +4092,6 @@ import type {
 } from "./types.ts";
 
 /**
- * Google Health scope URLs. Full URLs (not short names) are stored on
- * ``public.google_accounts.granted_scopes`` exactly as Google returns
- * them in the token response, so scope-presence checks compare against
- * these exact strings. Kept in sync with:
- *   src/butlers/api/routers/oauth.py ::GOOGLE_SCOPE_SETS["health"]
- *   src/butlers/api/routers/google_health.py ::GOOGLE_HEALTH_SCOPE_URLS
- */
-export const GOOGLE_HEALTH_SCOPES = [
-  "https://www.googleapis.com/auth/googlehealth.sleep.readonly",
-  "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly",
-  "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly",
-] as const;
-
-/**
  * Google may report the broader non-`.readonly` variant of a googlehealth
  * scope when the account already holds it, so granted-scope checks must match
  * by FAMILY rather than exact URL (mirrors

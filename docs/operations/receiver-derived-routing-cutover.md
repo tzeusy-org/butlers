@@ -1,12 +1,13 @@
-# Receiver-derived routing: staged cutover and rollback
+# Receiver-derived routing: dev cutover and rollback
 
 This is the L3 operator boundary for `REQ-butler-control-plane-liveness-002/004/008`
-and `REQ-butler-switchboard-002/004`. The code is staged with
-`BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER` **unset by default**. This document
-does not authorize a deployment, restart, live route probe, credential use, or
-cutover. Those effects require a separate exact-environment operator approval.
+and `REQ-butler-switchboard-002/004`. The code defaults to legacy routing when
+`BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER` is unset. Dev hotreload Compose sets
+it to `1` for both daemon and Dashboard API; their base services, also used in
+production, default to `0`.
+Production activation remains a separate exact-environment decision.
 
-## What is staged
+## Dev cutover behavior
 
 - The default route still uses legacy `resolve_routing_target` and its
   `eligibility_state` projection. A test explicitly proves the separated-facts
@@ -19,6 +20,11 @@ cutover. Those effects require a separate exact-environment operator approval.
   current-epoch reread permits one target call. `not_attempted` is retained
   for pre-target refusal. Caller `allow_stale`/`allow_quarantined` overrides do
   not grant authority in this path.
+- Candidate classification uses separated policy and compatibility reads and
+  keeps otherwise eligible stale targets available for the bounded route probe.
+  Local schedules use administrative policy, while the old TTL sweep stops
+  mutating legacy state. This leaves stale legacy rows fail-closed on rollback.
+  The fleet board and heartbeat API show receiver-verified health.
 - The internal Switchboard backend endpoint
   `GET /internal/control-plane/route-preflight` is independent of that flag.
   It selects the lexically first configured non-paused domain target, uses the
@@ -32,30 +38,31 @@ cutover. Those effects require a separate exact-environment operator approval.
 
 ## Writer and reader inventory
 
-| Surface | Ownership during L3 staging |
+| Surface | Ownership during dev cutover |
 | --- | --- |
-| `register_butler`, legacy eligibility sweep/reconciliation, confirmed-route `last_seen_at` touch, old Dashboard heartbeat POST | Still write the legacy projection; L1's trigger preserves restrictive policy. None grants receiver-derived health. L4 retires the heartbeat writer later. |
+| `register_butler`, legacy read reconciliation, confirmed-route `last_seen_at` touch, old Dashboard heartbeat POST | May still write the legacy projection. None grants receiver-derived health or clears policy. The old TTL sweep is inert while the flag is `1`; the heartbeat POST remains owner-authenticated and rejected for daemon reporters. |
 | `public.register_butler_boot` and `butler_boot_registrations` | Daemon role owns boot succession; immutable UUID-to-epoch receipt survives rollback. |
-| Dashboard periodic observer | Shadow-only receiver evidence through L2's role-bound reserve/record operations. |
-| Switchboard on-demand route probe | The same L2 reserve/record operations, but only behind the default-off L3 route branch and only after non-health gates pass. |
+| Dashboard periodic observer | Receiver evidence through L2's role-bound reserve/record operations. |
+| Switchboard on-demand route probe | The same L2 reserve/record operations, behind the dev hotreload cutover flag and only after non-health gates pass. |
 | Authenticated owner eligibility API | Sole administrative policy mutation; neither probe nor confirmed route may clear its hold. |
-| `resolve_routing_target`, `list_butlers`, Dashboard status, QA heartbeat view | Continue reading the legacy projection until their own allocated cutovers. L3 does not silently rewrite these readers. |
-| L3 pure resolver and route preflight | Exact-name Switchboard reads of `sw_035` facts and Git-roster endpoint; no database write. |
+| Direct route, classifier and correction candidates, local scheduler, recovery notification admission | Read separated control-plane facts when the flag is `1`; a policy hold still denies the route. Legacy resolver remains for flag-off rollback. |
+| Fleet board and system heartbeat API | Follow the same cutover flag as the daemon. With `1`, project the receiver's last verified healthy observation and administrative policy; with `0`, retain the legacy projection. The board does not turn a failed probe into a fresh heartbeat. |
+| Generic `list_butlers` | Still reads legacy state and may show stale; it is not route authority under the flag. |
+| QA infra-state heartbeat discovery | With the flag set, reads receiver observations through the QA-only `public.v_qa_butler_receiver_state` view from `sw_037`. Its legacy view remains for flag-off deployments. QA cannot read the control-plane table directly. |
+| L3 pure resolver and route preflight | Exact-name Switchboard reads of control-plane facts and Git-roster endpoint; no database write. |
 
-## Separate live gate
+## Activation and rollback
 
-Before any owner-authorized activation, verify protected landing of L3 at an
-exact reviewed head, migrated `sw_035`, current daemon boot registrations, and
-L2 shadow observations across multiple TTL windows. Reconcile every legacy
-versus shadow mismatch and prove a route under a real auth-enabled runtime role
-with malformed/old-epoch/timeout and owner-policy negative cases. Confirm the
-fixed backend preflight is reachable only on the trusted internal network and
-that Q4 consumes its bounded cached result, not a per-public-request probe.
-Do not activate merely because this PR or its CI is green. PR #3960's held
-conversation-identity path and D1 target-intent work remain separately owned.
+Dev activation requires `sw_035`, the `sw_036` evidence repair, the QA receiver
+view in `sw_037`, current boot registrations, fresh receiver observations,
+and active policy for the exact intended targets. Verify the internal route preflight, a real
+authenticated route, and policy-denied negative case; then observe health and
+route acceptance beyond two legacy TTL windows. The dev hotreload Compose
+default supplies the flag, but production's base service remains default-off.
+Production needs its own exact-environment verification and activation.
 
-For rollback, disable the L3 flag in the exact process deployment only under
-the same operator authority. Retain `sw_035` policy/provenance, its restrictive
+For rollback, set the flag to `0` in the exact process deployment. Retain
+`sw_035`/`sw_036` policy and provenance, the `sw_037` QA read view, the restrictive
 legacy trigger, boot-registration ledger, and latest epoch. Recheck that the
 legacy projection still denies every paused, quarantined, or review-required
 target before serving traffic; do not treat code downgrade, successful route,
