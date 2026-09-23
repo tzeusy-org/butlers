@@ -81,13 +81,13 @@ def test_compose_base_freshness_uses_pinned_dockerfile_not_live_npm_latest() -> 
     assert "CLI_PKGS=" not in compose_text
 
 
-def test_codex_cli_pin_supports_gpt_5_6_luna() -> None:
+def test_codex_cli_pin_supports_gpt_6_sol_and_luna() -> None:
     text = _dockerfile_base_text()
     match = re.search(r"@openai/codex@(\d+)\.(\d+)\.(\d+)\s+\\", text)
 
     assert match is not None
-    assert tuple(map(int, match.groups())) >= (0, 144, 1), (
-        "gpt-5.6-luna requires Codex CLI 0.144.1 or newer"
+    assert tuple(map(int, match.groups())) >= (0, 156, 1), (
+        "gpt-6-sol and gpt-6-luna require Codex CLI 0.156.1 or newer"
     )
 
 
