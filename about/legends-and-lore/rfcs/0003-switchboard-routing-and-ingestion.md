@@ -321,6 +321,23 @@ and timestamps cannot create positive liveness evidence. The old dashboard
 after the observer cutover; owner authentication is not weakened to make that
 POST anonymous.
 
+L3 also owns a separate read-only internal
+`GET /internal/control-plane/route-preflight` on Switchboard's existing
+backend port. It accepts no caller-selected target or endpoint. Switchboard
+selects the lexically first configured non-paused domain target, traverses the
+pure selection/policy/eligibility/compatibility/endpoint resolver used by
+production routing, and calls only the shared bounded identity verifier in
+read-only mode. It does not reserve or record observation, call a target MCP
+tool, or write routing, registry, inbox, session, ingestion, notification, or
+condition evidence. Switchboard coalesces rapid internal reads and rate-bounds
+its identity GET; stale cache cannot become a healthy answer.
+Missing/denied/unavailable evidence returns only a fixed content-blind false
+result. The Dashboard controller caches this result; the
+public `GET /ready` handler never invokes preflight on request. L3 owns the
+producer, Q4 owns the one public route and owner-auth exception, and k3s and
+Compose consume that route. This is internal control-plane observation, not a
+transactional target acceptance receipt or a new public monitor.
+
 ### Amendment 5 (2026-09-23) — Ingestion-to-Domain Delivery Intent
 
 **Status:** Approved target contract in
