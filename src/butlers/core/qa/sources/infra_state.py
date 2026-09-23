@@ -34,8 +34,9 @@ Four checks, one discovery source
    (already excluded by the view itself) are never flagged. A connector
    registration with no heartbeat yet gets a 15-minute grace window from
    ``first_seen_at`` so it never fires on the very next patrol tick.
-2. **heartbeat-stale** — reads ``public.v_qa_butler_heartbeat`` (same
-   migration, over ``switchboard.butler_registry``). Recomputes staleness
+2. **heartbeat-stale** — before receiver cutover, reads
+   ``public.v_qa_butler_heartbeat`` (same migration, over
+   ``switchboard.butler_registry``). Recomputes staleness
    independently from ``last_seen_at`` + the per-butler
    ``liveness_ttl_seconds`` via the shared
    ``butlers.core.liveness.is_liveness_stale`` formula (the same canonical
@@ -46,7 +47,9 @@ Four checks, one discovery source
    which is only reconciled lazily on routing calls
    (``_reconcile_eligibility_state``) and can sit stale forever for a butler
    nobody routes to anymore — exactly the "dead and nobody noticed" failure
-   mode this bead exists to close.
+   mode this bead exists to close. After receiver cutover, the QA-only
+   ``public.v_qa_butler_receiver_state`` view supplies current-boot
+   observations. Administrative holds do not imply a failed health probe.
 3. **backup-stale / backup-run-failed** — reuses
    ``butlers.core.backup_facts.read_backup_facts_from_dir`` (the same
    recency/reachability facts ``GET /api/system/backups`` surfaces) against
@@ -143,6 +146,7 @@ logger = logging.getLogger(__name__)
 
 _CONNECTOR_VIEW = "public.v_qa_connector_state"
 _HEARTBEAT_VIEW = "public.v_qa_butler_heartbeat"
+_RECEIVER_VIEW = "public.v_qa_butler_receiver_state"
 
 #: Health-check query -- validates view accessibility before processing rows
 #: (catches revoked grants/dropped views early), mirroring
@@ -150,6 +154,14 @@ _HEARTBEAT_VIEW = "public.v_qa_butler_heartbeat"
 _HEALTH_CHECK_SQL = (
     f"SELECT 1 FROM {_CONNECTOR_VIEW} LIMIT 0; SELECT 1 FROM {_HEARTBEAT_VIEW} LIMIT 0"
 )
+_RECEIVER_HEALTH_CHECK_SQL = (
+    f"SELECT 1 FROM {_CONNECTOR_VIEW} LIMIT 0; SELECT 1 FROM {_RECEIVER_VIEW} LIMIT 0"
+)
+
+
+def _receiver_route_cutover_enabled() -> bool:
+    return os.environ.get("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER") == "1"
+
 
 #: Env var read by butlers.jobs.external_deadman. Kept local because a single
 #: string constant does not justify a hard import-time dependency on that module.
@@ -225,8 +237,8 @@ class InfraStateSource:
     ----------
     pool:
         asyncpg connection pool. Must be able to SELECT
-        ``public.v_qa_connector_state`` / ``public.v_qa_butler_heartbeat``
-        (granted to ``butler_qa_rw`` by migration ``sw_024``) and
+        ``public.v_qa_connector_state`` and the active butler-liveness view
+        (granted to ``butler_qa_rw`` by ``sw_024`` or ``sw_037``) and
         ``public.audit_log`` (already granted to every butler role by core
         migrations).
     backup_dir_env:
@@ -264,7 +276,12 @@ class InfraStateSource:
         # row processing, so a revoked grant or dropped view surfaces as a
         # clear, patrol-logged error rather than a silently empty result.
         try:
-            await self._pool.execute(_HEALTH_CHECK_SQL)
+            health_check_sql = (
+                _RECEIVER_HEALTH_CHECK_SQL
+                if _receiver_route_cutover_enabled()
+                else _HEALTH_CHECK_SQL
+            )
+            await self._pool.execute(health_check_sql)
         except asyncpg.PostgresError as exc:
             logger.error("InfraStateSource: health check failed: %s", exc)
             raise
@@ -391,6 +408,9 @@ class InfraStateSource:
     # ------------------------------------------------------------------
 
     async def _check_butler_heartbeats(self, now: datetime) -> list[QaFinding]:
+        if _receiver_route_cutover_enabled():
+            return await self._check_receiver_heartbeats(now)
+
         rows = await self._pool.fetch(f"SELECT * FROM {_HEARTBEAT_VIEW}")
 
         findings: list[QaFinding] = []
@@ -447,6 +467,59 @@ class InfraStateSource:
                 f", last seen {anchor.isoformat()}" if anchor is not None else ", never seen"
             )
 
+            findings.append(
+                self._build_finding(
+                    exception_type="ButlerHeartbeatStale",
+                    call_site=f"butler_heartbeat:{name}",
+                    raw_summary=raw_summary,
+                    severity=_SEVERITY_BUTLER_HEARTBEAT_STALE,
+                    source_butler=name,
+                    first_seen=anchor or now,
+                    now=now,
+                )
+            )
+        return findings
+
+    async def _check_receiver_heartbeats(self, now: datetime) -> list[QaFinding]:
+        """Check current-boot receiver observations, independent of owner policy.
+
+        A policy hold is an administrative decision, not evidence that the
+        daemon stopped responding. A failed probe cannot renew health merely
+        because an earlier healthy observation is still inside the TTL.
+        """
+        rows = await self._pool.fetch(f"SELECT * FROM {_RECEIVER_VIEW}")
+        findings: list[QaFinding] = []
+        for row in rows:
+            name = row["name"]
+            healthy_at = _as_aware(row["healthy_observed_at"])
+            registered_at = _as_aware(row["registered_at"])
+            if (
+                row["observed_state"] == "observer_unknown"
+                and healthy_at is None
+                and registered_at is not None
+            ):
+                if (now - registered_at) < _NEVER_SEEN_GRACE:
+                    continue
+
+            if (
+                row["observed_state"] == "healthy"
+                and row["current_boot_observed"] is True
+                and not is_liveness_stale(
+                    healthy_at,
+                    ttl_seconds=row["liveness_ttl_seconds"],
+                    now=now,
+                    clock_skew_tolerance=_CLOCK_SKEW_TOLERANCE,
+                )
+            ):
+                continue
+
+            anchor = healthy_at or registered_at
+            raw_summary = f"Butler '{name}' receiver observation is stale"
+            raw_summary += (
+                f", last verified {anchor.isoformat()}"
+                if anchor is not None
+                else ", never verified"
+            )
             findings.append(
                 self._build_finding(
                     exception_type="ButlerHeartbeatStale",

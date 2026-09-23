@@ -205,6 +205,146 @@ async def test_heartbeat_view_surfaces_registry_row(pool: asyncpg.Pool) -> None:
     assert row["last_seen_at"] is not None
 
 
+@pytest.mark.asyncio(loop_scope="session")
+async def test_qa_receiver_view_exposes_current_boot_health_without_policy_authority(
+    pool: asyncpg.Pool,
+) -> None:
+    from butlers.core.qa.sources.infra_state import InfraStateSource
+
+    now = datetime.now(UTC)
+    name = "qa_receiver_health"
+    await pool.execute(
+        """
+        INSERT INTO switchboard.butler_registry
+            (name, endpoint_url, last_seen_at, liveness_ttl_seconds)
+        VALUES ($1, 'http://localhost:41100/mcp', $2, 300)
+        """,
+        name,
+        now - timedelta(hours=2),
+    )
+    await pool.execute(
+        """
+        UPDATE switchboard.butler_registry_control_plane
+           SET policy_state = 'quarantined',
+               observed_state = 'healthy',
+               boot_epoch = 2,
+               observed_boot_epoch = 2,
+               healthy_observed_at = $2
+         WHERE name = $1
+        """,
+        name,
+        now,
+    )
+
+    async with pool.acquire() as conn:
+        await conn.execute('SET ROLE "butler_qa_rw"')
+        try:
+            row = await conn.fetchrow(
+                "SELECT * FROM public.v_qa_butler_receiver_state WHERE name = $1", name
+            )
+            assert row is not None
+            assert row["observed_state"] == "healthy"
+            assert row["current_boot_observed"] is True
+            assert row["healthy_observed_at"] == now
+            assert "policy_state" not in row.keys()
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await conn.fetchval(
+                    "SELECT policy_state FROM switchboard.butler_registry_control_plane "
+                    "WHERE name = $1",
+                    name,
+                )
+        finally:
+            await conn.execute("RESET ROLE")
+
+    source = InfraStateSource(pool=pool)
+    findings = await source._check_receiver_heartbeats(now)
+    assert not any(f.source_butler == name for f in findings)
+
+    await pool.execute(
+        "UPDATE switchboard.butler_registry_control_plane "
+        "SET observed_state = 'unavailable' WHERE name = $1",
+        name,
+    )
+    failed = await pool.fetchrow(
+        "SELECT * FROM public.v_qa_butler_receiver_state WHERE name = $1", name
+    )
+    assert failed["observed_state"] == "unavailable"
+    assert failed["healthy_observed_at"] == now
+    findings = await source._check_receiver_heartbeats(now)
+    assert any(f.source_butler == name for f in findings)
+
+    await pool.execute(
+        "UPDATE switchboard.butler_registry_control_plane "
+        "SET observed_state = 'healthy', observed_boot_epoch = 1 WHERE name = $1",
+        name,
+    )
+    old_boot = await pool.fetchrow(
+        "SELECT * FROM public.v_qa_butler_receiver_state WHERE name = $1", name
+    )
+    assert old_boot["current_boot_observed"] is False
+    findings = await source._check_receiver_heartbeats(now)
+    assert any(f.source_butler == name for f in findings)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_fleet_board_receiver_projection_ignores_legacy_heartbeat(
+    pool: asyncpg.Pool,
+) -> None:
+    """Execute the board's actual SQL against separated registry facts."""
+    from butlers.api.routers.butlers import _BOARD_RECEIVER_REGISTRY_SQL
+
+    now = datetime.now(UTC)
+    names = ("board_ready", "board_failed_probe", "board_old_boot", "board_held")
+    async with pool.acquire() as conn:
+        await conn.execute("SET search_path TO switchboard, public")
+        for name in names:
+            await conn.execute(
+                """
+                INSERT INTO switchboard.butler_registry
+                    (name, endpoint_url, eligibility_state, last_seen_at)
+                VALUES ($1, $2, 'stale', $3)
+                """,
+                name,
+                f"http://{name}:41100/mcp",
+                now - timedelta(hours=2),
+            )
+            await conn.execute(
+                """
+                UPDATE switchboard.butler_registry_control_plane
+                   SET observed_state = 'healthy', healthy_observed_at = $2,
+                       boot_epoch = 1, observed_boot_epoch = 1,
+                       route_compatible = true, accepting_routes = true
+                 WHERE name = $1
+                """,
+                name,
+                now,
+            )
+
+        await conn.execute(
+            "UPDATE switchboard.butler_registry_control_plane "
+            "SET observed_state = 'unavailable' WHERE name = 'board_failed_probe'"
+        )
+        await conn.execute(
+            "UPDATE switchboard.butler_registry_control_plane "
+            "SET observed_boot_epoch = 0 WHERE name = 'board_old_boot'"
+        )
+        await conn.fetchval("SELECT public.set_butler_registry_policy('board_held', 'quarantined')")
+
+        projected = {
+            row["name"]: row
+            for row in await conn.fetch(_BOARD_RECEIVER_REGISTRY_SQL)
+            if row["name"] in names
+        }
+
+    assert set(projected) == set(names)
+    assert projected["board_ready"]["eligibility_state"] == "active"
+    assert projected["board_ready"]["last_seen_at"] == now
+    assert projected["board_failed_probe"]["eligibility_state"] == "stale"
+    assert projected["board_old_boot"]["eligibility_state"] == "stale"
+    assert projected["board_held"]["eligibility_state"] == "quarantined"
+    assert projected["board_held"]["quarantine_reason"] == "protected_policy:quarantined"
+
+
 async def _as_role(pool: asyncpg.Pool, role: str, sql: str, *args):
     async with pool.acquire() as conn:
         await conn.execute(f'SET ROLE "{role}"')
@@ -1093,6 +1233,143 @@ def test_registry_quarantine_migration_and_rollback_preserve_authority(
             await p.close()
 
     asyncio.run(assert_classification_and_writes())
+
+
+def test_legacy_read_path_ttl_receipt_reclassification_preserves_owner_holds(
+    postgres_container,
+) -> None:
+    """Only a sw_035 receipt matching the old ttl_expired writer is repaired."""
+    from alembic import command
+    from butlers.migrations import _build_alembic_config
+
+    db_url = create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "switchboard"],
+        schemas={"switchboard": "switchboard"},
+        revisions={"switchboard": "sw_034"},
+    )
+    stamp = datetime.now(UTC) - timedelta(minutes=20)
+
+    async def seed() -> None:
+        p = await asyncpg.create_pool(db_url, min_size=1, max_size=3)
+        try:
+            for name, reason, log_at in (
+                ("general", "ttl_expired", stamp),
+                ("health", "operator_action", stamp),
+                ("finance", "ttl_expired", stamp - timedelta(seconds=1)),
+                ("home", None, None),
+                ("travel", "ttl_expired", stamp),
+            ):
+                await p.execute(
+                    """
+                    INSERT INTO switchboard.butler_registry (
+                        name, endpoint_url, eligibility_state,
+                        eligibility_updated_at, last_seen_at
+                    ) VALUES ($1, $2, 'stale', $3, $4)
+                    """,
+                    name,
+                    f"http://{name}:41100/mcp",
+                    stamp,
+                    stamp - timedelta(hours=1),
+                )
+                if reason is not None:
+                    await p.execute(
+                        """
+                        INSERT INTO switchboard.butler_registry_eligibility_log (
+                            butler_name, previous_state, new_state, reason, observed_at
+                        ) VALUES ($1, 'active', 'stale', $2, $3)
+                        """,
+                        name,
+                        reason,
+                        log_at,
+                    )
+            await p.execute(
+                """
+                INSERT INTO switchboard.butler_registry (
+                    name, endpoint_url, eligibility_state, quarantined_at,
+                    eligibility_updated_at, last_seen_at
+                ) VALUES ('concierge', 'http://concierge:41100/mcp',
+                          'quarantined', $1, $1, $2)
+                """,
+                stamp,
+                stamp - timedelta(hours=1),
+            )
+            await p.execute(
+                """
+                INSERT INTO switchboard.butler_registry_eligibility_log (
+                    butler_name, previous_state, new_state, reason, observed_at
+                ) VALUES ('concierge', 'stale', 'quarantined', 'ttl_expired', $1)
+                """,
+                stamp,
+            )
+        finally:
+            await p.close()
+
+    asyncio.run(seed())
+    config = _build_alembic_config(db_url, chains=["switchboard"], target_schema="switchboard")
+    command.upgrade(config, "switchboard@sw_035")
+
+    async def owner_override_and_snapshot() -> dict:
+        p = await asyncpg.create_pool(db_url, min_size=1, max_size=3, init=register_jsonb_codec)
+        try:
+            assert (
+                await p.fetchval(
+                    "SELECT policy_state FROM switchboard.butler_registry_control_plane "
+                    "WHERE name = 'general'"
+                )
+                == "review_required"
+            )
+            receipt = await p.fetchval(
+                "SELECT legacy_evidence FROM switchboard.butler_registry_control_plane "
+                "WHERE name = 'general'"
+            )
+            await p.fetchval("SELECT public.set_butler_registry_policy('travel', 'quarantined')")
+            return receipt
+        finally:
+            await p.close()
+
+    receipt = asyncio.run(owner_override_and_snapshot())
+    command.upgrade(config, "switchboard@sw_036")
+
+    async def assert_repair() -> None:
+        p = await asyncpg.create_pool(db_url, min_size=1, max_size=3, init=register_jsonb_codec)
+        try:
+            rows = await p.fetch(
+                "SELECT c.name, c.policy_state, c.policy_provenance, "
+                "c.observed_state, c.legacy_evidence, r.eligibility_state, "
+                "r.quarantined_at, r.quarantine_reason "
+                "FROM switchboard.butler_registry_control_plane AS c "
+                "JOIN switchboard.butler_registry AS r USING (name)"
+            )
+            by_name = {row["name"]: row for row in rows}
+            repaired = by_name["general"]
+            assert sum(row["policy_provenance"] == "legacy_ttl" for row in rows) == 1
+            assert repaired["policy_state"] == "active"
+            assert repaired["policy_provenance"] == "legacy_ttl"
+            assert repaired["observed_state"] == "stale"
+            assert repaired["legacy_evidence"] == receipt
+            assert repaired["eligibility_state"] == "stale"
+            assert repaired["quarantined_at"] is None
+            assert repaired["quarantine_reason"] is None
+
+            assert by_name["health"]["policy_state"] == "paused"
+            assert by_name["health"]["policy_provenance"] == "legacy_operator"
+            for name in ("finance", "home", "concierge"):
+                assert by_name[name]["policy_state"] == "review_required"
+                assert by_name[name]["eligibility_state"] == "quarantined"
+            assert by_name["travel"]["policy_state"] == "quarantined"
+            assert by_name["travel"]["policy_provenance"] == "operator"
+            assert by_name["travel"]["eligibility_state"] == "quarantined"
+        finally:
+            await p.close()
+
+    asyncio.run(assert_repair())
+
+    # A migration replay must not rewrite the repaired receipt or authority.
+    command.downgrade(config, "switchboard@sw_035")
+    command.upgrade(config, "switchboard@sw_036")
+    asyncio.run(assert_repair())
 
 
 def test_registry_policy_rls_survives_bootstrap_grant_replay(postgres_container) -> None:

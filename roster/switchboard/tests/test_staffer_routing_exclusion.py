@@ -260,6 +260,29 @@ class TestLoadAvailableButlers:
         assert "health" in names
         assert "switchboard" not in names
 
+    async def test_receiver_cutover_uses_separated_candidates_despite_legacy_holds(
+        self, monkeypatch
+    ) -> None:
+        from butlers.tools.switchboard.routing.classify import _load_available_butlers
+
+        monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", "1")
+        pool = AsyncMock()
+        with (
+            patch(
+                "butlers.tools.switchboard.routing.classify.list_control_plane_candidates",
+                new=AsyncMock(return_value=[{"name": "health", "modules": ["health"]}]),
+            ) as candidates,
+            patch(
+                "butlers.tools.switchboard.routing.classify.list_butlers",
+                new_callable=AsyncMock,
+            ) as legacy,
+        ):
+            result = await _load_available_butlers(pool)
+
+        assert result == [{"name": "health", "modules": ["health"]}]
+        candidates.assert_awaited_once_with(pool, butler_only=True)
+        legacy.assert_not_awaited()
+
 
 # ---------------------------------------------------------------------------
 # register_butler — agent_type stored correctly

@@ -57,6 +57,7 @@ from butlers.core.pricing import PricingConfig, estimate_session_cost
 from butlers.core.sessions import sessions_summary
 from butlers.tools.switchboard.registry.registry import (
     _derive_eligibility_state,
+    receiver_route_cutover_enabled,
 )
 
 logger = logging.getLogger(__name__)
@@ -407,6 +408,28 @@ _DEFAULT_STALE_SECONDS = 5 * 60
 # (`last_seen_at > NOW() + INTERVAL '5 minutes' THEN 'degraded'`).
 _CLOCK_SKEW_TOLERANCE_SECONDS = 5 * 60
 
+_BOARD_RECEIVER_REGISTRY_SQL = """
+    SELECT r.name, c.healthy_observed_at AS last_seen_at,
+           CASE WHEN c.policy_state != 'active' THEN 'quarantined'
+                WHEN c.observed_state = 'healthy'
+                 AND c.observed_boot_epoch = c.boot_epoch
+                 AND c.route_compatible IS TRUE AND c.accepting_routes IS TRUE
+                THEN 'active' ELSE 'stale' END AS eligibility_state,
+           CASE WHEN c.policy_state != 'active' THEN c.policy_changed_at
+                ELSE NULL END AS quarantined_at,
+           CASE WHEN c.policy_state != 'active'
+                THEN 'protected_policy:' || c.policy_state
+                ELSE NULL END AS quarantine_reason,
+           r.liveness_ttl_seconds
+    FROM butler_registry AS r
+    JOIN butler_registry_control_plane AS c USING (name)
+"""
+_BOARD_LEGACY_REGISTRY_SQL = """
+    SELECT name, last_seen_at, eligibility_state, quarantined_at,
+           quarantine_reason, liveness_ttl_seconds
+    FROM butler_registry
+"""
+
 
 class BoardRow(BaseModel):
     """One butler's row on the consolidated fleet status board."""
@@ -677,9 +700,13 @@ async def _fetch_board_row(
     if registry_source_error or reg is None:
         eligibility = "unavailable"
     else:
-        # Derive eligibility from freshness (TTL staleness) rather than raw stored state.
-        # This mirrors the freshness rule used in _derive_eligibility_state.
-        eligibility = _derive_eligibility_state(reg, now=now)
+        # Receiver state/compatibility can deny a target while its last good
+        # observation remains recent. Freshness can only narrow an active row.
+        eligibility = (
+            "stale"
+            if reg["eligibility_state"] == "stale"
+            else _derive_eligibility_state(reg, now=now)
+        )
 
     quarantine_reason = reg["quarantine_reason"] if reg else None
     quarantined_dt = (
@@ -870,12 +897,13 @@ async def get_butlers_board(
     registry_source_error = False
     try:
         sw_pool = db.pool("switchboard")
+        registry_query = (
+            _BOARD_RECEIVER_REGISTRY_SQL
+            if receiver_route_cutover_enabled()
+            else _BOARD_LEGACY_REGISTRY_SQL
+        )
         registry_rows = await asyncio.wait_for(
-            sw_pool.fetch(
-                "SELECT name, last_seen_at, eligibility_state, quarantined_at, quarantine_reason,"
-                " liveness_ttl_seconds"
-                " FROM butler_registry"
-            ),
+            sw_pool.fetch(registry_query),
             timeout=_STATUS_TIMEOUT_S,
         )
         for row in registry_rows:

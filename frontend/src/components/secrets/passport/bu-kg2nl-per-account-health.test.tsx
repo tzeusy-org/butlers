@@ -73,10 +73,14 @@ vi.mock("@/hooks/use-google-health.ts", async (importOriginal) => {
 })
 
 // Top-level imports (ESM — no require())
-import { GOOGLE_HEALTH_SCOPES } from "@/api/client.ts";
+import { GOOGLE_HEALTH_SCOPE_FAMILIES } from "@/api/client.ts";
 import * as useSecretsModule from "@/hooks/use-secrets.ts";
 import { PageGoogleAccounts } from "./pages.tsx";
 import type { GoogleAccount } from "@/api/types.ts";
+
+const GOOGLE_HEALTH_SCOPES = GOOGLE_HEALTH_SCOPE_FAMILIES.map(
+  (family) => `https://www.googleapis.com/auth/googlehealth.${family}.readonly`,
+);
 
 // ---------------------------------------------------------------------------
 // Fixtures — live topology: primary HAS health, secondary does NOT

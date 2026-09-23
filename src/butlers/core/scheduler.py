@@ -1981,17 +1981,14 @@ async def _butler_dispatch_gated(
 ) -> str | None:
     """Return a gate reason when scheduled dispatch must be suppressed.
 
-    A butler that has been paused/quarantined (or has gone stale) in the
-    Switchboard's ``butler_registry`` must NOT have its scheduled cron/deadline
-    ticks fire — otherwise pausing a butler in the dashboard leaves its cron
-    ticks running (the bug this guards against).
+    A butler under an administrative hold must not run scheduled ticks. Under
+    receiver-derived routing, remote observation staleness is not an authority
+    to stop a healthy local scheduler.
 
-    The canonical eligibility decision lives in the Switchboard registry, so we
-    reuse :func:`resolve_routing_target` (the same accessor the routing path
-    uses) rather than re-deriving the state here.  A target is gated for
-    scheduled dispatch under exactly the same default policy the router applies
-    to inbound routing: ``quarantined`` and ``stale`` are both gated, ``active``
-    is allowed.
+    With the receiver cutover enabled, the administrative policy row gates
+    local dispatch; a missing row or non-active policy suppresses the tick.
+    With the flag disabled, the legacy route resolver also gates stale
+    heartbeat state.
 
     Returns ``None`` when dispatch should proceed (eligible, or no gating
     context available), or a human-readable reason string when dispatch must be
@@ -2003,7 +2000,20 @@ async def _butler_dispatch_gated(
         return None
 
     try:
-        from butlers.tools.switchboard.registry.registry import resolve_routing_target
+        from butlers.tools.switchboard.registry.registry import (
+            receiver_route_cutover_enabled,
+            resolve_routing_target,
+        )
+
+        if receiver_route_cutover_enabled():
+            row = await eligibility_pool.fetchrow(
+                "SELECT policy_state FROM switchboard.butler_registry_control_plane"
+                " WHERE name = $1",
+                butler_name,
+            )
+            if row is None or row["policy_state"] != "active":
+                return f"Butler {butler_name!r} is held by administrative policy"
+            return None
 
         target, error = await resolve_routing_target(
             eligibility_pool,
