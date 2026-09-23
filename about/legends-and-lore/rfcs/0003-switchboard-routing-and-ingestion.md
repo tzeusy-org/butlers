@@ -12,12 +12,13 @@ direct owner ingress through the same envelope. The Switchboard processes these 
 multi-stage pipeline: deduplication, pre-classification triage (deterministic rules +
 thread affinity), and LLM classification fallback. Routed messages are dispatched to
 target butlers via `route.execute` with full identity preamble and trace context. A durable
-route inbox provides crash recovery, and email priority queuing prevents urgent messages
-from being buried behind bulk traffic.
+target route inbox provides crash recovery after acceptance, and email priority queuing prevents urgent messages
+from being buried behind bulk traffic. The 2026-09-23 amendment below adds a
+durable pre-acceptance intent for ordinary ingestion-to-domain dispatch.
 
 ## Motivation
 
-Personal email and messaging inboxes generate bursty, heterogeneous traffic. Without structured ingestion, every message would require an LLM classification call, creating multi-minute queue times during bursts. The pre-classification triage layer eliminates 50-70% of classification calls. Thread affinity preserves routing consistency for email conversations. The route inbox ensures no message is lost across daemon crashes. Priority queuing ensures that messages from known contacts and direct correspondence are processed before newsletters and bulk mail.
+Personal email and messaging inboxes generate bursty, heterogeneous traffic. Without structured ingestion, every message would require an LLM classification call, creating multi-minute queue times during bursts. The pre-classification triage layer eliminates 50-70% of classification calls. Thread affinity preserves routing consistency for email conversations. The target route inbox recovers work after acceptance; the 2026-09-23 delivery-intent amendment closes the pre-acceptance gap for ordinary ingestion-to-domain routes. Priority queuing ensures that messages from known contacts and direct correspondence are processed before newsletters and bulk mail.
 
 ## Design
 
@@ -203,6 +204,10 @@ accepted --> processing --> processed (session_id stored)
                        \--> errored   (error message stored)
 ```
 
+For ordinary non-dashboard ingestion-to-domain routes, the target acceptance
+identity and Switchboard pre-acceptance intent in Amendment 5 supersede any
+assumption that this target inbox alone covers failures before acceptance.
+
 **Crash recovery:** On startup, each butler scans for rows in `accepted` or `processing` state older than a configurable grace period (default 10 seconds) and claims them for recovery. An `accepted` row has not crossed the runtime handoff, so recovery re-dispatches it through its fenced claim. A `processing` worker owns an opaque lease: it synchronously fences the claim before protected work and again immediately before runtime creation, heartbeats while live, and may terminally settle only with that same claim. A displaced worker cancels/relinquishes its local work instead of writing a terminal state.
 
 Dashboard internal ingress carries the immutable dashboard user `message_id` as
@@ -245,11 +250,17 @@ A single conversation message may appear in the excerpts of more than one concep
 
 **Fan-out.** For each conceptual message produced by signal extraction, the pipeline calls the existing `route()` mechanism once, passing the cherry-picked excerpts as the routed payload. Fan-out calls run sequentially. Results are recorded per-butler in `dispatch_outcomes` on the parent `message_inbox` row using the same `{butler_name: {status, error, timestamp}}` schema used by standard routing. When fan-out completes (fully or partially), `lifecycle_state` is set to `"routed"` and `decomposition_output` stores the full signal-extraction JSON (including `signals`, `model`, `latency_ms`, and `token_usage`).
 
+Amendment 5 supersedes the call-before-outcome-persistence order for ordinary
+ingestion fan-out: the immutable decomposition plan and all target intents
+commit before the first call, with one stable segment identity per concept.
+
 **Empty-decomposition short-circuit (design decision D6).** When signal extraction returns an empty array, the pipeline logs the outcome and terminates without invoking any LLM classification or `route()` call. The `message_inbox` row is updated with `decomposition_output = {"signals": [], "reason": "no_signals_extracted"}` and `lifecycle_state = "decomposed_empty"`. A counter metric `butlers.pipeline.decomposition_empty` is incremented with `source_channel` and `connector_type` labels for dashboard visibility.
 
-### Heartbeat Protocol
+### Connector Heartbeat Protocol
 
 Connectors send `connector.heartbeat.v1` envelopes every 2 minutes via the `connector.heartbeat` MCP tool. The Switchboard derives liveness: `online` (< 2 min since last heartbeat), `stale` (2-4 min), `offline` (> 4 min).
+This connector-originated protocol is separate from daemon liveness. It is not
+replaced by the receiver-derived daemon observer below.
 
 ## Integration
 
@@ -261,6 +272,96 @@ Connectors send `connector.heartbeat.v1` envelopes every 2 minutes via the `conn
 - **RFC 0011:** The insight broker module runs within the Switchboard daemon. Candidate submissions arrive as `propose_insight_candidate` MCP tool calls, and the delivery cycle runs as a Switchboard scheduled task.
 - **`openspec/specs/conversation-decomposition/`:** Normative requirements for signal extraction, cherry-picked excerpts, fan-out, and empty-decomposition storage. The section above is the RFC-level design contract; that spec governs the behavioral requirements.
 - **`openspec/specs/module-pipeline/`:** Pipeline requirements for the Decomposition Branch, Decomposition-to-Routing Fan-Out, and Empty Decomposition Short-Circuit sit before the deprecated direct-wiring section in that spec.
+
+## Approved Target Amendments (2026-09-23)
+
+### Amendment 4 (2026-09-23) — Receiver-Derived Routing Eligibility
+
+**Status:** Approved target contract in
+`openspec/changes/restore-butler-control-plane-liveness`; implementation
+remains separate from this design amendment.
+
+The Dashboard periodic observer and Switchboard's one-shot stale-route recheck
+share a bounded verifier. Each enumerates only exact expected daemon names and
+endpoints from the Git roster and probes
+`GET /internal/control-plane/identity` on each existing daemon port for a
+bounded `butler.control.v1` identity and route-readiness response, and writes
+observations using DB-server time through narrowly authorized reserve-and-record
+operations. The registration transaction allocates a durable, monotonically
+increasing boot epoch for each new daemon instance before it advertises route
+acceptance. A valid
+observation must match the expected endpoint, daemon name, current boot
+UUID and registered epoch, and route-contract range. A stale generation, malformed response,
+unexpected timestamp, failed probe, or failed observer cycle cannot assert
+health. Both receiver roles reserve a shared per-daemon probe sequence in the
+database before the network call; a conditional write compares that sequence
+and the latest registered boot epoch. An older in-flight result cannot
+overwrite a newer observation or boot generation, even if an old boot's probe
+has a higher sequence. Neither receiver gains administrative-policy or dashboard
+owner-auth authority.
+Startup registration supplies configuration, not an independent liveness vote.
+
+The Switchboard stores three separate dimensions: observed health, explicit
+administrative pause/quarantine, and route compatibility. Routability requires
+all three to permit the route. A probe, successful route, registration, or
+restart cannot clear administrative quarantine. Existing mixed-provenance
+quarantine must be migrated by recorded provenance before this rule is
+enforced: TTL-derived state becomes observation state, operator state becomes
+policy, and ambiguous historic state remains unavailable for review.
+
+Before refusing an otherwise eligible stale target, routing SHALL make one
+bounded on-demand probe of its exact roster endpoint. A successful
+fresh observation permits the route without a restart; failure returns the existing
+typed `not_attempted` transport outcome. Caller-controlled names, endpoints,
+and timestamps cannot create positive liveness evidence. The old dashboard
+`POST /api/switchboard/heartbeat` mutation and daemon reporter are retired
+after the observer cutover; owner authentication is not weakened to make that
+POST anonymous.
+
+### Amendment 5 (2026-09-23) — Ingestion-to-Domain Delivery Intent
+
+**Status:** Approved target contract in
+`openspec/changes/recover-ingestion-target-deliveries`; implementation
+remains separate from this design amendment.
+
+For ordinary non-dashboard ingestion-to-domain `route.execute`, Switchboard
+persists classification or decomposition and one durable intent per target
+before the first target call. The stable target-delivery identity is
+`(ingestion_event_id, target_butler, segment_id)`. Each target atomically
+upserts that identity and a canonical immutable payload digest into its
+`route_inbox` and returns the same acceptance receipt on an exact duplicate;
+concurrent duplicates cannot create a second inbox row or target session.
+Receipt lookup also compares receiving target and digest, and a same-key change
+returns conflict rather than proof of acceptance. This extends, rather than replaces, the target
+inbox's post-acceptance crash recovery in RFC 0001.
+
+Switchboard owns intent states `pending`, `attempting`, `retry_wait`,
+`ambiguous`, `accepted`, and `terminal_failed`. `accepted` is terminal for
+Switchboard ownership: the target inbox then owns execution and recovery.
+There is no Switchboard `completed` claim without a separate authenticated
+target completion receipt. A fenced worker retries only a proven pre-acceptance
+no-effect result, with bounded backoff; a transport-ambiguous attempt is
+resolved by the same acceptance identity and receipt, never by inserting a
+second target row. Partial fan-out retries only unresolved target intents.
+Classification and decomposition are not rerun merely because delivery failed.
+`message_inbox.dispatch_outcomes` remains a per-butler compatibility aggregate;
+the segment-level intents are authoritative, and two segments for the same
+butler cannot collapse to one success. `public.ingestion_events.status =
+'ingested'` expresses source acceptance or processing, not acceptance by every
+selected target. The `failed`, `ingested`, `replay_failed`, and `replay_pending`
+recovery branches use only existing eligible intents; no branch resets a
+terminal message inbox for reclassification. Connector filtered-event replay
+retains its separate policy and drain contract.
+Route transport retains the canonical `confirmed | rejected | uncertain |
+not_attempted` certainty taxonomy.
+
+The existing failed-ingestion-event action that changes `failed` to `ingested`
+without dispatch must stop presenting itself as replay. A row reports queued
+recovery only when durable work exists. Historic recovery begins with a
+content-blind dry run; exact late delivery requires owner review. No provider
+cursor rewind, broad email replay, or automatic historic replay follows from
+this amendment. Connector ingress replay and the domain-event bus retain
+their own contracts and storage; this intent is not a second domain-event bus.
 
 ## Amendments Applied
 

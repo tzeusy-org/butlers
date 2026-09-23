@@ -96,7 +96,8 @@ Admission-control decisions that did not launch a runtime session (for example c
 
 | Endpoint | Response | Description |
 |----------|----------|-------------|
-| `GET /api/health` | `{"status": "ok"}` | Health check |
+| `GET /health`, `GET /api/health` | Process-status response | Lightweight process health; not fleet readiness |
+| `GET /ready` | Content-blind readiness response | Canonical semantic readiness; see 2026-09-23 amendment |
 | `GET /api/butlers` | `ApiResponse<ButlerSummary[]>` | All registered butlers |
 | `GET /api/butlers/{name}` | `ApiResponse<ButlerDetail>` | Butler detail |
 | `GET /api/butlers/{name}/config` | `ApiResponse<ButlerConfigResponse>` | Butler TOML config |
@@ -336,7 +337,7 @@ Five ownership-fact endpoints are registered under `/api/system/`. Each endpoint
 | `GET /api/system/database` | `ApiResponse<DatabaseFacts>` | Total database size in bytes (`total_size_bytes`), per-butler-schema size breakdown (`schemas: SchemaSize[]`), and the ten largest tables (`largest_tables: TableSize[]`). `growth_rate_bytes_per_day` is always `null` in v1 (deferred to v2). Derived from PostgreSQL catalog queries (`pg_database_size`, `pg_total_relation_size`, `information_schema.tables`). Returns HTTP 503 if the catalog query fails. |
 | `GET /api/system/backups` | `ApiResponse<BackupFacts>` | Backup recency (`last_backup_at`, `last_backup_size_bytes`), source reachability (`backup_source_reachable: bool`), and recent backup history (`backup_history: BackupEvent[]`). Degrades gracefully: always returns HTTP 200 with `backup_source_reachable: false` and null fields when no backup strategy is configured. |
 | `GET /api/system/egress` | `ApiResponse<EgressCatalog>` | External-actor egress catalog: which external endpoints have received data from this instance, with `last_seen_at` and `total_calls` per actor (`actors: EgressActor[]`). `catalog_covers_from` communicates the oldest audit record used to build the catalog. **Owner-only**: returns HTTP 403 when the owner contact cannot be asserted. |
-| `GET /api/system/butlers/heartbeat` | `ApiResponse<HeartbeatFacts>` | Per-butler liveness snapshot from the switchboard registry (`butlers: ButlerHeartbeat[]`). Each entry carries `last_heartbeat_at`, `heartbeat_age_seconds`, `last_session_at`, and `active_session_count`. Reads from the registry; does not issue live MCP calls. Degrades gracefully per butler when a schema is unreachable (`error: "schema_unreachable"`). |
+| `GET /api/system/butlers/heartbeat` | `ApiResponse<HeartbeatFacts>` | Per-butler registry snapshot (`butlers: ButlerHeartbeat[]`) with session facts. The 2026-09-23 Amendment 3 supersedes daemon-authored heartbeat time as liveness authority; the endpoint remains a read projection, not a live probe. Degrades per butler when a schema is unreachable (`error: "schema_unreachable"`). |
 
 System-specific Pydantic response models (`InstanceFacts`, `DatabaseFacts`, `SchemaSize`, `TableSize`, `EgressCatalog`, `EgressActor`, `HeartbeatFacts`, `ButlerHeartbeat`) are defined in `src/butlers/api/routers/system.py`. The DB-free backup models and artifact/run-receipt reader (`BackupFacts`, `BackupEvent`, `BackupRunFacts`, `RestoreDrillFacts`) are owned by `src/butlers/core/backup_facts.py`; both the system route and QA infrastructure checks consume that lower-layer reader. The system router owns API composition and overlays the DB-backed restore-drill result. The router is registered in `src/butlers/api/app.py` (explicit include; the system router lives in the core `src/butlers/api/routers/` package rather than in a butler-specific `roster/*/api/` directory and is therefore not subject to butler auto-discovery).
 
@@ -416,3 +417,43 @@ and distinct loading, not-found, and unavailable states. It has no tracker
 mutation affordance. Decisions and escalation blockers build their targets
 only as `/beads/${encodeURIComponent(id)}`. `external_ref` is inert displayed
 text, never a link or fetched target.
+
+---
+
+## Amendment 3 (2026-09-23): Process Health and Semantic Readiness
+
+**Status:** Approved target contract in
+`openspec/changes/restore-butler-control-plane-liveness`; implementation
+remains separate from this amendment. The active
+`k3s-deployment-helm-chart` change already names public `GET /ready`; its
+DB-and-one-roster minimum is superseded by this stronger success condition.
+
+`GET /health` and `GET /api/health` remain lightweight process checks. A 200
+there means the dashboard process is serving, not that PostgreSQL, routing,
+QA patrol, or the daemon fleet is ready. Docker liveness may continue to use
+`/health` without claiming deployment success.
+
+The canonical public `GET /ready` is a content-blind semantic readiness
+endpoint. It retains the k3s response shape: HTTP 200 `{"ready":true}` only
+when ready, or HTTP 503 `{"ready":false,"checks":{...}}` otherwise. The
+fixed boolean check keys are `postgres`, `roster`, `observer`, `fleet`,
+`qa_patrol`, `supervisors`, and `route_canary`. `roster` means the exact
+configured expected set, `fleet` requires verified daemon identity,
+generation, compatibility, and acceptance, and `route_canary` is effect-free:
+it creates no inbox, session, notification, or ingestion row. A bounded cached
+snapshot serves `/ready`; the public request cannot start probes or expensive
+database fanout. It reports no message content, credentials, internal
+endpoints, or unbounded diagnostic text. Partial or failed observations cannot
+be converted into a healthy aggregate. `qa_patrol` counts only a completed
+successful patrol with all enabled discovery sources completed, not an `error`,
+`skipped_overlap`, synthetic `suppressed`, or still-running record. A deployment
+may declare completion only after readiness has advanced through multiple
+probe and patrol cycles beyond a full liveness TTL, not after one process-health
+response.
+
+Owner authentication remains the central boundary for `/api/*`. The daemon
+observer consumes exact internal roster endpoints and cannot use an owner
+cookie, owner API key, or an anonymous heartbeat mutation. Public `/ready`
+does not confer routing or administrative authority. Exposing it to a separate
+external functional monitor is a later owner operation; the adopted minimal
+external `/api/health` monitor remains a different contract.

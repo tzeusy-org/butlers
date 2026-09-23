@@ -192,6 +192,16 @@ expected active `SET ROLE`; shared connecting-login membership is an effective-r
 an independently authenticated or cryptographic per-butler identity. No worker, transport, API,
 or historic-incident backfill is activated by the representation migration.
 
+The 2026-09-23 fleet-liveness target contract extends this narrow producer
+pattern to independently observed fleet-control and QA-patrol-overdue
+condition episodes. The controller may append only a fixed, server-derived,
+content-blind condition identity through a dedicated operation; it does not
+gain raw outbox DML or dashboard owner authority. A schema or bootstrap grant
+change must prove the effective runtime roles and forced-RLS behavior, including
+bootstrap replay. The existing fenced Switchboard worker retains transport
+ownership and at-most-once uncertainty semantics. This design amendment does
+not activate a new external monitor or historical backfill.
+
 `public.approvals_policy` is the single dashboard-managed Owner Attention Policy
 authority. It is evaluated as an end-exclusive IANA-timezone interval and is
 not a per-butler `delivery_preferences` replacement. The insight broker reads
