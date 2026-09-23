@@ -54,6 +54,8 @@ vi.mock("@/hooks/use-memory", () => ({
 
 // Relationship-scoped hooks consumed by the consolidated page
 vi.mock("@/hooks/use-entities", () => ({
+  ENTITY_CADENCE_REFRESH_MS: 30_000,
+  ENTITY_CADENCE_MAX_AGE_MS: 90_000,
   // EntityDetailPage renders EntityVerbRail (bu-6t8ix.4); its four write verbs each
   // call a mutation hook from this module. Inert here: these suites submit nothing,
   // the hooks only need to exist and report an idle state. Declared inline because a
@@ -101,6 +103,7 @@ vi.mock("@/hooks/use-entities", () => ({
     hasNextPage: false,
     isFetchingNextPage: false,
   })),
+  useEntityCadence: vi.fn(() => ({ data: { window_days: 30, interaction_count: 0, completeness: "complete", has_more: false }, isLoading: false, isError: false })),
   useEntityGifts: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityLoans: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityMessageThreads: vi.fn(() => ({ data: [], isLoading: false })),

@@ -3632,7 +3632,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Clear pin (auto)
 - Pinned
 - Last interaction
-- Last 30 days
+- Last {} days
 - Open loops
 - Dunbar tier pin cleared.
 - Pinned to {}.
