@@ -10,7 +10,7 @@
 //   - KPI quartet: SESS 24H / SPEND / LOAD / LAST
 //   - 24h activity stripe pinned at the bottom
 //
-// Click-to-restore: only a quarantined policy makes the activity chip a
+// Click-to-restore: only projected `quarantined` eligibility makes the chip a
 // <button>. A stale receiver observation clears after a healthy probe, not an
 // operator policy change.
 //
@@ -144,7 +144,7 @@ function KpiCell({ label, value }: { label: string; value: React.ReactNode }) {
 
 export interface StatusBoardCellProps {
   row: StatusBoardRow
-  /** Called with the butler name when the user restores a quarantined policy. */
+  /** Called with the butler name when the user restores a policy-held row. */
   onRestore?: (name: string) => void
   /** True while the restore mutation for this specific butler is in flight. */
   isRestorePending?: boolean
@@ -247,7 +247,7 @@ export function StatusBoardCell({
           {name}
         </span>
 
-        {/* Activity chip — only a quarantined policy offers Restore.
+        {/* Activity chip — only projected quarantined eligibility offers Restore.
             When heartbeat data is unavailable (source down or schema_unreachable),
             the activity verdict is unreliable: show '—' instead of a false 'IDLE'. */}
         {isRestorable && onRestore ? (
@@ -262,7 +262,7 @@ export function StatusBoardCell({
           >
             <button
               type="button"
-              aria-label={isRestorePending ? `Restoring ${name} policy` : `Restore ${name} quarantined policy`}
+              aria-label={isRestorePending ? `Restoring ${name} policy` : `Restore ${name} policy hold`}
               disabled={isRestorePending}
               onClick={(e) => {
                 e.stopPropagation()

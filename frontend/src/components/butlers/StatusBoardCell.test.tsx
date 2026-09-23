@@ -689,7 +689,7 @@ describe("StatusBoardCell: onRestore callback", () => {
         onRestore={onRestore}
       />,
     )
-    const btn = getByRole("button", { name: "Restore qa quarantined policy" })
+    const btn = getByRole("button", { name: "Restore qa policy hold" })
     fireEvent.click(btn)
     expect(onRestore).toHaveBeenCalledOnce()
     expect(onRestore).toHaveBeenCalledWith("qa")

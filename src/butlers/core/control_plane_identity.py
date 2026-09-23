@@ -306,6 +306,7 @@ class ShadowCycle:
     expected_count: int
     recorded_count: int
     mismatch_count: int | None
+    healthy_count: int
 
 
 async def run_shadow_cycle(
@@ -315,7 +316,7 @@ async def run_shadow_cycle(
 ) -> ShadowCycle:
     """Compare new evidence with legacy authority; do not change route decisions."""
     if not expected:
-        return ShadowCycle(False, 0, 0, None)
+        return ShadowCycle(False, 0, 0, None, 0)
     semaphore = asyncio.Semaphore(MAX_PROBE_FANOUT)
 
     async def bounded(target: ExpectedDaemon) -> ProbeOutcome:
@@ -324,6 +325,7 @@ async def run_shadow_cycle(
 
     outcomes = await asyncio.gather(*(bounded(target) for target in expected))
     recorded_count = sum(outcome.recorded for outcome in outcomes)
+    healthy_count = 0
     try:
         rows = await pool.fetch(
             """
@@ -346,20 +348,24 @@ async def run_shadow_cycle(
                 mismatches += 1
                 continue
             observed_at = row["healthy_observed_at"]
-            shadow_ready = (
-                row["policy_state"] == "active"
-                and row["observed_state"] == "healthy"
+            receiver_ready = (
+                row["observed_state"] == "healthy"
                 and row["observed_boot_epoch"] == row["boot_epoch"]
                 and row["route_compatible"] is True
                 and row["accepting_routes"] is True
                 and observed_at is not None
                 and observed_at + timedelta(seconds=row["liveness_ttl_seconds"]) >= now
             )
+            if receiver_ready:
+                healthy_count += 1
+            shadow_ready = row["policy_state"] == "active" and receiver_ready
             if shadow_ready != (row["eligibility_state"] == "active"):
                 mismatches += 1
     except Exception:
-        return ShadowCycle(False, len(expected), recorded_count, None)
-    return ShadowCycle(recorded_count == len(expected), len(expected), recorded_count, mismatches)
+        return ShadowCycle(False, len(expected), recorded_count, None, 0)
+    return ShadowCycle(
+        recorded_count == len(expected), len(expected), recorded_count, mismatches, healthy_count
+    )
 
 
 async def _effective_observer_interval_s(pool: Any, expected: tuple[ExpectedDaemon, ...]) -> float:
@@ -377,8 +383,20 @@ async def _effective_observer_interval_s(pool: Any, expected: tuple[ExpectedDaem
     return min(ttls.values()) / 2
 
 
+def _next_observer_delay_s(
+    cycle: ShadowCycle, *, interval_s: float, now: float, startup_retry_until: float
+) -> float:
+    """Retry an unverified startup fleet briefly, then resume the normal cadence."""
+    retry_s = min(interval_s, 30.0)
+    if (
+        not cycle.complete or cycle.healthy_count < cycle.expected_count
+    ) and now + retry_s <= startup_retry_until:
+        return retry_s
+    return interval_s
+
+
 async def run_shadow_observer_loop(pool: Any, configs: list[Any]) -> None:
-    """Supervised periodic observer. A partial cycle never claims an all-clear."""
+    """Probe promptly after startup, then use the configured recurring cadence."""
     expected = expected_from_roster(configs)
     if not expected:
         raise RuntimeError("no exact Git-roster targets for shadow observer")
@@ -386,22 +404,36 @@ async def run_shadow_observer_loop(pool: Any, configs: list[Any]) -> None:
     async with httpx.AsyncClient(trust_env=False, timeout=PROBE_DEADLINE_S) as client:
         prober = SingleFlightProber(role_view, client=client)
         try:
-            last_cycle_at = asyncio.get_running_loop().time()
+            loop = asyncio.get_running_loop()
+            last_cycle_at = loop.time()
+            scheduled_delay_s = 0.0
+            startup_retry_until: float | None = None
             while True:
                 interval_s = await _effective_observer_interval_s(role_view, expected)
-                remaining = last_cycle_at + interval_s - asyncio.get_running_loop().time()
+                if startup_retry_until is None:
+                    startup_retry_until = loop.time() + interval_s
+                # Re-read the TTL while waiting: an operator reduction must
+                # shorten even a previously scheduled long observation delay.
+                remaining = last_cycle_at + min(scheduled_delay_s, interval_s) - loop.time()
                 if remaining > 0:
-                    # Re-read the effective TTL often enough that an operator
-                    # reduction cannot leave the old long sleep in force.
                     await asyncio.sleep(min(remaining, 5.0))
                     continue
                 cycle = await run_shadow_cycle(role_view, expected, prober)
-                last_cycle_at = asyncio.get_running_loop().time()
+                now = loop.time()
+                last_cycle_at = now
+                scheduled_delay_s = _next_observer_delay_s(
+                    cycle,
+                    interval_s=interval_s,
+                    now=now,
+                    startup_retry_until=startup_retry_until,
+                )
                 logger.info(
-                    "Shadow fleet observation: complete=%s expected=%d recorded=%d mismatches=%s",
+                    "Shadow fleet observation: complete=%s expected=%d "
+                    "recorded=%d healthy=%d mismatches=%s",
                     cycle.complete,
                     cycle.expected_count,
                     cycle.recorded_count,
+                    cycle.healthy_count,
                     cycle.mismatch_count if cycle.mismatch_count is not None else "unavailable",
                 )
         finally:

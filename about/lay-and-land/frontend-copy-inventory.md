@@ -1975,6 +1975,8 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - past 24 h
 - open →
 - data unavailable
+- Restoring {} policy
+- Restore {} policy hold
 - SESS 24H
 - SPEND
 - LOAD
@@ -4392,4 +4394,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3446*
+*Total strings: 3448*

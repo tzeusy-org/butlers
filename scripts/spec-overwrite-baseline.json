@@ -461,14 +461,6 @@
       "excerpt": "- **AND** `tool_metadata()` declares `context` and `event_summary` as sensitive on `report_finding` (may contain agen..."
     }
   ],
-  "durable-dashboard-terminal-action-recovery/staffer-qa/V1 Discovery Sources": [
-    {
-      "kind": "clause",
-      "scenario": "Infra state source",
-      "digest": "f523edb68dd6",
-      "excerpt": "- **heartbeat-stale**: queries `public.v_qa_butler_heartbeat` (same migration, over `switchboard.butler_registry`) an..."
-    }
-  ],
   "education-mind-map-lifecycle-integrity/butler-education/Scheduled Tasks": [
     {
       "kind": "clause",
@@ -1107,6 +1099,14 @@
       "scenario": "Domain butlers (extensible roster)",
       "digest": "87a797a2a4e4",
       "excerpt": "- **AND** it launches a heartbeat task and liveness reporter to maintain its registration"
+    }
+  ],
+  "restore-butler-control-plane-liveness/dashboard-butler-management/Butler List Page": [
+    {
+      "kind": "clause",
+      "scenario": "Eligibility state rail",
+      "digest": "d82a7e3873ed",
+      "excerpt": "- `stale` eligibility: amber rail, chip is clickable to restore"
     }
   ],
   "restore-butler-control-plane-liveness/system-overview-page/Per-Butler Heartbeat Facts": [
