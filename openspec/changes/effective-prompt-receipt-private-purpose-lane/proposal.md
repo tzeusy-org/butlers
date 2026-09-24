@@ -3,9 +3,9 @@
 The dashboard currently shows only the mutable database prompt row while the runtime composes a
 larger effective system prompt from roster and dynamic layers. Session evidence therefore cannot
 answer which instruction bytes actually reached a runtime, and the butler console can describe an
-empty database row as if no prompt exists. Separately, connector discretion calls carrying private
-WhatsApp or Telegram content share a model tier with unrelated work, so catalog priority can select
-a non-local model without a purpose-specific refusal.
+empty database row as if no prompt exists. Connector and routed sessions also lack a content-blind
+purpose label that can explain where private-channel work originated without storing message,
+sender, recipient, or thread content.
 
 ## What Changes
 
@@ -18,17 +18,15 @@ a non-local model without a purpose-specific refusal.
   current truth.
 - Add a closed `purpose_lane` dispatch label. WhatsApp and Telegram discretion calls and routed
   sessions are `private_content`; other work is `standard`.
-- Require `private_content` work to use an OpenCode `ollama/` catalog model through the loopback or
-  RFC 0008 owner-local Ollama origin captured for that dispatch. A current, explicitly targeted,
-  successfully audited operator routing rule is the only bounded remote-model exception. Missing
-  locality proof, local capacity, or audit evidence refuses before adapter invocation and records
-  only safe refusal evidence.
+- Keep `purpose_lane` as content-blind provenance only. It does not alter catalog eligibility,
+  provider/runtime choice, priority, tier fallthrough, quota, breaker, or same-tier failover.
 
 ## Non-Goals
 
 - No prompt-authoring UI or change to the existing prompt write semantics.
 - No roster or manifesto rewrite and no adoption of the active roster-overlay proposal.
 - No general model-ranking, tier, quota, breaker, failover, or spend-governance redesign.
+- No source-specific provider/locality restriction and no private-purpose override authority.
 - No prompt, message, recipient, sender, or private-content bytes in audit, metric, dispatch-attempt,
   or list metadata.
 
@@ -39,7 +37,7 @@ a non-local model without a purpose-specific refusal.
 - `core-sessions`: persist the effective-prompt and purpose-lane receipt on new sessions.
 - `dashboard-visibility`: expose a protected session prompt detail door and purpose-lane badge.
 - `dashboard-butler-management`: show the composed prompt and honest roster-drift state.
-- `model-catalog`: enforce the local-only private-content lane with a narrow audited exception.
+- `model-catalog`: persist purpose-lane evidence while preserving canonical model resolution.
 
 ## Impact
 

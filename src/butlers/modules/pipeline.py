@@ -1511,13 +1511,19 @@ class MessagePipeline:
         """
         subrequest_id = f"decomposition-{concept_index}"
         segment_id = f"decomp-{concept_index}-{target_butler}"
+        source_sender_identity = (
+            request_context.get("source_sender_identity") if request_context is not None else None
+        )
         route_request_context: dict[str, Any] = {
             "request_id": request_id,
             "received_at": received_at.isoformat(),
             "source_channel": source,
             "source_endpoint_identity": "switchboard",
             "source_sender_identity": str(
-                source_metadata.get("source_id") or source_metadata.get("identity") or "unknown"
+                source_sender_identity
+                or source_metadata.get("source_id")
+                or source_metadata.get("identity")
+                or "unknown"
             ),
             "subrequest_id": subrequest_id,
             "segment_id": segment_id,
@@ -1534,8 +1540,6 @@ class MessagePipeline:
             "identity": str(source_metadata.get("identity") or "unknown"),
             "tool_name": str(source_metadata.get("tool_name") or "decomposition"),
         }
-        if source_metadata.get("provider") not in (None, ""):
-            route_source_metadata["provider"] = str(source_metadata["provider"])
         if source_metadata.get("source_id") not in (None, ""):
             route_source_metadata["source_id"] = str(source_metadata["source_id"])
 
@@ -1817,6 +1821,58 @@ class MessagePipeline:
         if args.get("dashboard_message_id") not in (None, ""):
             metadata["dashboard_message_id"] = str(args["dashboard_message_id"])
         return metadata
+
+    @staticmethod
+    def _route_wire_source_metadata(source_metadata: dict[str, str]) -> dict[str, str]:
+        """Project internal ingress metadata onto the closed route.v1 wire shape."""
+        allowed = ("channel", "identity", "tool_name", "source_id", "dashboard_message_id")
+        return {
+            key: source_metadata[key]
+            for key in allowed
+            if source_metadata.get(key) not in (None, "")
+        }
+
+    @staticmethod
+    def _route_sender_identity(
+        args: dict[str, Any],
+        source_metadata: dict[str, str],
+        request_context: dict[str, Any] | None,
+    ) -> str:
+        """Preserve the original sender rather than substituting the connector endpoint."""
+        if request_context is not None:
+            sender = request_context.get("source_sender_identity")
+            if isinstance(sender, str) and sender.strip():
+                return sender
+        for key in ("sender_identity", "source_id"):
+            sender = args.get(key)
+            if isinstance(sender, str) and sender.strip():
+                return sender
+        return source_metadata.get("identity", "unknown")
+
+    @staticmethod
+    def _route_result_error_class(result: Any) -> str | None:
+        """Return a bounded failure class from a Switchboard route wrapper."""
+        if not isinstance(result, dict):
+            return "invalid_route_response"
+        outer_error = result.get("error")
+        if outer_error is not None:
+            if isinstance(outer_error, dict):
+                return str(outer_error.get("class") or "route_error")
+            return "route_error"
+        if "result" not in result and result.get("status") in {"accepted", "ok"}:
+            return None
+        route_response = result.get("result")
+        if not isinstance(route_response, dict):
+            return "invalid_route_response"
+        status = route_response.get("status")
+        if status in {"accepted", "ok"}:
+            return None
+        if status == "error":
+            inner_error = route_response.get("error")
+            if isinstance(inner_error, dict):
+                return str(inner_error.get("class") or "route_error")
+            return "route_error"
+        return "invalid_route_response"
 
     @staticmethod
     def _message_preview(text: str, max_chars: int = 80) -> str:
@@ -2352,6 +2408,8 @@ class MessagePipeline:
             request_context = dict(request_context)
         else:
             request_context = None
+        route_source_metadata = self._route_wire_source_metadata(source_metadata)
+        route_sender_identity = self._route_sender_identity(args, source_metadata, request_context)
         routing_verdict_identity = self._routing_verdict_identity(
             args, source_metadata, request_context
         )
@@ -2653,9 +2711,7 @@ class MessagePipeline:
                                 # trusted_route_callers check passes.  The original ingestion
                                 # source is preserved in source_metadata and source_sender_identity.
                                 "source_endpoint_identity": "switchboard",
-                                "source_sender_identity": source_metadata.get(
-                                    "identity", "unknown"
-                                ),
+                                "source_sender_identity": route_sender_identity,
                                 "source_thread_identity": (
                                     request_context.get("source_thread_identity")
                                     if request_context
@@ -2668,7 +2724,7 @@ class MessagePipeline:
                                 "butler": _triage_target,
                                 "tool": "route.execute",
                             },
-                            "source_metadata": source_metadata,
+                            "source_metadata": route_source_metadata,
                             "__switchboard_route_context": {
                                 "request_id": request_id,
                                 "fanout_mode": "policy_bypass",
@@ -2689,9 +2745,10 @@ class MessagePipeline:
                                 args=bypass_envelope,
                                 source_butler="switchboard",
                             )
-                            if isinstance(bypass_result, dict) and bypass_result.get("error"):
+                            bypass_error = self._route_result_error_class(bypass_result)
+                            if bypass_error is not None:
                                 failed = [_triage_target]
-                                failed_details = [f"{_triage_target}: {bypass_result['error']}"]
+                                failed_details = [f"{_triage_target}: {bypass_error}"]
                             else:
                                 acked = [_triage_target]
                         except Exception as bypass_exc:
@@ -3900,9 +3957,7 @@ class MessagePipeline:
                                 "received_at": datetime.now(UTC).isoformat(),
                                 "source_channel": source,
                                 "source_endpoint_identity": "switchboard",
-                                "source_sender_identity": source_metadata.get(
-                                    "identity", "unknown"
-                                ),
+                                "source_sender_identity": route_sender_identity,
                                 "source_thread_identity": (
                                     request_context.get("source_thread_identity")
                                     if request_context
@@ -3915,7 +3970,7 @@ class MessagePipeline:
                                 "butler": fallback_target,
                                 "tool": "route.execute",
                             },
-                            "source_metadata": source_metadata,
+                            "source_metadata": route_source_metadata,
                             "__switchboard_route_context": {
                                 "request_id": request_id,
                                 "fanout_mode": "tool_routed",
@@ -3932,8 +3987,10 @@ class MessagePipeline:
                                 source_butler="switchboard",
                             )
                             routed = [fallback_target]
-                            if isinstance(fallback_result, dict) and fallback_result.get("error"):
+                            fallback_error_class = self._route_result_error_class(fallback_result)
+                            if fallback_error_class is not None:
                                 failed = [fallback_target]
+                                failed_details = [f"{fallback_target}: {fallback_error_class}"]
                             else:
                                 acked = [fallback_target]
                         except Exception as fallback_exc:
@@ -4053,7 +4110,7 @@ class MessagePipeline:
                         },
                     )
                     logger.warning(
-                        "Classification failed; falling back to general",
+                        "Classification failed; attempting general fallback",
                         extra=self._log_fields(
                             source=source,
                             chat_id=chat_id,
@@ -4067,7 +4124,7 @@ class MessagePipeline:
                         ),
                     )
 
-                    if message_inbox_id:
+                    if message_inbox_id and source == "dashboard":
                         with tracer.start_as_current_span("butlers.switchboard.persistence.write"):
                             await self._update_message_inbox_lifecycle(
                                 message_inbox_id=message_inbox_id,
@@ -4103,9 +4160,97 @@ class MessagePipeline:
                             ),
                         )
 
+                    fallback_target = "general"
+                    fallback_envelope: dict[str, Any] = {
+                        "schema_version": "route.v1",
+                        "request_context": {
+                            "request_id": request_id,
+                            "received_at": datetime.now(UTC).isoformat(),
+                            "source_channel": source,
+                            "source_endpoint_identity": "switchboard",
+                            "source_sender_identity": route_sender_identity,
+                            "source_thread_identity": (
+                                request_context.get("source_thread_identity")
+                                if request_context
+                                else None
+                            ),
+                            "trace_context": {},
+                        },
+                        "input": {"prompt": message_text},
+                        "target": {
+                            "butler": fallback_target,
+                            "tool": "route.execute",
+                        },
+                        "source_metadata": route_source_metadata,
+                        "__switchboard_route_context": {
+                            "request_id": request_id,
+                            "fanout_mode": "tool_routed",
+                            "segment_id": "fallback-general",
+                            "attempt": 1,
+                        },
+                    }
+                    fallback_result: dict[str, Any] | None = None
+                    routed = [fallback_target]
+                    acked: list[str] = []
+                    failed: list[str] = []
+                    fallback_error: str | None = None
+                    try:
+                        fallback_result = await _fallback_route(
+                            self._pool,
+                            target_butler=fallback_target,
+                            tool_name="route.execute",
+                            args=fallback_envelope,
+                            source_butler="switchboard",
+                        )
+                        fallback_error_class = self._route_result_error_class(fallback_result)
+                        if fallback_error_class is not None:
+                            failed = [fallback_target]
+                            fallback_error = (
+                                f"general fallback route was rejected: {fallback_error_class}"
+                            )
+                        else:
+                            acked = [fallback_target]
+                    except Exception as fallback_exc:
+                        logger.warning(
+                            "Classification-error fallback route failed: failure_class=%s",
+                            type(fallback_exc).__name__,
+                        )
+                        failed = [fallback_target]
+                        fallback_error = f"general fallback failed: {type(fallback_exc).__name__}"
+
+                    if message_inbox_id:
+                        completed_at = datetime.now(UTC)
+                        with tracer.start_as_current_span("butlers.switchboard.persistence.write"):
+                            await self._update_message_inbox_lifecycle(
+                                message_inbox_id=message_inbox_id,
+                                decomposition_output={
+                                    **decomposition_error,
+                                    "fallback_target": fallback_target,
+                                },
+                                dispatch_outcomes={
+                                    "request_id": request_id,
+                                    "acked": acked,
+                                    "failed": failed,
+                                },
+                                response_summary=(
+                                    "Classification failed; fallback acknowledged"
+                                    if acked
+                                    else "Classification and fallback failed"
+                                ),
+                                lifecycle_state="parsed" if acked else "errored",
+                                classified_at=completed_at,
+                                classification_duration_ms=spawn_latency_ms,
+                                final_state_at=completed_at,
+                            )
+
                     return RoutingResult(
-                        target_butler="general",
-                        classification_error=error_msg,
+                        target_butler=fallback_target,
+                        route_result=fallback_result,
+                        classification_error=None if acked else error_msg,
+                        routing_error=fallback_error,
+                        routed_targets=routed,
+                        acked_targets=acked,
+                        failed_targets=failed,
                     )
 
                 finally:

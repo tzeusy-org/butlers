@@ -69,18 +69,15 @@ import asyncpg
 from prometheus_client import Counter
 
 from butlers.cli_auth.registry import providers_for_runtime
-from butlers.core.audit import write_audit_entry
 from butlers.core.dispatch_intent import discretion_dispatch_intent
 from butlers.core.dispatch_outcomes import project_resolution_receipt, record_dispatch_attempt
 from butlers.core.failover_classifier import FailoverContext, classify_failover_eligibility
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import (
     Complexity,
-    PrivateContentModelUnavailable,
     SpendRoutingResult,
     apply_spend_routing_rules,
     check_token_quota,
-    enforce_private_content_selection,
     next_same_tier_candidate,
     record_token_usage,
     resolve_model_with_effective_tier,
@@ -94,7 +91,6 @@ from butlers.core.runtimes.base import (
     create_adapter,
     validated_session_timeout_overhead_s,
 )
-from butlers.core.spawner_provider import retarget_ollama_provider_config
 from butlers.credential_store import CredentialStore
 
 logger = logging.getLogger(__name__)
@@ -467,80 +463,6 @@ class DiscretionDispatcher:
             selection_reason=receipt_selection_reason,
         )
 
-        private_provider_config: dict[str, dict] | None = None
-        private_local_failover_allowed = False
-        if self._purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT:
-            pre_private_catalog_entry_id = catalog_entry_id
-            try:
-                (
-                    selected,
-                    audited_override,
-                    private_provider_config,
-                    private_local_failover_allowed,
-                ) = await enforce_private_content_selection(
-                    self._pool,
-                    butler_name=self._butler_name,
-                    effective_tier=effective_tier,
-                    routing_result=routing_result,
-                )
-            except PrivateContentModelUnavailable:
-                await record_dispatch_attempt(
-                    self._pool,
-                    catalog_entry_id=catalog_entry_id,
-                    butler=self._butler_name,
-                    outcome="suppressed",
-                    attempt_index=0,
-                    failure_reason="private_content_remote_refused",
-                    purpose_lane=self._purpose_lane,
-                    resolution_receipt=current_resolution_receipt,
-                )
-                await write_audit_entry(
-                    self._pool,
-                    "system:model_router",
-                    "model.private_content_remote_refused",
-                    {
-                        "purpose_lane": PURPOSE_LANE_PRIVATE_CONTENT,
-                        "effective_tier": effective_tier,
-                        "reason": "local_model_unavailable",
-                    },
-                    result="error",
-                    error="private_content_remote_refused",
-                )
-                raise
-            (
-                runtime_type,
-                model_id,
-                extra_args,
-                catalog_entry_id,
-                session_timeout_s,
-            ) = selected
-            if catalog_entry_id != pre_private_catalog_entry_id:
-                receipt_selection_reason = (
-                    "private_content_audited_remote_override"
-                    if audited_override
-                    else "private_content_local_policy"
-                )
-                current_resolution_receipt = project_resolution_receipt(
-                    base_resolution_receipt,
-                    catalog_entry_id=catalog_entry_id,
-                    runtime_type=runtime_type,
-                    model_id=model_id,
-                    effective_tier=effective_tier,
-                    attempt_index=0,
-                    selection_reason=receipt_selection_reason,
-                )
-            if audited_override:
-                await write_audit_entry(
-                    self._pool,
-                    "system:model_router",
-                    "model.private_content_remote_override",
-                    {
-                        "purpose_lane": PURPOSE_LANE_PRIVATE_CONTENT,
-                        "rule_id": str(routing_result.matched_rule_id),
-                        "model_id": model_id[:_QUOTA_SKIP_PROVENANCE_FIELD_MAX_CHARS],
-                    },
-                )
-
         attempted_ids: list[uuid.UUID] = []
         attempt_count = 0
 
@@ -609,21 +531,11 @@ class DiscretionDispatcher:
                         f"{attempt_count} attempt(s) (safety cap); last quota skip: {quota_msg}"
                     )
 
-                next_candidate = (
-                    None
-                    if self._purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
-                    and not private_local_failover_allowed
-                    else await next_same_tier_candidate(
-                        self._pool,
-                        self._butler_name,
-                        effective_tier,
-                        attempted_ids,
-                        **(
-                            {"local_only": True}
-                            if self._purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
-                            else {}
-                        ),
-                    )
+                next_candidate = await next_same_tier_candidate(
+                    self._pool,
+                    self._butler_name,
+                    effective_tier,
+                    attempted_ids,
                 )
                 if next_candidate is None:
                     logger.warning(
@@ -677,13 +589,7 @@ class DiscretionDispatcher:
 
             # Resolve provider config for models using external providers
             # (e.g. ollama/ prefix needs the base URL from public.provider_config)
-            provider_config = (
-                retarget_ollama_provider_config(private_provider_config, model_id)
-                if self._purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
-                and model_id.startswith("ollama/")
-                and private_provider_config is not None
-                else await self._resolve_provider_config(model_id)
-            )
+            provider_config = await self._resolve_provider_config(model_id)
             adapter = self._get_or_create_adapter(runtime_type, provider_config)
 
             # Thinking models (qwen3 family) default to chain-of-thought mode
@@ -842,21 +748,11 @@ class DiscretionDispatcher:
                     f"{type(attempt_exc).__name__}: {attempt_exc}"
                 ) from attempt_exc
 
-            next_candidate = (
-                None
-                if self._purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
-                and not private_local_failover_allowed
-                else await next_same_tier_candidate(
-                    self._pool,
-                    self._butler_name,
-                    effective_tier,
-                    attempted_ids,
-                    **(
-                        {"local_only": True}
-                        if self._purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
-                        else {}
-                    ),
-                )
+            next_candidate = await next_same_tier_candidate(
+                self._pool,
+                self._butler_name,
+                effective_tier,
+                attempted_ids,
             )
             if next_candidate is None:
                 logger.warning(
