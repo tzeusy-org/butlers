@@ -212,6 +212,20 @@ adapter-wide assumption does not establish that contract. Until such a canary pa
 leaves vision undeclared and image-bearing external dispatch fails closed. The direct API adapter
 cannot satisfy this path because it does not accept the butler MCP server configuration.
 
+The canary shape used for `core_248` (2026-09-24): serve a streamable-HTTP MCP tool that returns a
+FastMCP `Image` of a random nonce word, drive the exact runtime/model against it, and require the
+nonce verbatim; a text-only control must answer "cannot see" (OpenCode strips images for models
+whose models.dev `modalities.input` lacks `image`; Codex does the same from its model catalog's
+`input_modalities`). `core_248` records the passing rows (codex `gpt-6-sol`, `gpt-6-luna`;
+opencode-go `minimax-m3`, `glm-5.3-flash`, `mimo-v2.6-pro`, `mimo-v2.6-flash`) and the failing
+control (`qwen3.7-max` → `vision: false`). Re-probe after a CLI upgrade or a new catalog model, then
+set the row with `PUT /api/settings/models/{id}` `{"capabilities": {...}}` (the body replaces the
+whole envelope; keys outside `ModelFeature` are a 422).
+
+**Never give `attachment_view` structured output.** Codex CLI and Claude Code forward only
+`structuredContent` when a tool result carries it, dropping `content[]` and the image with it
+(openai/codex#10334). `tests/core/test_attachment_view.py` pins the wire shape.
+
 ## Token Quotas
 
 The quota system prevents runaway costs by limiting token consumption per model on rolling time windows.

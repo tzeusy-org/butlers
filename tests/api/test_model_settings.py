@@ -734,6 +734,44 @@ async def test_update_catalog_entry_422_no_fields(app, audit_append_spy):
     audit_append_spy.assert_not_awaited()
 
 
+async def test_update_catalog_entry_writes_and_returns_capabilities(app, audit_append_spy):
+    """PUT capabilities replaces the envelope; the entry echoes it back."""
+    entry_id = uuid.uuid4()
+    updated_row = {**_make_catalog_row(entry_id=entry_id), "capabilities": {"vision": True}}
+    _, mock_pool = _app_with_pool(app, fetchrow_result=updated_row)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.put(
+            f"/api/settings/models/{entry_id}", json={"capabilities": {"vision": True}}
+        )
+    assert resp.status_code == 200
+    assert resp.json()["data"]["capabilities"] == {"vision": True}
+    sql, *params = mock_pool.fetchrow.await_args.args
+    assert "capabilities = $1::jsonb" in sql
+    assert params[0] == {"vision": True}
+
+
+@pytest.mark.parametrize("method", ["post", "put"])
+async def test_catalog_capabilities_outside_vocabulary_422(app, audit_append_spy, method):
+    """A typo'd feature key is rejected before any write, never stored as 'no opinion'."""
+    _, mock_pool = _app_with_pool(app)
+    body: dict[str, Any] = {"capabilities": {"visoin": True}}
+    if method == "post":
+        body.update(alias="m", runtime_type="codex", model_id="gpt-6-sol")
+        url = "/api/settings/models"
+    else:
+        url = f"/api/settings/models/{uuid.uuid4()}"
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await getattr(client, method)(url, json=body)
+    assert resp.status_code == 422
+    assert "visoin" in resp.json()["detail"]
+    mock_pool.fetchrow.assert_not_awaited()
+    audit_append_spy.assert_not_awaited()
+
+
 async def test_model_failures_404_on_missing_entry(app):
     """GET /api/settings/models/{id}/failures returns 404 when catalog entry absent."""
     _, mock_pool = _app_with_pool(app, fetchval_result=None)

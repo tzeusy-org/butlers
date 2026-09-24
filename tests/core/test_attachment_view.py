@@ -73,6 +73,36 @@ async def test_attachment_view_returns_image_content_block_for_image(blob_store)
     assert base64.b64decode(content.data) == data
 
 
+async def test_registered_attachment_view_emits_image_block_without_structured_content(
+    blob_store,
+):
+    """Over MCP, the image arrives as a content block with no ``structuredContent``.
+
+    Codex CLI and Claude Code forward only ``structuredContent`` when a tool
+    result carries it, dropping ``content[]`` -- images included (openai/codex
+    #10334). A return annotation that made FastMCP emit structured output would
+    silently blind every vision-declared catalog row, so pin the wire shape.
+    """
+    from types import SimpleNamespace
+
+    from fastmcp import Client, FastMCP
+
+    from butlers.core_tools._media import register_media_tools
+
+    data = b"\x89PNG\r\n\x1a\n" + b"x" * 1000
+    storage_ref = await blob_store.put(data, content_type="image/png", filename="test.png")
+    mcp = FastMCP("media-wire")
+    ctx = SimpleNamespace(daemon=SimpleNamespace(blob_store=blob_store), butler_name=TEST_BUTLER)
+    register_media_tools(ctx, mcp, lambda group, **kw: mcp.tool(**kw))
+
+    async with Client(mcp) as client:
+        result = await client.call_tool("attachment_view", {"storage_ref": storage_ref})
+
+    assert result.structured_content is None
+    assert [block.type for block in result.content] == ["image"]
+    assert base64.b64decode(result.content[0].data) == data
+
+
 async def test_attachment_view_refuses_over_cap_blob(blob_store):
     """A blob over the vision size cap returns a typed refusal, not a data dump."""
     large_data = b"x" * (MAX_ATTACHMENT_SIZE_BYTES + 1)

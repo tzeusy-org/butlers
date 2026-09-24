@@ -31,6 +31,7 @@ from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_pricing
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.api.owner_control import require_dashboard_owner_control
+from butlers.core.model_capabilities import CapabilityDescriptorError, parse_capability_descriptor
 from butlers.core.model_routing import (
     RoutingScore,
     get_breaker_states,
@@ -120,6 +121,10 @@ class ModelCatalogEntry(BaseModel):
     routing_success_rate: float | None = None
     routing_p95_duration_ms: float | None = None
     routing_sample_count: int = 0
+    # Per-entry capability overrides (core_204) layered over the adapter
+    # baseline. An absent feature is *unknown*, not unsupported -- e.g. an
+    # image-bearing dispatch excludes every entry without ``vision: true``.
+    capabilities: dict[str, bool] = Field(default_factory=dict)
 
 
 class ModelPriorityDelta(BaseModel):
@@ -194,6 +199,7 @@ class ModelCatalogCreate(BaseModel):
     enabled: bool = True
     priority: int = 0
     session_timeout_s: int = Field(default=1800, gt=0)
+    capabilities: dict[str, bool] = Field(default_factory=dict)
 
 
 class ModelCatalogUpdate(BaseModel):
@@ -207,6 +213,10 @@ class ModelCatalogUpdate(BaseModel):
     enabled: bool | None = None
     priority: int | None = None
     session_timeout_s: int | None = Field(default=None, gt=0)
+    # Replaces the whole envelope when provided. ``vision: true`` must be backed
+    # by an exact-path probe (docs/runtime/model-routing.md, "Vision is an
+    # exact-path claim").
+    capabilities: dict[str, bool] | None = None
 
 
 class ButlerModelOverride(BaseModel):
@@ -430,7 +440,29 @@ def _row_to_catalog_entry(row: Any) -> ModelCatalogEntry:
         last_verified_error=_row_value(row, "last_verified_error", None),
         breaker_open=bool(_row_value(row, "breaker_open", False)),
         breaker_consecutive_failures=int(_row_value(row, "breaker_consecutive_failures", 0) or 0),
+        capabilities=_coerce_capabilities(_row_value(row, "capabilities")),
     )
+
+
+def _coerce_capabilities(raw: Any) -> dict[str, bool]:
+    """Render a stored envelope for display; an unparseable one shows as empty."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): v for k, v in raw.items() if isinstance(v, bool)}
+
+
+def _validate_capabilities(capabilities: dict[str, bool]) -> dict[str, bool]:
+    """Reject an envelope outside the ``ModelFeature`` vocabulary with a 422."""
+    try:
+        parse_capability_descriptor(capabilities)
+    except CapabilityDescriptorError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    return capabilities
 
 
 def _row_to_override(row: Any) -> ButlerModelOverride:
@@ -554,7 +586,7 @@ async def list_catalog_entries(
             mc.id, mc.alias, mc.runtime_type, mc.model_id, mc.extra_args,
             mc.complexity_tier, mc.enabled, mc.priority, mc.session_timeout_s,
             mc.last_verified_at, mc.last_verified_latency_ms, mc.last_verified_ok,
-            mc.last_verified_error,
+            mc.last_verified_error, mc.capabilities,
             COALESCE(ua.usage_24h, 0) AS usage_24h,
             COALESCE(ua.usage_30d, 0) AS usage_30d,
             tl.limit_24h,
@@ -686,6 +718,7 @@ async def create_catalog_entry(
 ) -> ApiResponse[ModelCatalogEntry]:
     """Create a new catalog entry. Returns 409 on duplicate alias."""
     _validate_complexity_tier(body.complexity_tier)
+    capabilities = _validate_capabilities(body.capabilities)
     pool = _shared_pool(db)
 
     async with pool.acquire() as connection, connection.transaction():
@@ -695,11 +728,12 @@ async def create_catalog_entry(
                 INSERT INTO public.model_catalog
                     (
                         alias, runtime_type, model_id, extra_args, complexity_tier,
-                        enabled, priority, session_timeout_s
+                        enabled, priority, session_timeout_s, capabilities
                     )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
                 RETURNING id, alias, runtime_type, model_id, extra_args,
-                          complexity_tier, enabled, priority, session_timeout_s
+                          complexity_tier, enabled, priority, session_timeout_s,
+                          capabilities
                 """,
                 body.alias,
                 body.runtime_type,
@@ -709,6 +743,7 @@ async def create_catalog_entry(
                 body.enabled,
                 body.priority,
                 body.session_timeout_s,
+                capabilities,
             )
         except asyncpg.UniqueViolationError:
             raise HTTPException(
@@ -764,6 +799,9 @@ async def update_catalog_entry(
         if field == "extra_args":
             set_parts.append(f"extra_args = ${idx}")
             params.append(value)
+        elif field == "capabilities":
+            set_parts.append(f"capabilities = ${idx}::jsonb")
+            params.append(_validate_capabilities(value))
         else:
             set_parts.append(f"{field} = ${idx}")
             params.append(value)
@@ -776,7 +814,7 @@ async def update_catalog_entry(
         f"UPDATE public.model_catalog SET {', '.join(set_parts)} "
         f"WHERE id = ${idx} "
         "RETURNING id, alias, runtime_type, model_id, extra_args, "
-        "complexity_tier, enabled, priority, session_timeout_s, "
+        "complexity_tier, enabled, priority, session_timeout_s, capabilities, "
         "last_verified_at, last_verified_latency_ms, last_verified_ok, last_verified_error"
     )
 
