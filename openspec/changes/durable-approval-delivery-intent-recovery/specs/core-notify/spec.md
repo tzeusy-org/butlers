@@ -3,7 +3,12 @@
 ### Requirement: Authenticated recovery presentation envelope
 The `notify.v1` contract SHALL carry an immutable recovery subject (a direct
 action key or a cohort key) plus a generation-specific presentation key only in
-a recovery-only approval-request shape. Switchboard SHALL derive the issuer and
+a recovery-only approval-request shape. Recovery mode SHALL be selected only
+when the serialized `recovery` member is non-null. An absent or null member
+SHALL have ordinary notification semantics, and producers SHALL omit it when
+unset. A present, non-null value that does not satisfy the complete recovery
+shape SHALL fail closed before recovery persistence or provider egress.
+Switchboard SHALL derive the issuer and
 owning schema from the authenticated daemon transport, validate the claimed
 subject/schema/mode against that trusted identity and a non-caller-serializable
 source-schema subject/presentation attestation, and forward trusted context to
@@ -25,9 +30,15 @@ Scope: v1-mandatory
 - **AND** no ordinary retry, worker, or generic notification control can advance that generation
 
 #### Scenario: Ordinary notify behavior remains compatible
-- **WHEN** an ordinary non-recovery `notify.v1` caller omits recovery fields
-- **THEN** existing validation and delivery behavior remain unchanged
-- **AND** that notification is not silently promoted into approval-recovery tracking
+- **WHEN** an ordinary non-recovery `notify.v1` caller omits `recovery` or serializes `"recovery": null`
+- **THEN** the request follows the ordinary generic-notification validation and delivery path
+- **AND** it does not enter recovery authentication, handoff-ledger, or approval-presentation handling
+- **AND** serializers omit the unset member from newly emitted envelopes
+
+#### Scenario: Malformed material recovery fails closed
+- **WHEN** `recovery` is present and non-null but is not a complete valid recovery object
+- **THEN** the request is rejected before generic delivery logging, recovery-ledger persistence, or a Messenger/provider call
+- **AND** it is neither treated as ordinary notification traffic nor granted recovery authority
 
 #### Scenario: Claimed recovery identity is not authority
 - **WHEN** a caller supplies an action/cohort subject or presentation key, origin, owning schema, or mode that differs from the transport-authenticated issuer and registered owning schema

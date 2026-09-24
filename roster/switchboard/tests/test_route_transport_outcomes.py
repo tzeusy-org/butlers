@@ -575,6 +575,26 @@ def _notify_envelope() -> dict[str, Any]:
     }
 
 
+def _confirmed_notify_route_result(*, delivery_id: str = "tg-42") -> dict[str, Any]:
+    return {
+        "result": {
+            "schema_version": "route_response.v1",
+            "status": "ok",
+            "result": {
+                "notify_response": {
+                    "schema_version": "notify_response.v1",
+                    "status": "ok",
+                    "delivery": {
+                        "channel": "telegram",
+                        "delivery_id": delivery_id,
+                    },
+                }
+            },
+        },
+        "transport": {"outcome": "confirmed", "retryable": False},
+    }
+
+
 def _recovery_envelope() -> dict[str, Any]:
     subject = "approval:relationship:00000000-0000-0000-0000-000000000000"
     return {
@@ -599,6 +619,161 @@ def _recovery_envelope() -> dict[str, Any]:
 
 
 class TestDeliverPostSendBookkeeping:
+    async def test_null_recovery_uses_generic_delivery(self) -> None:
+        pool = _mock_pool()
+        envelope = {**_notify_envelope(), "recovery": None}
+
+        with (
+            patch(
+                "butlers.tools.switchboard.notification.deliver.route",
+                new=AsyncMock(return_value=_confirmed_notify_route_result()),
+            ) as routed,
+            patch(
+                "butlers.tools.switchboard.notification.deliver.log_notification",
+                new=AsyncMock(return_value="notif-1"),
+            ) as logged,
+            patch(
+                "butlers.tools.switchboard.notification.deliver._write_outbound_message_inbox",
+                new=AsyncMock(),
+            ) as inbox,
+        ):
+            result = await deliver(pool, notify_request=envelope, source_butler="health")
+
+        assert result["status"] == "sent"
+        assert result["delivery_id"] == "tg-42"
+        routed.assert_awaited_once()
+        assert logged.await_args.kwargs["status"] == "sent"
+        assert logged.await_args.kwargs["metadata"]["delivery_id"] == "tg-42"
+        assert "recovery" not in logged.await_args.kwargs["metadata"]["notify_request"]
+        inbox.assert_awaited_once()
+
+    async def test_nested_route_application_error_is_never_reported_sent(self) -> None:
+        pool = _mock_pool()
+        route_result = {
+            "result": {
+                "schema_version": "route_response.v1",
+                "status": "error",
+                "error": {
+                    "class": "validation_error",
+                    "message": "Approval recovery authority rejected.",
+                    "retryable": False,
+                },
+            },
+            "transport": {"outcome": "confirmed", "retryable": False},
+        }
+
+        with (
+            patch(
+                "butlers.tools.switchboard.notification.deliver.route",
+                new=AsyncMock(return_value=route_result),
+            ),
+            patch(
+                "butlers.tools.switchboard.notification.deliver.log_notification",
+                new=AsyncMock(return_value="notif-1"),
+            ) as logged,
+            patch(
+                "butlers.tools.switchboard.notification.deliver._write_outbound_message_inbox",
+                new=AsyncMock(),
+            ) as inbox,
+        ):
+            result = await deliver(pool, notify_request=_notify_envelope(), source_butler="health")
+
+        assert result["status"] == "failed"
+        assert result["error_class"] == "validation_error"
+        assert result["error"] == "Approval recovery authority rejected."
+        assert logged.await_args.kwargs["status"] == "failed"
+        inbox.assert_not_awaited()
+
+    async def test_nested_timeout_without_transport_remains_uncertain(self) -> None:
+        pool = _mock_pool()
+        route_result = {
+            "result": {
+                "schema_version": "route_response.v1",
+                "status": "error",
+                "error": {
+                    "class": "timeout",
+                    "message": "Telegram delivery failed.",
+                    "retryable": False,
+                },
+            },
+            "transport": {"outcome": "confirmed", "retryable": False},
+        }
+
+        with (
+            patch(
+                "butlers.tools.switchboard.notification.deliver.route",
+                new=AsyncMock(return_value=route_result),
+            ),
+            patch(
+                "butlers.tools.switchboard.notification.deliver.log_notification",
+                new=AsyncMock(return_value="notif-1"),
+            ),
+        ):
+            result = await deliver(pool, notify_request=_notify_envelope(), source_butler="health")
+
+        assert result["status"] == "failed"
+        assert result["transport"]["outcome"] == "uncertain"
+        assert result["transport"]["error_detail"] == "transport_connection_lost"
+        assert result["transport"]["retryable"] is False
+
+    @pytest.mark.parametrize(
+        "route_response",
+        [
+            {"schema_version": "route_response.v1", "status": "accepted"},
+            {"schema_version": "route_response.v1", "status": "ok", "result": {}},
+            {
+                "schema_version": "route_response.v1",
+                "status": "ok",
+                "result": {
+                    "notify_response": {
+                        "schema_version": "notify_response.v1",
+                        "status": "ok",
+                        "delivery": {"channel": "telegram", "delivery_id": ""},
+                    }
+                },
+            },
+            {
+                "schema_version": "route_response.v1",
+                "status": "ok",
+                "result": {
+                    "notify_response": {
+                        "schema_version": "notify_response.v1",
+                        "status": "ok",
+                        "delivery": {"channel": "email", "delivery_id": "mail-1"},
+                    }
+                },
+            },
+        ],
+    )
+    async def test_sent_requires_complete_matching_messenger_receipt(
+        self, route_response: dict[str, Any]
+    ) -> None:
+        pool = _mock_pool()
+        with (
+            patch(
+                "butlers.tools.switchboard.notification.deliver.route",
+                new=AsyncMock(
+                    return_value={
+                        "result": route_response,
+                        "transport": {"outcome": "confirmed", "retryable": False},
+                    }
+                ),
+            ),
+            patch(
+                "butlers.tools.switchboard.notification.deliver.log_notification",
+                new=AsyncMock(return_value="notif-1"),
+            ) as logged,
+            patch(
+                "butlers.tools.switchboard.notification.deliver._write_outbound_message_inbox",
+                new=AsyncMock(),
+            ) as inbox,
+        ):
+            result = await deliver(pool, notify_request=_notify_envelope(), source_butler="health")
+
+        assert result["status"] == "failed"
+        assert logged.await_args.kwargs["status"] == "failed"
+        inbox.assert_not_awaited()
+
     @pytest.mark.parametrize(
         ("decision_state", "reason", "admitted"),
         [
@@ -815,13 +990,7 @@ class TestDeliverPostSendBookkeeping:
 
     async def test_confirmed_delivery_survives_notification_log_failure(self) -> None:
         pool = _mock_pool()
-        route_result = {
-            "result": {"notify_response": {"status": "ok"}},
-            "transport": {
-                "outcome": "confirmed",
-                "retryable": False,
-            },
-        }
+        route_result = _confirmed_notify_route_result()
 
         with (
             patch(
@@ -842,13 +1011,7 @@ class TestDeliverPostSendBookkeeping:
 
     async def test_confirmed_delivery_survives_message_inbox_failure(self) -> None:
         pool = _mock_pool(execute=AsyncMock(side_effect=RuntimeError("inbox down")))
-        route_result = {
-            "result": {"notify_response": {"status": "ok"}},
-            "transport": {
-                "outcome": "confirmed",
-                "retryable": False,
-            },
-        }
+        route_result = _confirmed_notify_route_result()
 
         with (
             patch(
@@ -921,10 +1084,19 @@ class TestDeliverPostSendBookkeeping:
         pool = _mock_pool()
         route_result = {
             "result": {
-                "notify_response": {
-                    "status": "error",
-                    "error": {"class": "delivery_error", "message": "chat not found"},
-                }
+                "schema_version": "route_response.v1",
+                "status": "error",
+                "error": {
+                    "class": "delivery_error",
+                    "message": "chat not found",
+                    "retryable": False,
+                },
+                "result": {
+                    "notify_response": {
+                        "status": "error",
+                        "error": {"class": "delivery_error", "message": "chat not found"},
+                    }
+                },
             },
             "transport": {"outcome": "confirmed", "retryable": False},
         }

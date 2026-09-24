@@ -185,7 +185,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
     ) -> dict[str, Any]:
         """Deliver a notification through the specified channel."""
         trusted_source = None
-        if isinstance(notify_request, dict) and "recovery" in notify_request:
+        if isinstance(notify_request, dict) and notify_request.get("recovery") is not None:
             trusted_source = authenticated_daemon_name(
                 get_access_token(),
                 required_scope="approval-recovery:source",
