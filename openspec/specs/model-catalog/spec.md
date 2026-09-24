@@ -336,6 +336,12 @@ migration `core_204`.
 - **AND** a text-only model verification, model-brand claim, direct `attachment_view()` unit test, or adapter-wide capability assumption is insufficient evidence
 - **AND** rows without that evidence retain unknown vision support and remain excluded from image-bearing external dispatches
 
+#### Scenario: Capability envelope is writable through the catalog API
+- **WHEN** the owner creates or updates a catalog entry with a `capabilities` object
+- **THEN** the object is validated against the `ModelFeature` vocabulary and boolean values before any write, and an unknown key or non-boolean value is rejected with 422
+- **AND** an update that includes `capabilities` replaces the entry's whole envelope
+- **AND** every catalog entry response includes the stored `capabilities` object
+
 ### Requirement: Fit Before Ranking
 When resolution is given a dispatch intent, the system SHALL exclude every candidate
 that cannot satisfy the intent's required capabilities, context floor, deadline, or

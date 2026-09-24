@@ -5254,6 +5254,9 @@ export interface ModelCatalogEntry {
   /** Count of trailing consecutive runtime_failure dispatch attempts feeding
    *  the breaker (capped at the breaker's own threshold). */
   breaker_consecutive_failures: number;
+  /** Per-entry capability overrides (core_204). An absent feature is unknown,
+   *  not unsupported: image-bearing dispatches need `vision: true`. */
+  capabilities?: Record<string, boolean>;
   /** Evidence-based routing score (bu-ep4ks.13), fully derived from recent
    *  model_dispatch_attempts. Null whenever routing_score_insufficient_data
    *  is true -- render "insufficient data", never a fabricated 0. */
