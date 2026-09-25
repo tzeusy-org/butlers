@@ -912,13 +912,6 @@ async def test_model_attempts_returns_real_rows(app):
     entry_id = uuid.uuid4()
     attempt_ts = datetime(2026, 5, 24, 10, 0, 0, tzinfo=UTC)
 
-    private_provider_config = {
-        "ollama": {
-            "npm": "@ai-sdk/openai-compatible",
-            "options": {"baseURL": "http://ollama:11434/v1"},
-            "models": {"qwen3.5:9b": {"name": "qwen3.5:9b"}},
-        }
-    }
     local_candidate = ("opencode", "ollama/qwen3.5:9b", [], entry_id, 30)
     resolved = (*local_candidate, "specialty")
     sentinel = (
@@ -942,10 +935,6 @@ async def test_model_attempts_returns_real_rows(app):
             AsyncMock(return_value=SpendRoutingResult(resolved=local_candidate)),
         ),
         patch(
-            "butlers.connectors.discretion_dispatcher.enforce_private_content_selection",
-            AsyncMock(return_value=(local_candidate, False, private_provider_config, False)),
-        ),
-        patch(
             "butlers.connectors.discretion_dispatcher.check_token_quota",
             AsyncMock(
                 return_value=QuotaStatus(
@@ -958,6 +947,10 @@ async def test_model_attempts_returns_real_rows(app):
             ),
         ),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
+        patch(
+            "butlers.connectors.discretion_dispatcher.next_same_tier_candidate",
+            AsyncMock(return_value=None),
+        ),
         patch(
             "butlers.connectors.discretion_dispatcher.record_dispatch_attempt",
             AsyncMock(),

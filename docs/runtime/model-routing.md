@@ -129,23 +129,11 @@ the dispatch `private_content`; all other and unknown sources remain `standard`.
 reads only the established routing/connector channel token. It never inspects prompt, message,
 sender, recipient, or thread content to infer sensitivity.
 
-`private_content` is local-first and fail-closed. A model is proven local only when its catalog row
-uses the OpenCode runtime, its canonical `model_id` begins `ollama/`, and the exact provider origin
-captured for the dispatch is loopback or the RFC 0008 owner-local `ollama` Tailnet service. Missing,
-malformed, unreadable, or other endpoints are not locality evidence. The accepted provider config
-is reused for adapter setup rather than re-read after authorization. Initial selection and
-same-tier failover therefore skip unproved entries before adapter setup. If no eligible local entry
-exists, the dispatch is refused and a bounded `model.private_content_remote_refused` audit record is
-attempted without private content.
-
-The narrow remote exception reuses the existing operator spend-rule surface rather than adding a
-second routing system. The first matching rule must explicitly set `purpose=private_content`, its
-action must explicitly name the selected remote model, and a successful audit entry for the current
-rule revision must exist. One database snapshot revalidates the live rule's identity, revision,
-condition, target, and owner audit; concurrent update or deletion therefore denies. Catch-all,
-tier-only, stale, or unverifiable rules are not authority. An accepted exception records
-`model.private_content_remote_override`; subsequent failover remains local-only rather than
-authorizing a different remote model.
+`private_content` is provenance, not model-selection authority. It neither adds nor removes a
+catalog candidate and does not change effective tier, priority, fit, verification, quota, breaker,
+provider/runtime selection, or same-tier failover. Normal operator routing rules retain their
+ordinary evaluation and authority; the lane itself creates no local-only requirement or special
+remote-model exception.
 
 New private discretion usage retains its existing spend purpose and carries the separate closed
 `purpose_lane=private_content` on token-usage and dispatch-attempt evidence with the stable
@@ -193,8 +181,8 @@ selects.
 It is carried on `TierQuotaExhausted.resolution` when quota blocks the tier. Catalog-backed
 Spawner and DiscretionDispatcher attempts persist a projection of that receipt. Discretion receipt
 capture observes the legacy winner without parsing capability envelopes or changing eligibility. A
-spend-rule or private-content policy override may re-project the final winner only after the
-replacement is confirmed fit-eligible for the original intent and effective tier. A hard-fit
+spend-rule override may re-project the final winner only after the replacement is confirmed
+fit-eligible for the original intent and effective tier. A hard-fit
 exclusion remains non-invocable and is never cleared merely because an override selected it.
 Failover projections carry the preceding failure class, while a
 transparent retry of the same candidate after a failed resume handle is labeled

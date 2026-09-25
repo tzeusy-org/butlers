@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -50,6 +51,7 @@ from butlers.modules.pipeline import (
     _normalize_decomp_signals,
 )
 from butlers.tools.switchboard.identity import inject as identity_inject
+from butlers.tools.switchboard.routing.contracts import parse_route_envelope
 
 pytestmark = pytest.mark.unit
 
@@ -632,6 +634,10 @@ async def test_decomposition_dispatch_exception_is_content_blind_at_active_span_
             "butlers.tools.switchboard.routing.classify._load_available_butlers",
             new=AsyncMock(return_value=_MOCK_BUTLERS),
         ),
+        patch(
+            "butlers.tools.switchboard.routing.route.route",
+            new=AsyncMock(return_value={"result": {"status": "accepted"}}),
+        ),
         patch("butlers.modules.pipeline.trace.get_tracer", return_value=_Tracer()),
         caplog.at_level(logging.DEBUG),
     ):
@@ -653,11 +659,11 @@ async def test_decomposition_dispatch_exception_is_content_blind_at_active_span_
         "error": {
             "category": "classification_dispatch_failed",
             "class": "RuntimeError",
-        }
+        },
+        "fallback_target": "general",
     }
-    assert result.classification_error == (
-        "classification_failed:classification_dispatch_failed:RuntimeError"
-    )
+    assert result.classification_error is None
+    assert result.acked_targets == ["general"]
     persisted_surface = {
         "decomposition_output": lifecycle["decomposition_output"],
         "dispatch_outcomes": lifecycle["dispatch_outcomes"],
@@ -1266,8 +1272,8 @@ class TestMessagePipelineRoutingVerdictLog:
             "channel": "email",
             "identity": "gmail:acct-1",
             "tool_name": "route.execute",
-            "provider": "gmail",
         }
+        assert route_envelope["request_context"]["source_sender_identity"] == "billing@chase.com"
         mock_record.assert_awaited_once()
         kwargs = mock_record.await_args.kwargs
         assert kwargs["ingestion_event_id"] == "00000000-0000-0000-0000-000000000002"
@@ -2234,6 +2240,7 @@ class TestMessagePipelineStructuredClassificationFastLane:
         pipeline = MessagePipeline(
             switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
         )
+        pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
         with patch(
             "butlers.tools.switchboard.routing.structured_classify.try_structured_classification",
             AsyncMock(side_effect=AssertionError("fast lane must not be attempted")),
@@ -2932,8 +2939,7 @@ class TestMessagePipelineProcessDashboardLanes:
         return_value=_MOCK_BUTLERS,
     )
     async def test_non_dashboard_spawn_exception_still_falls_back_to_general(self, mock_load):
-        """Regression: a classifier spawn exception on a non-dashboard channel
-        keeps the pre-existing silent 'general' fallback unchanged."""
+        """A classifier exception dispatches the original message to General."""
 
         async def mock_dispatch(**kwargs):
             raise RuntimeError("boom")
@@ -2941,13 +2947,198 @@ class TestMessagePipelineProcessDashboardLanes:
         pipeline = MessagePipeline(
             switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
         )
-        result = await pipeline.process(
-            "Just browsing", tool_args={"source_channel": "telegram_bot"}
+        pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+        telemetry = MagicMock()
+        telemetry.track_inflight_requests.return_value = nullcontext()
+
+        async def accepted_route(*_args, **kwargs):
+            wire_args = dict(kwargs["args"])
+            wire_args.pop("__switchboard_route_context", None)
+            parse_route_envelope(wire_args)
+            return {"result": {"schema_version": "route_response.v1", "status": "accepted"}}
+
+        with (
+            patch(
+                "butlers.tools.switchboard.routing.route.route",
+                new=AsyncMock(side_effect=accepted_route),
+            ) as fallback_route,
+            patch(
+                "butlers.modules.pipeline.get_switchboard_telemetry",
+                return_value=telemetry,
+            ),
+        ):
+            result = await pipeline.process(
+                "Just browsing",
+                tool_args={
+                    "source_channel": "telegram_bot",
+                    "source_provider": "telegram",
+                    "source_identity": "telegram:bot:synthetic",
+                    "request_context": {
+                        "source_sender_identity": "owner-sender",
+                        "source_thread_identity": "owner-thread",
+                    },
+                },
+                message_inbox_id="00000000-0000-0000-0000-000000000007",
+            )
+
+        assert result.target_butler == "general"
+        assert result.classification_error is None
+        assert result.routed_targets == result.acked_targets == ["general"]
+        assert result.failed_targets == []
+        fallback_route.assert_awaited_once()
+        envelope = fallback_route.await_args.kwargs["args"]
+        assert envelope["input"]["prompt"] == "Just browsing"
+        assert envelope["request_context"]["source_channel"] == "telegram_bot"
+        assert envelope["request_context"]["source_sender_identity"] == "owner-sender"
+        assert envelope["target"]["butler"] == "general"
+        assert "provider" not in envelope["source_metadata"]
+        lifecycle = pipeline._update_message_inbox_lifecycle.await_args.kwargs
+        assert lifecycle["dispatch_outcomes"]["acked"] == ["general"]
+        assert lifecycle["dispatch_outcomes"]["failed"] == []
+        assert lifecycle["lifecycle_state"] == "parsed"
+        assert lifecycle["decomposition_output"]["fallback_target"] == "general"
+        telemetry.end_to_end_latency_ms.record.assert_called_once()
+        final_transition = telemetry.lifecycle_transition.add.call_args_list[-1].args[1]
+        assert final_transition["lifecycle_state"] == "parsed"
+        assert final_transition["outcome"] == "success"
+
+    @pytest.mark.parametrize(
+        ("sender_field", "sender_value"),
+        [
+            ("from", "owner@example.test"),
+            ("chat_id", "telegram-owner-42"),
+            ("sender_id", "legacy-owner-7"),
+        ],
+    )
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_classification_fallback_preserves_supported_sender_shapes(
+        self,
+        mock_load,
+        sender_field: str,
+        sender_value: str,
+    ) -> None:
+        async def mock_dispatch(**kwargs):
+            raise RuntimeError("boom")
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
         )
+
+        with patch(
+            "butlers.tools.switchboard.routing.route.route",
+            new=AsyncMock(return_value={"result": {"status": "accepted"}}),
+        ) as fallback_route:
+            result = await pipeline.process(
+                "Route this",
+                tool_args={
+                    "source_channel": "telegram_bot",
+                    "source_identity": "telegram:bot:synthetic",
+                    sender_field: sender_value,
+                },
+            )
+
+        assert result.acked_targets == ["general"]
+        envelope = fallback_route.await_args.kwargs["args"]
+        assert envelope["request_context"]["source_sender_identity"] == sender_value
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_non_dashboard_spawn_exception_reports_nested_fallback_rejection(
+        self, mock_load
+    ) -> None:
+        async def mock_dispatch(**kwargs):
+            raise RuntimeError("boom")
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+        pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+        nested_rejection = {
+            "result": {
+                "schema_version": "route_response.v1",
+                "status": "error",
+                "error": {
+                    "class": "validation_error",
+                    "message": "invalid route",
+                    "retryable": False,
+                },
+            }
+        }
+
+        with patch(
+            "butlers.tools.switchboard.routing.route.route",
+            new=AsyncMock(return_value=nested_rejection),
+        ):
+            result = await pipeline.process(
+                "Just browsing",
+                tool_args={"source_channel": "telegram_bot"},
+                message_inbox_id="00000000-0000-0000-0000-000000000008",
+            )
 
         assert result.target_butler == "general"
         assert result.classification_error is not None
-        assert "RuntimeError" in result.classification_error
+        assert result.acked_targets == []
+        assert result.failed_targets == ["general"]
+        assert result.routing_error == "general fallback route was rejected: validation_error"
+        lifecycle = pipeline._update_message_inbox_lifecycle.await_args.kwargs
+        assert lifecycle["dispatch_outcomes"]["acked"] == []
+        assert lifecycle["dispatch_outcomes"]["failed"] == ["general"]
+        assert lifecycle["lifecycle_state"] == "errored"
+
+    @pytest.mark.parametrize(
+        "malformed_result",
+        [
+            {"error": {"class": "owner-secret-category"}},
+            {
+                "result": {
+                    "status": "error",
+                    "error": {"class": "owner-secret-category"},
+                }
+            },
+        ],
+    )
+    def test_route_result_error_class_bounds_downstream_values(self, malformed_result) -> None:
+        assert MessagePipeline._route_result_error_class(malformed_result) == "route_error"
+
+    @pytest.mark.parametrize(
+        "malformed_result",
+        [{}, {"result": None}, {"result": {}}, {"result": {"status": "rejected"}}],
+    )
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_non_dashboard_fallback_requires_recognized_route_success(
+        self, mock_load, malformed_result
+    ) -> None:
+        async def mock_dispatch(**kwargs):
+            raise RuntimeError("boom")
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+
+        with patch(
+            "butlers.tools.switchboard.routing.route.route",
+            new=AsyncMock(return_value=malformed_result),
+        ):
+            result = await pipeline.process(
+                "Just browsing", tool_args={"source_channel": "telegram_bot"}
+            )
+
+        assert result.acked_targets == []
+        assert result.failed_targets == ["general"]
+        assert result.routing_error == (
+            "general fallback route was rejected: invalid_route_response"
+        )
 
     @patch(
         "butlers.tools.switchboard.routing.classify._load_available_butlers",
