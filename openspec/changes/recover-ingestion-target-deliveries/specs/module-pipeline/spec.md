@@ -63,6 +63,7 @@ Scope: v1-mandatory
 - **THEN** the original message SHALL be assigned to the canonical General fallback target and enter the same persisted intent and acceptance path before dispatch
 - **AND** no target call SHALL occur before that fallback plan commits
 - **AND** the evidence SHALL preserve that classification failed rather than falsely claiming a model-selected target
+- **AND** final lifecycle evidence SHALL distinguish an acknowledged General fallback from a failed fallback without erasing the classification-failure evidence
 
 #### Scenario: Dashboard lane remains synchronous
 

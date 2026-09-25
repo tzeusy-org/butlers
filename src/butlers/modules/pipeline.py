@@ -73,6 +73,18 @@ _ANSWER_QUESTION_TOOL_NAME_RE = re.compile(r"(?:^|[^a-z0-9])answer_question$", r
 _CANNOT_ANSWER_TOOL_NAME_RE = re.compile(r"(?:^|[^a-z0-9])cannot_answer$", re.IGNORECASE)
 _TELEGRAM_CHAT_ID_RE = re.compile(r"^-?\d+$")
 _TELEGRAM_CHAT_MESSAGE_RE = re.compile(r"^(?P<chat_id>-?\d+):(?P<message_id>\d+)$")
+_ROUTE_RESULT_ERROR_CLASSES = frozenset(
+    {
+        "delivery_error",
+        "internal_error",
+        "overload_rejected",
+        "policy_denied",
+        "route_error",
+        "target_unavailable",
+        "timeout",
+        "validation_error",
+    }
+)
 
 # ---------------------------------------------------------------------------
 # Conversation History Loading
@@ -1832,8 +1844,9 @@ class MessagePipeline:
             if source_metadata.get(key) not in (None, "")
         }
 
-    @staticmethod
+    @classmethod
     def _route_sender_identity(
+        cls,
         args: dict[str, Any],
         source_metadata: dict[str, str],
         request_context: dict[str, Any] | None,
@@ -1843,11 +1856,16 @@ class MessagePipeline:
             sender = request_context.get("source_sender_identity")
             if isinstance(sender, str) and sender.strip():
                 return sender
-        for key in ("sender_identity", "source_id"):
-            sender = args.get(key)
-            if isinstance(sender, str) and sender.strip():
-                return sender
+        sender = cls._source_sender_identity(args, source_metadata)
+        if sender != "unknown":
+            return sender
         return source_metadata.get("identity", "unknown")
+
+    @staticmethod
+    def _bounded_route_error_class(value: Any) -> str:
+        """Project a downstream error class onto the stable routing taxonomy."""
+        normalized = normalize_error_class(value)
+        return normalized if normalized in _ROUTE_RESULT_ERROR_CLASSES else "route_error"
 
     @staticmethod
     def _route_result_error_class(result: Any) -> str | None:
@@ -1857,7 +1875,7 @@ class MessagePipeline:
         outer_error = result.get("error")
         if outer_error is not None:
             if isinstance(outer_error, dict):
-                return str(outer_error.get("class") or "route_error")
+                return MessagePipeline._bounded_route_error_class(outer_error.get("class"))
             return "route_error"
         if "result" not in result and result.get("status") in {"accepted", "ok"}:
             return None
@@ -1870,7 +1888,7 @@ class MessagePipeline:
         if status == "error":
             inner_error = route_response.get("error")
             if isinstance(inner_error, dict):
-                return str(inner_error.get("class") or "route_error")
+                return MessagePipeline._bounded_route_error_class(inner_error.get("class"))
             return "route_error"
         return "invalid_route_response"
 
@@ -4217,6 +4235,37 @@ class MessagePipeline:
                         )
                         failed = [fallback_target]
                         fallback_error = f"general fallback failed: {type(fallback_exc).__name__}"
+
+                    total_latency_ms = (time.perf_counter() - start) * 1000
+                    lifecycle_state = "parsed" if acked else "errored"
+                    outcome = "success" if acked else "failure"
+                    telemetry.end_to_end_latency_ms.record(
+                        total_latency_ms,
+                        {**request_attrs, "outcome": outcome},
+                    )
+                    telemetry.lifecycle_transition.add(
+                        1,
+                        {
+                            **request_attrs,
+                            "lifecycle_state": lifecycle_state,
+                            "outcome": outcome,
+                            "error_class": error_class,
+                        },
+                    )
+                    logger.info(
+                        "Classification-error General fallback completed",
+                        extra=self._log_fields(
+                            source=source,
+                            chat_id=chat_id,
+                            target_butler=fallback_target,
+                            latency_ms=total_latency_ms,
+                            content_blind=content_blind_observability,
+                            request_id=request_id,
+                            lifecycle_state=lifecycle_state,
+                            error_class=error_class,
+                            fallback_outcome=outcome,
+                        ),
+                    )
 
                     if message_inbox_id:
                         completed_at = datetime.now(UTC)

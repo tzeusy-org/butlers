@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -2947,6 +2948,8 @@ class TestMessagePipelineProcessDashboardLanes:
             switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
         )
         pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+        telemetry = MagicMock()
+        telemetry.track_inflight_requests.return_value = nullcontext()
 
         async def accepted_route(*_args, **kwargs):
             wire_args = dict(kwargs["args"])
@@ -2954,10 +2957,16 @@ class TestMessagePipelineProcessDashboardLanes:
             parse_route_envelope(wire_args)
             return {"result": {"schema_version": "route_response.v1", "status": "accepted"}}
 
-        with patch(
-            "butlers.tools.switchboard.routing.route.route",
-            new=AsyncMock(side_effect=accepted_route),
-        ) as fallback_route:
+        with (
+            patch(
+                "butlers.tools.switchboard.routing.route.route",
+                new=AsyncMock(side_effect=accepted_route),
+            ) as fallback_route,
+            patch(
+                "butlers.modules.pipeline.get_switchboard_telemetry",
+                return_value=telemetry,
+            ),
+        ):
             result = await pipeline.process(
                 "Just browsing",
                 tool_args={
@@ -2988,6 +2997,53 @@ class TestMessagePipelineProcessDashboardLanes:
         assert lifecycle["dispatch_outcomes"]["failed"] == []
         assert lifecycle["lifecycle_state"] == "parsed"
         assert lifecycle["decomposition_output"]["fallback_target"] == "general"
+        telemetry.end_to_end_latency_ms.record.assert_called_once()
+        final_transition = telemetry.lifecycle_transition.add.call_args_list[-1].args[1]
+        assert final_transition["lifecycle_state"] == "parsed"
+        assert final_transition["outcome"] == "success"
+
+    @pytest.mark.parametrize(
+        ("sender_field", "sender_value"),
+        [
+            ("from", "owner@example.test"),
+            ("chat_id", "telegram-owner-42"),
+            ("sender_id", "legacy-owner-7"),
+        ],
+    )
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_classification_fallback_preserves_supported_sender_shapes(
+        self,
+        mock_load,
+        sender_field: str,
+        sender_value: str,
+    ) -> None:
+        async def mock_dispatch(**kwargs):
+            raise RuntimeError("boom")
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+
+        with patch(
+            "butlers.tools.switchboard.routing.route.route",
+            new=AsyncMock(return_value={"result": {"status": "accepted"}}),
+        ) as fallback_route:
+            result = await pipeline.process(
+                "Route this",
+                tool_args={
+                    "source_channel": "telegram_bot",
+                    "source_identity": "telegram:bot:synthetic",
+                    sender_field: sender_value,
+                },
+            )
+
+        assert result.acked_targets == ["general"]
+        envelope = fallback_route.await_args.kwargs["args"]
+        assert envelope["request_context"]["source_sender_identity"] == sender_value
 
     @patch(
         "butlers.tools.switchboard.routing.classify._load_available_butlers",
@@ -3035,6 +3091,21 @@ class TestMessagePipelineProcessDashboardLanes:
         assert lifecycle["dispatch_outcomes"]["acked"] == []
         assert lifecycle["dispatch_outcomes"]["failed"] == ["general"]
         assert lifecycle["lifecycle_state"] == "errored"
+
+    @pytest.mark.parametrize(
+        "malformed_result",
+        [
+            {"error": {"class": "owner-secret-category"}},
+            {
+                "result": {
+                    "status": "error",
+                    "error": {"class": "owner-secret-category"},
+                }
+            },
+        ],
+    )
+    def test_route_result_error_class_bounds_downstream_values(self, malformed_result) -> None:
+        assert MessagePipeline._route_result_error_class(malformed_result) == "route_error"
 
     @pytest.mark.parametrize(
         "malformed_result",

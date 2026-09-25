@@ -181,8 +181,8 @@ selects.
 It is carried on `TierQuotaExhausted.resolution` when quota blocks the tier. Catalog-backed
 Spawner and DiscretionDispatcher attempts persist a projection of that receipt. Discretion receipt
 capture observes the legacy winner without parsing capability envelopes or changing eligibility. A
-spend-rule or private-content policy override may re-project the final winner only after the
-replacement is confirmed fit-eligible for the original intent and effective tier. A hard-fit
+spend-rule override may re-project the final winner only after the replacement is confirmed
+fit-eligible for the original intent and effective tier. A hard-fit
 exclusion remains non-invocable and is never cleared merely because an override selected it.
 Failover projections carry the preceding failure class, while a
 transparent retry of the same candidate after a failed resume handle is labeled
