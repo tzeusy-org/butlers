@@ -979,7 +979,16 @@ class TestDeliverNotifyRouting:
 
         async def mock_call(endpoint_url, tool_name, args):
             captured.append({"endpoint_url": endpoint_url, "tool_name": tool_name, "args": args})
-            return {"status": "ok", "result": {"notify_response": {"status": "ok"}}}
+            return {
+                "status": "ok",
+                "result": {
+                    "notify_response": {
+                        "schema_version": "notify_response.v1",
+                        "status": "ok",
+                        "delivery": {"channel": "telegram", "delivery_id": "tg-42"},
+                    }
+                },
+            }
 
         notify_request = {
             "schema_version": "notify.v1",
@@ -1012,6 +1021,7 @@ class TestDeliverNotifyRouting:
         routed_payload = captured[0]["args"]
         assert routed_payload["target"]["butler"] == "messenger"
         assert routed_payload["input"]["context"]["notify_request"]["origin_butler"] == "health"
+        assert "recovery" not in routed_payload["input"]["context"]["notify_request"]
         assert (
             routed_payload["input"]["context"]["notify_request"]["request_context"]["request_id"]
             == "018f52f3-9d8a-7ef2-8f2d-9fb6b32f12aa"
@@ -1041,7 +1051,16 @@ class TestDeliverNotifyRouting:
 
         async def mock_call(endpoint_url, tool_name, args):
             captured.append({"endpoint_url": endpoint_url, "tool_name": tool_name, "args": args})
-            return {"status": "ok", "result": {"notify_response": {"status": "ok"}}}
+            return {
+                "status": "ok",
+                "result": {
+                    "notify_response": {
+                        "schema_version": "notify_response.v1",
+                        "status": "ok",
+                        "delivery": {"channel": "telegram", "delivery_id": "tg-43"},
+                    }
+                },
+            }
 
         original_request_id = "018f52f3-9d8a-7ef2-8f2d-9fb6b32f12aa"
         notify_request = {

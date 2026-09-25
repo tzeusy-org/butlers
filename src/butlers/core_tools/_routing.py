@@ -18,6 +18,7 @@ from functools import partial
 from typing import Any
 
 import asyncpg
+import httpx
 from fastmcp.server.dependencies import get_access_token
 from opentelemetry import trace
 from opentelemetry.context import Context as OtelContext
@@ -33,6 +34,7 @@ from butlers.core.approval_delivery_transport import (
 from butlers.core.approval_delivery_worker import HandoffResult
 from butlers.core.dashboard_turns import claim_target, mark_route_enqueued, mark_terminal
 from butlers.core.model_routing import Complexity, coerce_complexity_tier
+from butlers.core.permissions import PermissionDenied
 from butlers.core.route_inbox import (
     RouteInboxLeaseLost,
     route_inbox_claim_processing,
@@ -51,6 +53,14 @@ from butlers.core.tool_call_capture import get_current_runtime_session_id
 from butlers.core_tools._base import ToolContext
 from butlers.identity import resolve_owner_channel_via_definer
 from butlers.tools.switchboard.routing.contracts import parse_notify_request, parse_route_envelope
+from butlers.tools.switchboard.routing.transport import (
+    POLICY_DENIED,
+    PROVIDER_REJECTED,
+    RECIPIENT_UNAVAILABLE,
+    TRANSPORT_TIMEOUT,
+    TransportResult,
+    classify_transport_exception,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +79,7 @@ _ROUTE_ERROR_RETRYABLE: dict[str, bool] = {
     "target_unavailable": True,
     "timeout": True,
     "overload_rejected": True,
+    "delivery_error": False,
     "internal_error": False,
 }
 
@@ -96,7 +107,7 @@ def _raw_input_has_approval_recovery(input_payload: Any) -> bool:
     if not isinstance(context, dict):
         return False
     notify_request = context.get("notify_request")
-    return isinstance(notify_request, dict) and "recovery" in notify_request
+    return isinstance(notify_request, dict) and notify_request.get("recovery") is not None
 
 
 def _preauthenticate_messenger_recovery(
@@ -570,9 +581,10 @@ def _format_validation_error(prefix: str, exc: ValidationError) -> str:
 def _extract_delivery_id(
     *,
     channel: str,
+    intent: str,
     adapter_result: Any,
     fallback_request_id: str | None,
-) -> str:
+) -> str | None:
     """Derive a stable delivery identifier from adapter output."""
     if isinstance(adapter_result, dict):
         for key in ("delivery_id", "message_id", "id", "thread_id"):
@@ -585,6 +597,17 @@ def _extract_delivery_id(
                 value = nested.get(key)
                 if value not in (None, ""):
                     return str(value)
+    if (
+        channel == "telegram"
+        and intent == "react"
+        and isinstance(adapter_result, dict)
+        and adapter_result.get("ok") is True
+        and adapter_result.get("result") is True
+        and fallback_request_id
+    ):
+        return f"telegram-reaction:{fallback_request_id}"
+    if channel == "telegram":
+        return None
     if fallback_request_id:
         return f"{channel}:{fallback_request_id}"
     return f"{channel}:{uuid.uuid4()}"
@@ -709,6 +732,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
             message: str,
             notify_response: dict[str, Any] | None = None,
             retryable: bool | None = None,
+            transport: TransportResult | None = None,
         ) -> dict[str, Any]:
             resolved_retryable = (
                 _ROUTE_ERROR_RETRYABLE.get(error_class, False) if retryable is None else retryable
@@ -727,6 +751,8 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 response["request_context"] = context_payload
             if notify_response is not None:
                 response["result"] = {"notify_response": notify_response}
+            if transport is not None:
+                response["transport"] = transport.as_dict()
             return response
 
         def _route_success_response(
@@ -1379,7 +1405,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
         except ValidationError as exc:
             message = (
                 "Invalid approval recovery request."
-                if "recovery" in raw_notify_request
+                if raw_notify_request.get("recovery") is not None
                 else _format_validation_error("Invalid notify.v1 request", exc)
             )
             channel = None
@@ -1827,51 +1853,111 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                     message=error_message,
                 ),
             )
-        except TimeoutError as exc:
-            error_message = f"Delivery timed out: {exc}"
+        except TimeoutError:
+            error_message = "Messenger delivery timed out."
             return _route_error_response(
                 context_payload=route_context,
                 error_class="timeout",
                 message=error_message,
+                retryable=False,
+                transport=TRANSPORT_TIMEOUT,
                 notify_response=_notify_error_response(
                     request_id=notify_request_id,
                     channel=channel,
                     error_class="timeout",
                     message=error_message,
+                    retryable=False,
                 ),
             )
         except (ConnectionError, OSError) as exc:
-            error_message = f"Delivery target unavailable: {exc}"
+            safe_transport = classify_transport_exception(exc)
+            error_message = "Messenger delivery transport unavailable."
             return _route_error_response(
                 context_payload=route_context,
                 error_class="target_unavailable",
                 message=error_message,
+                retryable=safe_transport.retryable,
+                transport=safe_transport,
                 notify_response=_notify_error_response(
                     request_id=notify_request_id,
                     channel=channel,
                     error_class="target_unavailable",
                     message=error_message,
+                    retryable=safe_transport.retryable,
                 ),
             )
         except RuntimeError as exc:
             lowered = str(exc).lower()
             if "overload" in lowered or "queue full" in lowered:
                 error_class = "overload_rejected"
+                error_message = "Messenger delivery capacity is unavailable."
+                safe_transport = classify_transport_exception(exc)
+            elif channel == "telegram" and type(exc).__name__ == "TelegramProviderResponseError":
+                error_class = "delivery_error"
+                if getattr(exc, "provider_rejected", False) is True:
+                    error_message = "Telegram delivery was rejected."
+                    safe_transport = PROVIDER_REJECTED
+                else:
+                    error_message = "Telegram delivery confirmation is unavailable."
+                    safe_transport = classify_transport_exception(exc)
+            elif channel == "telegram":
+                error_class = "target_unavailable"
+                error_message = "Telegram delivery target is unavailable."
+                safe_transport = RECIPIENT_UNAVAILABLE
             else:
                 error_class = "target_unavailable"
-            error_message = str(exc)
+                error_message = str(exc)
+                safe_transport = classify_transport_exception(exc)
             return _route_error_response(
                 context_payload=route_context,
                 error_class=error_class,
                 message=error_message,
+                retryable=safe_transport.retryable,
+                transport=safe_transport,
                 notify_response=_notify_error_response(
                     request_id=notify_request_id,
                     channel=channel,
                     error_class=error_class,
                     message=error_message,
+                    retryable=safe_transport.retryable,
                 ),
             )
         except Exception as exc:
+            if channel == "telegram":
+                if isinstance(exc, PermissionDenied):
+                    safe_transport = POLICY_DENIED
+                    error_class = "validation_error"
+                    error_message = "Telegram delivery is not permitted."
+                else:
+                    safe_transport = (
+                        PROVIDER_REJECTED
+                        if isinstance(exc, httpx.HTTPStatusError)
+                        else classify_transport_exception(exc)
+                    )
+                    error_class = (
+                        "timeout" if safe_transport is TRANSPORT_TIMEOUT else "delivery_error"
+                    )
+                    error_message = "Telegram delivery failed."
+                logger.warning(
+                    "Messenger delivery error: channel=telegram intent=%s failure_class=%s",
+                    intent,
+                    type(exc).__name__,
+                )
+                return _route_error_response(
+                    context_payload=route_context,
+                    error_class=error_class,
+                    message=error_message,
+                    retryable=safe_transport.retryable,
+                    transport=safe_transport,
+                    notify_response=_notify_error_response(
+                        request_id=notify_request_id,
+                        channel=channel,
+                        error_class=error_class,
+                        message=error_message,
+                        retryable=safe_transport.retryable,
+                    ),
+                )
+
             error_detail = str(exc)
             if intent == "react" and notify_context:
                 _tid = notify_context.source_thread_identity or ""
@@ -1911,17 +1997,33 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 ),
             )
 
+        delivery_id = _extract_delivery_id(
+            channel=channel,
+            intent=intent,
+            adapter_result=adapter_result,
+            fallback_request_id=notify_request_id,
+        )
+        if delivery_id is None:
+            message = "Telegram provider response did not contain a delivery receipt."
+            return _route_error_response(
+                context_payload=route_context,
+                error_class="delivery_error",
+                message=message,
+                notify_response=_notify_error_response(
+                    request_id=notify_request_id,
+                    channel=channel,
+                    error_class="delivery_error",
+                    message=message,
+                ),
+            )
+
         notify_response = {
             "schema_version": "notify_response.v1",
             "request_context": {"request_id": notify_request_id},
             "status": "ok",
             "delivery": {
                 "channel": channel,
-                "delivery_id": _extract_delivery_id(
-                    channel=channel,
-                    adapter_result=adapter_result,
-                    fallback_request_id=notify_request_id,
-                ),
+                "delivery_id": delivery_id,
             },
         }
         return _route_success_response(

@@ -9,10 +9,34 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import ValidationError
 
+from butlers.core_tools._routing import _extract_delivery_id
 from butlers.daemon import ButlerDaemon
 from butlers.tools.switchboard.routing.contracts import parse_notify_request
 
 pytestmark = pytest.mark.unit
+
+
+def test_confirmed_telegram_reaction_keeps_an_operation_receipt() -> None:
+    request_id = "018f6f4e-5b3b-7b2d-9c2f-7b7b6b6b6b6b"
+
+    assert (
+        _extract_delivery_id(
+            channel="telegram",
+            intent="react",
+            adapter_result={"ok": True, "result": True},
+            fallback_request_id=request_id,
+        )
+        == f"telegram-reaction:{request_id}"
+    )
+    assert (
+        _extract_delivery_id(
+            channel="telegram",
+            intent="react",
+            adapter_result={"ok": False, "result": False},
+            fallback_request_id=request_id,
+        )
+        is None
+    )
 
 
 @pytest.fixture

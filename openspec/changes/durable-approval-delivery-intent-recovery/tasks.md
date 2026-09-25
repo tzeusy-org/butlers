@@ -31,6 +31,7 @@
 - [x] 4.5 Branch recovery-mode `notify.v1` before generic `log_notification()` and `_write_outbound_message_inbox()` persistence; insert no outbound `switchboard.message_inbox` row, including a redacted substitute, and expose only the safe approval delivery projection.
 - [x] 4.6 Exclude recovery delivery from generic list/history/read/stats/acknowledge/retry/escalate/stored-envelope reconstruction and all generic conversation/LLM-history readers; do not persist rendered text, recipient-derived thread identity, or callback material there.
 - [x] 4.7 Add adapter and negative-authority tests showing confirmed same-tuple duplicate suppression, safe pre-start retry, Telegram-style unknown post-start no-resend, spoofed issuer/schema/mode/key rejection before egress, and no generic recovery replay or envelope disclosure. Add the real-PostgreSQL negative integration test with rendered-text, recipient-derived thread-identity, and callback-material sentinels; prove no `switchboard.message_inbox` row and no `_load_realtime_history`, `_load_email_history`, or `_load_conversation_history` result exposes a sentinel.
+- [x] 4.8 Treat only a non-null recovery value as recovery mode, omit unset recovery fields from producer serialization, and cover absent/null ordinary delivery plus malformed non-null fail-closed behavior.
 
 ## 5. Decision, expiry, retention, and operator truth
 

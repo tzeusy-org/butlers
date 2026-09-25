@@ -53,6 +53,10 @@ Scope: v1-mandatory
 
 ### Requirement: Idempotent, authenticated, and ambiguous provider handoff
 The system SHALL persist a fenced pre-provider handoff marker and require the actual Messenger boundary to classify an immutable presentation key as `confirmed`, `safe_retry`, or `ambiguous`; it SHALL bind that key to a transport-authenticated issuer, owning schema, and approved presentation mode before ledger/provider work, and SHALL never blindly resend an uncertain post-start handoff.
+An absent or null `recovery` member is ordinary notification traffic. Only a
+non-null recovery value enters this authenticated handoff boundary, and a
+malformed non-null value is rejected rather than downgraded to ordinary
+delivery.
 
 ID: REQ-approval-delivery-intent-recovery-004
 Source: RFC-0023

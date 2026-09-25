@@ -25,8 +25,29 @@ from butlers.api.routers.notifications import (
     _normalize_notification_metadata,
     get_cache,
 )
+from butlers.core.approval_recovery_exclusion import notification_metadata_is_recovery
 
 pytestmark = pytest.mark.unit
+
+
+def test_null_recovery_metadata_remains_an_ordinary_notification() -> None:
+    assert (
+        notification_metadata_is_recovery(
+            {"notify_request": {"schema_version": "notify.v1", "recovery": None}}
+        )
+        is False
+    )
+    assert (
+        notification_metadata_is_recovery(
+            {
+                "notify_request": {
+                    "schema_version": "notify.v1",
+                    "recovery": {"operation": "handoff"},
+                }
+            }
+        )
+        is True
+    )
 
 
 def _make_unavailable_db() -> MagicMock:
