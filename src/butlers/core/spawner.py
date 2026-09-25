@@ -90,13 +90,11 @@ from butlers.core.model_routing import (
     CandidateOutcome,
     Complexity,
     DispatchResolution,
-    PrivateContentModelUnavailable,
     SpendRoutingResult,
     TierQuotaExhausted,
     apply_spend_routing_rules,
     check_monthly_ceiling,
     check_token_quota,
-    enforce_private_content_selection,
     next_same_tier_candidate,
     resolve_model_with_effective_tier,
 )
@@ -149,7 +147,6 @@ from butlers.core.spawner_guardrails import (
 from butlers.core.spawner_provider import (
     _derive_llm_provider,  # noqa: F401 — re-export for test patches
     resolve_provider_config,  # noqa: F401 — re-export for test patches
-    retarget_ollama_provider_config,
 )
 from butlers.core.spawner_tool_calls import (
     _dedup_tool_calls_by_id,  # noqa: F401 — re-export for test patches
@@ -509,29 +506,6 @@ def _estimate_worst_case_call_cost(
     return cost
 
 
-async def _refuse_unregistered_private_runtime(
-    pool: asyncpg.Pool | None,
-    *,
-    effective_tier: str,
-) -> None:
-    """Record a content-blind refusal and stop before the remote compatibility fallback."""
-    await write_audit_entry(
-        pool,
-        "system:model_router",
-        "model.private_content_remote_refused",
-        {
-            "purpose_lane": PURPOSE_LANE_PRIVATE_CONTENT,
-            "effective_tier": effective_tier,
-            "reason": "unregistered_private_runtime",
-        },
-        result="error",
-        error="private_content_remote_refused",
-    )
-    raise PrivateContentModelUnavailable(
-        "private_content_remote_refused: local runtime unavailable"
-    )
-
-
 async def _write_dispatch_attempt(
     pool: asyncpg.Pool,
     *,
@@ -847,8 +821,6 @@ class Spawner:
         session_id: uuid.UUID | None,
         logical_session_id: str,
         purpose_lane: PurposeLane,
-        private_local_failover_allowed: bool,
-        private_provider_config: dict[str, dict[str, Any]] | None,
     ) -> tuple[_AdmittedFailoverCandidate | None, int]:
         """Return the next fit-eligible, registered same-tier candidate.
 
@@ -861,19 +833,11 @@ class Spawner:
             return None, attempt_index
 
         while attempt_index < _MAX_FAILOVER_ATTEMPTS:
-            candidate = (
-                None
-                if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
-                and not private_local_failover_allowed
-                else await next_same_tier_candidate(
-                    self._pool,
-                    self._config.name,
-                    effective_tier,
-                    attempted_ids,
-                    **(
-                        {"local_only": True} if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT else {}
-                    ),
-                )
+            candidate = await next_same_tier_candidate(
+                self._pool,
+                self._config.name,
+                effective_tier,
+                attempted_ids,
             )
             if candidate is None:
                 return None, attempt_index
@@ -930,21 +894,10 @@ class Spawner:
                 previous_failure_class=previous_failure_class,
                 selection_reason=selection_reason,
             )
-            provider_config = (
-                retarget_ollama_provider_config(private_provider_config, model)
-                if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
-                and model.startswith("ollama/")
-                and private_provider_config is not None
-                else await self._resolve_provider_config(model)
-            )
+            provider_config = await self._resolve_provider_config(model)
             try:
                 runtime = self._get_or_create_adapter(runtime_type, provider_config).create_worker()
             except ValueError:
-                if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT:
-                    await _refuse_unregistered_private_runtime(
-                        self._pool,
-                        effective_tier=effective_tier,
-                    )
                 failure_reason = (
                     "runtime_config_error: unregistered failover runtime before invocation"
                 )
@@ -1952,106 +1905,8 @@ class Spawner:
         if _spend_rule_fired:
             _receipt_selection_reason = "spend_rule_override"
 
-        # Private message content is local by default. This gate is deliberately
-        # after operator-rule evaluation but before prewarm/provider setup: only
-        # a rule explicitly scoped to this lane with current audit evidence may
-        # authorize the selected remote model.
-        _private_provider_config: dict[str, dict[str, Any]] | None = None
-        _private_local_failover_allowed = False
-        _private_remote_rule_id: uuid.UUID | None = None
-        if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT:
-            _pre_private_catalog_entry_id = catalog_entry_id
-            if catalog_entry_id is None or self._pool is None:
-                exc = PrivateContentModelUnavailable(
-                    "private_content_remote_refused: local model unavailable"
-                )
-                await write_audit_entry(
-                    self._pool,
-                    "system:model_router",
-                    "model.private_content_remote_refused",
-                    {
-                        "purpose_lane": purpose_lane,
-                        "effective_tier": _failover_effective_tier or str(complexity),
-                        "reason": "no_catalog_local_selection",
-                    },
-                    result="error",
-                    error="private_content_remote_refused",
-                )
-                if dashboard_turn_id is not None:
-                    return await self._dashboard_preflight_failure(
-                        dashboard_turn_id=dashboard_turn_id,
-                        error=str(exc),
-                        model=model,
-                    )
-                raise exc
-
-            assert self._pool is not None
-            assert catalog_entry_id is not None
-            lane_result = _routing_result or SpendRoutingResult(
-                resolved=(
-                    resolved_runtime_type,
-                    model,
-                    catalog_extra_args,
-                    catalog_entry_id,
-                    catalog_timeout_s or 1800,
-                )
-            )
-            try:
-                (
-                    lane_selection,
-                    audited_remote_override,
-                    _private_provider_config,
-                    _private_local_failover_allowed,
-                ) = await enforce_private_content_selection(
-                    self._pool,
-                    butler_name=self._config.name,
-                    effective_tier=_failover_effective_tier or str(complexity),
-                    routing_result=lane_result,
-                )
-            except PrivateContentModelUnavailable as exc:
-                await write_audit_entry(
-                    self._pool,
-                    "system:model_router",
-                    "model.private_content_remote_refused",
-                    {
-                        "purpose_lane": purpose_lane,
-                        "effective_tier": _failover_effective_tier or str(complexity),
-                        "reason": "local_model_unavailable",
-                    },
-                    result="error",
-                    error="private_content_remote_refused",
-                )
-                if dashboard_turn_id is not None:
-                    return await self._dashboard_preflight_failure(
-                        dashboard_turn_id=dashboard_turn_id,
-                        error=str(exc),
-                        model=model,
-                    )
-                raise
-            (
-                resolved_runtime_type,
-                model,
-                catalog_extra_args,
-                catalog_entry_id,
-                catalog_timeout_s,
-            ) = lane_selection
-            if catalog_entry_id != _pre_private_catalog_entry_id:
-                _receipt_selection_reason = (
-                    "private_content_audited_remote_override"
-                    if audited_remote_override
-                    else "private_content_local_policy"
-                )
-            if audited_remote_override:
-                _private_remote_rule_id = lane_result.matched_rule_id
-            else:
-                # The initial quota-aware receipt belongs to the displaced
-                # remote entry, so the local candidate must run the ordinary
-                # quota check below.
-                _spend_rule_fired = True
-                _spend_rule_breaker_open = None
-
         # Every post-resolution override remains subordinate to the original
-        # dispatch intent. Spend and private-content policy may change the winner,
+        # dispatch intent. Spend policy may change the winner,
         # but they cannot turn a hard-fit exclusion into an invocable selection.
         final_fit_eligible = (
             None
@@ -2087,18 +1942,6 @@ class Spawner:
                 error=f"ModelResolutionError: {resolution_error}",
                 model=model,
                 resolution_receipt=_base_resolution_receipt,
-            )
-
-        if _private_remote_rule_id is not None:
-            await write_audit_entry(
-                self._pool,
-                "system:model_router",
-                "model.private_content_remote_override",
-                {
-                    "purpose_lane": purpose_lane,
-                    "rule_id": str(_private_remote_rule_id),
-                    "model_id": model[:256],
-                },
             )
 
         # Speculative prewarm (bu-ep4ks.13 follow-up / bu-k9te9, slice 4): the runtime_type
@@ -2295,8 +2138,6 @@ class Spawner:
                     session_id=None,
                     logical_session_id=effective_request_id,
                     purpose_lane=purpose_lane,
-                    private_local_failover_allowed=_private_local_failover_allowed,
-                    private_provider_config=_private_provider_config,
                 )
                 if admitted_candidate is None:
                     # No candidates remain: hard block.
@@ -2452,13 +2293,7 @@ class Spawner:
             if _prepared_runtime is not None:
                 runtime = _prepared_runtime
             else:
-                provider_config = (
-                    _private_provider_config
-                    if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
-                    and isinstance(model, str)
-                    and model.startswith("ollama/")
-                    else await self._resolve_provider_config(model)
-                )
+                provider_config = await self._resolve_provider_config(model)
 
                 # Select adapter for the resolved runtime type (lazy instantiation on demand).
                 try:
@@ -2466,11 +2301,6 @@ class Spawner:
                         resolved_runtime_type, provider_config
                     ).create_worker()
                 except ValueError:
-                    if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT:
-                        await _refuse_unregistered_private_runtime(
-                            self._pool,
-                            effective_tier=_failover_effective_tier or str(complexity),
-                        )
                     resolution_error = ModelResolutionError(
                         f"unregistered_runtime_type: runtime_type={resolved_runtime_type}"
                     )
@@ -3242,8 +3072,6 @@ class Spawner:
                     session_id=session_id,
                     logical_session_id=effective_request_id,
                     purpose_lane=purpose_lane,
-                    private_local_failover_allowed=_private_local_failover_allowed,
-                    private_provider_config=_private_provider_config,
                 )
 
                 if admitted_candidate is None:

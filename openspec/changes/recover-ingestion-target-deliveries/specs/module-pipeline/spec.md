@@ -39,7 +39,7 @@ Scope: v1-mandatory
 
 ### Requirement: Classification decisions precede ordinary target dispatch
 
-For non-dashboard ingestion-to-domain `route.execute`, the pipeline SHALL finish and durably record the classified target plan before any target call. Model tool calls, deterministic triage bypasses, and fallback inference SHALL all use the same delivery-intent boundary; classification failure SHALL NOT create a speculative target delivery.
+For non-dashboard ingestion-to-domain `route.execute`, the pipeline SHALL finish and durably record the classified target plan before any target call. Model tool calls, deterministic triage bypasses, no-tool inference, and the canonical General fallback after classifier failure SHALL all use the same delivery-intent boundary; classification failure SHALL NOT create a speculative target call before that fallback plan is recorded.
 
 ID: REQ-module-pipeline-001
 Source: RFC 0003 §Pre-Classification Triage Pipeline; design.md Decision 1
@@ -60,7 +60,10 @@ Scope: v1-mandatory
 #### Scenario: Classification fails before a target decision
 
 - **WHEN** classification fails or times out before a valid target set is complete
-- **THEN** no ordinary target call SHALL occur and no target intent SHALL falsely claim that classification succeeded
+- **THEN** the original message SHALL be assigned to the canonical General fallback target and enter the same persisted intent and acceptance path before dispatch
+- **AND** no target call SHALL occur before that fallback plan commits
+- **AND** the evidence SHALL preserve that classification failed rather than falsely claiming a model-selected target
+- **AND** final lifecycle evidence SHALL distinguish an acknowledged General fallback from a failed fallback without erasing the classification-failure evidence
 
 #### Scenario: Dashboard lane remains synchronous
 

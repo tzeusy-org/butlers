@@ -57,7 +57,6 @@ from __future__ import annotations
 
 import dataclasses
 import enum
-import ipaddress
 import json
 import logging
 import time
@@ -66,7 +65,6 @@ from collections import OrderedDict
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlparse
 
 import asyncpg
 
@@ -316,9 +314,6 @@ class SpendRoutingResult:
     max_cost_per_call: float | None = None
     breaker_open: BreakerState | None = None
     matched_rule_id: uuid.UUID | None = None
-    matched_rule_updated_at: datetime | None = None
-    explicit_private_content: bool = False
-    target_model: str | None = None
 
 
 # Shared with the ceiling-deny message the spawner builds below and the
@@ -1222,10 +1217,6 @@ all_candidates AS (
       AND mc.last_verified_ok IS DISTINCT FROM false
       AND COALESCE(bmo.complexity_tier, mc.complexity_tier) = $2
       AND mc.id != ALL($3::uuid[])
-      AND (
-        NOT $4::boolean
-        OR (mc.runtime_type = 'opencode' AND mc.model_id LIKE 'ollama/%')
-      )
       AND mc.id NOT IN (SELECT catalog_entry_id FROM breaker_open)
 )
 SELECT
@@ -1323,7 +1314,7 @@ GROUP BY mc.model_id
 # Load all spend routing rules in evaluation order (top-to-bottom = position ASC).
 # Each rule is a (condition JSONB, action JSONB) pair; evaluation is first-match-wins.
 _SPEND_RULES_SELECT_SQL = """
-SELECT id, condition, action, updated_at
+SELECT id, condition, action
 FROM public.spend_rules
 ORDER BY position ASC
 """
@@ -2369,8 +2360,6 @@ async def next_same_tier_candidate(
     butler_name: str,
     effective_tier: str,
     attempted_ids: list[uuid.UUID],
-    *,
-    local_only: bool = False,
 ) -> tuple[str, str, list[str], uuid.UUID, int] | None:
     """Return the next eligible model in the exact effective tier, excluding attempted IDs.
 
@@ -2399,11 +2388,6 @@ async def next_same_tier_candidate(
     attempted_ids:
         Catalog entry IDs that have already been attempted or explicitly skipped
         for this logical session.  All of these are excluded from the result.
-    local_only:
-        When true, require the OpenCode runtime and canonical ``ollama/`` model
-        namespace. The caller separately supplies the captured provider-origin
-        authority used for invocation.
-
     Returns
     -------
     tuple[str, str, list[str], uuid.UUID, int] | None
@@ -2416,7 +2400,6 @@ async def next_same_tier_candidate(
         butler_name,
         effective_tier,
         attempted_ids,
-        local_only,
     )
     if row is None:
         return None
@@ -2467,186 +2450,6 @@ def _parse_max_cost_per_call(action: dict, rule_id: object) -> float | None:
         )
         return None
     return cap
-
-
-def _explicit_private_content_condition(condition: dict) -> bool:
-    """Return whether a rule explicitly names the private-content purpose.
-
-    Catch-all, butler-only, tier-only, and the legacy ``trigger`` alias are not
-    sufficient authority to move private content off a local model. The owner
-    must target this lane by its durable purpose name.
-    """
-    raw = condition.get("purpose")
-    values = raw if isinstance(raw, list) else [raw]
-    return any(isinstance(value, str) and value.casefold() == "private_content" for value in values)
-
-
-async def is_current_spend_rule_audited(
-    pool: asyncpg.Pool,
-    result: SpendRoutingResult,
-) -> bool:
-    """Verify that a private-content override's current rule revision was audited.
-
-    Audit lookup failure denies the exception. A historic create event is not
-    enough after a rule update: its timestamp must be at least the rule's
-    current ``updated_at``.
-    """
-    if (
-        result.matched_rule_id is None
-        or result.matched_rule_updated_at is None
-        or not result.explicit_private_content
-        or result.target_model != result.resolved[1]
-    ):
-        return False
-    try:
-        return bool(
-            await pool.fetchval(
-                """
-                SELECT EXISTS (
-                    SELECT 1
-                      FROM public.spend_rules AS rule
-                      JOIN public.audit_log AS audit
-                        ON audit.target = 'rule:' || rule.id::text
-                     WHERE rule.id = $1
-                       AND rule.updated_at = $2
-                       AND rule.action ->> 'model' = $3
-                       AND EXISTS (
-                            SELECT 1
-                              FROM jsonb_array_elements_text(
-                                CASE jsonb_typeof(rule.condition -> 'purpose')
-                                  WHEN 'array' THEN rule.condition -> 'purpose'
-                                  WHEN 'string' THEN jsonb_build_array(
-                                    rule.condition -> 'purpose'
-                                  )
-                                  ELSE '[]'::jsonb
-                                END
-                              ) AS purpose(value)
-                             WHERE lower(purpose.value) = 'private_content'
-                       )
-                       AND audit.action IN ('spend.rule.create', 'spend.rule.update')
-                       AND audit.actor = 'owner'
-                       AND audit.result = 'success'
-                       AND audit.ts >= rule.updated_at
-                )
-                """,
-                result.matched_rule_id,
-                result.matched_rule_updated_at,
-                result.resolved[1],
-            )
-        )
-    except Exception:
-        logger.warning(
-            "Private-content override audit lookup failed for rule=%s; refusing remote model",
-            result.matched_rule_id,
-            exc_info=True,
-        )
-        return False
-
-
-class PrivateContentModelUnavailable(RuntimeError):
-    """No local candidate or current audited remote exception exists."""
-
-
-def _is_owner_local_ollama_endpoint(raw_url: object) -> bool:
-    """Return whether an Ollama origin has explicit owner-local authority.
-
-    RFC 0008 names ``ollama`` as the sole tailnet host authorized for local LLM
-    inference. Loopback is local to the invoking host; any other DNS name or IP
-    remains uncertain and therefore remote for the private-content gate.
-    """
-    if not isinstance(raw_url, str) or not raw_url.strip():
-        return False
-    parsed = urlparse(raw_url.strip())
-    if parsed.scheme not in {"http", "https"} or parsed.hostname is None:
-        return False
-    hostname = parsed.hostname.casefold()
-    if hostname in {"localhost", "ollama"}:
-        return True
-    try:
-        return ipaddress.ip_address(hostname).is_loopback
-    except ValueError:
-        return False
-
-
-async def _provider_config_for_private_selection(
-    pool: asyncpg.Pool,
-    selection: tuple[str, str, list[str], uuid.UUID, int],
-) -> tuple[bool, dict[str, dict[str, Any]] | None]:
-    """Prove that a catalog selection executes through local Ollama.
-
-    The model namespace alone is editable metadata. Local authority requires
-    the OpenCode runtime (the only in-tree adapter that consumes the Ollama
-    provider config) plus an enabled provider row whose endpoint is an
-    unambiguous loopback URL. Missing, malformed, or unreadable configuration
-    denies locality.
-    """
-    runtime_type, model_id, *_rest = selection
-    if runtime_type != "opencode" or not model_id.startswith("ollama/"):
-        return False, None
-    from butlers.core.spawner_provider import resolve_provider_config
-
-    try:
-        provider_config = await resolve_provider_config(pool, model_id)
-    except Exception:
-        logger.warning(
-            "Private-content Ollama locality lookup failed; refusing local classification",
-            exc_info=True,
-        )
-        return False, None
-    if provider_config is None:
-        return False, None
-    raw_url = provider_config.get("ollama", {}).get("options", {}).get("baseURL")
-    return _is_owner_local_ollama_endpoint(raw_url), provider_config
-
-
-async def enforce_private_content_selection(
-    pool: asyncpg.Pool,
-    *,
-    butler_name: str,
-    effective_tier: str,
-    routing_result: SpendRoutingResult,
-) -> tuple[
-    tuple[str, str, list[str], uuid.UUID, int],
-    bool,
-    dict[str, dict[str, Any]] | None,
-    bool,
-]:
-    """Return a local selection, or a current explicitly audited remote one.
-
-    The second value is true only for the audited remote exception. The third
-    is the exact provider configuration captured while proving an Ollama
-    selection; the caller must reuse it for adapter setup. The fourth says
-    whether that captured origin has owner-local authority for failover.
-    """
-    selected = routing_result.resolved
-    selected_is_local, selected_provider_config = await _provider_config_for_private_selection(
-        pool, selected
-    )
-    if selected_is_local:
-        return selected, False, selected_provider_config, True
-    if await is_current_spend_rule_audited(pool, routing_result):
-        return selected, True, selected_provider_config, False
-
-    attempted_ids = [selected[3]]
-    while True:
-        local_candidate = await next_same_tier_candidate(
-            pool,
-            butler_name,
-            effective_tier,
-            attempted_ids,
-            local_only=True,
-        )
-        if local_candidate is None:
-            raise PrivateContentModelUnavailable(
-                "private_content_remote_refused: proven local model unavailable"
-            )
-        (
-            candidate_is_local,
-            candidate_provider_config,
-        ) = await _provider_config_for_private_selection(pool, local_candidate)
-        if candidate_is_local:
-            return local_candidate, False, candidate_provider_config, True
-        attempted_ids.append(local_candidate[3])
 
 
 async def apply_spend_routing_rules(
@@ -2758,16 +2561,11 @@ async def apply_spend_routing_rules(
         # First match wins — stop evaluating further rules regardless of outcome.
         rule_id = rule_row["id"]
         matched_rule_id = rule_id if isinstance(rule_id, uuid.UUID) else uuid.UUID(str(rule_id))
-        raw_updated_at = rule_row.get("updated_at")
-        matched_rule_updated_at = raw_updated_at if isinstance(raw_updated_at, datetime) else None
         action = _coerce_rule_dict(rule_row["action"])
         max_cost_per_call = _parse_max_cost_per_call(action, rule_id)
         target_model = action.get("model")
         match_metadata = {
             "matched_rule_id": matched_rule_id,
-            "matched_rule_updated_at": matched_rule_updated_at,
-            "explicit_private_content": _explicit_private_content_condition(condition),
-            "target_model": target_model if isinstance(target_model, str) else None,
         }
 
         if not target_model or not isinstance(target_model, str):

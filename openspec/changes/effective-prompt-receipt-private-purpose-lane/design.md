@@ -61,26 +61,20 @@ private; other or unknown sources are standard. The value is safe to persist on 
 token-usage, and dispatch-attempt evidence and safe to render as a badge. Sender, recipient, thread,
 or message identifiers are never used as the lane value.
 
-### D5: Private content defaults to local and remote use requires current audit evidence
+### D5: Purpose lane is evidence, not model-selection authority
 
-A catalog model is local only when it uses the OpenCode runtime, its canonical `model_id` begins
-`ollama/`, and the exact provider origin captured for the dispatch is loopback or the RFC 0008
-owner-local `ollama` Tailnet service. Missing, malformed, unreadable, or other provider config is not
-proof. The gate returns the captured config and adapter setup reuses it; it never validates one
-origin and then re-reads another. Before any adapter is created or invoked, private-content
-selection and same-tier failover exclude unproved models.
+`purpose_lane` is carried into session, dispatch-attempt, and token-usage evidence, but it does not
+independently add or remove a catalog candidate. Initial selection, tier fallthrough, priority,
+fit, verification, quota, breaker, and same-tier failover continue to use the canonical
+model-catalog contracts and any separately adopted operator routing rules. In particular,
+`private_content` does not require OpenCode, an `ollama/` model, locality proof, or a
+private-purpose audited remote exception, and it does not authorize a
+`private_content_remote_refused` outcome while an ordinarily eligible catalog candidate exists.
 
-The only exception is an existing operator spend-routing rule whose condition explicitly matches
-`purpose=private_content`, whose action explicitly names the selected remote model, and whose latest
-successful `spend.rule.create` or `spend.rule.update` audit evidence is at least as new as the rule.
-One database snapshot revalidates the live rule identifier, revision, private-purpose condition,
-selected target, and owner audit. A concurrent update or delete, catch-all, tier-only rule, old
-audit for a subsequently changed rule, audit read failure, or post-selection code path is not
-authority. The exception is recorded as `audited_remote_override` without content.
-
-If no local model and no valid audited exception exists, routing refuses before provider setup or
-invocation, appends a bounded audit/dispatch-attempt reason, and exposes the refusal without falling
-back remotely. Audit write failure does not turn refusal into permission.
+This preserves Heart-and-Soul's recorded trust model: external LLM providers are partially trusted,
+and the owner accepts provider exposure as a condition of using the system. The lane remains useful
+content-blind provenance; changing that trust model requires an explicit doctrine decision rather
+than a routing implementation detail.
 
 ## Rollback
 
@@ -89,5 +83,5 @@ data exists. A requested downgrade that crosses the protected runtime-attention 
 that boundary before either newer revision changes schema or its version stamp; refusal preserves
 the original head and all receipt/purpose evidence. Removing the UI projections falls back to
 existing session and prompt displays.
-Removing lane enforcement requires reverting source and migration together; stored lane values are
-non-secret evidence and need no replay or reinterpretation.
+Stored lane values are non-secret provenance and need no replay or reinterpretation; removing the
+display later does not alter model-selection history.
