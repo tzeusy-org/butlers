@@ -13,7 +13,8 @@ def notification_recovery_exclusion_sql(alias: str = "") -> str:
     return (
         "NOT COALESCE("
         f"jsonb_typeof({metadata} -> 'notify_request') = 'object' "
-        f"AND ({metadata} -> 'notify_request') ? 'recovery', FALSE"
+        f"AND ({metadata} -> 'notify_request') ? 'recovery' "
+        f"AND jsonb_typeof({metadata} -> 'notify_request' -> 'recovery') <> 'null', FALSE"
         ")"
     )
 
@@ -23,7 +24,7 @@ def notification_metadata_is_recovery(value: Any) -> bool:
     if not isinstance(value, Mapping):
         return False
     notify_request = value.get("notify_request")
-    return isinstance(notify_request, Mapping) and "recovery" in notify_request
+    return isinstance(notify_request, Mapping) and notify_request.get("recovery") is not None
 
 
 def message_inbox_recovery_exclusion_sql(alias: str = "") -> str:

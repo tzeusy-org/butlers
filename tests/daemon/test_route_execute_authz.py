@@ -16,11 +16,13 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from fastmcp.server.dependencies import AccessToken
 
 from butlers.core.approval_delivery_worker import HandoffResult
 from butlers.daemon import ButlerDaemon
+from butlers.modules.telegram import TelegramProviderResponseError
 
 pytestmark = pytest.mark.unit
 
@@ -499,6 +501,136 @@ class TestRouteExecuteAuthz:
         repository.process.assert_not_awaited()
         assert patches["mock_pool"].method_calls == []
         telegram._send_message.assert_not_awaited()
+
+    async def test_null_recovery_is_ordinary_notify_not_privileged_recovery(
+        self, tmp_path: Path
+    ) -> None:
+        patches = _patch_infra()
+        daemon, route_execute = await _start_daemon_with_route_execute(
+            _make_butler_toml(
+                tmp_path,
+                butler_name="messenger",
+                modules={"telegram": {}, "email": {}},
+            ),
+            patches,
+        )
+        assert route_execute is not None
+        telegram = next(module for module in daemon._modules if module.name == "telegram")
+        telegram._send_message = AsyncMock(
+            return_value={"ok": True, "result": {"message_id": 4321}}
+        )
+        notify_request = {**_valid_notify_request(), "recovery": None}
+
+        result = await route_execute(
+            schema_version="route.v1",
+            request_context=_route_request_context(),
+            input={"prompt": "Deliver.", "context": {"notify_request": notify_request}},
+        )
+
+        telegram._send_message.assert_awaited_once()
+        assert result["status"] == "ok"
+        assert result["result"]["notify_response"]["delivery"] == {
+            "channel": "telegram",
+            "delivery_id": "4321",
+        }
+
+    async def test_telegram_transport_failure_is_content_blind_and_uncertain(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        patches = _patch_infra()
+        daemon, route_execute = await _start_daemon_with_route_execute(
+            _make_butler_toml(
+                tmp_path,
+                butler_name="messenger",
+                modules={"telegram": {}, "email": {}},
+            ),
+            patches,
+        )
+        assert route_execute is not None
+        telegram = next(module for module in daemon._modules if module.name == "telegram")
+        telegram._send_message = AsyncMock(
+            side_effect=httpx.ReadTimeout(
+                "private-body-sentinel",
+                request=httpx.Request(
+                    "POST", "https://api.telegram.org/botsecret-token/sendMessage"
+                ),
+            )
+        )
+
+        with caplog.at_level("WARNING"):
+            result = await route_execute(
+                schema_version="route.v1",
+                request_context=_route_request_context(),
+                input={
+                    "prompt": "Deliver.",
+                    "context": {"notify_request": _valid_notify_request()},
+                },
+            )
+
+        rendered = repr(result) + caplog.text
+        assert "private-body-sentinel" not in rendered
+        assert "secret-token" not in rendered
+        assert result["status"] == "error"
+        assert result["error"] == {
+            "class": "timeout",
+            "message": "Telegram delivery failed.",
+            "retryable": False,
+        }
+        assert result["transport"]["outcome"] == "uncertain"
+        assert result["transport"]["error_detail"] == "transport_timeout"
+
+    @pytest.mark.parametrize(
+        ("provider_rejected", "message", "outcome", "detail"),
+        [
+            (
+                False,
+                "Telegram delivery confirmation is unavailable.",
+                "uncertain",
+                "transport_connection_lost",
+            ),
+            (True, "Telegram delivery was rejected.", "rejected", "provider_rejected"),
+        ],
+    )
+    async def test_telegram_response_failure_preserves_transport_truth(
+        self,
+        tmp_path: Path,
+        provider_rejected: bool,
+        message: str,
+        outcome: str,
+        detail: str,
+    ) -> None:
+        patches = _patch_infra()
+        daemon, route_execute = await _start_daemon_with_route_execute(
+            _make_butler_toml(
+                tmp_path,
+                butler_name="messenger",
+                modules={"telegram": {}, "email": {}},
+            ),
+            patches,
+        )
+        assert route_execute is not None
+        telegram = next(module for module in daemon._modules if module.name == "telegram")
+        telegram._send_message = AsyncMock(
+            side_effect=TelegramProviderResponseError(
+                "telegram_provider_response: invalid message_id",
+                provider_rejected=provider_rejected,
+            )
+        )
+
+        result = await route_execute(
+            schema_version="route.v1",
+            request_context=_route_request_context(),
+            input={"prompt": "Deliver.", "context": {"notify_request": _valid_notify_request()}},
+        )
+
+        assert result["status"] == "error"
+        assert result["error"] == {
+            "class": "delivery_error",
+            "message": message,
+            "retryable": False,
+        }
+        assert result["transport"]["outcome"] == outcome
+        assert result["transport"]["error_detail"] == detail
 
 
 # ---------------------------------------------------------------------------

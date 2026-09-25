@@ -33,6 +33,7 @@ from butlers.tools.switchboard.routing.contracts import (
 from butlers.tools.switchboard.routing.route import route
 from butlers.tools.switchboard.routing.transport import (
     PROVIDER_REJECTED,
+    TRANSPORT_CONNECTION_LOST,
     TransportResult,
     transport_result_from_envelope,
 )
@@ -118,7 +119,9 @@ def _build_notify_route_envelope(
         "target": {"butler": MESSENGER_BUTLER_NAME, "tool": "route.execute"},
         "input": {
             "prompt": _NOTIFY_ROUTE_PROMPT,
-            "context": {"notify_request": notify_request.model_dump(mode="json")},
+            "context": {
+                "notify_request": notify_request.model_dump(mode="json", exclude_none=True)
+            },
         },
     }
 
@@ -268,7 +271,7 @@ async def _deliver_via_notify_request(
         recipient = notify_request.request_context.source_thread_identity or ""
     message = notify_request.delivery.message
     log_metadata = dict(metadata or {})
-    log_metadata["notify_request"] = notify_request.model_dump(mode="json")
+    log_metadata["notify_request"] = notify_request.model_dump(mode="json", exclude_none=True)
     log_metadata["request_context"] = request_context.model_dump(mode="json")
 
     # Create a switchboard-scoped context for the route.v1 envelope so the
@@ -341,7 +344,51 @@ async def _deliver_via_notify_request(
         }
         return result
 
-    notify_response = _extract_notify_response(route_result.get("result"))
+    route_response = route_result.get("result")
+    if not isinstance(route_response, dict) or route_response.get("status") != "ok":
+        route_error = route_response.get("error") if isinstance(route_response, dict) else None
+        if isinstance(route_error, dict):
+            error_msg = str(route_error.get("message") or "Messenger route rejected delivery.")
+            error_class = str(route_error.get("class") or "route_error")
+        else:
+            error_msg = "Messenger returned no successful delivery response."
+            error_class = "invalid_route_response"
+        notification_id = await _log_notification_best_effort(
+            pool,
+            source_butler=source_butler,
+            channel=channel,
+            recipient=recipient,
+            message=message,
+            metadata=log_metadata,
+            status="failed",
+            error=error_msg,
+            session_id=session_id,
+            trace_id=_current_trace_id(),
+        )
+        nested_transport = (
+            transport_result_from_envelope(route_response)
+            if isinstance(route_response, dict)
+            else None
+        )
+        explicit_application_rejection = (
+            isinstance(route_response, dict)
+            and route_response.get("status") == "error"
+            and isinstance(route_response.get("error"), dict)
+            and error_class in {"validation_error", "delivery_error", "policy_denied"}
+        )
+        failure_transport = nested_transport or (
+            PROVIDER_REJECTED if explicit_application_rejection else TRANSPORT_CONNECTION_LOST
+        )
+        return {
+            "notification_id": notification_id,
+            "status": "failed",
+            "error": error_msg,
+            "error_class": error_class,
+            "retryable": False,
+            **_transport_fragment(failure_transport),
+        }
+
+    notify_response = _extract_notify_response(route_response)
     if isinstance(notify_response, dict) and notify_response.get("status") == "error":
         error_payload = notify_response.get("error")
         if isinstance(error_payload, dict):
@@ -377,6 +424,47 @@ async def _deliver_via_notify_request(
             **_transport_fragment(transport),
         }
 
+    delivery_receipt = (
+        notify_response.get("delivery") if isinstance(notify_response, dict) else None
+    )
+    delivery_id = (
+        delivery_receipt.get("delivery_id") if isinstance(delivery_receipt, dict) else None
+    )
+    receipt_channel = (
+        delivery_receipt.get("channel") if isinstance(delivery_receipt, dict) else None
+    )
+    if (
+        not isinstance(notify_response, dict)
+        or notify_response.get("status") != "ok"
+        or receipt_channel != channel
+        or not isinstance(delivery_id, (str, int))
+        or isinstance(delivery_id, bool)
+        or not str(delivery_id).strip()
+    ):
+        error_msg = "Messenger delivery confirmation was missing or malformed."
+        notification_id = await _log_notification_best_effort(
+            pool,
+            source_butler=source_butler,
+            channel=channel,
+            recipient=recipient,
+            message=message,
+            metadata=log_metadata,
+            status="failed",
+            error=error_msg,
+            session_id=session_id,
+            trace_id=_current_trace_id(),
+        )
+        return {
+            "notification_id": notification_id,
+            "status": "failed",
+            "error": error_msg,
+            "error_class": "invalid_delivery_receipt",
+            "retryable": False,
+            **_transport_fragment(TRANSPORT_CONNECTION_LOST),
+        }
+
+    log_metadata["delivery_id"] = str(delivery_id)
+
     # Messenger confirmed delivery. Everything below is bookkeeping and must
     # not be able to turn a delivered message back into a failure.
     notification_id = await _log_notification_best_effort(
@@ -401,7 +489,8 @@ async def _deliver_via_notify_request(
     return {
         "notification_id": notification_id,
         "status": "sent",
-        "result": notify_response or route_result.get("result"),
+        "delivery_id": str(delivery_id),
+        "result": notify_response,
         **_transport_fragment(transport),
     }
 
@@ -566,7 +655,7 @@ async def deliver(
         "error": "<description>"}`` on failure.
     """
     envelope_payload: dict[str, Any] | None = notify_request
-    if isinstance(envelope_payload, dict) and "recovery" in envelope_payload:
+    if isinstance(envelope_payload, dict) and envelope_payload.get("recovery") is not None:
         authenticated = await _authenticate_recovery_request(
             pool,
             envelope_payload=envelope_payload,
@@ -610,7 +699,7 @@ async def deliver(
             except ValidationError as exc:
                 error_msg = (
                     "Invalid approval recovery request."
-                    if "recovery" in envelope_payload
+                    if envelope_payload.get("recovery") is not None
                     else f"Invalid notify.v1 envelope: {exc}"
                 )
                 span.set_status(trace.StatusCode.ERROR, error_msg)
