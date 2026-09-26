@@ -24,7 +24,7 @@ import { formatUptimeParts } from "./uptime-utils"
 
 function TileSkeleton() {
   return (
-    <Tile>
+    <Tile loading>
       <TileHeader>
         <TileTitle>Uptime</TileTitle>
         <TileDescription>Process uptime</TileDescription>
@@ -41,7 +41,7 @@ function TileSkeleton() {
 
 function TileError() {
   return (
-    <Tile>
+    <Tile degraded>
       <TileHeader>
         <TileTitle>Uptime</TileTitle>
         <TileDescription>Process uptime</TileDescription>

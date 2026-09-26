@@ -28,7 +28,7 @@ import { useDriftFacts } from "@/hooks/use-system"
 
 function TileSkeleton() {
   return (
-    <Tile>
+    <Tile loading>
       <TileHeader>
         <TileTitle>Migration Drift</TileTitle>
         <TileDescription>Codebase vs. deployed schema state</TileDescription>
@@ -45,7 +45,7 @@ function TileSkeleton() {
 
 function TileError() {
   return (
-    <Tile>
+    <Tile degraded>
       <TileHeader>
         <TileTitle>Migration Drift</TileTitle>
         <TileDescription>Codebase vs. deployed schema state</TileDescription>
@@ -84,7 +84,7 @@ export function DriftTile() {
 
   if (!facts?.drift_check_available) {
     return (
-      <Tile>
+      <Tile degraded>
         <TileHeader>
           <TileTitle>Migration Drift</TileTitle>
           <TileDescription>Codebase vs. deployed schema state</TileDescription>

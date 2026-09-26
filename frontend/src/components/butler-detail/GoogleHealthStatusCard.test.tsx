@@ -146,6 +146,13 @@ describe("GoogleHealthStatusCard — single account", () => {
     expect(screen.getByTestId("account-email").textContent).toBe("user@example.com");
   });
 
+  it("keeps the account heading phrasing-only and renders status beside it", () => {
+    renderCard(SINGLE_ACCOUNT_STATUS);
+    const heading = screen.getByRole("heading", { name: /user@example.com/i });
+    expect(heading.querySelector("div")).toBeNull();
+    expect(heading.contains(screen.getByTestId("account-state"))).toBe(false);
+  });
+
   it("shows the account state text on the widget", () => {
     renderCard(SINGLE_ACCOUNT_STATUS);
     const accountState = screen.getByTestId("account-state");

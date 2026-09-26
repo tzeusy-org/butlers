@@ -25,7 +25,7 @@ import { useEgressFacts } from "@/hooks/use-system"
 
 function TileSkeleton() {
   return (
-    <Tile>
+    <Tile loading>
       <TileHeader>
         <TileTitle>Data Egress</TileTitle>
         <TileDescription>External services that received data</TileDescription>
@@ -43,7 +43,7 @@ function TileSkeleton() {
 
 function TileError() {
   return (
-    <Tile>
+    <Tile degraded>
       <TileHeader>
         <TileTitle>Data Egress</TileTitle>
         <TileDescription>External services that received data</TileDescription>
@@ -77,7 +77,7 @@ export function EgressCatalogTile() {
 
   if (isForbidden) {
     return (
-      <Tile>
+      <Tile degraded>
         <TileHeader>
           <TileTitle>Data Egress</TileTitle>
           <TileDescription>External services that received data</TileDescription>

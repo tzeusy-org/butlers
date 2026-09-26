@@ -42,7 +42,7 @@
 
 import { getProviderOAuthStartUrl } from '@/api/client'
 import type { ConnectorSummary } from '@/api/types'
-import { stateColorVar } from '@/lib/visual-token-roles'
+import { stateTextColorVar } from '@/lib/visual-token-roles'
 
 /** Derived auth status — maps onto the Dispatch design language. */
 export type DerivedAuthStatus =
@@ -259,15 +259,15 @@ export function authStatusLabel(status: DerivedAuthStatus): string {
 export function authStatusColor(status: DerivedAuthStatus): string {
   switch (status) {
     case 'ok':
-      return stateColorVar('ok')
+      return stateTextColorVar('ok')
     case 'expiring':
-      return stateColorVar('degraded')
+      return stateTextColorVar('degraded')
     case 'needs_reauth':
-      return stateColorVar('error')
+      return stateTextColorVar('error')
     case 'needs_primary_account':
-      return stateColorVar('degraded')
+      return stateTextColorVar('degraded')
     case 'unconfigured':
-      return stateColorVar('waiting')
+      return stateTextColorVar('waiting')
   }
 }
 
@@ -289,7 +289,7 @@ export function healthDotState(health: DerivedHealth): 'ok' | 'degraded' | 'erro
 
 /** Maps health to the same semantic token consumed by StateDot. */
 export function healthTextColor(health: DerivedHealth): string {
-  return stateColorVar(healthDotState(health))
+  return stateTextColorVar(healthDotState(health))
 }
 
 /** The visible auth label and semantic foreground tone for roster surfaces. */
