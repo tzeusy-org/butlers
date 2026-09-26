@@ -4,7 +4,7 @@
 
 Six selected fixes are wired in source. Four new moves survive deduplication: one chat correction and three evidence-aware capability specifications.
 
-[Open the local report](2026-09-22-jarvis-pursuit-report.html) · [Structured evidence](2026-09-22-jarvis-pursuit-data.json)
+[Structured evidence](2026-09-22-jarvis-pursuit-data.json)
 
 ## Decision in view
 

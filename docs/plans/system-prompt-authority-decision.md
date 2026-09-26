@@ -7,8 +7,8 @@ or Beads lifecycle changes.
 **Source:** `36e683197ab0ab548ddd67a12badbaaba940da04` (`origin/main` and this
 branch matched when the evidence was refreshed on 2026-09-12).
 
-**Predecessor research:** `docs/plans/spec-debt-provenance-next-tranche.md`, produced by
-`bu-o2yi6k` and merged in PR #4148. That packet established the historical requirement rename
+**Predecessor research:** the spec-debt provenance packet produced by `bu-o2yi6k` and merged in
+PR #4148 (commit `e74841f8a`; retired from `docs/plans/`, recover with `git show`). That packet established the historical requirement rename
 but deliberately left effective prompt provenance and two shared-include surfaces unresolved.
 
 **Owning debt:** `bu-w8uno` still owns unarchived whole-requirement overwrite debt;

@@ -343,9 +343,4 @@ docs/
     testing/
   archive/                      # retained research and evidence with an explicit purpose
     README.md                   # successors for retired bodies; git history preserves them
-    draft-discord.md
-    home-assistant-draft.md
-    photos-screenshots-draft.md
-    voice-draft.md
-    whatsapp-draft.md
 ```

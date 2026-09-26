@@ -35,11 +35,15 @@ binding; `Shipped -> ...` means the cited work landed and the citing change is a
 | Brief | Surface | Status | Now bound by |
 |---|---|---|---|
 | [2026-05-17-entity-brief.md](2026-05-17-entity-brief.md) | Entity / relationship pages (v1) | Active (§0, §6b binding) | `openspec/specs/relationship-facts/spec.md` (§6b Amendment 1.1), `openspec/specs/dashboard-relationship/spec.md` (binding §0) |
-| [2026-06-12-entity-brief-v3.md](2026-06-12-entity-brief-v3.md) | Entity pages (v3; supersedes v1/v2 for later scope) | Shipped -> `openspec/changes/archive/2026-06-12-entity-v3-lifecycle-and-depth` | latest entity brief; prior v2 scope shipped (epics bu-lh4ol, bu-ao6uh, bu-uhjxr, bu-m8gb6) |
 | [2026-05-25-secrets-brief.md](2026-05-25-secrets-brief.md) | `/secrets` passport surface | Active (binding) | `openspec/specs/butler-secrets/spec.md` (Binding integration brief) |
-| [2026-06-20-health-brief.md](2026-06-20-health-brief.md) | Health domain pages | Shipped -> `openspec/changes/archive/2026-06-24-health-dashboard-overview-redesign` | `openspec/specs/dashboard-domain-pages/spec.md`, `openspec/specs/butler-health/spec.md`, `openspec/specs/proactive-insight-engine/spec.md` |
 | [ingestion-handoff.md](ingestion-handoff.md) | Ingestion / Dispatch console | Active (binding) | `openspec/specs/dashboard-ingestion-dispatch-console/spec.md`; `AGENTS.md` (ingestion closure evidence) |
-| [design-language.md](design-language.md) | Dispatch design language | Superseded-by -> `openspec/specs/dashboard-design-language/spec.md` | **graduated stub** → `openspec/specs/dashboard-design-language/spec.md` (canonical) |
+
+Retired briefs (bodies recoverable from Git history at their original paths):
+`2026-06-12-entity-brief-v3.md` (binding constraints carried by the archived change
+[2026-06-12-entity-v3-lifecycle-and-depth](../../openspec/changes/archive/2026-06-12-entity-v3-lifecycle-and-depth/design.md)),
+`2026-06-20-health-brief.md` (bound by `dashboard-domain-pages`, `butler-health`, and
+`proactive-insight-engine` specs), and the `design-language.md` redirect stub (canonical:
+[dashboard-design-language](../../openspec/specs/dashboard-design-language/spec.md)).
 
 Two React mocks accompany the ingestion handoff and are cited by the active
 change `add-connector-oauth-scope-surface`:

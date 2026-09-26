@@ -14,5 +14,6 @@
 - [Heartbeat](heartbeat.md) — connector health monitoring
 - [Live Listener](live-listener.md) — audio live listener connector
 - [OwnTracks](owntracks.md) — phone location setup, evidence cadence, and privacy notes
+- [WhatsApp](whatsapp.md) — WhatsApp bridge ownership, pairing, and operator setup
 - [Attachment Handling](attachment-handling.md) — file/media attachment processing
 - [Metrics](metrics.md) — connector metrics and statistics
