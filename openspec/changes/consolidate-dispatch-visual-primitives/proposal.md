@@ -14,7 +14,8 @@ topology surfaces.
   one module's failure from blanking neighboring modules.
 - Migrate every production `ui/card` consumer to Section or the narrow Tile role, then delete
   `ui/card.tsx` without a re-export or compatibility alias.
-- Route connector, Google Health, and topology state marks through `StateDot` or `stateColorVar`.
+- Route connector, Google Health, and topology state marks through `StateDot` or `stateColorVar`,
+  and state text through the same registry's AA-safe `stateTextColorVar` mapping.
 - Add narrow ESLint ratchets for retired Card imports and literal CSS-token fallbacks inside
   `var()`. The existing named-color and semantic visual-role guards remain the authorities for
   their existing scopes.

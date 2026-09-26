@@ -1195,8 +1195,10 @@ Non-identity callers choose a typed semantic role instead:
   `frontend/src/lib/chart-colors.ts`, which resolve `--chart-1..5` (the
   role-explicit `chartSeriesColor` name is preferred for new multi-series
   code).
-- **Operational state:** `StateDot` / `stateColorVar`, which resolve the
-  state-token registry rather than a categorical or identity hue.
+- **Operational state:** `StateDot` / `stateColorVar` / `stateTextColorVar`,
+  which resolve the state-token registry rather than a categorical or identity
+  hue. The text resolver selects the AA-safe `--amber-text` and `--red-text`
+  variants while marks retain the base fill and border tokens.
 - **Owner-selected label colors:** `ownerCustomColor`, the explicit custom
   color boundary for a supplied owner value.
 - **Filled label styles:** `labelFillColors` normalizes supported owner hex
