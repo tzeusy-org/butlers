@@ -180,6 +180,8 @@
    *   --border-soft                 list separators (6% / 5% opacity)
    *   --border-strong               buttons, link underlines (18% / 20% opacity)
    *   --green                       healthy / positive delta state color
+   *   --amber-text / --red-text     AA-safe operational state text; state
+   *                                  marks retain base --amber / --red
    *
    * Note: --border, --red, and --amber already exist above and their dark-mode
    * values match the Dispatch spec exactly. --border light-mode uses the

@@ -16,8 +16,10 @@ operational signal. `frontend/src/index.css` remains the token-value authority a
 3. Card subparts are migrated to named Section or Tile anatomy (`Header`, `Title`, `Description`,
    `Content`, `Action`, and `Footer`) so the new primitive is explicit. No `Card` export, alias,
    path shim, or duplicate elevated surface remains.
-4. Connector and topology status marks use `StateDot` or `stateColorVar`. A module does not
-   maintain a private state-to-token map when the shared resolver can express the same meaning.
+4. Connector and topology status marks use `StateDot` or `stateColorVar`; status text uses
+   `stateTextColorVar`, with both resolvers reading `VISUAL_TOKEN_ROLE_REGISTRY.state`. A module
+   does not maintain a private state-to-token map when the shared resolver can express the same
+   meaning.
 5. The new ESLint selectors only reject imports from the retired Card path and CSS custom-property
    fallbacks. They do not add a blanket Tailwind named-color ban or replace the existing visual
    role registry.
