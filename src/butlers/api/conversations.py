@@ -543,6 +543,12 @@ async def conversation_search(
 ) -> tuple[list[dict[str, Any]], int]:
     """Substring search across conversation messages for a butler.
 
+    Matching is deliberately case-insensitive substring (``ILIKE '%q%'``, served by
+    ``idx_dashboard_messages_content_trgm``), not the full-text ``search_vector`` used by
+    :func:`message_search`. FTS differs on partial words, inflection, word order, stop
+    words, and wildcard characters, and lacks this endpoint's per-conversation grouping
+    and offset/total contract, so swapping predicates is a behavior change (bu-u22ss).
+
     Returns (results, total_count).  Each result includes the conversation
     metadata plus a ``snippet`` field from the matching message.  Results are
     ordered by most recent matching message first (``msg_created_at DESC``).

@@ -6,8 +6,7 @@
  * POST/GET /api/butlers/switchboard/conversations spine the butler-detail
  * ChatPanel.tsx Sheet uses), so widget conversations are the owner's single
  * "everything I told the system" history — visible on Switchboard's own
- * butler-detail chat panel too (docs/plans/2026-07-03-dashboard-chat-widget-
- * design.md § Storage scope).
+ * butler-detail chat panel too (openspec/specs/dashboard-conversations/spec.md).
  *
  * Differs from ChatPanel.tsx (which renders a wide Sheet with a persistent
  * sidebar + thread split pane) in two ways suited to a small floating
