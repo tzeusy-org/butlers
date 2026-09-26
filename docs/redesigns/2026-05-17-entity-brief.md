@@ -5,7 +5,8 @@
 > (binding §0) and `openspec/specs/relationship-facts/spec.md` (§6b migration-safety
 > requirement). The v1/v2 baseline routes and visual layer this brief designed have shipped
 > (closed epics `bu-lh4ol`, `bu-ao6uh`, `bu-uhjxr`, `bu-m8gb6`) and later-scope depth work is
-> layered on top by [2026-06-12-entity-brief-v3.md](2026-06-12-entity-brief-v3.md) — not a
+> layered on top by the archived v3 change
+> [2026-06-12-entity-v3-lifecycle-and-depth](../../openspec/changes/archive/2026-06-12-entity-v3-lifecycle-and-depth/design.md) — not a
 > supersession of this brief's still-binding clauses.
 
 **Date:** 2026-05-17
