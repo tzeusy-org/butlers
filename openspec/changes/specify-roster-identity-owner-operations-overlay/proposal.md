@@ -47,9 +47,9 @@ it changes no roster or prompt bytes.
 - Make the rollback window fail closed from deployment-owned server configuration. No request,
   database row, MCP tool, runtime session, or generic API can open or extend it.
 - Inventory every current source and writer seam in `design.md`. The active
-  `k3s-deployment-helm-chart` and `specify-improvement-proposal-spine` changes remain the only
-  whole-requirement owners of `core-skills / AGENTS.md Read/Write Access`; this change neither
-  modifies that requirement nor adopts either candidate target state.
+  `specify-improvement-proposal-spine` change remains the only whole-requirement owner of
+  `core-skills / AGENTS.md Read/Write Access`; this change neither modifies that requirement nor
+  adopts its candidate target state.
 
 This is a draft contract only. It does not authorize implementation, schema or grant changes,
 credential provisioning, prompt or roster edits, runtime/database access, deployment, archive,

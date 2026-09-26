@@ -27,11 +27,11 @@ control-plane selection and reachability, not transactional target acceptance
 or session success. Delivery receipts and conditions are separate evidence.
 An intentional QA pause remains separately visible but does not satisfy
 readiness. A database connection and nonempty roster alone SHALL NOT make
-`/ready` successful. K3s and Compose consume Q4's route; they SHALL NOT
+`/ready` successful. Deployment launchers consume Q4's route; they SHALL NOT
 register a second readiness handler or public auth exception.
 
 ID: REQ-dashboard-api-063
-Source: RFC 0007 §API Surface; openspec/changes/k3s-deployment-helm-chart/specs/dashboard-api/spec.md §Readiness probe endpoint; docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md §5.4
+Source: RFC 0007 §API Surface; docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md §5.4
 Scope: v1-mandatory
 
 #### Scenario: Control plane is ready
