@@ -24,4 +24,4 @@
       add focused Section and Tile render tests.
 - [x] 4.2 Run affected Vitest nodes/files, frontend lint, `npm run knip`, build, `make check-guards`,
       and `make test-plan BASE=origin/main`.
-- [ ] 4.3 Push the exact head, open a PR, and use terminal hosted CI for broad evidence.
+- [x] 4.3 Push the exact head, open PR #4231, and use terminal hosted CI for broad evidence.
