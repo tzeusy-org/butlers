@@ -23,7 +23,7 @@ import { useInstanceFacts } from "@/hooks/use-system"
 
 function TileSkeleton() {
   return (
-    <Tile>
+    <Tile loading>
       <TileHeader>
         <TileTitle>Version</TileTitle>
         <TileDescription>Software version</TileDescription>
@@ -40,7 +40,7 @@ function TileSkeleton() {
 
 function TileError() {
   return (
-    <Tile>
+    <Tile degraded>
       <TileHeader>
         <TileTitle>Version</TileTitle>
         <TileDescription>Software version</TileDescription>

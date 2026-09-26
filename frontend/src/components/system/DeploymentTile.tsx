@@ -59,7 +59,7 @@ function servingModeText(current: {
 
 function TileSkeleton() {
   return (
-    <Tile>
+    <Tile loading>
       <TileHeader>
         <TileTitle>Deployment</TileTitle>
         <TileDescription>What's actually serving right now</TileDescription>
@@ -76,7 +76,7 @@ function TileSkeleton() {
 
 function TileError() {
   return (
-    <Tile>
+    <Tile degraded>
       <TileHeader>
         <TileTitle>Deployment</TileTitle>
         <TileDescription>What's actually serving right now</TileDescription>
@@ -119,7 +119,7 @@ export function DeploymentTile() {
 
   if (!facts?.current) {
     return (
-      <Tile>
+      <Tile degraded>
         <TileHeader>
           <TileTitle>Deployment</TileTitle>
           <TileDescription>What's actually serving right now</TileDescription>
@@ -148,7 +148,10 @@ export function DeploymentTile() {
   const isRed = redClauses.length > 0
 
   return (
-    <Tile className={isRed ? "border-[var(--red)]/40" : undefined}>
+    <Tile
+      degraded={!behindKnown}
+      className={isRed ? "border-[var(--red)]/40" : undefined}
+    >
       <TileHeader>
         <TileTitle>Deployment</TileTitle>
         <TileDescription>What's actually serving right now</TileDescription>

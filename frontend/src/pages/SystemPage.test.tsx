@@ -535,6 +535,20 @@ describe("SystemPage -- backup source unreachable", () => {
     const html = renderPage();
     expect(html).toContain("Backup status unavailable");
   });
+
+  it("keeps sibling tiles rendered when the backup tile degrades", () => {
+    vi.mocked(useBackupFacts).mockReturnValue({
+      data: undefined,
+      isPending: false,
+      isError: true,
+    } as AnyMock);
+
+    const html = renderPage();
+    expect(html).toContain("Could not load backup facts");
+    expect(html).toContain('data-degraded="true"');
+    expect(html).toContain("Software version");
+    expect(html).toContain("Process uptime");
+  });
 });
 
 describe("SystemPage -- tile sizing (bu-ozbtv)", () => {

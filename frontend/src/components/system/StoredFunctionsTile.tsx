@@ -29,7 +29,7 @@ import { useStoredFunctionFacts } from "@/hooks/use-system"
 
 function TileSkeleton() {
   return (
-    <Tile>
+    <Tile loading>
       <TileHeader>
         <TileTitle>Stored Functions</TileTitle>
         <TileDescription>Deployed bodies vs. init-db.sql</TileDescription>
@@ -46,7 +46,7 @@ function TileSkeleton() {
 
 function TileError() {
   return (
-    <Tile>
+    <Tile degraded>
       <TileHeader>
         <TileTitle>Stored Functions</TileTitle>
         <TileDescription>Deployed bodies vs. init-db.sql</TileDescription>
@@ -86,7 +86,7 @@ export function StoredFunctionsTile() {
 
   if (!facts?.stored_function_check_available) {
     return (
-      <Tile>
+      <Tile degraded>
         <TileHeader>
           <TileTitle>Stored Functions</TileTitle>
           <TileDescription>Deployed bodies vs. init-db.sql</TileDescription>

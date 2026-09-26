@@ -138,6 +138,13 @@ const STATE_COLORS: Record<StateColorRole, string> = {
   archived: "var(--muted-foreground)",
 };
 
+const STATE_TEXT_COLORS: Record<"ok" | "degraded" | "error" | "waiting", string> = {
+  ok: "var(--green)",
+  degraded: "var(--amber-text)",
+  error: "var(--red-text)",
+  waiting: "var(--dim)",
+};
+
 function hashName(name: string): number {
   let hash = 0;
   for (let index = 0; index < name.length; index += 1) {
@@ -169,6 +176,13 @@ export function categoricalColor(index: number): CategoricalColor {
 /** Resolve a state through the three-state semantic palette. */
 export function stateColorVar(state: StateColorRole): string {
   return STATE_COLORS[state];
+}
+
+/** Resolve a Dispatch state to a theme-safe foreground token. */
+export function stateTextColorVar(
+  state: "ok" | "degraded" | "error" | "waiting",
+): string {
+  return STATE_TEXT_COLORS[state];
 }
 
 /**
