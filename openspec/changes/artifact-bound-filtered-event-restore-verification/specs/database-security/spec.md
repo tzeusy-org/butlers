@@ -10,7 +10,7 @@ associate the exact overall restore attempt with its filtered-event scoped
 result, fixed reason, artifact SHA-256, manifest SHA-256, and manifest capture
 completion time; no separately persisted receipt may be reused across attempts.
 
-ID: REQ-database-security-009
+ID: REQ-database-security-011
 Source: Non-Negotiable Rules 1 and 4; RFC 0006 § Database Connection Scoping; RFC 0008 § Invariants
 Scope: v1-mandatory
 
