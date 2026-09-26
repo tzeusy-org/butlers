@@ -28,7 +28,7 @@ import { humanizeBytes } from "./db-size-utils"
 
 function TileSkeleton() {
   return (
-    <Tile>
+    <Tile loading>
       <TileHeader>
         <TileTitle>Database Size</TileTitle>
         <TileDescription>PostgreSQL disk footprint</TileDescription>
@@ -47,7 +47,7 @@ function TileSkeleton() {
 
 function TileError() {
   return (
-    <Tile>
+    <Tile degraded>
       <TileHeader>
         <TileTitle>Database Size</TileTitle>
         <TileDescription>PostgreSQL disk footprint</TileDescription>

@@ -185,6 +185,21 @@ describe("TopologyGraph -- canonical liveness tone coloring", () => {
     expect(html).toContain("var(--green)");
   });
 
+  it.each([
+    ["online", "var(--green)"],
+    ["stale", "var(--amber)"],
+    ["offline", "var(--red)"],
+    ["future-state", "var(--dim)"],
+  ])("maps connector status %s through the canonical state resolver", (liveness, token) => {
+    const html = render({
+      butlers: [{ name: "general", status: "ok", tone: "neutral" }],
+      connectors: [{ connector_type: "gmail", endpoint_identity: "me", liveness }],
+    });
+    const node = html.match(/<div data-testid="node-connector-gmail-me"[^>]*>/);
+    expect(node).not.toBeNull();
+    expect(node![0]).toContain(`border:2px solid ${token}`);
+  });
+
   it("animates the switchboard edge only when the butler's tone is green (running)", () => {
     const html = render({
       butlers: [

@@ -20,7 +20,13 @@
  * bead: bu-91zdb.8
  */
 
-import { Section, SectionContent, SectionHeader, SectionTitle } from "@/components/ui/Section";
+import {
+  Section,
+  SectionAction,
+  SectionContent,
+  SectionHeader,
+  SectionTitle,
+} from "@/components/ui/Section";
 import { Badge } from "@/components/ui/badge";
 import { Time } from "@/components/ui/time";
 import { StateDot } from "@/components/ui/StateDot";
@@ -127,29 +133,27 @@ interface AccountWidgetProps {
 function AccountWidget({ account, isPrimary }: AccountWidgetProps) {
   return (
     <Section data-testid="google-health-account-widget">
-      <SectionHeader className="pb-2">
-        <SectionTitle className="text-sm font-medium flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2 min-w-0">
-            {/* State dot — uses StateDot primitive for consistent token-based colour */}
-            <StateDot state={toDotState(account.state)} size={8} />
-            <span className="font-mono text-xs truncate" data-testid="account-email">
-              {account.email}
-            </span>
-          </div>
-          <div className="flex items-center gap-1 shrink-0">
-            {isPrimary && (
-              <Badge variant="outline" className="text-[10px] py-0 px-1.5">
-                primary
-              </Badge>
-            )}
-            <span
-              className="text-xs font-mono text-muted-foreground"
-              data-testid="account-state"
-            >
-              {account.state}
-            </span>
-          </div>
+      <SectionHeader className="flex flex-row items-center justify-between gap-2 pb-2">
+        <SectionTitle className="flex min-w-0 items-center gap-2 text-sm font-medium">
+          {/* State dot — uses StateDot primitive for consistent token-based colour */}
+          <StateDot state={toDotState(account.state)} size={8} />
+          <span className="font-mono text-xs truncate" data-testid="account-email">
+            {account.email}
+          </span>
         </SectionTitle>
+        <SectionAction className="flex items-center gap-1">
+          {isPrimary && (
+            <Badge variant="outline" className="text-[10px] py-0 px-1.5">
+              primary
+            </Badge>
+          )}
+          <span
+            className="text-xs font-mono text-muted-foreground"
+            data-testid="account-state"
+          >
+            {account.state}
+          </span>
+        </SectionAction>
       </SectionHeader>
       <SectionContent>
         {(account.state === "degraded" || account.state === "error") &&

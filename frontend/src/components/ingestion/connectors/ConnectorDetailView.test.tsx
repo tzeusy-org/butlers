@@ -255,6 +255,21 @@ describe('Header band', () => {
     renderDetail(root, BASE_CONNECTOR)
     expect(container.textContent).toContain('online')
   })
+
+  it.each([
+    ['online', 'OK'],
+    ['stale', 'Degraded'],
+    ['offline', 'Error'],
+    ['future-state', 'Waiting'],
+  ])('maps %s liveness to one labeled dot and neutral adjacent text', (liveness, label) => {
+    renderDetail(root, { ...BASE_CONNECTOR, liveness })
+    const dot = container.querySelector(`[role="img"][aria-label="${label}"]`)
+    expect(dot).not.toBeNull()
+    const meta = dot?.parentElement
+    expect(meta?.textContent).toContain(liveness)
+    expect(meta?.className).toContain('text-muted-foreground')
+    expect(meta?.getAttribute('style')).toBeNull()
+  })
 })
 
 // ---------------------------------------------------------------------------

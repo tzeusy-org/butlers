@@ -41,7 +41,7 @@ import { useBackupFacts } from "@/hooks/use-system"
 
 function TileSkeleton() {
   return (
-    <Tile>
+    <Tile loading>
       <TileHeader>
         <TileTitle>Backups</TileTitle>
         <TileDescription>Backup recency and reachability</TileDescription>
@@ -58,7 +58,7 @@ function TileSkeleton() {
 
 function TileError() {
   return (
-    <Tile>
+    <Tile degraded>
       <TileHeader>
         <TileTitle>Backups</TileTitle>
         <TileDescription>Backup recency and reachability</TileDescription>
@@ -278,7 +278,7 @@ export function BackupTile() {
 
   if (!facts?.backup_source_reachable) {
     return (
-      <Tile>
+      <Tile degraded>
         <TileHeader>
           <TileTitle>Backups</TileTitle>
           <TileDescription>Backup recency and reachability</TileDescription>

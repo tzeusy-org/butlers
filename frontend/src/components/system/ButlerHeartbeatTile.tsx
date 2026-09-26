@@ -186,7 +186,7 @@ export function ButlerHeartbeatTile() {
 
   if (isLoading) {
     return (
-      <Tile>
+      <Tile loading>
         <TileHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
           <TileTitle className="text-sm font-medium">Butler Heartbeats</TileTitle>
         </TileHeader>
@@ -199,7 +199,7 @@ export function ButlerHeartbeatTile() {
 
   if (isError) {
     return (
-      <Tile>
+      <Tile degraded>
         <TileHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
           <TileTitle className="text-sm font-medium">Butler Heartbeats</TileTitle>
         </TileHeader>

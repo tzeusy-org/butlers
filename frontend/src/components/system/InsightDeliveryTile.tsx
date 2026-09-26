@@ -28,7 +28,7 @@ import type { ReactNode } from "react"
 
 function TileSkeleton() {
   return (
-    <Tile>
+    <Tile loading>
       <TileHeader>
         <TileTitle>Insight Delivery</TileTitle>
         <TileDescription>Proactive insight pipeline state</TileDescription>
@@ -47,7 +47,7 @@ function TileSkeleton() {
 
 function TileError() {
   return (
-    <Tile>
+    <Tile degraded>
       <TileHeader>
         <TileTitle>Insight Delivery</TileTitle>
         <TileDescription>Proactive insight pipeline state</TileDescription>

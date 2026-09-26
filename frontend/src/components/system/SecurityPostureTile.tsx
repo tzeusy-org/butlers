@@ -28,7 +28,7 @@ import { useHealthPosture } from "@/hooks/use-system"
 
 function TileSkeleton() {
   return (
-    <Tile>
+    <Tile loading>
       <TileHeader>
         <TileTitle>Security Posture</TileTitle>
         <TileDescription>Auth and secrets configuration</TileDescription>
@@ -45,7 +45,7 @@ function TileSkeleton() {
 
 function TileError() {
   return (
-    <Tile>
+    <Tile degraded>
       <TileHeader>
         <TileTitle>Security Posture</TileTitle>
         <TileDescription>Auth and secrets configuration</TileDescription>

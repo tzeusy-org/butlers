@@ -351,11 +351,11 @@ describe('AC2: auth issues appear consistently in attention strip and row', () =
     expect(stripText).toContain('reauth')
     // The connector is unhealthy (state=error), but its genuine auth failure
     // must keep the actionable reauth label and its auth severity tone.
-    expect(rowAuthLabel?.getAttribute('style')).toContain('var(--red)')
+    expect(rowAuthLabel?.getAttribute('style')).toContain('var(--red-text)')
     const stripAuthLabel = Array.from(stripItem?.querySelectorAll('span') ?? []).find((span) =>
       span.textContent?.toLowerCase().includes('reauth'),
     )
-    expect(stripAuthLabel?.getAttribute('style')).toContain('var(--red)')
+    expect(stripAuthLabel?.getAttribute('style')).toContain('var(--red-text)')
   })
 
   it('uses the registered Google OAuth route for Gmail reauth', () => {
@@ -418,7 +418,7 @@ describe('AC2: auth issues appear consistently in attention strip and row', () =
 
     const pausedStatus = container.querySelector('[data-testid="auth-status-google_calendar"]')
     expect(pausedStatus?.textContent?.toLowerCase()).toContain('connector paused')
-    expect(pausedStatus?.getAttribute('style')).toContain('var(--amber)')
+    expect(pausedStatus?.getAttribute('style')).toContain('var(--amber-text)')
 
     const pausedAttention = container.querySelector('[data-testid="attention-item-google_calendar"]')
     expect(pausedAttention?.textContent?.toLowerCase()).toContain('connector paused')
@@ -543,6 +543,8 @@ describe('AC3: single health verdict per row (dot + word)', () => {
     const verdict = container.querySelector('[data-testid="health-verdict-gmail"]')
     expect(verdict).not.toBeNull()
     expect(verdict?.textContent?.trim()).toBe('online')
+    expect(verdict?.className).toContain('text-muted-foreground')
+    expect(verdict?.getAttribute('style')).toBeNull()
 
     // No leftover two-dot markup
     expect(container.querySelector('[data-testid="liveness-dot-gmail"]')).toBeNull()
@@ -593,7 +595,7 @@ describe('bu-14gso: offline connector with frozen error state', () => {
     expect(status?.textContent?.toLowerCase()).not.toContain('reauth')
     expect(status?.textContent?.toLowerCase()).toContain('connector offline')
     expect(status?.textContent?.toLowerCase()).not.toContain('authorized')
-    expect(status?.getAttribute('style')).toContain('var(--red)')
+    expect(status?.getAttribute('style')).toContain('var(--red-text)')
     expect(status?.className).not.toContain('--green')
   })
 
@@ -608,7 +610,7 @@ describe('bu-14gso: offline connector with frozen error state', () => {
     const healthNote = Array.from(item?.querySelectorAll('span') ?? []).find((span) =>
       span.textContent?.toLowerCase().includes('connector offline'),
     )
-    expect(healthNote?.getAttribute('style')).toContain('var(--red)')
+    expect(healthNote?.getAttribute('style')).toContain('var(--red-text)')
     expect(healthNote?.className).not.toContain('--green')
   })
 

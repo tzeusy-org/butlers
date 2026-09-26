@@ -731,7 +731,8 @@ function RoutingRulesList({ rules, reader }: RoutingRulesListProps) {
 function livenessDotState(liveness: string): DispatchState {
   if (liveness === 'online') return 'ok'
   if (liveness === 'stale') return 'degraded'
-  return 'error'
+  if (liveness === 'offline') return 'error'
+  return 'waiting'
 }
 
 function connectorStateDotState(state: string): DispatchState {

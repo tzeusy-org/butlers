@@ -39,7 +39,6 @@ import {
   deriveConnectorDispatchInfo,
   authStatusPresentation,
   healthDotState,
-  healthTextColor,
   healthVerdictWord,
   resolveConnectorRecovery,
 } from './connector-auth'
@@ -102,7 +101,6 @@ export function ConnectorRosterRow({
   const authColor = authPresentation.color
   const verdictWord = healthVerdictWord(c, info)
   const verdictState = healthDotState(info.health)
-  const verdictColor = healthTextColor(info.health)
 
   // Left rail severity color for non-ok connectors
   const railColorClass =
@@ -162,8 +160,7 @@ export function ConnectorRosterRow({
       <div className="flex items-center gap-1.5">
         <StateDot state={verdictState} size={6} />
         <span
-          className="font-mono text-[10px] tracking-[0.02em]"
-          style={{ color: verdictColor }}
+          className="font-mono text-[10px] tracking-[0.02em] text-muted-foreground"
           data-testid={`health-verdict-${c.connector_type}`}
         >
           {verdictWord}
