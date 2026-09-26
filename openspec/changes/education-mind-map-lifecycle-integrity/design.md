@@ -25,7 +25,7 @@ Goals:
 Non-Goals:
 
 - Reworking the curriculum planner, the diagnostic phase, or SM-2.
-- Replacing the KV curriculum-request lock with a durable queue.
+- Changing the receipt-backed curriculum request lifecycle landed in PR #3757.
 
 ## Decisions
 
@@ -88,50 +88,25 @@ installed. Installing the trigger first does not fix existing rows (triggers
 fire on write, not on rest), and would then reject the backfill's own updates
 if written carelessly.
 
-### Decision 5: the curriculum-request lock releases from the API layer, not the prompt
+### Decision 5: curriculum submission remains receipt-backed
 
-Today the only release is step 4 of a prose prompt
-(`roster/education/api/router.py:659-670`). Everything about that is
-conditional on a language model following an instruction after having already
-done the interesting part of its job. The `trigger` core tool
-(`src/butlers/core_tools/_infra.py:148`) awaits the spawner and returns
-`success`/`error`, so the API layer can release the lock when the session
-terminates, whatever the outcome — an unconditional release, not a
-compensating one.
+PR #3757 replaced the former KV guard with the current durable contract. Before
+detached work begins, the API inserts an immutable `accepted` row into
+`education.curriculum_requests`. The partial unique index
+`uq_curriculum_requests_one_open` permits at most one `accepted` or `running`
+receipt and is the sole admission guard; a conflicting insert returns 409.
 
-A bounded lease is added on top for the case the API layer itself dies (daemon
-restart mid-session): an expired lock is reclaimed by the next request rather
-than answered with 409.
+The detached task advances that receipt to `running` and settles it exactly
+once to `completed` or `failed` with the available evidence. Terminal
+settlement is idempotent. A bounded abandoned-receipt sweep runs on submit and
+status reads, settling stale non-terminal receipts to `failed` with
+`failure_reason = "timed_out"`, so a restart cannot strand admission.
 
-The lease length is derived, not chosen. `session_timeout_s` defaults to 1800
-and is operator-configurable per catalog entry
-(`src/butlers/api/routers/model_settings.py:81`), so any hardcoded TTL is a
-number that can silently become shorter than the session it guards — and a
-lease that expires under a live session fails open at exactly the moment it is
-doing its job, admitting a second drain on the same topic. Two drains on one
-topic is how you get two mind maps for one request, which is the defect the
-legacy migration in this change exists to clean up. So the TTL tracks the
-catalog: max eligible `session_timeout_s` plus a margin of at least 300s.
-
-Once a lease can expire, releases can arrive out of order, and an unqualified
-`state_delete("pending_curriculum_request")` stops being merely redundant and
-becomes unsafe: a stalled session's late release would delete the *next*
-owner's lock, and two drains would run behind a guard reporting itself free.
-So the lock payload carries a `request_token` minted per acquisition, and every
-release is an atomic compare-and-delete against it.
-
-That also settles the session-side release, which is removed rather than kept
-as an early-release convenience. The only key-deleting tool a session can reach
-is the shared `state_delete(key)` core tool
-(`src/butlers/core/state.py:191`, exposed at
-`src/butlers/core_tools/_state.py:44`), which takes no predicate — so a
-session-side release is necessarily the blind delete we just outlawed. Widening
-a shared core tool's signature for one butler's lock is the wrong trade, and
-the alternative (an education-module `curriculum_request_release(token)` tool)
-would buy only a few seconds of earlier release while restoring exactly the
-prompt-obedience coupling this change exists to remove. Two release paths
-remain — the API layer's unconditional release, and lease expiry — and both are
-token-safe.
+This lifecycle change does not modify that admission, drain, settlement, or
+sweep behavior. Its dashboard API work is limited to the mind-map status
+endpoint's refusal of an invalid activation. Keeping the receipt requirement
+body aligned with the current baseline prevents this older active change from
+recreating the removed KV mechanism when it is later archived.
 
 ### Decision 6: draft maps stay visible in the UI
 
