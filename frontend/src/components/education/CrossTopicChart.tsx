@@ -6,7 +6,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Section, SectionContent, SectionHeader, SectionTitle } from "@/components/ui/Section";
 import { useCrossTopicAnalytics } from "@/hooks/use-education";
 import { chartColor } from "@/lib/chart-colors";
 
@@ -23,16 +23,16 @@ export default function CrossTopicChart() {
   }));
 
   return (
-    <Card>
-      <CardHeader>
+    <Section>
+      <SectionHeader>
         <div className="flex items-center justify-between">
-          <CardTitle>Cross-Topic Portfolio</CardTitle>
+          <SectionTitle>Cross-Topic Portfolio</SectionTitle>
           <span className="text-sm text-muted-foreground">
             Overall: {Math.round(analytics.portfolio_mastery * 100)}%
           </span>
         </div>
-      </CardHeader>
-      <CardContent>
+      </SectionHeader>
+      <SectionContent>
         <ResponsiveContainer width="100%" height={200}>
           <BarChart data={chartData}>
             <XAxis dataKey="name" tick={{ fontSize: 12 }} />
@@ -43,7 +43,7 @@ export default function CrossTopicChart() {
             <Bar dataKey="mastery" fill={chartColor()} radius={[4, 4, 0, 0]} />
           </BarChart>
         </ResponsiveContainer>
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }

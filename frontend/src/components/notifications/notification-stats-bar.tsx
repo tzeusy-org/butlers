@@ -1,4 +1,4 @@
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Section, SectionContent, SectionHeader, SectionTitle } from "@/components/ui/Section"
 import { Badge } from "@/components/ui/badge"
 import { StatsSkeleton } from "@/components/skeletons"
 import type { NotificationStats } from "@/api/types"
@@ -43,22 +43,22 @@ export function NotificationStatsBar({ stats, isLoading, onFilterClick }: Notifi
     <div className="space-y-4">
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
         {/* Total Notifications */}
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
+        <Section>
+          <SectionHeader className="flex flex-row items-center justify-between pb-2">
+            <SectionTitle className="text-sm font-medium text-muted-foreground">
               Total Notifications
-            </CardTitle>
+            </SectionTitle>
             <Bell className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
+          </SectionHeader>
+          <SectionContent>
             <div className="text-2xl font-bold" data-testid="stat-value-total">
               {sourceUnavailable ? EM_DASH : total.toLocaleString()}
             </div>
-          </CardContent>
-        </Card>
+          </SectionContent>
+        </Section>
 
         {/* Sent — clickable filter anchor when onFilterClick is wired */}
-        <Card
+        <Section
           role={onFilterClick ? "button" : undefined}
           tabIndex={onFilterClick ? 0 : undefined}
           onClick={onFilterClick ? () => onFilterClick("sent") : undefined}
@@ -75,22 +75,22 @@ export function NotificationStatsBar({ stats, isLoading, onFilterClick }: Notifi
           className={onFilterClick ? "cursor-pointer transition-colors hover:bg-muted/40" : undefined}
           data-testid="stat-tile-sent"
         >
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Sent</CardTitle>
+          <SectionHeader className="flex flex-row items-center justify-between pb-2">
+            <SectionTitle className="text-sm font-medium text-muted-foreground">Sent</SectionTitle>
             <CheckCircle className="h-4 w-4 text-[var(--green)]" />
-          </CardHeader>
-          <CardContent>
+          </SectionHeader>
+          <SectionContent>
             <div
               className={`text-2xl font-bold ${sourceUnavailable ? "text-muted-foreground" : "text-[var(--green)]"}`}
               data-testid="stat-value-sent"
             >
               {sourceUnavailable ? EM_DASH : sent.toLocaleString()}
             </div>
-          </CardContent>
-        </Card>
+          </SectionContent>
+        </Section>
 
         {/* Failed — clickable filter anchor when onFilterClick is wired */}
-        <Card
+        <Section
           role={onFilterClick ? "button" : undefined}
           tabIndex={onFilterClick ? 0 : undefined}
           onClick={onFilterClick ? () => onFilterClick("failed") : undefined}
@@ -107,29 +107,29 @@ export function NotificationStatsBar({ stats, isLoading, onFilterClick }: Notifi
           className={onFilterClick ? "cursor-pointer transition-colors hover:bg-muted/40" : undefined}
           data-testid="stat-tile-failed"
         >
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Failed</CardTitle>
+          <SectionHeader className="flex flex-row items-center justify-between pb-2">
+            <SectionTitle className="text-sm font-medium text-muted-foreground">Failed</SectionTitle>
             <XCircle className="h-4 w-4 text-[var(--red-text)]" />
-          </CardHeader>
-          <CardContent>
+          </SectionHeader>
+          <SectionContent>
             <div
               className={`text-2xl font-bold ${sourceUnavailable ? "text-muted-foreground" : "text-[var(--red-text)]"}`}
               data-testid="stat-value-failed"
             >
               {sourceUnavailable ? EM_DASH : failed.toLocaleString()}
             </div>
-          </CardContent>
-        </Card>
+          </SectionContent>
+        </Section>
 
         {/* Failure Rate */}
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
+        <Section>
+          <SectionHeader className="flex flex-row items-center justify-between pb-2">
+            <SectionTitle className="text-sm font-medium text-muted-foreground">
               Failure Rate
-            </CardTitle>
+            </SectionTitle>
             <Percent className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
+          </SectionHeader>
+          <SectionContent>
             <div
               className={`text-2xl font-bold ${
                 sourceUnavailable
@@ -144,8 +144,8 @@ export function NotificationStatsBar({ stats, isLoading, onFilterClick }: Notifi
             >
               {sourceUnavailable ? EM_DASH : `${failureRate}%`}
             </div>
-          </CardContent>
-        </Card>
+          </SectionContent>
+        </Section>
       </div>
 
       {/* Per-channel breakdown */}

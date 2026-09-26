@@ -4,7 +4,7 @@ import { ButlerMark } from "@/components/ui/ButlerMark";
 import { RowLink } from "@/components/ui/RowLink";
 import { Time } from "@/components/ui/time";
 import { formatCostUsd } from "@/lib/format-cost";
-import { Section } from "./Section";
+import { Section } from "@/components/ui/Section";
 import type { OverviewButlerIndexRow } from "./model";
 
 interface ButlerIndexProps {
@@ -109,7 +109,7 @@ export function ButlerIndex({ butlers, butlersError = false }: ButlerIndexProps)
               fontFamily: "var(--font-serif)",
               fontSize: "14px",
               fontStyle: "italic",
-              color: "var(--destructive, var(--muted-foreground))",
+              color: "var(--destructive)",
               paddingTop: "10px",
               paddingBottom: "10px",
             }}

@@ -307,7 +307,7 @@ export function EmptyLine({ children, className }: EmptyLineProps) {
   return (
     <p
       className={cn(
-        "text-sm italic font-[family-name:var(--font-serif,serif)]",
+        "text-sm italic font-[family-name:var(--font-serif)]",
         toneClass("dim"),
         className,
       )}

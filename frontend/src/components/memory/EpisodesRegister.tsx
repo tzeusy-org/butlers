@@ -150,7 +150,7 @@ export function EpisodeRow({ episode }: { episode: Episode }) {
       className={cn(
         "grid grid-cols-[50px_24px_1fr_16px] items-baseline gap-x-2",
         "border-b border-[var(--border-soft)] px-1 py-2.5",
-        "cursor-pointer transition-colors hover:bg-[var(--bg-elev,transparent)]",
+        "cursor-pointer transition-colors hover:bg-[var(--bg-elev)]",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus",
         "text-fg",
       )}

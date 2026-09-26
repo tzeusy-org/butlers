@@ -7,12 +7,12 @@ import JsonViewer from "@/components/general/JsonViewer";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+  Section,
+  SectionContent,
+  SectionDescription,
+  SectionHeader,
+  SectionTitle,
+} from "@/components/ui/Section";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 
@@ -119,14 +119,14 @@ export default function ButlerMcpTab({ butlerName }: ButlerMcpTabProps) {
 
   return (
     <div className="space-y-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>MCP Debugging</CardTitle>
-          <CardDescription>
+      <Section>
+        <SectionHeader>
+          <SectionTitle>MCP Debugging</SectionTitle>
+          <SectionDescription>
             Call MCP tools on this butler with optional JSON arguments.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
+          </SectionDescription>
+        </SectionHeader>
+        <SectionContent className="space-y-4">
           <div className="flex items-center justify-between">
             <p className="text-sm text-muted-foreground">
               {tools.length} {tools.length === 1 ? "tool" : "tools"} available
@@ -189,13 +189,13 @@ export default function ButlerMcpTab({ butlerName }: ButlerMcpTabProps) {
           <Button onClick={() => void handleCall()} disabled={!canCall}>
             {isCalling ? "Calling..." : "Call Tool"}
           </Button>
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
 
       {(callError || lastResponse) && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-3">
+        <Section>
+          <SectionHeader>
+            <SectionTitle className="flex items-center gap-3">
               Last Response
               {lastResponse && (
                 <Badge
@@ -204,9 +204,9 @@ export default function ButlerMcpTab({ butlerName }: ButlerMcpTabProps) {
                   {lastResponse.is_error ? "Tool Error" : "OK"}
                 </Badge>
               )}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
+            </SectionTitle>
+          </SectionHeader>
+          <SectionContent className="space-y-4">
             {callError && <p className="text-sm text-destructive">{callError}</p>}
             {lastResponse && (
               <>
@@ -232,8 +232,8 @@ export default function ButlerMcpTab({ butlerName }: ButlerMcpTabProps) {
                 )}
               </>
             )}
-          </CardContent>
-        </Card>
+          </SectionContent>
+        </Section>
       )}
     </div>
   );

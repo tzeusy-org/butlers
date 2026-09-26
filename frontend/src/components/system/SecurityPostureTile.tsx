@@ -12,12 +12,12 @@
 // ---------------------------------------------------------------------------
 
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
+  Tile,
+  TileContent,
+  TileDescription,
+  TileHeader,
+  TileTitle,
+} from "@/components/ui/Tile"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useHealthPosture } from "@/hooks/use-system"
@@ -28,34 +28,34 @@ import { useHealthPosture } from "@/hooks/use-system"
 
 function TileSkeleton() {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Security Posture</CardTitle>
-        <CardDescription>Auth and secrets configuration</CardDescription>
-      </CardHeader>
-      <CardContent>
+    <Tile loading>
+      <TileHeader>
+        <TileTitle>Security Posture</TileTitle>
+        <TileDescription>Auth and secrets configuration</TileDescription>
+      </TileHeader>
+      <TileContent>
         <div data-testid="security-posture-tile-skeleton" className="space-y-2">
           <Skeleton className="h-5 w-48" />
           <Skeleton className="h-5 w-56" />
         </div>
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }
 
 function TileError() {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Security Posture</CardTitle>
-        <CardDescription>Auth and secrets configuration</CardDescription>
-      </CardHeader>
-      <CardContent>
+    <Tile degraded>
+      <TileHeader>
+        <TileTitle>Security Posture</TileTitle>
+        <TileDescription>Auth and secrets configuration</TileDescription>
+      </TileHeader>
+      <TileContent>
         <p data-testid="security-posture-tile-error" className="text-destructive text-sm">
           Could not load security posture.
         </p>
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }
 
@@ -116,12 +116,12 @@ export function SecurityPostureTile() {
   const security = response?.security
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Security Posture</CardTitle>
-        <CardDescription>Auth and secrets configuration</CardDescription>
-      </CardHeader>
-      <CardContent data-testid="security-posture-tile-content">
+    <Tile>
+      <TileHeader>
+        <TileTitle>Security Posture</TileTitle>
+        <TileDescription>Auth and secrets configuration</TileDescription>
+      </TileHeader>
+      <TileContent data-testid="security-posture-tile-content">
         <dl className="divide-y divide-border">
           <PostureRow
             label="Owner authentication"
@@ -152,7 +152,7 @@ export function SecurityPostureTile() {
             testId="posture-role-enforcement"
           />
         </dl>
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }

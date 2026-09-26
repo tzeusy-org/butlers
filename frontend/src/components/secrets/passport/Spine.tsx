@@ -217,8 +217,8 @@ export function SpineRow({
             className="truncate"
             style={{
               fontFamily: entry.mono
-                ? "var(--font-mono, monospace)"
-                : "var(--font-sans, sans-serif)",
+                ? "var(--font-mono)"
+                : "var(--font-sans)",
               fontSize: entry.mono ? 10.5 : 12.5,
               fontWeight: 500,
               color: active ? "var(--fg)" : "var(--mfg)",

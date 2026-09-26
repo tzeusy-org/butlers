@@ -68,7 +68,7 @@ describe("StampGlyph: amber foreground versus decoration", () => {
   it("uses --amber-text for the warned glyph while retaining --amber for its border", () => {
     const html = renderToStaticMarkup(<StampGlyph action="warned" />)
 
-    expect(html).toMatch(/border:1px solid var\(--amber,[^;]+;color:var\(--amber-text\)/)
+    expect(html).toContain("border:1px solid var(--amber);color:var(--amber-text)")
   })
 })
 

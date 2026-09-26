@@ -40,7 +40,7 @@ import type {
   HealthCondition,
   SleepLatestResponse,
 } from "@/api/index.ts";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Section, SectionContent, SectionHeader, SectionTitle } from "@/components/ui/Section";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Time } from "@/components/ui/time";
@@ -134,8 +134,8 @@ interface KpiCellProps {
 
 function KpiCell({ label, value, unit, isLoading }: KpiCellProps) {
   return (
-    <Card data-testid="kpi-cell">
-      <CardContent className="pt-4">
+    <Section data-testid="kpi-cell">
+      <SectionContent className="pt-4">
         <p className="text-xs text-muted-foreground">{label}</p>
         <p className="text-2xl font-bold font-mono tnum truncate" data-testid="kpi-value">
           {isLoading ? "…" : value}
@@ -143,8 +143,8 @@ function KpiCell({ label, value, unit, isLoading }: KpiCellProps) {
         {unit && !isLoading && value !== "—" && (
           <p className="text-xs text-muted-foreground">{unit}</p>
         )}
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }
 
@@ -376,18 +376,18 @@ function TrendPanel({
   const measurements = data?.data ?? [];
 
   return (
-    <Card data-testid={`trend-panel-${type}`}>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium flex items-center justify-between">
+    <Section data-testid={`trend-panel-${type}`}>
+      <SectionHeader className="pb-2">
+        <SectionTitle className="text-sm font-medium flex items-center justify-between">
           {title} · 14d
           {drilldownLink && (
             <Button variant="ghost" size="sm" asChild className="text-xs text-muted-foreground">
               <Link to={drilldownLink}>View all</Link>
             </Button>
           )}
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
+        </SectionTitle>
+      </SectionHeader>
+      <SectionContent>
         <TrendSparkline
           measurements={measurements}
           isLoading={isLoading}
@@ -396,8 +396,8 @@ function TrendPanel({
           valueKey={valueKey}
           unit={unit}
         />
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }
 
@@ -417,18 +417,18 @@ function SleepStagesPanel({ sleep, isLoading }: { sleep: SleepLatestResponse | u
   const totalMinutes = stages.reduce((sum, s) => sum + s.duration_minutes, 0);
 
   return (
-    <Card data-testid="sleep-stages-panel">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium">
+    <Section data-testid="sleep-stages-panel">
+      <SectionHeader className="pb-2">
+        <SectionTitle className="text-sm font-medium">
           Sleep stages
           {sleep?.session_date ? (
             <span className="ml-2 text-xs font-normal text-muted-foreground">
               <Time value={sleep.session_date} mode="absolute" precision="day" compact />
             </span>
           ) : null}
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
+        </SectionTitle>
+      </SectionHeader>
+      <SectionContent>
         {isLoading ? (
           <LoadingLine />
         ) : stages.length === 0 ? (
@@ -478,8 +478,8 @@ function SleepStagesPanel({ sleep, isLoading }: { sleep: SleepLatestResponse | u
             </ul>
           </div>
         )}
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }
 
@@ -497,11 +497,11 @@ function SourcesPanel({
   isError: boolean;
 }) {
   return (
-    <Card data-testid="sources-panel">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium">Measurement sources</CardTitle>
-      </CardHeader>
-      <CardContent>
+    <Section data-testid="sources-panel">
+      <SectionHeader className="pb-2">
+        <SectionTitle className="text-sm font-medium">Measurement sources</SectionTitle>
+      </SectionHeader>
+      <SectionContent>
         {isLoading ? (
           <LoadingLine />
         ) : isError ? (
@@ -533,8 +533,8 @@ function SourcesPanel({
             ))}
           </ul>
         )}
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }
 
@@ -550,11 +550,11 @@ function ExpectedSignalsPanel({
   isError: boolean;
 }) {
   return (
-    <Card data-testid="expected-signals-panel">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium">Expected measurements</CardTitle>
-      </CardHeader>
-      <CardContent>
+    <Section data-testid="expected-signals-panel">
+      <SectionHeader className="pb-2">
+        <SectionTitle className="text-sm font-medium">Expected measurements</SectionTitle>
+      </SectionHeader>
+      <SectionContent>
         {isLoading ? (
           <LoadingLine testId="expected-signals-loading" />
         ) : isError || !available ? (
@@ -605,8 +605,8 @@ function ExpectedSignalsPanel({
             })}
           </ul>
         )}
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }
 
@@ -624,16 +624,16 @@ function ActiveMedicationsPanel({
   const active = medications.filter((m) => m.active);
 
   return (
-    <Card data-testid="active-medications-panel">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium flex items-center justify-between">
+    <Section data-testid="active-medications-panel">
+      <SectionHeader className="pb-2">
+        <SectionTitle className="text-sm font-medium flex items-center justify-between">
           Active medications
           <Button variant="ghost" size="sm" asChild className="text-xs text-muted-foreground">
             <Link to="/health/medications">View all</Link>
           </Button>
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
+        </SectionTitle>
+      </SectionHeader>
+      <SectionContent>
         {isLoading ? (
           <LoadingLine />
         ) : active.length === 0 ? (
@@ -650,8 +650,8 @@ function ActiveMedicationsPanel({
             ))}
           </ul>
         )}
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }
 
@@ -673,16 +673,16 @@ function RecentConditionsPanel({
   isLoading: boolean;
 }) {
   return (
-    <Card data-testid="recent-conditions-panel">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium flex items-center justify-between">
+    <Section data-testid="recent-conditions-panel">
+      <SectionHeader className="pb-2">
+        <SectionTitle className="text-sm font-medium flex items-center justify-between">
           Recent conditions
           <Button variant="ghost" size="sm" asChild className="text-xs text-muted-foreground">
             <Link to="/health/conditions">View all</Link>
           </Button>
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
+        </SectionTitle>
+      </SectionHeader>
+      <SectionContent>
         {isLoading ? (
           <LoadingLine />
         ) : conditions.length === 0 ? (
@@ -713,8 +713,8 @@ function RecentConditionsPanel({
             ))}
           </ul>
         )}
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }
 

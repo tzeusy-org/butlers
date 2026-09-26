@@ -11,7 +11,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import dagre from "@dagrejs/dagre";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Section, SectionContent, SectionHeader, SectionTitle } from "@/components/ui/Section";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { useMindMap, useFrontierNodes } from "@/hooks/use-education";
 import { MASTERY_STATUS_COLORS } from "./mastery-status";
@@ -130,58 +130,58 @@ export default function MindMapGraph({ mindMapId, onSelectNode }: MindMapGraphPr
 
   if (isLoading) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Concept Map</CardTitle>
-        </CardHeader>
-        <CardContent>
+      <Section>
+        <SectionHeader>
+          <SectionTitle>Concept Map</SectionTitle>
+        </SectionHeader>
+        <SectionContent>
           <div className="flex h-96 items-center justify-center text-muted-foreground">
             Loading...
           </div>
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
     );
   }
 
   if (isError) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Concept Map</CardTitle>
-        </CardHeader>
-        <CardContent>
+      <Section>
+        <SectionHeader>
+          <SectionTitle>Concept Map</SectionTitle>
+        </SectionHeader>
+        <SectionContent>
           <SourceDegradedNote
             label="Concept map"
             detail="could not be reached"
             onRetry={() => void refetch()}
             testId="mind-map-graph-degraded"
           />
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
     );
   }
 
   if (nodes.length === 0) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Concept Map</CardTitle>
-        </CardHeader>
-        <CardContent>
+      <Section>
+        <SectionHeader>
+          <SectionTitle>Concept Map</SectionTitle>
+        </SectionHeader>
+        <SectionContent>
           <div className="flex h-96 items-center justify-center text-muted-foreground">
             This curriculum has no concepts yet. The butler is still building it.
           </div>
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
     );
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Concept Map</CardTitle>
-      </CardHeader>
-      <CardContent>
+    <Section>
+      <SectionHeader>
+        <SectionTitle>Concept Map</SectionTitle>
+      </SectionHeader>
+      <SectionContent>
         <div className="h-96">
           <ReactFlow
             nodes={nodes}
@@ -195,7 +195,7 @@ export default function MindMapGraph({ mindMapId, onSelectNode }: MindMapGraphPr
             <Controls />
           </ReactFlow>
         </div>
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }

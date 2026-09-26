@@ -1,7 +1,7 @@
 import { useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Section, SectionContent, SectionHeader, SectionTitle } from "@/components/ui/Section";
 import { Time } from "@/components/ui/time";
 import { useQuizResponses } from "@/hooks/use-education";
 import { ChevronDown, ChevronRight } from "lucide-react";
@@ -52,11 +52,11 @@ export default function QuizHistoryList({
     return compact ? (
       <p className="text-xs text-destructive">{errMsg}</p>
     ) : (
-      <Card>
-        <CardContent className="flex h-48 items-center justify-center text-destructive">
+      <Section>
+        <SectionContent className="flex h-48 items-center justify-center text-destructive">
           {errMsg}
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
     );
   }
 
@@ -67,11 +67,11 @@ export default function QuizHistoryList({
     return compact ? (
       <p className="text-xs text-muted-foreground">{msg}</p>
     ) : (
-      <Card>
-        <CardContent className="flex h-48 items-center justify-center text-muted-foreground">
+      <Section>
+        <SectionContent className="flex h-48 items-center justify-center text-muted-foreground">
           {msg}
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
     );
   }
 
@@ -190,11 +190,11 @@ export default function QuizHistoryList({
   if (compact) return list;
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Quiz History</CardTitle>
-      </CardHeader>
-      <CardContent>{list}</CardContent>
-    </Card>
+    <Section>
+      <SectionHeader>
+        <SectionTitle>Quiz History</SectionTitle>
+      </SectionHeader>
+      <SectionContent>{list}</SectionContent>
+    </Section>
   );
 }

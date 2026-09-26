@@ -30,6 +30,7 @@
 
 import { Link } from 'react-router'
 import { Time } from '@/components/ui/time'
+import { StateDot } from '@/components/ui/StateDot'
 import type { ConnectorSummary } from '@/api/types'
 import { ConnectorCheckpoints } from './ConnectorCheckpoints'
 import { ConnectorDeviceBadges } from './ConnectorDeviceBadges'
@@ -37,8 +38,7 @@ import { Sparkline } from './Sparkline'
 import {
   deriveConnectorDispatchInfo,
   authStatusPresentation,
-  healthDotColor,
-  healthTextColor,
+  healthDotState,
   healthVerdictWord,
   resolveConnectorRecovery,
 } from './connector-auth'
@@ -98,17 +98,16 @@ export function ConnectorRosterRow({
   const eventsCount = events24h ?? c.today?.messages_ingested ?? 0
 
   const authPresentation = authStatusPresentation(info)
-  const authColorClass = authPresentation.colorClass
+  const authColor = authPresentation.color
   const verdictWord = healthVerdictWord(c, info)
-  const verdictDotClass = healthDotColor(info.health)
-  const verdictTextClass = healthTextColor(info.health)
+  const verdictState = healthDotState(info.health)
 
   // Left rail severity color for non-ok connectors
   const railColorClass =
     info.authStatus === 'needs_reauth'
-      ? 'bg-[color:var(--red,oklch(0.62_0.20_25))]'
+      ? 'bg-[color:var(--red)]'
       : info.health !== 'ok'
-        ? 'bg-[color:var(--amber,oklch(0.72_0.12_70))]'
+        ? 'bg-[color:var(--amber)]'
         : null
 
   const displayName = c.connector_type.replace(/_/g, ' ')
@@ -159,12 +158,9 @@ export function ConnectorRosterRow({
 
       {/* Health verdict — single dot + word, folding liveness + health */}
       <div className="flex items-center gap-1.5">
+        <StateDot state={verdictState} size={6} />
         <span
-          className={`w-1.5 h-1.5 rounded-full shrink-0 ${verdictDotClass}`}
-          aria-hidden="true"
-        />
-        <span
-          className={`font-mono text-[10px] tracking-[0.02em] ${verdictTextClass}`}
+          className="font-mono text-[10px] tracking-[0.02em] text-muted-foreground"
           data-testid={`health-verdict-${c.connector_type}`}
         >
           {verdictWord}
@@ -222,7 +218,8 @@ export function ConnectorRosterRow({
         {recovery?.kind === 'oauth' ? (
           <a
             href={recovery.href}
-            className={`relative z-10 inline-flex items-center gap-1 font-mono text-[10px] tracking-[0.06em] uppercase underline decoration-current/40 underline-offset-2 hover:decoration-current transition-colors ${authColorClass}`}
+            className="relative z-10 inline-flex items-center gap-1 font-mono text-[10px] tracking-[0.06em] uppercase underline decoration-current/40 underline-offset-2 hover:decoration-current transition-colors"
+            style={{ color: authColor }}
             data-testid={`auth-status-${c.connector_type}`}
             aria-label={`Re-authorize ${displayName}`}
           >
@@ -231,7 +228,8 @@ export function ConnectorRosterRow({
         ) : recovery?.kind === 'passport' ? (
           <Link
             to={recovery.to}
-            className={`relative z-10 inline-flex items-center gap-1 font-mono text-[10px] tracking-[0.06em] uppercase underline decoration-current/40 underline-offset-2 hover:decoration-current transition-colors ${authColorClass}`}
+            className="relative z-10 inline-flex items-center gap-1 font-mono text-[10px] tracking-[0.06em] uppercase underline decoration-current/40 underline-offset-2 hover:decoration-current transition-colors"
+            style={{ color: authColor }}
             data-testid={`auth-status-${c.connector_type}`}
             aria-label={
               recovery.action === 'pair'
@@ -243,7 +241,8 @@ export function ConnectorRosterRow({
           </Link>
         ) : (
           <span
-            className={`font-mono text-[10px] tracking-[0.06em] uppercase ${authColorClass}`}
+            className="font-mono text-[10px] tracking-[0.06em] uppercase"
+            style={{ color: authColor }}
             data-testid={`auth-status-${c.connector_type}`}
           >
             {authDisplayLabel}

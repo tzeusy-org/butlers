@@ -7,12 +7,12 @@ import type { ScheduleFormValues } from "@/components/schedules/ScheduleForm";
 import { ScheduleTable } from "@/components/schedules/ScheduleTable";
 import { Button } from "@/components/ui/button";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+  Section,
+  SectionContent,
+  SectionDescription,
+  SectionHeader,
+  SectionTitle,
+} from "@/components/ui/Section";
 import {
   Dialog,
   DialogContent,
@@ -172,16 +172,16 @@ export default function ButlerSchedulesTab({ butlerName }: ButlerSchedulesTabPro
 
   if (isError) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Schedules</CardTitle>
-        </CardHeader>
-        <CardContent>
+      <Section>
+        <SectionHeader>
+          <SectionTitle>Schedules</SectionTitle>
+        </SectionHeader>
+        <SectionContent>
           <p className="text-sm text-destructive">
             Failed to load schedules: {error instanceof Error ? error.message : "Unknown error"}
           </p>
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
     );
   }
 
@@ -191,15 +191,15 @@ export default function ButlerSchedulesTab({ butlerName }: ButlerSchedulesTabPro
 
   return (
     <div className="space-y-4">
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between">
+      <Section>
+        <SectionHeader className="flex flex-row items-center justify-between">
           <div>
-            <CardTitle>Schedules</CardTitle>
-            <CardDescription>Scheduled tasks for this butler</CardDescription>
+            <SectionTitle>Schedules</SectionTitle>
+            <SectionDescription>Scheduled tasks for this butler</SectionDescription>
           </div>
           <Button onClick={handleAddClick}>Add schedule</Button>
-        </CardHeader>
-        <CardContent>
+        </SectionHeader>
+        <SectionContent>
           <ScheduleTable
             schedules={schedules}
             isLoading={isLoading}
@@ -210,8 +210,8 @@ export default function ButlerSchedulesTab({ butlerName }: ButlerSchedulesTabPro
             triggeringId={triggeringId}
             togglingIds={togglingIds}
           />
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
 
       {toggleReceipt && (
         <p className="text-sm text-muted-foreground" role="status">

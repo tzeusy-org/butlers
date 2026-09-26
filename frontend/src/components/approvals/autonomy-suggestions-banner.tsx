@@ -13,7 +13,7 @@ import { Time } from "@/components/ui/time";
 import type { AutonomySuggestion } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Section, SectionContent, SectionFooter, SectionHeader, SectionTitle } from "@/components/ui/Section";
 
 interface SuggestionCardProps {
   suggestion: AutonomySuggestion;
@@ -73,21 +73,21 @@ function ApprovalLink({ actionId }: { actionId: string | null | undefined }) {
 
 function PromotionCard({ suggestion, onConfirm, onDismiss, isPending }: SuggestionCardProps) {
   return (
-    <Card className={PROMOTION_ACCENT_CLASSES.card}>
-      <CardHeader className="pb-2">
+    <Section className={PROMOTION_ACCENT_CLASSES.card}>
+      <SectionHeader className="pb-2">
         <div className="flex items-start justify-between gap-2">
           <div className="flex items-center gap-2">
             <TrendingUp className={PROMOTION_ACCENT_CLASSES.icon} />
-            <CardTitle className={PROMOTION_ACCENT_CLASSES.title}>
+            <SectionTitle className={PROMOTION_ACCENT_CLASSES.title}>
               Promote to standing rule
-            </CardTitle>
+            </SectionTitle>
           </div>
           <Badge variant="outline" className="text-xs shrink-0">
             {suggestion.approval_count_at_creation}× approved
           </Badge>
         </div>
-      </CardHeader>
-      <CardContent className="pb-2 space-y-2">
+      </SectionHeader>
+      <SectionContent className="pb-2 space-y-2">
         <p className="text-sm text-foreground/80 font-mono bg-muted/50 rounded px-2 py-1">
           {suggestion.scope_description}
         </p>
@@ -105,8 +105,8 @@ function PromotionCard({ suggestion, onConfirm, onDismiss, isPending }: Suggesti
           </span>
           <VelocityIndicator suggestion={suggestion} />
         </div>
-      </CardContent>
-      <CardFooter className="pt-0 gap-2">
+      </SectionContent>
+      <SectionFooter className="pt-0 gap-2">
         <Button
           size="sm"
           variant="default"
@@ -127,28 +127,28 @@ function PromotionCard({ suggestion, onConfirm, onDismiss, isPending }: Suggesti
           Dismiss
         </Button>
         <ApprovalLink actionId={suggestion.action_id} />
-      </CardFooter>
-    </Card>
+      </SectionFooter>
+    </Section>
   );
 }
 
 function DemotionCard({ suggestion, onConfirm, onDismiss, isPending }: SuggestionCardProps) {
   return (
-    <Card className="border-[var(--amber)] bg-[var(--amber)]/30">
-      <CardHeader className="pb-2">
+    <Section className="border-[var(--amber)] bg-[var(--amber)]/30">
+      <SectionHeader className="pb-2">
         <div className="flex items-start justify-between gap-2">
           <div className="flex items-center gap-2">
             <AlertTriangle className="h-4 w-4 text-[var(--amber-text)] shrink-0 mt-0.5" />
-            <CardTitle className="text-sm font-semibold text-[var(--amber-text)]">
+            <SectionTitle className="text-sm font-semibold text-[var(--amber-text)]">
               Review Standing Rule
-            </CardTitle>
+            </SectionTitle>
           </div>
           <Badge variant="destructive" className="text-xs shrink-0">
             Execution failed
           </Badge>
         </div>
-      </CardHeader>
-      <CardContent className="pb-2 space-y-2">
+      </SectionHeader>
+      <SectionContent className="pb-2 space-y-2">
         <p className="text-sm text-foreground/80 font-mono bg-muted/50 rounded px-2 py-1">
           {suggestion.scope_description}
         </p>
@@ -160,8 +160,8 @@ function DemotionCard({ suggestion, onConfirm, onDismiss, isPending }: Suggestio
             <Time value={suggestion.created_at} mode="relative" />
           </span>
         </div>
-      </CardContent>
-      <CardFooter className="pt-0 gap-2">
+      </SectionContent>
+      <SectionFooter className="pt-0 gap-2">
         <Button
           size="sm"
           variant="destructive"
@@ -181,8 +181,8 @@ function DemotionCard({ suggestion, onConfirm, onDismiss, isPending }: Suggestio
           Keep rule
         </Button>
         <ApprovalLink actionId={suggestion.action_id} />
-      </CardFooter>
-    </Card>
+      </SectionFooter>
+    </Section>
   );
 }
 

@@ -27,7 +27,7 @@
 import { toast } from "sonner";
 import { useNavigate } from "react-router";
 
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Tile, TileContent, TileHeader, TileTitle } from "@/components/ui/Tile";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { RowLink } from "@/components/ui/RowLink";
@@ -186,27 +186,27 @@ export function ButlerHeartbeatTile() {
 
   if (isLoading) {
     return (
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-          <CardTitle className="text-sm font-medium">Butler Heartbeats</CardTitle>
-        </CardHeader>
-        <CardContent>
+      <Tile loading>
+        <TileHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+          <TileTitle className="text-sm font-medium">Butler Heartbeats</TileTitle>
+        </TileHeader>
+        <TileContent>
           <div className="h-16 rounded bg-muted" data-testid="butler-heartbeat-skeleton" />
-        </CardContent>
-      </Card>
+        </TileContent>
+      </Tile>
     );
   }
 
   if (isError) {
     return (
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-          <CardTitle className="text-sm font-medium">Butler Heartbeats</CardTitle>
-        </CardHeader>
-        <CardContent>
+      <Tile degraded>
+        <TileHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+          <TileTitle className="text-sm font-medium">Butler Heartbeats</TileTitle>
+        </TileHeader>
+        <TileContent>
           <p className="text-sm text-destructive">Failed to load heartbeat data.</p>
-        </CardContent>
-      </Card>
+        </TileContent>
+      </Tile>
     );
   }
 
@@ -214,14 +214,14 @@ export function ButlerHeartbeatTile() {
   const tickingName = forceTick.isPending ? forceTick.variables : undefined;
 
   return (
-    <Card>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <CardTitle className="text-sm font-medium">Butler Heartbeats</CardTitle>
+    <Tile>
+      <TileHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+        <TileTitle className="text-sm font-medium">Butler Heartbeats</TileTitle>
         <span className="text-xs text-muted-foreground">
           {sortedRows.length} butler{sortedRows.length !== 1 ? "s" : ""}
         </span>
-      </CardHeader>
-      <CardContent>
+      </TileHeader>
+      <TileContent>
         {sortedRows.length === 0 ? (
           <p className="text-sm text-muted-foreground">No butlers registered.</p>
         ) : (
@@ -236,7 +236,7 @@ export function ButlerHeartbeatTile() {
             ))}
           </ul>
         )}
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   );
 }

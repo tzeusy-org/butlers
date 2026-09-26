@@ -111,7 +111,7 @@ function KpiCell({
       <span
         className="tabular-nums"
         style={{
-          fontFamily: "var(--font-sans, 'Inter Tight', sans-serif)",
+          fontFamily: "var(--font-sans)",
           fontSize: 22,
           fontWeight: 500,
           letterSpacing: "-0.02em",
@@ -387,7 +387,7 @@ export function DirectionPassport({
               <h1
                 className="m-0"
                 style={{
-                  fontFamily: "var(--font-sans, 'Inter Tight', sans-serif)",
+                  fontFamily: "var(--font-sans)",
                   fontSize: 32,
                   fontWeight: 500,
                   letterSpacing: "-0.025em",

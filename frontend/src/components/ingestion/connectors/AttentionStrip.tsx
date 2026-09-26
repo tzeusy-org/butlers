@@ -83,9 +83,9 @@ export function AttentionStrip({ connectors }: AttentionStripProps) {
           const label = hasOperationalWarning
             ? 'cadence sparse'
             : authPresentation.label
-          const colorClass = hasOperationalWarning
-            ? 'text-[var(--amber-text)]'
-            : authPresentation.colorClass
+          const color = hasOperationalWarning
+            ? 'var(--amber)'
+            : authPresentation.color
           const displayName = formatConnectorName(c)
 
           return (
@@ -96,7 +96,10 @@ export function AttentionStrip({ connectors }: AttentionStripProps) {
               className="inline-flex items-baseline gap-1.5 text-foreground underline decoration-border underline-offset-[3px] hover:decoration-foreground transition-colors"
             >
               <span className="text-[13px] tracking-[-0.005em]">{displayName}</span>
-              <span className={`font-mono text-[10px] tracking-[0.06em] uppercase ${colorClass}`}>
+              <span
+                className="font-mono text-[10px] tracking-[0.06em] uppercase"
+                style={{ color }}
+              >
                 {label}
               </span>
             </Link>

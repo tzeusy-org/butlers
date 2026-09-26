@@ -1,4 +1,4 @@
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Section, SectionContent, SectionHeader, SectionTitle } from "@/components/ui/Section";
 import { Badge } from "@/components/ui/badge";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { useMindMapAnalytics } from "@/hooks/use-education";
@@ -29,28 +29,28 @@ export default function StrugglingNodesCard({
 
   if (isError) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Struggling Concepts</CardTitle>
-        </CardHeader>
-        <CardContent>
+      <Section>
+        <SectionHeader>
+          <SectionTitle>Struggling Concepts</SectionTitle>
+        </SectionHeader>
+        <SectionContent>
           <SourceDegradedNote
             label="Struggling concepts"
             detail="could not be reached"
             onRetry={() => void refetch()}
             testId="struggling-nodes-degraded"
           />
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
     );
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Struggling Concepts</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-2">
+    <Section>
+      <SectionHeader>
+        <SectionTitle>Struggling Concepts</SectionTitle>
+      </SectionHeader>
+      <SectionContent className="space-y-2">
         {struggling.map((node) => (
           <button
             key={node.node_id}
@@ -69,7 +69,7 @@ export default function StrugglingNodesCard({
             </span>
           </button>
         ))}
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }

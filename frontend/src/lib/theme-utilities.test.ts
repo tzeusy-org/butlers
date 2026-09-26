@@ -72,7 +72,7 @@ describe("Dispatch Tailwind theme utilities", () => {
   it.each([
     "color: var(--fg)",
     'style={{ background: "var(--bg)" }}',
-    "text-[var(--fg,oklch(0.985_0_0))]",
+    "text-fg",
     "text-[var(--mfg)]",
   ])("allows non-retired token syntax: %s", (source) => {
     expect(source.match(ARBITRARY_SURFACE_TOKEN_CLASS)).toBeNull()

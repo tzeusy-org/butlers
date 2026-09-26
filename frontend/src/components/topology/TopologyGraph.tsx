@@ -9,9 +9,9 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
-import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { Section, SectionContent, SectionHeader, SectionTitle } from "../ui/Section";
 import { SourceDegradedNote } from "../ui/query-boundary";
-import { TONE_COLORS } from "../ui/StateDot";
+import { stateColorVar } from "@/lib/visual-token-roles";
 import type { CellTone } from "@/hooks/use-butler-status-board";
 
 interface ButlerNode {
@@ -50,23 +50,36 @@ interface TopologyGraphProps {
   connectorsError?: boolean;
 }
 
-// Legacy status-string color mapping -- still used for connector nodes
-// (which have no canonical tone) and as a fallback for butler nodes that
-// have not yet loaded board data.
-const STATUS_COLORS: Record<string, string> = {
-  ok: "var(--green)",
-  online: "var(--green)",
-  down: "var(--red)",
-  offline: "var(--red)",
-  degraded: "var(--amber)",
-  stale: "var(--amber)",
-};
+function toneColor(tone: CellTone): string {
+  switch (tone) {
+    case "green":
+      return stateColorVar("ok");
+    case "amber":
+      return stateColorVar("degraded");
+    case "red":
+      return stateColorVar("error");
+    case "neutral":
+      return stateColorVar("waiting");
+  }
+}
 
 function getStatusColor(status: string, tone?: CellTone): string {
   if (tone) {
-    return TONE_COLORS[tone];
+    return toneColor(tone);
   }
-  return STATUS_COLORS[status] ?? "var(--dim)";
+  switch (status) {
+    case "ok":
+    case "online":
+      return stateColorVar("ok");
+    case "down":
+    case "offline":
+      return stateColorVar("error");
+    case "degraded":
+    case "stale":
+      return stateColorVar("degraded");
+    default:
+      return stateColorVar("waiting");
+  }
 }
 
 function connectorLabel(c: ConnectorNode): string {
@@ -297,56 +310,56 @@ export default function TopologyGraph({
 
   if (isLoading) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Ecosystem Topology</CardTitle>
-        </CardHeader>
-        <CardContent>
+      <Section>
+        <SectionHeader>
+          <SectionTitle>Ecosystem Topology</SectionTitle>
+        </SectionHeader>
+        <SectionContent>
           <div className="h-96 rounded bg-muted" data-testid="topology-graph-skeleton" />
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
     );
   }
 
   if (butlers.length === 0) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Ecosystem Topology</CardTitle>
-        </CardHeader>
-        <CardContent>
+      <Section>
+        <SectionHeader>
+          <SectionTitle>Ecosystem Topology</SectionTitle>
+        </SectionHeader>
+        <SectionContent>
           <div className="flex h-96 items-center justify-center text-sm text-muted-foreground">
             No butlers discovered
           </div>
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
     );
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Ecosystem Topology</CardTitle>
-      </CardHeader>
-      <CardContent>
+    <Section>
+      <SectionHeader>
+        <SectionTitle>Ecosystem Topology</SectionTitle>
+      </SectionHeader>
+      <SectionContent>
         {/* Legend -- the graph's colors are otherwise unexplained; this
             names the one canonical liveness vocabulary shared with the
             roster board and heartbeat tile. */}
         <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
           <span className="flex items-center gap-1.5">
-            <span className="inline-block size-2 rounded-full" style={{ background: TONE_COLORS.green }} aria-hidden="true" />
+            <span className="inline-block size-2 rounded-full" style={{ background: toneColor("green") }} aria-hidden="true" />
             Running
           </span>
           <span className="flex items-center gap-1.5">
-            <span className="inline-block size-2 rounded-full" style={{ background: TONE_COLORS.neutral }} aria-hidden="true" />
+            <span className="inline-block size-2 rounded-full" style={{ background: toneColor("neutral") }} aria-hidden="true" />
             Idle
           </span>
           <span className="flex items-center gap-1.5">
-            <span className="inline-block size-2 rounded-full" style={{ background: TONE_COLORS.amber }} aria-hidden="true" />
+            <span className="inline-block size-2 rounded-full" style={{ background: toneColor("amber") }} aria-hidden="true" />
             Overdue
           </span>
           <span className="flex items-center gap-1.5">
-            <span className="inline-block size-2 rounded-full" style={{ background: TONE_COLORS.red }} aria-hidden="true" />
+            <span className="inline-block size-2 rounded-full" style={{ background: toneColor("red") }} aria-hidden="true" />
             Offline / Quarantined
           </span>
         </div>
@@ -373,8 +386,8 @@ export default function TopologyGraph({
             <Background />
           </ReactFlow>
         </div>
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }
 

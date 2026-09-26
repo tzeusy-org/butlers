@@ -146,12 +146,19 @@ describe("GoogleHealthStatusCard — single account", () => {
     expect(screen.getByTestId("account-email").textContent).toBe("user@example.com");
   });
 
+  it("keeps the account heading phrasing-only and renders status beside it", () => {
+    renderCard(SINGLE_ACCOUNT_STATUS);
+    const heading = screen.getByRole("heading", { name: /user@example.com/i });
+    expect(heading.querySelector("div")).toBeNull();
+    expect(heading.contains(screen.getByTestId("account-state"))).toBe(false);
+  });
+
   it("shows the account state text on the widget", () => {
     renderCard(SINGLE_ACCOUNT_STATUS);
     const accountState = screen.getByTestId("account-state");
     expect(accountState.textContent).toBe("healthy");
-    expect(accountState.className).toContain("var(--green)");
-    expect(accountState.className).not.toContain("oklch(");
+    expect(accountState.className).toContain("text-muted-foreground");
+    expect(screen.getByRole("img", { name: "Healthy" })).toBeDefined();
   });
 
   it("shows sleep_sessions_7d correctly", () => {
@@ -189,8 +196,8 @@ describe("GoogleHealthStatusCard — single account state colours", () => {
     renderCard(degraded);
     const accountState = screen.getByTestId("account-state");
     expect(accountState.textContent).toBe("degraded");
-    expect(accountState.className).toContain("var(--amber)");
-    expect(accountState.className).not.toContain("oklch(");
+    expect(accountState.className).toContain("text-muted-foreground");
+    expect(screen.getByRole("img", { name: "Degraded" })).toBeDefined();
   });
 
   it("renders error state on widget", () => {
@@ -202,8 +209,8 @@ describe("GoogleHealthStatusCard — single account state colours", () => {
     renderCard(error);
     const accountState = screen.getByTestId("account-state");
     expect(accountState.textContent).toBe("error");
-    expect(accountState.className).toContain("var(--red)");
-    expect(accountState.className).not.toContain("oklch(");
+    expect(accountState.className).toContain("text-muted-foreground");
+    expect(screen.getByRole("img", { name: "Error" })).toBeDefined();
   });
 });
 

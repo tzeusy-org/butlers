@@ -177,8 +177,8 @@ function HeadingBand({
               className="m-0"
               style={{
                 fontFamily: titleMono
-                  ? "var(--font-mono, monospace)"
-                  : "var(--font-sans, 'Inter Tight', sans-serif)",
+                  ? "var(--font-mono)"
+                  : "var(--font-sans)",
                 fontSize: titleMono ? 24 : 30,
                 fontWeight: 500,
                 letterSpacing: titleMono ? "0.005em" : "-0.025em",
@@ -2455,7 +2455,7 @@ function CliDeviceAuthPanel({ auth }: { auth: CliDeviceAuthState }) {
             <span
               className="px-3 py-1.5 tabular-nums"
               style={{
-                fontFamily: "var(--font-mono, monospace)",
+                fontFamily: "var(--font-mono)",
                 fontSize: 22,
                 fontWeight: 600,
                 letterSpacing: "0.18em",
@@ -3112,7 +3112,7 @@ export function PassportEmptyState() {
     <div className="p-10">
       <span
         style={{
-          fontFamily: "var(--font-serif, 'Source Serif 4', serif)",
+          fontFamily: "var(--font-serif)",
           fontStyle: "italic",
           color: "var(--dim)",
           fontSize: 15,
@@ -3354,7 +3354,7 @@ export function PassportAddPanel({
           <h1
             className="m-0"
             style={{
-              fontFamily: "var(--font-sans, 'Inter Tight', sans-serif)",
+              fontFamily: "var(--font-sans)",
               fontSize: 28,
               fontWeight: 500,
               letterSpacing: "-0.025em",

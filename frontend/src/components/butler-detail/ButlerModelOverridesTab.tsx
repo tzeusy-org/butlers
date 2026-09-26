@@ -6,12 +6,12 @@ import { ComplexityBadge, COMPLEXITY_TIERS, complexityLabel } from "@/components
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+  Section,
+  SectionContent,
+  SectionDescription,
+  SectionHeader,
+  SectionTitle,
+} from "@/components/ui/Section";
 import {
   Dialog,
   DialogContent,
@@ -99,14 +99,14 @@ function EffectiveModelRow({ butlerName, tier }: { butlerName: string; tier: Com
 
 function EffectiveModelsTable({ butlerName }: { butlerName: string }) {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">Effective Models per Tier</CardTitle>
-        <CardDescription>
+    <Section>
+      <SectionHeader>
+        <SectionTitle className="text-base">Effective Models per Tier</SectionTitle>
+        <SectionDescription>
           Resolved model for each complexity tier (accounting for overrides).
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
+        </SectionDescription>
+      </SectionHeader>
+      <SectionContent>
         <Table>
           <TableHeader>
             <TableRow>
@@ -122,8 +122,8 @@ function EffectiveModelsTable({ butlerName }: { butlerName: string }) {
             ))}
           </TableBody>
         </Table>
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }
 
@@ -439,13 +439,13 @@ export default function ButlerModelOverridesTab({
 
   if (isError) {
     return (
-      <Card>
-        <CardContent className="py-8">
+      <Section>
+        <SectionContent className="py-8">
           <p className="text-sm text-destructive text-center">
             Failed to load model overrides.
           </p>
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
     );
   }
 
@@ -455,13 +455,13 @@ export default function ButlerModelOverridesTab({
       <EffectiveModelsTable butlerName={butlerName} />
 
       {/* Per-butler overrides */}
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between">
+      <Section>
+        <SectionHeader className="flex flex-row items-center justify-between">
           <div>
-            <CardTitle className="text-base">Per-Butler Overrides</CardTitle>
-            <CardDescription>
+            <SectionTitle className="text-base">Per-Butler Overrides</SectionTitle>
+            <SectionDescription>
               Override specific catalog entries for this butler.
-            </CardDescription>
+            </SectionDescription>
           </div>
           <Button
             size="sm"
@@ -470,16 +470,16 @@ export default function ButlerModelOverridesTab({
           >
             Add override
           </Button>
-        </CardHeader>
-        <CardContent>
+        </SectionHeader>
+        <SectionContent>
           <OverridesTable
             overrides={overrides}
             isLoading={overridesLoading}
             onEdit={handleEditClick}
             onDelete={handleDeleteClick}
           />
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
 
       {/* Override dialog */}
       <OverrideDialog

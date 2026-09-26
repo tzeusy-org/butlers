@@ -86,7 +86,7 @@ describe('deriveConnectorDispatchInfo — paused and unrecognized runtime states
       expect(healthVerdictWord(connector, info)).toBe(verdict)
       expect(authStatusPresentation(info)).toEqual({
         label: authNote,
-        colorClass: 'text-[var(--amber-text)]',
+        color: 'var(--amber-text)',
       })
     },
   )
@@ -126,10 +126,10 @@ describe('authStatusPresentation', () => {
       const presentation = authStatusPresentation(info)
       expect(presentation).toEqual({
         label: info.authNote,
-        colorClass: healthTextColor(info.health),
+        color: healthTextColor(info.health),
       })
       expect(presentation.label).not.toBe('authorized')
-      expect(presentation.colorClass).not.toContain('--green')
+      expect(presentation.color).not.toContain('--green')
     },
   )
 
@@ -138,13 +138,13 @@ describe('authStatusPresentation', () => {
 
     expect(authStatusPresentation(info)).toEqual({
       label: 'authorized',
-      colorClass: 'text-[var(--green)]',
+      color: 'var(--green)',
     })
   })
 
   it.each([
-    ['reauth', 'needs_reauth', 'error', 'session expired', '--red-text'],
-    ['no primary', 'needs_primary_account', 'degraded', 'primary account missing', '--amber-text'],
+    ['reauth', 'needs_reauth', 'error', 'session expired', 'var(--red-text)'],
+    ['no primary', 'needs_primary_account', 'degraded', 'primary account missing', 'var(--amber-text)'],
   ] as const)(
     'preserves the actionable %s label when health is also unhealthy',
     (expectedLabel, authStatus, health, authNote, expectedTone) => {
@@ -156,7 +156,7 @@ describe('authStatusPresentation', () => {
       })
 
       expect(presentation.label).toBe(expectedLabel)
-      expect(presentation.colorClass).toContain(expectedTone)
+      expect(presentation.color).toBe(expectedTone)
     },
   )
 })

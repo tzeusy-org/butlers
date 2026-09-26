@@ -32,12 +32,12 @@
 import { useMemo, useState } from "react"
 
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
+  Tile,
+  TileContent,
+  TileDescription,
+  TileHeader,
+  TileTitle,
+} from "@/components/ui/Tile"
 import { SourceDegradedNote } from "@/components/ui/query-boundary"
 import { Skeleton } from "@/components/ui/skeleton"
 import { StateDot, type DispatchState } from "@/components/ui/StateDot"
@@ -136,31 +136,39 @@ interface DecoratedCondition {
 
 function TileSkeleton() {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Standing Conditions</CardTitle>
-        <CardDescription>Infrastructure outages and owner-facing concerns tracked by the reliability ledger</CardDescription>
-      </CardHeader>
-      <CardContent>
+    <Tile loading>
+      <TileHeader>
+        <TileTitle>Standing Conditions</TileTitle>
+        <TileDescription>Infrastructure outages and owner-facing concerns tracked by the reliability ledger</TileDescription>
+      </TileHeader>
+      <TileContent>
         <div data-testid="standing-conditions-skeleton" className="space-y-2">
           <Skeleton className="h-5 w-48" />
           <Skeleton className="h-5 w-40" />
           <Skeleton className="h-5 w-44" />
         </div>
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }
 
-function TileFrame({ children, testId }: { children: React.ReactNode; testId?: string }) {
+function TileFrame({
+  children,
+  testId,
+  degraded = false,
+}: {
+  children: React.ReactNode
+  testId?: string
+  degraded?: boolean
+}) {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Standing Conditions</CardTitle>
-        <CardDescription>Infrastructure outages and owner-facing concerns tracked by the reliability ledger</CardDescription>
-      </CardHeader>
-      <CardContent data-testid={testId}>{children}</CardContent>
-    </Card>
+    <Tile degraded={degraded}>
+      <TileHeader>
+        <TileTitle>Standing Conditions</TileTitle>
+        <TileDescription>Infrastructure outages and owner-facing concerns tracked by the reliability ledger</TileDescription>
+      </TileHeader>
+      <TileContent data-testid={testId}>{children}</TileContent>
+    </Tile>
   )
 }
 
@@ -494,7 +502,7 @@ export function StandingConditionsTile() {
 
   if (infraQuery.isError && ownerQuery.isError) {
     return (
-      <TileFrame testId="standing-conditions-error">
+      <TileFrame testId="standing-conditions-error" degraded>
         <SourceDegradedNote label="Standing conditions" detail="could not be reached" />
       </TileFrame>
     )
@@ -507,7 +515,7 @@ export function StandingConditionsTile() {
 
   if (!infraAvailable && !ownerAvailable) {
     return (
-      <TileFrame testId="standing-conditions-degraded">
+      <TileFrame testId="standing-conditions-degraded" degraded>
         <SourceDegradedNote label="Standing conditions" detail="reliability ledger unavailable" />
       </TileFrame>
     )
@@ -541,7 +549,10 @@ export function StandingConditionsTile() {
   )
 
   return (
-    <TileFrame testId="standing-conditions-content">
+    <TileFrame
+      testId="standing-conditions-content"
+      degraded={infraQuery.isError || ownerQuery.isError || suppressionCountsError}
+    >
       {!infraAvailable ? (
         <SourceDegradedNote
           className="mb-2"

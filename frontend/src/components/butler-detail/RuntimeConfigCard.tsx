@@ -4,12 +4,12 @@ import { Time } from "@/components/ui/time";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
-  Card,
-  CardAction,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+  Section,
+  SectionAction,
+  SectionContent,
+  SectionHeader,
+  SectionTitle,
+} from "@/components/ui/Section";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -64,23 +64,23 @@ export default function RuntimeConfigCard({ butlerName }: RuntimeConfigCardProps
 
   if (isLoading) {
     return (
-      <Card>
-        <CardHeader><CardTitle>Runtime Config</CardTitle></CardHeader>
-        <CardContent><p className="text-sm text-muted-foreground">Loading...</p></CardContent>
-      </Card>
+      <Section>
+        <SectionHeader><SectionTitle>Runtime Config</SectionTitle></SectionHeader>
+        <SectionContent><p className="text-sm text-muted-foreground">Loading...</p></SectionContent>
+      </Section>
     );
   }
 
   if (isError) {
     return (
-      <Card>
-        <CardHeader><CardTitle>Runtime Config</CardTitle></CardHeader>
-        <CardContent>
+      <Section>
+        <SectionHeader><SectionTitle>Runtime Config</SectionTitle></SectionHeader>
+        <SectionContent>
           <p className="text-sm text-destructive">
             {error instanceof Error ? error.message : "Failed to load"}
           </p>
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
     );
   }
 
@@ -156,10 +156,10 @@ export default function RuntimeConfigCard({ butlerName }: RuntimeConfigCardProps
       : [];
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Runtime Config</CardTitle>
-        <CardAction>
+    <Section>
+      <SectionHeader>
+        <SectionTitle>Runtime Config</SectionTitle>
+        <SectionAction>
           {config.updated_at && (
             <span className="text-xs text-muted-foreground mr-3">
               Updated: <Time value={config.updated_at} mode="absolute" />
@@ -172,9 +172,9 @@ export default function RuntimeConfigCard({ butlerName }: RuntimeConfigCardProps
           >
             {patchMutation.isPending ? "Saving..." : "Save"}
           </Button>
-        </CardAction>
-      </CardHeader>
-      <CardContent className="space-y-4">
+        </SectionAction>
+      </SectionHeader>
+      <SectionContent className="space-y-4">
         <div className="rounded-md border border-border p-3" data-testid="tool-surface-card">
           <div className="flex items-center justify-between gap-3">
             <div>
@@ -383,7 +383,7 @@ export default function RuntimeConfigCard({ butlerName }: RuntimeConfigCardProps
             Runtime config may narrow Git authority, never add a group Git does not declare.
           </p>
         </div>
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }

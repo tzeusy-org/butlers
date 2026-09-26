@@ -72,7 +72,9 @@ function render(): string {
 describe("BackupTile -- loading state", () => {
   it("renders skeleton when isPending=true", () => {
     mockResult = { isPending: true }
-    expect(render()).toContain("backup-tile-skeleton")
+    const html = render()
+    expect(html).toContain("backup-tile-skeleton")
+    expect(html).toContain('aria-busy="true"')
   })
 
   it("does not render content while loading", () => {
@@ -90,7 +92,9 @@ describe("BackupTile -- loading state", () => {
 describe("BackupTile -- error state", () => {
   it("renders error message when isError=true", () => {
     mockResult = { isPending: false, isError: true }
-    expect(render()).toContain("backup-tile-error")
+    const html = render()
+    expect(html).toContain("backup-tile-error")
+    expect(html).toContain('data-degraded="true"')
   })
 
   it("renders error text when isError=true", () => {
@@ -116,7 +120,9 @@ describe("BackupTile -- backup source unreachable", () => {
       isPending: false,
       data: makeBackupFacts({ backup_source_reachable: false }),
     }
-    expect(render()).toContain("backup-tile-unavailable")
+    const html = render()
+    expect(html).toContain("backup-tile-unavailable")
+    expect(html).toContain('data-degraded="true"')
   })
 
   it("shows 'Backup status unavailable' text", () => {

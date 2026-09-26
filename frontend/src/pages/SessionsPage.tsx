@@ -13,7 +13,7 @@ import {
 } from "@/components/sessions/SessionsVerdictOpener";
 import { SessionStripeChart } from "@/components/dashboard/SessionStripeChart";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import { Section, SectionContent } from "@/components/ui/Section";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -443,15 +443,15 @@ export default function SessionsPage() {
       <SessionsKpiStrip filterParams={filterParams} />
 
       {/* Primary visualization — wired to the active filters, not the cursor */}
-      <Card>
-        <CardContent className="pt-6">
+      <Section>
+        <SectionContent className="pt-6">
           <SessionStripeChart butlers={butlers} filterParams={filterParams} />
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
 
       {/* Filter bar */}
-      <Card>
-        <CardContent className="pt-0">
+      <Section>
+        <SectionContent className="pt-0">
           <div className="flex flex-wrap items-end gap-4">
             {/* Butler dropdown */}
             <div className="space-y-1">
@@ -569,8 +569,8 @@ export default function SessionsPage() {
               </Button>
             )}
           </div>
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
 
       {/* Pinned strip — running (ticking elapsed) + recent failures (inline
           error excerpt) surfaced above the chronological flow (bu-ptaub,
@@ -589,8 +589,8 @@ export default function SessionsPage() {
       />
 
       {/* Session table — dims (never blanks) while a filter/cursor change refetches */}
-      <Card>
-        <CardContent>
+      <Section>
+        <SectionContent>
           <FetchingDim isFetching={isListRefreshing}>
             <SessionTable
               sessions={sessions}
@@ -602,8 +602,8 @@ export default function SessionsPage() {
               sourcesDegraded={listSourcesDegraded}
             />
           </FetchingDim>
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
 
       {/* Keyset pagination controls (Newer / Older — no page count) */}
       {(sessions.length > 0 || canGoNewer) && (
