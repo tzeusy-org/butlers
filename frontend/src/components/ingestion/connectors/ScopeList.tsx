@@ -16,6 +16,8 @@
  * Reference: docs/redesigns/ingestion-connector-detail.jsx §Scopes
  */
 
+import { StateDot } from '@/components/ui/StateDot'
+
 /** One OAuth scope entry from connector-oauth-scope-surface. */
 export interface OAuthScope {
   name: string
@@ -68,13 +70,6 @@ export function ScopeList({ scopes, reauthRequired, connectorType }: ScopeListPr
             const isBroken = !scope.granted || scope.verdict === 'mismatch' || scope.verdict === 'denied'
             const verdict = scope.verdict ?? (scope.granted ? 'granted' : 'denied')
 
-            const dotClass = isBroken
-              ? 'bg-[color:var(--red,oklch(0.62_0.20_25))]'
-              : 'bg-[color:var(--green,oklch(0.72_0.17_150))]'
-            const nameClass = isBroken
-              ? 'text-[color:var(--red,oklch(0.62_0.20_25))]'
-              : 'text-foreground'
-
             return (
               <div
                 key={i}
@@ -82,11 +77,12 @@ export function ScopeList({ scopes, reauthRequired, connectorType }: ScopeListPr
                 style={{ gridTemplateColumns: '12px 1fr auto' }}
                 data-testid={`scope-row-${scope.name}`}
               >
-                <span
-                  className={`w-1.5 h-1.5 rounded-full ${dotClass} mt-1 self-start`}
-                  aria-hidden="true"
+                <StateDot
+                  state={isBroken ? 'error' : 'ok'}
+                  size={6}
+                  className="mt-1 self-start"
                 />
-                <span className={`font-mono text-[11.5px] ${nameClass} break-all`}>
+                <span className="font-mono text-[11.5px] text-foreground break-all">
                   {scope.name}
                 </span>
                 <span className="font-mono text-[10px] text-muted-foreground whitespace-nowrap">

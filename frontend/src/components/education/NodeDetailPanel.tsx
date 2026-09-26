@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Section, SectionContent, SectionHeader, SectionTitle } from "@/components/ui/Section";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Time } from "@/components/ui/time";
@@ -87,15 +87,15 @@ export default function NodeDetailPanel({
     // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onKeyDown here is Escape-to-close only (trapFocus: false — no Tab handling), matching the accepted TimelineEventDrawer/EventDrawer inline-disclosure-panel pattern.
     <div ref={rootRef} role="complementary" aria-label="Node detail panel" onKeyDown={onKeyDown}>
       {/* Focus lands here on open (tabIndex=-1: programmatically focusable,
-          not a Tab stop); visually hidden since CardTitle below already
+          not a Tab stop); visually hidden since SectionTitle below already
           carries the same information for sighted users. */}
       <h2 ref={initialFocusRef} tabIndex={-1} className="sr-only">
         Node details: {node.label}
       </h2>
-      <Card>
-        <CardHeader className="flex flex-row items-start justify-between space-y-0">
+      <Section>
+        <SectionHeader className="flex flex-row items-start justify-between space-y-0">
           <div className="space-y-1">
-            <CardTitle className="text-lg">{node.label}</CardTitle>
+            <SectionTitle className="text-lg">{node.label}</SectionTitle>
             <div className="flex flex-wrap items-center gap-2">
               <Badge className={masteryStatusBadgeClassName(node.mastery_status)}>
                 {node.mastery_status}
@@ -121,8 +121,8 @@ export default function NodeDetailPanel({
           >
             <X className="h-4 w-4" />
           </Button>
-        </CardHeader>
-        <CardContent className="space-y-4">
+        </SectionHeader>
+        <SectionContent className="space-y-4">
           {node.description && (
             <p className="text-sm text-muted-foreground">{node.description}</p>
           )}
@@ -166,8 +166,8 @@ export default function NodeDetailPanel({
             <h4 className="mb-2 text-sm font-medium">Quiz History</h4>
             <QuizHistoryList mindMapId={mindMapId!} nodeId={nodeId} compact />
           </div>
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
     </div>
   );
 }

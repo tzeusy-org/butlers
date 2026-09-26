@@ -17,7 +17,7 @@ import { Time } from "@/components/ui/time";
 import type { RulePromotionAutoApplied, RulePromotionSuggestion } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Section, SectionContent, SectionFooter, SectionHeader, SectionTitle } from "@/components/ui/Section";
 
 interface PendingCardProps {
   suggestion: RulePromotionSuggestion;
@@ -40,21 +40,21 @@ const PROMOTION_ACCENT_CLASSES = {
 function PendingCard({ suggestion, onConfirm, onDismiss, isPending }: PendingCardProps) {
   const isRouteTo = suggestion.proposed_action.startsWith("route_to:");
   return (
-    <Card className={PROMOTION_ACCENT_CLASSES.card}>
-      <CardHeader className="pb-2">
+    <Section className={PROMOTION_ACCENT_CLASSES.card}>
+      <SectionHeader className="pb-2">
         <div className="flex items-start justify-between gap-2">
           <div className="flex items-center gap-2">
             <TrendingUp className={PROMOTION_ACCENT_CLASSES.icon} />
-            <CardTitle className={PROMOTION_ACCENT_CLASSES.title}>
+            <SectionTitle className={PROMOTION_ACCENT_CLASSES.title}>
               Promote to standing rule
-            </CardTitle>
+            </SectionTitle>
           </div>
           <Badge variant="outline" className="text-xs shrink-0">
             {suggestion.evidence_count}× agreed
           </Badge>
         </div>
-      </CardHeader>
-      <CardContent className="pb-2 space-y-2">
+      </SectionHeader>
+      <SectionContent className="pb-2 space-y-2">
         <p className="text-sm text-foreground/80 font-mono bg-muted/50 rounded px-2 py-1 break-all">
           {suggestion.sender_key} → {suggestion.proposed_action}
         </p>
@@ -70,8 +70,8 @@ function PendingCard({ suggestion, onConfirm, onDismiss, isPending }: PendingCar
             Created <Time value={suggestion.created_at} mode="relative" />
           </span>
         </div>
-      </CardContent>
-      <CardFooter className="pt-0 gap-2">
+      </SectionContent>
+      <SectionFooter className="pt-0 gap-2">
         <Button
           size="sm"
           variant="default"
@@ -86,8 +86,8 @@ function PendingCard({ suggestion, onConfirm, onDismiss, isPending }: PendingCar
           <X className="h-3.5 w-3.5 mr-1.5" />
           Dismiss
         </Button>
-      </CardFooter>
-    </Card>
+      </SectionFooter>
+    </Section>
   );
 }
 
@@ -100,21 +100,21 @@ interface AutoAppliedCardProps {
 function AutoAppliedCard({ item, onSetEnabled, isPending }: AutoAppliedCardProps) {
   const enabled = item.rule_enabled !== false;
   return (
-    <Card className="border-border bg-muted/30">
-      <CardHeader className="pb-2">
+    <Section className="border-border bg-muted/30">
+      <SectionHeader className="pb-2">
         <div className="flex items-start justify-between gap-2">
           <div className="flex items-center gap-2">
             <ShieldCheck className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
-            <CardTitle className="text-sm font-semibold text-foreground/80">
+            <SectionTitle className="text-sm font-semibold text-foreground/80">
               Auto-applied rule
-            </CardTitle>
+            </SectionTitle>
           </div>
           <Badge variant={enabled ? "outline" : "secondary"} className="text-xs shrink-0">
             {enabled ? "active" : "disabled"}
           </Badge>
         </div>
-      </CardHeader>
-      <CardContent className="pb-2 space-y-2">
+      </SectionHeader>
+      <SectionContent className="pb-2 space-y-2">
         <p className="text-sm text-foreground/80 font-mono bg-muted/50 rounded px-2 py-1 break-all">
           {item.sender_key} → {item.proposed_action}
         </p>
@@ -131,8 +131,8 @@ function AutoAppliedCard({ item, onSetEnabled, isPending }: AutoAppliedCardProps
             </>
           )}
         </div>
-      </CardContent>
-      <CardFooter className="pt-0 gap-2">
+      </SectionContent>
+      <SectionFooter className="pt-0 gap-2">
         <Button
           size="sm"
           variant="outline"
@@ -141,8 +141,8 @@ function AutoAppliedCard({ item, onSetEnabled, isPending }: AutoAppliedCardProps
         >
           {enabled ? "Disable rule" : "Re-enable rule"}
         </Button>
-      </CardFooter>
-    </Card>
+      </SectionFooter>
+    </Section>
   );
 }
 

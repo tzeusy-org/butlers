@@ -763,7 +763,7 @@ function MoverChip({ mover }: { mover: Mover }) {
       <span
         className={cn(
           "shrink-0 h-2 w-2 rounded-full",
-          up ? "bg-[var(--red)]" : "bg-[var(--green,var(--primary))]",
+          up ? "bg-[var(--red)]" : "bg-[var(--green)]",
         )}
         aria-hidden
       />

@@ -29,7 +29,7 @@ import {
 } from "recharts";
 
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Section, SectionContent, SectionHeader, SectionTitle } from "@/components/ui/Section";
 import { Time } from "@/components/ui/time";
 import { useTimezone } from "@/components/ui/timezone-context";
 import { classifyReviewBucket, type ReviewBucket } from "@/lib/review-buckets";
@@ -186,7 +186,7 @@ function useReviewsTabData(): AggregatedData {
 function EmptyStateLine({ children }: { children: ReactNode }) {
   return (
     <p
-      className="text-sm text-muted-foreground italic font-[family-name:var(--font-serif,serif)]"
+      className="text-sm text-muted-foreground italic font-[family-name:var(--font-serif)]"
       data-testid="empty-state-line"
     >
       {children}
@@ -254,8 +254,8 @@ function KpiQuartet({
       data-testid="mastery-kpi-strip"
     >
       {kpis.map((kpi) => (
-        <Card key={kpi.label}>
-          <CardContent className="pt-4">
+        <Section key={kpi.label}>
+          <SectionContent className="pt-4">
             <p className="text-xs text-muted-foreground">{kpi.label}</p>
             <p
               className={`text-2xl font-bold tnum font-mono ${
@@ -269,8 +269,8 @@ function KpiQuartet({
             >
               {kpi.value}
             </p>
-          </CardContent>
-        </Card>
+          </SectionContent>
+        </Section>
       ))}
     </div>
   );
@@ -294,11 +294,11 @@ function MindMapsProgressPanel({
   isLoading: boolean;
 }) {
   return (
-    <Card data-testid="mind-maps-progress-panel">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium">Mind maps</CardTitle>
-      </CardHeader>
-      <CardContent>
+    <Section data-testid="mind-maps-progress-panel">
+      <SectionHeader className="pb-2">
+        <SectionTitle className="text-sm font-medium">Mind maps</SectionTitle>
+      </SectionHeader>
+      <SectionContent>
         {isLoading ? (
           <LoadingLine />
         ) : items.length === 0 ? (
@@ -355,8 +355,8 @@ function MindMapsProgressPanel({
             })}
           </ul>
         )}
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }
 
@@ -413,11 +413,11 @@ function ReviewTimelinePanel({
   const hasAny = groups.some((g) => g.entries.length > 0);
 
   return (
-    <Card data-testid="reviews-timeline-section">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium">Pending reviews</CardTitle>
-      </CardHeader>
-      <CardContent className="max-h-72 overflow-y-auto">
+    <Section data-testid="reviews-timeline-section">
+      <SectionHeader className="pb-2">
+        <SectionTitle className="text-sm font-medium">Pending reviews</SectionTitle>
+      </SectionHeader>
+      <SectionContent className="max-h-72 overflow-y-auto">
         {isLoading ? (
           <LoadingLine />
         ) : !hasAny ? (
@@ -465,8 +465,8 @@ function ReviewTimelinePanel({
               ))}
           </div>
         )}
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }
 
@@ -484,11 +484,11 @@ function FrontierPanel({
   const top5 = entries.slice(0, 5);
 
   return (
-    <Card data-testid="reviews-frontier-section">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium">Ready to learn</CardTitle>
-      </CardHeader>
-      <CardContent>
+    <Section data-testid="reviews-frontier-section">
+      <SectionHeader className="pb-2">
+        <SectionTitle className="text-sm font-medium">Ready to learn</SectionTitle>
+      </SectionHeader>
+      <SectionContent>
         {isLoading ? (
           <LoadingLine />
         ) : top5.length === 0 ? (
@@ -517,8 +517,8 @@ function FrontierPanel({
             ))}
           </ul>
         )}
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }
 
@@ -591,11 +591,11 @@ function RetentionTrendPanel({
   }, [data]);
 
   return (
-    <Card data-testid="retention-trend-panel">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium">Retention · 7d</CardTitle>
-      </CardHeader>
-      <CardContent>
+    <Section data-testid="retention-trend-panel">
+      <SectionHeader className="pb-2">
+        <SectionTitle className="text-sm font-medium">Retention · 7d</SectionTitle>
+      </SectionHeader>
+      <SectionContent>
         {isLoading ? (
           <LoadingLine />
         ) : isError ? (
@@ -638,8 +638,8 @@ function RetentionTrendPanel({
             <p className="sr-only">{`Retention trend · ${chartData.length} snapshots over 7 days`}</p>
           </div>
         )}
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }
 

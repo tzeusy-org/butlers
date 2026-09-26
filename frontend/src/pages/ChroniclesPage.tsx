@@ -41,7 +41,7 @@ import { Headline } from "@/components/overview/Headline";
 import { Elaboration } from "@/components/overview/Elaboration";
 import { KpiStrip } from "@/components/overview/KpiStrip";
 import { AttentionList, type AttentionListItem } from "@/components/overview/AttentionList";
-import { Section } from "@/components/overview/Section";
+import { Section } from "@/components/ui/Section";
 import { ChroniclesDrilldownPanel } from "@/components/chronicles/ChroniclesDrilldownPanel";
 import { RecentDaysIndex } from "@/components/chronicles/RecentDaysIndex";
 import {
@@ -454,7 +454,7 @@ export default function ChroniclesPage() {
                   ...EYEBROW_STYLE,
                   fontSize: "9px",
                   letterSpacing: "0.08em",
-                  color: "var(--destructive, var(--muted-foreground))",
+                  color: "var(--destructive)",
                 }}
                 title="Coverage or availability for this day could not be affirmed."
                 aria-label="Coverage or availability for this day could not be affirmed"

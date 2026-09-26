@@ -25,12 +25,12 @@
 
 import type { BackupFacts, BackupRunFacts, RestoreDrillFacts } from "@/api/types"
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
+  Tile,
+  TileContent,
+  TileDescription,
+  TileHeader,
+  TileTitle,
+} from "@/components/ui/Tile"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Time } from "@/components/ui/time"
 import { useBackupFacts } from "@/hooks/use-system"
@@ -41,34 +41,34 @@ import { useBackupFacts } from "@/hooks/use-system"
 
 function TileSkeleton() {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Backups</CardTitle>
-        <CardDescription>Backup recency and reachability</CardDescription>
-      </CardHeader>
-      <CardContent>
+    <Tile>
+      <TileHeader>
+        <TileTitle>Backups</TileTitle>
+        <TileDescription>Backup recency and reachability</TileDescription>
+      </TileHeader>
+      <TileContent>
         <div data-testid="backup-tile-skeleton" className="space-y-2">
           <Skeleton className="h-8 w-40" />
           <Skeleton className="h-4 w-52" />
         </div>
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }
 
 function TileError() {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Backups</CardTitle>
-        <CardDescription>Backup recency and reachability</CardDescription>
-      </CardHeader>
-      <CardContent>
+    <Tile>
+      <TileHeader>
+        <TileTitle>Backups</TileTitle>
+        <TileDescription>Backup recency and reachability</TileDescription>
+      </TileHeader>
+      <TileContent>
         <p data-testid="backup-tile-error" className="text-destructive text-sm">
           Could not load backup facts.
         </p>
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }
 
@@ -278,28 +278,28 @@ export function BackupTile() {
 
   if (!facts?.backup_source_reachable) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Backups</CardTitle>
-          <CardDescription>Backup recency and reachability</CardDescription>
-        </CardHeader>
-        <CardContent data-testid="backup-tile-unavailable">
+      <Tile>
+        <TileHeader>
+          <TileTitle>Backups</TileTitle>
+          <TileDescription>Backup recency and reachability</TileDescription>
+        </TileHeader>
+        <TileContent data-testid="backup-tile-unavailable">
           <p className="text-muted-foreground text-sm">Backup status unavailable.</p>
           <p className="text-muted-foreground mt-1 text-xs">
             Backup source is unreachable or not configured.
           </p>
-        </CardContent>
-      </Card>
+        </TileContent>
+      </Tile>
     )
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Backups</CardTitle>
-        <CardDescription>Backup recency and reachability</CardDescription>
-      </CardHeader>
-      <CardContent data-testid="backup-tile-content">
+    <Tile>
+      <TileHeader>
+        <TileTitle>Backups</TileTitle>
+        <TileDescription>Backup recency and reachability</TileDescription>
+      </TileHeader>
+      <TileContent data-testid="backup-tile-content">
         <dl className="space-y-3 text-sm">
           <div>
             <dt className="text-muted-foreground text-xs">Status</dt>
@@ -320,7 +320,7 @@ export function BackupTile() {
           <BackupRunRow run={facts.last_run} />
           <RestoreDrillRow drill={facts.restore_drill} />
         </dl>
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }

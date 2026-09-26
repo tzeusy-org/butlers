@@ -24,11 +24,11 @@ import { UptimeTile } from "@/components/system/UptimeTile";
 import { VersionTile } from "@/components/system/VersionTile";
 import TopologyGraph from "@/components/topology/TopologyGraph";
 import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+  Section,
+  SectionContent,
+  SectionHeader,
+  SectionTitle,
+} from "@/components/ui/Section";
 import { Page } from "@/components/ui/page";
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board";
 import { useConnectorSummaries } from "@/hooks/use-ingestion";
@@ -46,13 +46,13 @@ interface SystemTileProps {
 
 function SystemTile({ title, action, children }: SystemTileProps) {
   return (
-    <Card>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <CardTitle className="text-sm font-medium">{title}</CardTitle>
+    <Section>
+      <SectionHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+        <SectionTitle className="text-sm font-medium">{title}</SectionTitle>
         {action}
-      </CardHeader>
-      <CardContent>{children}</CardContent>
-    </Card>
+      </SectionHeader>
+      <SectionContent>{children}</SectionContent>
+    </Section>
   );
 }
 

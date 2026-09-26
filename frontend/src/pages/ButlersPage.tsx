@@ -30,7 +30,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { toast } from "sonner";
 
-import { Card, CardContent } from "@/components/ui/card";
+import { Section, SectionContent } from "@/components/ui/Section";
 import { Page } from "@/components/ui/page";
 import { BoardFooter } from "@/components/butlers/BoardFooter";
 import { BoardHeader } from "@/components/butlers/BoardHeader";
@@ -246,14 +246,14 @@ export default function ButlersPage() {
       {/* Stale-data banner — shown above the grid when cached rows exist but the
           last refresh failed. Mirrors the pattern from the old ButlersPage. */}
       {showStaleBanner && (
-        <Card>
-          <CardContent className="py-4">
+        <Section>
+          <SectionContent className="py-4">
             <p className="text-sm text-destructive">
               Showing last known butler status. Refresh failed:{" "}
               {error instanceof Error ? error.message : "Unknown error"}
             </p>
-          </CardContent>
-        </Card>
+          </SectionContent>
+        </Section>
       )}
 
       {/* Status-board grid — 4 columns, each cell links to the butler detail page. */}

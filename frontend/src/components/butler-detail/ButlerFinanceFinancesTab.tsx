@@ -132,7 +132,7 @@ function UrgencyChip({ urgency }: { urgency: string }) {
 function EmptyLine({ children }: { children: ReactNode }) {
   return (
     <p
-      className="text-sm text-muted-foreground italic font-[family-name:var(--font-serif,serif)]"
+      className="text-sm text-muted-foreground italic font-[family-name:var(--font-serif)]"
       data-testid="empty-state-line"
     >
       {children}

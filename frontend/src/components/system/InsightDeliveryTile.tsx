@@ -11,12 +11,12 @@
 // ---------------------------------------------------------------------------
 
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
+  Tile,
+  TileContent,
+  TileDescription,
+  TileHeader,
+  TileTitle,
+} from "@/components/ui/Tile"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useInsightDeliveryState } from "@/hooks/use-system"
 import { Time } from "@/components/ui/time"
@@ -28,36 +28,36 @@ import type { ReactNode } from "react"
 
 function TileSkeleton() {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Insight Delivery</CardTitle>
-        <CardDescription>Proactive insight pipeline state</CardDescription>
-      </CardHeader>
-      <CardContent>
+    <Tile>
+      <TileHeader>
+        <TileTitle>Insight Delivery</TileTitle>
+        <TileDescription>Proactive insight pipeline state</TileDescription>
+      </TileHeader>
+      <TileContent>
         <div data-testid="insight-delivery-tile-skeleton" className="space-y-2">
           <Skeleton className="h-5 w-40" />
           <Skeleton className="h-5 w-40" />
           <Skeleton className="h-5 w-40" />
           <Skeleton className="h-5 w-48" />
         </div>
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }
 
 function TileError() {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Insight Delivery</CardTitle>
-        <CardDescription>Proactive insight pipeline state</CardDescription>
-      </CardHeader>
-      <CardContent>
+    <Tile>
+      <TileHeader>
+        <TileTitle>Insight Delivery</TileTitle>
+        <TileDescription>Proactive insight pipeline state</TileDescription>
+      </TileHeader>
+      <TileContent>
         <p data-testid="insight-delivery-tile-error" className="text-destructive text-sm">
           Could not load insight delivery state.
         </p>
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }
 
@@ -112,12 +112,12 @@ export function InsightDeliveryTile() {
   ) : "No deliveries yet"
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Insight Delivery</CardTitle>
-        <CardDescription>Proactive insight pipeline state</CardDescription>
-      </CardHeader>
-      <CardContent data-testid="insight-delivery-tile-content">
+    <Tile>
+      <TileHeader>
+        <TileTitle>Insight Delivery</TileTitle>
+        <TileDescription>Proactive insight pipeline state</TileDescription>
+      </TileHeader>
+      <TileContent data-testid="insight-delivery-tile-content">
         <dl className="divide-y divide-border">
           <StatRow
             label="Queued"
@@ -141,7 +141,7 @@ export function InsightDeliveryTile() {
             muted={!state?.last_delivery_at}
           />
         </dl>
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }

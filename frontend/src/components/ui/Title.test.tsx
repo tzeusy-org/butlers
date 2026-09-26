@@ -90,7 +90,7 @@ describe("Title: typography", () => {
 
   it("applies primary foreground color token", () => {
     const html = renderToStaticMarkup(<Title>title</Title>)
-    expect(html).toContain("--fg")
+    expect(html).toContain("text-fg")
   })
 })
 

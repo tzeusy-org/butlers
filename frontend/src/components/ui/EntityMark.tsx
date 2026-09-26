@@ -179,7 +179,7 @@ export function EntityMark({
         ? "var(--role-owner)"
         : isUnidentified
           ? "var(--amber)"
-          : "var(--border-strong,oklch(1 0 0/0.18))"
+          : "var(--border-strong)"
 
   // Font: sans (weighted) for persons (initials need more width),
   // mono for glyph types (single char, even spacing).

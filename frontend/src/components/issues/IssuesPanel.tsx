@@ -6,7 +6,7 @@ import { Time } from '@/components/ui/time'
 import { cn } from '@/lib/utils'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
+import { Section, SectionContent, SectionHeader, SectionTitle } from '../ui/Section'
 import { EmptyState } from '../ui/empty-state'
 import { ErrorState } from '../ui/error-state'
 import { SourceDegradedNote } from '../ui/query-boundary'
@@ -240,34 +240,34 @@ export default function IssuesPanel({
 
   if (isLoading) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Issues</CardTitle>
-        </CardHeader>
-        <CardContent>
+      <Section>
+        <SectionHeader>
+          <SectionTitle>Issues</SectionTitle>
+        </SectionHeader>
+        <SectionContent>
           <div className="space-y-3">
             {Array.from({ length: 2 }).map((_, i) => (
               <div key={i} className="h-12 rounded bg-muted" />
             ))}
           </div>
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
     )
   }
 
   if (isError) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Issues</CardTitle>
-        </CardHeader>
-        <CardContent>
+      <Section>
+        <SectionHeader>
+          <SectionTitle>Issues</SectionTitle>
+        </SectionHeader>
+        <SectionContent>
           <ErrorState
             title="Could not load issues."
             description="The issues feed is unavailable right now. Retrying automatically; check the backend if this persists."
           />
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
     )
   }
 
@@ -301,11 +301,11 @@ export default function IssuesPanel({
 
   if (issues.length === 0) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Issues</CardTitle>
-        </CardHeader>
-        <CardContent>
+      <Section>
+        <SectionHeader>
+          <SectionTitle>Issues</SectionTitle>
+        </SectionHeader>
+        <SectionContent>
           {incompleteNotes ?? (
             <EmptyState
               variant="page"
@@ -321,18 +321,18 @@ export default function IssuesPanel({
               }
             />
           )}
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
     )
   }
 
   return (
-    <Card>
-      <CardHeader className="flex flex-row items-center justify-between">
-        <CardTitle>{dismissedView ? 'Acknowledged issues' : 'Issues'}</CardTitle>
+    <Section>
+      <SectionHeader className="flex flex-row items-center justify-between">
+        <SectionTitle>{dismissedView ? 'Acknowledged issues' : 'Issues'}</SectionTitle>
         <Badge variant={dismissedView ? 'secondary' : 'destructive'}>{issues.length}</Badge>
-      </CardHeader>
-      <CardContent>
+      </SectionHeader>
+      <SectionContent>
         {incompleteNotes && <div className="mb-3 space-y-2">{incompleteNotes}</div>}
         <div className="space-y-3">
           {issues.map((issue) => {
@@ -519,7 +519,7 @@ export default function IssuesPanel({
             )
           })}
         </div>
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   )
 }

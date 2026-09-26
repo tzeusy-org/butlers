@@ -12,12 +12,12 @@
 // ---------------------------------------------------------------------------
 
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
+  Tile,
+  TileContent,
+  TileDescription,
+  TileHeader,
+  TileTitle,
+} from "@/components/ui/Tile"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Time } from "@/components/ui/time"
 import { useDriftFacts } from "@/hooks/use-system"
@@ -28,34 +28,34 @@ import { useDriftFacts } from "@/hooks/use-system"
 
 function TileSkeleton() {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Migration Drift</CardTitle>
-        <CardDescription>Codebase vs. deployed schema state</CardDescription>
-      </CardHeader>
-      <CardContent>
+    <Tile>
+      <TileHeader>
+        <TileTitle>Migration Drift</TileTitle>
+        <TileDescription>Codebase vs. deployed schema state</TileDescription>
+      </TileHeader>
+      <TileContent>
         <div data-testid="drift-tile-skeleton" className="space-y-2">
           <Skeleton className="h-8 w-40" />
           <Skeleton className="h-4 w-52" />
         </div>
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }
 
 function TileError() {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Migration Drift</CardTitle>
-        <CardDescription>Codebase vs. deployed schema state</CardDescription>
-      </CardHeader>
-      <CardContent>
+    <Tile>
+      <TileHeader>
+        <TileTitle>Migration Drift</TileTitle>
+        <TileDescription>Codebase vs. deployed schema state</TileDescription>
+      </TileHeader>
+      <TileContent>
         <p data-testid="drift-tile-error" className="text-destructive text-sm">
           Could not load migration drift status.
         </p>
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }
 
@@ -84,47 +84,47 @@ export function DriftTile() {
 
   if (!facts?.drift_check_available) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Migration Drift</CardTitle>
-          <CardDescription>Codebase vs. deployed schema state</CardDescription>
-        </CardHeader>
-        <CardContent data-testid="drift-tile-unavailable">
+      <Tile>
+        <TileHeader>
+          <TileTitle>Migration Drift</TileTitle>
+          <TileDescription>Codebase vs. deployed schema state</TileDescription>
+        </TileHeader>
+        <TileContent data-testid="drift-tile-unavailable">
           <p className="text-muted-foreground text-sm">Drift check unavailable.</p>
           <p className="text-muted-foreground mt-1 text-xs">
             The comparison itself failed. This is not a clean bill of health.
           </p>
-        </CardContent>
-      </Card>
+        </TileContent>
+      </Tile>
     )
   }
 
   if (!facts.is_drifted) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Migration Drift</CardTitle>
-          <CardDescription>Codebase vs. deployed schema state</CardDescription>
-        </CardHeader>
-        <CardContent data-testid="drift-tile-clean">
+      <Tile>
+        <TileHeader>
+          <TileTitle>Migration Drift</TileTitle>
+          <TileDescription>Codebase vs. deployed schema state</TileDescription>
+        </TileHeader>
+        <TileContent data-testid="drift-tile-clean">
           <span
             data-testid="drift-tile-clean-badge"
             className="bg-[var(--green)] text-white inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
           >
             In sync
           </span>
-        </CardContent>
-      </Card>
+        </TileContent>
+      </Tile>
     )
   }
 
   return (
-    <Card className="border-[var(--red)]/40">
-      <CardHeader>
-        <CardTitle>Migration Drift</CardTitle>
-        <CardDescription>Codebase vs. deployed schema state</CardDescription>
-      </CardHeader>
-      <CardContent data-testid="drift-tile-drifted">
+    <Tile className="border-[var(--red)]/40">
+      <TileHeader>
+        <TileTitle>Migration Drift</TileTitle>
+        <TileDescription>Codebase vs. deployed schema state</TileDescription>
+      </TileHeader>
+      <TileContent data-testid="drift-tile-drifted">
         <span
           data-testid="drift-tile-drifted-badge"
           className="bg-[var(--red)] text-white mb-3 inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
@@ -145,7 +145,7 @@ export function DriftTile() {
             {facts.escalated ? ", escalated to QA" : ""}
           </p>
         )}
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }

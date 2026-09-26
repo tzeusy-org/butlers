@@ -78,12 +78,12 @@ export function LiveStatusBadge({ latestReceivedAt, isDown = false }: LiveStatus
     return (
       <span
         className="inline-flex items-center gap-1.5 font-mono text-[11px] tracking-[0.01em]"
-        style={{ color: "var(--red, theme(colors.red.600))" }}
+        style={{ color: "var(--red)" }}
         data-testid="live-status-badge-down"
       >
         <span
           className="size-1.5 rounded-full"
-          style={{ backgroundColor: "var(--red, theme(colors.red.600))" }}
+          style={{ backgroundColor: "var(--red)" }}
         />
         Down
       </span>
@@ -103,12 +103,12 @@ export function LiveStatusBadge({ latestReceivedAt, isDown = false }: LiveStatus
     return (
       <span
         className="inline-flex items-center gap-1.5 font-mono text-[11px] tracking-[0.01em]"
-        style={{ color: "var(--green, theme(colors.emerald.600))" }}
+        style={{ color: "var(--green)" }}
         data-testid="live-status-badge-live"
       >
         <span
           className="size-1.5 rounded-full"
-          style={{ backgroundColor: "var(--green, theme(colors.emerald.600))" }}
+          style={{ backgroundColor: "var(--green)" }}
         />
         Live
       </span>

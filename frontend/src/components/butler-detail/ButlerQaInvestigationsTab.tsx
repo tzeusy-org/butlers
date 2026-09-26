@@ -17,7 +17,7 @@ import { Link } from "react-router";
 
 import type { QaInvestigation, QaPatrolSummary } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Section, SectionContent, SectionHeader, SectionTitle } from "@/components/ui/Section";
 import { FetchingDim } from "@/components/ui/fetching-dim";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TONE_COLORS } from "@/components/ui/StateDot";
@@ -161,8 +161,8 @@ function KpiQuartet({
       data-testid="qa-kpi-quartet"
     >
       {kpis.map((kpi) => (
-        <Card key={kpi.label}>
-          <CardContent className="pt-4">
+        <Section key={kpi.label}>
+          <SectionContent className="pt-4">
             <p className="text-xs text-muted-foreground">{kpi.label}</p>
             <p
               className="mt-0.5 font-mono text-2xl font-bold tabular-nums truncate"
@@ -170,8 +170,8 @@ function KpiQuartet({
             >
               {kpi.value}
             </p>
-          </CardContent>
-        </Card>
+          </SectionContent>
+        </Section>
       ))}
     </div>
   );
@@ -212,11 +212,11 @@ function PatrolStatusChip({ status }: { status: QaPatrolSummary["status"] }) {
 function PatrolCadenceStripe({ patrols, isLoading }: PatrolStripeProps) {
   if (isLoading && patrols.length === 0) {
     return (
-      <Card data-testid="patrol-cadence-stripe">
-        <CardHeader>
-          <CardTitle className="text-sm font-medium">Recent patrols</CardTitle>
-        </CardHeader>
-        <CardContent>
+      <Section data-testid="patrol-cadence-stripe">
+        <SectionHeader>
+          <SectionTitle className="text-sm font-medium">Recent patrols</SectionTitle>
+        </SectionHeader>
+        <SectionContent>
           <div className="space-y-2" data-testid="patrol-stripe-loading">
             {Array.from({ length: 3 }, (_, i) => (
               <div key={i} className="flex items-center gap-3" data-testid="loading-line">
@@ -226,17 +226,17 @@ function PatrolCadenceStripe({ patrols, isLoading }: PatrolStripeProps) {
               </div>
             ))}
           </div>
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
     );
   }
 
   return (
-    <Card data-testid="patrol-cadence-stripe">
-      <CardHeader>
-        <CardTitle className="text-sm font-medium">Recent patrols</CardTitle>
-      </CardHeader>
-      <CardContent>
+    <Section data-testid="patrol-cadence-stripe">
+      <SectionHeader>
+        <SectionTitle className="text-sm font-medium">Recent patrols</SectionTitle>
+      </SectionHeader>
+      <SectionContent>
         {patrols.length === 0 ? (
           <p className="text-sm text-muted-foreground" data-testid="empty-state-line">
             No patrols recorded.
@@ -270,8 +270,8 @@ function PatrolCadenceStripe({ patrols, isLoading }: PatrolStripeProps) {
             ))}
           </ul>
         )}
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }
 
@@ -293,11 +293,11 @@ function RecentInvestigationsTable({
   onSelect,
 }: RecentInvestigationsTableProps) {
   return (
-    <Card data-testid="recent-investigations-card">
-      <CardHeader>
-        <CardTitle className="text-sm font-medium">Recent investigations</CardTitle>
-      </CardHeader>
-      <CardContent>
+    <Section data-testid="recent-investigations-card">
+      <SectionHeader>
+        <SectionTitle className="text-sm font-medium">Recent investigations</SectionTitle>
+      </SectionHeader>
+      <SectionContent>
         {isLoading && investigations.length === 0 ? (
           <div className="space-y-2" data-testid="investigations-loading">
             {Array.from({ length: 5 }, (_, i) => (
@@ -373,8 +373,8 @@ function RecentInvestigationsTable({
             </table>
           </div>
         )}
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }
 
@@ -392,11 +392,11 @@ function InvestigationDetailPanel({
   onClose,
 }: InvestigationDetailPanelProps) {
   return (
-    <Card data-testid="investigation-detail-panel">
-      <CardHeader>
+    <Section data-testid="investigation-detail-panel">
+      <SectionHeader>
         <div className="flex items-start justify-between gap-2">
           <div className="space-y-1 min-w-0">
-            <CardTitle className="text-sm font-medium">Investigation detail</CardTitle>
+            <SectionTitle className="text-sm font-medium">Investigation detail</SectionTitle>
             <p className="font-mono text-xs text-muted-foreground tabular-nums">
               {inv.id}
             </p>
@@ -409,8 +409,8 @@ function InvestigationDetailPanel({
             Close
           </button>
         </div>
-      </CardHeader>
-      <CardContent>
+      </SectionHeader>
+      <SectionContent>
         <div className="space-y-3 text-sm">
           <div className="flex flex-wrap gap-2">
             <SeverityBadge severity={inv.severity} />
@@ -482,8 +482,8 @@ function InvestigationDetailPanel({
             </Link>
           </div>
         </div>
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }
 

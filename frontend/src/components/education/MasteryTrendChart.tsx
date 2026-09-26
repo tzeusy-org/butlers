@@ -6,7 +6,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Section, SectionContent, SectionHeader, SectionTitle } from "@/components/ui/Section";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { useMindMapAnalytics } from "@/hooks/use-education";
 import { chartColor } from "@/lib/chart-colors";
@@ -27,41 +27,41 @@ export default function MasteryTrendChart({ mindMapId }: MasteryTrendChartProps)
 
   if (isError) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Mastery Trend</CardTitle>
-        </CardHeader>
-        <CardContent className="flex h-72 items-center justify-center">
+      <Section>
+        <SectionHeader>
+          <SectionTitle>Mastery Trend</SectionTitle>
+        </SectionHeader>
+        <SectionContent className="flex h-72 items-center justify-center">
           <SourceDegradedNote
             label="Mastery trend"
             detail="could not be reached"
             onRetry={() => void refetch()}
             testId="mastery-trend-chart-degraded"
           />
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
     );
   }
 
   if (trendData.length === 0) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Mastery Trend</CardTitle>
-        </CardHeader>
-        <CardContent className="flex h-72 items-center justify-center text-muted-foreground">
+      <Section>
+        <SectionHeader>
+          <SectionTitle>Mastery Trend</SectionTitle>
+        </SectionHeader>
+        <SectionContent className="flex h-72 items-center justify-center text-muted-foreground">
           Analytics will appear after the butler computes its first daily snapshot
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
     );
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Mastery Trend (30 days)</CardTitle>
-      </CardHeader>
-      <CardContent>
+    <Section>
+      <SectionHeader>
+        <SectionTitle>Mastery Trend (30 days)</SectionTitle>
+      </SectionHeader>
+      <SectionContent>
         <ResponsiveContainer width="100%" height={288}>
           <AreaChart data={trendData}>
             <XAxis dataKey="date" tick={{ fontSize: 12 }} />
@@ -78,7 +78,7 @@ export default function MasteryTrendChart({ mindMapId }: MasteryTrendChartProps)
             />
           </AreaChart>
         </ResponsiveContainer>
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }

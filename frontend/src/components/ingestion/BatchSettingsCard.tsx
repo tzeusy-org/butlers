@@ -9,12 +9,12 @@
 
 import { useState } from "react";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+  Section,
+  SectionContent,
+  SectionDescription,
+  SectionHeader,
+  SectionTitle,
+} from "@/components/ui/Section";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -88,16 +88,16 @@ export function BatchSettingsCard({
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Batch Settings</CardTitle>
-        <CardDescription>
+    <Section>
+      <SectionHeader>
+        <SectionTitle>Batch Settings</SectionTitle>
+        <SectionDescription>
           Configures how long the connector buffers messages before flushing a
           batch. Changes take effect on the next flush scanner cycle (within 60
           seconds).
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
+        </SectionDescription>
+      </SectionHeader>
+      <SectionContent>
         <div className="space-y-4">
           <div className="space-y-2">
             <div className="flex items-center gap-2">
@@ -159,7 +159,7 @@ export function BatchSettingsCard({
             </p>
           </div>
         </div>
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }
