@@ -16,7 +16,7 @@
 import { Link } from "react-router";
 
 import { Button } from "@/components/ui/button";
-import { Section } from "./Section";
+import { Section } from "@/components/ui/Section";
 import type { OverviewNowRow } from "./model";
 
 interface OperationsNowListProps {

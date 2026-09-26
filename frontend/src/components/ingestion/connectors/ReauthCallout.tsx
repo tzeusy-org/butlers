@@ -19,6 +19,7 @@
  */
 
 import type { ConnectorRecovery, DerivedAuthStatus } from './connector-auth'
+import { StateDot } from '@/components/ui/StateDot'
 
 interface ReauthCalloutProps {
   authStatus: DerivedAuthStatus
@@ -55,14 +56,11 @@ export function ReauthCallout({
   // Color: red for hard errors, amber for warnings (expiring / no primary account)
   const isRed = isError
   const borderClass = isRed
-    ? 'border-[color:var(--red,oklch(0.62_0.20_25))]'
-    : 'border-[color:var(--amber,oklch(0.72_0.12_70))]'
-  const dotColorClass = isRed
-    ? 'bg-[color:var(--red,oklch(0.62_0.20_25))]'
-    : 'bg-[color:var(--amber,oklch(0.72_0.12_70))]'
+    ? 'border-[color:var(--red)]'
+    : 'border-[color:var(--amber)]'
   const textColorClass = isRed
-    ? 'text-[color:var(--red,oklch(0.62_0.20_25))]'
-    : 'text-[color:var(--amber,oklch(0.72_0.12_70))]'
+    ? 'text-[var(--red-text)]'
+    : 'text-[var(--amber-text)]'
 
   const statusLabel = isUnsupportedRecovery
     ? 'recovery unavailable'
@@ -87,7 +85,7 @@ export function ReauthCallout({
     >
       {/* Status label */}
       <div className="flex items-center gap-2">
-        <span className={`w-1.5 h-1.5 rounded-full ${dotColorClass}`} aria-hidden="true" />
+        <StateDot state={isRed ? 'error' : 'degraded'} size={6} />
         <span
           className={`font-mono text-[10px] tracking-[0.10em] uppercase ${textColorClass}`}
         >

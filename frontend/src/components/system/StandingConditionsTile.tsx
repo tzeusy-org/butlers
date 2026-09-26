@@ -32,12 +32,12 @@
 import { useMemo, useState } from "react"
 
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
+  Tile,
+  TileContent,
+  TileDescription,
+  TileHeader,
+  TileTitle,
+} from "@/components/ui/Tile"
 import { SourceDegradedNote } from "@/components/ui/query-boundary"
 import { Skeleton } from "@/components/ui/skeleton"
 import { StateDot, type DispatchState } from "@/components/ui/StateDot"
@@ -136,31 +136,31 @@ interface DecoratedCondition {
 
 function TileSkeleton() {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Standing Conditions</CardTitle>
-        <CardDescription>Infrastructure outages and owner-facing concerns tracked by the reliability ledger</CardDescription>
-      </CardHeader>
-      <CardContent>
+    <Tile>
+      <TileHeader>
+        <TileTitle>Standing Conditions</TileTitle>
+        <TileDescription>Infrastructure outages and owner-facing concerns tracked by the reliability ledger</TileDescription>
+      </TileHeader>
+      <TileContent>
         <div data-testid="standing-conditions-skeleton" className="space-y-2">
           <Skeleton className="h-5 w-48" />
           <Skeleton className="h-5 w-40" />
           <Skeleton className="h-5 w-44" />
         </div>
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }
 
 function TileFrame({ children, testId }: { children: React.ReactNode; testId?: string }) {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Standing Conditions</CardTitle>
-        <CardDescription>Infrastructure outages and owner-facing concerns tracked by the reliability ledger</CardDescription>
-      </CardHeader>
-      <CardContent data-testid={testId}>{children}</CardContent>
-    </Card>
+    <Tile>
+      <TileHeader>
+        <TileTitle>Standing Conditions</TileTitle>
+        <TileDescription>Infrastructure outages and owner-facing concerns tracked by the reliability ledger</TileDescription>
+      </TileHeader>
+      <TileContent data-testid={testId}>{children}</TileContent>
+    </Tile>
   )
 }
 

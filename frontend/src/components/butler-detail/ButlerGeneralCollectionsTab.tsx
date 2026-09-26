@@ -27,7 +27,7 @@ import { Plus, Search } from "lucide-react";
 import type { GeneralCollection, GeneralEntity } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Section, SectionContent, SectionHeader, SectionTitle } from "@/components/ui/Section";
 import {
   Dialog,
   DialogContent,
@@ -95,11 +95,11 @@ function CollectionsKpiStrip({
 }: KpiStripProps) {
   if (isLoading) {
     return (
-      <Card data-testid="kpi-strip">
-        <CardHeader>
-          <CardTitle className="text-sm font-medium">Collections overview</CardTitle>
-        </CardHeader>
-        <CardContent>
+      <Section data-testid="kpi-strip">
+        <SectionHeader>
+          <SectionTitle className="text-sm font-medium">Collections overview</SectionTitle>
+        </SectionHeader>
+        <SectionContent>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-6">
             {Array.from({ length: 4 }, (_, i) => (
               <div key={i} className="space-y-1" data-testid="loading-line">
@@ -108,30 +108,30 @@ function CollectionsKpiStrip({
               </div>
             ))}
           </div>
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
     );
   }
 
   if (isError) {
     return (
-      <Card data-testid="kpi-strip">
-        <CardHeader>
-          <CardTitle className="text-sm font-medium">Collections overview</CardTitle>
-        </CardHeader>
-        <CardContent>
+      <Section data-testid="kpi-strip">
+        <SectionHeader>
+          <SectionTitle className="text-sm font-medium">Collections overview</SectionTitle>
+        </SectionHeader>
+        <SectionContent>
           <ErrorLine>Could not load collections overview.</ErrorLine>
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
     );
   }
 
   return (
-    <Card data-testid="kpi-strip">
-      <CardHeader>
-        <CardTitle className="text-sm font-medium">Collections overview</CardTitle>
-      </CardHeader>
-      <CardContent>
+    <Section data-testid="kpi-strip">
+      <SectionHeader>
+        <SectionTitle className="text-sm font-medium">Collections overview</SectionTitle>
+      </SectionHeader>
+      <SectionContent>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-6" data-testid="kpi-row">
           <div data-testid="kpi-item">
             <KpiCell label="Total collections" value={String(totalCollections)} />
@@ -150,8 +150,8 @@ function CollectionsKpiStrip({
             <KpiCell label="Largest collection" value={String(largestCollectionSize)} />
           </div>
         </div>
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }
 
@@ -181,11 +181,11 @@ function CollectionsDirectory({
   const totalPages = Math.max(1, Math.ceil(total / COLLECTIONS_PAGE_SIZE));
 
   return (
-    <Card className="lg:col-span-3" data-testid="collections-directory-card">
-      <CardHeader>
-        <CardTitle className="text-sm font-medium">Collections</CardTitle>
-      </CardHeader>
-      <CardContent>
+    <Section className="lg:col-span-3" data-testid="collections-directory-card">
+      <SectionHeader>
+        <SectionTitle className="text-sm font-medium">Collections</SectionTitle>
+      </SectionHeader>
+      <SectionContent>
         {isLoading && collections.length === 0 ? (
           <LoadingRows count={5} />
         ) : isError ? (
@@ -258,8 +258,8 @@ function CollectionsDirectory({
             )}
           </>
         )}
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }
 
@@ -275,11 +275,11 @@ interface RecentItemsSidebarProps {
 
 function RecentItemsSidebar({ entities, isLoading, isError }: RecentItemsSidebarProps) {
   return (
-    <Card className="lg:col-span-1" data-testid="recent-items-card">
-      <CardHeader>
-        <CardTitle className="text-sm font-medium">Recent items</CardTitle>
-      </CardHeader>
-      <CardContent>
+    <Section className="lg:col-span-1" data-testid="recent-items-card">
+      <SectionHeader>
+        <SectionTitle className="text-sm font-medium">Recent items</SectionTitle>
+      </SectionHeader>
+      <SectionContent>
         {isLoading && entities.length === 0 ? (
           <LoadingRows count={3} />
         ) : isError ? (
@@ -315,8 +315,8 @@ function RecentItemsSidebar({ entities, isLoading, isError }: RecentItemsSidebar
             ))}
           </ul>
         )}
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }
 
@@ -349,11 +349,11 @@ interface SizeHistogramProps {
 
 function SizeHistogramPanel({ buckets, isLoading, isError }: SizeHistogramProps) {
   return (
-    <Card className="lg:col-span-2" data-testid="size-histogram-card">
-      <CardHeader>
-        <CardTitle className="text-sm font-medium">Collection sizes</CardTitle>
-      </CardHeader>
-      <CardContent>
+    <Section className="lg:col-span-2" data-testid="size-histogram-card">
+      <SectionHeader>
+        <SectionTitle className="text-sm font-medium">Collection sizes</SectionTitle>
+      </SectionHeader>
+      <SectionContent>
         {isLoading ? (
           <div className="space-y-2">
             <Skeleton className="h-[120px] w-full rounded" data-testid="loading-line" />
@@ -410,8 +410,8 @@ function SizeHistogramPanel({ buckets, isLoading, isError }: SizeHistogramProps)
             </p>
           </div>
         )}
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }
 
@@ -452,11 +452,11 @@ function QuickActionsCard({ onSearchChange, searchValue }: QuickActionsProps) {
 
   return (
     <>
-      <Card className="lg:col-span-2" data-testid="quick-actions-card">
-        <CardHeader>
-          <CardTitle className="text-sm font-medium">Quick actions</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
+      <Section className="lg:col-span-2" data-testid="quick-actions-card">
+        <SectionHeader>
+          <SectionTitle className="text-sm font-medium">Quick actions</SectionTitle>
+        </SectionHeader>
+        <SectionContent className="space-y-4">
           <Button
             size="sm"
             className="w-full"
@@ -476,8 +476,8 @@ function QuickActionsCard({ onSearchChange, searchValue }: QuickActionsProps) {
               data-testid="collection-search-input"
             />
           </div>
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
 
       <Dialog open={createOpen} onOpenChange={handleOpenChange}>
         <DialogContent data-testid="create-collection-dialog">

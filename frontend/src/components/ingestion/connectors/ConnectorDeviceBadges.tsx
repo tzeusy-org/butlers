@@ -17,6 +17,7 @@
  */
 
 import { Time } from '@/components/ui/time'
+import { StateDot } from '@/components/ui/StateDot'
 import type { ConnectorDeviceLiveness } from '@/api/types'
 
 interface ConnectorDeviceBadgesProps {
@@ -38,23 +39,12 @@ export function ConnectorDeviceBadges({ devices }: ConnectorDeviceBadgesProps) {
           className="flex items-center gap-1.5"
           data-testid={`connector-device-${d.sender_identity}`}
         >
-          <span
-            aria-hidden="true"
-            className={`w-1 h-1 rounded-full shrink-0 ${
-              d.stale
-                ? 'bg-[color:var(--red,oklch(0.62_0.20_25))]'
-                : 'bg-[color:var(--green,oklch(0.72_0.17_150))]'
-            }`}
-          />
+          <StateDot state={d.stale ? 'error' : 'ok'} size={4} />
           <span className="font-mono text-[10px] tracking-[0.02em] text-muted-foreground/80">
             {d.sender_identity}
           </span>
           <span
-            className={`font-mono text-[10px] ${
-              d.stale
-                ? 'text-[color:var(--red,oklch(0.62_0.20_25))]'
-                : 'text-muted-foreground/60'
-            }`}
+            className="font-mono text-[10px] text-muted-foreground/60"
             data-testid={`connector-device-lastseen-${d.sender_identity}`}
           >
             {d.stale ? 'stale · ' : 'last · '}

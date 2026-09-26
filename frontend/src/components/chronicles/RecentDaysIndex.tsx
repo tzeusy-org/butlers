@@ -13,7 +13,7 @@
  *   §Attention list (row anatomy reused: rule-separated rows, no card chrome).
  */
 
-import { Section } from "@/components/overview/Section";
+import { Section } from "@/components/ui/Section";
 import type { ChroniclesRecentDay } from "@/api/types";
 
 interface RecentDaysIndexProps {

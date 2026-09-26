@@ -35,8 +35,8 @@ const RING_RADIUS = 18;
 const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
 
 const DELTA_COLOR: Record<"up" | "down" | "flat", string> = {
-  up: "var(--green-text, var(--green))",
-  down: "var(--amber-text, var(--amber))",
+  up: "var(--green-text)",
+  down: "var(--amber-text)",
   flat: "var(--muted-foreground)",
 };
 

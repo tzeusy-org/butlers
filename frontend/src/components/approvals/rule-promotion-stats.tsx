@@ -14,7 +14,7 @@
 
 import { TrendingUp } from "lucide-react";
 import type { RulePromotionStats } from "@/api/types";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Section, SectionContent, SectionHeader, SectionTitle } from "@/components/ui/Section";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 
 // Backend source names (get_rule_promotion_stats degraded flags).
@@ -65,14 +65,14 @@ export function RulePromotionStatsTile({
   const isDegraded = (src: string) => degraded.includes(src);
 
   return (
-    <Card data-testid="rule-promotion-stats">
-      <CardHeader className="pb-2">
+    <Section data-testid="rule-promotion-stats">
+      <SectionHeader className="pb-2">
         <div className="flex items-center gap-2">
           <TrendingUp className={PROMOTION_STATS_ICON_CLASS} />
-          <CardTitle className="text-sm font-semibold">Rule promotion</CardTitle>
+          <SectionTitle className="text-sm font-semibold">Rule promotion</SectionTitle>
         </div>
-      </CardHeader>
-      <CardContent className="space-y-4">
+      </SectionHeader>
+      <SectionContent className="space-y-4">
         {/* Savings block (verdict-log derived). */}
         {isDegraded(SRC_VERDICT) ? (
           <SourceDegradedNote
@@ -132,7 +132,7 @@ export function RulePromotionStatsTile({
           Sessions avoided is an estimate: one event routed by a promoted rule is one LLM
           session not spawned, counted since each rule was promoted.
         </p>
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }

@@ -1658,4 +1658,32 @@ describe("semantic visual-role lint", () => {
     expect(message?.message).not.toContain("fixed identity hue");
     expect(message?.message).not.toContain("exception");
   });
+
+  it("rejects imports of the retired Card primitive", async () => {
+    const messages = await statusGuardMessages(
+      `import { Card } from "${["@/components/ui/", "card"].join("")}";\nexport const surface = Card;\n`,
+    );
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.message).toContain("Card primitive is retired");
+  });
+
+  it("rejects literal CSS-token fallbacks while allowing direct semantic tokens", async () => {
+    const messages = await statusGuardMessages(
+      [
+        sourceWithStringLiterals([
+          ["text-[var(", "--fg,oklch(0.985_0_0))]"].join(""),
+          ["text-[var(", "--fg)]"].join(""),
+        ]),
+        sourceWithTemplateLiterals([
+          ["border-[var(", "--border,currentColor)]"].join(""),
+        ]),
+      ].join("\n"),
+    );
+
+    expect(messages).toHaveLength(2);
+    expect(messages.every((message) => message.message.includes("Literal CSS-token fallbacks"))).toBe(
+      true,
+    );
+  });
 });

@@ -132,7 +132,7 @@ export function ProviderConfigDrawer({
             id={headingId}
             className="m-0 mt-2"
             style={{
-              fontFamily: "var(--font-sans, 'Inter Tight', sans-serif)",
+              fontFamily: "var(--font-sans)",
               fontSize: 28,
               fontWeight: 500,
               letterSpacing: "-0.025em",

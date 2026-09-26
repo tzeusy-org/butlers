@@ -18,7 +18,7 @@
 // ---------------------------------------------------------------------------
 
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Section, SectionContent, SectionHeader, SectionTitle } from "@/components/ui/Section";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
@@ -343,27 +343,27 @@ export default function ButlerLifestyleTasteTab() {
 
       {/* Row 2: Taste verdicts + recently added works */}
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-        <Card className="lg:col-span-2" data-testid="taste-summary-card">
-          <CardHeader>
-            <CardTitle className="text-sm font-medium">Taste verdicts</CardTitle>
-          </CardHeader>
-          <CardContent>
+        <Section className="lg:col-span-2" data-testid="taste-summary-card">
+          <SectionHeader>
+            <SectionTitle className="text-sm font-medium">Taste verdicts</SectionTitle>
+          </SectionHeader>
+          <SectionContent>
             <TasteVerdictsPanel
               verdicts={verdicts}
               isLoading={verdictsLoading}
               isError={verdictsUnavailable}
             />
-          </CardContent>
-        </Card>
+          </SectionContent>
+        </Section>
 
-        <Card className="lg:col-span-2" data-testid="recent-works-card">
-          <CardHeader>
-            <CardTitle className="text-sm font-medium">Recently added</CardTitle>
-          </CardHeader>
-          <CardContent>
+        <Section className="lg:col-span-2" data-testid="recent-works-card">
+          <SectionHeader>
+            <SectionTitle className="text-sm font-medium">Recently added</SectionTitle>
+          </SectionHeader>
+          <SectionContent>
             <RecentWorksPanel works={works} isLoading={worksLoading} isError={worksUnavailable} />
-          </CardContent>
-        </Card>
+          </SectionContent>
+        </Section>
       </div>
     </div>
   );

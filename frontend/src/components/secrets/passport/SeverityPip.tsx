@@ -36,7 +36,7 @@ interface PipSpec {
 const PIP_MAP: Record<Severity, PipSpec> = {
   high:   { char: "↑", color: "var(--red)",                   label: "high severity"   },
   medium: { char: "·", color: "var(--amber-text)",             label: "medium severity" },
-  low:    { char: "↓", color: "var(--dim,oklch(0.55_0_0))",  label: "low severity"    },
+  low:    { char: "↓", color: "var(--dim)",  label: "low severity"    },
 }
 
 /**

@@ -1,7 +1,7 @@
 import { Link } from "react-router";
 
 import { Button } from "../ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { Section, SectionContent, SectionHeader, SectionTitle } from "../ui/Section";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { formatCostUsd } from "@/lib/format-cost";
 import type { DailySpend, UnpricedModelUsage } from "@/api/types";
@@ -55,26 +55,26 @@ export default function CostWidget({
 
   if (isLoading) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Cost Today</CardTitle>
-        </CardHeader>
-        <CardContent>
+      <Section>
+        <SectionHeader>
+          <SectionTitle>Cost Today</SectionTitle>
+        </SectionHeader>
+        <SectionContent>
           <div className="h-16 rounded bg-muted" />
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
     );
   }
 
   return (
-    <Card>
-      <CardHeader className="flex flex-row items-center justify-between pb-2">
-        <CardTitle className="text-sm font-medium">Cost Today</CardTitle>
+    <Section>
+      <SectionHeader className="flex flex-row items-center justify-between pb-2">
+        <SectionTitle className="text-sm font-medium">Cost Today</SectionTitle>
         <Button variant="ghost" size="sm" asChild>
           <Link to="/spend">View all</Link>
         </Button>
-      </CardHeader>
-      <CardContent>
+      </SectionHeader>
+      <SectionContent>
         {isUnavailable ? (
           <SourceDegradedNote
             label="Cost summary"
@@ -140,7 +140,7 @@ export default function CostWidget({
             7-day trend excludes {dailyUnpricedCalls.toLocaleString()} unpriced {dailyUnpricedCalls === 1 ? "call" : "calls"}
           </p>
         ) : null}
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }

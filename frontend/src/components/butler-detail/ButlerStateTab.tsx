@@ -11,12 +11,12 @@ import { useState } from "react";
 import StateBrowser from "@/components/state/StateBrowser";
 import { Button } from "@/components/ui/button";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+  Section,
+  SectionContent,
+  SectionDescription,
+  SectionHeader,
+  SectionTitle,
+} from "@/components/ui/Section";
 import {
   Dialog,
   DialogContent,
@@ -158,40 +158,40 @@ export default function ButlerStateTab({ butlerName }: ButlerStateTabProps) {
 
   if (isError) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>State Store</CardTitle>
-        </CardHeader>
-        <CardContent>
+      <Section>
+        <SectionHeader>
+          <SectionTitle>State Store</SectionTitle>
+        </SectionHeader>
+        <SectionContent>
           <p className="text-sm text-destructive">
             Failed to load state: {error instanceof Error ? error.message : "Unknown error"}
           </p>
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
     );
   }
 
   return (
     <div className="space-y-4">
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between space-y-0">
+      <Section>
+        <SectionHeader className="flex flex-row items-center justify-between space-y-0">
           <div className="space-y-1">
-            <CardTitle>State Store</CardTitle>
-            <CardDescription>
+            <SectionTitle>State Store</SectionTitle>
+            <SectionDescription>
               Key-value state entries for this butler ({entries.length} entries)
-            </CardDescription>
+            </SectionDescription>
           </div>
           <Button onClick={() => setSetDialogOpen(true)}>Set value</Button>
-        </CardHeader>
-        <CardContent>
+        </SectionHeader>
+        <SectionContent>
           <StateBrowser
             entries={entries}
             isLoading={isLoading}
             onEdit={handleEdit}
             onDelete={handleDelete}
           />
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
 
       {/* Set value dialog */}
       <SetValueDialog

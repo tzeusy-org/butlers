@@ -514,7 +514,7 @@ function OwnerPlexCanvas({
             key={`halo-arc-${arc.entityType}`}
             d={arcPath(cx, cy, haloR, arc.startAngle, arc.endAngle)}
             fill="none"
-            stroke="var(--border-strong, currentColor)"
+            stroke="var(--border-strong)"
             strokeOpacity={0.45}
           />
         ))}
@@ -555,7 +555,7 @@ function OwnerPlexCanvas({
                   y1={a.y}
                   x2={b.x}
                   y2={b.y}
-                  stroke="var(--fg, currentColor)"
+                  stroke="var(--fg)"
                   strokeOpacity={0.35}
                 />
               );
@@ -575,7 +575,7 @@ function OwnerPlexCanvas({
                   y1={a.y}
                   x2={b.x}
                   y2={b.y}
-                  stroke="var(--fg, currentColor)"
+                  stroke="var(--fg)"
                   strokeOpacity={0.3}
                   strokeDasharray="2 4"
                 />
@@ -596,7 +596,7 @@ function OwnerPlexCanvas({
                   y1={a.y}
                   x2={b.x}
                   y2={b.y}
-                  stroke="var(--fg, currentColor)"
+                  stroke="var(--fg)"
                   strokeOpacity={0.3}
                   strokeDasharray="2 4"
                 />
@@ -882,7 +882,7 @@ function NeighbourPlexCanvas({
               y1={cy}
               x2={p.x}
               y2={p.y}
-              stroke="var(--border-strong, currentColor)"
+              stroke="var(--border-strong)"
               strokeOpacity={0.15 + 0.6 * node.conf}
             />
           );

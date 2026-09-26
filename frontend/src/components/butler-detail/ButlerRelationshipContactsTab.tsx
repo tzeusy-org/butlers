@@ -30,7 +30,7 @@ import type {
   OverdueContact,
 } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Section, SectionContent, SectionHeader, SectionTitle } from "@/components/ui/Section";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time, formatOwnerDateTime } from "@/components/ui/time";
 import { useTimezone } from "@/components/ui/timezone-context";
@@ -62,7 +62,7 @@ const TRACKED_TIERS = [5, 15, 50, 150];
 function EmptyStateLine({ children }: { children: ReactNode }) {
   return (
     <p
-      className="text-sm text-muted-foreground italic font-[family-name:var(--font-serif,serif)]"
+      className="text-sm text-muted-foreground italic font-[family-name:var(--font-serif)]"
       data-testid="empty-state-line"
     >
       {children}
@@ -137,25 +137,25 @@ function RelationshipKpiStrip({ ranking, overdueCount, totalContacts, isLoading,
 
   if (isLoading && !ranking) {
     return (
-      <Card data-testid="kpi-strip">
-        <CardHeader>
-          <CardTitle className="text-sm font-medium">Relationship overview</CardTitle>
-        </CardHeader>
-        <CardContent className="p-0 pb-4">{kpiSkeleton}</CardContent>
-      </Card>
+      <Section data-testid="kpi-strip">
+        <SectionHeader>
+          <SectionTitle className="text-sm font-medium">Relationship overview</SectionTitle>
+        </SectionHeader>
+        <SectionContent className="p-0 pb-4">{kpiSkeleton}</SectionContent>
+      </Section>
     );
   }
 
   if (isError) {
     return (
-      <Card data-testid="kpi-strip">
-        <CardHeader>
-          <CardTitle className="text-sm font-medium">Relationship overview</CardTitle>
-        </CardHeader>
-        <CardContent>
+      <Section data-testid="kpi-strip">
+        <SectionHeader>
+          <SectionTitle className="text-sm font-medium">Relationship overview</SectionTitle>
+        </SectionHeader>
+        <SectionContent>
           <ErrorLine>Could not load relationship overview.</ErrorLine>
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
     );
   }
 
@@ -172,11 +172,11 @@ function RelationshipKpiStrip({ ranking, overdueCount, totalContacts, isLoading,
   const cadenceOkCount = trackedEntries.filter((e) => (e.warmth ?? 0) >= 0.5).length;
 
   return (
-    <Card data-testid="kpi-strip">
-      <CardHeader>
-        <CardTitle className="text-sm font-medium">Relationship overview</CardTitle>
-      </CardHeader>
-      <CardContent>
+    <Section data-testid="kpi-strip">
+      <SectionHeader>
+        <SectionTitle className="text-sm font-medium">Relationship overview</SectionTitle>
+      </SectionHeader>
+      <SectionContent>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-6">
           <div data-testid="kpi-item">
             <KpiCell
@@ -206,8 +206,8 @@ function RelationshipKpiStrip({ ranking, overdueCount, totalContacts, isLoading,
             />
           </div>
         </div>
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }
 
@@ -588,36 +588,36 @@ export default function ButlerRelationshipContactsTab() {
 
       {/* Panels 2–3: Tier distribution (2col) + Overdue (2col) */}
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-        <Card className="lg:col-span-2" data-testid="tier-distribution-card">
-          <CardHeader>
-            <CardTitle className="text-sm font-medium">Tier distribution</CardTitle>
-          </CardHeader>
-          <CardContent>
+        <Section className="lg:col-span-2" data-testid="tier-distribution-card">
+          <SectionHeader>
+            <SectionTitle className="text-sm font-medium">Tier distribution</SectionTitle>
+          </SectionHeader>
+          <SectionContent>
             <TierDistributionPanel ranking={dunbarData} isLoading={dunbarLoading} isError={dunbarError} />
-          </CardContent>
-        </Card>
+          </SectionContent>
+        </Section>
 
-        <Card className="lg:col-span-2" data-testid="overdue-card">
-          <CardHeader>
-            <CardTitle className="text-sm font-medium">Overdue · cadence-aware</CardTitle>
-          </CardHeader>
-          <CardContent>
+        <Section className="lg:col-span-2" data-testid="overdue-card">
+          <SectionHeader>
+            <SectionTitle className="text-sm font-medium">Overdue · cadence-aware</SectionTitle>
+          </SectionHeader>
+          <SectionContent>
             <OverduePanel
               contacts={overdueContacts}
               isLoading={overdueLoading}
               isError={overdueError}
               cadenceAvailable={cadenceAvailable}
             />
-          </CardContent>
-        </Card>
+          </SectionContent>
+        </Section>
       </div>
 
       {/* Panel 4: Watchlist T1+T2 — full width, scrollable */}
-      <Card data-testid="watchlist-card">
-        <CardHeader>
-          <CardTitle className="text-sm font-medium">Watchlist · T1 + T2</CardTitle>
-        </CardHeader>
-        <CardContent>
+      <Section data-testid="watchlist-card">
+        <SectionHeader>
+          <SectionTitle className="text-sm font-medium">Watchlist · T1 + T2</SectionTitle>
+        </SectionHeader>
+        <SectionContent>
           <WatchlistPanel
             ranking={dunbarData}
             isLoading={dunbarLoading}
@@ -625,20 +625,20 @@ export default function ButlerRelationshipContactsTab() {
             selectedContactId={selectedContactId}
             onSelectContact={handleSelectContact}
           />
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
 
       {/* Panels 5–6: Selected thread (3col) + Known facts (1col) */}
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-        <Card className="lg:col-span-3" data-testid="thread-card">
-          <CardHeader>
-            <CardTitle className="text-sm font-medium">
+        <Section className="lg:col-span-3" data-testid="thread-card">
+          <SectionHeader>
+            <SectionTitle className="text-sm font-medium">
               {selectedContactName
                 ? `Thread · ${selectedContactName}`
                 : "Thread · select a contact"}
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
+            </SectionTitle>
+          </SectionHeader>
+          <SectionContent>
             <ThreadPanel
               contactId={selectedContactId}
               contactName={selectedContactName}
@@ -646,17 +646,17 @@ export default function ButlerRelationshipContactsTab() {
               isError={interactionsError}
               interactions={interactions}
             />
-          </CardContent>
-        </Card>
+          </SectionContent>
+        </Section>
 
-        <Card className="lg:col-span-1" data-testid="known-facts-card">
-          <CardHeader>
-            <CardTitle className="text-sm font-medium">Known facts</CardTitle>
-          </CardHeader>
-          <CardContent>
+        <Section className="lg:col-span-1" data-testid="known-facts-card">
+          <SectionHeader>
+            <SectionTitle className="text-sm font-medium">Known facts</SectionTitle>
+          </SectionHeader>
+          <SectionContent>
             <KnownFactsPanel contact={selectedContact} contactName={selectedContactName} />
-          </CardContent>
-        </Card>
+          </SectionContent>
+        </Section>
       </div>
     </div>
   );

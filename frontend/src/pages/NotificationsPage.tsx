@@ -11,7 +11,7 @@ import {
 } from "@/components/notifications/notifications-verdict-opener";
 import { NotificationTableSkeleton } from "@/components/skeletons";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import { Section, SectionContent } from "@/components/ui/Section";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { FetchingDim } from "@/components/ui/fetching-dim";
 import { Input } from "@/components/ui/input";
@@ -491,8 +491,8 @@ export default function NotificationsPage() {
         />
 
         {/* Filter bar */}
-        <Card>
-          <CardContent className="pt-0">
+        <Section>
+          <SectionContent className="pt-0">
             <div className="flex flex-wrap items-end gap-4">
               {/* Butler name */}
               <div className="space-y-1">
@@ -612,12 +612,12 @@ export default function NotificationsPage() {
                 </Button>
               )}
             </div>
-          </CardContent>
-        </Card>
+          </SectionContent>
+        </Section>
 
         {/* Notification feed — dims (never blanks) while a filter/page change refetches */}
-        <Card>
-          <CardContent>
+        <Section>
+          <SectionContent>
             {notificationsLoading ? (
               <NotificationTableSkeleton rows={10} hasTriageControls />
             ) : notificationsError ? (
@@ -644,11 +644,11 @@ export default function NotificationsPage() {
                 />
               </FetchingDim>
             )}
-          </CardContent>
+          </SectionContent>
           {/* Shared footer hint strip (bu-qvnce.11 slice 4) -- advertises the
               EXACT j/k/a bindings useListTriage just registered. */}
           <ListTriageFooterHint bindings={notificationTriageHints} />
-        </Card>
+        </Section>
 
         {/* Pagination */}
         {total > 0 && (

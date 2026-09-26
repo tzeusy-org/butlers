@@ -109,7 +109,7 @@ export function LedgerRow({ fact, now }: { fact: Fact; now?: Date }) {
       className={cn(
         "grid cursor-pointer grid-cols-[minmax(180px,0.8fr)_1fr_auto] items-baseline gap-x-4",
         "border-b border-[var(--border-soft)] px-1 py-2.5",
-        "transition-colors hover:bg-[var(--bg-elev,transparent)]",
+        "transition-colors hover:bg-[var(--bg-elev)]",
         rowColor,
       )}
     >

@@ -7,12 +7,12 @@
 // ---------------------------------------------------------------------------
 
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
+  Tile,
+  TileContent,
+  TileDescription,
+  TileHeader,
+  TileTitle,
+} from "@/components/ui/Tile"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Time } from "@/components/ui/time"
 import { useInstanceFacts } from "@/hooks/use-system"
@@ -23,34 +23,34 @@ import { useInstanceFacts } from "@/hooks/use-system"
 
 function TileSkeleton() {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Version</CardTitle>
-        <CardDescription>Software version</CardDescription>
-      </CardHeader>
-      <CardContent>
+    <Tile>
+      <TileHeader>
+        <TileTitle>Version</TileTitle>
+        <TileDescription>Software version</TileDescription>
+      </TileHeader>
+      <TileContent>
         <div data-testid="version-tile-skeleton" className="space-y-2">
           <Skeleton className="h-8 w-32" />
           <Skeleton className="h-4 w-48" />
         </div>
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }
 
 function TileError() {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Version</CardTitle>
-        <CardDescription>Software version</CardDescription>
-      </CardHeader>
-      <CardContent>
+    <Tile>
+      <TileHeader>
+        <TileTitle>Version</TileTitle>
+        <TileDescription>Software version</TileDescription>
+      </TileHeader>
+      <TileContent>
         <p data-testid="version-tile-error" className="text-destructive text-sm">
           Could not load version info.
         </p>
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }
 
@@ -74,12 +74,12 @@ export function VersionTile() {
   const facts = response?.data
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Version</CardTitle>
-        <CardDescription>Software version</CardDescription>
-      </CardHeader>
-      <CardContent data-testid="version-tile-content">
+    <Tile>
+      <TileHeader>
+        <TileTitle>Version</TileTitle>
+        <TileDescription>Software version</TileDescription>
+      </TileHeader>
+      <TileContent data-testid="version-tile-content">
         <dl className="space-y-3 text-sm">
           <div>
             <dt className="text-muted-foreground text-xs">Package version</dt>
@@ -96,7 +96,7 @@ export function VersionTile() {
             </div>
           )}
         </dl>
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }

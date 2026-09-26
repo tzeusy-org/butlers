@@ -43,6 +43,38 @@ const HSL_VAR_SELECTORS = [
   },
 ]
 
+// bu-27dxl.12: Dispatch surface consolidation. New code uses semantic
+// Section surfaces, or Tile only for independently loading/degrading modules
+// in dense status grids. The old shadcn Card module is retired outright, so
+// an import is a migration error rather than a compatibility opportunity.
+const RETIRED_CARD_SELECTORS = [
+  {
+    selector: 'ImportDeclaration[source.value=/ui\\/card$/i]',
+    message:
+      'The Card primitive is retired (bu-27dxl.12). Use the canonical Section ' +
+      'surface, or Tile only for an independently loading/degrading dense-grid module.',
+  },
+]
+
+// Dispatch tokens are defined centrally in index.css. A fallback literal in
+// var(--token, ...) hides a missing token and makes theme drift invisible.
+// This is intentionally narrower than a generic color ban: it catches only
+// CSS custom-property fallbacks and leaves named Tailwind categories alone.
+const TOKEN_FALLBACK_SELECTORS = [
+  {
+    selector: 'Literal[value=/var\\(\\s*--[A-Za-z0-9_-]+\\s*,/i]',
+    message:
+      'Literal CSS-token fallbacks are banned (bu-27dxl.12). Use the canonical ' +
+      'token directly, or add the missing token to frontend/src/index.css.',
+  },
+  {
+    selector: 'TemplateElement[value.raw=/var\\(\\s*--[A-Za-z0-9_-]+\\s*,/i]',
+    message:
+      'Literal CSS-token fallbacks are banned (bu-27dxl.12). Use the canonical ' +
+      'token directly, or add the missing token to frontend/src/index.css.',
+  },
+]
+
 // bu-86c4c.6, deliverable (a): ban raw Tailwind status-palette classes.
 // The dashboard has exactly three state colors (--red, --amber, --green —
 // see openspec/specs/dashboard-design-language/spec.md § State Color
@@ -2664,6 +2696,8 @@ export default defineConfig([
       'no-restricted-syntax': [
         'error',
         ...HSL_VAR_SELECTORS,
+        ...RETIRED_CARD_SELECTORS,
+        ...TOKEN_FALLBACK_SELECTORS,
         ...STATUS_COLOR_SELECTORS,
         ...POLL_POLICY_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
@@ -2685,6 +2719,8 @@ export default defineConfig([
       'no-restricted-syntax': [
         'error',
         ...HSL_VAR_SELECTORS,
+        ...RETIRED_CARD_SELECTORS,
+        ...TOKEN_FALLBACK_SELECTORS,
         ...STATUS_COLOR_SELECTORS,
         ...HEX_COLOR_SELECTORS,
         ...PRIMITIVE_REDECLARATION_SELECTORS,
@@ -2713,6 +2749,8 @@ export default defineConfig([
       'no-restricted-syntax': [
         'error',
         ...HSL_VAR_SELECTORS,
+        ...RETIRED_CARD_SELECTORS,
+        ...TOKEN_FALLBACK_SELECTORS,
         ...STATUS_COLOR_SELECTORS,
         ...HEX_COLOR_SELECTORS,
         ...POLL_POLICY_SELECTORS,
@@ -2738,6 +2776,8 @@ export default defineConfig([
       'no-restricted-syntax': [
         'error',
         ...HSL_VAR_SELECTORS,
+        ...RETIRED_CARD_SELECTORS,
+        ...TOKEN_FALLBACK_SELECTORS,
         ...STATUS_COLOR_SELECTORS,
         ...HEX_COLOR_SELECTORS,
         ...PRIMITIVE_REDECLARATION_SELECTORS,
@@ -2763,6 +2803,8 @@ export default defineConfig([
       'no-restricted-syntax': [
         'error',
         ...HSL_VAR_SELECTORS,
+        ...RETIRED_CARD_SELECTORS,
+        ...TOKEN_FALLBACK_SELECTORS,
         ...STATUS_COLOR_SELECTORS,
         ...POLL_POLICY_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
@@ -2780,6 +2822,8 @@ export default defineConfig([
       'no-restricted-syntax': [
         'error',
         ...HSL_VAR_SELECTORS,
+        ...RETIRED_CARD_SELECTORS,
+        ...TOKEN_FALLBACK_SELECTORS,
         ...STATUS_COLOR_SELECTORS,
         ...HEX_COLOR_SELECTORS,
         ...PRIMITIVE_REDECLARATION_SELECTORS,
@@ -2808,6 +2852,8 @@ export default defineConfig([
       'no-restricted-syntax': [
         'error',
         ...HSL_VAR_SELECTORS,
+        ...RETIRED_CARD_SELECTORS,
+        ...TOKEN_FALLBACK_SELECTORS,
         ...STATUS_COLOR_SELECTORS,
         ...HEX_COLOR_SELECTORS,
         ...PRIMITIVE_REDECLARATION_SELECTORS,
@@ -2834,6 +2880,8 @@ export default defineConfig([
       'no-restricted-syntax': [
         'error',
         ...HSL_VAR_SELECTORS,
+        ...RETIRED_CARD_SELECTORS,
+        ...TOKEN_FALLBACK_SELECTORS,
         ...STATUS_COLOR_SELECTORS,
         ...HEX_COLOR_SELECTORS,
         ...PRIMITIVE_REDECLARATION_SELECTORS,

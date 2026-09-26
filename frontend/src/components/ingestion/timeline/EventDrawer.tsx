@@ -151,7 +151,7 @@ function CopyButton({ value, label }: { value: string; label?: string }) {
       >
         <span className="truncate max-w-[160px]">{label ?? value}</span>
         {copied ? (
-          <Check className="size-3 text-[var(--green,theme(colors.emerald.500))] shrink-0" />
+          <Check className="size-3 text-[var(--green)] shrink-0" />
         ) : (
           <Copy className="size-3 shrink-0" />
         )}
@@ -430,7 +430,7 @@ function DrawerRawTab({
       <div className="flex items-center gap-3 font-mono text-[11px] text-muted-foreground">
         {payload.channel && <span>{payload.channel}</span>}
         <span>{payload.bytes.toLocaleString()} bytes</span>
-        {payload.truncated && <span className="text-[var(--amber,theme(colors.amber.500))]">truncated</span>}
+        {payload.truncated && <span className="text-[var(--amber)]">truncated</span>}
         <button
           type="button"
           className="ml-auto hover:text-foreground transition-colors flex items-center gap-1"
@@ -785,10 +785,10 @@ export function EventDrawer({ event, onClose, onOptimisticUpdate }: EventDrawerP
             <KVRow label="tier" value={event.policy_tier ?? event.ingestion_tier ?? '—'} />
             <KVRow label="sender" value={event.source_sender_identity ?? '—'} />
             {event.filter_reason && (
-              <KVRow label="filtered" value={<span className="text-[var(--amber,theme(colors.amber.600))]">{event.filter_reason}</span>} />
+              <KVRow label="filtered" value={<span className="text-[var(--amber)]">{event.filter_reason}</span>} />
             )}
             {event.error_detail && (
-              <KVRow label="error" value={<span className="text-[var(--red,theme(colors.red.600))]">{event.error_detail}</span>} />
+              <KVRow label="error" value={<span className="text-[var(--red)]">{event.error_detail}</span>} />
             )}
             {detail?.lifecycle_state && (
               <KVRow label="lifecycle" value={detail.lifecycle_state} />

@@ -20,11 +20,11 @@ import { probeEvidenceCopy } from "./probe-copy.ts";
 // eslint-disable-next-line react-refresh/only-export-components
 export function toneColor(tone: string): string {
   switch (tone) {
-    case "ok":    return "var(--green, oklch(0.790 0.195 148))";
-    case "amber": return "var(--amber, oklch(0.810 0.185 84))";
-    case "red":   return "var(--red, oklch(0.685 0.250 29))";
-    case "dim":   return "var(--mfg, oklch(0.55 0 0))";
-    default:      return "var(--fg, oklch(0.985 0 0))";
+    case "ok":    return "var(--green)";
+    case "amber": return "var(--amber)";
+    case "red":   return "var(--red)";
+    case "dim":   return "var(--mfg)";
+    default:      return "var(--fg)";
   }
 }
 
@@ -115,7 +115,7 @@ export function Eyebrow({
       {sub && (
         <span
           className="font-mono text-[10px]"
-          style={{ color: "var(--dim, oklch(0.55 0 0))" }}
+          style={{ color: "var(--dim)" }}
         >
           {sub}
         </span>
@@ -149,7 +149,7 @@ export function Mono({
       className={cn("font-mono tabular-nums", className)}
       style={{
         fontSize: size,
-        color: color ?? "var(--fg, oklch(0.985 0 0))",
+        color: color ?? "var(--fg)",
         textTransform: upper ? "uppercase" : "none",
         letterSpacing: tracking,
         fontWeight: weight,
@@ -193,7 +193,7 @@ export function Voice({
       style={{
         fontSize: size,
         lineHeight: 1.55,
-        color: color ?? "var(--mfg, oklch(0.708 0 0))",
+        color: color ?? "var(--mfg)",
         maxWidth,
       }}
     >
@@ -221,12 +221,12 @@ export function Display({
     <h1
       className={cn("m-0", className)}
       style={{
-        fontFamily: "var(--font-sans, 'Inter Tight', sans-serif)",
+        fontFamily: "var(--font-sans)",
         fontSize: size,
         fontWeight: 500,
         letterSpacing: "-0.025em",
         lineHeight: 1.08,
-        color: color ?? "var(--fg, oklch(0.985 0 0))",
+        color: color ?? "var(--fg)",
         maxWidth,
         textWrap: "pretty",
       }}
@@ -341,9 +341,9 @@ export function ProviderMark({
         width: size,
         height: size,
         borderRadius: 3,
-        border: "1px solid var(--border-strong, oklch(1 0 0 / 0.18))",
+        border: "1px solid var(--border-strong)",
         background: "transparent",
-        color: "var(--fg, oklch(0.985 0 0))",
+        color: "var(--fg)",
         fontSize: Math.round(size * 0.5),
       }}
     >
@@ -599,7 +599,7 @@ export function StampRow({
         {event.note ? (
           <span
             style={{
-              fontFamily: "var(--font-serif, 'Source Serif 4', serif)",
+              fontFamily: "var(--font-serif)",
               fontSize: 12,
               color: "var(--mfg)",
               lineHeight: 1.4,
@@ -813,7 +813,7 @@ export function ProbeResult({
       {test.message && (
         <span
           style={{
-            fontFamily: "var(--font-serif, 'Source Serif 4', serif)",
+            fontFamily: "var(--font-serif)",
             fontStyle: "italic",
             fontSize: 12,
             color: test.ok ? "var(--mfg)" : "var(--red)",

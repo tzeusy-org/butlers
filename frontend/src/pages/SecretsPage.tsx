@@ -99,7 +99,7 @@ export default function SecretsPage() {
           justifyContent: "center",
           minHeight: "100%",
           color: "var(--dim)",
-          fontFamily: "var(--font-mono, monospace)",
+          fontFamily: "var(--font-mono)",
           fontSize: 13,
         }}
       >
@@ -126,7 +126,7 @@ export default function SecretsPage() {
           gap: 12,
           minHeight: "100%",
           color: "var(--red)",
-          fontFamily: "var(--font-mono, monospace)",
+          fontFamily: "var(--font-mono)",
           fontSize: 13,
         }}
       >
