@@ -351,11 +351,11 @@ describe('AC2: auth issues appear consistently in attention strip and row', () =
     expect(stripText).toContain('reauth')
     // The connector is unhealthy (state=error), but its genuine auth failure
     // must keep the actionable reauth label and its auth severity tone.
-    expect(rowAuthLabel?.className).toContain('var(--red-text)')
+    expect(rowAuthLabel?.getAttribute('style')).toContain('var(--red)')
     const stripAuthLabel = Array.from(stripItem?.querySelectorAll('span') ?? []).find((span) =>
       span.textContent?.toLowerCase().includes('reauth'),
     )
-    expect(stripAuthLabel?.className).toContain('var(--red-text)')
+    expect(stripAuthLabel?.getAttribute('style')).toContain('var(--red)')
   })
 
   it('uses the registered Google OAuth route for Gmail reauth', () => {
@@ -418,7 +418,7 @@ describe('AC2: auth issues appear consistently in attention strip and row', () =
 
     const pausedStatus = container.querySelector('[data-testid="auth-status-google_calendar"]')
     expect(pausedStatus?.textContent?.toLowerCase()).toContain('connector paused')
-    expect(pausedStatus?.className).toContain('var(--amber-text)')
+    expect(pausedStatus?.getAttribute('style')).toContain('var(--amber)')
 
     const pausedAttention = container.querySelector('[data-testid="attention-item-google_calendar"]')
     expect(pausedAttention?.textContent?.toLowerCase()).toContain('connector paused')
@@ -593,7 +593,7 @@ describe('bu-14gso: offline connector with frozen error state', () => {
     expect(status?.textContent?.toLowerCase()).not.toContain('reauth')
     expect(status?.textContent?.toLowerCase()).toContain('connector offline')
     expect(status?.textContent?.toLowerCase()).not.toContain('authorized')
-    expect(status?.className).toContain('var(--red-text)')
+    expect(status?.getAttribute('style')).toContain('var(--red)')
     expect(status?.className).not.toContain('--green')
   })
 
@@ -608,7 +608,7 @@ describe('bu-14gso: offline connector with frozen error state', () => {
     const healthNote = Array.from(item?.querySelectorAll('span') ?? []).find((span) =>
       span.textContent?.toLowerCase().includes('connector offline'),
     )
-    expect(healthNote?.className).toContain('var(--red-text)')
+    expect(healthNote?.getAttribute('style')).toContain('var(--red)')
     expect(healthNote?.className).not.toContain('--green')
   })
 
@@ -701,7 +701,7 @@ describe('reauth pill is the reauth action', () => {
     const pill = container.querySelector('[data-testid="auth-status-gmail"]')
     expect(pill?.tagName).not.toBe('A')
     expect(pill?.textContent?.toLowerCase()).toBe('authorized')
-    expect(pill?.className).toContain('var(--green')
+    expect(pill?.getAttribute('style')).toContain('var(--green)')
   })
 })
 

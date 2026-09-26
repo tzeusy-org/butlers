@@ -11,12 +11,12 @@
 // ---------------------------------------------------------------------------
 
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
+  Tile,
+  TileContent,
+  TileDescription,
+  TileHeader,
+  TileTitle,
+} from "@/components/ui/Tile"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useDatabaseFacts } from "@/hooks/use-system"
 import type { SchemaSize } from "@/api/types"
@@ -28,36 +28,36 @@ import { humanizeBytes } from "./db-size-utils"
 
 function TileSkeleton() {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Database Size</CardTitle>
-        <CardDescription>PostgreSQL disk footprint</CardDescription>
-      </CardHeader>
-      <CardContent>
+    <Tile>
+      <TileHeader>
+        <TileTitle>Database Size</TileTitle>
+        <TileDescription>PostgreSQL disk footprint</TileDescription>
+      </TileHeader>
+      <TileContent>
         <div data-testid="db-size-tile-skeleton" className="space-y-2">
           <Skeleton className="h-8 w-24" />
           <Skeleton className="h-4 w-full" />
           <Skeleton className="h-4 w-full" />
           <Skeleton className="h-4 w-3/4" />
         </div>
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }
 
 function TileError() {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Database Size</CardTitle>
-        <CardDescription>PostgreSQL disk footprint</CardDescription>
-      </CardHeader>
-      <CardContent>
+    <Tile>
+      <TileHeader>
+        <TileTitle>Database Size</TileTitle>
+        <TileDescription>PostgreSQL disk footprint</TileDescription>
+      </TileHeader>
+      <TileContent>
         <p data-testid="db-size-tile-error" className="text-destructive text-sm">
           Could not load database size.
         </p>
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }
 
@@ -107,12 +107,12 @@ export function DbSizeTile() {
   const topSchemas = (facts?.schemas ?? []).slice(0, 5)
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Database Size</CardTitle>
-        <CardDescription>PostgreSQL disk footprint</CardDescription>
-      </CardHeader>
-      <CardContent data-testid="db-size-tile-content">
+    <Tile>
+      <TileHeader>
+        <TileTitle>Database Size</TileTitle>
+        <TileDescription>PostgreSQL disk footprint</TileDescription>
+      </TileHeader>
+      <TileContent data-testid="db-size-tile-content">
         <dl className="space-y-4 text-sm">
           <div>
             <dt className="text-muted-foreground text-xs">Total size</dt>
@@ -138,7 +138,7 @@ export function DbSizeTile() {
             </div>
           )}
         </dl>
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }

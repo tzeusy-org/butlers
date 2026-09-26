@@ -86,7 +86,7 @@ describe('deriveConnectorDispatchInfo — paused and unrecognized runtime states
       expect(healthVerdictWord(connector, info)).toBe(verdict)
       expect(authStatusPresentation(info)).toEqual({
         label: authNote,
-        colorClass: 'text-[var(--amber-text)]',
+        color: 'var(--amber)',
       })
     },
   )
@@ -126,10 +126,10 @@ describe('authStatusPresentation', () => {
       const presentation = authStatusPresentation(info)
       expect(presentation).toEqual({
         label: info.authNote,
-        colorClass: healthTextColor(info.health),
+        color: healthTextColor(info.health),
       })
       expect(presentation.label).not.toBe('authorized')
-      expect(presentation.colorClass).not.toContain('--green')
+      expect(presentation.color).not.toContain('--green')
     },
   )
 
@@ -138,7 +138,7 @@ describe('authStatusPresentation', () => {
 
     expect(authStatusPresentation(info)).toEqual({
       label: 'authorized',
-      colorClass: 'text-[var(--green)]',
+      color: 'var(--green)',
     })
   })
 
@@ -156,7 +156,7 @@ describe('authStatusPresentation', () => {
       })
 
       expect(presentation.label).toBe(expectedLabel)
-      expect(presentation.colorClass).toContain(expectedTone)
+      expect(presentation.color).toContain(expectedTone === '--red-text' ? '--red' : '--amber')
     },
   )
 })

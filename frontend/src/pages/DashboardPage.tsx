@@ -94,7 +94,7 @@ import { Elaboration } from "@/components/overview/Elaboration";
 import { Headline } from "@/components/overview/Headline";
 import { OperationsNowList } from "@/components/overview/OperationsNowList";
 import { RuntimeSummaryKpi } from "@/components/overview/RuntimeSummaryKpi";
-import { Section } from "@/components/overview/Section";
+import { Section } from "@/components/ui/Section";
 import { deriveOverviewTriageModel } from "@/components/overview/model";
 import { useTimezone } from "@/components/ui/timezone-context";
 

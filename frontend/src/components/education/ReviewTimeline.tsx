@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Section, SectionContent, SectionHeader, SectionTitle } from "@/components/ui/Section";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ListTriageFooterHint } from "@/components/ui/list-triage-footer";
@@ -175,36 +175,36 @@ export default function ReviewTimeline({ onSelectNode }: ReviewTimelineProps) {
 
   if (mindMapsError || reviewsError) {
     return (
-      <Card>
-        <CardContent className="flex h-48 items-center justify-center">
+      <Section>
+        <SectionContent className="flex h-48 items-center justify-center">
           <SourceDegradedNote
             label="Review schedule"
             detail="unavailable"
             testId="review-timeline-degraded"
           />
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
     );
   }
 
   if (allEntries.length === 0) {
     return (
-      <Card>
-        <CardContent className="flex h-48 items-center justify-center text-muted-foreground">
+      <Section>
+        <SectionContent className="flex h-48 items-center justify-center text-muted-foreground">
           No reviews scheduled. Keep learning and reviews will appear here.
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
     );
   }
 
   return (
     <div className="space-y-4">
       {groups.map((group) => (
-        <Card key={group.label}>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium">{group.label}</CardTitle>
-          </CardHeader>
-          <CardContent
+        <Section key={group.label}>
+          <SectionHeader className="pb-2">
+            <SectionTitle className="text-sm font-medium">{group.label}</SectionTitle>
+          </SectionHeader>
+          <SectionContent
             className={`divide-y border-l-4 ${group.borderClass}`}
           >
             {group.entries.map((entry) => (
@@ -214,8 +214,8 @@ export default function ReviewTimeline({ onSelectNode }: ReviewTimelineProps) {
                 onSelectNode={onSelectNode}
               />
             ))}
-          </CardContent>
-        </Card>
+          </SectionContent>
+        </Section>
       ))}
       {/* Shared footer hint strip (bu-qvnce.11 slice 4) -- advertises the
           EXACT j/k bindings useListTriage just registered. */}

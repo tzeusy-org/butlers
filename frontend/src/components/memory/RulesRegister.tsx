@@ -160,7 +160,7 @@ export function DirectiveRow({ rule, index }: { rule: MemoryRule; index: number 
         "grid cursor-pointer grid-cols-[44px_1fr_auto] items-baseline gap-x-3",
         // Generous 18px vertical padding — the most on the page (rules are read).
         "border-b border-[var(--border-soft)] px-1 py-[18px]",
-        "transition-colors hover:bg-[var(--bg-elev,transparent)]",
+        "transition-colors hover:bg-[var(--bg-elev)]",
         // 2px --red left sliver for anti_pattern rules; transparent otherwise so
         // the grid geometry never shifts between row kinds.
         "border-l-2",

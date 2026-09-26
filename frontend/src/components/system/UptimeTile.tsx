@@ -7,12 +7,12 @@
 // ---------------------------------------------------------------------------
 
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
+  Tile,
+  TileContent,
+  TileDescription,
+  TileHeader,
+  TileTitle,
+} from "@/components/ui/Tile"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Time } from "@/components/ui/time"
 import { useInstanceFacts } from "@/hooks/use-system"
@@ -24,34 +24,34 @@ import { formatUptimeParts } from "./uptime-utils"
 
 function TileSkeleton() {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Uptime</CardTitle>
-        <CardDescription>Process uptime</CardDescription>
-      </CardHeader>
-      <CardContent>
+    <Tile>
+      <TileHeader>
+        <TileTitle>Uptime</TileTitle>
+        <TileDescription>Process uptime</TileDescription>
+      </TileHeader>
+      <TileContent>
         <div data-testid="uptime-tile-skeleton" className="space-y-2">
           <Skeleton className="h-8 w-28" />
           <Skeleton className="h-4 w-44" />
         </div>
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }
 
 function TileError() {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Uptime</CardTitle>
-        <CardDescription>Process uptime</CardDescription>
-      </CardHeader>
-      <CardContent>
+    <Tile>
+      <TileHeader>
+        <TileTitle>Uptime</TileTitle>
+        <TileDescription>Process uptime</TileDescription>
+      </TileHeader>
+      <TileContent>
         <p data-testid="uptime-tile-error" className="text-destructive text-sm">
           Could not load uptime info.
         </p>
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }
 
@@ -71,12 +71,12 @@ export function UptimeTile() {
   const facts = response?.data
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Uptime</CardTitle>
-        <CardDescription>Process uptime</CardDescription>
-      </CardHeader>
-      <CardContent data-testid="uptime-tile-content">
+    <Tile>
+      <TileHeader>
+        <TileTitle>Uptime</TileTitle>
+        <TileDescription>Process uptime</TileDescription>
+      </TileHeader>
+      <TileContent data-testid="uptime-tile-content">
         <dl className="space-y-3 text-sm">
           <div>
             <dt className="text-muted-foreground text-xs">Running for</dt>
@@ -93,7 +93,7 @@ export function UptimeTile() {
             </div>
           )}
         </dl>
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }

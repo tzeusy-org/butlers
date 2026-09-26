@@ -44,7 +44,7 @@ export function Display({ as: Tag = "h1", children, className, ...props }: Displ
         // Tracking — tight per spec (-0.025em)
         "tracking-[-0.025em]",
         // Color — primary foreground
-        "text-[var(--fg,oklch(0.985_0_0))]",
+        "text-fg",
         className,
       )}
       {...props}

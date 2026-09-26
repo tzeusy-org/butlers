@@ -14,12 +14,12 @@
 // ---------------------------------------------------------------------------
 
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
+  Tile,
+  TileContent,
+  TileDescription,
+  TileHeader,
+  TileTitle,
+} from "@/components/ui/Tile"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useStoredFunctionFacts } from "@/hooks/use-system"
 
@@ -29,34 +29,34 @@ import { useStoredFunctionFacts } from "@/hooks/use-system"
 
 function TileSkeleton() {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Stored Functions</CardTitle>
-        <CardDescription>Deployed bodies vs. init-db.sql</CardDescription>
-      </CardHeader>
-      <CardContent>
+    <Tile>
+      <TileHeader>
+        <TileTitle>Stored Functions</TileTitle>
+        <TileDescription>Deployed bodies vs. init-db.sql</TileDescription>
+      </TileHeader>
+      <TileContent>
         <div data-testid="stored-functions-tile-skeleton" className="space-y-2">
           <Skeleton className="h-8 w-40" />
           <Skeleton className="h-4 w-52" />
         </div>
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }
 
 function TileError() {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Stored Functions</CardTitle>
-        <CardDescription>Deployed bodies vs. init-db.sql</CardDescription>
-      </CardHeader>
-      <CardContent>
+    <Tile>
+      <TileHeader>
+        <TileTitle>Stored Functions</TileTitle>
+        <TileDescription>Deployed bodies vs. init-db.sql</TileDescription>
+      </TileHeader>
+      <TileContent>
         <p data-testid="stored-functions-tile-error" className="text-destructive text-sm">
           Could not load stored-function drift status.
         </p>
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }
 
@@ -86,18 +86,18 @@ export function StoredFunctionsTile() {
 
   if (!facts?.stored_function_check_available) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Stored Functions</CardTitle>
-          <CardDescription>Deployed bodies vs. init-db.sql</CardDescription>
-        </CardHeader>
-        <CardContent data-testid="stored-functions-tile-unavailable">
+      <Tile>
+        <TileHeader>
+          <TileTitle>Stored Functions</TileTitle>
+          <TileDescription>Deployed bodies vs. init-db.sql</TileDescription>
+        </TileHeader>
+        <TileContent data-testid="stored-functions-tile-unavailable">
           <p className="text-muted-foreground text-sm">Stored-function check unavailable.</p>
           <p className="text-muted-foreground mt-1 text-xs">
             The comparison itself failed. This is not a clean bill of health.
           </p>
-        </CardContent>
-      </Card>
+        </TileContent>
+      </Tile>
     )
   }
 
@@ -105,30 +105,30 @@ export function StoredFunctionsTile() {
 
   if (!facts.is_drifted && !hasNotDeployed) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Stored Functions</CardTitle>
-          <CardDescription>Deployed bodies vs. init-db.sql</CardDescription>
-        </CardHeader>
-        <CardContent data-testid="stored-functions-tile-clean">
+      <Tile>
+        <TileHeader>
+          <TileTitle>Stored Functions</TileTitle>
+          <TileDescription>Deployed bodies vs. init-db.sql</TileDescription>
+        </TileHeader>
+        <TileContent data-testid="stored-functions-tile-clean">
           <span
             data-testid="stored-functions-tile-clean-badge"
             className="bg-[var(--green)] text-white inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
           >
             All {facts.matched_count} matched
           </span>
-        </CardContent>
-      </Card>
+        </TileContent>
+      </Tile>
     )
   }
 
   return (
-    <Card className={facts.is_drifted ? "border-[var(--red)]/40" : undefined}>
-      <CardHeader>
-        <CardTitle>Stored Functions</CardTitle>
-        <CardDescription>Deployed bodies vs. init-db.sql</CardDescription>
-      </CardHeader>
-      <CardContent data-testid="stored-functions-tile-drifted">
+    <Tile className={facts.is_drifted ? "border-[var(--red)]/40" : undefined}>
+      <TileHeader>
+        <TileTitle>Stored Functions</TileTitle>
+        <TileDescription>Deployed bodies vs. init-db.sql</TileDescription>
+      </TileHeader>
+      <TileContent data-testid="stored-functions-tile-drifted">
         <p className="text-muted-foreground mb-3 text-xs">
           {facts.matched_count} matched, {facts.drifted.length} drifted,{" "}
           {facts.not_deployed.length} not deployed
@@ -171,7 +171,7 @@ export function StoredFunctionsTile() {
             </ul>
           </div>
         )}
-      </CardContent>
-    </Card>
+      </TileContent>
+    </Tile>
   )
 }

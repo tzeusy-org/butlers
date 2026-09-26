@@ -194,7 +194,7 @@ function RecentWritesPanelBody({ episodes, isLoading, isError }: RecentWritesPan
   if (episodes.length === 0) {
     return (
       <p
-        className="text-sm text-muted-foreground italic font-[family-name:var(--font-serif,serif)]"
+        className="text-sm text-muted-foreground italic font-[family-name:var(--font-serif)]"
         data-testid="empty-state-line"
       >
         No memory writes recorded yet.
