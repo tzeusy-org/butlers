@@ -1,0 +1,202 @@
+{
+  "baseline": "c1085ad335b97deddd30cb09d5e4d982d83896a2",
+  "adopted_manifest": "7b97e54600398001330aa5180f9d1ed269db4ce73e104a3de46260fab672c5c7",
+  "source_id": "bu-2jtfw.9.1",
+  "terminal_id": "bu-2jtfw.9.2",
+  "original_outcome_map": {
+    "S1": "capture_admission_routing",
+    "S2": "ordinary_source_boundary",
+    "S3": "ordinary_source_boundary (ordinary creation preserved, old refusal superseded)",
+    "S4": "capture_admission_routing",
+    "S5": "retrieval_source_fences",
+    "S6": "retrieval_source_fences",
+    "S7": "capture_admission_routing + owner_intake_held_ui",
+    "S8": "owner_intake_held_ui (exact owner-reviewed proposals; no live merge authority)",
+    "S9": "owner_intake_held_ui"
+  },
+  "no_beads_mutated": true,
+  "packets": [
+    {
+      "key": "ordinary_source_boundary",
+      "parent": "bu-2jtfw.9",
+      "title": "Build ordinary-only General representation and source gates",
+      "issue_type": "task",
+      "priority": 2,
+      "labels": [
+        "complexity:high",
+        "general-capture",
+        "packet-complete"
+      ],
+      "description": "## Outcome\nBuild ordinary-only General representation and source gates.\n\n## Authority\nOwner A adopted manifest7b97e54600398001330aa5180f9d1ed269db4ce73e104a3de46260fab672c5c7 plus bounded repository delivery and transfer ONLY bu-2jtfw.9. Baseline c1085ad335b97deddd30cb09d5e4d982d83896a2. Governing RFC0037 and REQ-general-capture-001..006. No live/provider/credential/private-data/shared migration/deployment/merge-of-live-collections/archive authority. Preserve old PR4121 and its branch/worktree; never reset/reopen/force-push it. Current .6 dirty source, .5 Spawner/memory and bu-djjig memory semantics remain separate. Coordinator alone mutates Beads.\n\nGoverning slice: 003/004/005",
+      "owned_paths": [
+        "roster/general/migrations/003_ordinary_source_authority.py (next free after gen002; recheck)",
+        "roster/general/tools/{items,collections,vocabulary,source_authority}.py",
+        "roster/general/modules/tools.py",
+        "roster/general/api/{router,models}.py",
+        "roster/general/tests/test_tools.py",
+        "tests/tools/test_general_items.py",
+        "roster/general/tests/test_ordinary_source_authority.py (new)",
+        "roster/general/tests/test_general_source_migration.py (new)",
+        "docs/butlers/general.md (new)"
+      ],
+      "design": "One cohesive schema+all-reader/all-writer fence outcome. Add passive collections.custody_private BOOLEAN NOT NULL DEFAULT false only if absent/compatible; preserve existing true flags; ordinary-only partial name index added while retaining legacy global uniqueness, parent-first/item lock protocol and reserved possession_profile/classification denial. Preexisting reserved profile without authoritative private classification aborts migration transactionally, no data/flag rewrite or auto-enrollment. Missing/malformed schema/parent authority refuses generic exposure, not false=ordinary fallback. Do not build private enrollment/UI/history or enable a private mutator. Generic reads/search/list/export/count and create/update/delete/move/alias resolution must share one owned predicate; private-only names behave absent ordinary names and cannot collide/reveal. General never drops the legacy global constraint or enables enrollment. Updated writers use targetless ON CONFLICT DO NOTHING and locked ordinary reread, compatible with both index stages; preserve already compatible post-cutover schema. EVERY name-based admission first checks schema-wide ANY private row plus legacy global uniqueness and uniformly refuses ALL names with fixed unavailable, before target lookup or unique-error distinction. Preserve flags/data. Disposable PostgreSQL tests pin old ON CONFLICT(name) writer compatibility, both index stages, all-name incompatible-state refusal and synthetic post-cutover equivalence; the latter is not custody implementation. Future separately released custody owns index cutover and old-writer absence proof. Detect fresh active private-custody migration allocation before reserving gen003; one shared column/index owner, no duplicate chain.\nAdd explicit ordinary vocabulary/aliases with normalized-key uniqueness (DB-enforced concurrent punctuation/case declares), nonempty shape, exact declared alias resolution and suggestion-only fuzzy matches. Preserve item_create/collection_create existing ordinary absent-name creation; do not port PR4121 unknown-name refusal. Metadata from private parents never enters suggestions/counts. No live vocabulary seeding, renaming or consolidation. Mutation/read races either complete before protection or deny after it. Rollback refuses when true flags/duplicate names would reopen/flatten data. Role/grant changes none except existing own-schema migration behavior; no peer access.\nNearest tests existing General tools/item suites; new migrated General-chain test proves legacy objects preserved and passive guards do not claim custody enrollment. Positive ordinary controls accompany every privacy absence assertion. Coordinate shared General source with adopted custody future owner before editing; root transfer covers .9 only.\n\nStart exact affected nodes, then named owning files; make test-plan BASE=origin/main; migration/shared boundary requires real migrated PostgreSQL roles/rollback/concurrency, roster tests and full tests/ roster/ collection. Ruff/format, strict relevant OpenSpec, body-overwrite/countable/cited/archive/guards, shard registration and measured test-budget delta; independent security/semantic exact-head review and terminal protected merge-group evidence. No broad local Docker lanes by default. Source tests use synthetic inputs and disposable PostgreSQL/browser fixtures, no live endpoint/provider. Failures are diagnosed, not masked by skipped/empty fixtures.\nExpected test delta Tests:+5 ~4 -0 functions, focused matrix rows; estimate only, measure before handoff.",
+      "acceptance_criteria": "1. Actual migrated PG proves passive flag/index compatibility, preserved existing true rows, no profile creation/backfill and transactional refusal of ambiguous legacy reserved profiles.\n2. All generic read/write/search/export/name paths enforce ordinary predicate before content or count exposure; private-name creation matches absent-name behavior, and ordinary control succeeds.\n3. Concurrent declare/ordinary create/enrollment metadata/mutation cases preserve uniqueness and privacy; generic inputs cannot mutate reserved fields.\n4. Downgrade before private use is safe; downgrade with private data or name duplicates refuses without destructive repair.\n5. No custody feature is represented as implemented; all named tests/quality gates and net delta recorded.",
+      "depends_on": [
+        "bu-2jtfw.9.1"
+      ],
+      "packet_complete": true,
+      "runnable_now": false,
+      "holds": [
+        "canonical source bu-2jtfw.9.1 landed",
+        "fresh exact file/hunk reservation and migration allocation census"
+      ]
+    },
+    {
+      "key": "capture_admission_routing",
+      "parent": "bu-2jtfw.9",
+      "title": "Deliver durable General capture admission and target-owned routing",
+      "issue_type": "task",
+      "priority": 2,
+      "labels": [
+        "complexity:high",
+        "general-capture",
+        "packet-complete"
+      ],
+      "description": "## Outcome\nDeliver durable General capture admission and target-owned routing.\n\n## Authority\nOwner A adopted manifest7b97e54600398001330aa5180f9d1ed269db4ce73e104a3de46260fab672c5c7 plus bounded repository delivery and transfer ONLY bu-2jtfw.9. Baseline c1085ad335b97deddd30cb09d5e4d982d83896a2. Governing RFC0037 and REQ-general-capture-001..006. No live/provider/credential/private-data/shared migration/deployment/merge-of-live-collections/archive authority. Preserve old PR4121 and its branch/worktree; never reset/reopen/force-push it. Current .6 dirty source, .5 Spawner/memory and bu-djjig memory semantics remain separate. Coordinator alone mutates Beads.\n\nGoverning slice: 001/002/006",
+      "owned_paths": [
+        "alembic/versions/core/core_<next>_general_capture_ledger.py (new; current249, QA publication also allocates next, serialize)",
+        "src/butlers/core/capture.py (new)",
+        "src/butlers/core_tools/_capture.py (new)",
+        "src/butlers/core_tools/_dispatcher.py",
+        "src/butlers/core/tool_presentation_inventory.py",
+        "src/butlers/api/{routers/captures,models/capture}.py (new)",
+        "src/butlers/api/app.py (mount only)",
+        "roster/general/tools/capture_service.py (new)",
+        "roster/general/modules/tools.py",
+        "roster/switchboard/tools/routing/structured_classify.py; new roster/switchboard/tools/ingestion/capture_source_authority.py (owning-source verification only)",
+        "deploy/backup/pg_dump.sh",
+        "scripts/pg_restore.sh",
+        "scripts/pg_verify_restore.sh",
+        "docs/operations/backup-restore.md",
+        "docs/butlers/general.md",
+        "roster/general/tests/test_capture_service.py (new)",
+        "tests/api/test_captures_router.py (new)",
+        "tests/integration/test_general_capture_ledger.py (new)",
+        "tests/scripts/test_pg_dump_backup.py",
+        "tests/scripts/test_pg_restore_definer_ownership.py",
+        "src/butlers/api/dashboard_audit_middleware.py (fixed capture no-body policy only)",
+        "src/butlers/api/middleware.py or capture-scoped APIRoute exception projection (no generic policy rewrite)",
+        "tests/api/test_captures_router.py mounted full-app audit/error matrix"
+      ],
+      "design": "Create public.captures plus capture_operations as durable General-service-owned ledger: UUID capture/operation, verified owner/source binding, mutation key+payload digest, original input/reference, disposition held/routed/refused, typed hold category, source-owned target receipt/version, timestamps, stage and epoch. UNIQUE(owner,source,mutation_id) for supplied ids; server IDs for absent key. ENABLE+FORCE RLS permits butler_general_rw only; migration/table-owner roleNone, other runtime roles and broad bootstrap grants cannot bypass it. NoTRUNCATE trigger and terminal receipt immutability; fixed transition functions reject caller-selected targets/actor. Dashboard owner API validates authentication+CSRF before body and uses scoped General-role transaction with cancellation cleanup. Model capture requires current server-held session plus admitted owner-source binding checked via Switchboard MCP, not direct inbox SQL or caller actor strings. Missing source authority produces no admission; bounded valid source content can remain held without target authority.\nRegister core capture under existing state group, presentable metadata; never auto-enable a group. Infrastructure General admit/resolve methods require server authority independently of nonvisible metadata. Commit held receipt and return before scheduling classification/target writes. Persist operation claim before effect; duplicate same payload reuses receipt, changed payload refuses. General target+version+routed receipt is atomic locally. Specialist target and reconciliation use only owner MCP with immutable operation-bound receipt; absent capability means held/unavailable, not General shadow write or foreign SELECT. Unknown target outcome retains lineage/operation and blocks duplicate target dispatch across restart/retry/cooldown until exact read-only outcome proof. Refused specialist ownership is never reset by generic retry. Fixed errors contain no exception/source text.\nExtend backup shared-snapshot role export/import for ledgers and General authority metadata (do not exclude as ephemeral). Restore disables dispatch, rotates external host epoch and retains/restores in-doubt holds before resuming. Retain data on rollback, disable new admission/routing; no remote effect cleanup. All schema revisions allocated only after QA publication migration ownership check; no coupled live migration. Preserve caller/spawner lanes; direct wrapper newmodule path source-backed selection must be pinned before packet dispatch if source moved.\n\nStart exact affected nodes, then named owning files; make test-plan BASE=origin/main; migration/shared boundary requires real migrated PostgreSQL roles/rollback/concurrency, roster tests and full tests/ roster/ collection. Ruff/format, strict relevant OpenSpec, body-overwrite/countable/cited/archive/guards, shard registration and measured test-budget delta; independent security/semantic exact-head review and terminal protected merge-group evidence. No broad local Docker lanes by default. Source tests use synthetic inputs and disposable PostgreSQL/browser fixtures, no live endpoint/provider. Failures are diagnosed, not masked by skipped/empty fixtures.\nExpected test delta Tests:+7 ~5 -0 functions, reuse fixtures; estimate only, measure before handoff.\nInitial real supported target: General capture_service wraps existing items.py::item_create with the source-version write and ledger transition on ONE acquired General connection. Fixed ordinary note/fact/preference kinds map to declared notes/facts/preferences; current UUID return is not a receipt until operation/version binding is committed. General verify endpoint looks up exact operation receipt, validates current privacy and returns typed source version. Initial supported target registry includes General only. Finance/Travel/Relationship/Home have no assumed compatible capture receipt seam: refuse/hold BEFORE mutation; mocks prove only parser/refusal. Any future specialist adapter requires that owner contract/release, no new peer authority in this task.\nCapture input privacy: DashboardAuditMiddleware reads request.body before handler and audit_emit secret-key heuristics do not redact ordinary content. Add server-owned exact capture/explicit-chat-bridge route no-body classification BEFORE body capture, never caller-selectable. Preserve actor/fixedoperation/outcome/opaqueID audit event. Capture-scoped APIRoute catches/sanitizes RequestValidationError/ValueError before generic logging/response; no framework input or raw str(exc). Cancellation propagates after cleanup/content-blind audit, no successful captureclaim. New explicit chat capture endpoint uses same protected admission, not late flag on ordinary conversation POST. Existing ordinary conversation source retention/provider semantics remain unchanged; no claim of retroactive confidentiality.",
+      "acceptance_criteria": "1. Kill/interruption after committed admission leaves recoverable held receipt; no target call precedes commit; repeated/mismatched mutation IDs behave exactly under real PG races.\n2. Real roles/bootstrap/owner bypass/TRUNCATE and restore tests prove ledger fence and retained ambiguity across old snapshots; missing ledger prevents effect.\n3. General local routed receipt and specialist MCP receipt prove actual source-owned outcome; fabricated locator/owner/name cannot finalize. No peer SQL.\n4. Initial/worker/retry/recovery races create at most one target operation; ambiguity does not become ordinary terminal failure that permits a new resource.\n5. Configured capture registration, author/source checks and API owner guard execute at real seams; disabled group stays disabled.\n6. Source-only backup/epoch documentation and actual tests/quality checks complete; no live captured data/provider call.\n7. Actual General target transaction and verification seam are demonstrated against migrated PostgreSQL; no mock is credited as real specialist support. Unsupported specialist receipt capability prevents calling that domain writer.\nMounted full-app tests plant non-secret-key sentinel text/attachment refs/private-shaped values and assert absence from response/audit/log/trace for success, malformedJSON/422, ValueError, timeout and cancellation, with positive fixedcategory/actor/outcome audits; explicit chat capture bridge follows same policy. Ordinary unrelated API policies remain unchanged.",
+      "depends_on": [
+        "ordinary_source_boundary"
+      ],
+      "packet_complete": true,
+      "runnable_now": false,
+      "holds": [
+        "canonical source bu-2jtfw.9.1 landed",
+        "fresh exact file/hunk reservation and migration allocation census"
+      ]
+    },
+    {
+      "key": "retrieval_source_fences",
+      "parent": "bu-2jtfw.9",
+      "title": "Wire bounded capture retrieval, catalog and source-fence readiness",
+      "issue_type": "task",
+      "priority": 2,
+      "labels": [
+        "complexity:high",
+        "general-capture",
+        "packet-complete"
+      ],
+      "description": "## Outcome\nWire bounded capture retrieval, catalog and source-fence readiness.\n\n## Authority\nOwner A adopted manifest7b97e54600398001330aa5180f9d1ed269db4ce73e104a3de46260fab672c5c7 plus bounded repository delivery and transfer ONLY bu-2jtfw.9. Baseline c1085ad335b97deddd30cb09d5e4d982d83896a2. Governing RFC0037 and REQ-general-capture-001..006. No live/provider/credential/private-data/shared migration/deployment/merge-of-live-collections/archive authority. Preserve old PR4121 and its branch/worktree; never reset/reopen/force-push it. Current .6 dirty source, .5 Spawner/memory and bu-djjig memory semantics remain separate. Coordinator alone mutates Beads.\n\nGoverning slice: 004/005",
+      "owned_paths": [
+        "roster/general/migrations/004_capture_source_versions.py (next free after ordinary boundary; recheck)",
+        "roster/general/tools/{capture_search,source_authority,capture_service}.py",
+        "roster/general/modules/tools.py",
+        "src/butlers/modules/memory/{storage,search}.py (capture source-kind seams only)",
+        "src/butlers/core_tools/_memory_catalog.py (typed owning-source fetch only)",
+        "roster/switchboard/tools/routing/route.py (existing owner-routed MCP fetch seam; no direct peer SQL)",
+        "roster/general/tests/test_capture_search.py (new)",
+        "roster/general/tests/test_capture_source_fences.py (new)",
+        "tests/modules/memory/test_catalog_sensitivity.py",
+        "tests/core_tools/test_memory_catalog.py",
+        "roster/general/tests/test_general_source_migration.py",
+        "docs/butlers/general.md"
+      ],
+      "design": "Add General-local immutable source_versions and source_fences storage (own schema/role, current existing role isolation) bound to item/parent/version/generation/verified owner+consumer/operation/service epoch. Update own source version in same transaction as ordinary item mutation. Parent and item locks serialize privacy, mutation, deletion, search/catalog retirement. RoleNone/model-authored owner metadata cannot mint a fence. Ordinary text/vector projection and keyset pagination filter eligibility before count/limit; missing index may bounded-degrade but missing privacy fence never degrades to disclosure.\nAdd capture as an explicitly typed catalog source ONLY after both admission and owning-General canonical fetch are wired through Switchboard MCP and existing server-held sensitivity ceiling. Do not shoehorn captures into facts/rules or direct peer SELECT. Derive source sensitivity from trusted source provenance/policy using existing vocabulary/validation; unproven classification remains catalog-unavailable, not fabricated normal. Private/retired source must disappear from index/search/catalog atomically. Refresh bu-djjig and all memory catalogue source reservations; do not rewrite their general writers or credence policy.\nGeneral-local future consumer may finalize only in same General transaction with source+packet locks; General supplies no checklist packet table or finalization UI in this task. Source-owned remote interface prepare/commit_start/resolve is not optimistic read-then-peer-commit: prepared reservation holds source version/authority, commit_start durably records in-doubt permission BEFORE grant; source mutators/privacy enrollment refuse while in doubt. Only verified exact consumer outcome through MCP resolves+releases in one transaction. Expiry may retire unused prepare, NEVER commit_started. No arbitrary committed boolean, no stale epoch reuse, no automatic crash release. Keep endpoint unavailable for unimplemented/unverified consumers; use synthetic consumer to prove source readiness, not checklist completion. Restore/backup includes versions/fences with ledger consistent snapshot; all in-doubt outcomes preserved.\n\nStart exact affected nodes, then named owning files; make test-plan BASE=origin/main; migration/shared boundary requires real migrated PostgreSQL roles/rollback/concurrency, roster tests and full tests/ roster/ collection. Ruff/format, strict relevant OpenSpec, body-overwrite/countable/cited/archive/guards, shard registration and measured test-budget delta; independent security/semantic exact-head review and terminal protected merge-group evidence. No broad local Docker lanes by default. Source tests use synthetic inputs and disposable PostgreSQL/browser fixtures, no live endpoint/provider. Failures are diagnosed, not masked by skipped/empty fixtures.\nExpected test delta Tests:+6 ~5 -0 functions; estimate only, measure before handoff.",
+      "acceptance_criteria": "1. Bounded keyword/date/limit/cursor tests prove ordinary source-positive results, privacy/source sensitivity exclusions, stable pages and bounded degraded index behavior.\n2. Actual capture catalog admission AND canonical General MCP fetch work end-to-end synthetically; private source retirement removes search and prevents old reference fetch; no invalid fact/rule fallback.\n3. Real-PG source/version/parent locks exercise ordinary mutation/private enrollment vs prepared/commit-started fence. In-doubt survives expiry/crash/replay and only exact consumer outcome releases it.\n4. Local same-transaction consumer test proves atomic source/receipt seam without implementing checklist; a separate network check+commit is explicitly rejected as proof.\n5. General historical-source projections cannot bypass new private eligibility; receipt source refs supply no disclosure authority.\n6. Existing memory policy/owner lanes unchanged outside reviewed typed source extension; required tests/gates/independent review pass; no live/private/provider evidence claimed.",
+      "depends_on": [
+        "capture_admission_routing"
+      ],
+      "packet_complete": true,
+      "runnable_now": false,
+      "holds": [
+        "canonical source bu-2jtfw.9.1 landed",
+        "fresh exact file/hunk reservation and migration allocation census"
+      ]
+    },
+    {
+      "key": "owner_intake_held_ui",
+      "parent": "bu-2jtfw.9",
+      "title": "Wire General owner intake, held capture UI and deliberate proposals",
+      "issue_type": "task",
+      "priority": 2,
+      "labels": [
+        "complexity:high",
+        "general-capture",
+        "packet-complete"
+      ],
+      "description": "## Outcome\nWire General owner intake, held capture UI and deliberate proposals.\n\n## Authority\nOwner A adopted manifest7b97e54600398001330aa5180f9d1ed269db4ce73e104a3de46260fab672c5c7 plus bounded repository delivery and transfer ONLY bu-2jtfw.9. Baseline c1085ad335b97deddd30cb09d5e4d982d83896a2. Governing RFC0037 and REQ-general-capture-001..006. No live/provider/credential/private-data/shared migration/deployment/merge-of-live-collections/archive authority. Preserve old PR4121 and its branch/worktree; never reset/reopen/force-push it. Current .6 dirty source, .5 Spawner/memory and bu-djjig memory semantics remain separate. Coordinator alone mutates Beads.\n\nGoverning slice: 002/003/006",
+      "owned_paths": [
+        "src/butlers/api/routers/captures.py",
+        "roster/switchboard/tools/routing/structured_classify.py (capture intent only)",
+        "src/butlers/api/routers/conversations.py (existing authenticated intake bridge only)",
+        "frontend/src/components/general/HeldCapturesPanel.tsx (new)",
+        "frontend/src/components/general/CaptureIntake.tsx (new)",
+        "frontend/src/components/butler-detail/ButlerGeneralCollectionsTab.tsx",
+        "frontend/src/pages/ButlerDetailPage.tsx",
+        "frontend/src/api/{client,types}.ts",
+        "frontend/src/hooks/use-captures.ts (new)",
+        "frontend/src/components/general/HeldCapturesPanel.test.tsx (new)",
+        "frontend/tests/e2e/general-capture.spec.ts (new isolated synthetic route)",
+        "roster/general/tools/vocabulary.py",
+        "roster/general/tests/test_collection_vocabulary.py (new)",
+        "roster/switchboard/tests/test_structured_classify.py",
+        "roster/general/MANIFESTO.md implementation status only",
+        "docs/butlers/general.md",
+        "src/butlers/api/dashboard_audit_middleware.py (fixed capture no-body policy only)",
+        "src/butlers/api/middleware.py or capture-scoped APIRoute exception projection (no generic policy rewrite)",
+        "tests/api/test_captures_router.py mounted full-app audit/error matrix",
+        "roster/general/migrations/versions/ (proposal-operation store; fresh General revision allocation)",
+        "roster/general/tests/test_collection_vocabulary.py (real PostgreSQL preview/apply/inverse and concurrent revision matrix)"
+      ],
+      "design": "Mount real intake and held lane on existing General collections/detail surface (no competing route). Reuse Dispatch loading/errors/keyboard patterns. Show immediately acknowledged held state only after durable admission response, then routed/refused/unavailable with exact source-owner door; never optimistic Saved. Route chat/Telegram-owner capture through same deterministic admission and authenticated source binding; classification occurs only after held commit. Attachments remain source-owned references through existing safe attachment normalization, bounded extraction with explicit provenance; failure stays held/unavailable, not silent loss or direct external fetch. Private sources and custody questions only yield fixed generic private-screen entry, no record-specific door or content.\nDeliberate consolidation is proposal-first: deterministic read-only mapping over eligible ordinary vocabulary, exact revision/digests and owner review, never startup rename or a historical121-derived backfill. Repository delivery MUST implement preview, exact confirmed mapping apply and inverse CAS in vocabulary.py and owner captures API, backed by a General-owned proposal-operation store in the General migration chain. Persist proposal digest/input revisions/mapping/alias history/post-apply revision atomically under parent/member/operation locks. Stale/private/unknown/reserved collisions refuse before mutation; preserve all collection/item IDs and immutable source versions, source fences and alias history. Inverse requires exact recorded post-apply revision or refuses without repair. Idempotent replay returns the same result; changed payload refuses. Real PostgreSQL synthetic tests cover apply/inverse, concurrent protection/write, stale confirmation, rollback and inverse-after-edit refusal. No worker discretion to omit this outcome. No live mapping selection/apply is authorized by source delivery. No broad mass merge. Unknown-name compatibility remains current item_create behavior; display fuzzy candidates without choosing them. The .6 dirty owner batch overlaps General/frontend client paths; reserve exact hunks and wait for their settled source, not takeover. Frontend tests use fakeAPI/isolation, no live endpoint.\n\nStart exact affected nodes, then named owning files; make test-plan BASE=origin/main; migration/shared boundary requires real migrated PostgreSQL roles/rollback/concurrency, roster tests and full tests/ roster/ collection. Ruff/format, strict relevant OpenSpec, body-overwrite/countable/cited/archive/guards, shard registration and measured test-budget delta; independent security/semantic exact-head review and terminal protected merge-group evidence. No broad local Docker lanes by default. Source tests use synthetic inputs and disposable PostgreSQL/browser fixtures, no live endpoint/provider. Failures are diagnosed, not masked by skipped/empty fixtures.\nExpected test delta Tests:+5 ~5 -0 functions; estimate only, measure before handoff.\nCapture input privacy: DashboardAuditMiddleware reads request.body before handler and audit_emit secret-key heuristics do not redact ordinary content. Add server-owned exact capture/explicit-chat-bridge route no-body classification BEFORE body capture, never caller-selectable. Preserve actor/fixedoperation/outcome/opaqueID audit event. Capture-scoped APIRoute catches/sanitizes RequestValidationError/ValueError before generic logging/response; no framework input or raw str(exc). Cancellation propagates after cleanup/content-blind audit, no successful captureclaim. New explicit chat capture endpoint uses same protected admission, not late flag on ordinary conversation POST. Existing ordinary conversation source retention/provider semantics remain unchanged; no claim of retroactive confidentiality.",
+      "acceptance_criteria": "1. Actual supported owner dashboard/chat intake reaches held commit first, classification next; no orphan unmounted panel counted as feature.\n2. All status transitions, ambiguity/retry/empty/degraded and keyboard/source-door cases execute on production components with synthetic responses; no private record data leaks.\n3. Ordinary vocabulary proposals show exact scope and require owner confirmation before application; stale/private/ambiguous mappings refuse with no mutation. All synthetic item/provenance history survives safe apply/rollback.\n4. Attachment evidence uses exact source provenance and failure remains visible. No arbitrary URLs/provider fetch or record-bearing private custody tool.\n5. Frontend actual lint/copy/query-coercion/knip/build/test order, isolated browser tests, backend source-boundary tests, netdelta and protected CI/review pass. No .6 foreign dirty source overwritten.\nMounted full-app tests plant non-secret-key sentinel text/attachment refs/private-shaped values and assert absence from response/audit/log/trace for success, malformedJSON/422, ValueError, timeout and cancellation, with positive fixedcategory/actor/outcome audits; explicit chat capture bridge follows same policy. Ordinary unrelated API policies remain unchanged.",
+      "depends_on": [
+        "retrieval_source_fences"
+      ],
+      "packet_complete": true,
+      "runnable_now": false,
+      "holds": [
+        "canonical source bu-2jtfw.9.1 landed",
+        "fresh exact file/hunk reservation and migration allocation census"
+      ]
+    },
+    {
+      "key": "terminal",
+      "canonical_id": "bu-2jtfw.9.2",
+      "title": "Reconcile General repository delivery against all nine outcomes",
+      "description": "Owner A adopted manifest7b97e54600398001330aa5180f9d1ed269db4ce73e104a3de46260fab672c5c7 plus bounded repository delivery and transfer ONLY bu-2jtfw.9. Baseline c1085ad335b97deddd30cb09d5e4d982d83896a2. Governing RFC0037 and REQ-general-capture-001..006. No live/provider/credential/private-data/shared migration/deployment/merge-of-live-collections/archive authority. Preserve old PR4121 and its branch/worktree; never reset/reopen/force-push it. Current .6 dirty source, .5 Spawner/memory and bu-djjig memory semantics remain separate. Coordinator alone mutates Beads.",
+      "design": "Read complete landed source/spec/UI against six REQ-general-capture clauses and S1..S9 map below. Reuse exact-tree gates; focused counterexample only concrete uncertainty. No implementation source overlap. Report repository-delivery status only; source completion never grants live operation or custody/checklist completion. Every missing source outcome becomes complete deduped existing/new packet through coordinator. No archive.",
+      "acceptance_criteria": "Every original outcome and adopted clause has actual source and behavior proof. No unmounted intake, unconsumed catalog source or unproven fence counts as done; no live/private/provider proof inferred. Independent wholeflow review, Tests:+0 ~0 -0.",
+      "depends_on": [
+        "owner_intake_held_ui"
+      ],
+      "packet_complete": true,
+      "runnable_now": false
+    }
+  ]
+}

@@ -55,6 +55,7 @@ For a new reader, the recommended order follows data flow from startup through r
 | [0034](rfcs/0034-messenger-voice-egress.md) | Messenger-Owned Voice Egress | Draft | Messenger-owned local-first voice delivery: explicit initiation, presence, DND suppression, replay fencing, text fallback. |
 | [0035](rfcs/0035-bounded-post-delivery-approval-reminders.md) | Bounded Post-Delivery Approval Reminders | Proposed | At most two distinct-channel reminders after confirmed approval delivery, within expiry, quiet-hours, and burst limits. |
 | [0036](rfcs/0036-models-exact-path-vision-proof.md) | Models Exact-Path Vision Proof | Accepted | Bounded diagnostic controls and explicit proof application; implementation and real evidence remain gated. |
+| [0037](rfcs/0037-general-capture-and-private-source-boundaries.md) | General Capture and Private Source Boundaries | Accepted | Durable ordinary capture, source-owned receipts, private-safe vocabulary/search and source-fence readiness; implementation remains outstanding. |
 
 The RFC header is the single home for status detail (slices landed, gates, owner sign-off). The Status
 column is a one-word summary of it.
