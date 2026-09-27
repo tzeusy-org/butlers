@@ -1,0 +1,101 @@
+{
+  "existing_roots": [
+    "bu-s1u4br",
+    "bu-4gpfak"
+  ],
+  "no_beads_created": true,
+  "baseline": "4e3e0bd34aeb177dc5f5a58e427060d631c488ed",
+  "outcomes": [
+    {
+      "key": "canonical_contract",
+      "canonical_target": "proposed-source-prerequisite",
+      "title": "Integrate adopted Models vision RFC and OpenSpec",
+      "depends_on": [],
+      "description": "Owner A exact contract d46d758108064d4ea5d00cab2a94a8ebc82a18f54dea5a2b9393b7f1cc25e11e authorizes repository source/synthetic tests/protected delivery. No provider calls, credentials/key provisioning, live catalog changes/deployment/shared migrations or foreign ownership transfer. Refresh base 4e3e0bd34aeb177dc5f5a58e427060d631c488ed and exact active spec/owner overlaps; dedicated worktree; no OpenSpec archive. Invoke craft-and-care and actual shared-boundary planner/collection gates; independent exact-head review and terminal hosted merge-group plus landed proof. No live account/budget inferred. Outcome: Integrate adopted Models vision RFC and OpenSpec",
+      "design": "Own new then-free RFC plus CLI-scaffolded changeset and exact paired model-catalog/dashboard/runtime clauses. All adopted paragraphs map to clauses; preserve current whole requirements and active deltas. No runtime code.\nApply exact adopted semantics, include Add/Apply distinction and negative tool contract; no source policy reduction. Requirement body diff and trace authoring checks, strict/all overwrite/countable guards; Tests:+0 ~0 -0. New implementation code cannot start until this lands.",
+      "acceptance_criteria": "Exact adopted clause coverage and independent semantic equivalence PASS; no baseline/active loss; protected landing receipt; no operational action.",
+      "packet_status": "revised_draft_pending_independent_review_not_runnable",
+      "runnable_now": false
+    },
+    {
+      "key": "operation_authority",
+      "canonical_target": "proposed-source-child-of-bu-s1u4br",
+      "title": "Build purpose-bound operation and durable control ledger",
+      "depends_on": [
+        "canonical_contract"
+      ],
+      "description": "Owner A exact contract d46d758108064d4ea5d00cab2a94a8ebc82a18f54dea5a2b9393b7f1cc25e11e authorizes repository source/synthetic tests/protected delivery. No provider calls, credentials/key provisioning, live catalog changes/deployment/shared migrations or foreign ownership transfer. Refresh base 4e3e0bd34aeb177dc5f5a58e427060d631c488ed and exact active spec/owner overlaps; dedicated worktree; no OpenSpec archive. Invoke craft-and-care and actual shared-boundary planner/collection gates; independent exact-head review and terminal hosted merge-group plus landed proof. No live account/budget inferred. Outcome: Build purpose-bound operation and durable control ledger",
+      "design": "Own new core migration/tables and narrow runtime_probe_control vision capability/client/endpoint/receipt module; text capability/key contract unchanged. Source activation templates default absent. Serialize with custody/control-auth owners; no daemon/Spawner edits.\nUse storage-api-design.md exact row/operation/slot CAS contract. Cover forgery/purpose mismatch/caller fields, replay/concurrent busy, budget reserve/crash/expiry/cancel, core-only upgrade/bootstrap RLS/owner bypass/retention; no raw secrets/sentinels. Extend runtime_probe_control capability/receipts/migration tests and new cohesive vision ledger suite. Estimated Tests:+10 ~4 -0 measured; real migrated PG lane + module/API contract collection, not mocked permission proof. Read restricted-ingress-and-storage.md for exact Switchboard role, FORCE RLS/noTRUNCATE/immutable terminal rows, complete durable backup/restore epoch and indefinite v1 retention. These are explicit source responsibilities; live installation prohibited. Exact backup/restore/epoch files and test seams are owned here as listed in restricted-ingress-and-storage.md final section; no deferred unowned backup sidecar. Fresh host epoch outside snapshot is bound into every vision capability/application and gates startup before execution. Source implementation remains absent until this outcome lands.",
+      "acceptance_criteria": "Purpose mismatch fails before effects; each slot at-most-once; no live authority by default; all cap fields enforced server-side or not executable; historical text Verify byte contracts remain. Independent security review.",
+      "packet_status": "revised_draft_pending_independent_review_not_runnable",
+      "runnable_now": false
+    },
+    {
+      "key": "exact_path_executor",
+      "canonical_target": "proposed-source-child-of-bu-s1u4br",
+      "title": "Execute constrained synthetic attachment vision controls",
+      "depends_on": [
+        "operation_authority"
+      ],
+      "description": "Owner A exact contract d46d758108064d4ea5d00cab2a94a8ebc82a18f54dea5a2b9393b7f1cc25e11e authorizes repository source/synthetic tests/protected delivery. No provider calls, credentials/key provisioning, live catalog changes/deployment/shared migrations or foreign ownership transfer. Refresh base 4e3e0bd34aeb177dc5f5a58e427060d631c488ed and exact active spec/owner overlaps; dedicated worktree; no OpenSpec archive. Invoke craft-and-care and actual shared-boundary planner/collection gates; independent exact-head review and terminal hosted merge-group plus landed proof. No live account/budget inferred. Outcome: Execute constrained synthetic attachment vision controls",
+      "design": "Own narrow private Spawner entry/selection fit seam, synthetic Models-to-ingest attachment bridge, operation-scoped attachment_view allowlist and diagnostic result/capture redaction. Existing ingress3960, toolcatalog4244 and QAconsumer daemon/Spawner overlaps must clear. Adapters only scoped enforceability hooks after exact owner path clearance; no general runtime redesign.\nReal envelope/blob/view/intent/Spawner serialization with mocked provider boundary; positive/text-only/removed slots exact same tuple; exactly one allowed call each. NO_IMAGE without call fails. Unbounded installedCLI reports not_executable, no runtime switch. Tests/core/test_attachment_view.py, tools attachments, ingest_attachments_persistence, model_routing and actual Spawner owning seam; process_logs/session completion leakage with planted synthetic sentinel. Estimated Tests:+12 ~6 -0; per invariant one wire/behavior gate; full shared roster collection and targeted realPG/session integration. Rollback blocks pending launches, retains receipts/managed fence. Read diagnostic-executor-matrix.md and restricted-ingress-and-storage.md. Existing Codex/OpenCode ordinary paths are unsupported. Prove at least one supported diagnostic profile before claiming executor completion; otherwise report concrete implementation prerequisite and retain hold. No normal classification/inbox/observer extra launches.",
+      "acceptance_criteria": "Synthetic end-to-end production chain exercised; exact foreign refs/tools rejected before lookup; zero raw sentinel persistence; no retry/resume/fallback; cancellation/budget enforcement per request; mocks explicitly not real provider vision evidence.",
+      "packet_status": "revised_draft_pending_independent_review_not_runnable",
+      "runnable_now": false
+    },
+    {
+      "key": "proof_application",
+      "canonical_target": "proposed-source-child-of-bu-s1u4br",
+      "title": "Bind exact proof to catalog through owner CAS",
+      "depends_on": [
+        "operation_authority",
+        "exact_path_executor"
+      ],
+      "description": "Owner A exact contract d46d758108064d4ea5d00cab2a94a8ebc82a18f54dea5a2b9393b7f1cc25e11e authorizes repository source/synthetic tests/protected delivery. No provider calls, credentials/key provisioning, live catalog changes/deployment/shared migrations or foreign ownership transfer. Refresh base 4e3e0bd34aeb177dc5f5a58e427060d631c488ed and exact active spec/owner overlaps; dedicated worktree; no OpenSpec archive. Invoke craft-and-care and actual shared-boundary planner/collection gates; independent exact-head review and terminal hosted merge-group plus landed proof. No live account/budget inferred. Outcome: Bind exact proof to catalog through owner CAS",
+      "design": "Own model_settings API proof/status/apply and model_routing managed applicability plus row mutation inventory; avoid per-attempt adapter projection owned elsewhere. Exact control service role writer only; source/doc revisions same PR.\nImplement storage/api design, all true/write/import surfaces inventoried. Latest pass does not change routing even alreadytrue. Explicit Enable/Apply/Refresh CAS preserves unrelated capability keys, denies stale/alias/deleted/replayedchanged rows. Historical unbound remains unchanged. Extend modelsettings API/realDB and modelrouting fit tests; Tests:+8 ~5 -0 expected. Same-change docs model-routing/dashboard API; realPG races/readback after errors, not canned-row SQL assertion. Safe downgrade preserves managed gate.",
+      "acceptance_criteria": "Historical preservation, managed stale failclosed, explicit true-row binding, exactrow concurrent CAS and idempotence all executed; no API capability checkbox bypass; no real catalog mutated. All new/cloned/unbound vision=true and identity changes retaining historical true require proof; only unchanged historical declarations grandfathered. Inventory every writer, including imports/migrations/bulk helpers.",
+      "packet_status": "revised_draft_pending_independent_review_not_runnable",
+      "runnable_now": false
+    },
+    {
+      "key": "models_ui",
+      "canonical_target": "bu-4gpfak",
+      "title": "Deliver Models capability, Verify and Apply UX",
+      "depends_on": [
+        "proof_application"
+      ],
+      "description": "Owner A exact contract d46d758108064d4ea5d00cab2a94a8ebc82a18f54dea5a2b9393b7f1cc25e11e authorizes repository source/synthetic tests/protected delivery. No provider calls, credentials/key provisioning, live catalog changes/deployment/shared migrations or foreign ownership transfer. Refresh base 4e3e0bd34aeb177dc5f5a58e427060d631c488ed and exact active spec/owner overlaps; dedicated worktree; no OpenSpec archive. Invoke craft-and-care and actual shared-boundary planner/collection gates; independent exact-head review and terminal hosted merge-group plus landed proof. No live account/budget inferred. Outcome: Deliver Models capability, Verify and Apply UX",
+      "design": "Own SettingsModelsPage, use-model-catalog hooks, API DTO/client and nearest tests; primary Models reservations incl bu-2jtfw.6 require exact disjoint agreement first. No backend semantics changes in UI slice.\nFull adopted states declaration/latest/applied, cost-confirmation, preparing/runningcontrols/notrun/busy/cancel/interrupted/pass/fail/stale/conflict; explicit Apply/Refresh on true. Real page components synthetic API controls, keyboard focus/status and reload poll reconnect; no autoplay/retry. Extend SettingsModelsPage.test.tsx rather than new duplicate page fixture. Tests:+8 ~5 -0 estimated. lint/copy/querycoercion/knip/build/test actual order; synthetic browser isolated no live API. Docs owner Models flow.",
+      "acceptance_criteria": "Every contract state renders truthful distinct actions, no rawvisiontrue, textVerify separate, no leak/hidden invocation; row-preserving loading/error interactions accessible; protected delivery no activation.",
+      "packet_status": "revised_draft_pending_independent_review_not_runnable",
+      "runnable_now": false
+    },
+    {
+      "key": "real_path_evidence",
+      "canonical_target": "bu-s1u4br",
+      "title": "Finish exact live evidence only under later bounded authority",
+      "depends_on": [
+        "models_ui"
+      ],
+      "description": "Owner A exact contract d46d758108064d4ea5d00cab2a94a8ebc82a18f54dea5a2b9393b7f1cc25e11e authorizes repository source/synthetic tests/protected delivery. No provider calls, credentials/key provisioning, live catalog changes/deployment/shared migrations or foreign ownership transfer. Refresh base 4e3e0bd34aeb177dc5f5a58e427060d631c488ed and exact active spec/owner overlaps; dedicated worktree; no OpenSpec archive. Invoke craft-and-care and actual shared-boundary planner/collection gates; independent exact-head review and terminal hosted merge-group plus landed proof. No live account/budget inferred. Outcome: Finish exact live evidence only under later bounded authority",
+      "design": "Preserve original bu-s1u4br real provider criteria1-7. Source children do not close it. Only after source/prerequisite environment readiness collect content-blind current tuple/CLI/account fingerprints and request exact bounded live authorization; never default environment/account/budget.\nReuse retained historical receipts where exact stage/control equivalence proven; otherwise prepare explicit oneoperation3sessions no automatic retry with enforceable budgets. Owner decides target/credential-use/spend and whether separately Apply. Real positive+same tuplecontrols evidence, exact revision, no preinference leakage, failure preserves row; report limitations honestly. Synthetic Tests:+0 ~0 -0; actual later control count/cost in operation receipt. No authority currently for these calls.",
+      "acceptance_criteria": "Full original exactpath real evidence and allowed conditional catalog step verified, or remains HELD with exact missing authority/evidence. Real outcomes never credited from unit tests or earlier differenttuple controls.",
+      "packet_status": "revised_draft_pending_independent_review_not_runnable",
+      "runnable_now": false
+    },
+    {
+      "key": "terminal_reconciliation",
+      "canonical_target": "proposed-cross-outcome-reconciliation",
+      "title": "Reconcile Models vision source and live evidence independently",
+      "depends_on": [
+        "models_ui",
+        "real_path_evidence"
+      ],
+      "description": "Owner A exact contract d46d758108064d4ea5d00cab2a94a8ebc82a18f54dea5a2b9393b7f1cc25e11e authorizes repository source/synthetic tests/protected delivery. No provider calls, credentials/key provisioning, live catalog changes/deployment/shared migrations or foreign ownership transfer. Refresh base 4e3e0bd34aeb177dc5f5a58e427060d631c488ed and exact active spec/owner overlaps; dedicated worktree; no OpenSpec archive. Invoke craft-and-care and actual shared-boundary planner/collection gates; independent exact-head review and terminal hosted merge-group plus landed proof. No live account/budget inferred. Outcome: Reconcile Models vision source and live evidence independently",
+      "design": "Read whole final source/schema/API/UI against exact adopted clauses, new capability clauses and original two beads. No competing source ownership. Evidence report only; not archive.\nMap every adopted paragraph/scenario to implemented seam/tests and separately operational receipt. Reuse valid exact-tree gates; focused counterexample only concrete finding. Tests:+0 ~0 -0 baseline. Check no unbounded path/checkboxtoken/etc, no inherited historical proof claim, no bypass rollback. Missing source/outcome becomes complete linked gap packet; no sourceonly full closure.",
+      "acceptance_criteria": "Source milestone can report complete separately; bu-s1u4br overall and program cannot close until authorized real evidence criteria satisfied. Independent cross-child and userflow receipt, no concealed incomplete live stage.",
+      "packet_status": "revised_draft_pending_independent_review_not_runnable",
+      "runnable_now": false
+    }
+  ]
+}

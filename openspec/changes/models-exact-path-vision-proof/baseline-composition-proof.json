@@ -1,0 +1,20 @@
+[
+  {
+    "capability": "model-catalog",
+    "requirement": "Model Catalog Capability Envelope",
+    "original_paragraphs": 6,
+    "missing": []
+  },
+  {
+    "capability": "model-catalog",
+    "requirement": "Fit Before Ranking",
+    "original_paragraphs": 7,
+    "missing": []
+  },
+  {
+    "capability": "dashboard-model-settings",
+    "requirement": "Model Catalog Settings UI",
+    "original_paragraphs": 8,
+    "missing": []
+  }
+]

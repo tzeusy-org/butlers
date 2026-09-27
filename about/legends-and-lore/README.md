@@ -73,3 +73,5 @@ column is a one-word summary of it.
 - **Normative language:** "MUST", "SHOULD", "MAY" follow their usual meaning.
 - **Cross-references:** By RFC number (e.g., "see RFC 0003").
 - **Date:** ISO 8601 format.
+
+- [RFC 0036: Models exact-path vision proof](rfcs/0036-models-exact-path-vision-proof.md): adopted target, with bounded execution and explicit proof application; implementation and real evidence remain gated.
