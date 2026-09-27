@@ -136,8 +136,7 @@ Each novel finding above the severity threshold triggers:
 3. Investigation agent spawn with sandboxed environment.
 4. Timeout watchdog (default: 30 minutes).
 
-Investigation agents run with only: `GH_TOKEN`, `PATH`, and build-tool
-variables. No butler DB credentials, API keys, or OAuth tokens leak in.
+Investigation agents receive `PATH` and build-tool variables, never GitHub publication credentials. A trusted deterministic publisher owns the dedicated QA credential and accepts only attempt-bound validated publication operations. Process/filesystem separation must be proven before activation; no butler DB credentials, API keys, or OAuth tokens enter investigations.
 
 ---
 
@@ -145,7 +144,7 @@ variables. No butler DB credentials, API keys, or OAuth tokens leak in.
 
 - Labels: `["self-healing", "automated"]`
 - GitHub token: retrieved via `CredentialStore.resolve("BUTLERS_QA_GH_TOKEN")`
-- Token scope: branch push, PR create/label only (**no merge/approve**)
+- Effective publication surface: validated attempt-bound branch and PR publication plus fixed sanitized labels; **no merge, review, approval or queue**. Coarse provider permissions may be broader; publisher compromise is a residual risk, not an absent GitHub permission.
 - Anonymization: all event summaries and agent context passed through
   `anonymize()` before inclusion in PRs
 
