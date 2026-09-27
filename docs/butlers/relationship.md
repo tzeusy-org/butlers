@@ -27,6 +27,30 @@ The channel-to-producer mapping lives in the `butler-relationship` spec and
 triage, check the contact's expected-signal state and exact producer, then that same connector
 endpoint's heartbeat.
 
+## Implementation Notes
+
+- `relationship.facts` is a multi-valued log store: `activity` and `interaction_*` carry many
+  active rows per `(entity_id, predicate)`. Contradiction detection in
+  `run_fact_retraction_curation` (`roster/relationship/jobs/relationship_jobs.py`) is therefore
+  gated to the `_CONTRADICTION_FUNCTIONAL_PREDICATES` allowlist, so a new log predicate can never
+  flood approvals. Cardinality cannot be read from `entity_predicate_registry`, which covers only
+  the `entity_facts` store.
+- `run_interaction_sync_job` reads `switchboard.message_inbox` directly, so `scripts/init-db.sql`
+  grants `butler_relationship_rw` read-only access to schema `switchboard` (plus matching default
+  privileges).
+- `POST /api/relationship/contacts/sync` dispatches to the `contacts_sync_now` MCP tool with
+  `{"provider": "google", "mode": "incremental|full"}`. `mode` is strict, and credential failures
+  surface as `400` errors pointing at `/api/oauth/google/start`.
+- `relationship.facts` and `relationship.predicate_registry` belong to the memory module; domain
+  triple-store work uses `relationship.entity_facts` and `relationship.entity_predicate_registry`.
+  Interaction facts use `subject='entity:{entity_id}'` (`interaction_log` / `interaction_list`
+  still resolve legacy contact UUIDs).
+- Active-surface queries share one filter excluding `metadata.archived = true`, `archived_at`,
+  `tombstone = true`, `deleted_at` and `merged_into`.
+- Dunbar decay counts connector LLM-extraction facts as mentions unless
+  `extra_metadata.source == "interaction_sync"`; `email`, `interview` and `calendar_event`
+  interactions weigh `0.2`.
+
 ## Related Pages
 
 - [Switchboard Butler](switchboard.md) -- routes people-related messages here

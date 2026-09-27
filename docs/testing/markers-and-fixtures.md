@@ -148,6 +148,25 @@ docker_available = shutil.which("docker") is not None
 
 Tests can use this to skip gracefully when Docker is not installed.
 
+## Implementation Notes
+
+- Root `conftest.py` also serialises testcontainers `DockerClient.run()` across xdist workers and
+  caps `-n auto` at 3 workers (`PYTEST_XDIST_AUTO_WORKERS` overrides).
+- Startup timeouts (before a container starts) are host contention: reduce load and rely on the
+  init retry. Teardown races happen in `container.remove()` and are the teardown patch's job.
+- DB tests use `testcontainers.postgres.PostgresContainer` with `asyncpg.create_pool()`.
+- The guarded core integration modules (`tests/core/test_core_{state,sessions,scheduler}.py`) apply
+  session loop scope per async test (`@pytest.mark.asyncio(loop_scope="session")` or the local
+  `_asyncio_session` alias), never to a whole module or class, because synchronous guards may be
+  collected there.
+- Root `conftest.py` is the only global registration layer for `shared_fixtures`; nested conftests
+  must not re-register them but may define tree-scoped fixtures and hooks.
+- Patch testcontainers teardown at exactly one layer: assign `DockerContainer.stop` once and retry
+  `container.remove()`, not `stop()`. The transient errors are 404 "no such container", 409
+  "removal already in progress" and read timeouts, so match markers anywhere in the exception chain
+  (including docker-py's `explanation`) rather than gating on HTTP 500. Swallow the final transient
+  failure with a `RuntimeWarning`; fail fast on anything else.
+
 ## Related Pages
 
 - [Testing Strategy](testing-strategy.md) -- Test pyramid and quality gates

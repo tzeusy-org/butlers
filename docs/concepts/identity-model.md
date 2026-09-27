@@ -164,6 +164,14 @@ psql -h localhost -U butlers -d butlers -c \
 # Expected: count matches the number of unrecognized senders seen by the Switchboard
 ```
 
+## Implementation Notes
+
+- `_ensure_owner_entity` (`src/butlers/owner_bootstrap.py`) resolves an existing owner via
+  `'owner' = ANY(roles)` before inserting, and inserts with a target-less `ON CONFLICT DO NOTHING`
+  so `ix_entities_owner_singleton` cannot raise during startup.
+- Owner Telegram handle seeding is relationship-only: `_seed_owner_telegram_handle` checks
+  `current_schema() = 'relationship'` before probing `relationship.entity_facts`.
+
 ## Related Pages
 
 - [Switchboard Routing](switchboard-routing.md) --- how identity preambles are injected during routing

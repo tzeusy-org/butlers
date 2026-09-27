@@ -107,6 +107,12 @@ curl -s http://localhost:41200/api/ingestion/connectors/summaries | python3 -m j
 # heartbeat; storage-only checkpoints are nested under their parent
 ```
 
+## Implementation Notes
+
+- `status.state` is a closed vocabulary (`healthy`, `degraded`, `error`). A connector that has not
+  finished its first transport attempt reports `degraded` with detail such as `transport=starting`,
+  never a fourth state.
+
 ## Related Pages
 
 - [Connector Architecture Overview](overview.md) -- What connectors are and how they work

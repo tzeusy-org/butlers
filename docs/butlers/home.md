@@ -38,6 +38,29 @@ entity, or exposes a mapping read surface, and it returns only an opaque receipt
 Remap, delete, and rollback are separate owner-authorized operations. Route:
 `src/butlers/api/routers/home_person_mappings.py`.
 
+## Implementation Notes
+
+- Recorder statistics go through `connectors/home_assistant_statistics.py::HAStatisticsClient` and
+  the WebSocket command `recorder/statistics_during_period`. Energy consumption aggregates the
+  per-period `change`, never cumulative `sum`; provider errors stay bounded and sanitised.
+- Transport readiness is stronger than WebSocket authentication: health stays degraded, with REST
+  fallback available, until every required `subscribe_events` acknowledgement succeeds. One task
+  owns reconnects and shutdown awaits it.
+- The broad `source_channel=home_assistant` skip covers noisy events, not deterministic wellness
+  measurements: classify the wellness carve-out before that policy and advance the shared checkpoint
+  only after the wellness submission succeeds.
+- Weight history recovery queries `/api/history/period` with explicit significance and
+  initial-state flags, keeps historical attributes and a per-entity cursor, dedupes equal
+  timestamps, logs failures content-blind, and awaits its polling task on shutdown.
+- `run_device_health_check` (`src/butlers/jobs/home.py`) treats stateless domains (`button.*`,
+  `conversation.*`, `tts.*`, IR/RF blasters, Zigbee2MQTT gesture `*_action_*` sensors) as healthy at
+  `unknown` (`is_steady_state_unknown`). `select_due_issues` throttles repeat alerts via state key
+  `home:health_check:last_alerted` and the `realert` threshold (default 24h); returned counts still
+  reflect current state.
+- Actuation outcomes: only a connection-establishment failure or an HTTP rejection is `failed`. A
+  timeout or reset after dispatch, or an unparseable 2xx, is `unverified` and still attempts live
+  read-back.
+
 ## Related Pages
 
 - [Health Butler](health.md) -- reads Home Assistant sensors (read-only) for health correlation

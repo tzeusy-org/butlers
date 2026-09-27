@@ -105,6 +105,14 @@ curl -s http://localhost:41200/api/butlers/general/sessions | python3 -m json.to
 # Expected: matches the SQL query results above
 ```
 
+## Implementation Notes
+
+- Dashboard chat Stop is message-scoped: the immutable dashboard user-message id travels through
+  ingress, route inbox, recovery and `Spawner`, and cancellation renders only after the durable
+  control row confirms it. Route-inbox workers hold fenced processing leases; a worker that loses
+  its lease cancels its runtime but leaves the session unresolved for recovery to mark `ambiguous`
+  (no replay or retry, but Stop intent is recorded and every known session is cancelled).
+
 ## Related Pages
 
 - [LLM CLI Spawner](spawner.md) --- the component that creates and completes sessions

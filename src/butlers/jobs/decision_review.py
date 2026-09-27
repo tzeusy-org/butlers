@@ -60,8 +60,8 @@ Decision-bead detection: convention label only
 ---------------------------------------------------------------------------
 bu-ckkpz.1 (the structured decision-bead convention: ``decision`` label +
 ``metadata.decision.{options,default}`` + native ``due_at`` deadline,
-enforced by ``scripts/lint_decision_beads.py`` -- see AGENTS.md
-"Decision-bead convention") has shipped (PR #3141). :func:`_is_decision_bead`
+enforced by ``scripts/lint_decision_beads.py`` -- see
+``docs/operations/decision-beads.md``) has shipped (PR #3141). :func:`_is_decision_bead`
 classifies a bead solely by the convention's own marker -- the ``decision``
 label, the same field ``bd list --label decision`` and the linter key off
 (see :data:`_DECISION_LABEL`).

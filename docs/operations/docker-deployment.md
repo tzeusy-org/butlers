@@ -198,6 +198,25 @@ Per-mode host ports and project names (both can run at once):
 > do not trust the word "dev" here. Confirm which host an `.env.<mode>` file
 > actually points at before running migrations or destructive operations.
 
+## Implementation Notes
+
+- `scripts/compose.sh` rebuilds `butlers-base:latest` when the `butlers.base.dockerfile_sha` label
+  differs from `Dockerfile.base`; bump pinned runtime CLIs in `Dockerfile.base`, since an app-image
+  rebuild alone does not pick up base-layer tools.
+- Butler MCP ports `41100-41111` sit inside Linux's default ephemeral range, so `butlers-up` and
+  `butlers-up-hotreload` set `net.ipv4.ip_local_reserved_ports=41100-41111`; without it an outbound
+  DB connection can claim a listener port before startup.
+- The dev Postgres is capped at `max_connections=200`; keep the `BUTLERS_DB_POOL_*` and
+  `BUTLERS_API_DB_POOL_*` defaults conservative or late-starting butlers fail to connect.
+- Deployment-provisioned files: credentials go in top-level `secrets:` (service `mode: 0400`),
+  other material in `configs:` with an absolute `target:`. In `docker-compose.yml` use
+  `${VAR:-./deploy/<thing>-unprovisioned.json}` pointing at a tracked inert placeholder the parser
+  rejects, so the stack boots and the feature stays off; `${VAR:?}` is only for opt-in overlays.
+  Assert "never receives the key" as `"secrets" not in service`.
+- A second `secrets:`, `configs:` or `depends_on:` key in one service block is silently dropped by
+  YAML last-key-wins, and `yaml.safe_load` tests pass on the survivor. Run a duplicate-key scan over
+  each service mapping before calling a compose edit verified.
+
 ## Related Pages
 
 - [Environment Config](environment-config.md) -- Full environment variable reference
