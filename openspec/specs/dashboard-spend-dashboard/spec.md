@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The `/spend` page is the operator's view into system cost: total spend, breakdowns by butler/model/feature/purpose, a hand-rolled SVG forecast chart projecting month-end land, store-and-evaluate routing rules with per-rule 7-day savings, a monthly ceiling, and a live per-call spend stream. It is linked from the Settings Console and rendered in the Dispatch design language already shipped on `/overview`, `/butlers`, and `/qa`. The legacy `/costs` and `/settings/spend` routes replace-navigate to this canonical surface. It is backed by the spend endpoints (`/api/spend/*`) served by `spend.py` (the renamed `costs.py` router), including rules CRUD and the monthly ceiling; the live per-call ticker is delivered over the unified fleet event bus (`WS /api/events/stream`), not a dedicated socket. No charting library is loaded for this page.
+The `/spend` page is the operator's view into system cost: total spend, breakdowns by butler/model/feature/purpose, a hand-rolled SVG forecast chart projecting month-end land, store-and-evaluate routing rules with per-rule 7-day savings, a monthly ceiling, and a live per-call spend stream. It is linked from the Settings Console and rendered in the Dispatch design language. The legacy `/costs` and `/settings/spend` routes replace-navigate to this canonical surface. It is backed by the spend endpoints (`/api/spend/*`) served by `src/butlers/api/routers/spend.py`, including rules CRUD and the monthly ceiling; the live per-call ticker is delivered over the unified fleet event bus (`WS /api/events/stream`), not a dedicated socket. No charting library is loaded for this page.
 
 ## Requirements
 
@@ -104,7 +104,7 @@ The dashboard SHALL expose the spend endpoints.
 - **AND** the call invokes `audit.append("spend.ceiling")`.
 
 ### Requirement: Spend Live Stream
-The dashboard SHALL fan per-call spend events onto the unified fleet event bus (`WS /api/events/stream`) (the earlier dedicated `WS /api/spend/stream` route was retired in bu-01r64.2 once the bus fully covered this traffic).
+The dashboard SHALL fan per-call spend events onto the unified fleet event bus (`WS /api/events/stream`); there is no dedicated spend socket.
 
 #### Scenario: Stream event shape
 - **WHEN** the runtime records a completed LLM call
@@ -113,8 +113,8 @@ The dashboard SHALL fan per-call spend events onto the unified fleet event bus (
 
 #### Scenario: Cache invalidation on live spend events
 - **WHEN** a `"spend"` event is broadcast on `WS /api/events/stream`
-- **THEN** the shared cache-patch registry (`event-cache-registry.ts`'s `spendPatch`) invalidates `["cost-summary"]`, `["daily-costs"]`, `["top-sessions"]`, `["costs-by-schedule"]`, `["spend-breakdown"]`, `["spend-rules"]`, and `["spend-forecast"]` (bu-01r64.4 added the last three — the page's own breakdown/rules/forecast queries — closing a coverage-manifest gap where they polled a raw 60-120s literal instead of riding the bus like the other four)
-- **AND** each of those queries' own `refetchInterval` is `useBusAwarePollInterval` (a reconciliation sweep while the bus is connected, a fast fallback while it is down), not the primary update path
+- **THEN** the shared cache-patch registry (`event-cache-registry.ts`'s `spendPatch`) invalidates `["cost-summary"]`, `["daily-costs"]`, `["top-sessions"]`, `["costs-by-schedule"]`, `["spend-breakdown"]`, `["spend-rules"]`, and `["spend-forecast"]`
+- **AND** each of those queries polls only on the shared cadence defined by `dashboard-shell` Requirement: Bus-Aware Poll Architecture, never on a fixed per-hook timer; live invalidation remains the primary update path
 
 ### Requirement: Spend Rules Savings Job
 The system SHALL compute `spend_rules.saved_7d` daily by comparing the cost of each rule's chosen action against the baseline (default tier model).
@@ -371,6 +371,8 @@ The dashboard SHALL have a page at `/spend` rendered in the Dispatch design lang
 - **AND** no recharts or other chart library is loaded for this page.
 
 ## Source References
-- PLAN.md §5 `/settings/spend` API surface and §6 Phase 3 implementation order.
-- Visual reference: the `SpendDashboard` redesign prototype (graduated; now shipped in `frontend/`).
+- Live code: `src/butlers/api/routers/spend.py` (spend API, rules, ceiling),
+  `frontend/src/pages/SpendPage.tsx` (page), `frontend/src/hooks/use-spend.ts` and
+  `frontend/src/hooks/use-spend-ticker.ts` (queries and live ticker),
+  `frontend/src/hooks/event-cache-registry.ts` (`spendPatch` invalidation).
 - Reuses `audit.append()` from dashboard-audit-log.

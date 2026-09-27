@@ -63,11 +63,9 @@ process started.
 ### Requirement: Deployment Ledger Facts
 
 The `/api/system/deployments` endpoint SHALL return the current (most recent) deployment
-and a short recent history, drawn from `public.deployments` (bu-9r3hd.2, epic bu-9r3hd
-"Deploy spine"). This is the ledger the owner reads to answer "what code is actually
-running, and did it survive the last deploy" -- merged-but-undeployed drift is
-otherwise invisible (bd bu-zhfd0: seven merged migrations sat dark in prod with no
-record of when, or whether, any deploy actually took effect).
+and a short recent history, drawn from `public.deployments`. This is the ledger the owner reads to answer "what code
+is actually running, and did it survive the last deploy", so merged-but-undeployed drift
+is visible.
 
 #### Scenario: Deployments endpoint returns current and recent history
 
@@ -165,7 +163,7 @@ record of when, or whether, any deploy actually took effect).
 - **AND** this endpoint does NOT itself detect drift between schemas or between the
   recorded head and the live database state -- the hourly alembic-head vs per-schema
   DB-revision vs deployed-SHA comparison surfaced as a red `/system` clause is a
-  separate capability (bu-9r3hd.1); this ledger is what that sentinel (and this
+  separate capability; this ledger is what that sentinel (and this
   endpoint) reads to answer "what was last recorded as deployed"
 
 #### Scenario: The Deployment tile renders a null migration_head as an explicit unknown
@@ -346,10 +344,7 @@ the "your data has been seen by these endpoints" surface.
 
 - **WHEN** the egress catalog is assembled
 - **THEN** it reads exclusively from the canonical audit log table
-  (`public.audit_log`) -- no new write path is introduced. The legacy
-  `switchboard.dashboard_audit_log` rows were backfilled into `public.audit_log` by
-  migration `core_124` and the UNION arm was removed; there is no
-  `audit.events` table. Actor identity is derived from the `action` column (aliased
+  (`public.audit_log`) -- no new write path is introduced. Actor identity is derived from the `action` column (aliased
   `operation`, with `ts` aliased `created_at`) via the server-side actor registry.
   (`request_summary` JSONB is not used for actor derivation in v1; the registry maps
   `operation` strings directly to actor identifiers and display names.)
@@ -524,8 +519,8 @@ the dashboard instead of only via direct database access.
   decisions (Gate 5.5, `decision="infra_condition_open"`, joined on the
   shared `fingerprint` identity)
 - **THEN** the panel shows a count of suppressed QA dispatches for that
-  condition, so a previously invisible suppression is now traceable back to
-  the condition that caused it
+  condition, so each suppression is traceable back to the condition that
+  caused it
 
 ### Requirement: System Page Privacy Contract
 
