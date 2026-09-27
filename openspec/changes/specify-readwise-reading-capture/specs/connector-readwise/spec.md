@@ -3,7 +3,7 @@
 ### Requirement: Readwise Connector Identity and Authentication
 
 The Readwise connector SHALL run as a single-account, owner-only process that authenticates with a
-static bearer token resolved from the owner's companion entity. It SHALL NOT implement multi-account
+static API token resolved from the owner's companion entity. It SHALL NOT implement multi-account
 discovery.
 
 #### Scenario: Single owner identity
@@ -19,8 +19,10 @@ discovery.
 
 - **WHEN** the connector resolves a `readwise_token` value
 - **THEN** it SHALL validate the token via `GET https://readwise.io/api/v2/auth/`
-- **AND** a 204 response SHALL be treated as valid; any other status SHALL be treated as invalid
+- **AND** a 204 response SHALL be treated as valid; 401/403 SHALL be treated as invalid
   credentials
+- **AND** 429, 5xx, and network failures SHALL use the rate-limit or transient-error path,
+  without labeling the token invalid
 
 #### Scenario: Credential absent at startup
 
@@ -77,7 +79,7 @@ recommended initial-sync pattern: a full export with no `updatedAfter` filter.
 #### Scenario: Backfill sets the first watermark
 
 - **WHEN** the full backfill completes
-- **THEN** the connector SHALL persist a watermark equal to the maximum `updated` value observed
+- **THEN** the connector SHALL persist a watermark equal to the maximum `updated_at` value observed
   across the backfilled set (or the poll start time if the library was empty)
 
 ### Requirement: Incremental Cursor Persistence
@@ -89,7 +91,7 @@ and endpoint identity, advancing only after a fully-drained and fully-submitted 
 
 - **WHEN** a poll cycle completes successfully
 - **THEN** the connector SHALL call `cursor_store.save_cursor(pool, "readwise", "readwise:owner",
-  json.dumps({"updated_after": "<ISO 8601 max observed 'updated'>"}), parent_endpoint_identity=NO_PARENT)`
+  json.dumps({"updated_after": "<ISO 8601 max observed 'updated_at'>"}), parent_endpoint_identity=NO_PARENT)`
 
 #### Scenario: Resume after restart
 
@@ -101,9 +103,9 @@ and endpoint identity, advancing only after a fully-drained and fully-submitted 
 
 ### Requirement: ingest.v1 Field Mapping and Content Tier
 
-Each captured or updated highlight SHALL be submitted as a metadata-tier `ingest.v1` envelope whose
-event identity is derived from Readwise's own `updated` timestamp, keeping highlight/note text out
-of the envelope itself.
+Each captured or updated highlight SHALL be submitted as a metadata-tier `ingest.v1` envelope
+whose event identity is derived from the export highlight's `updated_at` timestamp, keeping
+highlight and note text out of the envelope itself.
 
 #### Scenario: Highlight event envelope shape
 
@@ -112,13 +114,13 @@ of the envelope itself.
   - `source.channel = "reading"`, `source.provider = "readwise"`,
     `source.endpoint_identity = "readwise:owner"`
   - `event.type = "highlight_captured"`
-  - `event.external_event_id = "readwise:highlight:<highlight_id>:<updated>"` where `<updated>` is
-    the highlight's provider-assigned `updated` ISO 8601 value verbatim
+  - `event.external_event_id = "readwise:highlight:<highlight_id>:<updated_at>"` where
+    `<updated_at>` is the nested export highlight's provider-assigned ISO 8601 value verbatim
   - `event.observed_at` = poll timestamp (RFC 3339)
   - `sender.identity = "readwise:owner"`
   - `payload.raw = null`
-  - `payload.normalized_text` = a short, non-sensitive summary containing only the book title
-    (e.g. `"Captured highlight from <book title>"`), never the highlight text, note, or tags
+  - `payload.normalized_text = "Readwise highlight captured"`; no title, author, text, note,
+    tags, or source URL is included
   - `control.ingestion_tier = "metadata"`
   - `control.idempotency_key = event.external_event_id`
   - `control.policy_tier = "default"`
@@ -144,19 +146,19 @@ of the envelope itself.
 ### Requirement: Update and Deduplication Identity
 
 The connector SHALL treat re-polling an unchanged highlight as an idempotent no-op and a genuinely
-edited highlight as a new, truthful event, using Readwise's own `updated` field as the sole
-authority — never a connector-side guess.
+edited highlight as a new, truthful event, using the export highlight's `updated_at` field as the
+sole authority — never a connector-side guess.
 
 #### Scenario: Unchanged highlight re-poll is a no-op
 
-- **WHEN** a highlight is returned again with the same `updated` value as previously captured
+- **WHEN** a highlight is returned again with the same `updated_at` value as previously captured
 - **THEN** the resulting `event.external_event_id` is identical to the prior submission
 - **AND** the Switchboard's dedup layer SHALL return the existing `request_id` with
   `duplicate=true`; no new evidence row mutation occurs beyond the idempotent upsert
 
 #### Scenario: Edited highlight is a distinct event
 
-- **WHEN** a highlight is returned with an `updated` value later than the last-captured value for
+- **WHEN** a highlight is returned with an `updated_at` value later than the last-captured value for
   that `highlight_id`
 - **THEN** the connector SHALL treat it as a new event with a new `external_event_id`
 - **AND** it SHALL upsert `connectors.readwise_highlights` in place (same `highlight_id`, updated
@@ -164,11 +166,14 @@ authority — never a connector-side guess.
 
 #### Scenario: Equal-timestamp siblings across a pagination boundary
 
-- **WHEN** two distinct highlights share the same `updated` timestamp and land on either side of a
+- **WHEN** two distinct highlights share the same `updated_at` timestamp and land on either side of a
   `pageCursor` page boundary within one poll cycle
 - **THEN** each highlight's event identity already includes its own `highlight_id`, so both are
   submitted as distinct, individually-idempotent events regardless of page boundary placement — no
-  additional tie-break bookkeeping is required beyond the per-highlight identity already specified
+  additional tie-break bookkeeping is required for event identity
+- **AND** this identity does not establish whether `updatedAfter` will return a later-visible
+  highlight at the stored watermark; checkpoint completeness remains unresolved before
+  implementation
 
 ### Requirement: Deletion Reconciliation
 
@@ -181,8 +186,8 @@ inferring deletion from absence in the normal incremental poll.
 - **WHEN** the reconciliation poll runs (default interval 24 hours, configurable)
 - **THEN** it SHALL request `/v2/export/?includeDeleted=true&ids=<batched previously-captured
   user_book_ids>` restricted to book IDs already present in `connectors.readwise_highlights`
-- **AND** it SHALL NOT pass `includeDeleted=true` on the normal incremental poll (that would
-  re-return every already-tombstoned highlight indefinitely)
+- **AND** it SHALL NOT pass `includeDeleted=true` on the normal incremental poll; deletion
+  reconciliation runs separately over the captured book IDs
 
 #### Scenario: Deletion tombstones evidence without a new ingest event
 
@@ -222,7 +227,7 @@ highlight creation or update.
 
 ### Requirement: Durable Evidence Surface
 
-The connector SHALL persist bounded, idempotent, least-privilege evidence for each captured
+The connector SHALL persist idempotent, least-privilege evidence for each captured
 highlight in a connector-owned table.
 
 #### Scenario: Evidence upsert key and fields
@@ -230,19 +235,23 @@ highlight in a connector-owned table.
 - **WHEN** the connector writes captured highlight evidence
 - **THEN** it SHALL upsert `connectors.readwise_highlights` keyed by `highlight_id` (stable,
   Readwise-assigned), with fields limited to: `highlight_id`, `user_book_id`, `book_title`,
-  `book_author`, `content_kind` (`book | article | tweet | podcast | supplemental | unknown`, from
-  Readwise's `category`), `text`, `note`, `location`, `location_type`, `source_url`, `tags`,
-  `highlighted_at`, `updated_at` (Readwise's `updated`), `captured_at` (connector observation
-  time), and `deleted_at` (nullable)
+  `book_author`, `content_kind` (`book | article | tweet | podcast | unknown`,
+  mapping the documented plural `category` values (`books`, `articles`, `tweets`, `podcasts`)
+  to singular values and any other value to `unknown`), `text`, `note`, `location`,
+  `location_type`, `source_url`, `tags`, `highlighted_at`, `updated_at` (the export highlight's
+  `updated_at`), `captured_at` (connector observation time), and `deleted_at` (nullable)
 - **AND** it SHALL NOT store any Spotify/Steam/other-connector fields, transcripts, full book text,
   or raw unparsed API response bodies
 
-#### Scenario: Evidence write failure does not block ingest submission
+#### Scenario: Evidence write failure preserves replay eligibility
 
 - **WHEN** the evidence upsert fails (transient DB error)
 - **THEN** the connector SHALL log the failure and still attempt the passive `ingest.v1` envelope
   submission for that highlight, matching the existing Spotify spoken-session evidence-write
   failure posture
+- **AND** it SHALL NOT advance the incremental watermark for that cycle; the next poll SHALL
+  re-read the highlight so the connector-owned evidence can be written, even if Switchboard
+  deduplicates the repeated envelope
 
 #### Scenario: Least-privilege ACL
 
@@ -290,6 +299,13 @@ The connector SHALL implement the connector base contract's filtered-event batch
   `connector_type = "readwise"`, `endpoint_identity = "readwise:owner"`,
   `source_channel = "reading"`, `status = 'error'`, and `error_detail`
 - **AND** the buffer SHALL be flushed in a single batch INSERT after each poll cycle
+
+#### Scenario: Filtered-event diagnostics do not copy private annotations
+
+- **WHEN** a highlight fails validation, evidence persistence, or ingest submission
+- **THEN** any `filtered_events` preview, `full_payload`, and `error_detail` SHALL omit
+  highlight text, notes, book title/author, tags, and source URL; diagnostic records SHALL
+  contain only provider IDs, non-sensitive status, and content-blind error categories
 
 #### Scenario: No active filters passes all events
 

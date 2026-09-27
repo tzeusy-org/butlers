@@ -7,12 +7,12 @@ run-6 coordinator review retired the option of closing this outcome from existin
 `health.facts` `reading_session` predicate, and its own docstring names Readwise/Pocket as a
 "future extension path (not in v1)" — it is not, and was never meant to be, Readwise integration.
 
-Official facts used to ground this draft (fetched 2026-09-09):
+Official facts used to ground this draft (fetched 2026-09-09; rechecked 2026-09-28):
 
 - Mozilla Pocket: shut down 2025-07-08, API transactions ended 2025-10-08
   (https://blog.mozilla.org/en/mozilla/building-whats-next/). No consumer or API path remains.
 - Readwise public API docs (https://readwise.io/api_deets):
-  - Auth: `Authorization: Token <access_token>` bearer header; validated via
+  - Auth: `Authorization: Token <access_token>` token header; validated via
     `GET /api/v2/auth/` → 204.
   - `GET /api/v2/export/` (the endpoint this connector uses): cursor pagination via `pageCursor`
     request param / `nextPageCursor` response field (iterate until null); `updatedAfter` (ISO 8601)
@@ -25,13 +25,14 @@ Official facts used to ground this draft (fetched 2026-09-09):
   - Rate limits: base 240 requests/minute per token; `GET /api/v2/highlights/` and
     `GET /api/v2/books/` (the LIST endpoints, not export) are separately capped at 20/minute. A 429
     response carries `Retry-After`.
-  - Dedup identity on the provider side: Readwise itself deduplicates highlight
-    creation/re-submission by (title, author, text, source_url); this connector is read-only and
-    does not create/update highlights, so provider-side dedup is not invoked, but it explains why a
-    given `highlight_id` is stable across the highlight's lifetime.
+  - Export nests highlights inside books and labels each highlight's update timestamp
+    `updated_at`. The separate Highlight LIST/DETAIL responses use `updated`; this connector
+    does not use those responses. Local event identity combines the exported highlight ID and
+    `updated_at`; the API documentation does not promise a pagination snapshot or tie-break order.
   - Deletion: `DELETE /api/v2/highlights/<id>/` returns 204. Export responses carry
     `is_deleted: false` by default; `includeDeleted=true` is required to see deleted highlights.
-    There is no separate tombstone/webhook feed — deletion is only observable by asking for it.
+    The public export documentation does not describe a separate deletion feed; this design
+    queries export explicitly for deleted records.
 
 ## Goals / Non-Goals
 
@@ -91,8 +92,8 @@ migration if that assumption is ever wrong.
 
 ### D3: Auth model mirrors `steam_api_key`, not Google OAuth
 
-Readwise access tokens are long-lived bearer tokens (`readwise.io/access_token`), not an OAuth
-flow. The credential is modeled exactly like `steam_api_key` in RFC 0004's registered
+Readwise access tokens use Readwise's `Token` authorization scheme (`readwise.io/access_token`),
+not an OAuth flow. The credential is modeled exactly like `steam_api_key` in RFC 0004's registered
 `entity_info` type table: `info_type = "readwise_token"`, `secured = true`, resolved via the
 owner's companion entity through the existing `resolve_owner_entity_info()` pattern used by Steam
 and Spotify. No refresh-token lifecycle, no scope negotiation, no re-consent flow — a revoked or
@@ -120,19 +121,19 @@ have no unbounded-flood risk — a personal Readwise library is bounded by years
 highlighting, not machine-generated events. Reversible: yes: a future change can add a bounded
 window if a real library proves too large.
 
-### D6: Update/dedup event identity uses Readwise's own `updated` timestamp
+### D6: Update/dedup event identity uses the export highlight's `updated_at` timestamp
 
-`event.external_event_id = "readwise:highlight:<highlight_id>:<updated>"`, where `<updated>` is
-the ISO 8601 `updated` field Readwise returns on each highlight row (not connector-observed time).
+`event.external_event_id = "readwise:highlight:<highlight_id>:<updated_at>"`, where
+`<updated_at>` is the ISO 8601 field Readwise returns on each nested export highlight (not
+connector-observed time).
 An unchanged highlight re-polled at a later cursor produces an identical event ID (the Switchboard
 dedup layer harmlessly no-ops it, per `connector-base-spec`'s "at-least-once delivery" contract). A
-genuinely edited highlight carries a new provider-assigned `updated` value and is therefore a
-distinct, truthful event — never a client-side guess. This also resolves the "equal timestamps"
-tie-break concern from the shaping packet: because the id already includes the granular provider
-`updated` value (not just the poll-boundary date), two highlights that happen to share an
-`updatedAfter` page boundary still get distinct, individually-idempotent event IDs from their own
-`updated` fields — no separate tie-break bookkeeping is needed beyond what `connector-base-spec`'s
-existing dedup-key contract already provides.
+genuinely edited highlight carries a new provider-assigned `updated_at` value and is therefore a
+distinct, truthful event — never a client-side guess. Distinct highlight IDs also keep siblings
+with equal timestamps independently idempotent. This does not establish completeness at an
+`updatedAfter` boundary: the API does not document whether a later-visible highlight with the
+same timestamp will be returned. The incremental checkpoint strategy must address that case
+before implementation; deduplication alone cannot.
 
 ### D7: Deletion is a bounded, separate reconciliation poll — not inferred from absence
 
@@ -141,20 +142,22 @@ tombstone, no webhook), the connector cannot infer a deletion from one poll's ab
 second explicit query. A periodic reconciliation poll (default: once per 24h, configurable) calls
 `/v2/export/?includeDeleted=true&ids=<previously-captured user_book_ids, batched>` restricted to
 already-captured book IDs, and any highlight now reporting `is_deleted: true` has its
-`connectors.readwise_highlights` row tombstoned (`deleted_at` set). **No new ingest.v1 event is
-submitted for a deletion** — a deletion is a retraction of previously captured evidence, not new
-content, and fabricating a "deleted" content event would misrepresent what happened to any
-downstream reader. `[decision]` chose a bounded reconciliation poll over either (a) always passing
-`includeDeleted=true` on every incremental poll (would also return every already-tombstoned
-highlight forever, unbounded growth) or (b) never detecting deletion at all (silently wrong once
+`connectors.readwise_highlights` row tombstoned (`deleted_at` set). Retention of full text and
+notes after tombstoning, and book-level `is_deleted`, still require an owner-reviewed contract.
+**No new ingest.v1 event is submitted for a deletion** — a deletion is a retraction of previously
+captured evidence, not new content, and fabricating a "deleted" content event would misrepresent
+what happened to any downstream reader. `[decision]` chose a bounded reconciliation poll over
+either (a) always passing
+`includeDeleted=true` on every incremental poll (would mix deletion reconciliation with normal
+incremental capture) or (b) never detecting deletion at all (silently wrong once
 the owner deletes a highlight from Readwise for a reason — e.g. accidental capture, a book removed
 from their library). Reversible: yes, cadence is a config value, not a structural commitment.
 
 ### D8: Content tier keeps highlight text out of LLM classification by default
 
 The `ingest.v1` envelope for each highlight event carries `control.ingestion_tier = "metadata"`
-(`payload.raw = null`, `payload.normalized_text` limited to a short non-sensitive summary such as
-`"Captured highlight from <book title>"`). A migration seeds a global `substring` policy rule on
+(`payload.raw = null`, `payload.normalized_text = "Readwise highlight captured"`). A migration
+seeds a global `substring` policy rule on
 the stable `readwise:highlight:` `external_event_id` prefix that pre-resolves `metadata_only`
 triage — identical in shape to the Spotify `spotify:spoken:` rule
 (`030_switchboard_spotify_spoken_metadata_only.py`) and the Steam `steam:status:` rule
@@ -175,8 +178,9 @@ explicitly flagged for owner review below rather than treated as foreclosed.
 
 The connector exclusively uses `/v2/export/`, which Readwise's documentation does not list among
 the endpoints separately restricted to 20 requests/minute (that restriction names `GET
-/api/v2/highlights/` and `GET /api/v2/books/` specifically). The connector therefore budgets
-against the base 240 requests/minute per token and, regardless of which budget actually applies,
+/api/v2/highlights/` and `GET /api/v2/books/` specifically). Applying the published base
+240 requests/minute budget to export is an inference from that list, not an endpoint-specific
+promise. Regardless of which budget actually applies, the connector
 honors any `Retry-After` header on a 429 response — so an incorrect assumption about which budget
 governs the export endpoint degrades to correct behavior rather than a hard failure. Exponential
 backoff (60s initial, doubling to a 3600s cap) applies on repeated 429/5xx, mirroring Steam's
@@ -247,3 +251,11 @@ These are explicitly **not** decided by this draft, per the decision-autonomy ha
 4. **The exact reconciliation-poll cadence** (default proposed: 24h) — an engineering default, not
    a hard gate, but named here since it trades staleness against API call volume and an owner may
    have an opinion once real usage is observed.
+5. **Retention and erasure of captured content.** A provider deletion currently only sets
+   `deleted_at`; this draft does not yet authorize indefinite retention of highlight text or notes.
+   Decide whether deletion erases those fields, how book-level deletion is handled, and how long
+   surviving content is retained before implementing the evidence table.
+6. **Incremental boundary completeness.** Readwise documents `updatedAfter` and cursor paging but
+   does not promise snapshot isolation or inclusive timestamp filtering. Before implementation,
+   specify a replay overlap or periodic full reconciliation that cannot silently skip a
+   later-visible highlight at the stored watermark. Per-highlight IDs solve deduplication only.
