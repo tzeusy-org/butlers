@@ -27,3 +27,26 @@
 - [x] 4.3 Push the exact head, open PR #4231, and use terminal hosted CI for broad evidence.
 - [x] 4.4 Register AA-safe operational state text mappings in the existing state role and pin
       registry, resolver, binding matrix, and active-delta parity.
+
+### Connector operational-text follow-up
+
+Bounded audit of every production connector file changed in PR #4231:
+`ConnectorDetailView`, `ConnectorRosterRow`, `AttentionStrip`, `ConnectorDeviceBadges`,
+`ReauthCallout`, `ScopeList`, and `connector-auth`. Checked text classes, inline foregrounds,
+status branches, and resolver call sites against the active operational-state scenario.
+
+- Event and incident failure labels shared a private base-red mapping. Both now resolve
+  `failed`, `error`, and `replay_failed` through `stateTextColorVar('error')`; ingested text
+  uses the `ok` role. Filtered and unknown labels retain their neutral presentation.
+- Roster warnings and the attention count bypassed the resolver with AA-safe text tokens.
+  Both now use the semantic resolver with unchanged degraded/error meanings.
+- Auth/health labels and attention-item warnings already use the resolver. Detail liveness
+  and state, device liveness, reauth callouts, and scope verdicts use StateDot with neutral
+  adjacent copy; no additional colored-text mapping remains in this bounded set.
+- Before implementation, all four failure-label assertions failed on the previous code
+  (three event statuses and a failed incident). Updated roster-warning and attention-count
+  assertions also failed before their migration. Existing behavior assertions remain in place.
+- The adjacent ingestion diff was also checked: `BatchSettingsCard` only changes its
+  container; `EventDrawer` still used base-red error text and base-amber filter/truncation
+  text. Those three foregrounds now use the shared resolver, with three assertions that
+  failed on the old foregrounds. Its copy-success icon is not operational-state text.

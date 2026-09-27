@@ -28,6 +28,7 @@
 import { Link } from 'react-router'
 import { Time } from '@/components/ui/time'
 import { StateDot } from '@/components/ui/StateDot'
+import { stateTextColorVar } from '@/lib/visual-token-roles'
 import type { ConnectorSummary } from '@/api/types'
 import { ConnectorCheckpoints } from './ConnectorCheckpoints'
 import { ConnectorDeviceBadges } from './ConnectorDeviceBadges'
@@ -262,7 +263,8 @@ export function ConnectorRosterRow({
       {c.operational_warnings?.map((warning) => (
         <p
           key={warning}
-          className="col-start-2 col-end-[-1] mt-1 font-serif text-[12px] leading-[1.45] text-[var(--amber-text)]"
+          className="col-start-2 col-end-[-1] mt-1 font-serif text-[12px] leading-[1.45]"
+          style={{ color: stateTextColorVar('degraded') }}
           data-testid={`connector-warning-${c.connector_type}`}
         >
           {warning}

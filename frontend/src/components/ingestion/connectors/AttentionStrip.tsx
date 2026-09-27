@@ -66,7 +66,8 @@ export function AttentionStrip({ connectors }: AttentionStripProps) {
         </span>
         <span
           data-testid="attention-count"
-          className="font-mono text-[10px] tabular-nums text-[var(--red-text)] leading-none"
+          className="font-mono text-[10px] tabular-nums leading-none"
+          style={{ color: stateTextColorVar('error') }}
         >
           {issues.length}
         </span>

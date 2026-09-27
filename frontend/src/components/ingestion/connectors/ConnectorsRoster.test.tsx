@@ -315,7 +315,8 @@ describe('AC2: auth issues appear consistently in attention strip and row', () =
     mockHooks([HEALTHY_CONNECTOR, REAUTH_CONNECTOR, STALE_CONNECTOR])
     renderRoster(container, root)
 
-    const badge = container.querySelector('[data-testid="attention-count"]')
+    const badge = container.querySelector<HTMLElement>('[data-testid="attention-count"]')
+    expect(badge?.style.color).toBe('var(--red-text)')
     expect(badge?.textContent?.trim()).toBe('2')
   })
 
@@ -401,8 +402,8 @@ describe('AC2: auth issues appear consistently in attention strip and row', () =
       container.querySelector('[data-testid="connector-warning-owntracks"]')?.textContent,
     ).toContain('The operational baseline is 24')
     expect(
-      container.querySelector('[data-testid="connector-warning-owntracks"]')?.className,
-    ).toContain('text-[var(--amber-text)]')
+      container.querySelector<HTMLElement>('[data-testid="connector-warning-owntracks"]')?.style.color,
+    ).toBe('var(--amber-text)')
     expect(
       container.querySelector('[data-testid="health-verdict-owntracks"]')?.textContent?.trim(),
     ).toBe('online')
@@ -427,9 +428,9 @@ describe('AC2: auth issues appear consistently in attention strip and row', () =
 
     const pausedAttention = container.querySelector('[data-testid="attention-item-google_calendar"]')
     expect(pausedAttention?.textContent?.toLowerCase()).toContain('connector paused')
-    const attentionCount = container.querySelector('[data-testid="attention-count"]')
+    const attentionCount = container.querySelector<HTMLElement>('[data-testid="attention-count"]')
     expect(attentionCount?.textContent?.trim()).toBe('1')
-    expect(attentionCount?.className).toContain('var(--red-text)')
+    expect(attentionCount?.style.color).toBe('var(--red-text)')
 
     const kpiFooter = container.querySelector('[data-testid="connectors-kpi-footer"]')
     const kpiValue = (label: string) =>
