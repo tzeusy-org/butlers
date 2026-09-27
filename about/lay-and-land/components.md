@@ -269,3 +269,7 @@ Model routing tables (`public.model_catalog`, `public.butler_model_overrides`) a
 Trace context propagation: the Spawner injects `TRACEPARENT` into the environment
 of spawned LLM CLI processes, creating a connected trace from ingestion through
 classification, routing, and session execution.
+
+## QA publication authority target
+
+Adopted, not yet implemented: investigation worktrees/build agents have no GitHub credential. A separate trusted deterministic publisher owns dedicated QA publication authority and accepts immutable validated attempt-bound source artifacts only. See RFC0015 and `openspec/changes/confine-qa-publication-authority/design.md` for process, storage and provider boundaries. The current dispatcher token-injection path is a migration target, not evidence of confinement. No live activation is implied.
