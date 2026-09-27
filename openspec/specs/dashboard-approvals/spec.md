@@ -503,14 +503,12 @@ owner-attention suppression; it does not configure per-butler
 
 ### Requirement: Approvals Live Stream
 
-The dashboard SHALL fan approval lifecycle events onto the unified fleet event bus (`WS /api/events/stream`) (the earlier dedicated `WS /api/approvals/stream` route was retired in bu-01r64.2 once the bus fully covered this traffic).
+The dashboard SHALL fan approval lifecycle events onto the unified fleet event bus (`WS /api/events/stream`). There is no dedicated approvals stream route.
 
 #### Scenario: Stream event shape
 
 - **WHEN** an approval transitions state
 - **THEN** an event `{type: "approval", data: {kind: "created"|"approved"|"rejected"|"deferred"|"executed"|"expired"|"abandoned", approval_id, ...}}` is broadcast on `WS /api/events/stream`.
-
----
 
 ### Requirement: Promotion Suggestions API Endpoint
 
@@ -637,79 +635,25 @@ The approvals dashboard page at `/approvals` SHALL include an "Autonomy Suggesti
 
 ### Requirement: Rule Promotion Suggestions API Endpoint
 
-The dashboard API SHALL expose `GET /api/switchboard/rule-promotion-suggestions`, returning a paginated list of switchboard ingestion-rule promotion and demotion suggestions. This is a distinct endpoint namespace from `GET /api/approvals/suggestions` (autonomy tool-call suggestions) — the two suggestion families track different underlying tables (`switchboard.rule_promotion_suggestions` vs `autonomy_suggestions`) and are not merged into one response shape, though both render through the dashboard's approvals-surface visual language.
+The dashboard API SHALL expose `GET /api/switchboard/rule-promotion-suggestions`, taking no query parameters and returning `ApiResponse[RulePromotionSurface]` with two sections, `pending` and `auto_applied`, drawn from `switchboard.rule_promotion_suggestions`. This is a distinct endpoint namespace from `GET /api/approvals/suggestions` (autonomy tool-call suggestions) — the two suggestion families track different underlying tables and are not merged into one response shape, though both render through the dashboard's approvals-surface visual language.
 
-The endpoint SHALL accept query parameters `status` (default `pending_review`), `is_clearly_automated` (optional boolean filter), `limit` (default 20), `offset` (default 0).
+- `pending` holds `pending_review` promotion suggestions that need an owner decision: every `route_to:<butler>` suggestion and any suggestion that is not clearly automated. Clearly-automated suggestions whose action is `skip` or `metadata_only` auto-apply and never appear here. Each item carries `id`, `sender_key`, `source_channel`, `proposed_rule_type`, `proposed_condition`, `proposed_action`, `evidence_count`, `is_clearly_automated`, `first_evidence_at`, `last_evidence_at`, and `created_at`, ordered by `created_at ASC`.
+- `auto_applied` holds suggestions confirmed by the auto-apply actor, newest decision first and capped at 50. Each item carries `id`, `sender_key`, `source_channel`, `proposed_action`, `evidence_count`, `created_rule_id`, `rule_enabled` (the minted rule's live `enabled` state), `decided_at`, and `decided_by`.
 
-Each returned suggestion object MUST include: `id`, `sender_key`, `source_channel`, `proposed_rule_type`, `proposed_condition`, `proposed_action`, `evidence_count`, `first_evidence_at`, `last_evidence_at`, `is_clearly_automated`, `status`, `created_rule_id`, `created_at`, `decided_at`, `decided_by`.
+If either section's query fails, that section MUST be returned empty and its source name (`rule_promotion_pending` or `rule_promotion_auto_applied`) MUST be listed in `meta.sources_degraded`, so a read failure is never shown as a genuinely empty queue.
 
 #### Scenario: Fetch pending rule promotion suggestions
 
-- **WHEN** `GET /api/switchboard/rule-promotion-suggestions?status=pending_review` is called
-- **THEN** the API MUST return all pending suggestions sorted by `evidence_count DESC, last_evidence_at DESC`
-- **AND** the response status MUST be 200
+- **WHEN** `GET /api/switchboard/rule-promotion-suggestions` is called and pending suggestions exist
+- **THEN** the response status MUST be 200
+- **AND** `data.pending` MUST list them oldest first, excluding clearly-automated `skip`/`metadata_only` suggestions
+- **AND** `data.auto_applied` MUST list auto-applied promotions with their minted rule's `rule_enabled` state
 
 #### Scenario: No pending suggestions
 
-- **WHEN** `GET /api/switchboard/rule-promotion-suggestions?status=pending_review` is called and none exist
-- **THEN** the API MUST return an empty array with response status 200
-
-### Requirement: Rule Promotion Suggestion Confirm/Bulk-Confirm/Dismiss Endpoints
-
-The dashboard API SHALL expose:
-- `POST /api/switchboard/rule-promotion-suggestions/{id}/confirm` — confirms a single suggestion, creating the corresponding `ingestion_rules` row.
-- `POST /api/switchboard/rule-promotion-suggestions/bulk-confirm` — accepts a list of suggestion ids and confirms each independently, reporting per-id success/failure rather than failing the whole batch on one error. Intended for the batched automated-sender confirm affordance; the API MUST NOT skip the confirm requirement for any id in the batch (see `switchboard-rule-promotion` spec, "Owner-Confirmed Promotion").
-- `POST /api/switchboard/rule-promotion-suggestions/{id}/dismiss` — accepts an optional `{"reason": string}` body, sets `cooldown_until`, transitions to `dismissed`.
-
-All three endpoints require authenticated human actor context.
-
-#### Scenario: Confirm a single suggestion
-
-- **WHEN** `POST /api/switchboard/rule-promotion-suggestions/{id}/confirm` is called with authenticated context on a `pending_review` suggestion
-- **THEN** the response MUST include the created `rule_id`
-- **AND** the response status MUST be 200
-
-#### Scenario: Bulk-confirm reports per-item results
-
-- **WHEN** `POST /api/switchboard/rule-promotion-suggestions/bulk-confirm` is called with 5 suggestion ids, one of which is already `dismissed`
-- **THEN** the response MUST indicate 4 successful confirmations and 1 per-item failure, not a single all-or-nothing error
-- **AND** the response status MUST be 200 for the batch call itself (individual failures are reported in the body, not via HTTP status)
-
-#### Scenario: Dismiss with reason
-
-- **WHEN** `POST /api/switchboard/rule-promotion-suggestions/{id}/dismiss` is called with `{"reason": "Sender's routing target changed"}`
-- **THEN** the suggestion MUST transition to `dismissed` with the reason recorded
-
-### Requirement: Rule Promotion Suggestions Dashboard Section
-
-The approvals dashboard page SHALL include a "Rule Promotion" section, visually consistent with the existing Autonomy Suggestions section but rendering `switchboard.rule_promotion_suggestions` data, displayed when pending suggestions exist.
-
-`route_to` suggestions MUST render as individual cards showing: the sender identity (`sender_key`), proposed target butler, evidence count, and first/last evidence dates, with "Confirm" and "Dismiss" actions per card.
-
-`is_clearly_automated = TRUE` suggestions with `proposed_action` in (`skip`, `metadata_only`) MUST render grouped, with a single "Confirm all N" batched action calling the bulk-confirm endpoint, alongside the ability to expand and dismiss individual senders from the group before confirming the rest.
-
-Demotion suggestions (rules flagged via spot-check drift) MUST render with a warning/alert visual style distinct from promotion cards, showing the rule's current scope description and the recent spot-check disagreement rate, with "Revoke rule" and "Keep rule" actions.
-
-#### Scenario: Route-to suggestion card displayed individually
-
-- **WHEN** a pending `route_to` suggestion exists
-- **THEN** the dashboard MUST display it as its own card, not grouped with other suggestions
-
-#### Scenario: Automated senders grouped with batch confirm
-
-- **WHEN** 9 pending suggestions exist, all `is_clearly_automated=TRUE` with `proposed_action='skip'`
-- **THEN** the dashboard MUST display them grouped under a single "Confirm all 9 automated senders" action
-
-#### Scenario: Confirming from the dashboard calls the API
-
-- **WHEN** a user clicks "Confirm" on an individual rule-promotion suggestion card
-- **THEN** the dashboard MUST call `POST /api/switchboard/rule-promotion-suggestions/{id}/confirm`
-- **AND** the card MUST be removed from the section on success with a success toast naming the new rule
-
-#### Scenario: No pending suggestions hides the section
-
-- **WHEN** no pending rule-promotion or demotion suggestions exist
-- **THEN** the Rule Promotion section MUST NOT be rendered
+- **WHEN** `GET /api/switchboard/rule-promotion-suggestions` is called and no pending or auto-applied suggestions exist
+- **THEN** the API MUST return empty `pending` and `auto_applied` arrays with response status 200
+- **AND** `meta.sources_degraded` MUST NOT name either section
 
 ### Requirement: Rule Promotion Metrics Endpoint and Tile
 
@@ -978,6 +922,61 @@ The Approvals command surface SHALL expose replay-eligible dashboard dead letter
 - **WHEN** the unroutable-command read fails
 - **THEN** the command surface SHALL show a named unavailable state
 - **AND** it SHALL not substitute an empty all-clear
+
+### Requirement: Rule Promotion Suggestion Confirm, Dismiss, and Rule-Enabled Endpoints
+
+The dashboard API SHALL expose three per-suggestion owner actions under `/api/switchboard/rule-promotion-suggestions/{id}`; there is no bulk-confirm endpoint:
+
+- `POST .../{id}/confirm` mints the `ingestion_rules` row for a `pending_review` suggestion and returns `ApiResponse[IngestionRule]`. It returns 404 when the suggestion does not exist, 409 when it is not `pending_review`, and 422 for an invalid id or a `route_to` target that is not a registered butler. Each confirm is audited as `rule_promotion_confirm`.
+- `POST .../{id}/dismiss` accepts an optional body `{reason, cooldown_days}` (`cooldown_days` defaults to 30 and MUST be non-negative), transitions the suggestion to `dismissed`, and records the reason, `cooldown_until`, and `decided_by = 'owner'`. It returns 404 when the suggestion does not exist and 409 when it is not `pending_review`.
+- `POST .../{id}/rule-enabled` accepts `{enabled}` and toggles the rule minted from that suggestion, returning `{rule_id, enabled}`. It returns 404 when the suggestion or its rule does not exist and 409 when the suggestion has no minted rule. This is the reversible control for auto-applied promotions.
+
+#### Scenario: Confirm a single suggestion
+
+- **WHEN** `POST /api/switchboard/rule-promotion-suggestions/{id}/confirm` is called on a `pending_review` suggestion
+- **THEN** the response status MUST be 200 and the body MUST carry the created ingestion rule
+- **AND** a second confirm of the same suggestion MUST return 409
+
+#### Scenario: Dismiss with reason
+
+- **WHEN** `POST /api/switchboard/rule-promotion-suggestions/{id}/dismiss` is called with `{"reason": "Sender's routing target changed"}`
+- **THEN** the suggestion MUST transition to `dismissed` with the reason and a cooldown recorded
+
+#### Scenario: Disable an auto-applied rule
+
+- **WHEN** `POST /api/switchboard/rule-promotion-suggestions/{id}/rule-enabled` is called with `{"enabled": false}` for an auto-applied suggestion
+- **THEN** the minted rule MUST be disabled and the response MUST report `{rule_id, enabled: false}`
+- **AND** calling it with `{"enabled": true}` MUST re-enable the same rule
+
+### Requirement: Rule Promotion Approvals Banner
+
+The approvals dashboard page SHALL render a rule-promotion banner, visually consistent with the Autonomy Suggestions section, fed by `GET /api/switchboard/rule-promotion-suggestions`.
+
+- Each `pending` suggestion MUST render as its own card showing the sender and proposed action, the evidence count, and "Confirm rule" and "Dismiss" actions.
+- Each `auto_applied` suggestion MUST render informationally (it needs no confirmation) with its evidence count marked as clearly automated and a reversible "Disable rule" / "Re-enable rule" control backed by the rule-enabled endpoint.
+- When the read fails, the banner MUST show a degraded-source note rather than hiding itself.
+
+#### Scenario: Pending suggestion renders as its own card
+
+- **WHEN** a pending `route_to` suggestion exists
+- **THEN** the banner MUST display it as its own card, not grouped with other suggestions
+
+#### Scenario: Confirming from the dashboard calls the API
+
+- **WHEN** the owner clicks "Confirm rule" on a pending card
+- **THEN** the dashboard MUST call `POST /api/switchboard/rule-promotion-suggestions/{id}/confirm`
+- **AND** on success the card MUST leave the banner and a "Routing rule created" toast MUST appear
+
+#### Scenario: Auto-applied promotions are reversible
+
+- **WHEN** an auto-applied promotion is listed
+- **THEN** it MUST render without a confirm action
+- **AND** clicking "Disable rule" MUST call the rule-enabled endpoint and the control MUST then offer "Re-enable rule"
+
+#### Scenario: Nothing to show hides the banner
+
+- **WHEN** there are no pending items, no auto-applied items, and no read error
+- **THEN** the rule-promotion banner MUST NOT be rendered
 
 ## Source References
 

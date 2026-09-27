@@ -84,7 +84,7 @@ The audit log SHALL be retained indefinitely. No retention job, no expiry, no de
   documented one-shot data-integrity repair below.
 
 #### Scenario: One-shot structural metadata repair is not a retention violation
-- **WHEN** a write-path defect causes a contiguous band of `audit_log` rows to store `metadata` as JSON-encoded text instead of an object (`jsonb_typeof(metadata) = 'string'`, bu-hmdqz.4)
+- **WHEN** a write-path defect causes a contiguous band of `audit_log` rows to store `metadata` as JSON-encoded text instead of an object (`jsonb_typeof(metadata) = 'string'`)
 - **THEN** a one-shot, batched, idempotent migration MAY normalize just the `metadata` column of the affected rows back to the correct object shape, preserving the original content losslessly (decoding valid JSON back to an object, or wrapping non-object content under `_raw`)
 - **AND** this is a data-integrity repair of a poisoned write path, not an ordinary update — it MUST NOT touch `ts`, `actor`, `action`, `target`, `result`, or `error`, and MUST NOT be used as precedent for any other kind of edit
 - **AND** the retention/append-only guarantee otherwise stands: no row is ever deleted, and no column other than a proven-poisoned `metadata` is ever rewritten.
@@ -446,6 +446,33 @@ occurrences drill-down, and the audit-row-to-group resolver.
 - **BECAUSE** `butlers.api.models.audit` remains the single enforcement point
   for what a credential row discloses; persisting the cause changes how rows
   group, and is not licence to change what each row says.
+
+### Requirement: Audit Log Page
+
+The dashboard SHALL render the audit log at `/audit-log` as a list page backed by `GET /api/audit-log`, with every filter serialised in the URL querystring so the visible controls and the request can never disagree.
+
+- The filter bar MUST offer free-text **Actor** and **Action** inputs (debounced before querying), **From** and **To** date inputs, a **Noise** toggle, and a "Clear filters" action.
+- The page MUST default to `kind=privileged`; the Noise toggle sets `?noise=all` to show every row, including routine cadence rows.
+- `?key=` and `?result=` MUST be honoured as deep-link filters, and active `key` and `actor` filters MUST render as removable chips.
+- The table MUST show Time, Actor, Action, Outcome, and Target columns; clicking a row expands its detail, and results page with Previous/Next controls.
+
+#### Scenario: Free-text actor and action filters
+
+- **WHEN** the owner types `owner` into the Actor input and `model.priority` into the Action input
+- **THEN** the URL MUST carry `?actor=owner&action=model.priority`
+- **AND** after the debounce, the page MUST request `GET /api/audit-log` with those `actor` and `action` values
+
+#### Scenario: Privileged by default
+
+- **WHEN** the owner opens `/audit-log` without `?noise=all`
+- **THEN** the request MUST include `kind=privileged`
+- **AND** toggling Noise MUST drop `kind` and set `?noise=all`
+
+#### Scenario: Deep-linked filters are visible and removable
+
+- **WHEN** the page is opened at `/audit-log?key=u:google&actor=owner`
+- **THEN** removable `key: u:google` and `actor: owner` chips MUST render
+- **AND** removing a chip MUST drop that parameter from the URL and the request
 
 ## Source References
 - PLAN.md §6 Phase 1 Foundations: audit log primitive.

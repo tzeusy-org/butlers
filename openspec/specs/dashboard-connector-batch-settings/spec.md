@@ -45,14 +45,10 @@ settings when the connector type is `telegram_user_client` or
 - **AND** a label indicates whether the value is "custom" (dashboard-set) or
   "default"
 
-### Requirement: Live Reload Without Connector Restart
+### Requirement: Batch Settings Apply Without Connector Restart
 Changes to batch settings via the dashboard SHALL take effect on the connector's next flush scanner cycle without requiring a connector restart.
 
 #### Scenario: Setting change propagation
 - **WHEN** the user updates `flush_interval_s` via the dashboard
 - **THEN** the connector picks up the new value on its next flush scanner cycle (within 60 seconds)
 - **AND** no connector restart is required
-
-#### Scenario: Restart notice removed
-- **WHEN** batch settings are updated via the dashboard
-- **THEN** the "changes take effect on next restart" notice (shown for cursor/discretion changes) is NOT displayed for batch settings

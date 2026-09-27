@@ -239,15 +239,6 @@ the owner entity (`email_password`, `telegram_api_id`, `telegram_api_hash`,
 guided Telegram session setup; the generic raw-credential mutation MUST NOT
 receive it.
 
-> **Design rationale (deliberate product decision):** Secured credentials are
-> intentionally managed on the dedicated Secrets page, not through the "Add
-> contact info" form on the entity detail contact-channel card. Separating
-> credential entry from contact-channel entry is an explicit security/UX
-> boundary: the Secrets page is purpose-built for masked entry, reveal
-> affordances, and per-entity identity projection. This is the shipped
-> implementation as of the entity detail redesign (bu-m8gb6 reconciliation,
-> 2026-05-25, bu-x1zql spec alignment).
-
 #### Scenario: Add a non-secured channel entry from the entity detail contact-channel card
 
 - **WHEN** a user opens the owner entity's detail page at `/entities/:entityId`
@@ -268,8 +259,6 @@ receive it.
 - **AND** the entity detail contact-channel card MUST NOT offer secured
   credential types in its add form
 
----
-
 ### Requirement: Owner identity setup banner
 
 The dashboard SHALL display a persistent banner on the entity detail page
@@ -279,17 +268,6 @@ inside the practical drawer, which is forced open when the owner has not
 completed identity setup. The entity detail contact-channel card at
 `/entities/:entityId` is the canonical location for ongoing identity and
 credential management.
-
-> **Placement rationale (deliberate product decision):** An earlier revision of
-> this spec placed the banner on the entity index page (`/entities?has=contact`)
-> as a "convenience" onboarding shortcut. The shipped implementation places it on
-> the entity detail page inside the practical drawer (forced open when setup is
-> incomplete), co-located with the canonical identity management surface. This is
-> the correct placement because: (1) the detail page is the spec's own canonical
-> location for identity management, (2) `forceOpen` ensures the banner is
-> prominently surfaced without requiring a separate index-level data fetch, and
-> (3) the reconciliation of bu-m8gb6 explicitly recommended updating the spec
-> rather than changing the UI code.
 
 #### Scenario: Banner shown when owner has missing identity fields
 
@@ -317,8 +295,6 @@ credential management.
   it is entered only through the guided Telegram session setup
 - **AND** credential fields (API ID and Home Assistant token) MUST
   create secured `entity_info` entries
-
----
 
 ### Requirement: Dashboard roles management API
 
@@ -471,9 +447,9 @@ The endpoints are:
 | `GET /api/relationship/entities/{id}/loans` | `predicate = 'loan'` | `created_at DESC` |
 | `GET /api/relationship/entities/{id}/timeline` | `predicate IN ('contact_note','life_event','gift','loan','dunbar_tier_override') OR predicate LIKE 'interaction_%'` | `valid_at DESC NULLS LAST, created_at DESC` |
 
-The Timeline endpoint excludes the legacy `activity` predicate. The `_log_activity()` write path is removed in this change; historical `activity` facts (if any survive) are not surfaced on Timeline (they are duplicates of primary facts already included via their own predicates) but remain queryable via the `feed_get` MCP tool.
+The Timeline endpoint excludes the legacy `activity` predicate. The relationship butler no longer writes `activity` facts; historical `activity` facts (if any survive) are not surfaced on Timeline (they are duplicates of primary facts already included via their own predicates) but remain queryable via the `feed_get` MCP tool.
 
-Response field shapes MUST follow the wrapper mappings in `predicate-taxonomy.md` §5.2 with the following per-tab shapes:
+Response field shapes MUST be the following per-tab shapes:
 
 - **notes** entries: `{ id: fact.id, content: fact.content, emotion: fact.metadata->>'emotion', created_at: fact.valid_at }`
 - **interactions** entries: `{ id: fact.id, type: <predicate suffix>, summary: fact.content, occurred_at: fact.valid_at, direction: fact.metadata->>'direction', group_size: fact.metadata->>'group_size' }`. The `type` field is extracted from the predicate suffix: `predicate='interaction_meeting'` yields `type='meeting'`. The `direction` and `group_size` fields are populated by the passive interaction sync job (`passive-interaction-sync` spec) and may be null for facts written via direct `interaction_log()` calls without those metadata keys.
@@ -482,6 +458,8 @@ Response field shapes MUST follow the wrapper mappings in `predicate-taxonomy.md
 - **timeline** entries: `{ kind: <predicate-family>, id: fact.id, content: fact.content, valid_at: fact.valid_at, predicate: fact.predicate, metadata: fact.metadata }` where `kind` is one of `note`, `interaction`, `gift`, `loan`, `life_event`, `dunbar_tier_override`.
 
 When a metadata field referenced above is absent from a fact's JSONB, the response value MUST be `null` (not omitted; not a default). Clients MUST be able to render rows with missing metadata fields without errors.
+
+These five endpoints read the shared `facts` table under `scope='relationship'`. `relationship.entity_facts` (see `relationship-facts`) is the canonical entity triple store; the entity-redesign endpoints read it directly, and these five endpoints SHALL be re-pointed to it at the read-path cut-over.
 
 #### Scenario: Notes endpoint returns facts for entity
 
@@ -554,16 +532,6 @@ When a metadata field referenced above is absent from a fact's JSONB, the respon
 - **WHEN** a fact has `metadata = '{}'` or is missing one of the documented metadata fields
 - **THEN** the response entry MUST include the field with value `null`
 - **AND** the endpoint MUST NOT raise an error
-
----
-
-**Phase 2 Extension: Entity Redesign**
-
-> Added 2026-05-17 via `/project-direction` Phase 2 for the entity-redesign feature.
-> Drives the brief at `docs/redesigns/2026-05-17-entity-brief.md` (binding §0 design intent,
-> binding §6b Phase 1 amendments). Layered on top of the contact-tabs scope above.
-
-> **Phase 1 / Phase 2 table reconciliation:** Phase 1's tab endpoints (§Notes/§Interactions/§Gifts/§Loans/§Timeline above) currently read the legacy shared `facts` table where the relationship butler stores relational and contact facts under `scope='relationship'`. Phase 2 introduces `relationship.entity_facts` as the canonical RDF triple store (per `specs/relationship-facts/spec.md`). During the 10-step migration (Brief §6b Amendment 1.1.C), Phase 1 endpoints MUST be re-pointed to `relationship.entity_facts` no later than Migration bead 7 (read-path cut-over). Until cut-over, Phase 1 endpoints read the legacy table; from cut-over, they read `relationship.entity_facts`. Both reads return identical data during the dual-write window. Phase 2 endpoints (§§added below) read `relationship.entity_facts` from day one — they ship after Migration bead 5 (backfill) completes.
 
 ### Requirement: Owner-only authorization for entity endpoints
 
@@ -647,8 +615,8 @@ consist of:
 1. **Tabular list (left/main column)** — one row per entity, neutral hairline-on-neutral.
    Columns: entity-mark glyph (type indicator: `P / O / L / X / @ / E / G`), canonical_name +
    nicknames, tier badge (Dunbar), `last_seen`, contact-fact count pill, aliases. Rows MUST NOT
-   carry state colour; the EntityMark glyph carries type, not hue (Brief §0 "No hue from entity type").
-   Row vertical padding is 10px (not 24px — no card thinking).
+   carry state colour; the EntityMark glyph carries type, not hue.
+   Rows use the index-row padding from `dashboard-design-language` "Density and Spacing", never card padding.
 2. **Filter chips** — type pills (`person/organization/location/product/...`), `has=contact`
    chip (replaces legacy `/contacts` page), state chips (`unidentified`, `duplicate-candidate`,
    `stale`), tier chips. The `has=contact` chip MUST surface all entities with at least one
@@ -658,8 +626,7 @@ consist of:
    Active tab is `/entities/index`.
 5. **Cmd-K affordance** — visible mono kbd capsule (`⌘K`) in the header.
 
-The Index page MUST render inside `<Page archetype="overview">` (per the in-flight
-`page-primitive-spec-sync` change) with breadcrumb `Entities`.
+The Index page MUST render inside `<Page archetype="overview">` with breadcrumb `Entities`.
 
 #### Scenario: Index renders with neutral rows and queue rail
 - **WHEN** a user navigates to `/entities/index` with at least one entity in `public.entities`
@@ -832,42 +799,26 @@ Data source: `GET /api/relationship/entities/concentration?pred=<predicate>`.
 
 The entity detail page at `/entities/:entityId` SHALL render in one of two modes: **Editorial** (default) or **Workbench**.
 The unified ActivityTimeline is present in Editorial mode. In Workbench mode
-it is replaced by the ProvenanceGrid (see `bu-r6vft`), which surfaces every
-provenance column in a dense, sortable grid. The toggle also changes how the
-header and contact facts are rendered.
+it is replaced by the ProvenanceGrid, which surfaces every provenance column in
+a dense, sortable grid. The toggle also changes how the header and contact
+facts are rendered.
 
 **Editorial mode** is the default and MUST:
-- Use `<Page archetype="detail">` (per the in-flight `detail-page-archetype`
-  change) with Display 44px headline for the entity canonical_name (editorial
-  archetype, per `about/heart-and-soul/design-language.md:218-246`
-  Non-Negotiable 2 + Gate A A2). The 44px Display tier is permitted per the
-  editorial-archetype carve-out at
-  `about/heart-and-soul/design-language.md:225-232`; the 1.2 type-ratio
-  doctrine at `:243-246` is a floor (values ≥1.2 satisfy it), not a target —
-  Display-tier headlines are exempt by archetype.
+- Use `<Page archetype="editorial">`, rendering the entity canonical_name in
+  the Display tier of the `dashboard-design-language` Type System.
 - Hide provenance metadata (`conf`, `src`, `weight`, `verified`, `primary`)
   from row chrome. Provenance is still loaded into the response; only the
   visual rendering hides it.
 - Render contacts grouped by predicate (`has-email`, `has-phone`, ...). A
   person with three emails MUST render three rows, primary first; never
   collapsed to "the email."
-- Render the voice gloss in `Source Serif 4` italic 16px (one line under the
-  canonical name). **The gloss text MUST be a canned string** selected by
-  `(tier, state, category)` from `frontend/src/lib/entity-glosses.ts` — see
-  Requirement: Detail-page voice gloss source.
+- Render the voice gloss in `Source Serif 4` italic, one line under the
+  canonical name. **The gloss text MUST be a canned string** selected by
+  `(tier, state, category)` — see Requirement: Detail-page voice gloss source.
 
 **Workbench mode** MUST:
-- Use `<Page archetype="overview">` with `text-2xl` H1 (per
-  `about/heart-and-soul/design-language.md` Non-Negotiable 2 + Gate A A2).
-  44px Display is forbidden in this mode. Editorial mode uses
-  `<Page archetype="detail">` (per the in-flight `detail-page-archetype`
-  change); Workbench reuses the already-defined `archetype="overview"` for
-  its dense workspace layout. **Workspace-archetype gap note (R3):** the
-  brief originally proposed `<Page archetype="workspace">` but no `workspace`
-  archetype is normatively defined in any shipped or in-flight Page spec.
-  Rather than block on authoring a sister spec, Workbench reuses
-  `archetype="overview"` (which IS defined) for v1; a dedicated `workspace`
-  archetype MAY be introduced in a separate change later if needed.
+- Use `<Page archetype="overview">` with the standard page heading; the
+  Display tier is forbidden in this mode.
 - Surface every provenance column (`conf`, `src`, `lastSeen`, `weight`,
   `verified`, `primary`) on every row. The same data record drives both
   modes.
@@ -875,29 +826,24 @@ header and contact facts are rendered.
   any column.
 
 **Mode persistence and toggle UI:**
-- The mode toggle lives in the Page shell's actions slot (icon button), per
-  Phase 1 Amendment 8.
-- The mode persists in `localStorage` under the key `entities.detail.mode`
-  (distinct from the `butlers.detail.mode` key used by
-  `redesign-detail-page-tab-vocabulary`'s Resident/Operator toggle — Phase 1
-  Amendment 10 mandates the distinct key and distinct vocabulary).
+- The mode toggle is an icon button in the Page shell's actions slot.
+- The mode persists in `localStorage` under the key `entities.detail.mode`.
 - Missing, invalid, or unsupported values in `localStorage` MUST default to
   `editorial`.
 - `?mode=workbench` URL parameter overrides `localStorage` for the current
   page load only; toggling via the UI updates both URL and `localStorage`.
-  _(Design history: param name reconciled from `?view=` → `?mode=` to match
-  shipped code, bu-monvg.)_
 
 **Forget affordance (binding):**
-- Both modes MUST surface a "Forget this entity" action in the Page header
-  (NOT a kebab menu). Clicking opens a confirm dialog with a one-sentence
-  serif gloss (canned text: "Forgetting also tombstones the source. Aliases
-  stay.") before the destructive POST.
+- Both modes MUST surface a "Forget" action (accessible name "Forget this
+  entity") in the Page header actions (NOT a kebab menu). Clicking opens a
+  "Forget this entity?" confirm dialog stating that forgetting retracts all
+  associated facts, permanently removes the entity, and cannot be undone,
+  before the destructive request.
 
 #### Scenario: Editorial is default, mode persists
 
 - **WHEN** a user lands on `/entities/<uuid>` with no `localStorage` value
-- **THEN** Editorial MUST render with Display 44px headline
+- **THEN** Editorial MUST render with the Display-tier headline
 - **WHEN** the user toggles to Workbench
 - **THEN** `localStorage["entities.detail.mode"]` MUST be set to `workbench`
 - **AND** subsequent loads MUST render Workbench until toggled back
@@ -910,8 +856,6 @@ header and contact facts are rendered.
 - **AND** Workbench MUST render three rows in the contacts grid, sorted by
   `primary DESC`
 - **AND** neither mode MUST collapse to a single "Email" row
-
----
 
 ### Requirement: Entity curation queue (Index right rail)
 
@@ -994,36 +938,7 @@ that fans out to this endpoint, but that is out of scope here.
 
 ### Requirement: Dispatch design language token discipline
 
-All six entity routes (`/entities`, `/entities/hop`, `/entities/columns`, `/entities/concentration`, `/entities/social-map`, `/entities/:entityId`) SHALL conform to the Dispatch design language with the following token rules (per Phase 1 Amendment 9 + Brief §1 binding tokens).
-
-Note: the sixth route in this list replaces the legacy `/butlers/relationship/entities/:id` route name that appeared in the original version of this requirement. The route `/entities/:entityId` is the canonical entity detail route per the "Entity detail page" requirement.
-
-1. **No new tokens** outside `frontend/src/index.css`. The redesign reuses
-   `--bg`, `--bg-elev`, `--bg-deep`, `--fg`, `--mfg`, `--dim`, `--border`,
-   `--border-soft`, `--border-strong`, `--red`, `--amber`, `--green`,
-   `--categorical-1..12` (local entity categories, with labels or legends), `--tier-1..6`
-   (Dunbar ramp, six layers: 5/15/50/150/500/1500), and `--severity-*` (per
-   in-flight `token-system-spec-sync`).
-
-   **Token namespace bridging (R3 gap note):** the Dispatch tokens (`--bg`,
-   `--fg`, `--mfg`, `--dim`, `--border-soft`, `--border-strong`) are NOT
-   present in shipped `frontend/src/index.css` (which today defines the
-   shadcn ramp: `--foreground`, `--background`, `--border`,
-   `--muted-foreground`, …) and they are NOT part of any in-flight token
-   change. Phase 3 task 8.x (frontend foundation) MUST resolve this by
-   EITHER (a) adding the Dispatch tokens to `frontend/src/index.css` mapped
-   1:1 to the shadcn tokens they replace, OR (b) rewriting component classes
-   to use the existing shadcn token names. The choice is deferred to
-   implementation; this spec is shape-only. `--tier-1..6` already ships in
-   `frontend/src/index.css` and is not part of this gap.
-2. **No hex literals** anywhere in
-   `frontend/src/components/relationship/*`,
-   `frontend/src/pages/entities/*`, or
-   `frontend/src/pages/butlers/relationship/*` EXCEPT in
-   `frontend/src/lib/entity-model.ts` and the predicate-catalog UI.
-3. **Fonts:** `Inter Tight` (UI), `Source Serif 4` (voice/gloss),
-   `JetBrains Mono` (numerals, IDs, eyebrows, kbd). Font loading MUST be
-   verified in `frontend/index.html` or equivalent before merge.
+All six entity routes (`/entities`, `/entities/hop`, `/entities/columns`, `/entities/concentration`, `/entities/social-map`, `/entities/:entityId`) SHALL follow the token, colour and font rules of `dashboard-design-language`. In particular they MUST NOT define CSS custom properties outside `frontend/src/index.css`, and MUST NOT use hex colour literals in relationship or entity-page components, except in `frontend/src/lib/entity-model.ts` and the predicate-catalog UI.
 
 #### Scenario: Token discipline applies to canonical entity detail route
 
@@ -1142,7 +1057,6 @@ MUST fail if any combination is missing.
 
 `GET /api/relationship/entities/search` MUST use rule-based ranking only (no embedding service,
 no reranker LLM in v1). The rule set is defined in
-`pr/overview/entity-redesign/prompts/07-finder.md §7.5` and also reproduced in
 Requirement: App-wide Cmd-K Finder above. No model call MAY appear in the request handler path
 of `/api/relationship/entities/search`.
 
@@ -1269,10 +1183,7 @@ record written through the dashboard remains visible to the MCP tools.
 
 Entity detail and the Plex dossier SHALL each render one operator verb rail
 offering `log-interaction`, `gift-idea`, and `note`, writing through the
-endpoints above. (A fourth verb, `draft-reach-out`, and entity detail's
-accompanying drafts panel, shipped alongside these and were later retired in
-bu-2jtfw.11 — see the "Reach-out drafts are drafted, never sent (RETIRED)"
-requirement above.)
+endpoints above.
 
 The rail MUST report the real state of a write and nothing more: a pending write
 MUST read as pending rather than as success, a completed write MUST appear only
@@ -1280,8 +1191,7 @@ after the server confirms it, and a refusal MUST surface one plain sentence
 naming the actual cause -- duplicate, owner-only, missing entity, or invalid
 input -- rather than a raw error payload or a silent no-op.
 
-The draft form MUST carry a permanent statement that nothing is sent, and the
-rail MUST offer no send affordance for any verb.
+The rail MUST offer no send affordance for any verb.
 
 #### Scenario: Verb writes appear only once confirmed
 

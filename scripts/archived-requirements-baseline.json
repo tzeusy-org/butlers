@@ -1837,38 +1837,6 @@
       "excerpt": "embedding_versions tracking table"
     }
   ],
-  "2026-04-25-model-catalog-price-column/dashboard-model-settings/Model Catalog Settings UI": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "7b2f2cc2fd03",
-      "excerpt": "The dashboard settings page SHALL include a model catalog management section with full CRUD capabilities, an alias ed..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Catalog table display",
-      "digest": "2787af5d7656",
-      "excerpt": "- **AND** the `discretion` tier group is displayed under a \"Discretion\" heading, visually separated from session tier..."
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Price column shows known pricing",
-      "digest": "3a8cf5733f7c",
-      "excerpt": "\"Price column shows known pricing\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Price column shows free for zero-cost models",
-      "digest": "e23db23ef93e",
-      "excerpt": "\"Price column shows free for zero-cost models\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Price column shows dash for unknown pricing",
-      "digest": "9831e74de57d",
-      "excerpt": "\"Price column shows dash for unknown pricing\" is not in the block"
-    }
-  ],
   "2026-04-25-model-catalog-price-column/dashboard-model-settings/Pricing Lookup API": [
     {
       "kind": "requirement",
@@ -2507,20 +2475,6 @@
       "excerpt": "WhatsApp Web Protocol via whatsmeow"
     }
   ],
-  "2026-04-26-add-dashboard-chronicles/dashboard-shell/Full Route Map": [
-    {
-      "kind": "clause",
-      "scenario": "Top-level routes",
-      "digest": "92613e06ec3b",
-      "excerpt": "- `/contacts/:contactId` -- Contact detail (parameterized)"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Top-level routes",
-      "digest": "89e1c9409b38",
-      "excerpt": "- `/settings` -- Local UI settings"
-    }
-  ],
   "2026-04-26-add-dashboard-chronicles/dashboard-shell/Sidebar Navigation": [
     {
       "kind": "requirement",
@@ -2583,134 +2537,6 @@
       "scenario": null,
       "digest": "6739d8fcc8e1",
       "excerpt": "Compact body frame"
-    }
-  ],
-  "2026-05-13-finish-butler-detail-body-panel-grid/dashboard-butler-management/Memory Tab": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "df21b8062b45",
-      "excerpt": "The Memory tab SHALL surface per-butler memory subsystem state. This MODIFIES the existing Memory tab requirement and..."
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "7b0dd71edbe1",
-      "excerpt": "- **Row 1:** KPI quartet (4 single-span panels using `<Panel>` atoms)"
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "7769cce6f74a",
-      "excerpt": "- episodes panel (title \"episodes\"): per-butler total episode count. Primary 28px. Sub-line: \"+N today\" derived from ..."
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "d32ac2985547",
-      "excerpt": "- facts panel (title \"facts\"): per-butler total fact count. 28px. Sub-line: \"+N today\". Tone: neutral"
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "e3915c339285",
-      "excerpt": "- entities panel (title \"entities\"): per-butler total entity count. 28px. Sub-line: \"+N today\". Tone: neutral"
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "fd3b5967f488",
-      "excerpt": "- rules panel (title \"rules\"): per-butler total rule count. 28px. Sub-line: \"+N today\". Tone: neutral"
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "91f46769d158",
-      "excerpt": "- Feed listing the most recent episodes for this butler via `useMemoryRecentWrites(name, 10)`. Each row: `<Time>` rel..."
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "5c2759451750",
-      "excerpt": "- Empty state: \"No memory writes recorded yet.\""
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "dd4c4559a6eb",
-      "excerpt": "**Data source constraints:**"
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "9f58bf26bdec",
-      "excerpt": "- KPI counts and 24h deltas: `useButlerMemoryStats(name)` wrapping `GET /api/butlers/{name}/memory/stats`. This is a ..."
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "cc8f2e5ec0bb",
-      "excerpt": "- Recent writes: `useMemoryRecentWrites(name, 10)` wrapping `GET /api/memory/episodes?butler={name}&limit=10`"
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "686d3c3301f4",
-      "excerpt": "- `about/heart-and-soul/design-language.md` Non-Negotiable 1: KPI tone colors via named tokens; no hex"
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "656d9642dd15",
-      "excerpt": "- `redesign-detail-resident-tabs-claude-design` Panel atom: `<Panel>` is required for KPI cells; `<Card>` primitives ..."
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Memory KPI quartet uses Panel atoms",
-      "digest": "e616769ab993",
-      "excerpt": "\"Memory KPI quartet uses Panel atoms\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "KPI counts are per-butler",
-      "digest": "7dfbfb10d3d5",
-      "excerpt": "\"KPI counts are per-butler\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "KPI \"+N today\" sub-lines populated",
-      "digest": "6f064f95376b",
-      "excerpt": "\"KPI \"+N today\" sub-lines populated\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Memory tab loading state",
-      "digest": "443c4343ce1e",
-      "excerpt": "\"Memory tab loading state\" is not in the block"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Memory tab empty state",
-      "digest": "83582eb4935a",
-      "excerpt": "- **WHEN** `GET /api/butlers/{name}/memory/stats` returns all-zero counts"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Memory tab empty state",
-      "digest": "dd61a0638e39",
-      "excerpt": "- **THEN** each KPI panel SHALL render 0 with \"+0 today\" sub-lines"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Memory tab empty state",
-      "digest": "689afdcd4c21",
-      "excerpt": "- **AND** the recent-writes panel SHALL display \"No memory writes recorded yet.\""
-    },
-    {
-      "kind": "clause",
-      "scenario": "Memory tab empty state",
-      "digest": "b5eb61fb31e0",
-      "excerpt": "- **AND** the empty state text SHALL not contain an em-dash"
     }
   ],
   "2026-05-13-finish-butler-detail-body-panel-grid/dashboard-butler-management/Rejected visual exemplar elements": [
@@ -3343,32 +3169,6 @@
       "excerpt": "Owner identity and credential management via contact detail page"
     }
   ],
-  "2026-06-03-decommission-contact-detail-page/dashboard-relationship/Owner identity setup banner": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "2cbef73770c2",
-      "excerpt": "The dashboard SHALL display a persistent banner on the entity index page (`/entities?has=contact`) when the owner con..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Banner shown when owner has missing identity fields",
-      "digest": "632f3b1f8e43",
-      "excerpt": "- **WHEN** a user navigates to `/entities?has=contact` and the owner contact is missing any of: name, email, telegram..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Banner dialog includes credentials section",
-      "digest": "f30714e8ebdf",
-      "excerpt": "- **THEN** a collapsible \"Credentials\" section MUST be available for optionally setting email password, Telegram API ..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Banner dialog includes credentials section",
-      "digest": "2db93d6eead9",
-      "excerpt": "- **AND** these credential fields MUST create secured `contact_info` entries"
-    }
-  ],
   "2026-06-12-entity-v3-lifecycle-and-depth/dashboard-relationship/90-day activity sparkline": [
     {
       "kind": "requirement",
@@ -3749,44 +3549,6 @@
       "excerpt": "Overview Tab Process Facts Card"
     }
   ],
-  "2026-06-13-complete-ingestion-redesign-parity/dashboard-shell/Full Route Map": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "3b4a0d1149bf",
-      "excerpt": "The route map SHALL include the ingestion dispatch console routes"
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "88aa78ae20af",
-      "excerpt": "- `/ingestion` -- ingestion Timeline ledger"
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "172efb12db56",
-      "excerpt": "- `/ingestion/connectors` -- ingestion connector roster"
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "a2c1db3ca5da",
-      "excerpt": "- `/ingestion/connectors/:connectorType/:endpointIdentity` -- ingestion connector detail"
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "30f8cc2268ac",
-      "excerpt": "- `/ingestion/filters` -- ingestion Filters pipeline"
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "c5dd21bdf6c4",
-      "excerpt": "These routes SHALL be first-class child routes. The redesigned ingestion surface SHALL NOT rely on a single `/ingesti..."
-    }
-  ],
   "2026-06-13-connector-detail-archetype-conformance/connector-base-spec/ConnectorDetailPage conforms to the detail-page archetype": [
     {
       "kind": "requirement",
@@ -3833,44 +3595,6 @@
       "scenario": null,
       "digest": "b6387d689f56",
       "excerpt": "TimezoneContext and useTimezone hook"
-    }
-  ],
-  "2026-06-13-redesign-butler-detail-no-hero/dashboard-butler-management/Butler detail page tab body vocabulary": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "5c4b328c1fd1",
-      "excerpt": "The Butler detail page tab body SHALL map to the four-tier archetype vocabulary as follows"
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "4f4074392414",
-      "excerpt": "- **Primary slot:** The `<Tabs>` block, containing `TabsList` (all visible tab triggers) and `TabsContent` for each t..."
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "ae2f79231059",
-      "excerpt": "- **No hero slot:** The Butler detail page MUST NOT render a Tier 2 page-level Hero, body-level identity card, or ide..."
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "a92ac8a3a151",
-      "excerpt": "- **Tabs are NOT a candidate for page-level archetype expansion:** The ten spec-mandated base tabs plus existing non-..."
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Base and operator tabs present on all butler pages",
-      "digest": "5edba4791ce7",
-      "excerpt": "\"Base and operator tabs present on all butler pages\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Gate A A2 controls render in Tier 1 Page actions",
-      "digest": "804b2ce3dd51",
-      "excerpt": "\"Gate A A2 controls render in Tier 1 Page actions\" is not in the block"
     }
   ],
   "2026-06-13-redesign-butler-list-card-density/dashboard-butler-management/Butler List Page": [
@@ -3953,248 +3677,12 @@
       "excerpt": "- **THEN** the butler list data is polled every 30 seconds to keep status current"
     }
   ],
-  "2026-06-13-redesign-detail-page-tab-vocabulary/dashboard-butler-management/Butler Detail Page Structure": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "79966a7c49b3",
-      "excerpt": "The `/butlers/:name` page SHALL be a tabbed detail view where each butler is treated as a first-class navigable entit..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "URL-driven tab routing",
-      "digest": "087846e23507",
-      "excerpt": "- **THEN** the active tab is set to the `tab` query parameter value when that value is available in the stored mode o..."
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Breadcrumb navigation",
-      "digest": "a9b1755c9576",
-      "excerpt": "\"Breadcrumb navigation\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Resident mode is the default tab vocabulary",
-      "digest": "e6d8aca015b4",
-      "excerpt": "\"Resident mode is the default tab vocabulary\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Operator mode preserves the administrative vocabulary",
-      "digest": "23e631684afc",
-      "excerpt": "\"Operator mode preserves the administrative vocabulary\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Stored mode is restored",
-      "digest": "9b22de07b4ee",
-      "excerpt": "\"Stored mode is restored\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Deep links to operator-only tabs auto-promote mode",
-      "digest": "ffc7c30c1628",
-      "excerpt": "\"Deep links to operator-only tabs auto-promote mode\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Deep links to resident-only tabs select resident mode",
-      "digest": "444c101d5f88",
-      "excerpt": "\"Deep links to resident-only tabs select resident mode\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Non-spec Models tab is operator-only while exposed",
-      "digest": "c1f50a555df0",
-      "excerpt": "\"Non-spec Models tab is operator-only while exposed\" is not in the block"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Conditionally shown tabs -- switchboard",
-      "digest": "8e2af4c34063",
-      "excerpt": "- **THEN** two additional tabs are shown after the active mode's base tabs: \"Routing Log\" and \"Registry\""
-    },
-    {
-      "kind": "clause",
-      "scenario": "Conditionally shown tabs -- switchboard",
-      "digest": "5a3d02051400",
-      "excerpt": "- **AND** the tabs are visible in both resident and operator modes"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Conditionally shown tabs -- health",
-      "digest": "e0dbb5dcab78",
-      "excerpt": "- **THEN** one additional tab is shown after the active mode's base tabs: \"Health\""
-    },
-    {
-      "kind": "clause",
-      "scenario": "Conditionally shown tabs -- health",
-      "digest": "9fe5d5a091dc",
-      "excerpt": "- **AND** the tab is visible in both resident and operator modes"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Conditionally shown tabs -- general",
-      "digest": "69208f336125",
-      "excerpt": "- **THEN** two additional tabs are shown after the active mode's base tabs: \"Collections\" and \"Entities\""
-    },
-    {
-      "kind": "clause",
-      "scenario": "Conditionally shown tabs -- general",
-      "digest": "5a3d02051400",
-      "excerpt": "- **AND** the tabs are visible in both resident and operator modes"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Conditionally shown tabs -- education",
-      "digest": "28645368a5ea",
-      "excerpt": "\"Conditionally shown tabs -- education\" is not in the block"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Lazy-loaded tabs for performance",
-      "digest": "31fa54e6cd1c",
-      "excerpt": "- **WHEN** a tab whose body is implemented as a lazy-loaded component is selected for the first time"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Lazy-loaded tabs for performance",
-      "digest": "04383c2f76d4",
-      "excerpt": "- **AND** this requirement applies only to tab bodies intentionally implemented with React `lazy()`, rather than forc..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Tab URL semantics and deep-linking",
-      "digest": "d107f2d91317",
-      "excerpt": "- **AND** accepted deep-link values include resident base tab keys (`overview`, `activity`, `logs`, `approvals`, `spe..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Tab URL semantics and deep-linking",
-      "digest": "eca5e8e0d21f",
-      "excerpt": "- **AND** deep links to operator-only tab keys auto-promote to operator mode"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Tab URL semantics and deep-linking",
-      "digest": "cd094d16c25e",
-      "excerpt": "- **AND** deep links to resident-only tab keys switch to resident mode when the stored mode is operator"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Tab URL semantics and deep-linking",
-      "digest": "17c3a708a3b8",
-      "excerpt": "- **AND** invalid `tab` values fall back to `overview` without forcing a mode switch"
-    }
-  ],
-  "2026-06-13-redesign-detail-page-tab-vocabulary/dashboard-butler-management/Butler detail page tab body vocabulary": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "5c4b328c1fd1",
-      "excerpt": "The Butler detail page tab body SHALL map to the four-tier archetype vocabulary as follows"
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "357152acd7a4",
-      "excerpt": "- **Primary slot:** The `<Tabs>` block, containing `TabsList` for all visible tab triggers in the active mode and `Ta..."
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "f0caf60dacfc",
-      "excerpt": "- **No additional body-level hero slot:** The `<Page>` / `<DetailPage>` shell still owns the record identity chrome: ..."
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "afdb4848052f",
-      "excerpt": "- **Mode-specific tabs are NOT a candidate for page-level archetype expansion:** resident and operator tab sets are p..."
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Resident base tabs present by default",
-      "digest": "83e6fbe991d0",
-      "excerpt": "\"Resident base tabs present by default\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Operator base tabs present in operator mode",
-      "digest": "271c968648dc",
-      "excerpt": "\"Operator base tabs present in operator mode\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Conditional tabs remain mode-independent",
-      "digest": "f9692b316fe3",
-      "excerpt": "\"Conditional tabs remain mode-independent\" is not in the block"
-    }
-  ],
-  "2026-06-13-redesign-detail-resident-tabs-claude-design/dashboard-butler-management/Config Tab": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "b2f33e703a66",
-      "excerpt": "The Config tab SHALL be restyled from a card-per-section layout to a 2x2 panel-grid block followed by a collapsed mar..."
-    }
-  ],
   "2026-06-13-redesign-detail-resident-tabs-claude-design/dashboard-butler-management/Memory tab": [
     {
       "kind": "requirement",
       "scenario": null,
       "digest": "dd59916c7147",
       "excerpt": "Memory tab"
-    }
-  ],
-  "2026-06-13-redesign-detail-tab-overview-card-stack/dashboard-butler-management/Overview Tab": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "e916b178d186",
-      "excerpt": "The Butler detail Overview tab SHALL be the identity surface for the selected butler and SHALL render a dense card st..."
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Identity card",
-      "digest": "fe8f7ae2cb9d",
-      "excerpt": "\"Identity card\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Process facts card",
-      "digest": "7ff15e79d350",
-      "excerpt": "\"Process facts card\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Heartbeat row",
-      "digest": "dd1325691727",
-      "excerpt": "\"Heartbeat row\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Module health card",
-      "digest": "618348944c3a",
-      "excerpt": "\"Module health card\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Cost card",
-      "digest": "007534e2bbd9",
-      "excerpt": "\"Cost card\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Recent sessions card",
-      "digest": "86dc18ebccfc",
-      "excerpt": "\"Recent sessions card\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Eligibility row",
-      "digest": "060dc9030c03",
-      "excerpt": "\"Eligibility row\" is not in the block"
     }
   ],
   "2026-06-13-redesign-memory-house-ledger/dashboard-domain-pages/Fact detail page": [
@@ -4339,40 +3827,6 @@
       "excerpt": "Pending Action Schema with Why and Evidence"
     }
   ],
-  "2026-06-13-token-system-spec-sync/dashboard-domain-pages/Contacts page with search, label filtering, and Google sync": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "764ed9c49e74",
-      "excerpt": "Label badge colors MUST be deterministically derived from a hash of the label name using the eight-step categorical t..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Label color determinism",
-      "digest": "94c3a1160288",
-      "excerpt": "- **THEN** its badge color MUST be deterministically derived from a hash of \"family\" using the categorical palette: `..."
-    }
-  ],
-  "2026-06-13-token-system-spec-sync/dashboard-domain-pages/Health measurements page with trend charting": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "aecd7105c56c",
-      "excerpt": "The chart for `blood_pressure` MUST render two lines: systolic using `var(--category-1)` (blue) and diastolic using `..."
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "03f5d971bb40",
-      "excerpt": "All other sub-requirements for this requirement remain unchanged"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Blood pressure dual-line chart",
-      "digest": "b899425f69c6",
-      "excerpt": "- **THEN** the chart MUST render two lines: systolic colored with `var(--category-1)` (blue) and diastolic colored wi..."
-    }
-  ],
   "2026-06-24-calendar-availability-find-time/time-aware-delivery/Owner Scheduling-Availability Preferences": [
     {
       "kind": "requirement",
@@ -4421,40 +3875,6 @@
       "scenario": "Medication refill timing insights",
       "digest": "3f0a4d01799a",
       "excerpt": "- **AND** the `dedup_key` SHALL be `health:medication-refill:{medication-id}`, `expires_at` the estimated depletion d..."
-    }
-  ],
-  "2026-06-24-health-dashboard-overview-redesign/dashboard-domain-pages/Health data hooks with auto-refresh": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "673fc5828362",
-      "excerpt": "Deterministic health domain hooks (CRUD lists, KPI/latest reads, and trend reads) MUST use TanStack Query hooks that ..."
-    }
-  ],
-  "2026-06-24-health-dashboard-overview-redesign/dashboard-domain-pages/Health measurements page with trend charting": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "a6a588017f9a",
-      "excerpt": "- A type selector displaying tabs for measurement types: `weight`, `blood_pressure`, `heart_rate`, `blood_sugar`, `te..."
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "75288ba9744e",
-      "excerpt": "- A Recharts `LineChart` in a `ResponsiveContainer`. For `blood_pressure`, the chart MUST render two lines (systolic ..."
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "36a5806429fb",
-      "excerpt": "- The trend rule-list as the primary surface, sourced from `GET /api/health/measurements/trend` (the bucketed mean/mi..."
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Chart tabs use only producible predicates",
-      "digest": "0d61dfb09606",
-      "excerpt": "\"Chart tabs use only producible predicates\" is not in the block"
     }
   ],
   "2026-06-24-relationship-memory-curation/relationship-curation/Weekly curation pass": [
@@ -4855,62 +4275,6 @@
       "excerpt": "Decisions Row List with Keyboard Triage"
     }
   ],
-  "2026-07-29-chat-stop-button-server-cancel/dashboard-chat-ui/Message Input Area": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "f7e9330f8f35",
-      "excerpt": "The input area SHALL provide text entry and message sending controls, including cancellation of an active response"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Text input",
-      "digest": "fd1e5d9a2e12",
-      "excerpt": "- **WHEN** the user types in the message input"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Text input",
-      "digest": "0b27865e9bf2",
-      "excerpt": "- **THEN** the textarea auto-grows up to a maximum height"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Text input",
-      "digest": "ce6869cea2d8",
-      "excerpt": "- **AND** Enter sends the message (Shift+Enter inserts a newline)"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Send button",
-      "digest": "4c3d599a7d4c",
-      "excerpt": "- **WHEN** the input has content and no message is currently streaming"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Send button",
-      "digest": "f8c711dc8a66",
-      "excerpt": "- **THEN** the send button is enabled"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Send button",
-      "digest": "421c02d34931",
-      "excerpt": "- **AND** clicking it (or pressing Enter) submits the message"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Input disabled during streaming",
-      "digest": "fefe92d07782",
-      "excerpt": "- **WHEN** a message is streaming"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Starting a new conversation from empty state",
-      "digest": "a125e1f70a82",
-      "excerpt": "- **THEN** the input area still functions, and sending a message creates a new conversation"
-    }
-  ],
   "2026-07-29-chat-stop-button-server-cancel/dashboard-chat-ui/SSE Client Integration": [
     {
       "kind": "clause",
@@ -5013,66 +4377,6 @@
       "scenario": null,
       "digest": "e6c141aa83fe",
       "excerpt": "Session Creation"
-    }
-  ],
-  "connector-ingestion-request-id/dashboard-api/API Endpoint Inventory": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "dbfeb932f438",
-      "excerpt": "The Traces section is removed from the endpoint inventory. A new Ingestion Events section is added, providing request..."
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Traces endpoints removed",
-      "digest": "5c45c131137b",
-      "excerpt": "\"Traces endpoints removed\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Ingestion events endpoints registered",
-      "digest": "f37a5575ebec",
-      "excerpt": "\"Ingestion events endpoints registered\" is not in the block"
-    }
-  ],
-  "connector-ingestion-request-id/dashboard-shell/Full Route Map": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "2cd209a8e698",
-      "excerpt": "The router defines all application routes as children of the root layout. The `/traces` and `/traces/:traceId` routes..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Top-level routes",
-      "digest": "92613e06ec3b",
-      "excerpt": "- `/contacts/:contactId` -- Contact detail (parameterized)"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Top-level routes",
-      "digest": "89e1c9409b38",
-      "excerpt": "- `/settings` -- Local UI settings"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Health sub-routes",
-      "digest": "476db3eae735",
-      "excerpt": "\"Health sub-routes\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Ingestion routes with legacy redirects",
-      "digest": "47d0ce68b933",
-      "excerpt": "\"Ingestion routes with legacy redirects\" is not in the block"
-    }
-  ],
-  "connector-ingestion-request-id/dashboard-shell/Keyboard Shortcuts System": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "580383559b10",
-      "excerpt": "The application supports vim-inspired two-key navigation shortcuts and search shortcuts, registered globally via the ..."
     }
   ],
   "connector-ingestion-request-id/dashboard-shell/Sidebar Navigation": [

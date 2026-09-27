@@ -13,8 +13,7 @@ The chat interface SHALL render as a slide-out panel on the butler detail page (
 #### Scenario: Chat panel toggle
 
 - **WHEN** the user clicks the "Chat" button on the butler detail page
-- **THEN** a slide-out panel opens from the right side of the viewport at 480px width
-- **AND** the panel uses the existing `Sheet` component with `side="right"`
+- **THEN** the panel opens as a right-side drawer built on the shared sheet primitive
 - **AND** the panel header shows the butler name and a close button
 - **AND** the main content area (butler detail) remains visible and scrollable behind the panel
 
@@ -25,19 +24,19 @@ The chat interface SHALL render as a slide-out panel on the butler detail page (
 
 #### Scenario: Chat panel responsive behavior
 
-- **WHEN** the viewport width is below the `sm` breakpoint (640px)
-- **THEN** the chat panel opens as a full-width overlay instead of a side panel (`w-full sm:max-w-[480px]`)
-- **AND** the standard Sheet close button is retained for navigation
+- **WHEN** the viewport is narrow
+- **THEN** the drawer opens full-width instead of as a side panel
+- **AND** the standard close button is retained for navigation
 
 ### Requirement: Global Chat Postures
 
-The global "Talk to Butlers" surface (Switchboard-routed conversations, distinct from the per-butler panel above) SHALL present exactly one of three postures at a time, chosen by viewport width and an explicit collapse/expand toggle, never stacked (bu-0ynlk.11):
+The global "Talk to Butlers" surface (Switchboard-routed conversations, distinct from the per-butler panel above) SHALL present exactly one of three postures at a time, chosen by viewport width and an explicit collapse/expand toggle, never stacked:
 
-- **Docked rail** — a persistent sidebar column at or above the `xl` breakpoint (1280px), the default posture. See `dashboard-shell` spec, Requirement: Chat Dock Rail.
+- **Docked rail** — `ChatDock`, rendered in the shell's `chatDock` slot at or above the `xl` breakpoint while open; the default posture there. The shell owns only the slot (see `dashboard-shell`, Requirement: Chat Dock Rail (>= xl breakpoint)). The dock is resizable within bounds, and both its width and its open/collapsed state are persisted per viewer.
 - **Full page** — `/chat` and `/chat/:conversationId`, reached via the dock/popover's "Open in full page" action, a copy-link, or cmdk recall.
-- **Popover** — the floating bottom-right widget, the only posture below `xl` or while the dock has been explicitly collapsed.
+- **Popover** — the floating bottom-right widget (`FloatingChatWidget`), the only posture below `xl` or while the dock is collapsed.
 
-All three postures render the same `MessageThread`/`MessageInput` components and drive their send/stream/stop turn state through the one shared `useConversationTurn` hook (`frontend/src/hooks/use-conversation-turn.ts`) — there is exactly one implementation of that turn logic, not a per-posture copy.
+The dock and the popover share the same Switchboard-routed conversation set. All three postures render the same `MessageThread`/`MessageInput` components and drive their send/stream/stop turn state through the one shared `useConversationTurn` hook (`frontend/src/hooks/use-conversation-turn.ts`) — there is exactly one implementation of that turn logic, not a per-posture copy.
 
 #### Scenario: Postures are mutually exclusive
 
@@ -50,6 +49,11 @@ All three postures render the same `MessageThread`/`MessageInput` components and
 - **WHEN** a conversation is actively streaming in one posture (e.g. the dock) and the operator navigates to `/chat/{id}` for that same conversation in another tab or after the dock collapses
 - **THEN** the full-page instance calls `useConversationTurn` independently and does not receive a live mirror of the other posture's in-flight stream — it resumes from the persisted message history once the turn completes
 - **AND** this is a deliberate scope boundary (cross-posture live-turn mirroring is out of scope for this capability)
+
+#### Scenario: Popover trigger reopens a collapsed dock
+
+- **WHEN** the dock has been collapsed while the viewport is at or above the `xl` breakpoint and the operator activates the popover trigger
+- **THEN** the dock reopens instead of the popover opening
 
 ### Requirement: Full-Page Chat Route
 
@@ -102,11 +106,11 @@ Within the chat panel, a conversation list SHALL allow switching between threads
 #### Scenario: Conversation list renders
 
 - **WHEN** the chat panel opens
-- **THEN** the left portion (200px, collapsible) shows the conversation list for the current butler
+- **THEN** a collapsible column beside the thread shows the conversation list for the current butler
 - **AND** conversations are sorted by `updated_at DESC` (most recent first)
 - **AND** each conversation shows the title (truncated to 2 lines) and a relative timestamp (e.g., "2h ago")
-- **AND** the active conversation is highlighted with `bg-accent`
-- **AND** a "New conversation" button appears at the top of the list with a `+` icon
+- **AND** the active conversation is visibly highlighted
+- **AND** a "New conversation" action appears at the top of the list
 
 #### Scenario: Conversation list empty state
 
@@ -116,9 +120,9 @@ Within the chat panel, a conversation list SHALL allow switching between threads
 #### Scenario: Conversation list collapsed mode
 
 - **WHEN** the user clicks the collapse toggle on the conversation list
-- **THEN** the list collapses to an icon-only column (48px) showing only the first letter of each conversation title
+- **THEN** the list collapses to a narrow column showing only the first letter of each conversation title
 - **AND** the chat area expands to fill the available width
-- **AND** collapse state is stored in `localStorage` under `butlers:chat-sidebar-collapsed`
+- **AND** the collapse state is persisted per viewer
 
 ### Requirement: Message Thread Display
 
@@ -163,16 +167,15 @@ The message input area SHALL occupy the bottom of the chat panel with a text inp
 #### Scenario: Text input
 
 - **WHEN** the chat panel is active with a conversation (or ready to start a new one)
-- **THEN** a `Textarea` component renders at the bottom of the panel with placeholder "Type a message..."
-- **AND** the textarea auto-grows with content (up to 200px max height) and scrolls internally beyond that
+- **THEN** a textarea renders at the bottom of the panel with placeholder "Type a message..."
+- **AND** the textarea auto-grows with content up to a bounded height and scrolls internally beyond that
 - **AND** pressing `Enter` sends the message (without Shift)
 - **AND** pressing `Shift+Enter` inserts a newline
 
 #### Scenario: Send button
 
 - **WHEN** the textarea has non-empty content
-- **THEN** a send button (arrow-up icon) renders at the right edge of the input area
-- **AND** the button uses `default` variant at `icon` size (size-9)
+- **THEN** a send button renders at the right edge of the input area
 - **AND** clicking the button sends the message and clears the input
 
 #### Scenario: Input disabled during streaming
@@ -212,7 +215,7 @@ Each conversation and message SHALL display cost-related metrics for operator aw
 
 - **WHEN** an assistant message has `input_tokens` and `output_tokens`
 - **THEN** a cost estimate is displayed alongside the token counts using the dashboard's existing `PricingConfig` model-to-price mapping
-- **AND** the format is e.g., `~$0.0400` in `text-xs text-muted-foreground`
+- **AND** the estimate renders as muted mono metadata in the form `~$0.0400`
 
 #### Scenario: Conversation total cost
 
@@ -347,7 +350,7 @@ TanStack Query hooks SHALL manage conversation data fetching and caching.
 
 ### Requirement: Cross-Butler Conversation Lookup
 
-`GET /api/conversations/{conversation_id}` SHALL resolve a conversation's identity by id alone, independent of which butler owns it, for the `/chat/:conversationId` deep link and cmdk recall (bu-0ynlk.11).
+`GET /api/conversations/{conversation_id}` SHALL resolve a conversation's identity by id alone, independent of which butler owns it, for the `/chat/:conversationId` deep link and cmdk recall.
 
 #### Scenario: Lookup succeeds for any owning butler
 

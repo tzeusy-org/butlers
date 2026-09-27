@@ -217,8 +217,7 @@ table.
 - **AND** this holds even when no other attention source has a signal, so
   the list cannot silently render `Nothing waiting.` while the SAME board
   fetch drives the dashboard briefing headline's `"degraded"` state_class
-  (`dashboard-briefing` spec's Degraded class scenario) -- bu-gcz9e.2's
-  cross-surface consistency test pins this bound from a shared fixture
+  (`dashboard-briefing` spec's Degraded class scenario)
 
 #### Scenario: Historical issues are summarized
 
@@ -261,61 +260,6 @@ When the individual pending-approvals detail fetch is unavailable or empty while
 
 - **WHEN** the individual pending-approvals fetch errors or returns no rows while the aggregate metrics report `total_pending > 0`
 - **THEN** the attention list renders the existing aggregate "N pending approvals" row linking to `/approvals`, with no inline decision buttons.
-
-### Requirement: Runtime KPI Strip
-
-The home page SHALL render a promoted four-cell runtime KPI strip. "Promoted"
-means the KPIs are part of the primary information hierarchy; it does not mean
-they use heavier card chrome. The strip SHALL remain hairline-divided,
-tabular-numeric, and visually calm.
-
-#### Scenario: KPI cells have defined meanings
-
-- **WHEN** the runtime KPI strip renders
-- **THEN** it includes exactly these four cells:
-  - `Total butlers`: count of `GET /api/butlers` rows where `type` is `"butler"`
-  - `Healthy`: count of butler rows whose `status` is `"ok"`, `"online"`, or `"healthy"`
-  - `Sessions · 24h`: sum of `sessions_24h` across butler rows
-  - `Pending approvals`: `total_pending` from `GET /api/approvals/metrics`
-- **AND** every numeric value uses tabular numerals
-
-#### Scenario: KPI strip handles loading and partial failure
-
-- **WHEN** either KPI source is still loading
-- **THEN** cells depending on unavailable data render an unavailable/loading
-  value without shifting layout
-
-- **WHEN** one KPI source fails
-- **THEN** cells backed by the failed source render an unavailable/error value
-- **AND** cells backed by the still-available source MAY continue rendering
-
-#### Scenario: KPI cells are doors to supported destinations only (bu-27dxl.8.3)
-
-- **WHEN** a KPI cell's backing value is available (including a genuine zero)
-- **THEN** the whole cell is a navigable door: `Total butlers` routes to
-  `/butlers`; `Healthy` routes to the SAME unfiltered `/butlers` board (no
-  `healthy`-only filter exists anywhere in the product) with an accessible
-  name that says so explicitly; `Sessions · 24h` routes to
-  `/sessions?since=<captured-since>&until=<captured-until>` using one 24-hour
-  window captured once per render, not a fresh instant recomputed between
-  render and click; `Pending approvals` routes to `/approvals`
-
-#### Scenario: Unavailable KPI cells never carry a door
-
-- **WHEN** a KPI cell renders its unavailable value (`—`, from loading, error,
-  or a degraded source)
-- **THEN** that cell has no href and is not a link, div[role=link], button, or
-  any other interactive control
-- **AND** a genuine zero value is unaffected by this rule and keeps its door
-
-#### Scenario: Degraded Sessions aggregate leaves the other KPI doors available
-
-- **WHEN** `GET /api/butlers/board` succeeds but reports
-  `aggregates.sessions_source_error = true`
-- **THEN** `Sessions · 24h` renders `—` with unavailable semantics and no
-  Sessions door, because its aggregate is only a partial sum
-- **AND** the available `Total butlers`, `Healthy`, and `Pending approvals`
-  values retain their normal values and supported doors
 
 ### Requirement: Operations Index
 
@@ -413,11 +357,10 @@ The acceptable first-source set is:
 
 ### Requirement: Page Archetype Compliance
 
-The home page SHALL adopt the Editorial archetype as defined in
-`about/lay-and-land/frontend.md`. The shared `<Page>` primitive
-(`components/ui/page.tsx`) was shipped as part of Vertical A (bu-vj0h3) and
-`DashboardPage` was migrated to use it in bu-2okpr.6 (PR #1363). The primitive
-is no longer future-tense; it is the current implementation contract.
+The home page SHALL adopt the Editorial archetype and render through the shared `<Page>`
+primitive (`components/ui/page.tsx`). Layout, spacing, and conformance rules are owned by
+`dashboard-design-language` (Requirement: Page Shell and Layout; Requirement: Page Conformance);
+this requirement binds only the Overview's use of that archetype.
 
 #### Scenario: Page renders inside the standard shell
 
@@ -431,8 +374,8 @@ is no longer future-tense; it is the current implementation contract.
 - **WHEN** `DashboardPage` renders
 - **THEN** it SHALL use `<Page archetype="editorial" title="Overview">` as its
   outermost container
-- **AND** the cockpit surfaces SHALL be direct children of `<Page>`, not
-  wrapped in a raw `<div className="space-y-6">`
+- **AND** the cockpit surfaces SHALL be direct children of `<Page>` rather than an
+  extra layout wrapper
 
 ### Requirement: Internal maintenance rollup in Dashboard Now
 
@@ -515,6 +458,122 @@ all-clear. Independently successful individual approval rows remain usable.
 - **THEN** the overview renders no approval-unavailable signal
 - **AND** it preserves its normal calm zero behavior.
 
+### Requirement: Runtime KPI Strip Cells and Doors
+
+The home page SHALL render a promoted four-cell runtime KPI strip. "Promoted"
+means the KPIs are part of the primary information hierarchy; it does not mean
+they use heavier card chrome. The strip SHALL remain hairline-divided,
+tabular-numeric, and visually calm.
+
+#### Scenario: KPI cells have defined meanings
+
+- **WHEN** the runtime KPI strip renders
+- **THEN** it includes exactly these four cells:
+  - `Total butlers`: count of `GET /api/butlers` rows where `type` is `"butler"`
+  - `Healthy`: count of butler rows whose `status` is `"ok"`, `"online"`, or `"healthy"`
+  - `Sessions · 24h`: sum of `sessions_24h` across butler rows
+  - `Pending approvals`: `total_pending` from `GET /api/approvals/metrics`
+- **AND** every numeric value uses tabular numerals
+
+#### Scenario: KPI strip handles loading and partial failure
+
+- **WHEN** either KPI source is still loading
+- **THEN** cells depending on unavailable data render an unavailable/loading
+  value without shifting layout
+
+- **WHEN** one KPI source fails
+- **THEN** cells backed by the failed source render an unavailable/error value
+- **AND** cells backed by the still-available source MAY continue rendering
+
+#### Scenario: KPI cells are doors to supported destinations only
+
+- **WHEN** a KPI cell's backing value is available (including a genuine zero)
+- **THEN** the whole cell is a navigable door: `Total butlers` routes to
+  `/butlers`; `Healthy` routes to the SAME unfiltered `/butlers` board (no
+  `healthy`-only filter exists anywhere in the product) with an accessible
+  name that says so explicitly; `Sessions · 24h` routes to
+  `/sessions?since=<captured-since>&until=<captured-until>` using one 24-hour
+  window captured once per render, not a fresh instant recomputed between
+  render and click; `Pending approvals` routes to `/approvals`
+
+#### Scenario: Unavailable KPI cells never carry a door
+
+- **WHEN** a KPI cell renders its unavailable value (`—`, from loading, error,
+  or a degraded source)
+- **THEN** that cell has no href and is not a link, div[role=link], button, or
+  any other interactive control
+- **AND** a genuine zero value is unaffected by this rule and keeps its door
+
+#### Scenario: Degraded Sessions aggregate leaves the other KPI doors available
+
+- **WHEN** `GET /api/butlers/board` succeeds but reports
+  `aggregates.sessions_source_error = true`
+- **THEN** `Sessions · 24h` renders `—` with unavailable semantics and no
+  Sessions door, because its aggregate is only a partial sum
+- **AND** the available `Total butlers`, `Healthy`, and `Pending approvals`
+  values retain their normal values and supported doors
+
+### Requirement: Spend widget for dashboard overview
+
+The Overview MUST render a full-width cost band below the editorial grid: a `CostWidget` in a
+half-width column followed by the `TopSessionsTable`. The widget MUST display:
+- Title "Cost Today" with a "View all" link to `/spend`.
+- Total cost for the day formatted as currency when its direct summary query succeeds with priced data.
+- Top butler name and cost (e.g., "Top: health ($3.50)") when its direct summary query succeeds with a top butler.
+- A sparkline showing the real trailing 7-day daily spend series.
+
+The widget MUST distinguish a direct Overview summary-query failure from a successful
+compatibility envelope with `source_error` and from a successful zero-cost summary.
+
+#### Scenario: Widget with no data
+
+- **WHEN** `totalCostUsd` is 0 and `topButler` is null
+- **AND** the direct summary query succeeded without `source_error`
+- **THEN** the widget MUST display "$0.00" and no top-butler line
+
+#### Scenario: Direct summary reader failure is unavailable
+
+- **WHEN** the Overview's direct `useSpendSummary("today")` query reports an error
+- **THEN** `DashboardPage` MUST pass an explicit unavailable state to `CostWidget`
+- **AND** the widget MUST render a named cost-summary-unavailable state
+- **AND** it MUST NOT render a formatted cost total or a top-butler claim from fallback or retained data
+
+#### Scenario: Successful compatibility summary remains degraded
+
+- **WHEN** the direct summary request succeeds with `source_error: true`
+- **THEN** the widget MUST render its existing source-degraded state
+- **AND** it MUST NOT render the direct-summary-unavailable state or a calm "$0.00" total
+
+#### Scenario: Cost band renders below the cockpit
+
+- **WHEN** a user navigates to `/`
+- **THEN** the cost band renders below the editorial grid, with `CostWidget` above
+  `TopSessionsTable`
+- **AND** the widget draws from the direct `useSpendSummary("today")` query and the table from
+  the direct `useTopSessions()` query
+
+### Requirement: Top sessions table
+
+The Overview cost band MUST provide a `TopSessionsTable` displaying the most expensive LLM sessions. The table MUST display columns: rank number (#), Butler (secondary badge), Model (muted text), Tokens (input/output formatted as abbreviated counts separated by "/"), Cost (right-aligned, bold, tabular-nums), Time (right-aligned, formatted as "MMM d, HH:mm").
+
+#### Scenario: Session token display
+
+- **WHEN** a session has 50,000 input tokens and 12,000 output tokens
+- **THEN** the Tokens column MUST display "50.0K / 12.0K"
+
+#### Scenario: Direct top-sessions reader failure is unavailable
+
+- **WHEN** the Overview's direct `useTopSessions()` query reports an error
+- **THEN** `DashboardPage` MUST pass an explicit unavailable state to `TopSessionsTable`
+- **AND** the table MUST render a named top-sessions-unavailable state before its empty-state branch
+- **AND** it MUST NOT render "No session data available"
+
+#### Scenario: Successful empty top sessions remain calm
+
+- **WHEN** the direct top-sessions query succeeds with an empty list
+- **THEN** the table MUST render "No session data available"
+- **AND** it MUST NOT render the top-sessions-unavailable state
+
 ## Source References
 
 - `about/heart-and-soul/design-language.md` §Editorial archetype: the Overview
@@ -523,9 +582,12 @@ all-clear. Independently successful individual approval rows remain usable.
 - `about/lay-and-land/frontend.md` §Editorial archetype layout: the Overview
   frame is `<Page archetype="editorial">` with left-column narrative and
   right-column scan lists.
-- `openspec/changes/dashboard-overview-briefing/specs/dashboard-briefing/spec.md`:
-  the briefing response remains the six-field API contract consumed by the
-  Overview page.
+- `openspec/specs/dashboard-briefing/spec.md`: the briefing response remains the
+  six-field API contract consumed by the Overview page.
+- Live code: `frontend/src/pages/DashboardPage.tsx` (page composition),
+  `frontend/src/components/costs/CostWidget.tsx` and
+  `frontend/src/components/costs/TopSessionsTable.tsx` (cost band),
+  `frontend/src/components/ui/page.tsx` (`<Page>` primitive).
 - Current endpoint sources: `GET /api/dashboard/briefing`, `GET /api/issues`,
   `GET /api/butlers`, `GET /api/spend/summary?period=today`,
   `GET /api/approvals/metrics`, `GET /api/qa/summary`,

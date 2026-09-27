@@ -1,7 +1,7 @@
 # Dashboard Visibility and Traceability
 
 ## Purpose
-Specifies the operator-facing dashboard surfaces that provide end-to-end visibility into the Butlers system: session history, unified timeline, notification audit trail, audit log, issue detection, and topology visualization. Together these surfaces answer the operator's core questions: "What is every butler doing right now?", "What happened to this specific request?", and "Is the system healthy?" Every requirement below is grounded in the implemented frontend code and its backend data contracts.
+Specifies the operator-facing dashboard surfaces that provide end-to-end visibility into the Butlers system: session history, unified timeline, notification audit trail, the issues page, and topology visualization. The audit-log contract is owned by `dashboard-audit-log`, the home page by `dashboard-overview`, and the `/ingestion` Timeline ledger by `dashboard-ingestion-dispatch-console`. Together these surfaces answer the operator's core questions: "What is every butler doing right now?", "What happened to this specific request?", and "Is the system healthy?" Every requirement below is grounded in the implemented frontend code and its backend data contracts.
 
 ## Requirements
 
@@ -42,7 +42,7 @@ The Sessions page (`/sessions`) SHALL provide a paginated, filterable table of s
 - **WHEN** the Sessions page renders
 - **THEN** a session-volume-over-time chart (`SessionStripeChart`, stacked per-butler bars) is shown as the page's primary visualization above the filter bar
 - **AND** the chart is scoped to the visible active filter window (not the page cursor); if the paginated list debounces free-text input, the chart still refetches for the visible Trigger Source and Request ID so prior-query data is never presented as current
-- **AND** its data polls via `useBusAwarePollInterval` (bu-01r64.4): the chart's `["session-stripe"]` query key is invalidated by "session" bus events (same as the list below it — see `event-cache-manifest.ts`), so both surfaces update within the same beat rather than the list going live while the chart lags on its own fixed poll
+- **AND** the chart and the list are invalidated by the same session bus events and refresh on the shared cadence in `dashboard-shell` Requirement: Bus-Aware Poll Architecture, so the chart never lags the list
 
 #### Scenario: Window-true KPI strip
 - **WHEN** the Sessions page renders
@@ -214,8 +214,8 @@ The Timeline page (`/timeline`) SHALL merge events from all butlers into a singl
 
 #### Scenario: Auto-refresh control
 - **WHEN** the Timeline page loads
-- **THEN** its data polls automatically via `useBusAwarePollInterval` (bu-01r64.3): a 5-minute reconciliation sweep while the fleet event bus is connected, a 30-second fallback while it's down/reconnecting
-- **AND** there is no manual toggle or interval picker — the prior `AutoRefreshToggle`/`useAutoRefresh` mechanism retired
+- **THEN** its data refreshes automatically on the shared cadence in `dashboard-shell` Requirement: Bus-Aware Poll Architecture
+- **AND** there is no manual toggle or interval picker
 
 #### Scenario: Human-readable event summary derivation
 - **WHEN** Timeline or the Butler Activity Feed projects a session row, it SHALL derive the row's `summary` from its structured `trigger_source` before inspecting stored prompt text
@@ -301,61 +301,6 @@ The Notifications page (`/notifications`) SHALL provide a complete audit trail o
 - **WHEN** no notifications exist at all (no filters active)
 - **THEN** the empty state reads "Notifications will appear here as butlers send messages via Telegram, email, and other channels."
 
-### Requirement: Audit Log
-The Audit Log page (`/audit-log`) SHALL provide a tamper-evident record of every operation performed by every butler. It captures triggers, ticks, session lifecycle events, schedule mutations, and state mutations -- the authoritative record of "who did what, when, and what happened."
-
-#### Scenario: Audit log filter bar
-- **WHEN** the operator interacts with the audit log filter bar
-- **THEN** four filter controls are available: Butler (dropdown populated from `/api/butlers`), Operation (dropdown with values: All, trigger, tick, session, schedule.create, schedule.update, schedule.delete, schedule.toggle, state.set, state.delete), From (date input), To (date input)
-
-#### Scenario: Audit log table columns
-- **WHEN** audit entries are displayed
-- **THEN** the table shows columns: Time (relative), Butler (outlined badge), Operation (monospace code block), Result (badge: "default" variant for success, "destructive" for error), and Request Summary (truncated JSON)
-
-#### Scenario: Expandable audit entry detail
-- **WHEN** the operator clicks an audit entry row
-- **THEN** an expanded detail row appears below showing: Request (full JSON, 2-space indented), User Context (full JSON), and Error (if result is "error", displayed with destructive styling)
-- **AND** clicking the same row again collapses the detail
-- **AND** only one entry can be expanded at a time
-
-### Requirement: Issue Detection and Surfacing
-The Issues page (`/issues`) and `IssuesPanel` component SHALL provide automated detection and grouping of errors and warnings across all butlers. Issues are the system's way of proactively alerting operators to problems that need attention.
-
-#### Scenario: Issues page layout
-- **WHEN** the operator navigates to `/issues`
-- **THEN** the page header reads "Issues" with subtitle "Grouped errors and warnings across all butlers, newest first."
-- **AND** the `IssuesPanel` renders below, showing all issues from `getIssues()`
-
-#### Scenario: Issue card structure
-- **WHEN** issues are displayed
-- **THEN** each issue renders as a bordered card showing: severity badge (destructive variant for "critical", secondary for other severities), butler name (or "N butlers" if multiple butlers are affected), description text, occurrence count with first-seen and last-seen timestamps (both relative and absolute), and optional "View" link (if `issue.link` is set) and "Acknowledge" button
-- **AND** when the issue names a single real butler (`issue.butler` is not `"multiple"`), a "Run schedule now" button is also shown, forcing that butler's scheduler to run immediately via `POST /api/butlers/{name}/tick`
-- **AND** when the issue's `type` is `"unreachable"` and it names a single real butler, a "Ping butler" button is also shown, rechecking reachability immediately via `GET /api/butlers/{name}` (a real live MCP ping, not a cached read)
-
-#### Scenario: Multi-butler issue grouping
-- **WHEN** an issue has a `butlers` array with more than one entry
-- **THEN** the display shows "N butlers" (where N is the array length) instead of a single butler name
-- **AND** this indicates the issue affects multiple butlers and is likely systemic
-- **AND** neither "Run schedule now" nor "Ping butler" is shown, since there is no single butler to target
-
-#### Scenario: Issue acknowledgment persistence (acknowledge-until-recurrence)
-- **WHEN** the operator clicks "Acknowledge" on an issue
-- **THEN** the issue is removed from the visible active list
-- **AND** the acknowledgment is persisted server-side via POST to the dismiss-issue endpoint, keyed by the server-computed `issue_key`, along with the issue's `last_seen_at` at the moment of acknowledgment
-- **AND** the acknowledgment is NOT dismiss-forever: it holds across refreshes and browsers only until the issue group recurs
-- **AND** if the group's `last_seen_at` later advances past the acknowledged watermark (a genuinely new occurrence), the issue automatically reappears in the active feed with no owner action required
-- **AND** a legacy acknowledgment recorded with no watermark (or an issue type that never carries a timestamp) falls back to holding indefinitely, since there is no recurrence signal to compare against
-- **AND** the acknowledged-issues view (`include_dismissed=true`) offers a "Restore" affordance to manually undo an acknowledgment before it would have lapsed on its own
-
-#### Scenario: Issue link navigation
-- **WHEN** an issue has a non-null `link` field
-- **THEN** a "View" button renders as a client-side link (using react-router `Link`)
-- **AND** clicking navigates to the linked resource (typically a filtered session or notification view)
-
-#### Scenario: Auto-refresh for issue detection
-- **WHEN** the issues hook polls the backend
-- **THEN** it uses a 30-second `refetchInterval` to detect new issues without manual refresh
-
 ### Requirement: System Topology Visualization
 The `TopologyGraph` component SHALL render a force-directed graph of butler nodes and their interconnections, providing at-a-glance system architecture visibility and health status.
 
@@ -392,69 +337,16 @@ The `TopologyGraph` component SHALL render a force-directed graph of butler node
 - **AND** the graph auto-fits to the viewport (`fitView`)
 - **AND** a subtle background grid pattern is rendered
 
-### Requirement: Overview Dashboard
-The `DashboardPage` (`/`) SHALL be the operator's triage cockpit and the system's landing page. It uses an editorial two-column layout to surface the most critical signals at a glance without navigation to individual domain pages.
-
-#### Scenario: Editorial two-column layout
-- **WHEN** the overview page loads at a viewport width of 1024px or wider
-- **THEN** content is arranged in a two-column editorial grid: a wider narrative column (1.4fr) on the left and an index column (1fr) on the right, with a 56px gap
-- **WHEN** the viewport is narrower than 1024px
-- **THEN** the layout collapses to a single column with the narrative above the index
-
-#### Scenario: Left column -- briefing narrative
-- **WHEN** the dashboard loads
-- **THEN** the left column displays, from top to bottom: a `DateEyebrow` with an inline `BriefingStatus` pill, a `Headline` (greet + display headline from the active briefing), an `Elaboration` paragraph (voice paragraph from the briefing), a "Needs attention" `AttentionList` section, and a `RuntimeSummaryKpi` strip
-- **AND** while a briefing refetch is in progress, the `Elaboration` text shows a loading indicator
-- **AND** a manual refetch control on the `BriefingStatus` pill allows triggering a fresh briefing on demand
-
-#### Scenario: AttentionList items
-- **WHEN** the `AttentionList` renders
-- **THEN** it derives items from `useIssues()` ordered by severity and staleness (client-side)
-
-#### Scenario: RuntimeSummaryKpi strip
-- **WHEN** the `RuntimeSummaryKpi` renders
-- **THEN** it shows KPI cells derived from butler runtime state (`useButlers()`, `useButlerHeartbeats()`), and approval count (`useApprovalMetrics()`)
-- **AND** the approvals KPI cell is visible only when approval metrics data is available (not shown on error)
-
-#### Scenario: Right column -- operations index
-- **WHEN** the dashboard loads
-- **THEN** the right column shows a `ButlerIndex` followed by an `OperationsNowList`
-- **AND** the `ButlerIndex` shows all butlers from `useButlers()` enriched with per-butler cost from `useSpendSummary("today")`
-- **AND** the `OperationsNowList` shows signal rows for: pending approvals (`useApprovalMetrics()`), notification pressure (`useNotificationStats()`), QA state (`useQaSummary()`), and the five most recent timeline entries (`useTimeline({ limit: 5 })`)
-
-#### Scenario: Cost surface
-- **WHEN** the page loads
-- **THEN** a full-width cost band below the editorial grid shows a `CostWidget` (aggregate cost today plus the top-cost butler) in a half-width column, followed by a `TopSessionsTable` listing the most-expensive recent sessions
-- **AND** both surfaces draw from `useSpendSummary("today")` and `useTopSessions()` respectively
-
-### Requirement: Real-Time Polling and Auto-Refresh
-All visibility surfaces SHALL use TanStack Query (React Query) for data fetching. Bus-covered surfaces poll at a bus-aware cadence (`useBusAwarePollInterval`); others poll at a fixed interval. Neither is user-configurable — the prior manual `AutoRefreshToggle` control retired (bu-01r64.3).
-
-#### Scenario: Default polling intervals per surface
-- **WHEN** the Sessions page is active
-- **THEN** sessions list data polls via `useBusAwarePollInterval` (bu-01r64.3): 5 minutes while the fleet event bus is connected (live session start/end events are the primary update path), 30 seconds while the bus is down/reconnecting
-- **WHEN** the Timeline page is active
-- **THEN** timeline data polls the same bus-aware cadence (session, notification, and ingestion events all invalidate its cache key)
-- **WHEN** the Audit Log is active
-- **THEN** audit entries refetch every 30 seconds
-- **WHEN** the Issues page is active
-- **THEN** issues poll the same bus-aware cadence as Sessions/Timeline above (issues are bus-covered — see `event-cache-manifest.ts`)
-- **WHEN** the Sessions page's `SessionStripeChart` is active
-- **THEN** it polls the same bus-aware cadence as the sessions list above (bu-01r64.4 closed its coverage-manifest gap — see `event-cache-manifest.ts`)
-
-#### Scenario: Dashboard overview refresh
-- **WHEN** the dashboard is active
-- **THEN** the briefing, butler list, cost summary, issues, heartbeats, notification stats, QA summary, approval metrics, top sessions, and timeline data each refresh at their respective default TanStack Query refetch intervals
-
 ### Requirement: Pagination Consistency
-Offset-paginated surfaces SHALL share the same offset-based pattern using backend `PaginationMeta` responses. The cross-butler Sessions list (`GET /api/sessions`) is the one exception: it uses keyset (cursor) pagination, to avoid the cross-butler count fan-out.
+Offset-paginated dashboard surfaces, including domain pages, SHALL share the same offset-based pattern using backend `PaginationMeta` responses, per the envelope conventions in `docs/api_and_protocols/response-conventions.md`. The cross-butler Sessions list (`GET /api/sessions`) is the one exception: it uses keyset (cursor) pagination, to avoid the cross-butler count fan-out. On every paginated surface, changing any filter parameter SHALL reset the view to its first page.
 
 #### Scenario: Offset-based pagination contract
 - **WHEN** an offset-paginated surface (Notifications, Audit Log, and the per-butler `GET /api/butlers/{name}/sessions` list) renders data
 - **THEN** it sends `offset` and `limit` parameters derived from `page * PAGE_SIZE`
 - **AND** the response `meta` object contains `total`, `offset`, `limit`, and `has_more`
 - **AND** Previous/Next buttons are disabled at the start/end of the result set
-- **AND** a "Page X of Y" indicator shows current position
+- **AND** a position indicator ("Page X of Y" or "Showing X-Y of Z") shows current position
+- **AND** changing any filter parameter resets the page to the first page
 
 #### Scenario: Cross-butler session keyset pagination
 - **WHEN** the cross-butler Sessions list (`GET /api/sessions`) renders data
@@ -482,7 +374,7 @@ The visibility surfaces SHALL be interconnected through contextual links that al
 
 #### Scenario: Notification to trace navigation
 - **WHEN** a notification row has a `trace_id`
-- **THEN** a "Trace {shortId}" link navigates to `/ingestion?tab=timeline`
+- **THEN** a "Trace {shortId}" link navigates to `/ingestion?trace={trace_id}`
 
 #### Scenario: Session detail to butler navigation
 - **WHEN** a session detail page shows the butler name
@@ -521,19 +413,16 @@ The system SHALL support tracing a request from initial ingestion through final 
 - **AND** from any session, open the session detail drawer to inspect tool calls and execution detail
 
 ### Requirement: Loading and Error States
-All visibility surfaces SHALL handle loading and error states consistently to prevent operator confusion.
+All visibility surfaces SHALL handle loading and error states consistently to prevent operator confusion, using the shared shell patterns in `dashboard-shell` (Requirement: Skeleton Loading Components; Requirement: Empty State Pattern; Requirement: Error Boundary). Loading and empty states SHALL be mutually exclusive: skeletons while loading, and the empty state only after loading completes with zero results.
 
 #### Scenario: Skeleton loading states
-- **WHEN** data is loading for any table (Sessions, Notifications, Audit Log)
-- **THEN** skeleton rows are displayed with animated placeholder bars matching the column layout
-- **WHEN** data is loading for the Timeline
-- **THEN** 8 skeleton rows with timestamp, badge, and text placeholders are shown
-- **WHEN** data is loading for the Topology
-- **THEN** a `h-96` animated pulse placeholder is shown
+- **WHEN** data is loading for any visibility surface (Sessions, Notifications, Audit Log, Timeline, Topology)
+- **THEN** the surface renders the shell skeleton pattern shaped like its loaded layout
+- **AND** it does not render its empty state
 
 #### Scenario: Empty states
 - **WHEN** no data matches the current view (after loading completes)
-- **THEN** a centered empty state message is shown with a descriptive title and explanation
+- **THEN** the shell empty-state pattern is shown with a descriptive title and explanation
 - **AND** the message varies by surface (e.g. "No sessions found" with "Sessions will appear here as butlers process triggers and scheduled tasks.")
 
 #### Scenario: Error states
@@ -591,109 +480,11 @@ The frontend TypeScript interfaces SHALL define the data contracts that all visi
 - **WHEN** the issues API responds
 - **THEN** each issue conforms to: `severity` (string), `type` (string), `butler` (string), `description` (string), `link` (string | null), `error_message` (optional string | null), `occurrences` (optional number), `first_seen_at` (optional string | null), `last_seen_at` (optional string | null), `butlers` (optional string array for multi-butler issues)
 
-### Requirement: Ingestion Timeline Status Column
-The ingestion timeline ledger at `/ingestion` SHALL display a Status column indicating the outcome of each event.
-
-#### Scenario: Status column rendering
-- **WHEN** the timeline table renders
-- **THEN** a "Status" column SHALL appear after the "Sender" column
-- **AND** each row SHALL display a color-coded status badge
-
-#### Scenario: Status badge colors
-- **WHEN** a status badge is rendered
-- **THEN** `ingested` SHALL render as a green badge, `filtered` as a gray badge, `error` as a red badge, `replay_pending` as a blue badge, `replay_complete` as a green-outline badge, and `replay_failed` as a red-outline badge
-
-#### Scenario: Filter reason tooltip
-- **WHEN** the status is `filtered` or `error`
-- **THEN** hovering over the status badge SHALL display a tooltip with the `filter_reason` value
-- **AND** for `error` status, the tooltip SHALL also include the `error_detail` if available
-
-### Requirement: Ingestion Timeline Action Column
-The ingestion timeline table SHALL display an Action column with a Replay
-button only for events that are both status-replayable and server-confirmed
-replay-safe.
-
-#### Scenario: Action column rendering
-- **WHEN** the timeline table renders
-- **THEN** an "Action" column SHALL appear as the last column
-
-#### Scenario: Replay button for safe filtered events
-- **WHEN** a row has status `filtered` or `error` and server-derived
-  replay-policy evidence is safe
-- **THEN** the Action column SHALL display a "Replay" button
-- **AND** clicking the button SHALL call `POST /api/ingestion/events/{id}/replay`
-
-#### Scenario: Replay button for safe replay_failed events
-- **WHEN** a row has status `replay_failed` and server-derived replay-policy
-  evidence is safe
-- **THEN** the Action column SHALL display a "Retry" button
-- **AND** clicking the button SHALL call `POST /api/ingestion/events/{id}/replay`
-
-#### Scenario: Unsafe event action is non-actionable
-- **WHEN** a row has a status that could otherwise be replayed but its
-  server-derived replay policy is unsafe or unresolved
-- **THEN** the Action column SHALL not expose a clickable replay control
-- **AND** the UI SHALL provide a concise non-sensitive explanation
-
-#### Scenario: Replay button disabled during pending
-- **WHEN** a row has status `replay_pending`
-- **THEN** the Action column SHALL display a spinner or "Pending..." label
-- **AND** no button SHALL be clickable
-
-#### Scenario: No action for ingested events
-- **WHEN** a row has status `ingested` or `replay_complete`
-- **THEN** the Action column SHALL be empty (no button rendered)
-
-#### Scenario: Optimistic UI update on replay
-- **WHEN** the operator clicks the Replay button and the API returns 200
-- **THEN** the row's status badge SHALL immediately update to `replay_pending` (optimistic update)
-- **AND** the Replay button SHALL be replaced with a spinner
-
-#### Scenario: Replay button for filtered events
-- **WHEN** a row has status `filtered` or `error`
-- **THEN** the Action column SHALL display a "Replay" button
-- **AND** clicking the button SHALL call `POST /api/ingestion/events/{id}/replay`
-
-#### Scenario: Replay button for replay_failed events
-- **WHEN** a row has status `replay_failed`
-- **THEN** the Action column SHALL display a "Retry" button
-- **AND** clicking the button SHALL call `POST /api/ingestion/events/{id}/replay`
-
-#### Scenario: Error handling on replay
-- **WHEN** the replay API returns 409 or another error
-- **THEN** a toast notification SHALL display the error message
-- **AND** the row's status SHALL remain unchanged
-
-### Requirement: Ingestion Timeline Status Filter
-The ingestion timeline filter bar SHALL include a Status filter dropdown.
-
-#### Scenario: Status filter options
-- **WHEN** the operator interacts with the Status filter
-- **THEN** the filter SHALL render as multi-select toggle chips covering: Ingested, Skipped, Filtered, Error, Replay Pending, Replay Complete, Replay Failed
-- **AND** toggling chips SHALL pass a comma-separated `statuses=<csv>` param (single `status=<value>` is also accepted) and reset pagination
-
-### Requirement: Ingestion Timeline Unified Data Source
-The timeline table SHALL display events from both `public.ingestion_events` and `connectors.filtered_events` in a single merged view.
-
-#### Scenario: Unified ordering
-- **WHEN** the timeline loads
-- **THEN** events from both sources SHALL be interleaved by `received_at DESC`
-- **AND** the operator SHALL not be able to distinguish the source table visually (unified UX)
-
-#### Scenario: Column mapping for filtered events
-- **WHEN** a filtered event row is displayed
-- **THEN** the Request ID column SHALL show the `connectors.filtered_events.id`
-- **AND** the Channel column SHALL show `source_channel`
-- **AND** the Sender column SHALL show `sender_identity`
-- **AND** the Tier column SHALL be empty or show "—" (filtered events have no ingestion tier)
-- **AND** the Tokens and Cost columns SHALL be empty or show "—" (no sessions spawned)
-- **AND** the row SHALL NOT be expandable (no session flamegraph for filtered events)
-
 ### Requirement: Timeline minute density and historical interval selection
 The dashboard SHALL display server-aggregated per-minute event density and SHALL load the complete selected minute through interval-filtered pagination, independently of which rows were previously loaded.
 
 ID: REQ-dashboard-visibility-001
-Source: bu-ddo0n; proposed complete-timeline-followups/design.md Density and interval contract; dashboard-visibility Unified Timeline
+Source: dashboard-visibility Unified Timeline; frontend/src/pages/TimelinePage.tsx
 Scope: v1-mandatory
 
 #### Scenario: Density includes events beyond the loaded page
@@ -751,7 +542,7 @@ Scope: v1-mandatory
 The dashboard SHALL show a collapsible strip above the timeline listing recent records created in the last 24 hours that are currently marked failed, with server-derived counts independent of loaded timeline rows and no claim of unresolved work.
 
 ID: REQ-dashboard-visibility-002
-Source: bu-ddo0n; proposed complete-timeline-followups/design.md Recent-failure strip
+Source: frontend/src/pages/TimelinePage.tsx
 Scope: v1-mandatory
 
 #### Scenario: Counts and rows reflect canonical failures
@@ -790,7 +581,7 @@ Scope: v1-mandatory
 The dashboard SHALL support j/k traversal of rendered timeline disclosure controls and expose existing view presets through the page action registry while preserving shell search and current timeline shortcuts.
 
 ID: REQ-dashboard-visibility-003
-Source: bu-ddo0n; proposed complete-timeline-followups/design.md Keyboard flow; dashboard-shell Keyboard Shortcuts
+Source: dashboard-shell Keyboard Shortcuts; frontend/src/pages/TimelinePage.tsx
 Scope: v1-mandatory
 
 #### Scenario: Real focus and one activation
@@ -998,3 +789,31 @@ truthful complete zero remains quiet.
   `pending_actions_sources_degraded`
 - **THEN** the Sidebar keeps its existing `/approvals` link
 - **AND** renders an accessible amber unavailable marker instead of `0`.
+
+### Requirement: Issues page presents grouped issues
+The Issues page (`/issues`) and `IssuesPanel` SHALL present the grouped issues feed from `GET /api/issues` with per-issue verbs. Aggregation, grouping keys, and acknowledge-until-recurrence semantics are owned by `dashboard-api` Requirement: Issues Aggregation; refresh follows `dashboard-shell` Requirement: Bus-Aware Poll Architecture.
+
+#### Scenario: Issues page layout
+- **WHEN** the operator navigates to `/issues`
+- **THEN** the page header reads "Issues" with a subtitle stating that it groups errors and warnings across all butlers, newest first
+- **AND** the `IssuesPanel` renders below it with every issue from the feed
+
+#### Scenario: Issue card structure
+- **WHEN** issues are displayed
+- **THEN** each issue shows its severity, the affected butler (or "N butlers" when several are affected), description, occurrence count with first-seen and last-seen timestamps, an optional "View" link when `issue.link` is set, and an "Acknowledge" action
+- **AND** when the issue names a single real butler, a "Run schedule now" action forces that butler's scheduler to run via `POST /api/butlers/{name}/tick`
+- **AND** when the issue's `type` is `"unreachable"` and it names a single real butler, a "Ping butler" action rechecks reachability via a live `GET /api/butlers/{name}`
+
+#### Scenario: Multi-butler issue grouping
+- **WHEN** an issue has a `butlers` array with more than one entry
+- **THEN** the display shows "N butlers" instead of a single butler name
+- **AND** neither "Run schedule now" nor "Ping butler" is shown, since there is no single butler to target
+
+#### Scenario: Acknowledging removes the issue until it recurs
+- **WHEN** the operator acknowledges an issue
+- **THEN** the issue leaves the active list and the acknowledgement is persisted server-side
+- **AND** the acknowledged-issues view offers a "Restore" action that undoes the acknowledgement
+
+#### Scenario: Issue link navigation
+- **WHEN** an issue has a non-null `link` field
+- **THEN** the "View" action is a client-side link to the linked resource (typically a filtered session or notification view)

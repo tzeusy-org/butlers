@@ -1,7 +1,7 @@
 # Dashboard Data Layer and API
 
 ## Purpose
-Defines the complete data access layer connecting the Butlers dashboard frontend to backend infrastructure. This covers the FastAPI application factory, REST endpoint inventory across all domains, cross-butler database fan-out, MCP client proxy, butler-specific route auto-discovery, TanStack Query refresh patterns, SSE real-time streaming, OAuth bootstrap flow, generic secrets management, response envelope standards, and the pricing/cost estimation model. Together these form the single-pane-of-glass contract between the React frontend and the Python backend.
+Defines the complete data access layer connecting the Butlers dashboard frontend to backend infrastructure. This covers the FastAPI application factory, cross-domain route rules (the full route list is the generated OpenAPI schema), cross-butler database fan-out, MCP client proxy, butler-specific route auto-discovery, frontend query defaults, SSE real-time streaming, OAuth bootstrap flow, generic secrets management, response envelope standards, and the pricing/cost estimation model. Together these form the single-pane-of-glass contract between the React frontend and the Python backend.
 
 ## Requirements
 
@@ -346,383 +346,6 @@ The session list/aggregate endpoints MUST interpret a bare `YYYY-MM-DD` `from_da
 #### Scenario: Butler config endpoint
 - **WHEN** `GET /api/butlers/{name}/config` is called
 - **THEN** `butler.toml` is parsed as a dict and returned along with raw text of `CLAUDE.md`, `AGENTS.md`, and `MANIFESTO.md` (null if missing)
-
-### Requirement: API Endpoint Inventory
-
-The API SHALL expose the following complete endpoint inventory, grouped by domain.
-
-#### Core System
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/health` | Health check |
-| GET | `/api/butlers` | List all butlers with live status |
-| GET | `/api/butlers/{name}` | Butler detail |
-| GET | `/api/butlers/{name}/config` | Butler configuration files |
-| GET | `/api/butlers/{name}/skills` | Butler skills (name + SKILL.md content) |
-| POST | `/api/butlers/{name}/trigger` | Trigger runtime session |
-| POST | `/api/butlers/{name}/tick` | Force scheduler tick |
-| GET | `/api/butlers/{name}/mcp/tools` | List MCP tools |
-| POST | `/api/butlers/{name}/mcp/call` | Invoke MCP tool |
-| GET | `/api/butlers/{name}/modules` | Module health status |
-| GET | `/api/butlers/{name}/module-states` | Module runtime states |
-| PUT | `/api/butlers/{name}/module-states/{module}/enabled` | Toggle module enabled state |
-
-#### Dashboard Conversations
-| Method | Path | Response | Purpose |
-|--------|------|----------|---------|
-| GET | `/api/butlers/{name}/conversations` | `PaginatedResponse<ConversationSummary>` | List conversations |
-| GET | `/api/butlers/{name}/conversations/search` | `PaginatedResponse<ConversationSearchResult>` | Search conversation history |
-| GET | `/api/butlers/{name}/conversations/summary` | `ConversationStats` | Conversation statistics |
-| POST | `/api/butlers/{name}/conversations` | `text/event-stream` | Create and submit an immutable dashboard user turn |
-| GET | `/api/butlers/{name}/conversations/{conversation_id}/messages` | `PaginatedResponse<ConversationMessage>` | List messages |
-| POST | `/api/butlers/{name}/conversations/{conversation_id}/messages` | `text/event-stream` | Submit a follow-up user turn |
-| PATCH | `/api/butlers/{name}/conversations/{conversation_id}` | `ConversationSummary` | Rename, archive, or unarchive a conversation |
-| POST | `/api/butlers/{name}/conversation-turns/{message_id}/cancel` | `ConversationCancelResponse` | Canonical durable Stop for one immutable user turn |
-| POST | `/api/butlers/{name}/conversations/{conversation_id}/cancel` | `ConversationCancelResponse` | Legacy compatibility Stop route; dashboard clients use the message-scoped route |
-
-#### Scenario: Dashboard conversation stream and Stop semantics
-- **WHEN** the dashboard submits a user turn
-- **THEN** the API opens durable control keyed by the immutable `message_id` before external ingress, and only the caller with the `dispatch` claim may invoke `ingest.v1`
-- **AND** a caller observing `accepted` observes the original request, while `pending` or `cancelling` yields `INGEST_IN_PROGRESS` plus `done` and never creates a replay
-- **AND** confirmed cancellation yields `SESSION_CANCELLED`; an unprovable recovered predecessor yields `TURN_OUTCOME_UNKNOWN`; both suppress automatic replay
-- **AND** the raw `ConversationCancelResponse` documents exactly one truthful Stop result (`cancelled`, `already_finished`, or unconfirmed), while non-2xx failures retain `ErrorResponse`
-
-#### Sessions
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/sessions` | Cross-butler paginated session list (fan-out) |
-| GET | `/api/sessions/{id}` | Cross-butler session detail (fan-out; the ONLY detail route) |
-| GET | `/api/butlers/{name}/sessions` | Butler-scoped paginated session list |
-
-Single-session detail is served ONLY by the cross-butler `GET /api/sessions/{id}`
-fan-out. Session ids are globally unique, so the global path resolves pinned
-rows and deep links without a `?butler=` hint; the butler-scoped detail route
-was removed (no compat shim).
-
-#### Ingestion Events
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/ingestion/events` | Cursor-paginated ingestion event list (`limit`, `cursor`, and primary `channels` filter; deprecated server-only `source_channel` compatibility) |
-| GET | `/api/ingestion/events/{requestId}` | Single ingestion event detail |
-| GET | `/api/ingestion/events/{requestId}/sessions` | All sessions attributed to this request ID across all butlers |
-| GET | `/api/ingestion/events/{requestId}/rollup` | Token/cost/butler topology rollup for this request ID |
-
-The ingestion-events list accepts an opaque `cursor` from the preceding response
-alongside `limit`; its response uses the cursor envelope
-`{ "data": T[], "meta": { "next_cursor": string | null, "has_more": boolean } }`
-and does not return `total` or `offset`. `channels` is the primary
-comma-separated source-channel filter. The server accepts the deprecated,
-single-value `source_channel` query parameter only as server-side compatibility;
-it is not exposed by the private frontend client. When both parameters are
-present, `channels` takes precedence over `source_channel`.
-
-#### Timeline
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/timeline` | Cross-butler unified event stream (cursor pagination) |
-
-#### Notifications
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/notifications` | Cross-butler paginated notification list |
-| GET | `/api/notifications/stats` | Aggregate notification statistics |
-| GET | `/api/butlers/{name}/notifications` | Butler-scoped notification list |
-| POST | `/api/notifications/{id}/retry` | Manually re-attempt a failed notification on the same channel |
-| POST | `/api/notifications/{id}/escalate` | Manually re-attempt a failed notification on the owner's alternate channel |
-
-#### Scenario: Notifications degraded source is named, not rendered as an all-clear
-- **WHEN** `GET /api/notifications` or `GET /api/notifications/stats` returns
-  HTTP 200 but the Switchboard notifications source was unreachable (so the
-  counts are zero placeholders and the list page is empty)
-- **THEN** the response carries `source_available: false` (following the
-  fleet-wide degraded-envelope convention); the field is absent or `true` when
-  the source answered
-- **AND** the frontend notifications page SHALL NOT render the fabricated zeros
-  as a truthful tally — the stats tiles show an em-dash (not a green `0.0%`
-  failure rate) and the feed shows a named `SourceDegradedNote` naming the
-  unreachable source rather than the calm "No notifications found" empty state
-- **AND** a reachable-but-empty source (`source_available` absent or `true`
-  with genuine zeros) keeps its honest zeros and empty state
-
-#### Scenario: Manual retry re-sends a failed notification and links the new attempt
-- **WHEN** `POST /api/notifications/{id}/retry` is called on a notification
-  whose stored `status` is `failed`
-- **THEN** the backend re-invokes delivery in-process (the same
-  approval-push-runtime pattern the dashboard-API process already uses to
-  call `deliver()` without a `switchboard_client` MCP connection), using the
-  envelope persisted at delivery time (`metadata.notify_request`) or, for
-  older rows that predate it, a synthetic envelope built from the row's own
-  `channel`/`recipient`/`message` columns
-- **AND** the original notification is flipped to `status = 'read'` with a
-  `metadata.retried_to` marker pointing at the new attempt's id, regardless
-  of whether the new attempt itself succeeds or fails again — a human has
-  acted on it either way, and a retry that fails again is its own new,
-  independently actionable row rather than a reason to leave the original
-  stuck in `failed`
-- **AND** the response reports the new attempt's own `status` (`sent` or
-  `failed`) and `error`, never a fabricated success for the original
-- **AND** a best-effort `public.attention_ledger` event is recorded
-  (`source="notify"`, `outcome="delivered"` or `"failed"`,
-  `notification_ref` set to the new attempt's id) so the manual action is
-  traceable the same way an automatic notify() outcome is
-- **AND** `GET /api/notifications?status=terminal_failed` and the aggregate
-  `failed` count in `GET /api/notifications/stats` no longer include the
-  original row afterward, since it is no longer `status = 'failed'`
-- **AND** `effective_status` on the original row reports `"retried"` (not
-  the generic `"read"`) so the UI communicates what happened, not just that
-  it was acknowledged
-
-#### Scenario: Manual retry rejects a non-failed notification
-- **WHEN** `POST /api/notifications/{id}/retry` or `.../escalate` is called
-  on a notification whose stored `status` is not `failed`
-- **THEN** the endpoint returns HTTP 409 without attempting delivery
-- **AND** HTTP 404 is returned when `{id}` does not exist, and HTTP 503 when
-  the Switchboard pool is unavailable
-
-#### Scenario: Concurrent or replayed retry/escalate never double-delivers
-- **WHEN** two `POST .../retry` (or two `.../escalate`) requests for the same
-  `{id}` race — a double-click, two open tabs, or a client resending after a
-  perceived timeout — and both observe `status = 'failed'` on their initial
-  read
-- **THEN** immediately before invoking real delivery, the backend atomically
-  claims the row with a single conditional `UPDATE notifications SET status
-  = 'read' WHERE id = $1 AND status = 'failed' RETURNING *`; only the first
-  request's `UPDATE` can match a `'failed'` row, so exactly one request
-  proceeds to redeliver and the loser's claim affects zero rows
-- **AND** the losing request returns HTTP 409 without invoking delivery — the
-  user is never sent the notification twice
-- **AND** because the claim (not delivery success) is what leaves `'failed'`
-  status, a delivery-adjacent failure after the claim — including
-  `_finalize_manual_action`'s own metadata-merge write failing after a
-  successful send — cannot leave the row re-claimable: a subsequent client
-  retry after such a failure also observes a non-`'failed'` status and gets
-  HTTP 409, never a second real send. The tradeoff is a possible orphaned row
-  (already `status = 'read'` but missing its `retried_to`/`escalated_to`
-  forward-link marker) rather than a duplicate delivery
-
-#### Scenario: Manual escalate re-sends on the owner's alternate channel
-- **WHEN** `POST /api/notifications/{id}/escalate` is called on a failed
-  `telegram` or `email` notification
-- **THEN** the backend swaps to the other channel (`telegram` -> `email`,
-  `email` -> `telegram`) and resolves the owner's contact for it via
-  `resolve_owner_entity_info` — the same owner-credential lookup the
-  dashboard's connector actions already use for owner-directed delivery
-- **AND** HTTP 422 is returned, without attempting delivery, when the
-  channel is neither `telegram` nor `email` (no alternate-channel resolver
-  is wired for other channels), or when the owner has no contact configured
-  for the alternate channel
-- **AND** on success the original notification is flipped to `status =
-  'read'` with a `metadata.escalated_to` marker, following the same
-  forward-link and ledger-recording contract as manual retry, and
-  `effective_status` reports `"escalated"`
-
-#### State Store
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/butlers/{name}/state` | List all state entries |
-| GET | `/api/butlers/{name}/state/{key}` | Get single state entry |
-| PUT | `/api/butlers/{name}/state/{key}` | Set state value (MCP proxy) |
-| DELETE | `/api/butlers/{name}/state/{key}` | Delete state entry (MCP proxy) |
-
-#### Schedules
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/butlers/{name}/schedules` | List schedules |
-| POST | `/api/butlers/{name}/schedules` | Create schedule (MCP proxy) |
-| PUT | `/api/butlers/{name}/schedules/{id}` | Update schedule (MCP proxy) |
-| DELETE | `/api/butlers/{name}/schedules/{id}` | Delete schedule (MCP proxy) |
-| PATCH | `/api/butlers/{name}/schedules/{id}/toggle` | Toggle schedule enabled (MCP proxy) |
-
-#### Schedule Execution Semantics
-- **WHEN** the dashboard displays or interprets schedule data
-- **THEN** `Schedule.source` describes the schedule origin (`toml` for TOML-defined, `db` for dashboard-created); it is NOT the execution mode
-- **AND** runtime-mode schedules (those with a `prompt`) execute through `spawner.trigger(..., trigger_source="schedule:<task-name>")` and correlate with `sessions` rows
-- **AND** native-mode schedules (those with `dispatch_mode = "job"` and `job_name`) execute deterministic Python jobs directly and may not create `sessions` rows
-- **AND** the dashboard treats schedule status fields (`enabled`, `next_run_at`, `last_run_at`) as authoritative regardless of execution mode
-- **AND** schedule failures for both execution modes surface through `GET /api/issues` as `scheduled_task_failure:<schedule-name>`
-
-#### Spend
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/spend/summary` | Aggregate cost summary (MCP fan-out) |
-| GET | `/api/spend/daily` | Daily cost time series (MCP fan-out) |
-| GET | `/api/spend/top-sessions` | Most expensive sessions (MCP fan-out) |
-| GET | `/api/spend/by-schedule` | Per-schedule cost analysis (MCP fan-out) |
-
-#### Memory
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/memory/stats` | Aggregated memory tier counts (fan-out) |
-| GET | `/api/memory/episodes` | Paginated episode list (fan-out) |
-| GET | `/api/memory/facts` | Paginated fact list with text search (fan-out) |
-| GET | `/api/memory/facts/{id}` | Single fact detail (fan-out) |
-| GET | `/api/memory/rules` | Paginated rule list with text search (fan-out) |
-| GET | `/api/memory/rules/{id}` | Single rule detail (fan-out) |
-| GET | `/api/memory/activity` | Recent memory activity interleaved (fan-out) |
-
-#### Approvals
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/approvals/actions` | Pending action queue |
-| GET | `/api/approvals/actions/executed` | Executed actions audit |
-| GET | `/api/approvals/actions/{id}` | Action detail |
-| POST | `/api/approvals/actions/{id}/approve` | Approve action and dispatch for execution |
-| POST | `/api/approvals/actions/{id}/reject` | Reject action with optional reason |
-| POST | `/api/approvals/actions/expire-stale` | Expire stale actions |
-| GET | `/api/approvals/rules` | Standing rule list |
-| GET | `/api/approvals/rules/{id}` | Rule detail |
-| POST | `/api/approvals/rules` | Create standing approval rule |
-| POST | `/api/approvals/rules/from-action` | Create rule from a pending action |
-| POST | `/api/approvals/rules/{id}/revoke` | Revoke (deactivate) rule |
-| GET | `/api/approvals/rules/suggestions/{actionId}` | Constraint suggestions |
-| GET | `/api/approvals/metrics` | Aggregate approval metrics |
-
-#### Scenario: Approvals degraded pools are named, not rendered as an empty queue
-- **WHEN** `GET /api/approvals` or `GET /api/approvals/history` fans out across
-  each butler's pool and one or more pools fail their query (a genuine error —
-  the request still returns HTTP 200 with the summaries from the pools that
-  answered)
-- **THEN** the response includes `meta.sources_degraded: string[]` naming the
-  dropped pools (following the fleet-wide degraded-envelope convention); the
-  field is absent or empty when every queried pool answered
-- **AND** the frontend approvals verdict opener SHALL NOT render the calm "No
-  approvals waiting." all-clear while a pool is degraded — it names the dropped
-  pools inline as a clause that suppresses the all-clear line
-- **AND** the approvals queue rail SHALL NOT render the "No pending approvals."
-  empty state as an all-clear while a pool is degraded — it names the dropped
-  pools via a `SourceDegradedNote` (in place of the empty state when zero rows
-  survived, above the rows when some did)
-- **AND** a reachable queue with `meta.sources_degraded` absent or empty keeps
-  its honest empty state and calm verdict
-
-#### Search
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/search` | Cross-butler ILIKE search (entities, contacts, sessions, state) |
-
-#### Audit Log
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/audit-log` | Paginated audit log from switchboard DB |
-
-#### Issues
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/issues` | Aggregated issues (reachability + audit errors) |
-
-#### Calendar Workspace
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/calendar/workspace` | Normalized calendar entries for time range |
-| GET | `/api/calendar/workspace/meta` | Workspace metadata (sources, lanes, writables) |
-| POST | `/api/calendar/workspace/sync` | Trigger provider/projection sync |
-| POST | `/api/calendar/workspace/user-events` | Create/update/delete user-view events (MCP) |
-| POST | `/api/calendar/workspace/butler-events` | Create/update/delete/toggle butler events (MCP) |
-| GET | `/api/calendar/workspace/audit` | Calendar mutation audit trail (read-only) |
-| POST | `/api/calendar/workspace/undo/{action_id}` | Reverse a previously-applied calendar mutation |
-
-#### OAuth
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/oauth/{provider}/start` | Begin OAuth flow for any provider (generalised; `provider=google` unchanged) |
-| GET | `/api/oauth/{provider}/callback` | Handle OAuth callback for any provider (generalised) |
-| GET | `/api/oauth/google/start` | Begin Google OAuth flow (redirect or JSON) |
-| GET | `/api/oauth/google/callback` | Handle Google OAuth callback |
-| GET | `/api/oauth/status` | OAuth credential status probe |
-| PUT | `/api/oauth/google/credentials` | Store Google app credentials |
-| GET | `/api/oauth/google/credentials` | Masked credential status |
-| DELETE | `/api/oauth/google/credentials` | Delete Google credentials |
-
-#### Secrets
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/butlers/{name}/secrets` | List secrets (metadata only, values masked) |
-| GET | `/api/butlers/{name}/secrets/{key}` | Single secret metadata |
-| PUT | `/api/butlers/{name}/secrets/{key}` | Upsert secret (write-only value) |
-| DELETE | `/api/butlers/{name}/secrets/{key}` | Delete secret |
-| GET | `/api/secrets/inventory` | Passport inventory (cli/system/user; `?identity=`) |
-| GET | `/api/secrets/user/{provider}` | User credential evidence (`?identity=`) |
-| GET | `/api/secrets/system/{key}` | System secret evidence |
-| GET | `/api/secrets/cli/{id}` | CLI runtime evidence |
-| POST | `/api/secrets/user/{provider}/reauthorize` | Begin reauthorize OAuth dance (`?identity=`) |
-| POST | `/api/secrets/user/{provider}/rotate` | Rotate user credential value (`?identity=`) |
-| POST | `/api/secrets/user/{provider}/disconnect` | Disconnect user credential (`?identity=`) |
-| POST | `/api/secrets/user/{provider}/probe` | Probe user credential (`?identity=`) |
-| POST | `/api/secrets/system/{key}` | Set/rotate/override system secret |
-| POST | `/api/secrets/system/{key}/probe` | Probe system secret |
-| DELETE | `/api/secrets/system/{key}` | Remove system secret/override (`?target=`) |
-| POST | `/api/secrets/cli/{id}/rotate` | Rotate CLI runtime (returns value once) |
-| POST | `/api/secrets/cli/{id}/revoke` | Revoke CLI runtime |
-| GET | `/api/secrets/audit/{scope}/{key}` | Per-credential audit history (`?limit=`) |
-| GET | `/api/secrets/breaks-catalogue` | Provider feature/break catalogue (`?provider=`) |
-
-#### SSE
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/events` | Server-Sent Events stream |
-
-### Requirement: TanStack Query Patterns
-The frontend SHALL use TanStack Query (`@tanstack/react-query`) via `frontend/src/hooks/` for all data fetching, with domain-specific stale times, refetch intervals, and mutation invalidation patterns.
-
-#### Scenario: Default query client configuration
-- **WHEN** the TanStack QueryClient is initialized (`frontend/src/lib/query-client.ts`)
-- **THEN** default `staleTime` is 30,000 ms (30s) and `retry` is 1
-
-#### Scenario: Domain-specific refetch intervals
-- **WHEN** hooks are used from the hooks directory
-- **THEN** the following refetch intervals are applied:
-
-| Domain | Interval | Hooks |
-|--------|----------|-------|
-| Butlers list | 30s | `useButlers` |
-| Sessions (list) | 30s | `useSessions`, `useButlerSessions` |
-| Schedules | 30s | `useSchedules` |
-| State entries | 30s | `useButlerState` |
-| Issues | 30s | `useIssues` |
-| Audit log | 30s | `useAuditLog` |
-| Ingestion events | 30s | `useIngestionEvents` |
-| Timeline | 30s (default, overridable) | `useTimeline` |
-| Health measurements | 30s | `useMeasurements`, `useMedications`, `useConditions`, `useSymptoms`, `useMeals`, `useResearch` |
-| Memory stats/episodes/facts/rules | 30s | `useMemoryStats`, `useEpisodes`, `useFacts`, `useRules` |
-| Switchboard routing/registry | 30s | `useRoutingLog`, `useRegistry` |
-| Backfill jobs | 30s | `useBackfillJobs`, `useBackfillJob` |
-| Connector detail | 30s | `useConnectorDetail` |
-| Calendar workspace | 5m while bus-connected / 30s fallback (default, overridable) | `useCalendarWorkspace`, `useCalendarOverlays`, `useCalendarDayBriefing`, `useCalendarProposals`, `useCalendarWorkspaceSearch`, `useCalendarWorkspaceMeta`, `useCalendarWorkspaceEntry`, `useCalendarDuplicates`, `useCalendarConflicts`, `useCalendarWorkspaceAudit` |
-| Spend summary | 60s | `useSpendSummary` |
-| Daily spend | 60s | `useDailySpend` |
-| Top sessions | 60s | `useTopSessions` |
-| Connectors list/summary | 60s | `useConnectorSummaries`, `useCrossConnectorSummary`, `useIngestionOverview`, `useConnectorStats` |
-| Connector fanout | 120s | `useConnectorFanout` |
-| Calendar workspace meta | 60s (default, overridable) | `useCalendarWorkspaceMeta` |
-| Memory activity | 15s | `useMemoryActivity` |
-| Backfill job progress (active) | 5s | `useBackfillJobProgress` (when status is pending/active) |
-| Backfill job progress (idle) | 30s | `useBackfillJobProgress` (when status is completed/cancelled/paused) |
-| Approval pending actions | 15s | `useApprovalActions` (when status filter is `pending`) |
-| Approval rules / executed audit | 60s | `useApprovalRules`, `useExecutedActions` |
-| No auto-interval | n/a | Notifications, contacts, groups, labels, butler config/skills, session detail, triage rules (use staleTime: 60s instead) |
-
-#### Scenario: Mutation invalidation pattern
-- **WHEN** a mutation hook succeeds (e.g., `useCreateSchedule`, `useSetState`, `useDeleteSecret`)
-- **THEN** the related query cache is invalidated via `queryClient.invalidateQueries({ queryKey: [...] })`
-- **AND** all mutations use `useMutation` with `onSuccess` callbacks for invalidation
-
-#### Scenario: Approval query key factory
-- **WHEN** approval hooks are used
-- **THEN** a structured key factory (`approvalKeys`) provides hierarchical keys: `["approvals", "actions", params]`, `["approvals", "rules", params]`, etc.
-- **AND** mutation success invalidates the parent `["approvals"]` prefix for broad cache busting
-
-#### Scenario: Debounced search
-- **WHEN** `useSearch(query)` is called
-- **THEN** the query is debounced by 300ms and only fires when the query length is at least 2 characters
-
-#### Scenario: Conditional query enablement
-- **WHEN** a hook receives a nullable identifier (e.g., `useButler(name)`)
-- **THEN** `enabled: !!identifier` prevents the query from executing until the identifier is available
-
-#### Scenario: Bus-aware polling for bus-covered hooks
-- **WHEN** a bus-covered query hook (e.g. sessions, approvals, spend, issues, notifications, messenger, timeline, butlers board, calendar workspace — see `event-cache-manifest.ts`) calls `useBusAwarePollInterval`
-- **THEN** it resolves `refetchInterval` from the shared fleet event bus's connection status: `POLL_BUS_RECONCILE_MS` (5 minutes) while connected, `POLL_BUS_DOWN_FALLBACK_MS` (30 seconds) while the bus is down/reconnecting
-- **AND** there is no user-facing control to change this cadence (the prior `useAutoRefresh`/`AutoRefreshToggle` mechanism retired — bu-01r64.3)
 
 ### Requirement: SSE Real-Time Streaming
 `src/butlers/api/routers/sse.py` SHALL provide a `GET /api/events` endpoint that streams Server-Sent Events to connected dashboard clients.
@@ -1139,31 +762,6 @@ All endpoints under the new `/api/secrets/*` namespace and the generalised `/api
 - **AND** a genuinely-empty-but-healthy fan-out (no unavailable butlers, zero
   rows) keeps its honest empty state
 
-### Requirement: Audit Log
-`src/butlers/api/routers/audit.py` SHALL query the switchboard butler's `dashboard_audit_log` table and provide a `log_audit_entry()` helper for other routers to record write operations.
-
-#### Scenario: Read audit log
-- **WHEN** `GET /api/audit-log` is called
-- **THEN** paginated audit entries are returned from the switchboard DB
-- **AND** filters for `butler`, `operation`, `since`, `until` are supported
-
-#### Scenario: Filter by canonical credential key
-- **WHEN** `GET /api/audit-log?key=u:google&limit=50` is called
-- **THEN** the response is `PaginatedResponse<AuditLogEntry>` filtered to `public.audit_log` rows whose normalised `target` equals the canonical credential key `u:google`
-- **AND** the canonical credential-key format matches the focus-key format used by the `/secrets` page: `u:<provider>`, `s:<KEY>`, `c:<id>`
-- **AND** a normalisation function (defined in `core-credentials`) is applied to match against existing `target` values written by other writers (e.g. older audit rows that used non-canonical formats)
-- **AND** the existing `?since=`, `?actor=`, `?action=`, and `?limit=` query parameters remain functional and combinable with `?key=`
-- **AND** the response uses the existing `PaginatedResponse<T>` envelope (RFC 0007), not the `ApiResponse<T>` envelope
-
-#### Scenario: Unknown credential key returns empty page
-- **WHEN** `GET /api/audit-log?key=u:does-not-exist` is called
-- **THEN** the response is an empty `PaginatedResponse` with `meta.total = 0` and `meta.has_more = false`
-
-#### Scenario: Write audit entry
-- **WHEN** `log_audit_entry(db, butler, operation, request_summary)` is called by any router after a write operation
-- **THEN** an entry is inserted into `dashboard_audit_log` in the switchboard DB
-- **AND** errors in audit logging are silently swallowed (never break the primary operation)
-
 ### Requirement: Calendar Workspace
 `src/butlers/api/routers/calendar_workspace.py` provides a normalized calendar read surface, metadata endpoint, sync trigger, and mutation endpoints for both user-view and butler-view events. It SHALL additionally expose a read-only accounts surface (`GET /api/calendar/accounts`) and a per-calendar source enable/disable mutation (`POST /api/calendar/sources`); the sync trigger SHALL accept a `full` recovery flag and the metadata endpoint SHALL carry a per-source `error_kind` so the workspace can render the correct Recover/Reconnect CTA. No new table is introduced — source enable/disable reuses the existing `calendar_sources` projection rows, and the accounts surface reuses `public.google_accounts` plus the Google Calendar connector health.
 
@@ -1509,6 +1107,25 @@ pattern and MUST NOT breach per-butler schema isolation.
   `meta.sources_degraded`, never swallowed, so the feed cannot present a
   request-time fallback onset as a durable acknowledgement
 
+#### Scenario: Issues page layout and issue rows
+- **WHEN** the operator navigates to `/issues`
+- **THEN** the page header reads "Issues" with subtitle "Grouped errors and warnings across all butlers, newest first."
+- **AND** each issue row shows its severity, the affected butler (or "N butlers" when the group spans more than one), description, occurrence count, and first-seen and last-seen times
+- **AND** an issue with a non-null `link` offers a "View" client-side link to the linked resource, and every active issue offers "Acknowledge"
+
+#### Scenario: Single-butler issues offer direct remediation
+- **WHEN** an issue names a single real butler
+- **THEN** a "Run schedule now" action forces that butler's scheduler to run immediately via `POST /api/butlers/{name}/tick`
+- **AND** when the issue's `type` is `"unreachable"`, a "Ping butler" action rechecks reachability immediately via a live `GET /api/butlers/{name}`
+- **AND** a multi-butler issue offers neither action, since there is no single butler to target
+
+#### Scenario: Acknowledgement holds until the group recurs
+- **WHEN** the operator acknowledges an issue
+- **THEN** the issue leaves the active list and the acknowledgement is persisted server-side via `POST /api/issues/dismiss`, keyed by the server-computed `issue_key` together with the issue's recurrence watermark
+- **AND** the acknowledgement holds across refreshes and browsers only until the group recurs past that watermark, after which the issue reappears in the active feed with no owner action
+- **AND** an acknowledgement recorded without a watermark, or for an issue type that never carries a timestamp, holds indefinitely
+- **AND** the acknowledged view (`include_dismissed=true`) lists only acknowledged issues and offers "Restore" to undo an acknowledgement before it lapses
+
 ### Requirement: Butler Eligibility Control
 Butler-specific routers that expose domain-specific API endpoints SHALL have them auto-discovered and mounted.
 
@@ -1516,63 +1133,6 @@ Butler-specific routers that expose domain-specific API endpoints SHALL have the
 - **WHEN** the switchboard butler has `roster/switchboard/api/router.py`
 - **THEN** its endpoints (e.g., routing log, registry, set eligibility) are auto-discovered and mounted
 - **AND** the frontend `useSetEligibility` mutation calls the switchboard-specific endpoint
-
-### Requirement: Ingestion Rules and Thread Affinity
-Frontend hooks SHALL manage unified ingestion rules and thread affinity settings via dedicated API endpoints. The previous triage-specific hooks (`useTriageRules`, `useCreateTriageRule`, etc.) and source filter hooks (`useSourceFilters`, `useCreateSourceFilter`, etc.) are replaced by unified ingestion rules hooks.
-
-#### Scenario: Ingestion rule management
-- **WHEN** ingestion rule hooks are used (`useIngestionRules`, `useCreateIngestionRule`, `useUpdateIngestionRule`, `useDeleteIngestionRule`)
-- **THEN** rules are fetched from `/api/switchboard/ingestion-rules` with `staleTime: 60s` (no refetchInterval by default)
-- **AND** mutations invalidate the `["ingestion-rules"]` query key family
-- **AND** optional scope filtering is supported via query params
-
-#### Scenario: Rule dry-run testing
-- **WHEN** `useTestIngestionRule` is called
-- **THEN** the mutation sends a test envelope to `/api/switchboard/ingestion-rules/test` without invalidating any cache
-
-#### Scenario: Thread affinity management
-- **WHEN** `useThreadAffinitySettings`, `useUpsertThreadAffinityOverride`, `useDeleteThreadAffinityOverride` hooks are used
-- **THEN** settings are fetched with `staleTime: 60s`
-- **AND** override mutations invalidate both settings and overrides query keys
-
-### Requirement: Backfill Job Management
-Frontend hooks in `use-backfill.ts` SHALL manage historical data backfill jobs with lifecycle operations.
-
-#### Scenario: Adaptive polling for active jobs
-- **WHEN** `useBackfillJobProgress(jobId, currentStatus)` is called
-- **THEN** polling interval is 5s when the job status is `pending` or `active`
-- **AND** polling interval falls back to 30s when the job is completed, cancelled, or paused
-
-#### Scenario: Lifecycle mutations
-- **WHEN** pause/cancel/resume mutations succeed
-- **THEN** three query key families are invalidated: `["backfill-jobs"]`, `["backfill-job", jobId]`, and `["backfill-job-progress", jobId]`
-
-### Requirement: Ingestion Analytics
-Frontend hooks in `use-ingestion.ts` SHALL provide multi-tab analytics for the ingestion monitoring page.
-
-#### Scenario: Shared query key strategy
-- **WHEN** the Overview and Connectors tabs share data
-- **THEN** both tabs reuse warm cache via the shared `ingestionKeys` factory
-- **AND** the key hierarchy is `["ingestion", "connectors-list"]`, `["ingestion", "connectors-summary", period]`, etc.
-
-#### Scenario: Lazy-loaded per-tab data
-- **WHEN** a tab is inactive
-- **THEN** its `enabled` flag prevents unnecessary fetches until the tab is activated
-
-### Requirement: Ingestion Timeline Tab Frontend Hooks
-TanStack Query hooks for the Timeline tab on the Ingestion page SHALL follow the same cache-key and stale-time conventions as existing ingestion hooks.
-
-#### Scenario: Ingestion events list hook
-- **WHEN** the Timeline tab renders on the Ingestion page
-- **THEN** `useIngestionEvents(filters)` fetches from `GET /api/ingestion/events` with a 30s stale time
-- **AND** the cache key hierarchy is `["ingestion", "events", filters]`
-
-#### Scenario: Request lineage hook
-- **WHEN** a user selects a specific ingestion event on the Timeline tab
-- **THEN** `useIngestionEventLineage(requestId)` fetches sessions and rollup data in parallel
-- **AND** the sessions cache key is `["ingestion", "events", requestId, "sessions"]`
-- **AND** the rollup cache key is `["ingestion", "events", requestId, "rollup"]`
-- **AND** both use a 30s stale time (no auto-refresh interval; use staleTime only, same as session detail)
 
 ### Requirement: Calendar Overlay Projection
 
@@ -2656,3 +2216,175 @@ The Secrets inventory SHALL use a canonical shared CLI row as the health authori
 - **WHEN** no canonical `cli[]` row exists for a `cli-auth` key
 - **THEN** same-key per-butler mirrors remain eligible for the CLI display family
 - **AND** their most severe state determines the fallback display state
+
+### Requirement: Dashboard Query Defaults and Refresh
+
+The frontend SHALL fetch dashboard data through shared query hooks with a 30-second default stale time, at most one retry (never retrying an HTTP 401), no background refetch while the tab is hidden, and mutation success invalidating the reads it affects. Refresh cadence for bus-covered reads is specified in `dashboard-shell` "Bus-Aware Poll Architecture".
+
+#### Scenario: Default query behavior
+- **WHEN** a dashboard read runs with no per-hook override
+- **THEN** its data is considered fresh for 30 seconds
+- **AND** a failed read is retried at most once, and an HTTP 401 is not retried
+- **AND** interval refetches pause while the browser tab is hidden
+
+#### Scenario: Mutations refresh the reads they affect
+- **WHEN** a mutation succeeds
+- **THEN** the dashboard invalidates the cached reads whose data the mutation changed, so the affected views refetch without a manual reload
+
+#### Scenario: Debounced search
+- **WHEN** `useSearch(query)` is called
+- **THEN** the query is debounced by 300ms and only fires when the query length is at least 2 characters
+
+#### Scenario: Conditional query enablement
+- **WHEN** a hook receives a nullable identifier (e.g., `useButler(name)`)
+- **THEN** the query does not execute until the identifier is available
+
+### Requirement: Audit Log Credential-Key Filter
+
+`GET /api/audit-log?key=` SHALL filter `public.audit_log` rows by canonical credential key, using the same key format as the `/secrets` focus key and the normalisation defined in `core-credentials`. The full read contract is specified in `dashboard-audit-log` "Audit Log Read API".
+
+#### Scenario: Filter by canonical credential key
+- **WHEN** `GET /api/audit-log?key=u:google&limit=50` is called
+- **THEN** the response is `PaginatedResponse<AuditLogEntry>` filtered to `public.audit_log` rows whose normalised `target` equals the canonical credential key `u:google`
+- **AND** the canonical credential-key format matches the focus-key format used by the `/secrets` page: `u:<provider>`, `s:<KEY>`, `c:<id>`
+- **AND** a normalisation function (defined in `core-credentials`) is applied to match against existing `target` values written by other writers (including rows written in non-canonical formats)
+- **AND** `?since=`, `?actor=`, `?action=`, and `?limit=` are combinable with `?key=`
+- **AND** the response uses the `PaginatedResponse<T>` envelope (RFC 0007), not the `ApiResponse<T>` envelope
+
+#### Scenario: Unknown credential key returns empty page
+- **WHEN** `GET /api/audit-log?key=u:does-not-exist` is called
+- **THEN** the response is an empty `PaginatedResponse` with `meta.total = 0` and `meta.has_more = false`
+
+### Requirement: Cross-Domain API Route Rules
+
+The API SHALL publish its complete route inventory through the FastAPI-generated OpenAPI schema (`/openapi.json`); each route's request and response contract is owned by the per-domain requirement or capability spec that names it. This requirement carries only the cross-domain route rules below.
+
+#### Scenario: Single-session detail is served only by the cross-butler route
+- **WHEN** a client needs the detail of one session
+- **THEN** it calls the cross-butler fan-out `GET /api/sessions/{id}`, which resolves pinned rows and deep links without a `?butler=` hint because session ids are globally unique
+- **AND** no butler-scoped session detail route is mounted; `GET /api/butlers/{name}/sessions` serves only the butler-scoped list
+
+#### Scenario: Ingestion-events list uses the cursor envelope and channels filter
+- **WHEN** `GET /api/ingestion/events` is called with `limit` and an optional opaque `cursor` taken from the preceding response
+- **THEN** the response uses the cursor envelope `{ "data": T[], "meta": { "next_cursor": string | null, "has_more": boolean } }` and returns no `total` or `offset`
+- **AND** `channels` is the primary comma-separated source-channel filter
+- **AND** the single-value `source_channel` parameter is accepted only as server-side compatibility, is not exposed by the frontend client, and is ignored when `channels` is also present
+
+#### Scenario: Schedule Execution Semantics
+- **WHEN** the dashboard displays or interprets schedule data
+- **THEN** `Schedule.source` describes the schedule origin (`toml` for TOML-defined, `db` for dashboard-created); it is NOT the execution mode
+- **AND** runtime-mode schedules (those with a `prompt`) execute through `spawner.trigger(..., trigger_source="schedule:<task-name>")` and correlate with `sessions` rows
+- **AND** native-mode schedules (those with `dispatch_mode = "job"` and `job_name`) execute deterministic Python jobs directly and may not create `sessions` rows
+- **AND** the dashboard treats schedule status fields (`enabled`, `next_run_at`, `last_run_at`) as authoritative regardless of execution mode
+- **AND** schedule failures for both execution modes surface through `GET /api/issues` as `scheduled_task_failure:<schedule-name>`
+
+#### Scenario: Dashboard conversation stream and Stop semantics
+- **WHEN** the dashboard submits a user turn
+- **THEN** the API opens durable control keyed by the immutable `message_id` before external ingress, and only the caller with the `dispatch` claim may invoke `ingest.v1`
+- **AND** a caller observing `accepted` observes the original request, while `pending` or `cancelling` yields `INGEST_IN_PROGRESS` plus `done` and never creates a replay
+- **AND** confirmed cancellation yields `SESSION_CANCELLED`; an unprovable recovered predecessor yields `TURN_OUTCOME_UNKNOWN`; both suppress automatic replay
+- **AND** the raw `ConversationCancelResponse` documents exactly one truthful Stop result (`cancelled`, `already_finished`, or unconfirmed), while non-2xx failures retain `ErrorResponse`
+
+#### Scenario: Notifications degraded source is named, not rendered as an all-clear
+- **WHEN** `GET /api/notifications` or `GET /api/notifications/stats` returns
+  HTTP 200 but the Switchboard notifications source was unreachable (so the
+  counts are zero placeholders and the list page is empty)
+- **THEN** the response carries `source_available: false` (following the
+  fleet-wide degraded-envelope convention); the field is absent or `true` when
+  the source answered
+- **AND** the frontend notifications page SHALL NOT render the fabricated zeros
+  as a truthful tally — the stats tiles show an em-dash (not a green `0.0%`
+  failure rate) and the feed shows a named `SourceDegradedNote` naming the
+  unreachable source rather than the calm "No notifications found" empty state
+- **AND** a reachable-but-empty source (`source_available` absent or `true`
+  with genuine zeros) keeps its honest zeros and empty state
+
+#### Scenario: Manual retry re-sends a failed notification and links the new attempt
+- **WHEN** `POST /api/notifications/{id}/retry` is called on a notification
+  whose stored `status` is `failed`
+- **THEN** the backend re-invokes delivery in-process (the same
+  approval-push-runtime pattern the dashboard-API process already uses to
+  call `deliver()` without a `switchboard_client` MCP connection), using the
+  envelope persisted at delivery time (`metadata.notify_request`) or, for
+  older rows that predate it, a synthetic envelope built from the row's own
+  `channel`/`recipient`/`message` columns
+- **AND** the original notification is flipped to `status = 'read'` with a
+  `metadata.retried_to` marker pointing at the new attempt's id, regardless
+  of whether the new attempt itself succeeds or fails again — a human has
+  acted on it either way, and a retry that fails again is its own new,
+  independently actionable row rather than a reason to leave the original
+  stuck in `failed`
+- **AND** the response reports the new attempt's own `status` (`sent` or
+  `failed`) and `error`, never a fabricated success for the original
+- **AND** a best-effort `public.attention_ledger` event is recorded
+  (`source="notify"`, `outcome="delivered"` or `"failed"`,
+  `notification_ref` set to the new attempt's id) so the manual action is
+  traceable the same way an automatic notify() outcome is
+- **AND** `GET /api/notifications?status=terminal_failed` and the aggregate
+  `failed` count in `GET /api/notifications/stats` no longer include the
+  original row afterward, since it is no longer `status = 'failed'`
+- **AND** `effective_status` on the original row reports `"retried"` (not
+  the generic `"read"`) so the UI communicates what happened, not just that
+  it was acknowledged
+
+#### Scenario: Manual retry rejects a non-failed notification
+- **WHEN** `POST /api/notifications/{id}/retry` or `.../escalate` is called
+  on a notification whose stored `status` is not `failed`
+- **THEN** the endpoint returns HTTP 409 without attempting delivery
+- **AND** HTTP 404 is returned when `{id}` does not exist, and HTTP 503 when
+  the Switchboard pool is unavailable
+
+#### Scenario: Concurrent or replayed retry/escalate never double-delivers
+- **WHEN** two `POST .../retry` (or two `.../escalate`) requests for the same
+  `{id}` race — a double-click, two open tabs, or a client resending after a
+  perceived timeout — and both observe `status = 'failed'` on their initial
+  read
+- **THEN** immediately before invoking real delivery, the backend atomically
+  claims the row with a single conditional `UPDATE notifications SET status
+  = 'read' WHERE id = $1 AND status = 'failed' RETURNING *`; only the first
+  request's `UPDATE` can match a `'failed'` row, so exactly one request
+  proceeds to redeliver and the loser's claim affects zero rows
+- **AND** the losing request returns HTTP 409 without invoking delivery — the
+  user is never sent the notification twice
+- **AND** because the claim (not delivery success) is what leaves `'failed'`
+  status, a delivery-adjacent failure after the claim — including
+  `_finalize_manual_action`'s own metadata-merge write failing after a
+  successful send — cannot leave the row re-claimable: a subsequent client
+  retry after such a failure also observes a non-`'failed'` status and gets
+  HTTP 409, never a second real send. The tradeoff is a possible orphaned row
+  (already `status = 'read'` but missing its `retried_to`/`escalated_to`
+  forward-link marker) rather than a duplicate delivery
+
+#### Scenario: Manual escalate re-sends on the owner's alternate channel
+- **WHEN** `POST /api/notifications/{id}/escalate` is called on a failed
+  `telegram` or `email` notification
+- **THEN** the backend swaps to the other channel (`telegram` -> `email`,
+  `email` -> `telegram`) and resolves the owner's contact for it via
+  `resolve_owner_entity_info` — the same owner-credential lookup the
+  dashboard's connector actions already use for owner-directed delivery
+- **AND** HTTP 422 is returned, without attempting delivery, when the
+  channel is neither `telegram` nor `email` (no alternate-channel resolver
+  is wired for other channels), or when the owner has no contact configured
+  for the alternate channel
+- **AND** on success the original notification is flipped to `status =
+  'read'` with a `metadata.escalated_to` marker, following the same
+  forward-link and ledger-recording contract as manual retry, and
+  `effective_status` reports `"escalated"`
+
+#### Scenario: Approvals degraded pools are named, not rendered as an empty queue
+- **WHEN** `GET /api/approvals` or `GET /api/approvals/history` fans out across
+  each butler's pool and one or more pools fail their query (a genuine error —
+  the request still returns HTTP 200 with the summaries from the pools that
+  answered)
+- **THEN** the response includes `meta.sources_degraded: string[]` naming the
+  dropped pools (following the fleet-wide degraded-envelope convention); the
+  field is absent or empty when every queried pool answered
+- **AND** the frontend approvals verdict opener SHALL NOT render the calm "No
+  approvals waiting." all-clear while a pool is degraded — it names the dropped
+  pools inline as a clause that suppresses the all-clear line
+- **AND** the approvals queue rail SHALL NOT render the "No pending approvals."
+  empty state as an all-clear while a pool is degraded — it names the dropped
+  pools via a `SourceDegradedNote` (in place of the empty state when zero rows
+  survived, above the rows when some did)
+- **AND** a reachable queue with `meta.sources_degraded` absent or empty keeps
+  its honest empty state and calm verdict
