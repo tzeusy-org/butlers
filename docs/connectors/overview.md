@@ -2,7 +2,7 @@
 
 > **Purpose:** Explain what connectors are, their responsibilities, transport model, and how they submit events to the Switchboard.
 > **Audience:** Developers building or operating connectors.
-> **Prerequisites:** Familiarity with the [Switchboard butler role](../architecture/routing.md).
+> **Prerequisites:** Familiarity with the [Switchboard butler role](../concepts/switchboard-routing.md).
 
 ## Overview
 
@@ -178,5 +178,5 @@ curl -s "http://localhost:9090/api/v1/query?query=connector_ingest_submissions_t
 ## Related Pages
 
 - [Connector Interface Contract](../api_and_protocols/ingestion-envelope.md) -- Full normative spec including `ingest.v1` envelope schema
-- [Switchboard Butler Role](../architecture/routing.md) -- Ingestion authority
+- [Switchboard Butler Role](../concepts/switchboard-routing.md) -- Ingestion authority
 - [API Authentication](../identity_and_secrets/cli-runtime-auth.md) -- Token lifecycle

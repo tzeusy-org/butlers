@@ -16,8 +16,8 @@ Butlers has system dependencies (languages, tools, services), LLM runtime CLIs (
 | **uv** | latest | Python package manager (replaces pip); used for dependency management and running commands |
 | **Node.js** | 22+ | Frontend dev server (Vite) and LLM CLI installations |
 | **npm** | (bundled with Node) | Frontend dependency management and global CLI installs |
-| **Docker** + **Docker Compose** | latest | PostgreSQL database and optional production containers |
-| **tmux** | any | The `dev.sh` script runs all services in tmux panes |
+| **Docker** + **Docker Compose** | latest | Runs the butler stack via `scripts/compose.sh` |
+| **PostgreSQL** | with `pgvector` | External database server (not a Compose service); `scripts/init-db.sql` installs extensions |
 | **psql** | any | Part of `postgresql-client`; used by the OAuth gate to poll the database at startup |
 | **Tailscale** | latest | Provides HTTPS for Google OAuth callbacks; can be skipped with `--skip-tailscale-check` |
 
@@ -31,15 +31,15 @@ Node.js 22+ is needed for two purposes: running the Vite frontend dev server, an
 
 ### Docker
 
-Docker and Docker Compose are required for running PostgreSQL. The `docker-compose.yml` defines services for the database, and optionally for the dashboard API and frontend via the `dev` profile. In production, all services run in Docker.
-
-### tmux
-
-The development helper script (`scripts/dev.sh`) orchestrates all services --- database, butlers, connectors, dashboard --- in tmux panes. If you prefer to start services manually, tmux is not strictly required, but `dev.sh` expects it.
+`scripts/compose.sh` runs the whole stack --- butler daemons, connectors, dashboard API, and
+frontend --- from `docker-compose.yml`, in dev or prod mode. PostgreSQL is external in both modes;
+see [Dev Environment](dev-environment.md) for provisioning it.
 
 ### Tailscale
 
-Google OAuth callbacks require HTTPS. In development, Butlers uses Tailscale to provide a stable HTTPS hostname. If you are not using Google modules (Calendar, Contacts, Gmail), you can skip this by passing `--skip-tailscale-check` to `dev.sh`.
+Google OAuth callbacks require HTTPS. `scripts/compose.sh` configures `tailscale serve` to provide a
+stable HTTPS hostname. If you are not using Google modules (Calendar, Contacts, Gmail), skip it with
+`./scripts/compose.sh --skip-tailscale-check`.
 
 ## LLM Runtime CLIs
 
@@ -49,7 +49,7 @@ Butlers spawn ephemeral LLM CLI instances to reason and act. Each butler declare
 | --- | --- | --- | --- |
 | `claude` (default) | `claude` | `npm install -g @anthropic-ai/claude-code` | Dashboard Settings page |
 | `codex` | `codex` | `npm install -g @openai/codex` | Dashboard Settings page |
-| `gemini` | `gemini` | `npm install -g @anthropic-ai/gemini-cli` | Dashboard Settings page |
+| `gemini` | `gemini` | `npm install -g @google/gemini-cli` | Dashboard Settings page |
 
 The daemon verifies at startup that the configured binary is on `PATH` and will fail fast with a clear error if it is missing.
 
@@ -77,19 +77,6 @@ These can also be bootstrapped via the dashboard UI after first start.
 ### Module-Specific Credentials
 
 Module credentials (Telegram bot tokens, email passwords, Telegram API keys for user-client connections) are managed through the dashboard after first boot. They are stored in PostgreSQL and resolved by the daemon at startup through a layered credential store (database first, environment variable fallback).
-
-### Secrets Directory (dev.sh)
-
-The `dev.sh` script sources environment files for connector processes:
-
-```
-/secrets/.dev.env                       # Global dev secrets (API keys, DB passwords)
-secrets/connectors/telegram_bot         # BUTLER_TELEGRAM_TOKEN, etc.
-secrets/connectors/telegram_user_client # Telegram user-client credentials
-secrets/connectors/gmail                # Gmail connector credentials
-```
-
-If you do not use certain connectors, the corresponding files can be empty or absent --- those connector panes will simply fail to start without affecting the rest of the system.
 
 ## Verification
 

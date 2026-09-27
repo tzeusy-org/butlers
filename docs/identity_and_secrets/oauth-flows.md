@@ -169,4 +169,4 @@ print(repr(c))
 
 - [Credential Store](../data_and_storage/credential-store.md) -- `butler_secrets` table
 - [Owner Identity](owner-identity.md) -- Entity-based credential storage
-- [Contact System](contact-system.md) -- Google Contacts provider integration
+- [Contacts Module](../modules/contacts.md) -- Google Contacts provider sync

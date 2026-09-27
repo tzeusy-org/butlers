@@ -73,13 +73,15 @@ The connector applies tiered processing rules before submission (see [Gmail Inge
 | 2 | Metadata-only | Slim envelope, bypass LLM classification, store reference only |
 | 3 | Skip | Connector drops the message, metrics only |
 
-Tier assignment happens before classification, driven by triage rules evaluated in priority order. Default is Tier 1 for safety.
+Tier assignment happens in the connector before classification: the label filter, then
+connector-scope and global-scope Switchboard ingestion rules evaluated in priority order. Default is
+Tier 1 for safety.
 
 ## Label Filtering
 
 `GMAIL_LABEL_INCLUDE` and `GMAIL_LABEL_EXCLUDE` are normative production controls:
 
-- Label filters are applied before triage evaluation.
+- Label filters are applied before ingestion-rule evaluation.
 - `GMAIL_LABEL_EXCLUDE` takes precedence over include matches.
 - Empty include list means "all labels allowed except excluded."
 - Deployments SHOULD exclude `SPAM` and `TRASH` (this is the default).
@@ -121,12 +123,12 @@ The Gmail connector implements the optional backfill polling protocol for dashbo
 - Implements token bucket rate limiting.
 - Also honors Gmail API quota (250 units/second per user).
 - Tracks estimated cost and reports via `cost_spent_cents` on each progress call.
-- Switchboard enforces `daily_cost_cap` and transitions to `cost_capped` when exceeded.
+- Switchboard enforces the job's `daily_cost_cap_cents` and transitions it to `cost_capped` when
+  exceeded (`roster/switchboard/tools/backfill/connector.py`).
 
 ### Backfill Modes
 
 - **Selective batch** (primary): Category-targeted windows (e.g., finance last 7 years, health all history).
-- **On-demand**: User-question-driven retrieval via `email_search_and_ingest(query, max_results)`.
 - **Background batch** (optional): Low-priority continuous enrichment with tight cost caps.
 
 ### Capability Advertisement
@@ -144,28 +146,19 @@ Multiple Gmail connectors can run concurrently, isolated per mailbox:
 
 ## Environment Variables
 
-| Variable | Required | Description |
-|---|---|---|
-| `SWITCHBOARD_MCP_URL` | Yes | SSE endpoint for Switchboard MCP server |
-| `CONNECTOR_PROVIDER` | Yes (default: `gmail`) | Provider name |
-| `CONNECTOR_CHANNEL` | Yes (default: `email`) | Channel name |
-| `CONNECTOR_MAX_INFLIGHT` | No (default: 8) | Max concurrent ingest submissions |
-| `CONNECTOR_HEALTH_PORT` | No (default: 40082) | HTTP port for health endpoint |
-| `DATABASE_URL` or `POSTGRES_*` | No | DB connectivity for credential lookup |
-| `CONNECTOR_BUTLER_DB_NAME` | No | Butler DB name |
-| `BUTLER_SHARED_DB_NAME` | No (default: `butlers`) | Shared credentials DB |
-| `GMAIL_POLL_INTERVAL_S` | No (default: 60) | Polling interval in seconds |
-| `GMAIL_WATCH_RENEW_INTERVAL_S` | No (default: 86400) | Watch renewal cadence |
-| `GMAIL_LABEL_INCLUDE` | No | Comma-separated label include filter |
-| `GMAIL_LABEL_EXCLUDE` | No (default: `SPAM,TRASH`) | Comma-separated label exclude filter |
-| `GMAIL_PUBSUB_ENABLED` | No (default: false) | Enable Pub/Sub push mode |
-| `GMAIL_PUBSUB_TOPIC` | If Pub/Sub enabled | GCP Pub/Sub topic |
-| `GMAIL_PUBSUB_WEBHOOK_PORT` | No (default: 40083) | Webhook server port |
-| `GMAIL_PUBSUB_WEBHOOK_PATH` | No (default: `/gmail/webhook`) | Webhook endpoint path |
-| `GMAIL_PUBSUB_WEBHOOK_TOKEN` | No | Auth token for webhook security |
-| `CONNECTOR_BACKFILL_ENABLED` | No (default: true) | Enable backfill polling |
-| `CONNECTOR_BACKFILL_POLL_INTERVAL_S` | No (default: 60) | Backfill poll cadence |
-| `CONNECTOR_BACKFILL_PROGRESS_INTERVAL` | No (default: 50) | Report progress every N messages |
+Read by `GmailConnectorConfig.from_env` and `GmailProcessConfig.from_env`
+(`src/butlers/connectors/gmail.py`, whose module docstring also lists them); the names and
+defaults live there. Families: Switchboard and connector identity (`SWITCHBOARD_MCP_URL`,
+`CONNECTOR_*`), polling and watch renewal (`GMAIL_POLL_*`, `GMAIL_WATCH_*`), label filtering
+(`GMAIL_LABEL_*`), Pub/Sub push (`GMAIL_PUBSUB_*`), sent-mail lookback for priority-tier (queue
+ordering) assignment (`GMAIL_SENT_*`, `GMAIL_USER_EMAIL`), and backfill (`CONNECTOR_BACKFILL_*`).
+Non-obvious points:
+
+- `SWITCHBOARD_MCP_URL` is the only hard-required variable; OAuth credentials come from the
+  database (above), never from env.
+- `GMAIL_LABEL_EXCLUDE` defaults to `SPAM,TRASH`; setting it replaces that default rather than
+  extending it.
+- `GMAIL_PUBSUB_TOPIC` is required once `GMAIL_PUBSUB_ENABLED` is true.
 
 ## Pub/Sub Setup
 

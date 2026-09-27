@@ -25,6 +25,8 @@ graph TB
             HOM["home :41108"]
             LIF["lifestyle :41109"]
             QA["qa :41110"]
+            CHR["chronicler :41111"]
+            CON["concierge :41112"]
         end
 
         subgraph ConnProcs["Connector Processes"]
@@ -43,7 +45,7 @@ graph TB
     end
 
     subgraph Infra["Infrastructure Services"]
-        PG["PostgreSQL :54320->5432"]
+        PG["PostgreSQL :5432 (external)"]
         MinIO["MinIO :9000 (API) :9001 (console)"]
         OTel["Grafana Alloy (OTLP)"]
     end
@@ -68,41 +70,69 @@ POSTs until the control-plane change cuts over.
 
 ## Port Assignments
 
-### Butler MCP Ports (41100-41110)
+This is the single port map; other docs link here. Sources of truth: `port` in
+`roster/*/butler.toml`, `CONNECTOR_HEALTH_PORT` in `docker-compose.yml` (or the connector's code
+default), and the mode block in `scripts/compose.sh`.
 
-| Butler | Type | Port | Status |
-|---|---|---|---|
-| switchboard | staffer | 41100 | Functional |
-| general | butler | 41101 | Functional |
-| relationship | butler | 41102 | Functional |
-| health | butler | 41103 | Functional |
-| messenger | staffer | 41104 | Functional |
-| finance | butler | 41105 | Evolving |
-| travel | butler | 41106 | Evolving |
-| education | butler | 41107 | Evolving |
-| home | butler | 41108 | Evolving |
-| lifestyle | butler | 41109 | Evolving |
-| qa | staffer | 41110 | Evolving |
+### Butler MCP Ports (41100-41112)
 
-### Connector Health Ports (40080-40091)
+| Butler | Type | Port |
+|---|---|---|
+| switchboard | staffer | 41100 |
+| general | butler | 41101 |
+| relationship | butler | 41102 |
+| health | butler | 41103 |
+| messenger | staffer | 41104 |
+| finance | butler | 41105 |
+| travel | butler | 41106 |
+| education | butler | 41107 |
+| home | butler | 41108 |
+| lifestyle | butler | 41109 |
+| qa | staffer | 41110 |
+| chronicler | butler | 41111 |
+| concierge | staffer | 41112 |
+
+A new butler takes the next free port after the highest one in use.
+
+### Connector Health Ports (40080-40092)
+
+Container-internal unless noted; each connector serves `/health` and `/metrics` on its port.
 
 | Connector | Port |
 |---|---|
 | telegram-user | 40080 |
 | telegram-bot | 40081 |
-| gmail | 40082 |
-| discord | 40084 |
+| gmail, whatsapp-user | 40082 (separate containers) |
+| spotify | 40083 |
+| discord-user | 40084 |
+| google-calendar | 40085 |
+| owntracks | 40086 (host-published) |
+| home-assistant | 40087 |
+| google-drive | 40088 |
+| steam | 40089 |
+| google-health | 40090 |
 | live-listener | 40091 |
+| activitywatch | 40092 (host-published) |
+
+### Host Ports by Mode
+
+`scripts/compose.sh` publishes prod and dev on different host ports (bound to `127.0.0.1`) so both
+stacks can run side by side. Inside the containers the ports are always the prod values.
+
+| Service | Prod | Dev |
+|---|---|---|
+| Switchboard MCP (`butlers-up`) | 41100 | 42100 |
+| Dashboard API | 41200 | 42200 |
+| Frontend (Vite dev server, `frontend-dev`) | 41173 | 42173 |
+| OwnTracks webhook | 40086 | 42086 |
 
 ### Infrastructure Ports
 
 | Service | Port | Notes |
 |---|---|---|
-| Dashboard API | 41200 | FastAPI backend |
-| Dashboard Frontend (dev) | 41173 | Vite dev server |
-| PostgreSQL | 54320 (host) -> 5432 (container) | pgvector/pg17 |
-| MinIO API | 9000 | S3-compatible blob storage |
-| MinIO Console | 9001 | Web UI for MinIO |
+| PostgreSQL | `POSTGRES_PORT` (default 5432) | External host; not a Compose service |
+| MinIO API | 9000 | S3-compatible blob storage, `127.0.0.1` only |
+| MinIO Console | 9001 | Web UI for MinIO, `127.0.0.1` only |
 
 ---
 
@@ -173,52 +203,11 @@ during butler daemon startup.
 
 ## Environment Variables
 
-### Database connectivity
-
-| Variable | Default | Used by |
-|---|---|---|
-| `DATABASE_URL` | -- | All (libpq-style URL; daemon publisher pools, dashboard API pools, and the fleet bridge use its decoded database path as the target when set) |
-| `POSTGRES_DB` | caller-configured fallback | Daemon publisher pools, dashboard API pools, and fleet bridge (database target when `DATABASE_URL` is unset) |
-| `POSTGRES_HOST` | `localhost` | All |
-| `POSTGRES_PORT` | `5432` | All |
-| `POSTGRES_USER` | `butlers` | All |
-| `POSTGRES_PASSWORD` | `butlers` | All |
-
-### Observability
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | -- (no-op tracer if unset) | OTLP gRPC exporter endpoint |
-
-### Runtime control
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `BUTLERS_MAX_GLOBAL_SESSIONS` | `3` | Process-wide cap on concurrent LLM sessions |
-| `DASHBOARD_URL` | `OAUTH_DASHBOARD_URL`, then `http://localhost:41200` | Public dashboard base for daemon-generated owner links; include any reverse-proxy path prefix. |
-| `ANTHROPIC_API_KEY` | -- | Claude API authentication |
-
-### Connector-specific
-
-| Variable | Default | Used by |
-|---|---|---|
-| `SWITCHBOARD_MCP_URL` | -- | All connectors (Switchboard SSE endpoint) |
-| `CONNECTOR_PROVIDER` | -- | All connectors (e.g., "telegram", "gmail") |
-| `CONNECTOR_CHANNEL` | -- | All connectors (e.g., "telegram_bot", "email") |
-| `CONNECTOR_MAX_INFLIGHT` | `8` | All connectors (concurrent ingest submissions) |
-| `CONNECTOR_HEALTH_PORT` | Varies | All connectors |
-| `CONNECTOR_HEARTBEAT_INTERVAL_S` | `120` | All connectors |
-| `BUTLER_TELEGRAM_TOKEN` | -- | Telegram connector |
-| `GMAIL_PUBSUB_ENABLED` | `false` | Gmail connector |
-| `LIVE_LISTENER_DEVICES` | -- | Live listener (JSON device spec list) |
-
-### Credential resolution
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `BUTLER_SHARED_DB_NAME` | `butlers` | Shared credentials database name |
-| `BUTLER_SHARED_DB_SCHEMA` | `public` | Shared credentials schema |
-| `CONNECTOR_BUTLER_DB_NAME` | `butlers` | Per-connector butler DB for secret overrides |
+Every process reads its database target from `DATABASE_URL` or the `POSTGRES_*` variables, and
+exports telemetry only when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. Connectors reach the Switchboard
+through `SWITCHBOARD_MCP_URL`. Runtime secrets are not environment variables: they resolve DB-first
+from `butler_secrets`, with the environment as a last-resort fallback. The full operator reference
+is [`docs/identity_and_secrets/environment-variables.md`](../../docs/identity_and_secrets/environment-variables.md).
 
 ---
 

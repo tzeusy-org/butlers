@@ -6,97 +6,46 @@
 
 ## Overview
 
-Connectors are independent processes that run outside the Switchboard daemon lifecycle. The heartbeat protocol provides the mechanism for the system to know which connectors are alive, healthy, and actively ingesting data. All connectors MUST implement this protocol.
+Connectors are independent processes that run outside the Switchboard daemon lifecycle; the
+heartbeat is how the system knows which ones are alive and ingesting. All connectors MUST
+implement it. Where the heartbeat sits in the overall topology is described in
+[Integration Points §8](../../about/lay-and-land/integration.md) and
+[Data Flow §6](../../about/lay-and-land/data-flow.md); this page covers the protocol rules.
 
 Connectors self-register on their first heartbeat -- no manual pre-configuration is required.
 
 ## Heartbeat Envelope
 
-Connectors submit `connector.heartbeat.v1` payloads via MCP tool call (`connector.heartbeat`) using the same SSE-based MCP connection configured via `SWITCHBOARD_MCP_URL`.
+Connectors submit `connector.heartbeat.v1` payloads through the `connector.heartbeat` MCP tool on
+the same Switchboard connection they ingest over (`SWITCHBOARD_MCP_URL`). The wire contract is the
+Pydantic model `ConnectorHeartbeatV1` in `roster/switchboard/tools/connector/heartbeat.py`, which
+also lists the accepted `connector_type` values (`VALID_CONNECTOR_TYPES`). Every section is
+`extra="forbid"`, so an unknown field rejects the heartbeat. The rules the model cannot express:
 
-```json
-{
-  "schema_version": "connector.heartbeat.v1",
-  "connector": {
-    "connector_type": "telegram_bot|gmail|telegram_user_client|live_listener|...",
-    "endpoint_identity": "bot-123|user@gmail.com|...",
-    "instance_id": "uuid-of-this-process-instance",
-    "version": "optional semver or git sha"
-  },
-  "status": {
-    "state": "healthy|degraded|error",
-    "error_message": null,
-    "uptime_s": 3600
-  },
-  "counters": {
-    "messages_ingested": 42,
-    "messages_failed": 1,
-    "source_api_calls": 150,
-    "checkpoint_saves": 10,
-    "dedupe_accepted": 0
-  },
-  "checkpoint": {
-    "cursor": "provider-specific-cursor-value",
-    "updated_at": "RFC3339 timestamp"
-  },
-  "capabilities": {
-    "backfill": true
-  },
-  "sent_at": "RFC3339 timestamp"
-}
-```
-
-### Field Reference
-
-**connector** (required):
-
-| Field | Description |
-|---|---|
-| `connector_type` | Canonical type name; matches `CONNECTOR_PROVIDER` env var |
-| `endpoint_identity` | Receiving identity, auto-resolved at startup |
-| `instance_id` | Stable UUID for this process instance, generated at startup |
-| `version` | Optional software version for operational visibility |
-
-**status** (required):
-
-| Field | Description |
-|---|---|
-| `state` | `healthy` (normal), `degraded` (operational with issues), `error` (unable to ingest) |
-| `error_message` | Human-readable context when `degraded` or `error`; null when `healthy` |
-| `uptime_s` | Seconds since this connector instance started |
-
-**counters** (required): All counters are monotonically increasing since process start.
-
-| Counter | Description |
-|---|---|
-| `messages_ingested` | Successfully submitted to Switchboard ingest API |
-| `messages_failed` | Failed ingest submission after retries exhausted |
-| `source_api_calls` | Total calls to source provider API |
-| `checkpoint_saves` | Total checkpoint persistence operations |
-| `dedupe_accepted` | Messages accepted by Switchboard as duplicates |
-
-**checkpoint** (optional): Opaque provider-specific cursor value and last advance timestamp.
-
-**capabilities** (optional): Feature flags like `backfill: true` for dashboard control rendering.
-
-**sent_at** (required): Generation timestamp for clock-drift detection and latency measurement.
+- `instance_id` is a UUID generated once per process start; a new value on a known connector
+  means a restart or replacement and is logged as such.
+- `status.state` is `healthy`, `degraded` (operational with issues) or `error` (unable to
+  ingest); `error_message` carries context for the latter two.
+- Counters are monotonically increasing since process start. The Switchboard computes deltas
+  against the previous snapshot, so a connector must never reset them mid-process.
+- `checkpoint` is an opaque provider cursor; `capabilities` (for example `backfill: true`) drives
+  which dashboard controls render.
+- `sent_at` plus the `server_time` in the acknowledgment allow clock-drift detection.
 
 ## Frequency and Staleness
 
-Connectors MUST send a heartbeat every **2 minutes** (120 seconds).
+Connectors send a heartbeat every **2 minutes** by default. The heartbeat runs as a background task
+independent of the ingestion loop; heartbeat failures MUST NOT block or crash ingestion.
 
-The heartbeat runs as a background async task independent of the ingestion loop. Heartbeat failures MUST NOT block or crash ingestion.
-
-### Staleness Thresholds
-
-The Switchboard derives connector liveness from heartbeat recency:
+Liveness is derived at read time from heartbeat recency by `derive_liveness()`
+(`src/butlers/core/liveness.py`):
 
 | Condition | Derived state |
 |---|---|
 | Last heartbeat < 5 min ago | `online` |
 | Last heartbeat 5-15 min ago | `stale` |
-| Last heartbeat > 15 min ago | `offline` |
-| No heartbeat ever received | `offline` |
+| Last heartbeat > 15 min ago, or never | `offline` |
+| Heartbeat more than 5 min in the future (clock skew) | `offline` |
 
 Rules:
 - `stale` connectors remain eligible for display but are flagged in the dashboard.
@@ -105,52 +54,23 @@ Rules:
 - `unclassified` is not a liveness state: it applies only to a registry row whose
   operational role has not yet been claimed as a runtime instance.
 
-## Self-Registration
+## Switchboard Processing
 
-When the Switchboard receives a heartbeat from an unknown `(connector_type, endpoint_identity)` pair:
+The `connector.heartbeat` tool (`roster/switchboard/tools/connector/heartbeat.py`) validates the
+envelope, self-registers an unknown `(connector_type, endpoint_identity)` pair (recording
+`first_seen_at` and `registered_via`), upserts `switchboard.connector_registry` with the latest
+state, counters and checkpoint, appends to the partitioned `switchboard.connector_heartbeat_log`
+(7-day retention), computes counter deltas for rollups, and returns
+`{status: "accepted", server_time}`.
 
-1. Create a new `connector_registry` record.
-2. Set `first_seen_at` to current timestamp.
-3. Set `registered_via` to `"self"`.
-4. Accept the heartbeat normally.
+## Connector-Side Implementation
 
-When a known connector sends a heartbeat with a new `instance_id`, the record is updated and the instance change is logged (indicates restart or replacement).
-
-## Implementation
-
-The shared heartbeat implementation lives in `butlers.connectors.heartbeat`:
-
-- `HeartbeatConfig` -- Configuration dataclass with `from_env()` factory that reads `CONNECTOR_HEARTBEAT_INTERVAL_S` and `CONNECTOR_HEARTBEAT_ENABLED`.
-- `ConnectorHeartbeat` -- Background task manager that generates a stable `instance_id`, runs a loop at the configured interval, collects counter values from Prometheus metrics, determines health state via a caller-provided callback, and submits the envelope via `CachedMCPClient`.
-
-The implementation reads counter values directly from the Prometheus registry (`connector_ingest_submissions_total`, `connector_source_api_calls_total`, `connector_checkpoint_saves_total`) with label filtering by `connector_type` and `endpoint_identity`.
-
-## Switchboard Persistence
-
-### connector_registry
-
-Stores current state of each known connector. Primary key: `(connector_type, endpoint_identity)`. Includes latest counter snapshot, checkpoint state, health state, and instance metadata.
-
-### connector_heartbeat_log
-
-Append-only log of heartbeat events, partitioned by `received_at`. Used for historical analysis and rollup input. Retention: 7 days.
-
-## Processing Rules
-
-On receiving a heartbeat, the Switchboard:
-
-1. Validates the envelope against the schema.
-2. Upserts `connector_registry` with latest state, counters, and checkpoint.
-3. Appends to `connector_heartbeat_log`.
-4. Computes delta counters for rollup input.
-5. Returns acknowledgment with `server_time` for clock-drift detection.
-
-## Environment Variables
-
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `CONNECTOR_HEARTBEAT_INTERVAL_S` | No | 120 | Heartbeat interval (min: 30, max: 300) |
-| `CONNECTOR_HEARTBEAT_ENABLED` | No | true | Set to `false` for dev/testing only |
+The shared client lives in `src/butlers/connectors/heartbeat.py`: `HeartbeatConfig.from_env()`
+reads `CONNECTOR_HEARTBEAT_INTERVAL_S` (clamped to 30-300 s) and `CONNECTOR_HEARTBEAT_ENABLED`
+(disable only for dev/testing), and `ConnectorHeartbeat` runs the loop. It reads counter values
+straight from the connector's Prometheus registry, filtered by `connector_type` and
+`endpoint_identity`, so a connector gets correct counters by emitting the standard connector
+metrics rather than by tracking them separately.
 
 ## Verification
 

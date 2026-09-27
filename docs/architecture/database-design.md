@@ -8,7 +8,7 @@
 
 ![Database Schema Topology](./database-schema.svg)
 
-Butlers uses a single PostgreSQL database with per-butler schema isolation. Each butler operates within its own schema, with access to the `public` schema for cross-butler data (contacts, model catalog, credentials) and the `public` schema as a fallback. This design provides strong data boundaries between butlers while allowing shared identity and configuration data through a controlled surface.
+Butlers uses a single PostgreSQL database with per-butler schema isolation. Each butler operates within its own schema, with access to the `public` schema for cross-butler data (entity graph, model catalog, shared credentials). This design provides strong data boundaries between butlers while allowing shared identity and configuration data through a controlled surface.
 
 Messenger intentionally has no schema-local delivery tracking, queue, retry, or
 receipt tables. Its native channel adapters perform direct egress after the
@@ -19,26 +19,21 @@ not in a fabricated Messenger database subsystem.
 
 ### Per-Butler Schemas
 
-Each butler gets its own PostgreSQL schema (e.g., `switchboard`, `general`, `relationship`, `health`, `messenger`). The `Database` class in `src/butlers/db.py` configures the connection pool's `search_path` to `<butler_schema>, public` at connection time:
-
-```python
-def schema_search_path(schema: str | None) -> str | None:
-    search_path: list[str] = []
-    for part in (normalized, "public"):
-        if part not in search_path:
-            search_path.append(part)
-    return ",".join(search_path)
-```
-
-This means unqualified table references in SQL queries resolve first to the butler's own schema, then to `public`, then to `public`. Butler code never needs to qualify table names with schema prefixes for its own tables or shared tables.
+Each butler gets its own PostgreSQL schema (e.g., `switchboard`, `general`, `relationship`, `health`,
+`messenger`). `schema_search_path()` in `src/butlers/db.py` sets the pool's `search_path` to
+`<butler_schema>,public`, so unqualified names resolve to the butler's own tables first and then to
+`public`. See [Schema Topology](../data_and_storage/schema-topology.md#schema-search-path).
 
 ### Cross-Butler Tables (in `public`)
 
 The `public` schema contains cross-butler data that must be accessible to all butlers:
 
-**`public.contacts`** — The canonical contact registry. One row per known person/actor. Includes a `roles` array (e.g., `['owner']`) and optional `entity_id` foreign key to the memory butler's entity graph. Bootstraps with an "Owner" contact on first startup.
+**`public.entities`** / **`public.entity_info`** — The entity graph that identity resolution reads
+(see [Identity Model](../concepts/identity-model.md)). Owner-bound credentials such as OAuth refresh
+tokens live in `entity_info`.
 
-**`public.contact_info`** — Per-channel identifiers linked to contacts (e.g., Telegram chat ID, email address). UNIQUE on `(type, value)`. Entries with `secured=true` hold credential data (email passwords, API keys) and are masked in API list responses.
+**`public.butler_secrets`** — The shared credential pool behind the
+[Credential Store](../data_and_storage/credential-store.md)'s fallback tier.
 
 **`public.model_catalog`** — The model catalog for dynamic model routing. Contains runtime types, model IDs, complexity tiers, priority rankings, and extra CLI arguments.
 
@@ -59,7 +54,7 @@ The `public` schema contains cross-butler data that must be accessible to all bu
 
 ## Core Tables
 
-Every butler schema contains three mandatory core tables, created by the `core` migration chain:
+Every butler schema contains these core tables, created by the `core` migration chain:
 
 ### `state`
 
@@ -86,17 +81,16 @@ The database makes heavy use of PostgreSQL JSONB columns for flexible, schema-li
 - **Cost data** — token usage and cost breakdowns stored as JSONB objects on session rows.
 - **Last result** — scheduler task outcomes (success result or error object) stored as JSONB.
 - **Job args** — structured arguments for `job`-mode scheduled tasks stored as JSONB objects.
-- **Triage rule conditions** — pre-classification rule matching conditions stored as JSONB with type-specific schemas (sender_domain, sender_address, header_condition, mime_type).
 - **Route envelopes** — full routing envelopes stored as JSONB in the route_inbox for crash recovery and audit.
 
-JSONB columns are validated at the application layer (Pydantic models, explicit type checks) before insertion. Indexes use GIN where query patterns warrant it (e.g., triage rule conditions).
+JSONB columns are validated at the application layer (Pydantic models, explicit type checks) before insertion. Indexes use GIN where query patterns warrant it.
 
 ## Database Provisioning
 
 The `Database` class (`src/butlers/db.py`) handles both provisioning and connection pool management:
 
 1. **Provisioning** connects to the `postgres` maintenance database and creates the target database if it doesn't exist. Template collation versions are refreshed to handle OS/container updates.
-2. **Connection pool** creation uses `asyncpg.create_pool()` with configurable min/max sizes (default 2-10) and optional SSL mode. The `server_settings` parameter sets the `search_path` for schema isolation.
+2. **Connection pool** creation uses `asyncpg.create_pool()` with min/max sizes from `BUTLERS_DB_POOL_MIN_SIZE` / `BUTLERS_DB_POOL_MAX_SIZE` (default 1-10) and optional SSL mode. The `server_settings` parameter sets the `search_path` for schema isolation.
 3. **SSL handling** includes automatic retry with `ssl=disable` when an SSL upgrade connection loss is detected (common in containerized environments).
 
 Connection parameters are resolved from environment variables: `DATABASE_URL` (libpq-style) takes precedence, with individual `POSTGRES_*` variables as fallback.
@@ -107,7 +101,7 @@ Migrations are managed by Alembic, run programmatically at startup (no CLI shell
 
 ### Core Chain
 
-Lives in `alembic/versions/core/`. Contains migrations for the three mandatory core tables. Always runs first. Targets the butler's own schema.
+Lives in `alembic/versions/core/`. Contains the core per-butler tables and the database-global `public` tables. Always runs first. Targets the butler's own schema.
 
 ### Module Chains
 
@@ -115,7 +109,7 @@ Discovered from `src/butlers/modules/<name>/migrations/`. Each module with persi
 
 ### Butler-Specific Chains
 
-Discovered from `roster/<name>/migrations/`. Individual butlers can define role-specific migrations for domain tables (e.g., the Switchboard's `routing_log`, `ingestion_events`, `triage_rules`).
+Discovered from `roster/<name>/migrations/`. Individual butlers can define role-specific migrations for domain tables (e.g., the Switchboard's `routing_log`).
 
 ### Execution
 
@@ -129,7 +123,7 @@ To confirm the database design described here matches the live schema:
 # 1. Shared public tables exist with expected columns
 psql -h localhost -U butlers -d butlers -c \
   "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name;"
-# Expected: contacts, contact_info, model_catalog, butler_model_overrides,
+# Expected: entities, entity_info, butler_secrets, model_catalog, butler_model_overrides,
 #           token_limits, token_usage_ledger, provider_config present
 
 # 2. Per-butler schema isolation is enforced
