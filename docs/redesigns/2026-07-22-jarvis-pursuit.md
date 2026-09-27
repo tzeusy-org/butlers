@@ -14,8 +14,8 @@ the `fable` orchestrator. Every batch was checkpointed to a durable harvest file
 2026-07-23.
 
 **Data:** full per-agent structured output in
-[`2026-07-22-jarvis-pursuit-data.json`](2026-07-22-jarvis-pursuit-data.json).
-Access pattern: `jq '.audits[] | select(.page_key=="page:chronicles")' docs/redesigns/2026-07-22-jarvis-pursuit-data.json`
+`git show b23d5b76afab:docs/redesigns/2026-07-22-jarvis-pursuit-data.json`.
+Access pattern: `git show b23d5b76afab:docs/redesigns/2026-07-22-jarvis-pursuit-data.json | jq '.audits[] | select(.page_key=="page:chronicles")'`
 (keys: `qc:*`, `page:*`, `cross:*`, `eco:*`); synthesis under `.synthesis`.
 
 ## North star

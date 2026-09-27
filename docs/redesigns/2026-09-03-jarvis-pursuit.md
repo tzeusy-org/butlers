@@ -8,11 +8,11 @@ proactivity, owner-absent operation, home/IoT, finance & commerce, agent self-im
 deep-design agents (entity graph dossier, fleet case file), 1 cross-cutting mobile/on-the-go sweep,
 and 6 coarse surface journeys. Zero agent errors.
 
-Full per-agent structured output lives in `2026-09-03-jarvis-pursuit-data.json`. Access pattern:
+Full per-agent structured output lives in `git show b23d5b76afab:docs/redesigns/2026-09-03-jarvis-pursuit-data.json`. Access pattern:
 
 ```bash
-jq '.audits[] | select(.page=="eco: home-iot")' docs/redesigns/2026-09-03-jarvis-pursuit-data.json
-jq '.synthesis.ranked_moves[] | {rank, title, cost}' docs/redesigns/2026-09-03-jarvis-pursuit-data.json
+git show b23d5b76afab:docs/redesigns/2026-09-03-jarvis-pursuit-data.json | jq '.audits[] | select(.page=="eco: home-iot")'
+git show b23d5b76afab:docs/redesigns/2026-09-03-jarvis-pursuit-data.json | jq '.synthesis.ranked_moves[] | {rank, title, cost}'
 ```
 
 ## North star (unchanged from run 09)
