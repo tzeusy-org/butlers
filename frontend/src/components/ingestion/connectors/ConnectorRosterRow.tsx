@@ -11,9 +11,6 @@
  * resolver: registered OAuth, Passport pairing, or an honest unavailable
  * explanation (the same contract the connector detail ReauthCallout uses).
  *
- * A left-rail severity indicator appears for non-ok connectors: red for
- * needs_reauth, amber for degraded/expiring.
- *
  * Design: hairline-divided rows, no card chrome. The whole row is the
  * navigation target (a stretched link filling the row) with the chevron kept
  * as a visual disclosure cue only — it is no longer an independent click
@@ -102,14 +99,6 @@ export function ConnectorRosterRow({
   const verdictWord = healthVerdictWord(c, info)
   const verdictState = healthDotState(info.health)
 
-  // Left rail severity color for non-ok connectors
-  const railColorClass =
-    info.authStatus === 'needs_reauth'
-      ? 'bg-[color:var(--red)]'
-      : info.health !== 'ok'
-        ? 'bg-[color:var(--amber)]'
-        : null
-
   const displayName = c.connector_type.replace(/_/g, ' ')
 
   // The reauth pill doubles as the recovery action only for a known recovery
@@ -135,14 +124,6 @@ export function ConnectorRosterRow({
       style={{ gridTemplateColumns: CONNECTOR_ROSTER_GRID_COLUMNS }}
       data-testid={`connector-row-${c.connector_type}`}
     >
-      {/* Left severity rail */}
-      {railColorClass && (
-        <div
-          aria-hidden="true"
-          className={`absolute left-0 top-0 bottom-0 w-0.5 ${railColorClass}`}
-        />
-      )}
-
       {/* Stretched row link — the whole row is the navigation target (click
           or keyboard Enter/Space). All other row content below stays
           position:static, so it paints (and hit-tests) BELOW this absolutely
