@@ -707,6 +707,13 @@ The module SHALL register an MCP tool `calendar_find_free_slots` that turns free
 - **WHEN** `calendar_find_free_slots` is called and the search window contains no gap long enough for `duration_minutes`
 - **THEN** an empty slots list is returned (fail-open, not an error)
 
+#### Scenario: Provider failure returns a structured module error
+
+- **WHEN** the provider free/busy lookup fails with an authentication or request error
+- **THEN** the tool returns its structured error dictionary with `status="error"`, an empty `slots` list, the requested `duration_minutes`, and the resolved `calendar_ids`
+- **AND** the tool does not create, update, or delete a calendar event
+- **AND** any diagnostic error text remains subject to the module's existing credential-redaction contract
+
 ### Requirement: Recurrence-Scoped Occurrence Mutation
 
 When a mutation targets a recurring event, the module SHALL support operating on a single occurrence (`this`) or the occurrence-and-onward remainder (`following`) in addition to the whole series (`series`), via the `recurrence_scope` argument on `calendar_update_event` / `calendar_delete_event` and the dedicated `calendar_update_event_instance` / `calendar_delete_event_instance` tools. Occurrence-scoped mutations SHALL persist provider EXDATE/RDATE recurrence entries and mark the affected `calendar_event_instances` rows `is_exception = true`.

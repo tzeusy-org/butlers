@@ -795,7 +795,7 @@ separate authorities. Partial or failed evidence permits none of those steps.
 
 ## Repository references
 
-- [Conversation-anchor provider resume ledger](../../openspec/changes/conversation-anchor-provider-resume-ledger/specs/dashboard-conversations/spec.md): requirements “Channel-Agnostic Conversation Anchor” and “Conversation Data Model”.
+- [Conversation-anchor provider resume ledger](../../openspec/changes/archive/2026-09-27-conversation-anchor-provider-resume-ledger/specs/dashboard-conversations/spec.md): requirements “Channel-Agnostic Conversation Anchor” and “Conversation Data Model”.
 - [Canonical dashboard conversations](../../openspec/specs/dashboard-conversations/spec.md).
 - [RFC 0003: Switchboard Routing and Ingestion](../../about/legends-and-lore/rfcs/0003-switchboard-routing-and-ingestion.md).
 - [Deployment and drift specification](../../openspec/specs/deployment-and-drift/spec.md).

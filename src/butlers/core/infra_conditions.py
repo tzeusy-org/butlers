@@ -3,7 +3,7 @@
 bu-27dxl.6.2 — implements the representation and transition semantics defined
 by the merged ``define-infrastructure-reliability-lifecycle`` OpenSpec change
 (bu-27dxl.6.1, PR #3522). See
-``openspec/changes/define-infrastructure-reliability-lifecycle/design.md``
+``openspec/changes/archive/2026-09-27-define-infrastructure-reliability-lifecycle/design.md``
 and its ``specs/infrastructure-reliability/spec.md`` for the full normative
 contract this module implements: canonical condition identity (Decision #1),
 append-per-episode snapshot-authoritative recovery (Decision #2), and bounded

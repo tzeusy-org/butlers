@@ -20,8 +20,8 @@ next occurrence.
 ### Requirement: Three-Way Migration Drift Comparison
 
 The system SHALL compare, per butler schema, the codebase's current Alembic
-head revision for every migration chain applicable to that schema against
-the revision(s) actually present in that schema's `alembic_version` table.
+head revision for every migration chain applicable to that schema against the
+revision(s) actually present in that schema's `alembic_version` table.
 
 #### Scenario: A schema's chains are resolved the same way the migration runner resolves them
 
@@ -56,6 +56,20 @@ the revision(s) actually present in that schema's `alembic_version` table.
 - **THEN** the drift entry's actual revision is reported as `null`, distinct
   from a stale-but-present revision
 
+#### Scenario: A check failure is an incomplete snapshot, never a false all-clear
+
+- **WHEN** the comparison itself cannot complete (the shared database pool is
+  unavailable, or reading a schema's `alembic_version` table raises an
+  unexpected error)
+- **THEN** the result is marked degraded/unavailable rather than reporting
+  "no drift" or raising to the caller
+- **AND** it is treated as an incomplete infrastructure-condition snapshot
+  that cannot resolve any active migration-drift condition
+- **AND** a schema whose `alembic_version` table does not exist at all (a
+  schema that predates any migration run) is treated as a legitimate empty
+  state, not a check failure — every applicable chain is reported as never
+  applied for that schema
+
 #### Scenario: A check failure is a degraded result, never a false all-clear or a crash
 
 - **WHEN** the comparison itself cannot complete (the shared database pool is
@@ -80,6 +94,18 @@ background process, independent of any single dashboard page view.
   one bad tick never terminates the background loop or the process hosting
   it
 
+#### Scenario: The sentinel loop reconciles lifecycle decisions, not cached reads
+
+- **WHEN** `GET /api/system/drift` (see below) is called
+- **THEN** it computes the comparison live on that request rather than
+  reading a value cached by the hourly loop — the endpoint is always at
+  least as fresh as the loop
+- **AND** the hourly loop's distinct responsibility is submitting complete
+  drift snapshots to infrastructure-condition reconciliation and processing
+  any resulting due lifecycle transitions
+- **AND** it does not treat audit-marker absence or a degraded report as
+  resolution authority
+
 #### Scenario: The sentinel loop's job is the escalation side effect, not serving reads
 
 - **WHEN** `GET /api/system/drift` (see below) is called
@@ -93,9 +119,9 @@ background process, independent of any single dashboard page view.
 ### Requirement: GET /api/system/drift
 
 The `/api/system/drift` endpoint SHALL return the current three-way
-comparison result plus escalation state, following the fleet-wide
-degraded-envelope convention (never a fabricated all-clear, never an
-unhandled 503 for a known degraded state).
+comparison result plus active-episode escalation state, following the
+fleet-wide degraded-envelope convention (never a fabricated all-clear, never
+an unhandled 503 for a known degraded state).
 
 #### Scenario: Endpoint returns the comparison result
 
@@ -106,10 +132,10 @@ unhandled 503 for a known degraded state).
   - `drifted: DriftEntry[]` -- one entry per `(schema, chain)` pair out of
     sync, each with `schema_name`, `chain`, `expected_head`, and
     `actual_revision: string | null`
-  - `first_detected_at: string | null` -- when the current drift composition
-    was first detected, or `null` if not drifted
-  - `escalated: boolean` -- whether a QA case has already been opened for
-    the current drift composition
+  - `first_detected_at: string | null` -- when the current drift episode was
+    first detected, or `null` if not drifted
+  - `escalated: boolean` -- whether the current active episode has emitted L1
+    or higher; it SHALL NOT mean a permanent already-escalated latch
   - `drift_check_available: boolean`
 - **AND** the response wraps in the standard `ApiResponse<DriftFacts>`
   envelope

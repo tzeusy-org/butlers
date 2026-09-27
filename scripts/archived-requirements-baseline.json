@@ -3985,26 +3985,6 @@
       "excerpt": "\"Delete this-and-following occurrences of a recurring event\" is not in the block"
     }
   ],
-  "2026-07-05-conversation-reply-channel/dashboard-conversations/Conversation Data Model": [
-    {
-      "kind": "clause",
-      "scenario": "Conversation table schema",
-      "digest": "1c7c51b5cef5",
-      "excerpt": "- `total_input_tokens` (BIGINT, NOT NULL, default `0`): aggregate input tokens across all assistant responses"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Conversation table schema",
-      "digest": "effa7589b9a3",
-      "excerpt": "- `total_output_tokens` (BIGINT, NOT NULL, default `0`): aggregate output tokens across all assistant responses"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Conversation table schema",
-      "digest": "afefa02ee254",
-      "excerpt": "- `total_duration_ms` (BIGINT, NOT NULL, default `0`): aggregate response duration across all assistant responses"
-    }
-  ],
   "2026-07-10-finance-alerts-category-anomaly-scenario/finance-alerts/Automated Periodic Summaries": [
     {
       "kind": "clause",
