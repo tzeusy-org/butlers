@@ -57,7 +57,7 @@ export function Voice({ as: Tag = "p", variant = "roman", children, className, .
         // Tracking — normal per spec
         "tracking-normal",
         // Color — primary foreground
-        "text-[var(--fg,oklch(0.985_0_0))]",
+        "text-fg",
         // Variant
         variant === "italic" && "italic",
         className,

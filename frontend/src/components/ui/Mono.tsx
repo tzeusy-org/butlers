@@ -47,8 +47,8 @@ export function Mono({ as: Tag = "span", muted = false, children, className, ...
         "tabular-nums",
         // Color
         muted
-          ? "text-[var(--mfg,oklch(0.708_0_0))]"
-          : "text-[var(--fg,oklch(0.985_0_0))]",
+          ? "text-[var(--mfg)]"
+          : "text-fg",
         className,
       )}
       {...props}

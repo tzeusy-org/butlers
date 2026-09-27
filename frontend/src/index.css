@@ -180,6 +180,8 @@
    *   --border-soft                 list separators (6% / 5% opacity)
    *   --border-strong               buttons, link underlines (18% / 20% opacity)
    *   --green                       healthy / positive delta state color
+   *   --amber-text / --red-text     AA-safe operational state text; state
+   *                                  marks retain base --amber / --red
    *
    * Note: --border, --red, and --amber already exist above and their dark-mode
    * values match the Dispatch spec exactly. --border light-mode uses the
@@ -893,7 +895,7 @@ body {
   animation: calendar-entry-flash 2.2s cubic-bezier(0.22, 1, 0.36, 1) forwards;
   position: relative;
   z-index: 20;
-  border-radius: var(--radius-md, 0.5rem);
+  border-radius: var(--radius-md);
 }
 @media (prefers-reduced-motion: reduce) {
   .chat-message-highlight {

@@ -3,7 +3,7 @@ import { useEffect } from "react";
 import { Breadcrumbs } from "@/components/ui/breadcrumbs";
 import { useBreadcrumbsControl } from "@/components/ui/breadcrumbs-control";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Section, SectionContent, SectionHeader } from "@/components/ui/Section";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Title } from "@/components/ui/Title";
 import { CardSkeleton } from "@/components/skeletons/card-skeleton";
@@ -204,11 +204,11 @@ const LIST_SKELETON_COLUMNS = [
 
 function ListSkeleton() {
   return (
-    <Card>
-      <CardContent className="pt-6">
+    <Section>
+      <SectionContent className="pt-6">
         <TableSkeleton rows={5} columns={LIST_SKELETON_COLUMNS} />
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }
 
@@ -368,7 +368,7 @@ export function Page({
     if (process.env.NODE_ENV !== "production" && archetype === "list" && empty != null) {
       console.warn(
         "[Page] archetype=\"list\" with a non-null `empty` prop is unsupported. " +
-          "List pages must handle empty state inside their <Card> body and pass empty={null} to <Page>.",
+          "List pages must handle empty state inside their <Section> body and pass empty={null} to <Page>.",
       );
     }
   }, [archetype, empty]);
@@ -425,19 +425,19 @@ export function Page({
     if (archetype === "editorial" || archetype === "status-board") {
       return (
         <ArchetypeWrapper archetype={archetype} header={header} footer={footer}>
-          <Card className="border-destructive" role="alert">
-            <CardHeader>
+          <Section className="border-destructive" role="alert">
+            <SectionHeader>
               <p className="font-semibold text-destructive">Something went wrong</p>
-            </CardHeader>
-            <CardContent className="space-y-4">
+            </SectionHeader>
+            <SectionContent className="space-y-4">
               <p className="text-sm text-destructive">{message}</p>
               {onRetry && (
                 <Button variant="outline" size="sm" onClick={onRetry}>
                   Retry
                 </Button>
               )}
-            </CardContent>
-          </Card>
+            </SectionContent>
+          </Section>
         </ArchetypeWrapper>
       );
     }
@@ -451,19 +451,19 @@ export function Page({
             status={status}
             actions={actions}
           />
-          <Card className="border-destructive" role="alert">
-            <CardHeader>
+          <Section className="border-destructive" role="alert">
+            <SectionHeader>
               <p className="font-semibold text-destructive">Something went wrong</p>
-            </CardHeader>
-            <CardContent className="space-y-4">
+            </SectionHeader>
+            <SectionContent className="space-y-4">
               <p className="text-sm text-destructive">{message}</p>
               {onRetry && (
                 <Button variant="outline" size="sm" onClick={onRetry}>
                   Retry
                 </Button>
               )}
-            </CardContent>
-          </Card>
+            </SectionContent>
+          </Section>
         </div>
       </ArchetypeWrapper>
     );

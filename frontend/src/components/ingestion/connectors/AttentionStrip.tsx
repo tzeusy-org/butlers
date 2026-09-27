@@ -27,6 +27,7 @@
 
 import { Link } from 'react-router'
 import type { ConnectorSummary } from '@/api/types'
+import { stateTextColorVar } from '@/lib/visual-token-roles'
 import {
   deriveConnectorDispatchInfo,
   authStatusPresentation,
@@ -65,7 +66,8 @@ export function AttentionStrip({ connectors }: AttentionStripProps) {
         </span>
         <span
           data-testid="attention-count"
-          className="font-mono text-[10px] tabular-nums text-[var(--red-text)] leading-none"
+          className="font-mono text-[10px] tabular-nums leading-none"
+          style={{ color: stateTextColorVar('error') }}
         >
           {issues.length}
         </span>
@@ -83,9 +85,9 @@ export function AttentionStrip({ connectors }: AttentionStripProps) {
           const label = hasOperationalWarning
             ? 'cadence sparse'
             : authPresentation.label
-          const colorClass = hasOperationalWarning
-            ? 'text-[var(--amber-text)]'
-            : authPresentation.colorClass
+          const color = hasOperationalWarning
+            ? stateTextColorVar('degraded')
+            : authPresentation.color
           const displayName = formatConnectorName(c)
 
           return (
@@ -96,7 +98,10 @@ export function AttentionStrip({ connectors }: AttentionStripProps) {
               className="inline-flex items-baseline gap-1.5 text-foreground underline decoration-border underline-offset-[3px] hover:decoration-foreground transition-colors"
             >
               <span className="text-[13px] tracking-[-0.005em]">{displayName}</span>
-              <span className={`font-mono text-[10px] tracking-[0.06em] uppercase ${colorClass}`}>
+              <span
+                className="font-mono text-[10px] tracking-[0.06em] uppercase"
+                style={{ color }}
+              >
                 {label}
               </span>
             </Link>

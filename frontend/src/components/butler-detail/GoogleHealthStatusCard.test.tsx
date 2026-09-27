@@ -146,12 +146,23 @@ describe("GoogleHealthStatusCard — single account", () => {
     expect(screen.getByTestId("account-email").textContent).toBe("user@example.com");
   });
 
+  it("keeps the account heading phrasing-only and renders status beside it", () => {
+    renderCard(SINGLE_ACCOUNT_STATUS);
+    const heading = screen.getByRole("heading", { name: /user@example.com/i });
+    expect(heading.querySelector("div")).toBeNull();
+    expect(heading.className).toContain("text-[10px]");
+    expect(heading.className).toContain("font-normal");
+    expect(heading.className).toContain("text-[var(--mfg)]");
+    expect(screen.getByTestId("account-email").className).not.toMatch(/text-(xs|sm|base)/);
+    expect(heading.contains(screen.getByTestId("account-state"))).toBe(false);
+  });
+
   it("shows the account state text on the widget", () => {
     renderCard(SINGLE_ACCOUNT_STATUS);
     const accountState = screen.getByTestId("account-state");
     expect(accountState.textContent).toBe("healthy");
-    expect(accountState.className).toContain("var(--green)");
-    expect(accountState.className).not.toContain("oklch(");
+    expect(accountState.className).toContain("text-muted-foreground");
+    expect(screen.getByRole("img", { name: "Google Health: healthy" })).toBeDefined();
   });
 
   it("shows sleep_sessions_7d correctly", () => {
@@ -189,8 +200,8 @@ describe("GoogleHealthStatusCard — single account state colours", () => {
     renderCard(degraded);
     const accountState = screen.getByTestId("account-state");
     expect(accountState.textContent).toBe("degraded");
-    expect(accountState.className).toContain("var(--amber)");
-    expect(accountState.className).not.toContain("oklch(");
+    expect(accountState.className).toContain("text-muted-foreground");
+    expect(screen.getByRole("img", { name: "Google Health: degraded" })).toBeDefined();
   });
 
   it("renders error state on widget", () => {
@@ -202,8 +213,8 @@ describe("GoogleHealthStatusCard — single account state colours", () => {
     renderCard(error);
     const accountState = screen.getByTestId("account-state");
     expect(accountState.textContent).toBe("error");
-    expect(accountState.className).toContain("var(--red)");
-    expect(accountState.className).not.toContain("oklch(");
+    expect(accountState.className).toContain("text-muted-foreground");
+    expect(screen.getByRole("img", { name: "Google Health: error" })).toBeDefined();
   });
 });
 
@@ -249,7 +260,9 @@ describe("GoogleHealthStatusCard — connector-failing (degraded) signal", () =>
     renderCard(errored);
     const banner = screen.getByTestId("connector-error-banner");
     expect(banner.textContent).toContain("unavailable");
-    expect(banner.className).toContain("var(--red)");
+    expect(banner.className).toContain("text-foreground");
+    expect(banner.className).not.toContain("text-muted-foreground");
+    expect(banner.className).not.toMatch(/var\(--(?:red|amber)/);
     expect(banner.className).not.toContain("oklch(");
   });
 
@@ -344,4 +357,22 @@ describe("GoogleHealthStatusCard — multi-account", () => {
     expect(states).toContain("healthy");
     expect(states).toContain("degraded");
   });
+});
+
+afterEach(cleanup);
+
+// One signal per account, including degraded failures that must never look red.
+it.each(["healthy", "degraded", "error", "not_configured"] as const)("single account signal: %s", (state) => {
+  for (const error_message of [null, "token_invalid"]) {
+    const view = renderCard({ ...SINGLE_ACCOUNT_STATUS, accounts: [{ ...SINGLE_ACCOUNT_STATUS.accounts[0], state, error_message }] });
+    const widget = screen.getByTestId("google-health-account-widget");
+    const mark = widget.querySelector('[role="img"]') as HTMLElement;
+    expect(mark).not.toBeNull();
+    expect(mark.getAttribute("aria-label")).toBe(`Google Health: ${state.replaceAll("_", " ")}`);
+    expect(mark.style.backgroundColor).toBe(({ healthy: "var(--green)", degraded: "var(--amber)", error: "var(--red)", not_configured: "var(--dim)" })[state]);
+    const signals = [...widget.querySelectorAll<HTMLElement>("*")].filter(el => /var\(--(?:red|amber|green)(?:-text)?\)/.test((el.getAttribute("style") ?? "") + el.className));
+    expect(signals).toEqual(state === "not_configured" ? [] : [mark]);
+    expect(widget.querySelector('[role="alert"]') !== null).toBe((state === "error" || state === "degraded") && error_message !== null);
+    view.unmount();
+  }
 });

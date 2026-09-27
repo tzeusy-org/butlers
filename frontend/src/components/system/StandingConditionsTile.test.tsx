@@ -186,7 +186,9 @@ describe("StandingConditionsTile -- populated", () => {
   it("renders content container", () => {
     mockSuppressionCounts = new Map()
     mockConditionsResult = { isPending: false, data: makeFacts({ conditions: [openCondition], total: 1 }) }
-    expect(render()).toContain("standing-conditions-content")
+    const html = render()
+    expect(html).toContain("standing-conditions-content")
+    expect(html).not.toContain('data-degraded="true"')
   })
 
   it("renders source, escalation level, and state", () => {
@@ -380,6 +382,7 @@ describe("StandingConditionsTile -- ledger badge", () => {
     }
     const html = render()
     expect(html).toContain("standing-conditions-infra-degraded")
+    expect(html).toContain('data-degraded="true"')
     expect(html).toContain("finance:bill-overdue")
   })
 
@@ -392,6 +395,7 @@ describe("StandingConditionsTile -- ledger badge", () => {
     mockOwnerConditionsResult = { isPending: false, data: makeFacts({ conditions_available: false }) }
     const html = render()
     expect(html).toContain("standing-conditions-owner-degraded")
+    expect(html).toContain('data-degraded="true"')
     expect(html).toContain("deploy_drift")
   })
 

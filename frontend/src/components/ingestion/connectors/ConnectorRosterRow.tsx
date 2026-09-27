@@ -11,9 +11,6 @@
  * resolver: registered OAuth, Passport pairing, or an honest unavailable
  * explanation (the same contract the connector detail ReauthCallout uses).
  *
- * A left-rail severity indicator appears for non-ok connectors: red for
- * needs_reauth, amber for degraded/expiring.
- *
  * Design: hairline-divided rows, no card chrome. The whole row is the
  * navigation target (a stretched link filling the row) with the chevron kept
  * as a visual disclosure cue only — it is no longer an independent click
@@ -30,6 +27,8 @@
 
 import { Link } from 'react-router'
 import { Time } from '@/components/ui/time'
+import { StateDot } from '@/components/ui/StateDot'
+import { stateTextColorVar } from '@/lib/visual-token-roles'
 import type { ConnectorSummary } from '@/api/types'
 import { ConnectorCheckpoints } from './ConnectorCheckpoints'
 import { ConnectorDeviceBadges } from './ConnectorDeviceBadges'
@@ -37,8 +36,7 @@ import { Sparkline } from './Sparkline'
 import {
   deriveConnectorDispatchInfo,
   authStatusPresentation,
-  healthDotColor,
-  healthTextColor,
+  healthDotState,
   healthVerdictWord,
   resolveConnectorRecovery,
 } from './connector-auth'
@@ -98,18 +96,10 @@ export function ConnectorRosterRow({
   const eventsCount = events24h ?? c.today?.messages_ingested ?? 0
 
   const authPresentation = authStatusPresentation(info)
-  const authColorClass = authPresentation.colorClass
+  // Health is already carried by the row dot. Independent auth failures retain their tone.
+  const authColor = info.authStatus === 'ok' ? 'var(--muted-foreground)' : authPresentation.color
   const verdictWord = healthVerdictWord(c, info)
-  const verdictDotClass = healthDotColor(info.health)
-  const verdictTextClass = healthTextColor(info.health)
-
-  // Left rail severity color for non-ok connectors
-  const railColorClass =
-    info.authStatus === 'needs_reauth'
-      ? 'bg-[color:var(--red,oklch(0.62_0.20_25))]'
-      : info.health !== 'ok'
-        ? 'bg-[color:var(--amber,oklch(0.72_0.12_70))]'
-        : null
+  const verdictState = healthDotState(info.health)
 
   const displayName = c.connector_type.replace(/_/g, ' ')
 
@@ -136,14 +126,6 @@ export function ConnectorRosterRow({
       style={{ gridTemplateColumns: CONNECTOR_ROSTER_GRID_COLUMNS }}
       data-testid={`connector-row-${c.connector_type}`}
     >
-      {/* Left severity rail */}
-      {railColorClass && (
-        <div
-          aria-hidden="true"
-          className={`absolute left-0 top-0 bottom-0 w-0.5 ${railColorClass}`}
-        />
-      )}
-
       {/* Stretched row link — the whole row is the navigation target (click
           or keyboard Enter/Space). All other row content below stays
           position:static, so it paints (and hit-tests) BELOW this absolutely
@@ -159,12 +141,9 @@ export function ConnectorRosterRow({
 
       {/* Health verdict — single dot + word, folding liveness + health */}
       <div className="flex items-center gap-1.5">
+        <StateDot state={verdictState} size={6} />
         <span
-          className={`w-1.5 h-1.5 rounded-full shrink-0 ${verdictDotClass}`}
-          aria-hidden="true"
-        />
-        <span
-          className={`font-mono text-[10px] tracking-[0.02em] ${verdictTextClass}`}
+          className="font-mono text-[10px] tracking-[0.02em] text-muted-foreground"
           data-testid={`health-verdict-${c.connector_type}`}
         >
           {verdictWord}
@@ -222,7 +201,8 @@ export function ConnectorRosterRow({
         {recovery?.kind === 'oauth' ? (
           <a
             href={recovery.href}
-            className={`relative z-10 inline-flex items-center gap-1 font-mono text-[10px] tracking-[0.06em] uppercase underline decoration-current/40 underline-offset-2 hover:decoration-current transition-colors ${authColorClass}`}
+            className="relative z-10 inline-flex items-center gap-1 font-mono text-[10px] tracking-[0.06em] uppercase underline decoration-current/40 underline-offset-2 hover:decoration-current transition-colors"
+            style={{ color: authColor }}
             data-testid={`auth-status-${c.connector_type}`}
             aria-label={`Re-authorize ${displayName}`}
           >
@@ -231,7 +211,8 @@ export function ConnectorRosterRow({
         ) : recovery?.kind === 'passport' ? (
           <Link
             to={recovery.to}
-            className={`relative z-10 inline-flex items-center gap-1 font-mono text-[10px] tracking-[0.06em] uppercase underline decoration-current/40 underline-offset-2 hover:decoration-current transition-colors ${authColorClass}`}
+            className="relative z-10 inline-flex items-center gap-1 font-mono text-[10px] tracking-[0.06em] uppercase underline decoration-current/40 underline-offset-2 hover:decoration-current transition-colors"
+            style={{ color: authColor }}
             data-testid={`auth-status-${c.connector_type}`}
             aria-label={
               recovery.action === 'pair'
@@ -243,7 +224,8 @@ export function ConnectorRosterRow({
           </Link>
         ) : (
           <span
-            className={`font-mono text-[10px] tracking-[0.06em] uppercase ${authColorClass}`}
+            className="font-mono text-[10px] tracking-[0.06em] uppercase"
+            style={{ color: authColor }}
             data-testid={`auth-status-${c.connector_type}`}
           >
             {authDisplayLabel}
@@ -282,7 +264,8 @@ export function ConnectorRosterRow({
       {c.operational_warnings?.map((warning) => (
         <p
           key={warning}
-          className="col-start-2 col-end-[-1] mt-1 font-serif text-[12px] leading-[1.45] text-[var(--amber-text)]"
+          className="col-start-2 col-end-[-1] mt-1 font-serif text-[12px] leading-[1.45]"
+          style={{ color: stateTextColorVar('degraded') }}
           data-testid={`connector-warning-${c.connector_type}`}
         >
           {warning}

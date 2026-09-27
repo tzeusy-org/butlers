@@ -5,7 +5,7 @@ import type { AuditLogEntry, AuditLogParams } from "@/api/types";
 import AuditLogTable from "@/components/audit/AuditLogTable";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import { Section, SectionContent } from "@/components/ui/Section";
 import { FetchingDim } from "@/components/ui/fetching-dim";
 import { Input } from "@/components/ui/input";
 import { Page } from "@/components/ui/page";
@@ -266,8 +266,8 @@ export default function AuditLogPage() {
       )}
 
       {/* Filter bar */}
-      <Card>
-        <CardContent className="pt-0">
+      <Section>
+        <SectionContent className="pt-0">
           <div className="flex flex-wrap items-end gap-4">
             {/* Actor text input */}
             <div className="space-y-1">
@@ -365,12 +365,12 @@ export default function AuditLogPage() {
               </Button>
             )}
           </div>
-        </CardContent>
-      </Card>
+        </SectionContent>
+      </Section>
 
       {/* Audit log table — dims (never blanks) while a filter/page change refetches */}
-      <Card>
-        <CardContent>
+      <Section>
+        <SectionContent>
           <FetchingDim isFetching={isListRefreshing}>
             <div ref={auditTableRef}>
               <AuditLogTable
@@ -384,9 +384,9 @@ export default function AuditLogPage() {
               />
             </div>
           </FetchingDim>
-        </CardContent>
+        </SectionContent>
         <ListTriageFooterHint bindings={auditTriageHints} />
-      </Card>
+      </Section>
 
       {/* Pagination controls */}
       {total > 0 && (

@@ -268,8 +268,8 @@ describe("EpisodesRegister — the daybook", () => {
       (c.textContent ?? "").includes("07:08"),
     ) as HTMLElement | undefined;
     expect(timeCell).toBeDefined();
-    // Mono full-fg variant uses --fg; the muted variant uses --mfg.
-    expect(timeCell!.className).toContain("--fg");
+    // Mono full-fg variant uses the foreground utility; the muted variant uses --mfg.
+    expect(timeCell!.className).toContain("text-fg");
     expect(timeCell!.className).not.toContain("--mfg");
   });
 
