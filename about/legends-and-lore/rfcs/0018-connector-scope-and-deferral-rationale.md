@@ -240,7 +240,7 @@ The practical decision rule that falls out of this catalogue:
 
 Applied per `openspec/changes/specify-readwise-reading-capture` (bu-ecu3w), a spec-first
 prerequisite for `bu-27dxl.15` (perception expansion) under the coordinator-reviewed run-6
-shaping packet (`/home/tze/.local/share/butlers/coordinator-evidence/run6-shaping-20260906/`).
+shaping packet.
 
 **Summary:** The combined "Readwise / Pocket" deferral row is split. Pocket is retired outright —
 Mozilla shut the service down on 2025-07-08 and ended API transactions on 2025-10-08, so it is no

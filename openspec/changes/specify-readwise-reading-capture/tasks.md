@@ -7,6 +7,10 @@
 - [ ] 1.2 Re-verify the Readwise API facts in `design.md` (endpoint shape, rate limits, pagination
   fields) against current official docs before implementing — this draft's evidence is a
   point-in-time fetch (2026-09-09).
+- [ ] 1.3 Resolve the owner-reviewed retention and erasure contract for full highlight text and
+  notes, including provider highlight and book deletions, before creating the evidence table.
+- [ ] 1.4 Specify and verify an incremental checkpoint strategy that cannot skip a later-visible
+  highlight at an `updatedAfter` boundary; event-ID deduplication alone is insufficient.
 
 ## 2. RFC amendments (implementation-time, per D10)
 
@@ -43,7 +47,8 @@
   covering: token validation success/failure, full backfill on empty cursor, incremental poll with
   `updatedAfter`, in-cycle `pageCursor` pagination drain, watermark advance only after full drain,
   unchanged-highlight dedup no-op, edited-highlight distinct event, equal-timestamp sibling
-  identity, reconciliation-poll tombstoning without a new ingest event, 429/`Retry-After` handling,
+  identity and boundary completeness, evidence-write failure without cursor advancement,
+  reconciliation-poll tombstoning without a new ingest event, 429/`Retry-After` handling,
   5xx backoff, empty-library healthy state, and credential-revocation transition to `error`.
 - [ ] 4.2 Implement `src/butlers/connectors/readwise.py` (or the repo's current connector module
   convention at implementation time) satisfying every scenario in
@@ -56,9 +61,10 @@
 
 ## 5. Verification and handoff (this drafting change)
 
-- [x] 5.1 Ground every provider-behavior claim in Readwise's official public API documentation
-  (fetched 2026-09-09) rather than invented behavior; retire Pocket with official shutdown
-  evidence.
+- [x] 5.1 Recheck the documented export fields, authentication, rate-limit statement, and
+  deletion filter against Readwise's official API documentation (fetched 2026-09-09, rechecked
+  2026-09-28); distinguish inferences and unresolved boundary behavior. Retire Pocket with
+  official shutdown evidence.
 - [x] 5.2 Run `openspec validate specify-readwise-reading-capture --strict`,
   `python3 scripts/check_spec_overwrites.py`, `python3 scripts/check_countable_tasks.py`, and
   `make check-guards`; fix any failures before opening the PR.

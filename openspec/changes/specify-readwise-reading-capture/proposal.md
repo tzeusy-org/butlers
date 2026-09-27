@@ -10,16 +10,16 @@ Readwise/Pocket as a "future extension path (not in v1)".
 
 `bu-27dxl.15` (perception expansion: GitHub connector, Spotify podcast lens, YouTube scope-set,
 reading capture) names reading capture as a remaining outcome. The coordinator-reviewed run-6
-shaping packet
-(`/home/tze/.local/share/butlers/coordinator-evidence/run6-shaping-20260906/coordinator-review.md`,
-`bu-27dxl.15-proposal.md`) requires a Readwise-only spec-first prerequisite — Candidate D — before
+shaping packet (coordinator review and `bu-27dxl.15-proposal.md`) requires a Readwise-only
+spec-first prerequisite — Candidate D — before
 any implementation carrier can exist, and explicitly forbids inferring implementation from this
 draft.
 
 This change retires Pocket with official evidence, drafts the full Readwise connector contract
 grounded in Readwise's official public API documentation (https://readwise.io/api_deets, fetched
-2026-09-09), and amends RFC 0018's deferral entry accordingly (see the RFC 0018 amendment applied
-alongside this change). It performs no account, token, credential, provider, or runtime action.
+2026-09-09 and rechecked 2026-09-28), and amends RFC 0018's deferral entry accordingly (see the
+RFC 0018 amendment applied alongside this change). It performs no account, token, credential,
+provider, or runtime action.
 
 ## What Changes
 
