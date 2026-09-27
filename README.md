@@ -98,8 +98,9 @@ For full prerequisites and setup details, see [Getting Started](docs/getting_sta
 # Install Python dependencies
 uv sync --dev
 
-# Start everything via tmux (PostgreSQL, butlers, connectors, dashboard)
-./scripts/dev.sh
+# Start the dev stack via Docker Compose (butlers, connectors, dashboard;
+# PostgreSQL is external, configured in .env.dev)
+./scripts/compose.sh
 
 # Or start manually
 docker compose up -d postgres
