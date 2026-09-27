@@ -24,7 +24,7 @@
 ## 4. Ingestion-Event Identity Migration
 
 - [ ] 4.1 Update envelope construction in `build_sleep_session_envelope` and `build_daily_summary_envelope` (and `control.idempotency_key`) to use the prefixed format `google_health:<email>:<resource>:<id>`. The format decision is locked — see design.md §Decisions/ADR-3.
-- [ ] 4.2 Write a one-shot Alembic migration that rewrites the 3 existing `public.ingestion_events.external_event_id` rows from `google_health:activity:<date>` to `google_health:uniquosity@gmail.com:activity:<date>`. Verify no downstream chronicler-adapter regression — chronicler still has `google_health.*` adapter as deferred (`butler-chronicler/spec.md:113`), so the only consumer of `external_event_id` for these rows is the dashboard counter query in `src/butlers/api/routers/google_health.py::_fetch_ingest_counts`, which uses `LIKE 'google_health:%:%'` and stays compatible.
+- [ ] 4.2 Write a one-shot Alembic migration that rewrites the 3 existing `public.ingestion_events.external_event_id` rows from `google_health:activity:<date>` to `google_health:owner@example.com:activity:<date>`. Verify no downstream chronicler-adapter regression — chronicler still has `google_health.*` adapter as deferred (`butler-chronicler/spec.md:113`), so the only consumer of `external_event_id` for these rows is the dashboard counter query in `src/butlers/api/routers/google_health.py::_fetch_ingest_counts`, which uses `LIKE 'google_health:%:%'` and stays compatible.
 - [ ] 4.3 Update `_fetch_ingest_counts` and `_fetch_last_ingest_at` predicate patterns to match the new key shape (`google_health:%:sleep_session:%` for sleep, `google_health:%:%:%` minus sleep for daily summaries) without regressing single-account installs.
 
 ## 5. Dashboard
@@ -36,7 +36,7 @@
 ## 6. Health Butler Acceptance Path
 
 - [ ] 6.1 Update the wellness-envelope acceptance check in the health butler (per the paired `butler-health` delta in `specs/butler-health/spec.md`) to accept any active health-scoped owner account, not just the primary `google_user_id`. The check should query `public.google_accounts` once per butler-session and cache the recognised identity set.
-- [ ] 6.2 Regression test: an envelope with `sender.identity = <tzeuse@gmail.com email>` and a primary account of `uniquosity@gmail.com` is accepted when both rows are health-scoped + active; rejected when tzeuse@ row is missing scopes or status='revoked'.
+- [ ] 6.2 Regression test: an envelope with `sender.identity = <owner.secondary@example.com email>` and a primary account of `owner@example.com` is accepted when both rows are health-scoped + active; rejected when owner.secondary@ row is missing scopes or status='revoked'.
 
 ## 7. Tests
 
@@ -48,4 +48,4 @@
 
 ## 8. Report
 
-- [ ] 8.1 Terminal reconciliation/report bead: confirm beads 1.1–7.5 are closed, dashboards render both accounts, fresh ingest is observed for sleep/HR on tzeuse@, and the paired `butler-health` delta acceptance scenarios pass. Publish a short report under `docs/reports/connector-google-health-multi-account.md` capturing actual vs. projected ingest counts, any deferred work, and follow-up beads if any.
+- [ ] 8.1 Terminal reconciliation/report bead: confirm beads 1.1–7.5 are closed, dashboards render both accounts, fresh ingest is observed for sleep/HR on owner.secondary@, and the paired `butler-health` delta acceptance scenarios pass. Publish a short report under `docs/reports/connector-google-health-multi-account.md` capturing actual vs. projected ingest counts, any deferred work, and follow-up beads if any.

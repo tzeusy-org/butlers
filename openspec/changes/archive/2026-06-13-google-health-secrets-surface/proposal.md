@@ -4,7 +4,7 @@
 
 The `dashboard-google-accounts` spec already mandates a per-account scope-set picker (including `Google Health`) and a Google Health status card, but no spec binds them to a concrete route. The implemented surface — the `/secrets` passport's `PageGoogleAccounts` rendered at `/secrets?focus=u:google` — only becomes reachable when the inventory is projected to a `{google_account}` entity via a manual `?identity=<uuid>` lens. The owner-default `/secrets` view projects the `{owner}` entity (which has NO Google credential; OAuth refresh tokens live on separate `{google_account}` entities per `google-account-registry`), so there is currently **no discoverable path** for the owner to reach the scope-set picker and grant Google Health scopes.
 
-A secondary safety gap: a naive owner-default Google-account join could expose non-primary accounts (e.g. a second person's `tzeuse@` token) in the owner view — a security regression. The spec must explicitly prohibit this.
+A secondary safety gap: a naive owner-default Google-account join could expose non-primary accounts (e.g. a second person's `owner.secondary@` token) in the owner view — a security regression. The spec must explicitly prohibit this.
 
 ## What Changes
 

@@ -222,6 +222,7 @@ check-duplicate-names:
 # does, so run it on a clean worktree or expect the diff to be yours.
 check-guards: check-em-dashes check-spec-overwrites check-countable-tasks check-duplicate-names check-session-links
 	python3 scripts/check_archived_requirements_landed.py
+	python3 scripts/check_owner_emails.py
 	python3 scripts/check_cited_requirements_resolve.py
 	python3 scripts/extract-frontend-copy.py
 	git diff --exit-code -- frontend/COPY_INVENTORY.md

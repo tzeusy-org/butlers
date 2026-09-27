@@ -1274,7 +1274,7 @@ async def test_cursor_migration_idempotent_and_loads_post_migration(
 # ---------------------------------------------------------------------------
 
 
-_MIGRATED_EMAIL = "uniquosity@gmail.com"
+_MIGRATED_EMAIL = "owner@example.com"
 
 
 def test_envelope_external_event_id_includes_email_prefix() -> None:

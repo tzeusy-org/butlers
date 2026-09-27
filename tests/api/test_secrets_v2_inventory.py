@@ -2244,7 +2244,7 @@ def test_non_primary_google_account_excluded_from_owner_default():
     Spec: §Multi-Account Leak Prevention (dashboard-google-accounts) and
           §Only the primary account appears in owner-default — non-primary excluded
 
-    This is the core security invariant: a non-primary account (e.g. tzeuse@)
+    This is the core security invariant: a non-primary account (e.g. owner.secondary@)
     MUST NOT appear in the owner-default view.
     """
     primary_entity_id = str(uuid4())
@@ -2509,7 +2509,7 @@ def test_primary_google_account_entity_appears_in_identities():
     # _fetch_identity_info queries public.entities for canonical_name+roles.
     google_entity_row = _make_entity_row(
         entity_id=primary_entity_id,
-        canonical_name="google-account:uniquosity@gmail.com",
+        canonical_name="google-account:owner@example.com",
         roles=["google_account"],
     )
 
@@ -2608,7 +2608,7 @@ def test_owner_entity_first_in_identities_when_google_type_sorts_before_owner_ty
     )
     google_entity_row = _make_entity_row(
         entity_id=google_entity_id,
-        canonical_name="google-account:uniquosity@gmail.com",
+        canonical_name="google-account:owner@example.com",
         roles=["google_account"],
     )
 
