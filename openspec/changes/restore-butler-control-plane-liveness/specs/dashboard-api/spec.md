@@ -68,7 +68,7 @@ Scope: v1-mandatory
 - **WHEN** an unauthenticated deployment probe requests exact `GET /ready`
 - **THEN** it may read only the content-blind readiness verdict and bounded check categories
 - **AND** no other protected dashboard API is opened by this exception
-- **AND** Q4 owns the one handler and exact method/path exception; k3s and Compose only consume it
+- **AND** Q4 owns the one handler and exact method/path exception; Compose only consumes it
 
 ### Requirement: [TARGET-STATE] Deployment waits for sustained semantic readiness
 The canonical deployment launcher SHALL refuse to declare completion until

@@ -11,7 +11,7 @@ Owner authentication now rejects the daemon's unauthenticated heartbeat POST. Th
 - Create one durable content-blind owner-attention episode per fleet-control or overdue-QA condition through the existing fenced Switchboard outbox, independently of QA patrol. Preserve bounded condition escalation and truthful pending, sent, failed, and uncertain delivery status.
 - Preserve lightweight process `/health`. Give L3 one read-only Switchboard
   route-preflight producer and Q4 the sole public `/ready` plus owner-auth
-  exception; k3s consumes that route. Make deployment completion depend on
+  exception; Compose consumes that route. Make deployment completion depend on
   distinct qualifying observer/patrol cycles and an effect-free canary beyond
   a full liveness TTL.
 - **BREAKING:** Retire `POST /api/switchboard/heartbeat` as liveness authority and the daemon heartbeat reporter after observer cutover. Do not create an anonymous auth exemption or a new process-bound signing key.
