@@ -209,6 +209,15 @@ cost, failures, spend) from typed read models, per
 
 ---
 
+## General capture target boundary
+
+Adopted, not yet implemented: General owns ordinary capture admission and receipts,
+ordinary-only vocabulary/search/catalog and General-local source-version fences.
+Switchboard brokers owner/source provenance and specialist routing through MCP;
+no General SQL queries a peer's target row. RFC0037 is the durable contract.
+Passive private-source classification guards are shared representation only;
+custody enrollment/UI/history and checklist finalization remain separate features.
+
 ## 5. Dashboard
 
 | Component | Source | Port | Stability |
