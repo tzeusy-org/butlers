@@ -45,7 +45,7 @@ This view is a sanctioned exception to schema isolation (RFC 0006), reusing the 
 #### Scenario: Guardrail 5 — zero LLM session in the read path
 - **WHEN** the overlay view is queried and projected for rendering
 - **THEN** the read is a pure deterministic SQL/Python projection with no LLM session and no cross-schema fan-out at request time
-- **BECAUSE** RFC-0020 rejected the per-open / LLM-synthesis design under RFC 0010 reuse criteria #2 (deterministic) and #3 (batch); any narrative summary is batch pre-rendered and deferred (`bu-jdrkbj`)
+- **BECAUSE** RFC-0020 rejected the per-open / LLM-synthesis design under RFC 0010 reuse criteria #2 (deterministic) and #3 (batch); any narrative summary is batch pre-rendered and deferred
 
 ### Requirement: Overlay View Migration
 
@@ -93,7 +93,7 @@ Each contributing specialist butler MUST write its daily overlay contribution as
 #### Scenario: v1 envelope carries no generated prose
 - **WHEN** a v1 overlay envelope is written
 - **THEN** it contains no `summary` (generated-prose) field
-- **BECAUSE** RFC-0020 adopted the no-LLM structured variant; the batched pre-rendered narrative layer is deferred to `bu-jdrkbj`
+- **BECAUSE** RFC-0020 adopted the no-LLM structured variant; the batched pre-rendered narrative layer is deferred
 
 ### Requirement: Per-Butler Overlay Contribution Job
 
@@ -148,7 +148,6 @@ Each contributing specialist butler SHALL write a structured per-event meeting-p
 
 ID: REQ-calendar-overlay-aggregation-005
 Source: RFC 0026 §Out of Scope ("Moment Prep integration — consumes commitment query surface")
-Scope: v1-mandatory
 
 #### Scenario: Relationship writes per-event prep envelopes
 - **WHEN** the relationship `calendar_prep_contribution` job runs for an entity-linked event in its lookahead window

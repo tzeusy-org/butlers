@@ -481,7 +481,7 @@ The system SHALL periodically clean up old insight data to prevent unbounded tab
 - **AND** it SHALL DELETE rows from `public.insight_engagement` where `delivered_at` is older than 30 days
 
 ### Requirement: Attention Daily Rollup
-The system SHALL persist a durable daily rollup of owner-engagement signal in `public.attention_daily_rollup`, so the disengagement ratchet's history survives the 30-day `insight_engagement` purge and cannot be poisoned by non-owner ingress (bu-tdd4k.5).
+The system SHALL persist a durable daily rollup of owner-engagement signal in `public.attention_daily_rollup`, so the disengagement ratchet's history survives the 30-day `insight_engagement` purge and cannot be poisoned by non-owner ingress.
 
 #### Scenario: Rollup schema
 - **WHEN** the `public.attention_daily_rollup` table is created
@@ -496,7 +496,7 @@ The system SHALL persist a durable daily rollup of owner-engagement signal in `p
 - **WHEN** the delivery cycle's cleanup step purges `public.insight_engagement` rows older than 30 days
 - **THEN** it SHALL first upsert each affected day's delivered/engaged counts into `public.attention_daily_rollup`
 
-### Requirement: [TARGET-STATE] Switchboard insight reader endpoint
+### Requirement: Switchboard insight reader endpoint
 
 The Switchboard SHALL expose a read-only insight reader at `GET /api/switchboard/insights` so dashboard surfaces
 can render pending insight candidates without each butler needing read access to the cross-butler
@@ -527,8 +527,7 @@ allowed to see.
 - **WHEN** the insight reader queries `public.insight_candidates`
 - **THEN** it MUST run under the Switchboard (insight broker) role, which already holds access to
   that table
-- **AND** the change MUST NOT introduce a new grant migration extending SELECT to the health or
-  dashboard role
+- **AND** no grant migration MUST extend SELECT on that table to the health or dashboard role
 
 #### Scenario: Status filter defaults to pending
 

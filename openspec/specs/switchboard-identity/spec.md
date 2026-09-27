@@ -8,7 +8,7 @@ Defines how the Switchboard resolves inbound message identities to canonical ent
 
 ### Requirement: Inbound message identity resolution
 
-The Switchboard SHALL call `resolve_contact_by_channel(type, value)` on every inbound message before routing. The resolution MUST use the message's source channel type (e.g., `'telegram'`, `'email'`) and source identifier (e.g., Telegram chat ID, email address) to look up the sender in `relationship.entity_facts` via channel-handle predicates (a `has-handle` triple whose value is prefixed `telegram:<id>`, a `has-email` triple, etc.). NOTE: resolution moved off `public.contact_info` to `relationship.entity_facts` per RFC 0004 Amendment 3 (bead bu-akads, epic bu-oluyt); `public.contacts` / `public.contact_info` are vestigial and `public.entity_info` holds only `secured=true` credentials.
+The Switchboard SHALL call `resolve_contact_by_channel(type, value)` on every inbound message before routing. The resolution MUST use the message's source channel type (e.g., `'telegram'`, `'email'`) and source identifier (e.g., Telegram chat ID, email address) to look up the sender in `relationship.entity_facts` via channel-handle predicates (a `has-handle` triple whose value is prefixed `telegram:<id>`, a `has-email` triple, etc.). Roles and canonical name SHALL be read from `public.entities`.
 
 The Switchboard fleet startup wiring SHALL enable this resolution for its
 production `MessagePipeline` and provide a non-null callback for the
@@ -19,13 +19,13 @@ connector or contacts-table path.
 #### Scenario: Owner sends a Telegram message
 
 - **WHEN** a Telegram message arrives from chat ID `99999`
-- **AND** `resolve_contact_by_channel('telegram', '99999')` returns a contact with `roles = ['owner']`
+- **AND** `resolve_contact_by_channel('telegram', '99999')` returns an entity whose `public.entities.roles = ['owner']`
 - **THEN** the Switchboard MUST identify the sender as the owner
 
 #### Scenario: Known non-owner sends a Telegram message
 
 - **WHEN** a Telegram message arrives from chat ID `12345`
-- **AND** `resolve_contact_by_channel('telegram', '12345')` returns a contact "Chloe" with `roles = []` and `entity_id = 'abc-123'`
+- **AND** `resolve_contact_by_channel('telegram', '12345')` returns the entity "Chloe" with `roles = []` and `entity_id = 'abc-123'`
 - **THEN** the Switchboard MUST identify the sender as "Chloe" with entity_id `abc-123`
 
 #### Scenario: Unknown sender sends a Telegram message
@@ -58,25 +58,23 @@ connector or contacts-table path.
 #### Scenario: Email message identity resolution
 
 - **WHEN** an email arrives from `chloe@example.com`
-- **AND** `resolve_contact_by_channel('email', 'chloe@example.com')` returns a contact
-- **THEN** the Switchboard MUST identify the sender using the resolved contact
-
----
+- **AND** `resolve_contact_by_channel('email', 'chloe@example.com')` returns an entity
+- **THEN** the Switchboard MUST identify the sender using the resolved entity
 
 ### Requirement: Identity-enriched prompt injection
 
-After resolving the sender's identity, the Switchboard MUST inject a structured identity preamble into the prompt before routing to downstream butlers. The preamble format depends on the sender's identity resolution result. The text preamble carries `entity_id` only; `contact_id` is no longer emitted in the preamble (bead bu-akads), `entity_id` being the canonical preamble identifier. An entity-only unknown sender MUST NOT gain a contact identifier merely to populate the preamble or routing context.
+After resolving the sender's identity, the Switchboard MUST inject a structured identity preamble into the prompt before routing to downstream butlers. The preamble format depends on the sender's identity resolution result. The text preamble carries `entity_id` only and MUST NOT emit `contact_id`; `entity_id` is the canonical preamble identifier. An entity-only unknown sender MUST NOT gain a contact identifier merely to populate the preamble or routing context.
 
 #### Scenario: Owner message prompt injection
 
-- **WHEN** the sender is resolved as the owner contact with `entity_id = 'def-456'`
+- **WHEN** the sender is resolved as the owner entity with `entity_id = 'def-456'`
 - **THEN** the routed prompt MUST be prefixed with `[Source: Owner (entity_id: def-456), via {channel}]`
 - **AND** the original message text MUST follow the preamble
 - **AND** downstream butlers MUST use `entity_id` as the anchor when storing facts about the owner
 
 #### Scenario: Known non-owner message prompt injection
 
-- **WHEN** the sender is resolved as a known contact "Chloe" with `entity_id = 'def-456'`
+- **WHEN** the sender is resolved as a known entity "Chloe" with `entity_id = 'def-456'`
 - **THEN** the routed prompt MUST be prefixed with `[Source: Chloe (entity_id: def-456), via telegram]`
 - **AND** downstream butlers MUST use `entity_id` as the subject when storing facts from this message
 
@@ -91,8 +89,6 @@ After resolving the sender's identity, the Switchboard MUST inject a structured 
 
 - **WHEN** the Switchboard routes `[Source: Chloe (entity_id: def-456), via telegram] I had lunch at 2pm today` to the Relationship butler
 - **THEN** the Relationship butler MUST store the fact "had lunch at 2pm" with `entity_id = 'def-456'` (Chloe's entity), NOT the owner's entity
-
----
 
 ### Requirement: Structured entity_id in route.v1 request_context
 

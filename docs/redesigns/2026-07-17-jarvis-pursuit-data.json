@@ -3406,7 +3406,7 @@
         },
         {
           "title": "Ledger carries non-butler spend identities (wa:<jid>, __dashboard_briefing__, messenger) invisible to every per-butler surface",
-          "evidence": "Live SQL: token_usage_ledger MTD butler_name values include wa:16295105925257@lid, wa:status@broadcast, wa:6591779336-1623972751@g.us (6 identities), __dashboard_briefing__ (39 rows), messenger. Breakdown by=butler / daily / movers fan out over roster configs only (spend.py:1240-1244), so this spend appears in purpose/MTD totals but in no per-butler view — the tabs disagree about the universe of spenders, and 'wa:status@broadcast' as a butler_name suggests an attribution leak at the ledger write site.",
+          "evidence": "Live SQL: token_usage_ledger MTD butler_name values include wa:10000000000001@lid, wa:status@broadcast, wa:6580000001-1600000000@g.us (6 identities), __dashboard_briefing__ (39 rows), messenger. Breakdown by=butler / daily / movers fan out over roster configs only (spend.py:1240-1244), so this spend appears in purpose/MTD totals but in no per-butler view — the tabs disagree about the universe of spenders, and 'wa:status@broadcast' as a butler_name suggests an attribution leak at the ledger write site.",
           "severity": "minor",
           "confidence": "live-confirmed",
           "detail": "Small dollars today ($0.03 total), but a structural identity leak: ledger butler_name should be a butler, with channel identity carried elsewhere."

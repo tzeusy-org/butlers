@@ -60,7 +60,7 @@ The delivery pipeline SHALL track whether the user engaged with delivered insigh
 - **WHEN** the Switchboard processes an ingress request
 - **THEN** it SHALL resolve the sender's identity via the standard channel reverse-lookup (`resolve_contact_by_channel`) and, ONLY when the sender resolves to the owner, check `public.insight_engagement` for rows with `engaged=FALSE` and `delivered_at` within the last 60 minutes
 - **AND** if any exist, it SHALL update them to `engaged=TRUE`
-- **AND** ingress from a connector, an automated source, or any non-owner (including unresolved/unknown) sender SHALL NOT be counted as engagement, so connector noise cannot poison the disengagement ratchet (bu-tdd4k.5)
+- **AND** ingress from a connector, an automated source, or any non-owner (including unresolved/unknown) sender SHALL NOT be counted as engagement, so connector noise cannot poison the disengagement ratchet
 - **AND** this check SHALL be lightweight (indexed query) and SHALL NOT delay ingress processing
 
 #### Scenario: Daily attention rollup survives raw-event purge

@@ -27,8 +27,7 @@ The connector SHALL treat end-to-end latency as the #1 priority. Every pipeline 
 
 ### Requirement: Connector Identity and Role
 
-The implementation SHALL provide the behavior described by this requirement.
-The live-listener connector bridges local microphone audio into the butler ecosystem as an ambient voice ingestion channel.
+The live-listener connector SHALL bridge local microphone audio into the butler ecosystem as an ambient voice ingestion channel.
 
 #### Scenario: Connector as ambient voice interface
 - **WHEN** the live-listener connector runs
@@ -47,8 +46,7 @@ The live-listener connector bridges local microphone audio into the butler ecosy
 
 ### Requirement: Audio Capture
 
-The implementation SHALL provide the behavior described by this requirement.
-The connector captures raw audio from local microphones using PortAudio via the `sounddevice` library.
+The connector SHALL capture raw audio from local microphones using PortAudio via the `sounddevice` library.
 
 #### Scenario: Audio stream configuration
 - **WHEN** an audio stream is opened for a microphone
@@ -78,8 +76,7 @@ The connector captures raw audio from local microphones using PortAudio via the 
 
 ### Requirement: Voice Activity Detection
 
-The implementation SHALL provide the behavior described by this requirement.
-The connector uses Silero VAD to segment continuous audio into discrete speech segments at natural utterance boundaries.
+The connector SHALL use Silero VAD to segment continuous audio into discrete speech segments at natural utterance boundaries.
 
 #### Scenario: VAD model and performance
 - **WHEN** the VAD processes audio frames
@@ -106,8 +103,7 @@ The connector uses Silero VAD to segment continuous audio into discrete speech s
 
 ### Requirement: Transcription Client
 
-The implementation SHALL provide the behavior described by this requirement.
-The connector sends speech audio to an external faster-whisper service and receives transcribed text.
+The connector SHALL send speech audio to an external faster-whisper service and receive transcribed text.
 
 #### Scenario: Protocol-agnostic interface
 - **WHEN** the connector transcribes a speech segment
@@ -153,8 +149,7 @@ The connector sends speech audio to an external faster-whisper service and recei
 
 ### Requirement: Discretion Layer
 
-The implementation SHALL provide the behavior described by this requirement.
-The live-listener uses the shared discretion layer (`butlers.connectors.discretion`) to evaluate transcribed utterances in context and decide whether they warrant butler attention. See `connector-base-spec` for the full shared discretion contract.
+The live-listener SHALL use the shared discretion layer (`butlers.connectors.discretion`) to evaluate transcribed utterances in context and decide whether they warrant butler attention. See `connector-base-spec` for the full shared discretion contract.
 
 #### Scenario: Shared discretion module
 - **WHEN** the live-listener connector uses the discretion layer
@@ -204,8 +199,7 @@ The live-listener uses the shared discretion layer (`butlers.connectors.discreti
 
 ### Requirement: ingest.v1 Field Mapping
 
-The implementation SHALL provide the behavior described by this requirement.
-Each forwarded utterance is normalized to the canonical `ingest.v1` envelope.
+Each forwarded utterance SHALL be normalized to the canonical `ingest.v1` envelope.
 
 #### Scenario: Field mapping
 - **WHEN** a forwarded utterance is constructed as an `ingest.v1` envelope
@@ -231,8 +225,7 @@ Each forwarded utterance is normalized to the canonical `ingest.v1` envelope.
 
 ### Requirement: Conversation Sessions
 
-The implementation SHALL provide the behavior described by this requirement.
-The connector groups temporally related utterances into conversation sessions for thread context.
+The connector SHALL group temporally related utterances into conversation sessions for thread context.
 
 #### Scenario: Session creation
 - **WHEN** an utterance is forwarded and no active session exists for that mic, or the silence gap since the last forwarded utterance exceeds `LIVE_LISTENER_SESSION_GAP_S` (default: 120 seconds)
@@ -250,8 +243,7 @@ The connector groups temporally related utterances into conversation sessions fo
 
 ### Requirement: Checkpoint Semantics
 
-The implementation SHALL provide the behavior described by this requirement.
-The connector persists checkpoint state for operational continuity, not for replay.
+The connector SHALL persist checkpoint state for operational continuity, not for replay.
 
 #### Scenario: Checkpoint contents
 - **WHEN** the connector saves a checkpoint
@@ -269,8 +261,7 @@ The connector persists checkpoint state for operational continuity, not for repl
 
 ### Requirement: Health State Derivation
 
-The implementation SHALL provide the behavior described by this requirement.
-The connector reports health based on device and service availability.
+The connector SHALL report health based on device and service availability.
 
 #### Scenario: Health states
 - **WHEN** the connector's health is queried
@@ -284,8 +275,7 @@ The connector reports health based on device and service availability.
 
 ### Requirement: Prometheus Metrics
 
-The implementation SHALL provide the behavior described by this requirement.
-The connector exports voice-specific metrics in addition to the standard `ConnectorMetrics`.
+The connector SHALL export voice-specific metrics in addition to the standard `ConnectorMetrics`.
 
 #### Scenario: Voice-specific counters
 - **WHEN** the connector processes audio
@@ -297,8 +287,7 @@ The connector exports voice-specific metrics in addition to the standard `Connec
 
 ### Requirement: Environment Variables
 
-The implementation SHALL provide the behavior described by this requirement.
-Configuration via environment variables extending the base connector variables.
+Configuration SHALL be provided via environment variables extending the base connector variables.
 
 #### Scenario: Required variables
 - **WHEN** the live-listener connector starts
@@ -323,8 +312,7 @@ Configuration via environment variables extending the base connector variables.
 
 ### Requirement: Idempotency and Safety
 
-The implementation SHALL provide the behavior described by this requirement.
-The connector guarantees at-least-once delivery with synthetic event IDs.
+The connector SHALL guarantee at-least-once delivery with synthetic event IDs.
 
 #### Scenario: Dedup identity
 - **WHEN** a voice utterance is submitted

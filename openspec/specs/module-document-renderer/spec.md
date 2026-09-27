@@ -5,7 +5,7 @@ Defines a shared, opt-in module providing pure-computation document rendering â€
 
 ## Requirements
 
-### Requirement: [TARGET-STATE] Render to Blob
+### Requirement: Render to Blob
 The module SHALL expose tools that render structured input (Markdown, HTML, or a chart spec) to a binary artifact (PDF, PNG, or SVG) and persist it to the blob store, returning a `storage_ref`.
 
 #### Scenario: Markdown rendered to PDF blob
@@ -17,7 +17,7 @@ The module SHALL expose tools that render structured input (Markdown, HTML, or a
 - **WHEN** the render tool is called with a chart specification and `format` in `("png","svg")`
 - **THEN** a static chart image is produced and stored, and a `storage_ref` is returned
 
-### Requirement: [TARGET-STATE] No External Side Effects
+### Requirement: No External Side Effects
 Document rendering SHALL be pure computation with no network egress and no approval gating (internal infrastructure).
 
 #### Scenario: Render requires no approval

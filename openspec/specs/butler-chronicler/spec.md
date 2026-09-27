@@ -254,7 +254,6 @@ Chronicler.
 
 ID: REQ-butler-chronicler-007
 Source: RFC 0014 Amendment 1; [Observed] `src/butlers/chronicler/contracts.py`
-Scope: v1-mandatory
 
 #### Scenario: Initial supported sources
 

@@ -249,8 +249,6 @@ Scope: v1-mandatory
 The consolidation executor SHALL apply parsed consolidation results to the database. Each action (new fact, updated fact, new rule, confirmation) SHALL be wrapped in its own try/except block so that one valid action failure does not prevent remaining valid actions from executing. Before any action is attempted for a non-empty source group, the executor MUST validate every fact and rule artifact's exact episode evidence. The executor MUST propagate tenant_id and request_id from the source episode group to all derived writes.
 
 ID: REQ-module-memory-006
-Source: [Observed] PR #3669; `openspec/changes/archive/2026-08-14-consolidation-exact-artifact-evidence/CANONICALIZATION.md`
-Scope: v1-mandatory
 
 #### Scenario: New facts stored with tenant context and exact derived_from links
 
@@ -305,8 +303,6 @@ Scope: v1-mandatory
 - **THEN** the INSERT MUST include `tenant_id` from the episode group being processed
 - **AND** the INSERT MUST include `actor_butler` with the butler name
 
----
-
 ### Requirement: Consolidation narrative edges use an exact local allowlist
 
 For newly consolidated facts only, the storage boundary SHALL admit an
@@ -320,7 +316,6 @@ SHALL NOT change generic `memory_store_fact()` admission behavior.
 
 ID: REQ-module-memory-012
 Source: [Observed] PR #3728; `openspec/changes/archive/2026-09-27-relational-edges-single-home/landed-b5-b6-transfer.md`
-Scope: v1-mandatory
 
 #### Scenario: Approved consolidation narrative edge persists
 
@@ -348,8 +343,6 @@ Scope: v1-mandatory
 - **AND** it MUST NOT write an evidence link for that rejected artifact
 - **AND** it MUST preserve the executor's established group lifecycle policy
 - **AND** the generic `memory_store_fact()` path MUST remain unaffected
-
----
 
 ### Requirement: Memory Page — Dispatch Fold-In
 The existing `/memory` page SHALL fold in the `MemoryExpanded` design, with sections for the tier flow, retention policy, compaction log, and memory-inspect search.
@@ -404,7 +397,7 @@ The dashboard SHALL expose a feed of recent compaction events.
 ### Requirement: memory_entity_resolve Raises on Invalid Input
 The `memory_entity_resolve` MCP tool SHALL raise `ValueError` when invoked with invalid input. The tool accepts a unified `identifier` argument (preferred) or a legacy `name` argument; exactly one must be supplied with a usable value. Invalid input includes: the resolved lookup string being `null`/`None`, missing, or empty/whitespace-only; and both `name` and `identifier` being provided together. The tool SHALL NOT return an empty list in these cases. The "no candidates found" empty-list return is reserved for a well-formed non-empty lookup string that simply does not match any entity under any tier.
 
-This requirement was motivated by a real incident (session `46f18840-4f74-4e0a-a3bf-cafa2b579f3a`, 2026-04-15) in which the lifestyle butler looped 41 times on `memory_entity_resolve` with a null lookup because the tool returned `[]` as a success, indistinguishable from a valid-query-no-match. The tool now distinguishes invalid input from no-match.
+Returning `[]` for a null lookup would be indistinguishable from a valid-query-no-match and can drive a caller into a retry loop, so invalid input and no-match are distinct outcomes.
 
 This requirement composes with the cross-cutting "MCP Tools Raise on Invalid Input" rule in `core-modules`. The cross-cutting rule is the contract; this requirement is the module-specific expression of that contract for the tool that triggered the incident, so regressions can be caught by module-local tests.
 

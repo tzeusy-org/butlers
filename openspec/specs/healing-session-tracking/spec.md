@@ -177,8 +177,7 @@ On dispatcher startup (daemon boot), the system SHALL recover from incomplete he
 
 ### Requirement: Workflow Deadline Authority
 
-The implementation SHALL provide the behavior described by this requirement.
-The `workflow_deadline_at` field is the authoritative deadline reference for multi-session recovery workflows.
+The `workflow_deadline_at` field SHALL be the authoritative deadline reference for multi-session recovery workflows.
 
 #### Scenario: Deadline is set at row creation
 - **WHEN** a `healing_attempts` row is inserted for a launched workflow

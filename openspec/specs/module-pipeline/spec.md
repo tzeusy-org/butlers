@@ -8,8 +8,7 @@ The Pipeline module provides LLM-based message classification and routing for th
 
 ### Requirement: Ingestion Architecture
 
-The implementation SHALL provide the behavior described by this requirement.
-Live data enters the system through connectors and flows through the Switchboard before reaching any domain butler. Modules on individual butlers provide runtime data lookup — they do not participate in ingestion.
+Live data SHALL enter the system through connectors and flow through the Switchboard before reaching any domain butler. Modules on individual butlers provide runtime data lookup — they do not participate in ingestion.
 
 #### Scenario: End-to-end ingestion flow
 - **WHEN** an external message arrives (Telegram, email, API, etc.)
@@ -29,8 +28,7 @@ Live data enters the system through connectors and flows through the Switchboard
 
 ### Requirement: Modules Enable Runtime Data Lookup
 
-The implementation SHALL provide the behavior described by this requirement.
-Modules on domain butlers provide tools for querying and manipulating domain-specific data. They sync with external sources independently and serve the LLM CLI at query time.
+Modules on domain butlers SHALL provide tools for querying and manipulating domain-specific data. They sync with external sources independently and serve the LLM CLI at query time.
 
 #### Scenario: Calendar module as runtime lookup
 - **WHEN** a butler has the `calendar` module enabled
@@ -54,8 +52,7 @@ Modules on domain butlers provide tools for querying and manipulating domain-spe
 
 ### Requirement: Pipeline as Post-Triage LLM Router
 
-The implementation SHALL provide the behavior described by this requirement.
-The pipeline's sole responsibility is LLM-driven classification and routing for messages that pass through deterministic triage without a match. It runs exclusively on the Switchboard butler.
+The pipeline's sole responsibility SHALL be LLM-driven classification and routing for messages that pass through deterministic triage without a match. It runs exclusively on the Switchboard butler.
 
 #### Scenario: Pipeline receives pre-processed messages
 - **WHEN** a message passes through triage without matching any rule
@@ -84,8 +81,7 @@ The pipeline's sole responsibility is LLM-driven classification and routing for 
 
 ### Requirement: Conversation History for Routing Context
 
-The implementation SHALL provide the behavior described by this requirement.
-The pipeline loads channel-appropriate conversation history to improve LLM routing accuracy.
+The pipeline SHALL load channel-appropriate conversation history to improve LLM routing accuracy.
 
 #### Scenario: Realtime messaging history
 - **WHEN** the source channel is `telegram`, `whatsapp`, `slack`, or `discord`
@@ -101,8 +97,7 @@ The pipeline loads channel-appropriate conversation history to improve LLM routi
 
 ### Requirement: Concurrent Pipeline Session Isolation
 
-The implementation SHALL provide the behavior described by this requirement.
-The pipeline uses per-task context variables to prevent cross-contamination between concurrent routing sessions.
+The pipeline SHALL use per-task context variables to prevent cross-contamination between concurrent routing sessions.
 
 #### Scenario: Context isolation
 - **WHEN** multiple messages are routed concurrently through the pipeline

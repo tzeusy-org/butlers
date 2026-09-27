@@ -8,8 +8,7 @@ Deterministic Python job handlers for the Home butler's scheduled monitoring tas
 
 ### Requirement: Job Handler Signature and Registration
 
-The implementation SHALL provide the behavior described by this requirement.
-All home deterministic job handlers follow the standard `_DeterministicScheduleJobHandler` signature and are registered in the daemon's job registry.
+All home deterministic job handlers SHALL follow the standard `_DeterministicScheduleJobHandler` signature and be registered in the daemon's job registry.
 
 #### Scenario: Job handler signature
 
@@ -42,8 +41,7 @@ and then converts Markdown to Telegram HTML.
 
 ### Requirement: Threshold Loading from State Store
 
-The implementation SHALL provide the behavior described by this requirement.
-All monitoring thresholds are loaded from the state store at job invocation time, with hardcoded defaults used only if no stored value exists. This enables user-configurable monitoring sensitivity.
+All monitoring thresholds SHALL be loaded from the state store at job invocation time, with hardcoded defaults used only if no stored value exists. This enables user-configurable monitoring sensitivity.
 
 #### Scenario: Load threshold from state store
 
@@ -72,8 +70,7 @@ All monitoring thresholds are loaded from the state store at job invocation time
 
 ### Requirement: Device Health Check Job
 
-The implementation SHALL provide the behavior described by this requirement.
-The `device_health_check` job reads all HA entity states, classifies battery and connectivity issues by severity, stores findings in memory, and sends a Telegram notification.
+The `device_health_check` job SHALL read all HA entity states, classify battery and connectivity issues by severity, store findings in memory, and send a Telegram notification.
 
 #### Scenario: Entity survey from connector cache
 
@@ -138,8 +135,7 @@ The `device_health_check` job reads all HA entity states, classifies battery and
 
 ### Requirement: Environment Report Job
 
-The implementation SHALL provide the behavior described by this requirement.
-The `environment_report` job reads environmental sensors per area, compares against stored comfort preferences, and sends a room-by-room report.
+The `environment_report` job SHALL read environmental sensors per area, compare against stored comfort preferences, and send a room-by-room report.
 
 #### Scenario: Area and sensor discovery
 
@@ -197,8 +193,7 @@ The `environment_report` job reads environmental sensors per area, compares agai
 
 ### Requirement: Energy Digest Job
 
-The implementation SHALL provide the behavior described by this requirement.
-The `energy_digest` job fetches weekly energy statistics, computes top consumers and trends vs. baselines, and sends a structured weekly digest.
+The `energy_digest` job SHALL fetch weekly energy statistics, compute top consumers and trends vs. baselines, and send a structured weekly digest.
 
 #### Scenario: Energy sensor discovery
 
@@ -272,8 +267,7 @@ The `energy_digest` job fetches weekly energy statistics, computes top consumers
 
 ### Requirement: Entity State Access and HA Statistics Fallback for Jobs
 
-The implementation SHALL provide the behavior described by this requirement.
-Job handlers read current entity state from the connector-populated `ha_entity_snapshot` table. A short-lived HA WebSocket client is available for historical statistics queries that the connector does not provide.
+Job handlers SHALL read current entity state from the connector-populated `ha_entity_snapshot` table. A short-lived HA WebSocket client is available for historical statistics queries that the connector does not provide.
 
 #### Scenario: Entity state from connector cache
 
@@ -308,9 +302,7 @@ Job handlers read current entity state from the connector-populated `ha_entity_s
 
 ### Requirement: HA Source Health Guard for Snapshot Readers
 
-The implementation SHALL provide the behavior described by this requirement.
-Reading `ha_entity_snapshot` alone cannot tell a caller whether Home Assistant
-is currently reachable — a snapshot captured during an outage is re-stamped
+A caller SHALL NOT rely on `ha_entity_snapshot` alone to determine whether Home Assistant is currently reachable — a snapshot captured during an outage is re-stamped
 with a fresh `captured_at` on every persistence cycle and looks identical to
 a genuinely current one. Before trusting `ha_entity_snapshot`, job handlers
 and the generic snapshot reader SHALL check `ha_source_health` (maintained by

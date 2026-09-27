@@ -25,9 +25,11 @@ The daemon SHALL read the `type` field from `butler.toml` config and apply type-
 - **AND** during schedule sync, it skips registration of any `daily_briefing_contribution` schedule entries
 - **AND** during switchboard registration, it includes `type = "staffer"` in the registration payload so the switchboard can exclude it from user-message routing
 
-#### Scenario: Butler-specific startup behaviors unchanged
+#### Scenario: Butler-specific startup behaviors
 - **WHEN** the daemon starts with `config.type == ButlerType.BUTLER`
-- **THEN** startup proceeds exactly as before this change — no behavioral differences from the pre-staffer codebase
+- **THEN** it proceeds through the full lifecycle with none of the staffer-specific skips
+- **AND** it registers the core tools that are withheld from staffers (for example session queries, schedule mutation, delegation, and temporal tools) when their groups are enabled
+- **AND** it reports `type = "butler"` to the switchboard so it remains eligible for user-message routing
 
 ### Requirement: Core Tool Surface
 Every butler daemon registers core MCP tools based on the `core_groups` allowlist from `runtime_config` (DB) and the butler's type/name. The daemon SHALL treat that stored allowlist as a projection, not independent capability authority: Git-owned `[butler.runtime_seed].core_groups` defines the declared surface, and a DB value may narrow it only when `core_groups_narrowing_reason` is non-empty. An unreasoned stale value is reconciled to Git at startup. When the effective `core_groups` is NULL, all groups are enabled (backward compat). When set, only tools in the listed groups are registered.
@@ -124,7 +126,6 @@ Phase: **9 — Resolve runtime config from DB (seed if first boot).**
 Failure mode: Fatal — cannot operate without runtime config.
 
 Source: RFC 0001 §Startup Phases (phase 9, between phases 8 and 10)
-Scope: v1-mandatory
 
 #### Scenario: First boot seeds from toml
 - **WHEN** the daemon starts and `runtime_config` table is empty
@@ -163,7 +164,6 @@ The daemon and dashboard SHALL expose a three-way comparison of Git-declared cor
 The daemon SHALL initialize the S3-compatible blob store at startup phase 8c, immediately after the layered `CredentialStore` is built (phase 8b) and before CLI auth restoration (phase 8c2). All S3 connection parameters SHALL be resolved from the credential store with `env_fallback=False`; there is no `[butler.storage]` TOML section and no environment-variable resolution path.
 
 Source: RFC 0001 §Startup Phases (phase 8c, between 8b credential store and 8c2 CLI auth restore)
-Scope: v1-mandatory
 
 #### Scenario: Phase ordering
 - **WHEN** the daemon starts
@@ -189,7 +189,6 @@ Scope: v1-mandatory
 The legacy `blob_storage_dir` field and any `[butler.storage]` TOML section SHALL NOT be parsed by the config loader. Local filesystem blob storage is no longer supported.
 
 Source: RFC 0001 §Startup Phases (phase 1 — config load)
-Scope: v1-mandatory
 
 #### Scenario: ButlerConfig has no blob_storage_dir
 - **WHEN** the daemon loads `butler.toml`

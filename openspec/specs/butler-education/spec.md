@@ -197,7 +197,6 @@ The Education Butler MANIFESTO.md SHALL reflect the source-grounded instruction 
 
 ID: REQ-butler-education-007
 Source: source-grounded-education changeset
-Scope: v1-mandatory
 
 #### Scenario: Value proposition articulates the core offering
 

@@ -123,7 +123,7 @@ together. Operators read it via `GET /api/dispatch/attempts` and
 - **AND** downstream readers SHALL be able to detect terminal exhaustion from the explicit
   `exhausted` row rather than inferring it from the last `runtime_failure` row
 
-#### Scenario: Fleet-wide attempt query (bu-7o89u.3)
+#### Scenario: Fleet-wide attempt query
 - **WHEN** a caller requests `GET /api/dispatch/attempts?outcome=<outcome>` without
   `session_id` or `logical_session_id`
 - **THEN** the endpoint SHALL return attempt rows matching `outcome` across ALL
