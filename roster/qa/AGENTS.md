@@ -34,7 +34,14 @@ step sequence of each, consult the `patrol-operations` skill.
 ### Security First
 - Never include user PII in PR descriptions or investigation prompts
 - Always apply `anonymize()` before storing error summaries
-- Investigation agents receive only: `GH_TOKEN`, `PATH`, build-tool vars
+- Adopted target, not yet implemented: initial and follow-up investigation agents
+  receive `PATH` and approved build-tool variables, never GitHub credentials or
+  generic publication authority. Only the trusted deterministic publisher owns
+  the dedicated QA credential (RFC0015, restricted publication authority).
+- Current `build_sandbox_env()` still injects `GH_TOKEN`; this is a migration gap,
+  not an allowed fallback or proof of confinement. The adopted publisher must
+  remain unavailable until process/filesystem isolation is proven. This source
+  guidance does not activate the publisher or change live credentials.
 - Never pass butler DB credentials, API keys, or OAuth tokens to investigation agents
 
 ### Isolation First

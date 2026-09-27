@@ -15,6 +15,7 @@ QA publication currently hands GitHub credentials to investigation code while re
 ### Modified Capabilities
 - `qa-investigation-dispatch`: full sandbox, anonymized pipeline and egress requirements.
 - `staffer-qa`: security model and dedicated credential ownership.
+- `healing-worktree`: scope inherited creation/isolation/cleanup/reaper/helper mechanisms to preserve general healing while applying the QA isolation, evidence-retention and no-implicit-deletion exceptions.
 
 ## Impact
 

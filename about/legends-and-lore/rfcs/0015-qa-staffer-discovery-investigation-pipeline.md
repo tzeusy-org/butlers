@@ -141,7 +141,8 @@ Gate rejections before any investigation session launches are recorded as dispat
 - `git fetch origin main` first.
 - Worktree at `self-healing/qa/<fingerprint-prefix>-<timestamp>/`.
 - Branch `qa/fix-<fingerprint-prefix>-<timestamp>`.
-- Cleaned up (`git worktree remove --force`) on any terminal outcome.
+- Disposable checkout teardown on terminal outcomes is subject to the QA-specific
+  retention and no-implicit-deletion rules in Healing Substrate Reuse below.
 
 **Agent sandbox** — the spawned investigation agent receives:
 
@@ -342,10 +343,40 @@ contribution schedules. It registers with the Switchboard for butler-to-staffer 
 
 ## Healing Substrate Reuse
 
-QA reuses the `healing-*` substrate specs directly: `healing-anonymizer` (PR content
+QA reuses the following `healing-*` substrate contracts: `healing-anonymizer` (PR content
 anonymization), `healing-model-tier` (`complexity = "self_healing"` model resolution),
 `healing-session-tracking` (`public.healing_attempts`, extended with `qa_patrol_id`), and
-`healing-worktree` (shared worktree lifecycle).
+`healing-worktree` (lifecycle concepts only, subject to the QA exceptions below).
+
+For initial and follow-up QA investigations, the restricted publication authority
+contract supersedes the inherited `healing-worktree` mechanisms as follows:
+
+- **Creation and isolation:** `Worktree Creation`, `Worktree Creation Error Handling`
+  and `Worktree Isolation` do not authorize exposing a linked worktree's shared
+  Git directory or object database to QA agents. In particular, `Worktree shares
+  git objects` applies only to non-QA healing. QA uses a disposable checkout with
+  its own Git metadata and object database, no shared `.git` or object alternates,
+  inside the required process/filesystem boundary. Retain latest-main provenance,
+  QA naming and helper-workspace behavior; CWD alone is not isolation.
+- **Completion and recovery:** `Worktree Cleanup on Completion` and `Stale Worktree
+  Reaper` do not authorize QA remote deletion or loss of publication evidence.
+  `Cleanup after anonymization failure` does not delete a QA remote branch.
+  Local teardown, including partial-creation cleanup and startup reaping, must
+  preserve sealed artifacts, expected-head/branch/PR bindings, operation stages
+  and unresolved lineage holds outside the disposable checkout. Terminal status,
+  missing attempt rows or elapsed time cannot release those holds.
+- **Helper APIs:** `Worktree Function Signatures` remain the general healing API,
+  not authority to invoke credentialed Git in an agent checkout. `Remove with
+  remote cleanup` and `delete_remote=True` confer no QA deletion authority.
+  No QA remote deletion is implicit, including on sanitizer failure or rollback;
+  any remote cleanup requires separate operational authority outside the closed
+  publisher action surface.
+
+These QA exceptions are binding adopted targets, not implemented confinement.
+The active `confine-qa-publication-authority` change carries complete MODIFIED
+blocks for `Worktree-Based Investigation` and the scoped `healing-worktree`
+requirements. General non-QA healing creation, shared-object behavior, cleanup,
+reaping and helper signatures remain unchanged.
 
 ## Non-Goals
 
@@ -391,7 +422,7 @@ anonymization), `healing-model-tier` (`complexity = "self_healing"` model resolu
 - `openspec/specs/healing-anonymizer/` — PR anonymization pipeline (reused by QA).
 - `openspec/specs/healing-model-tier/` — `self_healing` model tier (reused by QA).
 - `openspec/specs/healing-session-tracking/` — `healing_attempts` table schema (extended by QA).
-- `openspec/specs/healing-worktree/` — Worktree lifecycle infrastructure (reused by QA).
+- `openspec/specs/healing-worktree/` — Worktree lifecycle infrastructure (QA exceptions: Healing Substrate Reuse).
 
 ## Amendment (2026-09-23): Independent Patrol Assurance and Fleet Correlation
 

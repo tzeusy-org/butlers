@@ -181,6 +181,26 @@
       "excerpt": "- **AND** the token SHALL NOT have merge or approve permissions — humans remain in the merge seat"
     }
   ],
+  "confine-qa-publication-authority/qa-investigation-dispatch/Worktree-Based Investigation": [
+    {
+      "kind": "prose",
+      "scenario": null,
+      "digest": "af65dbc300e2",
+      "excerpt": "Each investigation SHALL run in a dedicated git worktree branched off latest `main`, using shared worktree infrastruc..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Worktree creation",
+      "digest": "38421b7d6df9",
+      "excerpt": "- **AND** a worktree is created under `.healing-worktrees/qa/<source_butler>/<fingerprint-prefix>-<epoch>/` via `crea..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Worktree cleanup on completion",
+      "digest": "88a1c7248ea8",
+      "excerpt": "- **THEN** the worktree is removed via `git worktree remove --force`"
+    }
+  ],
   "confine-qa-publication-authority/staffer-qa/Permissions and Security Model": [
     {
       "kind": "prose",
