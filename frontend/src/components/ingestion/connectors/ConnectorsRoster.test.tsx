@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter } from 'react-router'
+import { within } from '@testing-library/react'
 
 ;(
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -555,13 +556,27 @@ describe('AC3: single health verdict per row (dot + word)', () => {
     expect(container.querySelector('[data-testid="state-dot-gmail"]')).toBeNull()
   })
 
-  it('stale connector reports the "stale" verdict word', () => {
-    // STALE_CONNECTOR: liveness=stale, state=healthy
-    mockHooks([STALE_CONNECTOR])
+  it.each([
+    ['stale', 'Degraded', 'var(--amber)'],
+    ['offline', 'Error', 'var(--red)'],
+  ])('%s healthy connector has one state mark and an accessible verdict', (liveness, label, color) => {
+    mockHooks([{ ...STALE_CONNECTOR, liveness }])
     renderRoster(container, root)
 
-    const verdict = container.querySelector('[data-testid="health-verdict-telegram"]')
-    expect(verdict?.textContent?.trim()).toBe('stale')
+    const row = within(container).getByTestId('connector-row-telegram')
+    const dot = within(row).getByRole('img', { name: label })
+    expect(dot.style.backgroundColor).toBe(color)
+    expect(within(row).getByText(liveness).closest('[aria-hidden="true"]')).toBeNull()
+
+    // Count rendered state-colored shapes, including decorative ones hidden
+    // from assistive technology. JSDOM does not expand Tailwind utilities, so
+    // inspect both inline fills and token-based background classes. The dot
+    // is a positive control: removing all status marks must also fail.
+    const stateMarks = Array.from(row.querySelectorAll<HTMLElement>('*')).filter((element) =>
+      /var\(--(?:red|amber|green)\)/.test(element.style.backgroundColor) ||
+      /bg-\[(?:color:)?var\(--(?:red|amber|green)\)\]/.test(element.className),
+    )
+    expect(stateMarks).toEqual([dot])
   })
 
   it('offline+error connector reports the "offline" verdict word', () => {
