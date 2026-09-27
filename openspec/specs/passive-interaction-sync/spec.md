@@ -261,8 +261,7 @@ be zero and does not count those filtered rows.
 
 Message channels store sender identifiers differently.  The job maps
 `source_channel` to the expected `relationship.entity_facts` predicate and
-lookup key for resolution (`public.contact_info` was dropped in migration
-core_115 / bead bu-e2ja9):
+lookup key for resolution:
 
 | `source_channel`       | Lookup key type  | `entity_facts` predicate |
 |------------------------|------------------|--------------------------|
@@ -278,7 +277,7 @@ system. Exact equality alone is insufficient in practice:
   while senders arrive bare, so the prefixed form must be tried.
 - **WhatsApp** has no `has-handle` triples at all; a JID resolves by extracting
   its phone digits and cross-referencing `has-phone`. Stored numbers keep their
-  source formatting (`"+65 9815 0802"`, `"+6598150802"`, `"91153887"`), so the
+  source formatting (`"+65 8000 0001"`, `"+6580000001"`, `"80000002"`), so the
   comparison is digits-only and suffix-based to bridge an omitted country code.
   A JID may also carry a device ordinal (`"<phone>:33@s.whatsapp.net"`) or be an
   opaque linked id (`"<lid>@lid"`); the connector strips the former and
@@ -296,6 +295,5 @@ without error.
 Calendar events store attendees as email addresses in the `metadata` JSONB field.
 Resolution uses case-insensitive exact match against `relationship.entity_facts`
 rows where `predicate = 'has-email'` and `object_kind = 'literal'`.
-(`public.contact_info` was dropped in migration core_115 / bead bu-e2ja9.)
 This means contacts must have a `has-email` triple in `entity_facts` to be
 detected from calendar events — contacts without an email fact will not match.

@@ -7,8 +7,7 @@ The Home Assistant connector is a standalone process that subscribes to a Home A
 
 ### Requirement: Connector Identity and Role
 
-The implementation SHALL provide the behavior described by this requirement.
-The Home Assistant connector bridges real-time HA events into the butler ecosystem as a device-state ingestion channel.
+The Home Assistant connector SHALL bridge real-time HA events into the butler ecosystem as a device-state ingestion channel.
 
 #### Scenario: Connector as home automation event interface
 - **WHEN** the Home Assistant connector runs
@@ -26,8 +25,7 @@ The Home Assistant connector bridges real-time HA events into the butler ecosyst
 
 ### Requirement: Authentication and Connection Configuration
 
-The implementation SHALL provide the behavior described by this requirement.
-The connector authenticates with Home Assistant using a long-lived access token configured via the Butlers dashboard.
+The connector SHALL authenticate with Home Assistant using a long-lived access token configured via the Butlers dashboard.
 
 #### Scenario: Dashboard settings UX
 - **WHEN** the user navigates to the Butlers dashboard settings page at `/butlers/settings`
@@ -60,8 +58,7 @@ The connector authenticates with Home Assistant using a long-lived access token 
 
 ### Requirement: WebSocket Event Subscription
 
-The implementation SHALL provide the behavior described by this requirement.
-The connector maintains a persistent WebSocket connection to Home Assistant for real-time event streaming.
+The connector SHALL maintain a persistent WebSocket connection to Home Assistant for real-time event streaming.
 
 #### Scenario: WebSocket authentication handshake
 - **WHEN** the connector establishes a WebSocket connection
@@ -94,8 +91,7 @@ The connector maintains a persistent WebSocket connection to Home Assistant for 
 
 ### Requirement: REST API Polling Fallback
 
-The implementation SHALL provide the behavior described by this requirement.
-The connector falls back to REST API polling when the WebSocket connection is unavailable.
+The connector SHALL fall back to REST API polling when the WebSocket connection is unavailable.
 
 #### Scenario: Fallback activation
 - **WHEN** the WebSocket connection has been down for more than 3 consecutive reconnection attempts
@@ -117,8 +113,7 @@ The connector falls back to REST API polling when the WebSocket connection is un
 
 ### Requirement: Three-Layer Filtering Pipeline
 
-The implementation SHALL provide the behavior described by this requirement.
-The connector implements a three-layer filtering pipeline to reduce HA event noise before Switchboard submission.
+The connector SHALL implement a three-layer filtering pipeline to reduce HA event noise before Switchboard submission.
 
 #### Scenario: Layer 1 — Domain allowlist
 - **WHEN** an HA event is received
@@ -154,8 +149,7 @@ The connector implements a three-layer filtering pipeline to reduce HA event noi
 
 ### Requirement: ingest.v1 Field Mapping
 
-The implementation SHALL provide the behavior described by this requirement.
-Each event that passes all three filter layers is normalized to the canonical `ingest.v1` envelope.
+Each event that passes all three filter layers SHALL be normalized to the canonical `ingest.v1` envelope.
 
 #### Scenario: Field mapping for state_changed events
 - **WHEN** a `state_changed` event is constructed as an `ingest.v1` envelope
@@ -187,8 +181,7 @@ Each event that passes all three filter layers is normalized to the canonical `i
 
 ### Requirement: Checkpoint Semantics
 
-The implementation SHALL provide the behavior described by this requirement.
-The connector persists checkpoint state for crash-safe resumption.
+The connector SHALL persist checkpoint state for crash-safe resumption.
 
 #### Scenario: Checkpoint contents
 - **WHEN** the connector saves a checkpoint
@@ -207,8 +200,7 @@ The connector persists checkpoint state for crash-safe resumption.
 
 ### Requirement: Health State Derivation
 
-The implementation SHALL provide the behavior described by this requirement.
-The connector reports health based on HA connection and service availability.
+The connector SHALL report health based on HA connection and service availability.
 
 #### Scenario: Health states
 - **WHEN** the connector's health is queried
@@ -228,8 +220,7 @@ The connector reports health based on HA connection and service availability.
 
 ### Requirement: Prometheus Metrics
 
-The implementation SHALL provide the behavior described by this requirement.
-The connector exports HA-specific metrics in addition to the standard `ConnectorMetrics`.
+The connector SHALL export HA-specific metrics in addition to the standard `ConnectorMetrics`.
 
 #### Scenario: HA-specific counters
 - **WHEN** the connector processes HA events
@@ -252,8 +243,7 @@ The connector exports HA-specific metrics in addition to the standard `Connector
 
 ### Requirement: Environment Variables
 
-The implementation SHALL provide the behavior described by this requirement.
-Configuration via environment variables extending the base connector variables.
+Configuration SHALL be provided via environment variables extending the base connector variables.
 
 #### Scenario: Required variables
 - **WHEN** the Home Assistant connector starts
@@ -357,8 +347,7 @@ The connector SHALL recover recorder-backed weight measurements independently of
 
 ### Requirement: Idempotency and Safety
 
-The implementation SHALL provide the behavior described by this requirement.
-The connector guarantees at-least-once delivery with HA-derived event identifiers.
+The connector SHALL guarantee at-least-once delivery with HA-derived event identifiers.
 
 #### Scenario: Dedup identity
 - **WHEN** an HA event is submitted
@@ -372,8 +361,7 @@ The connector guarantees at-least-once delivery with HA-derived event identifier
 
 ### Requirement: Filtered Event Persistence
 
-The implementation SHALL provide the behavior described by this requirement.
-The connector persists filtered events per the base connector contract.
+The connector SHALL persist filtered events per the base connector contract.
 
 #### Scenario: HA-specific filter reasons
 - **WHEN** an HA event is filtered

@@ -205,7 +205,7 @@ When the deferred-notification flush pass (`_tick_deferred_notification_pass`) f
 - **WHEN** the flush pass finds exactly one due notification for a given
   delivery target
 - **THEN** `notify_fn` is called with that row's stored envelope, unmodified
-- **AND** the row is marked `delivered` exactly as it was before this change
+- **AND** the row is marked `delivered` with no coalescing applied
 
 #### Scenario: Different recipients are never coalesced
 - **WHEN** two due notifications target different explicit recipients (or one
@@ -263,8 +263,7 @@ Naming note: the summary's "per source" grouping is `origin_butler` (which butle
 
 ### Requirement: notify.v1 Envelope Schema
 
-The implementation SHALL provide the behavior described by this requirement.
-The notify envelope includes `schema_version` ("notify.v1"), `origin_butler` (requesting butler's name), `delivery` (intent, channel, message, optional recipient/subject/emoji), and optional `request_context` for reply/react targeting.
+The notify envelope SHALL include `schema_version` ("notify.v1"), `origin_butler` (requesting butler's name), `delivery` (intent, channel, message, optional recipient/subject/emoji), and optional `request_context` for reply/react targeting.
 
 #### Scenario: Send intent envelope
 - **WHEN** `notify(channel="telegram", message="Hello", intent="send")` is called
@@ -273,8 +272,7 @@ The notify envelope includes `schema_version` ("notify.v1"), `origin_butler` (re
 
 ### Requirement: Delivery Intent Validation
 
-The implementation SHALL provide the behavior described by this requirement.
-Four delivery intents are supported: `send`, `reply`, `react`, and `insight`. Each has specific field requirements.
+Four delivery intents SHALL be supported: `send`, `reply`, `react`, and `insight`. Each has specific field requirements.
 
 #### Scenario: Send intent
 - **WHEN** `intent="send"` is used
@@ -384,8 +382,7 @@ as defined by the Channel Validation requirement above.
 
 ### Requirement: Request Context Propagation
 
-The implementation SHALL provide the behavior described by this requirement.
-For `reply` and `react` intents, the `request_context` must carry lineage from the originating inbound request. This enables the Messenger butler to route the delivery to the correct conversation thread.
+For `reply` and `react` intents, the `request_context` MUST carry lineage from the originating inbound request. This enables the Messenger butler to route the delivery to the correct conversation thread.
 
 #### Scenario: Request context forwarded to envelope
 - **WHEN** `notify(intent="reply", request_context={...})` is called with valid context
@@ -397,8 +394,7 @@ For `reply` and `react` intents, the `request_context` must carry lineage from t
 
 ### Requirement: NotifyRequestContextInput Schema
 
-The implementation SHALL provide the behavior described by this requirement.
-The `request_context` parameter follows the `NotifyRequestContextInput` TypedDict with required fields (`request_id`, `source_channel`, `source_endpoint_identity`, `source_sender_identity`) and optional fields (`source_thread_identity`, `received_at`).
+The `request_context` parameter SHALL follow the `NotifyRequestContextInput` TypedDict with required fields (`request_id`, `source_channel`, `source_endpoint_identity`, `source_sender_identity`) and optional fields (`source_thread_identity`, `received_at`).
 
 #### Scenario: Valid request context
 - **WHEN** `request_context` includes all required fields
@@ -503,8 +499,7 @@ through standing-rule or pending-approval handling.
 
 ### Requirement: [TARGET-STATE] Messenger Routing via Switchboard
 
-The implementation SHALL provide the behavior described by this requirement.
-The `notify.v1` envelope is carried inside a Switchboard-routed `route.v1` payload and executed by the Messenger butler's `route.execute`. The Messenger returns `route_response.v1` with a `notify_response.v1` nested result.
+The `notify.v1` envelope SHALL be carried inside a Switchboard-routed `route.v1` payload and executed by the Messenger butler's `route.execute`. The Messenger returns `route_response.v1` with a `notify_response.v1` nested result.
 
 #### Scenario: Notify routed through Switchboard
 - **WHEN** a butler calls `notify()`
@@ -554,8 +549,7 @@ Successful delivery returns `notify_response.v1` with `status="ok"` and delivery
 
 ### Requirement: Origin Butler Identity
 
-The implementation SHALL provide the behavior described by this requirement.
-Every outbound interaction must include the originating butler's identity as `origin_butler` in the envelope. This is set automatically from the daemon's configuration.
+Every outbound interaction MUST include the originating butler's identity as `origin_butler` in the envelope. This is set automatically from the daemon's configuration.
 
 #### Scenario: Origin butler set automatically
 - **WHEN** the `health` butler calls `notify()`
@@ -563,8 +557,7 @@ Every outbound interaction must include the originating butler's identity as `or
 
 ### Requirement: [TARGET-STATE] Idempotency and Replay Tolerance
 
-The implementation SHALL provide the behavior described by this requirement.
-Because fanout is at-least-once, butlers must tolerate duplicate routed subrequests where request lineage matches.
+Because fanout is at-least-once, butlers MUST tolerate duplicate routed subrequests where request lineage matches.
 
 #### Scenario: Duplicate notify tolerated
 - **WHEN** the same `notify.v1` envelope is delivered twice with the same `request_context.request_id`

@@ -96,10 +96,11 @@ Each subprocess-based adapter integration test suite SHALL include tests that va
 ### Requirement: Shared Test Harness
 A shared set of fixtures and helpers SHALL be provided in `tests/adapters/conftest.py` to reduce boilerplate across adapter integration tests.
 
-#### Scenario: CLI runner fixture available
+#### Scenario: CLI runner helper available
 - **WHEN** an integration test needs to invoke a CLI binary
-- **THEN** it SHALL use the shared `run_cli(binary, args, prompt)` fixture
-- **AND** the fixture SHALL return `(stdout, stderr, returncode)` with configurable timeout
+- **THEN** it SHALL use the shared `run_cli(binary, args, prompt, timeout=120, cwd="/tmp")` module-level helper function from conftest (a plain function, not a pytest fixture)
+- **AND** the helper SHALL return `(stdout, stderr, returncode)` via `subprocess.run()`
+- **AND** the helper SHALL default `cwd` to `/tmp` to avoid polluting the working directory
 
 #### Scenario: JSONL event parser available
 - **WHEN** an integration test needs to parse raw CLI JSON output

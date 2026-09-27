@@ -163,24 +163,6 @@ Tests SHALL be classified into tiers of increasing scope, cost, and infrastructu
 - **THEN** it requires Docker (testcontainers), `ANTHROPIC_API_KEY` (real LLM calls), and the `claude` CLI binary on PATH
 - **AND** it is excluded from CI/CD via three independent mechanisms: `pytest.mark.e2e` marker, environment guard (`ANTHROPIC_API_KEY` check), and explicit `--ignore=tests/e2e` in CI configuration
 
-### Requirement: Adapter Integration Test Infrastructure
-Shared fixtures and helpers SHALL be provided in `tests/adapters/conftest.py` for adapter integration tests. These reduce boilerplate and enforce consistent patterns across all adapter nightly test suites.
-
-#### Scenario: run_cli fixture
-- **WHEN** an integration test needs to invoke a real CLI binary
-- **THEN** it SHALL use the `run_cli(binary, args, prompt, timeout=120, cwd="/tmp")` module-level helper function from conftest (not a pytest fixture)
-- **AND** the fixture SHALL return `(stdout, stderr, returncode)` via `subprocess.run()`
-- **AND** the fixture SHALL default `cwd` to `/tmp` to avoid polluting the working directory
-
-#### Scenario: parse_jsonl_events helper
-- **WHEN** an integration test needs to parse raw CLI JSON output into event dicts
-- **THEN** it SHALL use the `parse_jsonl_events(stdout)` helper from conftest
-- **AND** the helper SHALL skip non-JSON lines and return a list of parsed dicts
-
-#### Scenario: Binary availability markers
-- **WHEN** an adapter's CLI binary is not installed on PATH
-- **THEN** all integration tests for that adapter SHALL be skipped via `@pytest.mark.skipif(not shutil.which("<binary>"), reason="<binary> not on PATH")`
-
 ### Requirement: Test Directory Structure
 Tests SHALL be organized into subdirectories by concern, with standalone test files for cross-cutting validations.
 
@@ -293,7 +275,7 @@ The E2E harness SHALL boot a complete disposable butler ecosystem for every test
 
 #### Scenario: Ecosystem bootstrap
 - **WHEN** the E2E test session starts
-- **THEN** the `butler_ecosystem` session-scoped fixture auto-discovers butlers from `roster/`, provisions a database per butler, runs core and module Alembic migrations, boots each `ButlerDaemon`, starts FastMCP SSE servers on configured ports, and registers all butlers in the switchboard's `butler_registry`
+- **THEN** the `butler_ecosystem` session-scoped fixture auto-discovers butlers from `roster/`, provisions one schema per butler in the shared `butlers` database, runs core and module Alembic migrations, boots each `ButlerDaemon`, starts FastMCP SSE servers on configured ports, and registers all butlers in the switchboard's `butler_registry`
 
 #### Scenario: Butler auto-discovery
 - **WHEN** a new butler is added to `roster/` with a valid `butler.toml`

@@ -13,7 +13,7 @@ The system SHALL maintain a `public.model_catalog` table as the canonical regist
 - **WHEN** a model catalog entry is created
 - **THEN** it contains: `id` (UUID PK), `alias` (text, UNIQUE), `runtime_type` (text, NOT NULL), `model_id` (text, NOT NULL), `extra_args` (JSONB, default `[]`), `complexity_tier` (text, NOT NULL), `enabled` (boolean, default true), `priority` (int, default 0), `session_timeout_s` (int, NOT NULL, default 1800), `last_verified_at` (timestamptz, nullable), `last_verified_latency_ms` (int, nullable), `last_verified_ok` (bool, nullable), `last_verified_error` (text, nullable), `created_at` (timestamptz), `updated_at` (timestamptz)
 - **AND** `session_timeout_s` was added by migration `core_073` when the per-session timeout moved off `runtime_config` onto the catalog
-- **AND** the `last_verified_at` / `last_verified_latency_ms` / `last_verified_ok` columns were added by migration `core_093` and back the verification filter used during resolution (see Model Resolution); `last_verified_ok` is a single nullable boolean (NULL = never verified, `true` = last probe passed, `false` = last probe failed), not a multi-valued connection-state column
+- **AND** the `last_verified_at` / `last_verified_latency_ms` / `last_verified_ok` columns back the verification filter used during resolution (see Model Resolution); `last_verified_ok` is a single nullable boolean (NULL = never verified, `true` = last probe passed, `false` = last probe failed), not a multi-valued connection-state column
 - **AND** `last_verified_error` was added by migration `core_167` and stores the truncated exception text from the most recent failed verification (NULL when never verified or the last verification succeeded); it is display-only and does not participate in resolution eligibility
 
 #### Scenario: Alias uniqueness
@@ -22,10 +22,9 @@ The system SHALL maintain a `public.model_catalog` table as the canonical regist
 
 #### Scenario: Valid complexity tiers
 - **WHEN** a catalog entry specifies a `complexity_tier`
-- **THEN** the value MUST be one of the canonical six: `reasoning`, `workhorse`, `cheap`, `specialty`, `local`, `legacy` (enforced by the `chk_model_catalog_complexity_tier` CHECK constraint)
+- **THEN** the value MUST be one of the canonical tiers defined by complexity-classification "Complexity Enum" (enforced by the `chk_model_catalog_complexity_tier` CHECK constraint)
 - **AND** any other value is rejected with a constraint violation
-- **AND** the legacy six-value vocabulary (`trivial`, `medium`, `high`, `extra_high`, `discretion`, `self_healing`) was renamed to the canonical six in migration `core_093` (`trivial` to `cheap`, `medium` to `workhorse`, `high` and `extra_high` to `reasoning`, `discretion` and `self_healing` to `specialty`)
-- **AND** the `specialty` tier carries both the lightweight latency-sensitive evaluations (formerly `discretion`, e.g. connector noise filtering that runs outside the butler session spawner) and the healing agent sessions (formerly `self_healing`)
+- **AND** the `specialty` tier carries both the lightweight latency-sensitive evaluations (e.g. connector noise filtering that runs outside the butler session spawner) and the healing agent sessions
 - **AND** the `local` tier is reserved for self-hosted models (e.g. Ollama via OpenCode)
 
 #### Scenario: Valid runtime types
@@ -97,8 +96,7 @@ The system SHALL provide model resolution functions that select catalog entries 
 - **THEN** the resolver falls through to the next tier in canonical order (`reasoning` > `workhorse` > `cheap` > `specialty` > `local` > `legacy`) and selects the first qualifying candidate found
 - **AND** any subsequent same-tier failover is restricted to the effective tier that produced that selected candidate
 
-#### Scenario: No candidates fallback
-- **NOTE** The scenario name is retained for archived-change compatibility. The retired, non-normative clause was: "- **AND** the caller (spawner) falls back to the module-private `_FALLBACK_MODEL_ID` constant in `butlers.core.spawner` (see `core-spawner` - Catalog empty fallback)". A live pooled caller fails closed.
+#### Scenario: No candidates fails closed
 - **WHEN** `resolve_model()` finds no enabled qualifying entries in any tier
 - **THEN** the function returns `None`
 - **AND** a live Spawner with a database pool returns a pre-invocation `ModelResolutionError: no_eligible_catalog_entries` because catalog-keyed permission, budget, breaker, and provenance gates cannot run without an entry

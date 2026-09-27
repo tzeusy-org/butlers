@@ -269,7 +269,6 @@ where Chronicler may read approved durable facts asynchronously after Health
 
 ID: REQ-connector-google-health-015
 Source: RFC 0014 Amendment 1; [Observed] `src/butlers/connectors/google_health.py`
-Scope: v1-mandatory
 
 #### Scenario: Google Health not projected by Chronicler initially
 

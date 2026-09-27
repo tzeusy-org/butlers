@@ -159,7 +159,7 @@ The system SHALL record token usage to the ledger whenever an adapter reports to
 - **AND** month-to-date measured spend SHALL equal the priced sum of all four attempts
 
 ### Requirement: Purpose-Tagged Spend Attribution
-`public.token_usage_ledger` SHALL carry a nullable `purpose` column (bu-qvnce.12) recording a coarse "why" dimension for each row, independent of `butler_name` (who spent) and the cache-aware token buckets (what was spent). `record_token_usage()` SHALL accept an optional `purpose` keyword argument and write it through unchanged; omitting it SHALL record `NULL`, never a fabricated default.
+`public.token_usage_ledger` SHALL carry a nullable `purpose` column recording a coarse "why" dimension for each row, independent of `butler_name` (who spent) and the cache-aware token buckets (what was spent). `record_token_usage()` SHALL accept an optional `purpose` keyword argument and write it through unchanged; omitting it SHALL record `NULL`, never a fabricated default.
 
 #### Scenario: Spawner stamps purpose from trigger_source
 - **WHEN** `core.spawner._run()` records ledger usage for a completed or failed session

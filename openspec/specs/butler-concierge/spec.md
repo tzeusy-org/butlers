@@ -5,7 +5,7 @@
 Defines the Concierge staffer — a read-only, staffer-typed infrastructure
 agent (`type = "staffer"` at `roster/concierge/`) that answers system-plane
 questions about the butler fleet itself: fleet status, spend, and session
-telemetry. It exists so the dashboard chat's question lane (bu-0ynlk.2) can
+telemetry. It exists so the dashboard chat's question lane can
 answer operational questions from typed read models instead of either
 fabricating an answer or misrouting an operational question to a domain
 butler with no authority over it. Concierge owns no write tools and never
@@ -153,7 +153,7 @@ or used to remove legitimate role-fit tools.
 - **AND** the registered `dashboard_read_*` names exactly match the module's
   role-fit dashboard-read contract
 - **AND** every `dashboard_read_*` tool's docstring is non-empty (docstring
-  completeness for this bead's own tool surface; pre-existing gaps in shared
+  completeness for Concierge's own tool surface; pre-existing gaps in shared
   core tools are tracked separately, not by this assertion)
 - **AND** the registered handler count is not treated as evidence of the
   number or schema bytes of definitions initially loaded into model context
@@ -163,7 +163,6 @@ or used to remove legitimate role-fit tools.
 - Any write tool or Operator-style fleet control (out of scope; the existing
   `/api/butlers/*` admin surface remains the only mutation path).
 - Domain-question answering (stays with domain butlers).
-- The dashboard chat answer lane itself (bu-0ynlk.2) and the fast lane
-  (bu-0ynlk.6) — Concierge is a tool provider those lanes call, not the lane
+- The dashboard chat answer lane itself and the fast lane: Concierge is a tool provider those lanes call, not the lane
   implementation.
-- Page-context resolution beyond a stub (bu-0ynlk.4).
+- Page-context resolution beyond a stub.

@@ -345,8 +345,6 @@ its denominator and SHALL not invent a second expiry definition, invoke the
 cleanup handler, or convert observation into retention authority.
 
 ID: REQ-memory-retention-policy-009
-Source: [Observed] PR #3734; `openspec/changes/archive/2026-08-14-memory-graph-health-read-api/CANONICALIZATION.md`
-Scope: v1-mandatory
 
 #### Scenario: Observation remains aligned with cleanup without performing cleanup
 
@@ -378,9 +376,9 @@ content, or perform a historical catch-up drain as part of this requirement.
   MUST remain attributable through content-free expired-source evidence
 - **AND** the sweep MUST NOT retain the deleted episode's raw content
 
-#### Scenario: This change does not authorize historical retention cleanup
+#### Scenario: Source-tombstone invariant never drains pre-existing episodes
 
-- **WHEN** the source-tombstone invariant is deployed
+- **WHEN** the source-tombstone invariant is in effect
 - **THEN** it MUST NOT select, delete, backfill, or otherwise mutate any
   pre-existing retained episode solely to establish historical provenance
 - **AND** a historical drain MUST remain a separately owner-authorized

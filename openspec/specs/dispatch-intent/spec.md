@@ -1,7 +1,7 @@
 # dispatch-intent Specification
 
 ## Purpose
-TBD - created by archiving change add-dispatch-intent-fit. Update Purpose after archive.
+Defines the deterministic `DispatchIntent` every dispatch carries, the model capability descriptors it is matched against, the hard-fit rules that reject unfit models, and the resolution receipt that records the choice.
 
 ## Requirements
 

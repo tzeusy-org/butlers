@@ -7,8 +7,7 @@ Provides a per-butler key-value store backed by PostgreSQL JSONB, supporting get
 
 ### Requirement: State Get
 
-The implementation SHALL provide the behavior described by this requirement.
-Retrieve a JSONB value by key from the `state` table. Returns `None` if the key does not exist. Handles both decoded Python objects and raw JSON strings from asyncpg.
+`state_get()` SHALL retrieve a JSONB value by key from the `state` table. Returns `None` if the key does not exist. Handles both decoded Python objects and raw JSON strings from asyncpg.
 
 #### Scenario: Key exists
 - **WHEN** `state_get(pool, key)` is called with an existing key
@@ -20,8 +19,7 @@ Retrieve a JSONB value by key from the `state` table. Returns `None` if the key 
 
 ### Requirement: State Set (Upsert)
 
-The implementation SHALL provide the behavior described by this requirement.
-Upsert a key with any JSON-serializable value. If the key exists, its value, `updated_at` timestamp, and `version` are updated (version incremented). If the key does not exist, a new row is inserted with `version=1`. Returns the new version number.
+`state_set()` SHALL upsert a key with any JSON-serializable value. If the key exists, its value, `updated_at` timestamp, and `version` are updated (version incremented). If the key does not exist, a new row is inserted with `version=1`. Returns the new version number.
 
 #### Scenario: Insert new key
 - **WHEN** `state_set(pool, key, value)` is called for a non-existent key
@@ -35,8 +33,7 @@ Upsert a key with any JSON-serializable value. If the key exists, its value, `up
 
 ### Requirement: State Compare-and-Set (CAS)
 
-The implementation SHALL provide the behavior described by this requirement.
-Conditionally update a key only if its current version matches the expected version. Provides safe concurrent KV writes.
+`state_compare_and_set()` SHALL conditionally update a key only if its current version matches the expected version. Provides safe concurrent KV writes.
 
 #### Scenario: Version matches
 - **WHEN** `state_compare_and_set(pool, key, expected_version, new_value)` is called and the stored version equals `expected_version`
@@ -52,8 +49,7 @@ Conditionally update a key only if its current version matches the expected vers
 
 ### Requirement: State Delete
 
-The implementation SHALL provide the behavior described by this requirement.
-Delete a key from the state store. No-op if the key does not exist.
+`state_delete()` SHALL delete a key from the state store. No-op if the key does not exist.
 
 #### Scenario: Delete existing key
 - **WHEN** `state_delete(pool, key)` is called for an existing key
@@ -65,8 +61,7 @@ Delete a key from the state store. No-op if the key does not exist.
 
 ### Requirement: State List
 
-The implementation SHALL provide the behavior described by this requirement.
-Return state entries optionally filtered by key prefix. Supports two modes: keys-only (default) and full key-value pairs.
+`state_list()` SHALL return state entries optionally filtered by key prefix. Supports two modes: keys-only (default) and full key-value pairs.
 
 #### Scenario: List all keys
 - **WHEN** `state_list(pool)` is called without a prefix
@@ -82,8 +77,7 @@ Return state entries optionally filtered by key prefix. Supports two modes: keys
 
 ### Requirement: Per-Butler Schema Isolation
 
-The implementation SHALL provide the behavior described by this requirement.
-Each butler operates against its own PostgreSQL schema. The `state` table is a core table required in every butler's database. Direct cross-butler schema access is prohibited.
+Each butler SHALL operate against its own PostgreSQL schema. The `state` table is a core table required in every butler's database. Direct cross-butler schema access is prohibited.
 
 #### Scenario: Schema isolation
 - **WHEN** two butlers operate on the same PostgreSQL instance

@@ -159,8 +159,8 @@ The OwnTracks Wi-Fi presence source SHALL use this compatibility declaration:
 ### Requirement: Spotify Spoken Session Compatibility Declaration
 
 Spotify spoken-session evidence SHALL declare deterministic future Chronicler
-compatibility while this capture-only change defers registration, projection,
-and all Chronicler user surfaces.
+compatibility; Chronicler registration, projection, and all Chronicler user
+surfaces for this source are deferred.
 
 #### Scenario: Declaration defines a future deterministic source
 
@@ -168,7 +168,7 @@ and all Chronicler user surfaces.
 - **THEN** its declaration SHALL specify:
   - `source_name`: `spotify.spoken_session`
   - `source_kind`: structured Spotify current-playback episode evidence
-  - `supported_outputs`: episodes (planned, not implemented by this change)
+  - `supported_outputs`: episodes (planned, not implemented)
   - `time_fields`: `started_at` and `ended_at` from connector observations
   - `boundary_semantics`: item switch closes immediately; pause closes after
     configured idle drain; a replay after closure starts a new session
@@ -196,7 +196,6 @@ its unimplemented upstream shapes cannot be conflated.
 
 ID: REQ-chronicler-source-compatibility-006
 Source: RFC 0014 Amendment 1; [Observed] `src/butlers/chronicler/adapters/google_health.py`
-Scope: v1-mandatory
 
 #### Scenario: Supported Health fact shapes declare deterministic projection
 

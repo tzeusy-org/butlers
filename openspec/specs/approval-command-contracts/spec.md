@@ -1,7 +1,7 @@
 # approval-command-contracts Specification
 
 ## Purpose
-TBD - created by archiving change repair-non-messenger-approval-replay. Update Purpose after archive.
+Ensures approval-gated commands from non-Messenger producers are stored against a declared, executable tool contract, so an approved action can always be replayed and an unrepresentable one fails before it is parked.
 
 ## Requirements
 

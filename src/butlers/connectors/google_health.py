@@ -274,8 +274,8 @@ class ResourceBundle:
     ----------
     resource:
         Short key used in cursor identities, idempotency keys, metric
-        labels, and external_event_ids. Must match the predicate-taxonomy
-        keys in ``openspec/changes/google-health-connector/design.md`` §D5.
+        labels, and external_event_ids. Must match the ``<resource>`` segment
+        of the identities in ``openspec/specs/connector-google-health/spec.md``.
     endpoint_path:
         Relative path on ``health.googleapis.com/v4`` that is polled.
         Paths follow the public v4 discovery document's

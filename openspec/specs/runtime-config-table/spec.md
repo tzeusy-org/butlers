@@ -37,7 +37,6 @@ The `RuntimeConfig` dataclass (`src/butlers/core/runtime_config.py`) mirrors the
 A `RuntimeConfigAccessor` class SHALL provide TTL-cached read access to the `runtime_config` table. The default TTL is 30 seconds.
 
 Source: RFC 0001 §Startup Phases (phase 9 — runtime config resolution)
-Scope: v1-mandatory
 
 #### Scenario: Cached read within TTL
 - **WHEN** `accessor.get()` is called twice within 30 seconds
@@ -65,7 +64,6 @@ Scope: v1-mandatory
 The accessor SHALL provide a `seed_if_empty(seed: RuntimeSeedConfig)` method that inserts a row from the toml seed values only if no row exists. After that race-safe seed, the same call SHALL reconcile an existing unreasoned `core_groups` value to the current Git declaration. Other runtime-config fields remain DB-owned and SHALL NOT be overwritten by this reconciliation.
 
 Source: Doctrine Rule #5 (git seeds identity and operational defaults)
-Scope: v1-mandatory
 
 #### Scenario: First boot seeds from toml
 - **WHEN** `seed_if_empty()` is called and the `runtime_config` table is empty
@@ -106,7 +104,6 @@ Scope: v1-mandatory
 Deleting the `runtime_config` row and restarting the daemon SHALL cause the toml seed values to be applied again.
 
 Source: Design §Re-seeding mechanism
-Scope: v1-mandatory
 
 #### Scenario: Re-seed after row deletion
 - **WHEN** the `runtime_config` row is deleted and the daemon restarts

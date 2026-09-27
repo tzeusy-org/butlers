@@ -7,8 +7,7 @@ The Health butler (port 41103) is a health tracking companion for measurements, 
 
 ### Requirement: Health Butler Identity and Runtime
 
-The implementation SHALL provide the behavior described by this requirement.
-The health butler tracks health data with compound JSONB values and domain-specific analysis tools.
+The health butler SHALL track health data with compound JSONB values and domain-specific analysis tools.
 
 #### Scenario: Identity and port
 - **WHEN** the health butler is running
@@ -23,8 +22,7 @@ The health butler tracks health data with compound JSONB values and domain-speci
 
 ### Requirement: Health Butler Tool Surface
 
-The implementation SHALL provide the behavior described by this requirement.
-The health butler provides measurement, medication, condition, symptom, meal, and research tools.
+The health butler SHALL provide measurement, medication, condition, symptom, meal, and research tools.
 
 #### Scenario: Tool inventory
 - **WHEN** a runtime instance is spawned for the health butler
@@ -33,8 +31,7 @@ The health butler provides measurement, medication, condition, symptom, meal, an
 
 ### Requirement: Health Data Conventions
 
-The implementation SHALL provide the behavior described by this requirement.
-Health data uses compound JSONB values and standardized severity scales.
+Health data SHALL use compound JSONB values and standardized severity scales.
 
 #### Scenario: Measurement conventions
 - **WHEN** measurements are logged
@@ -57,8 +54,7 @@ job is per-deployment, not per-pageview.
 
 ### Requirement: Health Butler Skills
 
-The implementation SHALL provide the behavior described by this requirement.
-The health butler has check-in and trend interpretation skills.
+The health butler SHALL have check-in and trend interpretation skills.
 
 #### Scenario: Skill inventory
 - **WHEN** the health butler operates
@@ -66,17 +62,15 @@ The health butler has check-in and trend interpretation skills.
 
 ### Requirement: Health Memory Taxonomy
 
-The implementation SHALL provide the behavior described by this requirement.
-The health butler uses a clinical memory taxonomy with permanence based on condition chronicity.
+The health butler SHALL use a clinical memory taxonomy with permanence based on condition chronicity.
 
 #### Scenario: Memory classification
 - **WHEN** the health butler extracts facts
 - **THEN** it uses subjects like medication names, condition names, or "user"; predicates like `medication`, `medication_frequency`, `condition_status`, `symptom_pattern`, `dietary_restriction`, `allergy`; permanence `stable` for chronic conditions and allergies, `standard` for current medications and symptoms, `volatile` for acute symptoms
 
-### Requirement: CRUD-to-SPO migration — health domain (bu-ddb.2)
+### Requirement: Health data stored as temporal facts
 
-The implementation SHALL provide the behavior described by this requirement.
-The health butler migrates 6 dedicated CRUD tables (measurements, symptoms, medication_doses, medications, conditions, research) to temporal SPO facts using the memory module's facts table. All facts use `scope='health'` and `entity_id = owner_entity_id`. Full predicate taxonomy and metadata schemas are in `openspec/changes/crud-to-spo-migration/specs/predicate-taxonomy.md`.
+The health butler SHALL store measurements, symptoms, medication doses, medications, conditions, and research as SPO facts in the memory module's facts table rather than dedicated CRUD tables. All facts use `scope='health'` and `entity_id = owner_entity_id`, and their predicates are registered in the memory predicate registry.
 
 #### Scenario: Measurement tools as temporal fact wrappers
 - **WHEN** `measurement_log` is called to record a measurement
@@ -127,8 +121,7 @@ The health butler migrates 6 dedicated CRUD tables (measurements, symptoms, medi
 
 ### Requirement: Meal tracking as bitemporal facts
 
-The implementation SHALL provide the behavior described by this requirement.
-The health butler stores meal observations using the memory module's meal-specific temporal predicates and nutrition metadata, enabling historical meal querying and pattern analysis.
+The health butler SHALL store meal observations using the memory module's meal-specific temporal predicates and nutrition metadata, enabling historical meal querying and pattern analysis.
 
 #### Scenario: Meal predicates and temporal facts
 - **WHEN** the health butler logs a meal via `meal_log`
@@ -270,7 +263,7 @@ The Health butler SHALL receive `wellness/google_health` envelopes from the Swit
 #### Scenario: Route-execute entry
 
 - **WHEN** the Switchboard dispatches an accepted `wellness/google_health` envelope to the Health butler
-- **THEN** dispatch SHALL use the same pathway used for other non-interactive channels today (no new per-butler ingest-handler registry is introduced by this change)
+- **THEN** dispatch SHALL use the same pathway used for other non-interactive channels today (no per-butler ingest-handler registry)
 
 #### Scenario: Envelope to fact translation
 
@@ -320,9 +313,8 @@ The Health butler SHALL accept wellness envelopes whose `sender.identity` resolv
 
 The Health butler's wellness ingest SHALL dispatch translation on
 `source.provider`. Envelopes with `provider = "google_health"` SHALL be
-translated exactly as before this change (resource-segment parsing of
-`external_event_id`, the existing resource→predicate table, and owner-account
-sender validation per the `connector-google-health-multi-account` delta).
+translated by resource-segment parsing of `external_event_id`, the
+resource→predicate table, and owner-account sender validation.
 Envelopes with `provider = "home_assistant"` SHALL be translated from the
 normalized `payload.raw.wellness_measurement` object. Envelopes with any other
 provider SHALL be rejected with a labeled rejection metric and no fact written.
@@ -390,7 +382,7 @@ check).
 - **WHEN** two readings share a predicate but differ in `valid_at`
 - **THEN** both SHALL be stored as separate facts
 
-### Requirement: [TARGET-STATE] Dashboard dose-logging route
+### Requirement: Dashboard dose-logging route
 
 The health butler's dashboard API SHALL expose `POST /api/health/medications/{id}/doses` so the
 owner can log a medication dose from the dashboard. The route writes the same `took_dose` temporal
@@ -411,7 +403,7 @@ fact that the `medication_log_dose` MCP tool writes — no new table and no new 
 - **THEN** it MUST write to the existing `health.facts` store using the `took_dose` predicate
 - **AND** it MUST NOT require any new table, column, or DDL
 
-### Requirement: [TARGET-STATE] Frequency-expected adherence route
+### Requirement: Frequency-expected adherence route
 
 The health butler's dashboard API SHALL expose `GET /api/health/medications/{id}/adherence` that
 returns adherence computed against the medication's prescribed frequency (expected doses), not a
@@ -434,7 +426,7 @@ route and the job agree on the denominator.
 - **THEN** they MUST use the same shared frequency-to-doses-per-day helper
 - **AND** they MUST produce the same expected-dose denominator
 
-### Requirement: [TARGET-STATE] Nutrition summary route
+### Requirement: Nutrition summary route
 
 The health butler's dashboard API SHALL expose `GET /api/health/nutrition/summary` that aggregates
 calories and macros across meal facts in a date range, exposing over HTTP the rollup the
@@ -448,7 +440,7 @@ calories and macros across meal facts in a date range, exposing over HTTP the ro
 - **AND** the figures MUST be aggregated from existing meal facts (`meal_*` predicates) over the
   range, with no new schema
 
-### Requirement: Owner-timezone day-boundary date filters (bu-jlzxf)
+### Requirement: Owner-timezone day-boundary date filters
 
 The health butler's dashboard API date-range filters (`since`/`until` on `GET /api/health/meals`,
 `GET /api/health/measurements`, `GET /api/health/symptoms`, `GET /api/health/medications/{id}/doses`;

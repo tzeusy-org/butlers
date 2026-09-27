@@ -213,14 +213,12 @@ While in `planning` status, the ephemeral session decomposes the topic into a co
 
 ### Requirement: Teaching Phase — Explain, Question, Evaluate
 
-The implementation SHALL provide the behavior described by this requirement.
-While in `teaching` status, the session moves through three sub-phases for the current node: `explaining` → `questioning` → `evaluating`. After a successful evaluation, mastery is updated and the flow advances to `quizzing`.
+While in `teaching` status, the session SHALL move through three sub-phases for the current node: `explaining` → `questioning` → `evaluating`. After a successful evaluation, mastery is updated and the flow advances to `quizzing`.
 
 The teaching phase SHALL select a primary pedagogical technique based on the concept node's `metadata.concept_type` when set (`factual` → retrieval practice, `procedural` → worked example then guided practice, `conceptual` → Socratic questioning with analogy, `creative` → divergent prompts then critique), falling back to Socratic questioning when unset. The teaching session SHALL explain its technique choice when the owner asks, citing the pedagogical principle; SHALL include source citations in explanations when relevant registered or model-recalled sources exist; and SHALL suggest reading pathways after concept explanation completes.
 
 ID: REQ-module-education-teaching-flows-006
 Source: Education MANIFESTO.md amendment (evidence-based pedagogy)
-Scope: v1-mandatory
 
 #### Scenario: Technique selection by concept type
 
@@ -292,8 +290,7 @@ Scope: v1-mandatory
 
 ### Requirement: Quizzing Phase — Comprehension Testing
 
-The implementation SHALL provide the behavior described by this requirement.
-In `quizzing` status the session asks 1–3 additional quiz questions that vary in format (free-form, multiple-choice) to solidify comprehension. After the final question is evaluated, the session calls `teaching_flow_advance()` to branch toward the next frontier node or toward `completed`.
+In `quizzing` status the session SHALL ask 1–3 additional quiz questions that vary in format (free-form, multiple-choice) to solidify comprehension. After the final question is evaluated, the session calls `teaching_flow_advance()` to branch toward the next frontier node or toward `completed`.
 
 #### Scenario: Session asks at least one quiz question in quizzing phase
 
@@ -320,8 +317,7 @@ In `quizzing` status the session asks 1–3 additional quiz questions that vary 
 
 ### Requirement: Reviewing Phase — Spaced Repetition Sessions
 
-The implementation SHALL provide the behavior described by this requirement.
-A scheduled trigger fires when a review is due. The spawned session reads all nodes with `next_review_at <= now()` for the mind map, asks 1–3 recall questions per batch, records responses, updates SM-2 parameters, and schedules the next review. After processing, the session calls `teaching_flow_advance()`.
+A scheduled trigger SHALL fire when a review is due. The spawned session reads all nodes with `next_review_at <= now()` for the mind map, asks 1–3 recall questions per batch, records responses, updates SM-2 parameters, and schedules the next review. After processing, the session calls `teaching_flow_advance()`.
 
 #### Scenario: Scheduled trigger fires for due review
 
@@ -375,8 +371,7 @@ A scheduled trigger fires when a review is due. The spawned session reads all no
 
 ### Requirement: Mid-Flow User Questions — Contextual Help
 
-The implementation SHALL provide the behavior described by this requirement.
-When a user sends a freeform question (e.g., "I don't understand recursion") during an active teaching flow, the Switchboard routes it to the education butler. The session identifies the relevant node in the current mind map, provides a targeted explanation, asks a follow-up comprehension question, and records the response — without disrupting the main flow sequence.
+When a user sends a freeform question (e.g., "I don't understand recursion") during an active teaching flow, the Switchboard SHALL route it to the education butler. The session identifies the relevant node in the current mind map, provides a targeted explanation, asks a follow-up comprehension question, and records the response — without disrupting the main flow sequence.
 
 #### Scenario: Mid-flow question matched to current node
 
