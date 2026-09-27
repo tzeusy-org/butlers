@@ -346,15 +346,20 @@ these in `roster/general/tools/vocabulary.py`, capture owner API endpoints, and 
 General-owned proposal-operation store in the General migration chain. Persist
 proposal digest, input parent/member revisions, exact mapping, alias history and
 post-apply revision atomically. Lock parents then members and operation state;
-refuse stale revisions, unknown/private classification, reserved namespaces or
-private-name collisions before mutation. Preserve collection/item identities,
+resolve proposal names and aliases only in the ordinary namespace. A private-only
+matching name behaves absent and never causes a target-specific collision refusal.
+Refuse stale revisions, private/unavailable source or destination UUIDs, unknown
+authority and reserved namespaces uniformly before mutation. The incompatible
+legacy/private schema state still refuses ALL names as defined above. Preserve
+collection/item identities,
 immutable source versions and source-fence constraints; consolidation changes
 explicit ordinary aliases/mappings without deleting history. Inverse application
 requires the exact recorded post-apply revision to still match, otherwise refuses
 without guessed repair. Idempotent replay returns the same operation outcome.
 
 Synthetic real-Postgres tests exercise preview/apply/inverse, stale confirmations,
-concurrent writes/protection, changed-payload replay, rollback and inverse-after-edit
-refusal. Owner-authenticated API and UI tests exercise exact confirmation and fixed
+concurrent writes/protection, changed-payload replay, rollback, inverse-after-edit
+refusal and identical proposal-name behavior with absent versus private-only
+matching names, paired with an ordinary positive control. Owner-authenticated API and UI tests exercise exact confirmation and fixed
 content-blind errors. No actual live/private mapping selection or application is
 authorized by repository delivery; operational selection remains a separate act.
