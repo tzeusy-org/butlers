@@ -284,7 +284,15 @@ async function mockAllSecretRoutes(page: Page) {
   } satisfies OwnTracksStatusResponse;
   const ownTracksConfig = {
     webhook_url: "https://butlers.example.com/owntracks/webhook",
-    host: "butlers.example.com",
+    token_masked: "abcd...wxyz",
+    setup_instructions: {
+      mode: "HTTP",
+      url_field: "URL",
+      auth_type: "Bearer token",
+      steps_ios: ["Set the webhook URL in OwnTracks for iOS."],
+      steps_android: ["Set the webhook URL in OwnTracks for Android."],
+      troubleshooting_hint: "Check app permissions and webhook reachability.",
+    },
   } satisfies OwnTracksConfigResponse;
   await page.route("**/api/connectors/owntracks/status**", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(ownTracksStatus) })
