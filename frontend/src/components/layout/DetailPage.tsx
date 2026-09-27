@@ -6,8 +6,8 @@ import { Page, type Breadcrumb } from "@/components/ui/page";
 // DetailPage
 //
 // Canonical shell for all detail / drilldown pages. Wraps <Page archetype="detail">
-// and enforces the four-tier information-density contract from the
-// `about/lay-and-land/detail-page-audit.md`:
+// and enforces the information-density contract in
+// `openspec/specs/detail-page-archetype/spec.md`:
 //
 //   Hero      — record identity: title (H1 via Page), subtitle, type pill, actions
 //   Pulse     — at-a-glance metric row (consumer-supplied ReactNode)

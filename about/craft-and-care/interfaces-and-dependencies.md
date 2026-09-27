@@ -36,17 +36,8 @@ If the contract changes, update the contract document too.
 
 Do not add a dependency unless it clearly beats the existing stack on net:
 
-- simpler implementation
-- lower maintenance burden
-- better correctness or safety
-- no reasonable in-repo alternative
+simpler implementation, lower maintenance burden, or better correctness or
+safety, with no reasonable in-repo alternative.
 
-A new dependency should not be admitted just to avoid understanding the current
-system or to replace a small amount of straightforward code.
-
-## Dependency Change Discipline
-
-- Prefer the tools already standardized in the repo.
-- Keep version or dependency churn out of unrelated changes.
-- When dependency behavior affects tests, startup, networking, or migrations,
-  document the operational consequence.
+When dependency behavior affects tests, startup, networking, or migrations,
+document the operational consequence.

@@ -1,5 +1,7 @@
 # RFC 0027 Review -- Option B Amendment
 
+Retained as pinned upstream evidence for RFC 0027 Option B.
+
 **Date:** 2026-08-31
 **Decision:** Owner selected Option B in `bu-g5fha`
 **Status:** Amendment candidate; implementation and merge remain separately gated

@@ -2,9 +2,9 @@
 
 **Status:** Accepted
 **Date:** 2026-03-24
-**Amended:** 2026-04-29 — added contact_info context tagging and context-aware notify() routing (bu-uv4b4)
-**Amended:** 2026-05-19 — contacts collapsed to RDF triples per Amendment 2 (bu-u8xq2)
-**Amended:** 2026-06-18 — declared entity_info/entity_facts seam law; telegram_chat_id mapped to has-handle predicate; write-guard added (bu-oluyt.1)
+**Amended:** 2026-04-29 — added contact_info context tagging and context-aware notify() routing
+**Amended:** 2026-05-19 — contacts collapsed to RDF triples per Amendment 2
+**Amended:** 2026-06-18 — declared entity_info/entity_facts seam law; telegram_chat_id mapped to has-handle predicate; write-guard added
 
 ## Summary
 
@@ -33,22 +33,10 @@ The anchor table for identity. Each row represents a known person or actor.
 | `aliases` | TEXT[] | Alternative names |
 | `metadata` | JSONB | Extensible; temporary entities carry `{"unidentified": true}` |
 
-#### public.contacts (Superseded)
+#### Contact channel identifiers
 
-**Status:** Superseded by RFC 0004 Amendment 2
-
-The two-table model (`public.contacts` + `public.contact_info`) is deprecated and replaced by RDF triples stored in `relationship.entity_facts`. See `openspec/specs/relationship-facts/spec.md` for the replacement triple-based contact model and the migration timeline in `relationship-facts/spec.md` Requirement: Migration safety.
-
-Contact channel identifiers are now stored as facts: `(entity_id, "has-email", "alice@example.com")`, `(entity_id, "has-telegram", "12345")`, etc. This eliminates the two-table indirection and provides native multi-valuedness, provenance, and verification status.
-
-**Legacy schema (for reference during migration):**
-
-The deprecated tables were:
-
-- `public.contacts`: Links a named contact record to an entity. Columns: `id` (UUID PK), `name` (TEXT), `entity_id` (UUID FK), `roles` (TEXT[]), `metadata` (JSONB).
-- `public.contact_info`: Per-channel identifiers linked to contacts. Columns: `contact_id` (UUID FK), `type` (TEXT), `value` (TEXT), `is_primary` (BOOLEAN), `secured` (BOOLEAN), `context` (VARCHAR, nullable).
-
-For implementation details of the new triple-based model, consult `openspec/specs/relationship-facts/spec.md`.
+Contacts are triples in `relationship.entity_facts` (Amendment 2), for example
+`(entity_id, "has-email", "alice@example.com")`; see `openspec/specs/relationship-facts/spec.md`.
 
 #### public.entity_info
 
@@ -174,17 +162,10 @@ When provided, it influences both recipient selection and the approval gate.
 
 #### Recipient selection (contact_id path)
 
-When `contact_id` is given, `_resolve_contact_channel_identifier()` uses a context-priority
-`ORDER BY` to prefer entries whose `context` matches `msg_context`:
-
-1. Entries where `context = msg_context` — ordered by `is_primary DESC`.
-2. Entries where `context IS NULL` (unclassified) — ordered by `is_primary DESC`.
-3. Any remaining entry — ordered by `is_primary DESC, created_at ASC`.
-
-This ensures that a butler sending a personal message reaches the contact's personal address,
-even if the contact has both a personal and a work email in `contact_info`.
-
-When no `msg_context` is declared, the legacy behaviour (primary entry preferred) is preserved.
+When `contact_id` is given, `_resolve_entity_channel_identifier()` reads the channel's predicate
+from `relationship.entity_facts` for that entity. Triples carry no context column, so resolution
+does not prefer a matching-context address; `msg_context` is enforced only by the mismatch gate
+below.
 
 #### Context mismatch approval gate
 
@@ -200,8 +181,7 @@ email from being sent when the butler declared `msg_context="personal"`.
 
 #### Default context inference
 
-Callers may omit `msg_context`. When omitted, no context filtering or mismatch check occurs
-and legacy behaviour is preserved.  Butler-level context defaults are not currently enforced
+Callers may omit `msg_context`. When omitted, no mismatch check occurs.  Butler-level context defaults are not currently enforced
 in code; future work may map butler domains (e.g. `health`, `lifestyle` → `"personal"`)
 to a default context automatically.
 
@@ -212,7 +192,7 @@ Identity resolution is invoked at:
 | Integration Point | Purpose |
 |-------------------|---------|
 | Switchboard ingestion (RFC 0003) | Resolve sender identity, build preamble for routed messages |
-| `notify()` tool | Resolve outbound recipient from `contact_id` to channel-specific address; context-aware when `msg_context` is provided |
+| `notify()` tool | Resolve outbound recipient from `contact_id` to channel-specific address; `msg_context` feeds the mismatch gate |
 | Approval gate (email guard) | Role-based access + context mismatch detection for outbound email delivery |
 | Memory module | Anchor facts and episodes to the correct entity for retrieval |
 
@@ -239,7 +219,7 @@ Applied per `openspec/changes/archive/2026-05-20-relationship-tabs-to-entities/r
 - §"Unknown Sender Handling" updated to reference `create_temp_entity()` and `relationship_assert_fact()` instead of the deprecated contact creation path
 - `public.entity_info` remains unchanged and out of scope for this amendment
 
-### Amendment 3 (2026-06-18) — entity_info/entity_facts Seam Law (bu-oluyt.1)
+### Amendment 3 (2026-06-18) — entity_info/entity_facts Seam Law
 
 **Summary:** Formally declares the sensitivity-based seam between the two identity stores.
 The split axis is **SENSITIVITY**, not TYPE.
@@ -285,6 +265,6 @@ of epic bu-oluyt.
 
 **Per-butler contact tables.** Rejected because every butler needs sender context for personalized responses. Duplicating contact data across schemas would create synchronization problems and inconsistent identity states.
 
-**Roles on contacts instead of entities.** The `contacts.roles` column exists as a legacy artifact. Roles are now sourced from the entity, which is the canonical anchor. A contact is a named reference to an entity, not an independent role bearer. The entity-centric model supports multiple contacts per entity (e.g., a person with both personal and work email addresses) sharing the same role set.
+**Roles on contacts instead of entities.** The retired `public.contacts.roles` column was this alternative. Roles are now sourced from the entity, which is the canonical anchor. A contact is a named reference to an entity, not an independent role bearer. The entity-centric model supports multiple contacts per entity (e.g., a person with both personal and work email addresses) sharing the same role set.
 
 **Inline identity in message payload.** Rejected in favor of the structured preamble. Inline identity would require every butler to parse arbitrary message formats. The preamble provides a predictable, machine-readable prefix that LLM sessions can consistently interpret.

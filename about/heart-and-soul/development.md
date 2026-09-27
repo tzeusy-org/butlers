@@ -26,22 +26,9 @@ Write the failing test first. Then write the code that makes it pass.
   development, expand to integration tests during stabilization, run the full
   suite only for final pre-merge validation.
 
-**Test infrastructure:**
-
-- pytest with pytest-asyncio (asyncio_mode = "auto"). Default `addopts` use
-  importlib import mode and exclude the `nightly`, `bench`, and `perf` markers.
-- Tests are separated by marker, not by a single file. The relevant markers are
-  `unit`, `smoke`, `integration`, `db`, `e2e`, `nightly`, `bench`, and
-  `contract` (architectural invariants from this doctrine and key RFCs).
-  Database and migration tests live under `tests/migrations/`, `tests/config/`,
-  and `tests/core/` and carry the `integration`/`db`/`nightly` markers, so they
-  are selected or skipped by marker rather than by ignoring named files.
-- E2E test suite with benchmark scoring for routing accuracy and session
-  reliability. E2E tests require `ANTHROPIC_API_KEY`, the `claude` binary, and
-  Docker; they are not part of the default CI pipeline and run via
-  `make test-e2e` (validate mode) or `make test-e2e-benchmark` (model
-  scorecards). A separate frontend Playwright e2e suite does run in CI (see the
-  `frontend-e2e` job below) and locally via `make test-e2e-frontend`.
+**Test infrastructure:** markers, CI lanes, and the scoped-test ladder live in
+[craft-and-care/testing-and-verification.md](../craft-and-care/testing-and-verification.md)
+and `AGENTS.md` § Test Scope Policy.
 
 ## OpenSpec-Driven Development
 
@@ -112,15 +99,9 @@ trackers. Not task lists in comments.
 - Dolt-backed: issues live in a Dolt database, not in git or SQLite.
 - Agent-optimized: JSON output, ready work detection, discovered-from links.
 
-**Backend (how the data actually lives):** `bd` v1.0.x is backed by the shared
-Dolt server on `dolt.parrot-hen.ts.net:3307` (database `butlers`), discovered via
-`.beads/metadata.json` (`dolt_mode: server`). Writes auto-commit to Dolt
-history; there is no `bd sync` step (that subcommand does not exist in this bd
-version). To refresh the git-tracked JSONL mirror, run
-`bd export -o .beads/issues.export.jsonl`. Never create `.beads/issues.jsonl`:
-on bd 1.0.4 server mode its presence triggers a full-file re-import on every
-write that can wedge bd town-wide. The mirror lives at
-`.beads/issues.export.jsonl` (see `export.path` in `.beads/config.yaml`).
+The backend and its operational traps (shared Dolt server, no `bd sync`, never
+create `.beads/issues.jsonl`) are documented in the root `CLAUDE.md` and
+`AGENTS.md`.
 
 **Workflow:**
 
@@ -137,10 +118,7 @@ purposes.
 change(s) are archived and the affected specs are synced — in the same
 delivery as the close, not a follow-up. Run the change through `/opsx:archive`
 before calling `bd close` on the epic; the archive step must not lag behind the
-close. This pairs with the
-[v1-status refresh rule](v1-status.md#refresh-rule): an epic close that touches
-a success criterion should land the OpenSpec archive and the v1-status refresh
-in the same delivery.
+close.
 
 ## Code Quality
 
@@ -148,63 +126,12 @@ in the same delivery.
 
 **Formatting:** Ruff format. No debates about style.
 
-**Quality gate before merge:**
-
-```bash
-make lint                                                  # ruff check src/ tests/
-uv run ruff format --check src/ tests/ roster/ conftest.py -q
-make check-for-update-joins                                # SQL safety: FOR UPDATE + outer joins
-```
-
-All must pass. No exceptions, no "I'll fix the lint later." The
-`check-for-update-joins` gate is structural: PostgreSQL rejects `FOR UPDATE` on
-the nullable side of an outer join at runtime, and mock-based tests silently
-bypass it, so it is enforced statically.
-
-**CI pipeline** (GitHub Actions, runs automatically on push/PR). The core
-Python gate is a duration-balanced fan-out/fan-in:
-
-1. `check-preflight` runs the lock, lint, format, SQL-safety, exact-shard
-   verification, and smoke/release-evidence checks once.
-2. Five `check-unit-N` jobs and five `check-integration-N` jobs start on
-   independent runners. Each keeps whole test files together with xdist's
-   `--dist loadfile`; the integration shards retain Docker/testcontainers.
-3. `check` always evaluates every preflight/shard result, including a
-   cancellation result, fails on any non-success, then combines all ten
-   coverage artifacts and updates the main-push badge.
-
-The checked-in file manifests live in `.github/ci-test-shards/`. The sole
-selector, `scripts/check_ci_test_shards.py`, owns the exact current unit and
-integration marker expressions. Its `verify` command derives pytest's actual
-selected node IDs and refuses a stale manifest, missing file/node, duplicate
-within a lane, or zero-selected shard. A file can correctly appear once in
-each independent lane when it contains both unit and integration items.
-
-`coverage combine` runs only in the fan-in job because runners do not share a
-filesystem. The local `make test-ci-*` targets remain sequential convenience
-commands and therefore use `--cov-append` within their single worktree.
-
-Each shard emits a unique non-hidden coverage artifact plus runner-local raw
-JUnit input. CI derives retained timing evidence from that input, but uploads
-only the sanitized JUnit metadata and top-duration table; it never uploads raw
-JUnit or test logs. Each named artifact is overwrite-safe so rerunning a failed
-job within one workflow run can recover instead of colliding with an immutable
-v4 artifact.
-
-`frontend` (Node 24, `frontend/`) runs `npm ci`, `npm run lint`
-   (`eslint .`), `npm run build` (`tsc -b && vite build`), and `npm run test`
-   (`vitest run`).
-
-`frontend-e2e` (Node 24, `frontend/`) installs Playwright browsers, builds,
-   and runs `npm run test:e2e`.
-
-Longer-running schema-matrix and migration tests run separately in the nightly
-workflow (`-m "(nightly or integration) and not bench and not perf"`), not on
-every push.
-
-The local quality-gate shortcut (`make test-qg`) runs the unit-test scope in
-parallel (`-n auto --dist loadfile`); `make test-qg-serial` is the serial
-fallback for order-dependent debugging.
+**Quality gate before merge:** all lint, format, and SQL-safety gates must
+pass. No exceptions, no "I'll fix the lint later." Static gates such as
+`check-for-update-joins` exist because some failures (PostgreSQL rejecting
+`FOR UPDATE` on the nullable side of an outer join) only surface at runtime
+and mock-based tests bypass them. The exact commands live in the root `CLAUDE.md` § Commands; the CI
+pipeline is defined in `.github/workflows/ci.yml`.
 
 ## Git Workflow
 
@@ -214,20 +141,10 @@ fallback for order-dependent debugging.
 - Work is not complete until it is pushed to the remote. Local-only commits are
   unreliable artifacts.
 
-**Repo-root discipline (non-negotiable):** never move the main repo root
-(`~/gt/butlers`) off `main`. Agents and humans both rely on the root checkout
-staying on `main` at all times.
-
-- Every tracked change uses a dedicated git worktree branched off `origin/main`,
-  with commits, pushes, and PRs all coming from the worktree. Open PRs against
-  `--base main`; never push a change directly to `main`.
-- After review and the PR-head gates complete, enqueue the PR with
-  `gh pr merge <n> --squash --auto`. The non-strict `main-merge-queue` ruleset
-  runs required `check`, `guards`, and `frontend` contexts on the current
-  `merge_group` tree. Do not rebase a clean PR merely to refresh it; rebase only
-  to resolve a real conflict or when review requires it.
-
-See the root `CLAUDE.md` for the exact worktree commands and the full discipline.
+**Repo-root discipline (non-negotiable):** the main repo root
+(`~/GitHub/butlers`) stays on `main`. Every tracked change goes through a
+dedicated worktree and a PR. See the root `CLAUDE.md` for the exact worktree
+commands and the merge route.
 
 ## Development Environment
 

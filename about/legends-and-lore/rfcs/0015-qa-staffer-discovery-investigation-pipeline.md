@@ -11,9 +11,8 @@ fingerprint-based triage and deduplication layer, an investigation dispatch pipe
 isolated git worktrees, and a dashboard surface for operator visibility. The QA Staffer subsumes
 and supersedes the per-butler `self-healing-*` capability family: the unified QA pipeline delivers
 richer cross-system coverage than per-butler autonomous repair, and maintaining two parallel
-self-repair stacks would create ambiguity about which system owns a given finding. The legacy
-`self-healing-dispatch`, `self-healing-module`, and `self-healing-skill` specs are **deprecated**
-as of this RFC (see §"Legacy Self-Healing Deprecation").
+self-repair stacks would create ambiguity about which system owns a given finding. The
+`self-healing-*` specs are retired; see §"Healing Substrate Reuse".
 
 ## Motivation
 
@@ -338,59 +337,12 @@ contribution schedules. It registers with the Switchboard for butler-to-staffer 
 (RFC 0003 §8 covers the staffer archetype). Cross-butler DB access uses the
 `public.v_qa_recent_failures` read-only view per the RFC 0010 pattern.
 
-## Legacy Self-Healing Deprecation
+## Healing Substrate Reuse
 
-### Status of legacy specs
-
-The following capability specs are **deprecated** and superseded by the QA pipeline defined in
-this RFC:
-
-| Spec | Status | Superseded by |
-|---|---|---|
-| `self-healing-dispatch` | **Deprecated** | QA investigation dispatch (§D4) |
-| `self-healing-module` | **Deprecated** | QA `butler_reports` discovery source (§D1) + `report_finding` MCP tool |
-| `self-healing-skill` | **Deprecated** | QA skill at `roster/shared/skills/self-healing/` (content preserved; attribution changes) |
-
-The `healing-*` support specs (`healing-anonymizer`, `healing-model-tier`, `healing-session-tracking`,
-`healing-worktree`) are **implementation substrate, not deprecated**. The QA pipeline reuses
-them directly:
-
-- `healing-anonymizer` — QA anonymizes PR content through the same pipeline.
-- `healing-model-tier` — QA investigations use `complexity = "self_healing"` model resolution.
-- `healing-session-tracking` — QA writes to `public.healing_attempts`; the schema is extended
-  with `qa_patrol_id` but the table itself is the same.
-- `healing-worktree` — QA uses the shared worktree lifecycle infrastructure.
-
-### Why option (b) — declare deprecated, do not fold
-
-The reconciliation report (§"Doctrine conflicts found") identified two resolution options for
-the `self-healing-dispatch` / `qa-investigation-dispatch` coexistence problem:
-
-- **(a)** Fold `self-healing-*` specs into the QA capability set.
-- **(b)** Mark them deprecated with superseded-by pointers.
-
-Option (b) is recommended for three reasons:
-
-1. **Minimal churn.** Live code currently implements the `self-healing-module` `report_error`
-   tool. The correct migration path is to route `report_error` through the QA Staffer's
-   `report_finding` relay rather than deleting the tool. Folding specs would suggest the code
-   disappears; deprecation correctly signals "superseded, remove in a follow-up cycle."
-2. **Audit trail.** Deprecation with a superseded-by pointer preserves the design history and
-   makes future archive-sweep automation straightforward (`openspec-bulk-archive-change` can
-   batch-archive any spec carrying a `**Status:** Deprecated` banner).
-3. **Scope hygiene.** This RFC is a design contract, not an implementation task. Physically
-   archiving 3+ specs belongs in a separate chore bead ("sweep self-healing-* specs as
-   superseded") that can be reviewed and merged atomically.
-
-### Migration path
-
-1. Immediately: `self-healing-dispatch`, `self-healing-module`, and `self-healing-skill` specs
-   receive deprecation banners pointing to this RFC (see note below about spec edits).
-2. Follow-up bead: butlers' existing `report_error` MCP tool implementations are updated to
-   relay via `switchboard_client.call_tool("route", {"target_butler": "qa", ...})` instead of
-   invoking `dispatch_healing()` directly, making them aliases over the QA relay.
-3. Archive sweep bead: once the relay migration is merged and validated, the deprecated specs
-   are bulk-archived via `openspec-bulk-archive-change`.
+QA reuses the `healing-*` substrate specs directly: `healing-anonymizer` (PR content
+anonymization), `healing-model-tier` (`complexity = "self_healing"` model resolution),
+`healing-session-tracking` (`public.healing_attempts`, extended with `qa_patrol_id`), and
+`healing-worktree` (shared worktree lifecycle).
 
 ## Non-Goals
 
@@ -401,28 +353,6 @@ Option (b) is recommended for three reasons:
 - QA does NOT provide user-facing insights or recommendations; that is the Proactive Butler's domain.
 - QA does NOT implement the `prometheus_metrics`, `mcp_reachability`, `scheduler_drift`,
   `connector_heartbeat`, or `git_regression` discovery sources in v1.
-
-## Rollout
-
-1. Bootstrap `roster/qa/` with `butler.toml` (`type = "staffer"`), `MANIFESTO.md`, `CLAUDE.md`,
-   `AGENTS.md`.
-2. Apply database migrations: `public.qa_patrols`, `public.qa_findings`, `public.qa_dismissals`,
-   add `qa_patrol_id` column to `public.healing_attempts`, create `public.v_qa_recent_failures`
-   view with per-schema GRANTs.
-3. Implement `DiscoverySource` protocol and v1 sources (`log_scanner`, `session_records`,
-   `butler_reports`) under `src/butlers/core/qa/sources/`.
-4. Implement triage layer (`src/butlers/core/qa/triage.py`).
-5. Implement dispatch layer (`src/butlers/core/qa/dispatch.py`) — reusing `healing/` substrate.
-6. Implement `qa` module (`src/butlers/modules/qa/`) with `register_tools`, `on_startup`,
-   `on_shutdown`, and patrol loop scheduler entry.
-7. Add API routes at `roster/qa/api/router.py` (auto-discovered per RFC 0007).
-8. Add frontend pages: `/qa`, `/qa/patrols/:patrolId`, `/qa/investigations/:attemptId`,
-   home-page QA widget.
-9. Update Switchboard to exclude QA staffer from user-message routing and register for
-   butler-to-staffer MCP reachability.
-10. Provision `BUTLERS_QA_GH_TOKEN` secret via the dashboard; confirm git author identity settings.
-11. Mark `self-healing-dispatch`, `self-healing-module`, `self-healing-skill` as deprecated
-    in `openspec/specs/` (superseded-by pointer to RFC 0015).
 
 ## Open Questions
 

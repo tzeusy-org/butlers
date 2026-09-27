@@ -3,9 +3,8 @@
 Internal and external dependencies, startup ordering constraints, and failure
 blast radius analysis.
 
-The fleet-observer edges below are the approved target contract in
-`restore-butler-control-plane-liveness`. Until its cutover, deployed daemons
-still send the legacy heartbeat POST and the observer does not exist.
+This page is a snapshot, not a contract. Butler and module lists here are
+examples; `ls roster/` and `ls src/butlers/modules/` are authoritative.
 
 ---
 
@@ -13,32 +12,11 @@ still send the legacy heartbeat POST and the observer does not exist.
 
 ### Module Dependencies (topological sort at startup)
 
-```mermaid
-graph TD
-    Pipeline["pipeline"]
-    Memory["memory"]
-    Email["email"]
-    Telegram["telegram"]
-    Calendar["calendar"]
-    Contacts["contacts"]
-    Approvals["approvals"]
-    Mailbox["mailbox"]
-    Metrics["metrics (module)"]
-    SelfHealing["self_healing"]
-
-    Pipeline --> Memory
-    Pipeline --> Email
-    Pipeline --> Telegram
-    Approvals --> Pipeline
-```
-
 Module dependencies are declared via the `dependencies` property on each Module
 subclass. The `ModuleRegistry` resolves them via topological sort before
-calling `on_startup()`. Shutdown happens in reverse topological order.
-
-Modules that declare no dependencies (memory, email, telegram, calendar,
-contacts, mailbox, metrics, self_healing) can start in any order relative to
-each other.
+calling `on_startup()`; shutdown runs in reverse order. No module currently
+declares a dependency (`grep -rn -A2 "def dependencies" src/butlers/modules`),
+so startup order among enabled modules is unconstrained.
 
 ### Butler-to-Switchboard Dependency
 
@@ -46,66 +24,21 @@ each other.
 graph LR
     GEN["general :41101"] -- "MCP client" --> SW["switchboard :41100"]
     REL["relationship :41102"] -- "MCP client" --> SW
-    HLT["health :41103"] -- "MCP client" --> SW
-    MSG["messenger :41104"] -- "MCP client" --> SW
-    FIN["finance :41105"] -- "MCP client" --> SW
-
-    OBS["supervised dashboard fleet observer"] -- "bounded internal GET" --> GEN
-    OBS -- "bounded internal GET" --> REL
-    OBS -- "bounded internal GET" --> HLT
-    OBS -- "bounded internal GET" --> SW
-    OBS -- "reserved probe + DB-server observation" --> REG["Switchboard registry"]
-    SW -- "one stale-route probe + conditional observation" --> REG
+    OTHER["... every non-switchboard butler (e.g.)"] -- "MCP client" --> SW
+    OBS["dashboard shadow observer"] -- "GET /internal/control-plane/identity" --> GEN
+    OBS -- "GET /internal/control-plane/identity" --> SW
 ```
 
-In the approved target state, every non-switchboard butler:
-
-1. Opens an MCP client connection to the Switchboard during startup phase 12.
-2. Exposes bounded identity and route-readiness facts on its existing internal
-   port. The supervised observer probes the exact Git-roster endpoint. The
-   Switchboard daemon is observed by the same mechanism.
-   Each boot obtains a server-allocated durable epoch before advertising route
-   acceptance. The Dashboard observer and Switchboard stale-route recheck
-   share the exact-response verifier and reserve probe sequences in the
-   database; conditional writes fence old boots and overlapping receivers.
-
-The observer's DB-server timestamp is liveness evidence; daemon-authored
-heartbeat POSTs are retired after the approved cutover. Connector MCP
-heartbeats remain independent. Routing requires observed health, administrative
-policy, and route compatibility. A stale target gets one bounded on-demand
-probe before refusal; no probe, route success, or registration clears an
-administrative quarantine.
+Every non-switchboard butler opens an MCP client to the Switchboard during
+startup and registers its endpoint. Routing reads the Switchboard registry,
+kept fresh by daemon heartbeats; the Dashboard shadow observer probes each
+daemon's identity route but does not yet hold route authority. The staged
+cutover is in the
+[control-plane design](../../openspec/changes/restore-butler-control-plane-liveness/design.md).
 
 **Failure mode**: If the Switchboard is down, domain butlers cannot receive
 routed messages. Their local deterministic schedules and direct MCP triggers
-continue unless a separate administrative policy disables them. If the
-observer stops, the fleet becomes observer-unknown and semantic readiness
-fails; a failed observation cannot assert recovery.
-
-### Candidate voice-egress dependency chain (not implemented)
-
-```mermaid
-graph LR
-    SIGN["isolated voice signers"] -. "fixed-purpose non-inheritable handles" .-> SW
-    SIGN -. "fixed-purpose non-inheritable handles" .-> MSG
-    SIGN -. "fixed-purpose non-inheritable handles" .-> HOME
-    Origin["origin butler"] -- "notify.v1" --> SW["Switchboard"]
-    SW -- "signed voice_origin.v1" --> MSG["Messenger"]
-    MSG -- "signed attestation request" --> SW
-    SW -- "signed broker request" --> HOME["Home"]
-    HOME -- "signed categorical result" --> SW
-    SW -- "signed nested relay" --> MSG
-    MSG -- "one admitted handoff" --> VP["local-first voice provider"]
-    MSG -- "one text-only fallback intent" --> SW
-```
-
-Voice fails closed if a required signer/keyring or durable nonce store,
-Switchboard, Messenger's replay store, Home attestation, or the exact provider
-profile is unavailable. Current RFC 0028 does not admit Home/HA voice. A
-failure does not redirect
-Messenger to another room/provider, infer a device from identity data, or make
-Live Listener an egress component. Telegram/email text fallback is separately keyed
-and resolved once by Switchboard.
+continue unless a separate administrative policy disables them.
 
 ### Connector-to-Switchboard Dependency
 
@@ -136,15 +69,6 @@ graph LR
 The dashboard backend creates connection pools to each butler's schema on
 startup. It reads directly from butler databases -- it does not go through
 butler MCP servers.
-
-The approved control-plane observer is a separate, supervised Dashboard
-dependency on exact backend-network daemon identity/readiness endpoints. It
-uses the database for durable observations and condition evidence, and an
-independent patrol-age check so QA cannot be the only watcher of its own
-scheduler. Only a completed successful patrol with all enabled discovery
-sources completed renews that age. The canonical `/ready` requires this observer, expected fleet,
-patrol freshness, supervised loops, and an effect-free route canary in addition
-to PostgreSQL and roster discovery; `/health` remains process-only.
 
 **Failure mode**: If PostgreSQL is down, the dashboard returns 500 errors.
 Butler daemons also fail to start.
@@ -186,11 +110,14 @@ attempt ingestion, enforced by the readiness probe.
 | Dependency | Used By | Purpose | Failure Impact |
 |---|---|---|---|
 | **MinIO / S3** | Blob storage (attachments) | Attachment storage and retrieval | Attachment operations fail; non-blob daemon startup and core text messaging continue |
-| **Grafana Alloy** | Telemetry | OTLP trace/metric collection | No observability; no-op tracer/meter used instead |
+| **OpenTelemetry Collector** | Telemetry | OTLP trace/metric collection | No observability; no-op tracer/meter used instead |
 | **Tempo** | Trace queries | Trace storage backend | Cannot query traces; collection unaffected |
 | **Prometheus** | Metric queries | Metric storage backend | Cannot query metrics; emission unaffected |
 
 ### External APIs (per-connector/module)
+
+Representative examples; each connector service in `docker-compose.yml` and
+each module under `src/butlers/modules/` depends on its own provider API.
 
 | Dependency | Used By | Purpose | Failure Impact |
 |---|---|---|---|
@@ -207,7 +134,7 @@ attempt ingestion, enforced by the readiness probe.
 |---|---|
 | **Python 3.12+** | Runtime language |
 | **uv** | Package management and virtual environments |
-| **Node.js 22+** | Frontend build toolchain |
+| **Node.js 24** | Frontend build toolchain (matches CI) |
 | **Docker** | Container runtime for infrastructure services |
 | **Ruff** | Linting and formatting |
 | **pytest** | Test execution with pytest-asyncio |
@@ -228,25 +155,12 @@ errors. Connectors cannot resolve credentials.
 - Domain butlers continue running (local schedulers work, direct MCP calls work).
 - No new external messages are routed to domain butlers.
 - Connectors block or fail at ingestion.
-- The observer records Switchboard unavailability; related target impacts
-  correlate into one fleet condition rather than one QA investigation per
-  butler.
 
 ### Single domain butler down
 
-- Switchboard probes a stale target once; a proven pre-accept no-effect
-  attempt remains durably retryable for ordinary ingestion-to-domain delivery.
-  Ambiguous and policy-terminal outcomes remain visible for review.
+- Routes to that butler fail; the Switchboard registry marks it stale once its
+  heartbeat TTL lapses.
 - Other butlers are unaffected.
-- Dashboard shows the observer-derived unavailable state, distinct from
-  administrative quarantine or route incompatibility.
-
-### QA patrol or control-plane observer down
-
-- The independently supervised observer checks the age of completed QA
-  patrols, so a missed patrol remains visible without QA executing.
-- A stopped observer yields unknown fleet observation and failed semantic
-  readiness. A process-health 200 cannot close the condition.
 
 ### Connector down
 

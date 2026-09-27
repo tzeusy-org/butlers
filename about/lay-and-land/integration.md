@@ -3,9 +3,12 @@
 How subsystems connect at their boundaries: wire protocols, envelope schemas,
 and transport details.
 
-The observer and per-target intent edges in the overview are approved target
-contracts in `restore-butler-control-plane-liveness` and
-`recover-ingestion-target-deliveries`; they are not current runtime claims.
+This page is a snapshot, not a contract. Envelope schemas live in their
+Pydantic models and openspec specs; when they disagree with this page, they
+win. The observer and per-target intent edges in the overview are target
+contracts of the open `restore-butler-control-plane-liveness` and
+`recover-ingestion-target-deliveries` changes; the identity route and a shadow
+observer have landed, route authority has not moved.
 
 ---
 
@@ -253,113 +256,30 @@ between domain butlers.
 **Exception**: The Switchboard itself holds MCP client connections to all
 registered domain butlers for route dispatch.
 
-### Candidate voice-egress control plane (not implemented)
-
-RFC 0034 keeps the same MCP-only rule while adding two versioned envelopes:
-
-| Envelope | Authenticated producer | Consumer | Content boundary |
-|---|---|---|---|
-| `voice_origin.v1` | Switchboard's isolated Ed25519 service principal, matched to its durable route record | Messenger | Switchboard-signed canonical request/service/intent/message digest plus verified reply-lineage ref or one explicit opaque endpoint ref; no raw mic/room/device id |
-| `voice_presence_attest.v1` request | Messenger signature verified by Switchboard; separately signed broker hop to Home | Home | Opaque room ref, binding version, single-use nonce; no message content |
-| `voice_presence_attest.v1` result | Home signature verified/relayed under a Switchboard signature | Messenger | Nested signatures over categorical result/freshness/age bound to version and nonce; no raw presence evidence |
-
-Messenger never connects directly to Home. Dedicated immutable service
-keyrings and durable nonce receipts authenticate every broker hop; generic MCP
-reachability and caller fields do not. Switchboard does not manufacture
-presence or choose a physical endpoint. Home does not receive speech content
-and is presence-only under this candidate: current RFC 0028 cannot admit a
-Home/HA voice provider. A separate accepted amendment must define its approval,
-speech, receipt, freshness, and persistence seam. The provider adapter is
-Messenger-owned and returns only the exact no-start/start/confirm/fail/unknown
-categories. This is a target contract only; it provisions no keys and exposes
-no live endpoint until separate implementation and activation authority exists.
+The candidate in-room voice envelopes (`voice_origin.v1`,
+`voice_presence_attest.v1`) keep this rule and are specified in
+[RFC 0034](../legends-and-lore/rfcs/0034-messenger-voice-egress.md); they are
+not implemented.
 
 ---
 
 ## 7. Non-Switchboard Butler to Switchboard: Registration
 
 **Transport**: MCP client connection for dispatch; backend-network HTTP GET
-from the control-plane observer to each daemon's existing port for liveness
+from the control-plane observer for liveness.
 
 On startup, each non-switchboard butler opens an MCP client to
-`{switchboard_url}/mcp` during daemon startup phase 12 and advertises its
-configured endpoint. Every daemon, including Switchboard, exposes
-`GET /internal/control-plane/identity` on its existing port. Its bounded
-`butler.control.v1` response carries `butler_name`, UUIDv7
-`boot_instance_id`, a server-allocated durable `boot_epoch`, `route_contract` minimum/maximum, and
-`accepting_routes`. The separately supervised Dashboard/control-plane
-observer probes only exact Git-roster host:port/path entries, checks the
-response against expected identity, generation, and compatibility, and
-records DB-server observation time. Switchboard may perform one bounded
-stale-route recheck using the same verifier. Both receivers reserve a shared
-per-daemon probe sequence in the database and conditionally write against the
-latest boot epoch; neither gains owner-auth or administrative-policy authority.
+`{switchboard_url}/mcp` and advertises its configured endpoint; Switchboard
+records it in `switchboard.butler_registry`, which daemon heartbeats keep
+fresh and which routing reads today. Every daemon also serves
+`GET /internal/control-plane/identity` (`butler.control.v1`: name, boot
+UUIDv7, boot epoch, route-contract range, `accepting_routes`), probed by the
+Dashboard's shadow observer. Migration `sw_035` adds
+`switchboard.butler_registry_control_plane`, which keeps administrative
+policy, observed health, and route compatibility apart.
 
-The registry keeps observed health, administrative policy, and route
-compatibility separately. A stale target receives one bounded on-demand
-probe before a typed `not_attempted` refusal. A healthy probe or restart never
-clears administrative quarantine. The old dashboard heartbeat POST is retired
-after cutover; owner auth does not make it anonymous. This is an approved
-target contract, not a claim that the current runtime has cut over.
-
-L3's separate Switchboard-owned internal route preflight chooses the fixed
-domain target from Git roster and traverses the pure production resolver,
-then performs only a bounded identity GET. It makes no target MCP call or
-durable evidence write and returns a content-blind result to the Dashboard
-controller. Q4's public `/ready` reads the controller's cached result without
-calling Switchboard per request; k3s and Compose consume the one Q4-owned
-route and owner-auth exception. A positive preflight does not certify target
-inbox acceptance.
-
-### L1 registry representation and rollback
-
-Switchboard migration `sw_035` adds
-`switchboard.butler_registry_control_plane` beside the existing registry.
-It stores administrative policy and its provenance separately from observed
-health, route compatibility, the latest committed boot UUID/epoch, reserved and
-recorded probe sequences, last probe attempt, and last verified healthy time.
-The migration copies original legacy quarantine fields and the matching
-eligibility-log receipt into `legacy_evidence`. A matching TTL transition
-becomes stale observation; a matching owner transition becomes restrictive
-policy. Missing or contradictory evidence becomes `review_required`, never
-an inferred owner release. The same classification applies to legacy manual
-and TTL-derived `stale` rows.
-
-The new table has runtime RLS with no direct write policy, including after an
-`init-db.sql` grant replay. Fixed `public.register_butler_boot`,
-`reserve_butler_probe`, and `record_butler_probe` operations allocate epochs
-and sequences under database locks and stamp attempts with database time.
-An immutable `butler_boot_registrations` ledger binds each boot UUID to its
-original epoch: a lost-response retry of the current UUID returns that epoch,
-while an older UUID cannot register again after a successor. The ledger,
-latest epoch, and its runtime RLS fence survive downgrade and bootstrap replay.
-New legacy registry inserts initialize an unknown control row without
-claiming health or releasing a retained policy for a reused name.
-`public.set_butler_registry_policy` is reserved for the authenticated owner
-API's database login; the Switchboard runtime role cannot invoke it. A legacy
-registry trigger retains `eligibility_state='quarantined'` for paused,
-quarantined, or review-required policy despite automatic registrations, sweeps,
-heartbeat writes, or confirmed-route touches. A failed probe advances its
-attempt/failure state without advancing `healthy_observed_at`.
-The existing eligibility endpoint accepts explicit `paused` and
-`review_required`; its older operator `stale` request means a manual pause
-and maps to `paused` policy. Its response reports the actual restrictive
-legacy `quarantined` projection, not an invented receiver-stale observation.
-
-L1 does not switch route authority. The legacy writers still include the
-`register_butler` upsert, `run_eligibility_sweep`,
-`_reconcile_eligibility_state`, the heartbeat API, and routing's
-confirmed-success touch; only the owner eligibility API now writes protected
-policy. `resolve_routing_target`, `list_butlers`, the Switchboard registry
-API, the Dashboard butler status read, and the QA heartbeat view still consume
-the legacy registry/projection. L3 must audit and move each reader and writer
-before cutover; L4 retires the heartbeat writer. On code rollback,
-disable any new observer first and retain the `sw_035` table, RLS, trigger,
-functions, provenance and highest boot epoch; its Alembic downgrade is
-intentionally non-destructive. An operator must release a restrictive policy
-through the authenticated eligibility action, never by editing the old
-`eligibility_state` column. Do not drop the new representation while a
-reader, rollback path, or old-process fence still relies on it.
+The staged cutover (L1-L4), rollback rules, and the `/ready` contract are in
+the [control-plane design](../../openspec/changes/restore-butler-control-plane-liveness/design.md).
 
 ---
 
