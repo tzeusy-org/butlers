@@ -72,9 +72,13 @@ public.source_channel_catalog (
     updated_at    timestamptz NOT NULL,
     PRIMARY KEY (channel, provider),
     CHECK (channel ~ '^[a-z][a-z0-9_]{0,63}$'),
-    CHECK (provider ~ '^[a-z][a-z0-9_]{0,63}$')
+    CHECK (provider ~ '^[a-z][a-z0-9_-]{0,63}$')
 )
 ```
+
+Channel tokens retain underscore-only separators; provider tokens also permit hyphens to preserve
+the existing `voice/live-listener` pair exactly. Both tokens remain lowercase ASCII, begin with a
+letter, and are bounded to 64 characters. Syntax alone grants no pair admission.
 
 Registration is migration-only for this move: the migration owner writes and Switchboard alone
 receives runtime `SELECT`. Connector, butler, Messenger, and dashboard runtime roles receive no

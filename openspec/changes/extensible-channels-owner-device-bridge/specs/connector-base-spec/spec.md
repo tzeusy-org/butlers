@@ -13,7 +13,7 @@ Scope: v1-mandatory
 
 #### Scenario: Source identity (IngestSourceV1)
 - **WHEN** `source` is populated
-- **THEN** before catalog enforcement cutover, `channel` and `provider` SHALL belong to the respective projections of RFC 0033 `LEGACY_SOURCE_PAIRS_V1`; after cutover, both are canonical strings matching lowercase ASCII `[a-z][a-z0-9_]{0,63}`
+- **THEN** before catalog enforcement cutover, `channel` and `provider` SHALL belong to the respective projections of RFC 0033 `LEGACY_SOURCE_PAIRS_V1`; after cutover, `channel` SHALL match lowercase ASCII `[a-z][a-z0-9_]{0,63}` and `provider` SHALL match lowercase ASCII `[a-z][a-z0-9_-]{0,63}`, preserving `voice/live-listener` without renaming either token
 - **AND** `endpoint_identity` remains a non-empty string uniquely identifying the connector instance in both stages
 - Historical baseline wording, retained as non-operative provenance after adoption: `channel` is a `SourceChannel` enum value (`telegram`, `slack`, `email`, `api`, `mcp`, `voice`, `google_calendar`, `dashboard`, `owntracks`, `home_assistant`, `google_drive`), `provider` is a `SourceProvider` enum value (`telegram`, `slack`, `gmail`, `imap`, `internal`, `live-listener`, `google_calendar`, `owntracks`, `home_assistant`, `google_drive`), and `endpoint_identity` is a non-empty string uniquely identifying the connector instance (e.g., `"gmail:user:alice@gmail.com"`, `"telegram:bot:mybot"`, `"live-listener:mic:kitchen"`, `"google_calendar:user:work@gmail.com"`, `"dashboard:web:{conversation_id}"`, `"owntracks:ab"`, `"home_assistant:ha-host:8123"`, `"google_drive:user:alice@gmail.com"`)
 

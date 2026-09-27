@@ -31,8 +31,8 @@ Scope: v1-mandatory
 - **AND** no connector heartbeat, startup declaration, or accepted envelope SHALL create or enable a pair
 
 ### Requirement: Bounded Syntax and Authoritative Pair Validation
-Channel and provider tokens SHALL match lowercase ASCII `[a-z][a-z0-9_]{0,63}` before semantic
-validation. Switchboard SHALL validate the exact enabled pair against one atomically loaded catalog
+Channel tokens SHALL match lowercase ASCII `[a-z][a-z0-9_]{0,63}` and provider tokens SHALL match
+lowercase ASCII `[a-z][a-z0-9_-]{0,63}` before semantic validation. Switchboard SHALL validate the exact enabled pair against one atomically loaded catalog
 snapshot before deduplication or persistence and SHALL return a bounded machine-readable rejection
 without echoing payload, sender, recipient, credential, or provider-response content.
 
@@ -44,6 +44,12 @@ Scope: v1-mandatory
 - **WHEN** a channel or provider token is empty, longer than 64 characters, mixed-case, or contains a character outside the canonical syntax
 - **THEN** Switchboard SHALL reject the envelope with `error_code="invalid_source_syntax"`
 - **AND** it SHALL perform no deduplication or event persistence
+
+#### Scenario: Legacy hyphenated provider survives every rollout stage
+- **WHEN** the exact legacy pair `voice/live-listener` is seeded or validated before or after catalog enforcement cutover
+- **THEN** its unchanged channel and provider tokens SHALL satisfy the catalog constraints and wire syntax
+- **AND** the complete legacy tuple set SHALL pass both syntax checks as well as the set-equality guard
+- **AND** a syntactically valid hyphenated provider SHALL still require an exact enabled catalog pair after cutover
 
 #### Scenario: Unknown or mismatched pair fails closed
 - **WHEN** both tokens are syntactically valid but their exact pair is absent or disabled in the authoritative snapshot

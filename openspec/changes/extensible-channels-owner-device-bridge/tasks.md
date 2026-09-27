@@ -8,7 +8,7 @@
 ## 2. Catalog Representation and Grants
 
 - [ ] 2.1 Add an additive core migration for `public.source_channel_catalog` with bounded token checks, exact pair uniqueness, enablement, timestamps, and migration-only write ownership.
-- [ ] 2.2 Seed exactly RFC 0033 `LEGACY_SOURCE_PAIRS_V1` and add a fail-closed set-equality check against both runtime Literal projections and the full static pair matrix before propagation or enforcement; include equal-cardinality missing/extra substitution failures.
+- [ ] 2.2 Seed exactly RFC 0033 `LEGACY_SOURCE_PAIRS_V1` and add a fail-closed set-equality check against both runtime Literal projections and the full static pair matrix before propagation or enforcement; include equal-cardinality missing/extra substitution failures and prove every tuple satisfies the catalog constraints and wire syntax, including unchanged `voice/live-listener`.
 - [ ] 2.3 Add real-PostgreSQL migration tests proving complete/idempotent seeding, constraints, Switchboard-only runtime SELECT, denial of direct SELECT and every write privilege to connector/butler/Messenger/dashboard runtime roles, and non-destructive downgrade refusal where catalog-only dependencies remain.
 
 ## 3. Catalog Validation, Cache, and Read Surface
