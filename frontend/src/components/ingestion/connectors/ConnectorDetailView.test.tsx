@@ -31,6 +31,7 @@ import type {
 import { ConnectorDetailView } from './ConnectorDetailView'
 import type { ConnectorRecovery } from './connector-auth'
 import { ReauthCallout } from './ReauthCallout'
+import { stateColorVar } from '@/lib/visual-token-roles'
 import type { OAuthScope } from './ScopeList'
 
 // ---------------------------------------------------------------------------
@@ -352,7 +353,7 @@ describe('AC4: ReauthCallout appears when auth is broken/expired', () => {
   })
 })
 
-describe('ReauthCallout non-reauth states', () => {
+describe('ReauthCallout state presentation', () => {
   let container: HTMLDivElement
   let root: Root
 
@@ -360,6 +361,35 @@ describe('ReauthCallout non-reauth states', () => {
     ;({ container, root } = makeRoot())
   })
   afterEach(() => cleanup(root, container))
+
+  it.each([
+    ['needs_reauth', 'error', 'reauth required'],
+    ['expiring', 'degraded', 'expiring soon'],
+    ['needs_primary_account', 'degraded', 'no primary account'],
+  ] as const)('uses one registry-resolved state signal for %s', (authStatus, state, label) => {
+    act(() => {
+      root.render(
+        <ReauthCallout
+          authStatus={authStatus}
+          authNote="operator attention needed"
+          connectorType="gmail"
+        />,
+      )
+    })
+
+    const callout = container.querySelector<HTMLElement>('[data-testid="reauth-callout"]')!
+    const dots = callout.querySelectorAll<HTMLElement>('[role="img"]')
+    expect(dots).toHaveLength(1)
+    expect(dots[0].style.backgroundColor).toBe(stateColorVar(state))
+    expect(callout.classList.contains('border-border')).toBe(true)
+    const statusLabel = Array.from(callout.querySelectorAll('span'))
+      .find((span) => span.textContent === label)!
+    expect(statusLabel.classList.contains('text-muted-foreground')).toBe(true)
+    // The dot is the sole state color; surrounding copy and chrome stay neutral.
+    const supportingUi = callout.cloneNode(true) as HTMLElement
+    supportingUi.querySelector('[role="img"]')!.remove()
+    expect(supportingUi.outerHTML).not.toMatch(/var\(--(?:red|amber|green)(?:-text)?\)/)
+  })
 
   it.each(['expiring', 'needs_primary_account'] as const)(
     'does not render a recovery action for %s',

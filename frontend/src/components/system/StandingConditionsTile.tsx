@@ -551,7 +551,7 @@ export function StandingConditionsTile() {
   return (
     <TileFrame
       testId="standing-conditions-content"
-      degraded={infraQuery.isError || ownerQuery.isError || suppressionCountsError}
+      degraded={!infraAvailable || !ownerAvailable || suppressionCountsError}
     >
       {!infraAvailable ? (
         <SourceDegradedNote
