@@ -80,7 +80,7 @@ function ConnectorErrorBanner({ code }: { code: string }) {
     <div
       role="alert"
       data-testid="connector-error-banner"
-      className="mb-3 text-xs text-muted-foreground"
+      className="mb-3 text-xs text-foreground"
     >
       {formatConnectorError(code)}
     </div>
