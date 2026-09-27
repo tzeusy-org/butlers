@@ -459,7 +459,7 @@ Response field shapes MUST be the following per-tab shapes:
 
 When a metadata field referenced above is absent from a fact's JSONB, the response value MUST be `null` (not omitted; not a default). Clients MUST be able to render rows with missing metadata fields without errors.
 
-These five endpoints read the shared `facts` table under `scope='relationship'`. `relationship.entity_facts` (see `relationship-facts`) is the canonical entity triple store; the entity-redesign endpoints read it directly, and these five endpoints SHALL be re-pointed to it at the read-path cut-over.
+These five endpoints read the shared `facts` table under `scope='relationship'`. The entity-redesign endpoints read `relationship.entity_facts` (see `relationship-facts`) directly.
 
 #### Scenario: Notes endpoint returns facts for entity
 

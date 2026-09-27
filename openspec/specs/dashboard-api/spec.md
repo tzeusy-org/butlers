@@ -583,7 +583,7 @@ material exists.
   recovery surface
 
 ### Requirement: Secrets Mutation Endpoints
-The `/api/secrets/*` namespace SHALL expose mutation endpoints for every action the passport page can dispatch. Every mutation SHALL write to `public.audit_log` (see `core-credentials` Audit Action Enum requirement) with an appropriate action value.
+The `/api/secrets/*` namespace SHALL expose mutation endpoints for every action the passport page can dispatch. Every mutation SHALL write to `public.audit_log` (see `core-credentials` "Audit Action Vocabulary for Credential Lifecycle") with an appropriate action value.
 
 #### Scenario: User credential mutations
 - **WHEN** `POST /api/secrets/user/<provider>/reauthorize?identity=<uuid>` is called
