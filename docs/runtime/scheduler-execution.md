@@ -120,6 +120,18 @@ psql -h localhost -U butlers -d butlers -c \
 
 ## Implementation Notes
 
+- `sw_038` supplies `public.qa_local_schedule_policy()` for QA's separately
+  wired scheduler consumer. It accepts no arguments, requires effective
+  `SET ROLE butler_qa_rw`, and returns only `policy_state` and
+  `policy_provenance` for `qa`. The role-less audit pool is not an authorized
+  caller. SQLSTATE `42501` is denied, `P0002` is missing policy, and `22023`
+  is malformed policy; transport/function absence is unavailable. Consumers
+  must suppress new admission on these outcomes, never reuse cached `active`.
+  The migration retains the function and ACL on downgrade because migration
+  state cannot prove that all readers were retired. Remove it only after a
+  separately reviewed replacement; policy rows and owner holds are unchanged.
+  Installing this producer does not wire or activate the QA consumer.
+
 - `job_args` JSONB can round-trip through asyncpg as a JSON string: serialize dicts explicitly on
   write and normalize back to dicts before diffing, validation merges, list responses or dispatch.
 - Scheduler context must match across the background loop, the `tick` tool and

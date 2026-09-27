@@ -1373,6 +1373,129 @@ def test_legacy_read_path_ttl_receipt_reclassification_preserves_owner_holds(
     asyncio.run(assert_repair())
 
 
+async def _assert_qa_policy_fence(pool: asyncpg.Pool) -> None:
+    """REQ-staffer-qa-009: the definer must not inherit audit-login authority."""
+    query = "SELECT * FROM public.qa_local_schedule_policy()"
+    roles = await pool.fetch(
+        "SELECT rolname, has_function_privilege(oid, "
+        "'public.qa_local_schedule_policy()', 'EXECUTE') AS can_execute "
+        "FROM pg_roles WHERE rolname ~ '^butler_.*_rw$'"
+    )
+    assert roles
+    assert {row["rolname"] for row in roles if row["can_execute"]} == {"butler_qa_rw"}
+    for role in ("butler_finance_rw", "butler_switchboard_rw"):
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await _as_role(pool, role, query)
+    with pytest.raises(asyncpg.InsufficientPrivilegeError, match="qa_policy_denied"):
+        await pool.fetch(query)
+    with pytest.raises(asyncpg.InsufficientPrivilegeError):
+        await _as_role(
+            pool,
+            "butler_qa_rw",
+            "SELECT policy_state FROM switchboard.butler_registry_control_plane",
+        )
+    async with pool.acquire() as conn:
+        await conn.execute('SET ROLE "butler_qa_rw"')
+        try:
+            rows = await conn.fetch(query)
+            assert [dict(row) for row in rows] == [
+                {"policy_state": "quarantined", "policy_provenance": "operator"}
+            ]
+            with pytest.raises(asyncpg.UndefinedFunctionError):
+                await conn.fetch("SELECT * FROM public.qa_local_schedule_policy('health')")
+        finally:
+            await conn.execute("RESET ROLE")
+    assert await pool.fetchval("SELECT current_setting('role')") == "none"
+    # PUBLIC is a pseudo-role, so inspect the actual function ACL's public entry.
+    assert not await pool.fetchval(
+        "SELECT EXISTS (SELECT 1 FROM pg_proc p, "
+        "LATERAL aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) a "
+        "WHERE p.oid = 'public.qa_local_schedule_policy()'::regprocedure "
+        "AND a.grantee = 0 AND a.privilege_type = 'EXECUTE')"
+    )
+
+
+async def _assert_qa_policy_results(pool: asyncpg.Pool) -> None:
+    query = "SELECT * FROM public.qa_local_schedule_policy()"
+    pairs = [("active", p) for p in ("none", "legacy_ttl", "operator")]
+    pairs += [(s, p) for s in ("paused", "quarantined") for p in ("legacy_operator", "operator")]
+    pairs += [("review_required", p) for p in ("legacy_ambiguous", "operator")]
+    async with pool.acquire() as reader, pool.acquire() as writer:
+        await reader.execute('SET ROLE "butler_qa_rw"')
+        try:
+            for state, provenance in pairs:
+                # A distinct connection commits each change before the next read.
+                await writer.execute(
+                    "UPDATE switchboard.butler_registry_control_plane "
+                    "SET policy_state=$1, policy_provenance=$2 WHERE name='qa'",
+                    state,
+                    provenance,
+                )
+                assert dict(await reader.fetchrow(query)) == {
+                    "policy_state": state,
+                    "policy_provenance": provenance,
+                }
+            # Simulate damaged storage in a rolled-back transaction: enum validation
+            # must be performed by the read seam, not credited to a table CHECK.
+            with pytest.raises(asyncpg.InvalidParameterValueError, match="qa_policy_malformed"):
+                async with writer.transaction():
+                    constraints = await writer.fetch(
+                        "SELECT conname FROM pg_constraint WHERE conrelid = "
+                        "'switchboard.butler_registry_control_plane'::regclass "
+                        "AND contype='c' AND pg_get_constraintdef(oid) LIKE '%policy_state%'"
+                    )
+                    assert constraints
+                    for constraint in constraints:
+                        quoted = '"' + constraint["conname"].replace('"', '""') + '"'
+                        await writer.execute(
+                            "ALTER TABLE switchboard.butler_registry_control_plane "
+                            f"DROP CONSTRAINT {quoted}"
+                        )
+                    await writer.execute(
+                        "UPDATE switchboard.butler_registry_control_plane "
+                        "SET policy_state='invalid' WHERE name='qa'"
+                    )
+                    await writer.execute('SET LOCAL ROLE "butler_qa_rw"')
+                    await writer.fetch(query)
+            assert await writer.fetchval("SELECT current_setting('role')") == "none"
+            async with writer.transaction():
+                await writer.execute(
+                    "UPDATE switchboard.butler_registry_control_plane "
+                    "SET policy_state='paused', policy_provenance='none' WHERE name='qa'"
+                )
+            with pytest.raises(asyncpg.InvalidParameterValueError, match="qa_policy_malformed"):
+                await reader.fetch(query)
+            async with writer.transaction():
+                await writer.execute(
+                    "DELETE FROM switchboard.butler_registry_control_plane WHERE name='qa'"
+                )
+            with pytest.raises(asyncpg.NoDataFoundError, match="qa_policy_missing"):
+                await reader.fetch(query)
+            await writer.execute(
+                "INSERT INTO switchboard.butler_registry_control_plane "
+                "(name, policy_state, policy_provenance) VALUES ('qa','quarantined','operator')"
+            )
+            # Cancellation while the read waits for a table lock must not pin SET ROLE.
+            async with writer.transaction():
+                await writer.execute(
+                    "LOCK switchboard.butler_registry_control_plane IN ACCESS EXCLUSIVE MODE"
+                )
+                started = asyncio.Event()
+
+                async def blocked_read():
+                    started.set()
+                    await reader.fetch(query)
+
+                task = asyncio.create_task(blocked_read())
+                await started.wait()
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+        finally:
+            await reader.execute("RESET ROLE")
+        assert await reader.fetchval("SELECT current_setting('role')") == "none"
+
+
 def test_registry_policy_rls_survives_bootstrap_grant_replay(postgres_container) -> None:
     db_name = migration_db_name()
     db_url = create_migrated_test_db(
@@ -1383,7 +1506,7 @@ def test_registry_policy_rls_survives_bootstrap_grant_replay(postgres_container)
     )
 
     async def seed() -> None:
-        p = await asyncpg.create_pool(db_url, min_size=1, max_size=1)
+        p = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
         try:
             await p.execute(
                 "INSERT INTO switchboard.butler_registry (name, endpoint_url) "
@@ -1395,6 +1518,12 @@ def test_registry_policy_rls_survives_bootstrap_grant_replay(postgres_container)
                 )
                 == "quarantined"
             )
+            await p.execute(
+                "INSERT INTO switchboard.butler_registry (name, endpoint_url) "
+                "VALUES ('qa', 'http://qa:41100/mcp')"
+            )
+            await _assert_qa_policy_results(p)
+            await _assert_qa_policy_fence(p)
         finally:
             await p.close()
 
@@ -1455,9 +1584,20 @@ def test_registry_policy_rls_survives_bootstrap_grant_replay(postgres_container)
                 )
                 == "quarantined"
             )
+            await _assert_qa_policy_fence(p)
         finally:
             await p.close()
 
+    asyncio.run(assert_fence())
+
+    from alembic import command
+    from butlers.migrations import _build_alembic_config
+
+    config = _build_alembic_config(db_url, chains=["switchboard"], target_schema="switchboard")
+    # Retain the read seam and its privileges while a consumer may still exist.
+    command.downgrade(config, "switchboard@sw_037")
+    asyncio.run(assert_fence())
+    command.upgrade(config, "switchboard@sw_038")
     asyncio.run(assert_fence())
 
 

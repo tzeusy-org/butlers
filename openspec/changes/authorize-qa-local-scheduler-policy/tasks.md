@@ -13,13 +13,13 @@
 
 ## 1. Future Switchboard producer: bu-ch4p1v
 
-- [ ] 1.1 Implement a no-argument, fixed-QA, Switchboard-owned read
+- [x] 1.1 Implement a no-argument, fixed-QA, Switchboard-owned read
   projection with exact effective-role verification, fixed search path,
   enum/pair validation, and typed missing/malformed/denied results.
-- [ ] 1.2 Revoke PUBLIC function EXECUTE, grant only the QA runtime role, and
+- [x] 1.2 Revoke PUBLIC function EXECUTE, grant only the QA runtime role, and
   retain Switchboard table RLS without QA table SELECT or broad schema
   access. Verify migration and `init-db.sql` replay on real PostgreSQL.
-- [ ] 1.3 Verify concurrent owner-policy changes, direct other-role and
+- [x] 1.3 Verify concurrent owner-policy changes, direct other-role and
   migration-login denial, role reset on success/error/cancellation, and
   non-destructive rollback. Keep Switchboard's own sweep on its existing role.
 
