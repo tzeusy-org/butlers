@@ -289,6 +289,12 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 scripts/check_archived_requirements_landed.py
 
+      # Owner-email guard: the repo stays user-agnostic, so no tracked file may
+      # carry the owner's personal addresses (matched by local-part hash).
+      - name: Check no owner email addresses are tracked
+        if: ${{ !cancelled() }}
+        run: python3 scripts/check_owner_emails.py
+
       # Countable-tasks guard (bu-h7igs): `openspec archive`'s incomplete-task
       # gate counts markdown checkbox lines only. A tasks.md written as `### N.`
       # sections with per-task acceptance bullets -- richer than most checkbox files

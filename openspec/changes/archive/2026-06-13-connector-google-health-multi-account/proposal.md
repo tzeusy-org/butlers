@@ -5,8 +5,8 @@
 The Google Health connector currently polls only the row in `public.google_accounts` where `is_primary = true`. In practice, owners often connect multiple Google accounts and the recent Fitbit→Google Health Connect sync targets whichever account the device is linked to — not necessarily the one tagged primary.
 
 Concretely, in this environment:
-- `uniquosity@gmail.com` (primary) has 245 historical sleep dataPoints with the most recent end_time of `2025-07-29`.
-- `tzeuse@gmail.com` (secondary, also has all three `googlehealth.*` scopes) has a live stream through `2026-05-24`.
+- `owner@example.com` (primary) has 245 historical sleep dataPoints with the most recent end_time of `2025-07-29`.
+- `owner.secondary@example.com` (secondary, also has all three `googlehealth.*` scopes) has a live stream through `2026-05-24`.
 
 The connector polls primary only, so the live data never lands. The connector reports `healthy` because polls succeed — they just come back empty for the configured window.
 

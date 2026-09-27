@@ -778,7 +778,7 @@ class TestOwnerCrossSchemaFallback:
 class TestNotifySecondaryOwnerChannel:
     """Secondary owner email auto-approves through the generic notify shape."""
 
-    _SECONDARY_OWNER_EMAIL = "tzeuse@gmail.com"
+    _SECONDARY_OWNER_EMAIL = "owner.secondary@example.com"
     _NON_OWNER_EMAIL = "stranger@example.com"
 
     async def test_notify_secondary_owner_email_auto_approves(self) -> None:
