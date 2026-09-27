@@ -144,24 +144,6 @@ only `config`, `ps`, and `logs`; it never accepts `up` or another lifecycle
 verb, so it cannot replace the prepared-launch sequence. Rendered config is a
 read-only inspection artifact, not endpoint validation.
 
-## dev.sh
-
-Bootstraps the full local Butlers development stack in `tmux` (dashboard, frontend, connectors, backend, OAuth gate, and postgres preflight).
-
-Contacts sync contract: contacts incremental sync is a module-internal poller
-inside `uv run butlers up`. `dev.sh` does not launch a standalone contacts
-connector process.
-
-### Usage
-
-```bash
-# Preferred compatibility entrypoint
-./dev.sh
-
-# Direct script path
-./scripts/dev.sh
-```
-
 ## clear-processes.sh
 
 Kills processes currently listening on the expected local dev ports.
