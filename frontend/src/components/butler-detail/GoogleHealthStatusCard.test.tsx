@@ -260,7 +260,8 @@ describe("GoogleHealthStatusCard — connector-failing (degraded) signal", () =>
     renderCard(errored);
     const banner = screen.getByTestId("connector-error-banner");
     expect(banner.textContent).toContain("unavailable");
-    expect(banner.className).toContain("text-muted-foreground");
+    expect(banner.className).toContain("text-foreground");
+    expect(banner.className).not.toContain("text-muted-foreground");
     expect(banner.className).not.toMatch(/var\(--(?:red|amber)/);
     expect(banner.className).not.toContain("oklch(");
   });

@@ -541,6 +541,11 @@ describe("Health single signals", () => {
     expect(mark.style.backgroundColor).toBe(expiring ? "var(--red)" : "var(--amber)");
     const signals = [banner, ...banner.querySelectorAll("*")].filter(el => /var\(--(?:red|amber|green)(?:-text)?\)/.test(el.getAttribute("style") ?? ""));
     expect(signals).toEqual([mark]);
+    const warning = [...banner.querySelectorAll<HTMLElement>("span")].find(el =>
+      el.textContent?.includes(expiring ? "about to expire" : "consent expires every 7 days"),
+    );
+    expect(warning).toBeDefined();
+    expect(warning!.style.color).toBe("var(--fg)");
     expect(banner.querySelector("a")?.getAttribute("href")).toContain("scope_set=health");
     expect(banner.querySelector("a")?.textContent).toContain("re-consent");
   });

@@ -894,7 +894,7 @@ function TestModeExpiryBanner({
       <StateDot state={isExpiring ? "error" : "degraded"} className="mt-1"
         aria-label={isExpiring ? "Google Health consent: about to expire" : "Google Health consent: test mode"} />
       <div className="flex flex-col gap-1 min-w-0">
-        <Mono size={10} color="var(--mfg)">{label}</Mono>
+        <Mono size={10} color="var(--fg)">{label}</Mono>
         <a
           href={reconsentUrl}
           data-testid="test-mode-reconsent-link"
