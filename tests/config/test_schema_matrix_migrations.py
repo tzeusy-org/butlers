@@ -110,7 +110,6 @@ CHAIN_TABLES: dict[str, set[str]] = {
     },
     # contacts_source_accounts dropped by contacts_002 (verified-dead feature table)
     "contacts": {"contacts_source_links", "contacts_sync_state"},
-    "mailbox": {"mailbox"},
     "education": {
         "mind_maps",
         "mind_map_nodes",

@@ -47,7 +47,6 @@ from butlers.tools.switchboard.routing.contracts import (
 from butlers.tools.switchboard.routing.route import (
     _call_butler_tool,
     _log_routing,
-    post_mail,
     route,
 )
 from butlers.tools.switchboard.routing.telemetry import (
@@ -83,7 +82,6 @@ __all__ = [
     "parse_ingest_envelope",
     "parse_notify_request",
     "parse_route_envelope",
-    "post_mail",
     "register_butler",
     "reset_switchboard_telemetry_for_tests",
     "resolve_routing_target",

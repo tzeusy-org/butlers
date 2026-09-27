@@ -167,7 +167,6 @@ tests/daemon/test_startup_coverage_gaps.py
 tests/daemon/test_startup_guard.py
 tests/dashboard/test_briefing_attention_contract.py
 tests/features/test_skills_validation.py
-tests/integration/test_mailbox_module.py
 tests/jobs/test_commitment_escalation.py
 tests/jobs/test_deploy_drift.py
 tests/jobs/test_flight_status.py

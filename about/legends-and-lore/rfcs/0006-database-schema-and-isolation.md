@@ -82,7 +82,6 @@ Module-specific tables are added by module migration chains (see below). Example
 - **Memory module:** `episodes`, `facts`, `rules`, `entities`, `predicate_registry`, `consolidation_state`, and others (25+ revisions).
 - **Approvals module:** `approval_actions`, `approval_rules`, `approval_events` (3+ revisions).
 - **Contacts module:** `contacts_sync` and related tables (2+ revisions).
-- **Mailbox module:** `mailbox` (1+ revision).
 
 ### Cross-Butler Identity Tables (in `public`)
 

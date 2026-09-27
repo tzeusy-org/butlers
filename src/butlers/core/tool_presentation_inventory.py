@@ -227,11 +227,6 @@ TOOL_PRESENTATION_INVENTORY = (
         "health_vo2_max_latest",
     ),
     *_declare(
-        "mailbox",
-        "mail",
-        "mailbox_list mailbox_post mailbox_read mailbox_stats mailbox_update_status",
-    ),
-    *_declare(
         "memory",
         "core",
         "memory_confirm memory_context memory_get memory_recall memory_search memory_store_episode "
@@ -496,7 +491,7 @@ TOOL_PRESENTATION_INVENTORY = (
         "relationship_record_coverage",
     ),
     *_declare("switchboard", "routing", "correct_route list_butlers route"),
-    *_declare("switchboard", "delivery", "deliver post_mail", presentable=False),
+    *_declare("switchboard", "delivery", "deliver", presentable=False),
     *_declare("switchboard", "lifecycle", "connector_disconnect", presentable=False),
     *_declare(
         "switchboard",

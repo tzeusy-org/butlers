@@ -120,7 +120,6 @@ _PREFIX_MAP: list[tuple[str, list[str]]] = [
         ],
     ),
     # --- Modules: mailbox ---
-    ("src/butlers/modules/mailbox/", ["tests/modules/", "tests/integration/"]),
     # --- Modules: metrics ---
     ("src/butlers/modules/metrics/", ["tests/modules/"]),
     # --- Modules: calendar ---

@@ -72,7 +72,7 @@ class SwitchboardModuleConfig(ToolGroupMixin, BaseModel):
 
     Tool groups
     -----------
-    routing : list_butlers, route, post_mail, correct_route, deliver
+    routing : list_butlers, route, correct_route, deliver
     lifecycle : connector_disconnect
     extraction : log_extraction, extraction_log_list, extraction_log_undo
     backfill : create_backfill_job, backfill_pause, backfill_cancel,

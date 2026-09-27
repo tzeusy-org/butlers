@@ -261,7 +261,6 @@ docs/
     approvals.md
     email.md
     telegram.md
-    mailbox.md
     metrics.md
     pipeline.md
     knowledge-base.md

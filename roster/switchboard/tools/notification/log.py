@@ -6,8 +6,8 @@ Valid ``notifications.status`` values (enforced by DB CHECK constraint):
   failed: delivery attempt failed; ``error`` column will be populated
   read:   user has acknowledged/dismissed the notification (set via API)
 
-The default on INSERT is ``'sent'``.  Do not use ``'unread'``: that value
-belongs to the mailbox module, not the notifications table.
+The default on INSERT is ``'sent'``.  Do not use ``'unread'``: it is not a
+valid notifications status.
 """
 
 from __future__ import annotations
