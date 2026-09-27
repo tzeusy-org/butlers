@@ -71,4 +71,3 @@ Scope: v1-mandatory
 #### Scenario: Capture entry and held UI are truthful
 - **WHEN** the owner opens the held lane during a source outage or an unfinished routing attempt
 - **THEN** the UI reports unavailable or held rather than empty or saved and preserves keyboard access without invoking a hidden provider fallback
-
