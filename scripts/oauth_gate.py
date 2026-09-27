@@ -70,7 +70,7 @@ def main() -> None:
                 f"oauth-gate: timed out after {TIMEOUT}s — continuing without Google credentials",
                 file=sys.stderr,
             )
-            # Exit 0 so dependent services still start (matches dev.sh behavior)
+            # Exit 0 so dependent services still start
             sys.exit(0)
 
         if elapsed == 0:

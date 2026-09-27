@@ -24,7 +24,6 @@ Investigate failed butler sessions and connector/runtime issues in the Docker Co
 
 ## Do Not Use
 
-- For tmux-based local `scripts/dev.sh` debugging where the primary surface is pane output rather than Docker Compose containers
 - For production or staging incident response; this skill assumes repo-root `.env.dev` and local compose container names
 - For schema design or migration debugging detached from a concrete runtime or session symptom
 
