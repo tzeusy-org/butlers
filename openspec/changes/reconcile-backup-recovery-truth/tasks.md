@@ -49,7 +49,8 @@
 - [ ] 3.2 Keep one immutable attempt in the existing protected ledger, bind it
   atomically to the exact artifact digest, verified completion time/size,
   manifest/capture, FK, credential, filtered-event, ownership/ACL, cleanup and
-  scope results. Extend `latest_result()` from that same row; never compose an
+  scope results only after verification and the cleanup attempt finish. Persist
+  no preliminary pass. Extend `latest_result()` from that same row; never compose an
   older pass with a newer filesystem artifact. Preserve crash/retry fencing and
   the future multi-executor exclusion gate.
 - [ ] 3.3 Reuse `REQ-core-notify-026` for post-persistence failed-attempt
@@ -75,7 +76,9 @@
 
 - [ ] 5.1 Extend `tests/scripts/test_pg_dump_backup.py` to prove
   schema-qualified FK closure through the exact exported dump snapshot, with
-  both orderings of concurrent FK add/drop and relation create/drop. Derive the
+  both orderings of concurrent FK add/drop and relation create/drop. Witness
+  a compatible FK addition committing during capture and prove both outputs
+  remain snapshot-coherent or publication fails. Derive the
   complete Tier-1/Tier-2 credential-store inventory, prove dump-role visibility,
   and compare source/restored aggregate counts for empty and populated synthetic
   stores plus forced visibility loss, without selecting or printing values.
@@ -99,7 +102,8 @@
   protected-reader unavailable, no attempt, legacy/incomplete binding, newest
   failure after older pass, expired pass, and current exact pass. Assert every
   status/code/scope/nullability combination, precedence, semantic text, and
-  accessible detail.
+  accessible detail, including cleanup failure both before and after verified
+  artifact binding.
 - [ ] 5.6 Plant distinct synthetic sentinels and prove absence from every
   prohibited recovery surface while positively asserting each allowed field
   set. Never inspect real credential or production values.

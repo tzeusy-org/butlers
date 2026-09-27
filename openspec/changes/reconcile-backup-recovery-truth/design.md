@@ -79,9 +79,11 @@ would race to delete each other's clauses.
 The recovery artifact remains a complete, high-sensitivity copy of recoverable
 application state. It includes the authoritative credential-bearing rows needed
 to restart the instance, including each schema's `butler_secrets` and secured
-credential rows in `public.entity_info`. Neither values, keys, row counts, nor
-digests derived from them may enter a manifest, API, UI, audit, attention, log,
-metric, or trace.
+credential rows in `public.entity_info`. Values, keys, per-store row counts,
+and value-derived digests must not enter any manifest, API, UI, audit, attention,
+log, metric, or trace. Only the private recovery manifest may carry the one
+aggregate credential-row count defined in decisions 4 and 5; public surfaces
+must not expose that aggregate.
 
 The artifact is therefore handled as secret material at the deployment/storage
 boundary. This change does not invent encryption keys or claim media encryption.
@@ -104,12 +106,20 @@ finish. Every retained foreign-key child requires its referenced parent in the
 same artifact, or both must share one documented reconstructible-control-plane
 omission. A matching unqualified relation name is never evidence.
 
-A DDL change committed before snapshot acquisition appears in both outputs. An
-`ALTER TABLE`, foreign-key add/drop, or relation drop that arrives after locks
-waits until publication. A new relation committed after snapshot acquisition is
-absent from both outputs. If catalog identity changes, a lock cannot be
-acquired, or the recheck differs, no final pair is published. Real-PostgreSQL
-tests force both orders for foreign-key add/drop and relation create/drop.
+A DDL change committed before snapshot acquisition appears in both outputs. DDL requiring a lock that conflicts with `ACCESS SHARE` waits until capture
+ends. `ADD FOREIGN KEY` uses compatible `SHARE ROW EXCLUSIVE` locks and may
+commit during capture; the producer must not depend on it waiting. Compatible
+post-snapshot DDL, including newly created relations, must be absent from both
+snapshot-bound outputs, or the capture must fail without publishing a pair.
+If catalog identity changes, a lock cannot be acquired, or the recheck differs,
+no final pair is published. Real-PostgreSQL tests force both orders for
+foreign-key add/drop and relation create/drop, including a witnessed foreign-key
+addition committed during capture.
+
+This lock distinction follows the PostgreSQL table-lock compatibility matrix
+and `ALTER TABLE ... ADD FOREIGN KEY` contract; `pg_dump --snapshot` binds the
+dump to the exported snapshot, and implementation tests must prove the complete
+producer protocol rather than assume catalog coherence from lock acquisition.
 
 The existing bidirectional fenced-object check remains necessary but is not
 sufficient: it proves privilege/exclusion agreement, while this boundary proves
@@ -193,6 +203,12 @@ join, but must never combine the row with whichever filesystem artifact is
 newest. Public audit is telemetry and attention is a failure signal, never
 authority.
 
+The same attempt completes all verification and attempts target destruction
+before inserting its terminal protected row. A cleanup failure is included in
+that immutable terminal result; no preliminary pass is persisted and later
+upgraded or repaired. A crash before terminal persistence leaves no authoritative
+row and therefore cannot establish recovery proof.
+
 The single executor serializes scratch lifecycle. Repeating an artifact
 recomputes verification and creates a distinct immutable attempt. A pre-commit
 crash leaves no row, a post-commit crash leaves one complete row, and retries
@@ -227,7 +243,8 @@ the cross-process guard in `REQ-deployment-hardening-007`.
 | artifact/manifest binding failed | `failed` | row time | null | null | exact binding/capture code |
 | bound FK/credential visibility failed before restore | `failed` | row time | both non-null | null | exact coverage code |
 | bound restore or scoped check failed | `failed` | row time | both non-null | highest completed scope or null | exact stage code |
-| cleanup failed | `failed` | row time | both non-null | highest completed scope below `full_recovery` | `cleanup_failed` |
+| cleanup failed before verified binding | `failed` | row time | null | null | `cleanup_failed` |
+| cleanup failed after verified binding | `failed` | row time | both non-null | highest completed scope below `full_recovery` | `cleanup_failed` |
 | newest complete pass outside cadence | `stale` | row time | both non-null | `full_recovery` | `proof_stale` |
 | newest complete pass inside cadence | `proven` | row time | both non-null | `full_recovery` | null |
 
@@ -239,7 +256,10 @@ identity, FK closure, credential coverage, filtered-event scope, ownership/ACL,
 and cleanup passes. The newest authoritative row wins: a new failure outranks an
 older pass, and no field comes from another row or a newer filesystem artifact.
 Within one row, cleanup failure is terminal; otherwise the first failed ordered
-stage selects its exact code. Artifact/manifest binding failures expose no
+stage selects its exact code. Cleanup cannot establish artifact binding: if it
+fails after an artifact/manifest binding failure, artifact facts and scope stay
+null. After successful binding, cleanup failure retains only the bound facts
+and highest completed scope below `full_recovery`. Artifact/manifest binding failures expose no
 artifact facts; pre-restore coverage failures expose bound facts with null
 scope; restore failure has null scope; a filtered-event failure has
 `application_data`; a credential-count failure has `application_data` unless

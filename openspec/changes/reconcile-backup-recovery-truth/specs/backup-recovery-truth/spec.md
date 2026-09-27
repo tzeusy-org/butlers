@@ -45,8 +45,11 @@ Scope: v1-mandatory
 - **WHEN** a foreign-key add/drop or relation create/drop races backup capture
 - **THEN** DDL committed before snapshot acquisition appears in both graph and
   dump, while conflicting DDL after relation locking waits until capture ends
-- **AND** a post-snapshot new relation is absent from both outputs, and any
-  changed identity, failed lock, or inconsistent recheck publishes no pair
+- **AND** compatible post-snapshot DDL, including a foreign-key addition or new
+  relation, may commit during capture but is absent from both snapshot-bound
+  outputs or causes capture to fail without publishing a pair
+- **AND** any changed identity, failed lock, or inconsistent recheck publishes
+  no pair
 
 #### Scenario: Credential aggregates match after restore
 
@@ -79,8 +82,10 @@ The recovery artifact SHALL retain the ownership and ACL intent required to
 reconstruct its database objects. A restore SHALL be called recovery-ready only
 when the same protected attempt creates a disposable target isolated from the
 live database, runs managed trusted bootstrap there, restores the exact
-artifact, verifies the complete ownership/privilege policy, and durably records
-that scoped result beside the artifact binding before destroying the target.
+artifact, verifies the complete ownership/privilege policy, and attempts target
+destruction. Only after cleanup succeeds or fails SHALL it durably record that
+scoped result and the cleanup outcome beside the artifact binding in the one
+immutable terminal attempt row; no preliminary recovery pass may be persisted.
 
 ID: REQ-backup-recovery-truth-002
 Source: Non-Negotiable Rules 1 and 4; RFC 0006 Database Connection Scoping; restore-drill-recovery-truthfulness REQ-database-security-006; proposed artifact-bound-filtered-event-restore-verification REQ-database-security-011
@@ -291,9 +296,19 @@ Scope: v1-mandatory
   when filtered-event verification passed before a later credential-count or
   ownership/ACL failure
 
+#### Scenario: Cleanup failure before verified binding preserves absent facts
+
+- **WHEN** target cleanup fails before exact artifact/manifest binding succeeds,
+  including after a malformed manifest or another binding failure
+- **THEN** status is `failed`, failure code is `cleanup_failed`, and attempted
+  time is non-null while artifact completion time, artifact size, and scope
+  remain null
+- **AND** cleanup failure takes precedence over the earlier failure code but
+  cannot manufacture artifact facts from filesystem or partial manifest data
+
 #### Scenario: Cleanup failure overrides a prior passing stage
 
-- **WHEN** target cleanup fails after one or more verification stages complete
+- **WHEN** target cleanup fails after exact artifact/manifest binding succeeds
 - **THEN** status is `failed`, failure code is `cleanup_failed`, attempted time
   and both artifact facts are non-null, and scope is the highest completed scope
   below `full_recovery`
