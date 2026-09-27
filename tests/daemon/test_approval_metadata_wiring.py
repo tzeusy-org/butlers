@@ -10,6 +10,7 @@ import pytest
 from fastmcp import FastMCP as RuntimeFastMCP
 
 from butlers.config import ConfigError, load_config
+from butlers.core.tool_catalog import ToolCatalogError
 from butlers.daemon import ButlerDaemon
 from butlers.modules.approvals.command_contracts import ApprovalCommandContractError
 from butlers.modules.approvals.module import ApprovalsConfig, ApprovalsModule
@@ -126,6 +127,35 @@ async def test_unconfigured_approvals_module_keeps_gate_setup_inactive() -> None
     result = await daemon._apply_approval_gates()
 
     assert result == {}
+
+
+async def test_daemon_finalizes_complete_catalog_after_approval_phase() -> None:
+    daemon = _approval_wiring_daemon("home", [])
+    daemon.config = SimpleNamespace(name="home", modules={})
+
+    @daemon.mcp.tool(description="Notify the owner.")
+    async def notify(message: str) -> dict[str, str]:
+        return {"message": message}
+
+    daemon._registered_tool_names = {"notify"}
+    daemon._tool_module_map = {"notify": "core"}
+    names_before = {tool.name for tool in await daemon.mcp.list_tools()}
+
+    await daemon._apply_approval_gates()
+    first = await daemon._finalize_tool_catalog()
+    second = await daemon._finalize_tool_catalog()
+
+    assert first is second
+    assert daemon.tool_catalog is first
+    assert first.classification_complete is True
+    assert first["notify"].namespace == "core.notifications"
+    assert {tool.name for tool in await daemon.mcp.list_tools()} == names_before
+
+    daemon._tool_catalog = None
+    daemon._tool_module_map = {}
+    with pytest.raises(ToolCatalogError, match="no owner"):
+        await daemon._finalize_tool_catalog()
+    assert daemon._tool_catalog is None
 
 
 async def test_enabled_gates_receive_the_deterministic_approval_push_runtime(
