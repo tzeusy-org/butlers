@@ -291,7 +291,7 @@ class TestRouteExecuteSenderEntityIdInjection:
         assert ctx.get("source_entity_id") == sender_entity_id
 
     async def test_no_sender_entity_id_leaves_routing_ctx_unset(self, tmp_path: Path) -> None:
-        """When source_sender_entity_id is absent, _routing_ctx_var is not set by route."""
+        """Without an entity ID, route still propagates the validated source channel."""
         patches = _patch_infra()
         butler_dir = _make_butler_toml(tmp_path, butler_name="health")
         daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
@@ -322,8 +322,7 @@ class TestRouteExecuteSenderEntityIdInjection:
 
         assert result["status"] == "accepted"
         assert len(captured_routing_ctx) == 1
-        # When no entity_id, routing context should be None (not set by route.execute)
-        assert captured_routing_ctx[0] is None
+        assert captured_routing_ctx == [{"request_context": {"source_channel": "telegram_bot"}}]
 
     async def test_conceptual_message_is_persisted_and_available_as_structured_context(
         self,
@@ -376,7 +375,12 @@ class TestRouteExecuteSenderEntityIdInjection:
         assert result["status"] == "accepted"
         persisted_envelope = _mock_route_inbox.await_args.kwargs["route_envelope"]
         assert persisted_envelope["input"]["context"]["conceptual_message"] == conceptual_message
-        assert captured_routing_ctx == [{"conceptual_message": conceptual_message}]
+        assert captured_routing_ctx == [
+            {
+                "conceptual_message": conceptual_message,
+                "request_context": {"source_channel": "telegram_bot"},
+            }
+        ]
 
     async def test_route_inbox_insert_failure_is_content_blind(
         self,

@@ -19,15 +19,24 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-def _derive_llm_provider(model: str | None) -> str:
-    """Derive the LLM provider name from a model string.
+def _derive_llm_provider(model: str | None, runtime_type: str | None = None) -> str:
+    """Derive the provider from a qualified model id or its runtime adapter.
 
     The model string may be prefixed with a provider name separated by a
-    forward slash (e.g. ``"ollama/llama3"`` → ``"ollama"``).  If no prefix
-    is present the default runtime is the Anthropic API, so ``"anthropic"``
-    is returned.
+    forward slash (e.g. ``"ollama/llama3"`` → ``"ollama"``). Unqualified
+    and runtime-default models inherit the provider identity of the adapter
+    that actually invokes them rather than the project's historical Anthropic
+    default.
     """
-    return model.split("/", 1)[0] if model and "/" in model else "anthropic"
+    if model and "/" in model:
+        return model.split("/", 1)[0]
+    return {
+        "api": "anthropic",
+        "claude": "anthropic",
+        "codex": "openai",
+        "gemini": "google",
+        "opencode": "opencode",
+    }.get(runtime_type or "", "unknown")
 
 
 async def resolve_provider_config(
@@ -40,7 +49,7 @@ async def resolve_provider_config(
     ``public.provider_config`` for the Ollama provider's configured base
     URL and returns a config dict that OpenCode can consume, including the
     ``npm`` adapter package, ``/v1``-suffixed base URL, and explicit model
-    registration.  See https://docs.ollama.com/integrations/opencode
+    registration. See the Ollama OpenCode integration documentation.
 
     Returns ``None`` when no provider is configured, the model doesn't
     use a provider prefix, or no DB pool is available.

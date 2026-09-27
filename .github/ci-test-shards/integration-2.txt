@@ -20,6 +20,7 @@ roster/switchboard/tests/test_identity_notification_claim_integration.py
 roster/switchboard/tests/test_ingest_api.py
 roster/switchboard/tests/test_ingest_tier.py
 tests/api/test_audit_grouping_credential_blind_db.py
+tests/api/test_owner_auth_store.py
 tests/api/test_relationship_entities_search_db.py
 tests/cli/test_runtime_cli_sandbox.py
 tests/config/test_dashboard_turn_cancellation_migration.py
@@ -49,10 +50,8 @@ tests/integration/test_domain_event_bus_roundtrip.py
 tests/integration/test_gap_interview_integration.py
 tests/integration/test_infra_state_condition_suppression_roundtrip.py
 tests/integration/test_ingestion_replay_reconcile_db.py
-tests/integration/test_mailbox_module.py
 tests/integration/test_owntracks_ssid_adapter_integration.py
 tests/integration/test_passive_interaction_sender_identity_sql.py
-tests/integration/test_post_mail.py
 tests/integration/test_scheduler_jsonb_roundtrip.py
 tests/integration/test_switchboard_routing_tools_search_path.py
 tests/integration/test_switchboard_routing_verdict_log_migration.py
@@ -70,14 +69,17 @@ tests/migrations/test_memory_catalog_read_sensitivity_migration.py
 tests/migrations/test_model_catalog_complexity_tier_default_migration.py
 tests/migrations/test_model_catalog_defaults_reseed_migration.py
 tests/migrations/test_predicate_registry_migration.py
+tests/migrations/test_reclassify_health_write_sensitivity_migration.py
 tests/migrations/test_resolve_owner_triple_migration.py
 tests/migrations/test_retitle_session_episodes_migration.py
 tests/migrations/test_spotify_spoken_policy_migration.py
 tests/migrations/test_spotify_spoken_sessions_migration.py
+tests/migrations/test_spotify_track_plays_migration.py
 tests/modules/memory/test_catalog_sensitivity.py
 tests/modules/memory/test_consolidation_lifecycle.py
 tests/modules/memory/test_episode_cleanup_consolidation_aware.py
 tests/modules/memory/test_episode_provenance_deletion.py
+tests/modules/memory/test_local_read_ceiling.py
 tests/modules/test_approvals_jsonb_roundtrip.py
 tests/modules/test_approvals_retention.py
 tests/scripts/test_reconcile_whatsapp_entities.py

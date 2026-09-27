@@ -60,7 +60,7 @@ class TestGateParkPathJsonbRoundtrip:
             expiry_hours=1,
             risk_tier=ApprovalRiskTier.MEDIUM,
             rule_precedence=(),
-            butler_name=None,
+            butler_name="general",
             tool_meta=None,
         )
         evidence = [

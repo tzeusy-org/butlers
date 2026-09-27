@@ -4,7 +4,8 @@
 
 The Contacts module synchronizes external address-book sources into the entity-graph identity model and backfills the Relationship Butler's CRM with provider-agnostic upsert logic, provenance tracking, and conflict-aware field resolution. The module supports multiple concurrent providers (e.g., Google Contacts and Telegram) through a pluggable `ContactsProvider` interface.
 
-Note (reality sync, code authoritative): after bead `bu-tzyuh`, the backfill writer and resolver no longer touch `public.contacts` or `public.contact_info` (both retired by `core_115` / `core_134`). The writer creates/updates `public.entities` and stores channel identifiers as `relationship.entity_facts` triples; identity matching routes through `public.entities` and `relationship.entity_facts` (`src/butlers/modules/contacts/backfill.py:16-17`, `:86-91`, `:235-236`, `:311-312`). In this module's scenarios below, `local_id` is the entity UUID (`public.entities.id`), and any scenario phrased as writing to `public.contacts` / `public.contact_info` is SUPERSEDED by entity / `entity_facts` writes.
+Synced contacts are stored as `public.entities` rows, with channel identifiers stored as `relationship.entity_facts` triples. In this spec, `local_id` is the entity UUID (`public.entities.id`).
+
 ## Requirements
 ### Requirement: ContactsModule Configuration and Scaffold
 
@@ -133,7 +134,7 @@ The `TelegramContactsProvider` SHALL implement the `ContactsProvider` interface 
 #### Scenario: Telegram credential resolution
 
 - **WHEN** the Telegram provider initializes
-- **THEN** it resolves `telegram_api_id`, `telegram_api_hash`, and `telegram_user_session` from the owner contact's `public.contact_info` entries (secured credentials)
+- **THEN** it resolves `telegram_api_id`, `telegram_api_hash`, and `telegram_user_session` from the owner entity's secured `public.entity_info` entries
 - **AND** if any credential is missing, a `RuntimeError` is raised directing the user to configure Telegram user-client credentials
 
 #### Scenario: Telegram full sync
@@ -250,8 +251,8 @@ Sync state SHALL be persisted via `ContactsSyncStateStore` with fields: `sync_cu
 #### Scenario: New contact backfill
 
 - **WHEN** a canonical contact has no existing match
-- **THEN** a new CRM contact is created in the `contacts` table
-- **AND** `contact_info` rows are created for emails, phones, urls, usernames (in `public.contact_info`)
+- **THEN** a new entity is created in `public.entities`
+- **AND** emails, phones, urls, and usernames are asserted as `relationship.entity_facts` triples on that entity (`has-email`, `has-phone`, `has-website`, `has-handle`)
 - **AND** `addresses` rows are created for postal addresses
 - **AND** `important_dates` rows are created for birthdays and anniversaries
 - **AND** `labels` + `contact_labels` rows are created for group memberships
@@ -282,9 +283,9 @@ Sync state SHALL be persisted via `ContactsSyncStateStore` with fields: `sync_cu
 - **WHEN** a canonical contact is resolved
 - **THEN** the following strategies are tried in order:
   1. Source link match (`provider + account_id + external_contact_id` in `contacts_source_links`)
-  2. Primary email exact match in `public.contact_info` (type='email')
-  3. Phone exact/e164 match in `public.contact_info` (type='phone')
-  4. Conservative name match (ILIKE against `name`, `first_name || last_name`, `nickname`)
+  2. Primary email exact match on a `has-email` fact in `relationship.entity_facts`
+  3. Phone exact/e164 match on a `has-phone` fact in `relationship.entity_facts`
+  4. Conservative name match (ILIKE against `public.entities.canonical_name` and aliases)
 - **AND** ambiguous name matches (multiple candidates) skip auto-merge and return `ambiguous_name` strategy
 
 ### Requirement: MCP Tool Surface (4 Tools)
@@ -319,9 +320,9 @@ When multiple providers sync contacts concurrently, the `ContactBackfillEngine` 
 #### Scenario: Telegram contact matches existing Google contact by phone
 
 - **WHEN** a Telegram contact has phone number `+1-555-0100`
-- **AND** a Google-sourced CRM contact already exists with the same phone in `public.contact_info`
+- **AND** a Google-sourced entity already carries a `has-phone` fact with the same phone
 - **THEN** the backfill engine resolves them as the same contact via phone match (strategy 3 in resolution order)
-- **AND** Telegram-specific `contact_info` entries (`telegram_username`, `telegram_user_id`, `telegram_chat_id`) are added alongside the existing Google-sourced entries
+- **AND** Telegram identifiers (`telegram_username`, `telegram_user_id`) are asserted as `has-handle` facts alongside the existing Google-sourced facts
 - **AND** the `contacts_source_links` table records a second provenance row with `provider = "telegram"`
 - **AND** `metadata` JSONB provenance tracks which fields came from which provider (e.g., `{"display_name": {"source": "google"}, "telegram_user_id": {"source": "telegram"}}`)
 
@@ -329,8 +330,8 @@ When multiple providers sync contacts concurrently, the `ContactBackfillEngine` 
 
 - **WHEN** a Telegram contact has no matching email, phone, or source link in the CRM
 - **AND** the contact's name does not produce a unique name match
-- **THEN** a new CRM contact is created with `contacts_source_links.provider = "telegram"`
-- **AND** `contact_info` entries are created for available Telegram identifiers (`telegram_user_id`, optionally `telegram_username`)
+- **THEN** a new entity is created with `contacts_source_links.provider = "telegram"`
+- **AND** `has-handle` facts are asserted for available Telegram identifiers (`telegram_user_id`, optionally `telegram_username`)
 - **AND** a `contact_synced` activity feed entry is logged
 
 #### Scenario: Ambiguous name-only match across providers
@@ -356,7 +357,7 @@ When multiple providers sync contacts concurrently, the `ContactBackfillEngine` 
 - **AND** the Telegram sync detects the contact is no longer in the Telegram contact list
 - **THEN** only the Telegram `contacts_source_links` row is marked with `deleted_at`
 - **AND** the CRM contact record is preserved (still linked to Google)
-- **AND** Telegram-specific `contact_info` entries (`telegram_username`, `telegram_user_id`) are retained (not deleted)
+- **AND** Telegram `has-handle` facts (`telegram_username`, `telegram_user_id`) are retained (not deleted)
 - **AND** a `contact_sync_deleted_source` activity feed entry is logged for the Telegram source
 
 ### Requirement: [TARGET-STATE] Apple/CardDAV Provider

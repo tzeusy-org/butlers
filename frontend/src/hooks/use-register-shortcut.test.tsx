@@ -73,13 +73,17 @@ describe("useRegisterShortcut", () => {
     expect(handler).not.toHaveBeenCalled();
   });
 
-  it("requires an exact modifier match — a plain binding does not fire under Ctrl", () => {
+  it("requires an exact modifier match and ignores an in-progress IME composition", () => {
     const handler = vi.fn();
     act(() => {
       root.render(<Registrar bindings={[{ key: "a", display: ["a"], description: "Approve", handler }]} />);
     });
 
     act(() => press("a", { ctrlKey: true }));
+
+    expect(handler).not.toHaveBeenCalled();
+
+    act(() => press("a", { isComposing: true }));
 
     expect(handler).not.toHaveBeenCalled();
   });

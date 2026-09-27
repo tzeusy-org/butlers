@@ -123,6 +123,38 @@ function activityBins(): { bins: Array<{ date: string; count: number }> } {
   return { bins };
 }
 
+function activityStream() {
+  return {
+    items: [
+      {
+        id: "episode-1",
+        ts: "2026-05-20T12:00:00Z",
+        kind: "episode",
+        src: "chronicler",
+        store: null,
+        predicate: null,
+        episode_id: "episode-1",
+        summary: "Lunch with Alice",
+      },
+      {
+        id: "fact-1",
+        ts: "2026-05-18T00:00:00Z",
+        kind: "interaction",
+        src: "relationship",
+        store: "narrative",
+        predicate: "interaction_in_person",
+        episode_id: null,
+        summary: "Coffee catch-up",
+      },
+    ],
+    total: 2,
+    limit: 200,
+    offset: 0,
+    degraded: false,
+    degraded_reason: null,
+  };
+}
+
 /** A relationship CompareFact (types.ts CompareFact). */
 function compareFact(
   id: string,
@@ -354,7 +386,13 @@ async function installDetailStubs(
   // 90-day sparkline
   await page.route(
     `**/api/relationship/entities/${ENTITY_ID}/activity**`,
-    (route) => json(route, activityBins()),
+    (route) => {
+      const requestUrl = new URL(route.request().url());
+      return json(
+        route,
+        requestUrl.searchParams.get("bins") === "daily" ? activityBins() : activityStream(),
+      );
+    },
   );
 
   // delta-since-last-visit (read) — the fact ids here also seed the fact list
@@ -675,6 +713,11 @@ test.describe("entity-v3: detail quick-refresh blocks", () => {
     });
     await expect(page.getByTestId("sparkline-stick")).toHaveCount(90);
 
+    // The full stream uses the same page -> hook -> client transport and keeps
+    // Chronicle activity alongside exact Relationship summaries.
+    await expect(page.getByText("Lunch with Alice")).toBeVisible();
+    await expect(page.getByText("Coffee catch-up").first()).toBeVisible();
+
     // Core dates block + at least one row.
     await expect(page.getByTestId("core-dates-block")).toBeVisible();
     await expect(page.getByTestId("core-date-row-has-birthday")).toBeVisible();
@@ -810,6 +853,17 @@ test.describe("entity-v3: workbench mode", () => {
 // ===========================================================================
 
 test.describe("entity-v3: Cmd-K finder", () => {
+  async function visitFinderPage(page: Page) {
+    await page.goto("/", { timeout: TIMEOUT_MS });
+    // Navigation can finish before owner-session restoration mounts the shell.
+    // Wait for its actual command affordance and routed page before sending
+    // shortcuts or measuring headings; the login heading belongs to another UI.
+    await expect(page.getByRole("button", { name: "Open command menu" })).toBeVisible({
+      timeout: TIMEOUT_MS,
+    });
+    await expect(page.getByTestId("route-suspense-skeleton")).toHaveCount(0);
+  }
+
   /** Stubs shared by the finder tests. */
   async function installFinderStubs(page: Page) {
     // typed query → search results
@@ -852,7 +906,7 @@ test.describe("entity-v3: Cmd-K finder", () => {
     page,
   }) => {
     await installFinderStubs(page);
-    await page.goto("/", { timeout: TIMEOUT_MS });
+    await visitFinderPage(page);
 
     // Cmd-K / Ctrl-K opens the entity finder (global keydown handler).
     await page.keyboard.press("ControlOrMeta+k");
@@ -880,7 +934,7 @@ test.describe("entity-v3: Cmd-K finder", () => {
     await page.route("**/api/relationship/entities/search**", (route) =>
       json(route, { results: [], total: 0, q: "contacts", limit: 8 }),
     );
-    await page.goto("/", { timeout: TIMEOUT_MS });
+    await visitFinderPage(page);
 
     const trigger = page.getByRole("button", { name: "Open command menu" });
     const initialH1Count = await page.locator("h1").count();
@@ -984,12 +1038,18 @@ test.describe("entity-v3: Cmd-K finder", () => {
     await page.setViewportSize({ width: 320, height: 568 });
     await page.emulateMedia({ reducedMotion: "reduce" });
     await installFinderStubs(page);
-    await page.goto("/", { timeout: TIMEOUT_MS });
+    await visitFinderPage(page);
 
     await page.getByRole("button", { name: "Open command menu" }).click();
     const dialog = page.getByRole("dialog", { name: "Command menu" });
     await expect(dialog).toBeVisible();
     await expect(page.getByTestId("entity-finder-input")).toBeFocused();
+    // Empty-query Pages are intentionally browsable and capped with an
+    // overflow row. Exercise that full mobile flow before measuring the
+    // dialog, rather than checking the sparse pre-browsability menu.
+    await expect(page.getByTestId("entity-finder-pages-group")).toBeVisible();
+    await expect(page.getByTestId("entity-finder-page-item")).toHaveCount(8);
+    await expect(page.getByTestId("entity-finder-overflow-row")).toHaveCount(1);
 
     const geometry = await page.evaluate(() => {
       const rect = (selector: string) => {
@@ -1044,7 +1104,7 @@ test.describe("entity-v3: Cmd-K finder", () => {
       `**/api/relationship/entities/${ENTITY_ID}**`,
       (route) => json(route, entityDetail()),
     );
-    await page.goto("/", { timeout: TIMEOUT_MS });
+    await visitFinderPage(page);
 
     await page.keyboard.press("ControlOrMeta+k");
     const input = page.getByTestId("entity-finder-input");
@@ -1061,7 +1121,7 @@ test.describe("entity-v3: Cmd-K finder", () => {
 
   test("empty-query finder shows the owner-pinned set", async ({ page }) => {
     await installFinderStubs(page);
-    await page.goto("/", { timeout: TIMEOUT_MS });
+    await visitFinderPage(page);
 
     await page.keyboard.press("ControlOrMeta+k");
     await expect(page.getByTestId("entity-finder-input")).toBeVisible({

@@ -7,7 +7,7 @@ against `about/heart-and-soul/vision.md` and `docs/frontend/purpose-and-single-p
 Backward compatibility was explicitly waived — moves propose the ideal design.
 
 **Full per-page dossiers** (current state, JARVIS gap, redesign concept, moves, all 331
-evidence-cited findings) live in [`2026-07-03-jarvis-audit-data.json`](2026-07-03-jarvis-audit-data.json)
+evidence-cited findings) live in `git show b23d5b76afab:docs/redesigns/2026-07-03-jarvis-audit-data.json`
 — query one page with `jq '.audits[] | select(.page=="<key>")' <file>`.
 
 ## North star

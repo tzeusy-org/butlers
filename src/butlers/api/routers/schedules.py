@@ -18,11 +18,20 @@ import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 
+from butlers.api.audit_emit import authenticated_principal
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
-from butlers.api.models import ApiResponse
-from butlers.api.models.schedule import Schedule, ScheduleCreate, ScheduleUpdate
+from butlers.api.models import ApiResponse, ErrorDetail, ErrorResponse
+from butlers.api.models.schedule import (
+    Schedule,
+    ScheduleCreate,
+    ScheduleToggleRequest,
+    ScheduleToggleResult,
+    ScheduleUpdate,
+)
+from butlers.api.routers.audit import append as audit_append
 from butlers.api.routers.audit import log_audit_entry
 from butlers.api.routers.model_settings import _validate_complexity_tier
 from butlers.core.model_routing import coerce_complexity_tier
@@ -48,6 +57,12 @@ _SCHEDULE_COLUMNS = (
 )
 _DISPATCH_MODE_PROMPT = "prompt"
 _DISPATCH_MODE_JOB = "job"
+_MUTATION_SUCCESS_STATUS = {
+    "schedule.create": "created",
+    "schedule.update": "updated",
+    "schedule.delete": "deleted",
+    "schedule.trigger": "triggered",
+}
 
 
 def _coerce_complexity(value: str | None) -> str:
@@ -163,6 +178,46 @@ async def _call_mcp_tool(
     return {"result": str(result)}
 
 
+async def _log_legacy_schedule_mutation(
+    db: DatabaseManager,
+    butler: str,
+    operation: str,
+    *,
+    schedule_id: UUID | None = None,
+    response: dict | None = None,
+) -> None:
+    """Record safe, owner-attributed telemetry after a schedule MCP call."""
+    actor = authenticated_principal()
+    if response is None:
+        observed_status = "unavailable"
+        audit_result, error = "error", "MCP call failed"
+    elif response.get("status") == _MUTATION_SUCCESS_STATUS[operation]:
+        observed_status = _MUTATION_SUCCESS_STATUS[operation]
+        audit_result, error = "success", None
+    elif response.get("status") == "error":
+        observed_status = "error"
+        audit_result, error = "error", "MCP_REFUSED"
+    else:
+        observed_status = "unexpected"
+        audit_result, error = "error", "MCP_UNEXPECTED_RESULT"
+
+    if operation == "schedule.create" and audit_result == "success":
+        try:
+            schedule_id = UUID(str(response["id"])) if response is not None else None
+        except (KeyError, TypeError, ValueError):
+            schedule_id = None
+
+    target = f"schedule:{schedule_id}" if schedule_id else f"butler:{butler}/schedules"
+    summary: dict[str, object] = {
+        "butler": butler,
+        "path": target,
+        "observed_status": observed_status,
+    }
+    if schedule_id is not None:
+        summary["schedule_id"] = str(schedule_id)
+    await log_audit_entry(db, actor, operation, summary, result=audit_result, error=error)
+
+
 # ---------------------------------------------------------------------------
 # GET /api/butlers/{name}/schedules — list schedules
 # ---------------------------------------------------------------------------
@@ -231,17 +286,12 @@ async def create_schedule(
         _validate_complexity_tier(body.complexity)
         arguments["complexity"] = body.complexity
 
-    summary = {"name": body.name, "cron": body.cron, "dispatch_mode": body.dispatch_mode}
-    if body.job_name is not None:
-        summary["job_name"] = body.job_name
     try:
         result = await _call_mcp_tool(mgr, name, "schedule_create", arguments)
-        await log_audit_entry(db, name, "schedule.create", summary)
+        await _log_legacy_schedule_mutation(db, name, "schedule.create", response=result)
         return ApiResponse[dict](data=result)
     except HTTPException:
-        await log_audit_entry(
-            db, name, "schedule.create", summary, result="error", error="MCP call failed"
-        )
+        await _log_legacy_schedule_mutation(db, name, "schedule.create")
         raise
 
 
@@ -273,15 +323,14 @@ async def update_schedule(
         updates["calendar_event_id"] = str(updates["calendar_event_id"])
     arguments.update(updates)
 
-    summary = {"schedule_id": str(schedule_id), **updates}
     try:
         result = await _call_mcp_tool(mgr, name, "schedule_update", arguments)
-        await log_audit_entry(db, name, "schedule.update", summary)
+        await _log_legacy_schedule_mutation(
+            db, name, "schedule.update", schedule_id=schedule_id, response=result
+        )
         return ApiResponse[dict](data=result)
     except HTTPException:
-        await log_audit_entry(
-            db, name, "schedule.update", summary, result="error", error="MCP call failed"
-        )
+        await _log_legacy_schedule_mutation(db, name, "schedule.update", schedule_id=schedule_id)
         raise
 
 
@@ -301,15 +350,14 @@ async def delete_schedule(
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[dict]:
     """Delete a scheduled task via MCP tool call to the butler."""
-    summary = {"schedule_id": str(schedule_id)}
     try:
         result = await _call_mcp_tool(mgr, name, "schedule_delete", {"id": str(schedule_id)})
-        await log_audit_entry(db, name, "schedule.delete", summary)
+        await _log_legacy_schedule_mutation(
+            db, name, "schedule.delete", schedule_id=schedule_id, response=result
+        )
         return ApiResponse[dict](data=result)
     except HTTPException:
-        await log_audit_entry(
-            db, name, "schedule.delete", summary, result="error", error="MCP call failed"
-        )
+        await _log_legacy_schedule_mutation(db, name, "schedule.delete", schedule_id=schedule_id)
         raise
 
 
@@ -329,36 +377,107 @@ async def trigger_schedule(
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[dict]:
     """Trigger a scheduled task immediately (one-off dispatch) via MCP."""
-    summary = {"schedule_id": str(schedule_id)}
     try:
         result = await _call_mcp_tool(mgr, name, "schedule_trigger", {"id": str(schedule_id)})
-        await log_audit_entry(db, name, "schedule.trigger", summary)
+        await _log_legacy_schedule_mutation(
+            db, name, "schedule.trigger", schedule_id=schedule_id, response=result
+        )
         return ApiResponse[dict](data=result)
     except HTTPException:
-        await log_audit_entry(
-            db, name, "schedule.trigger", summary, result="error", error="MCP call failed"
-        )
+        await _log_legacy_schedule_mutation(db, name, "schedule.trigger", schedule_id=schedule_id)
         raise
+
+
+async def _log_schedule_toggle_audit(
+    db: DatabaseManager,
+    butler: str,
+    schedule_id: UUID,
+    summary: dict[str, object],
+    *,
+    result: str = "success",
+    error: str | None = None,
+) -> None:
+    """Record the owner action with butler and schedule as target context."""
+    actor = authenticated_principal()
+    try:
+        await audit_append(
+            db.pool("switchboard"),
+            actor,
+            "schedule.toggle",
+            target=f"schedule:{schedule_id}",
+            metadata={"butler": butler, **summary},
+            result=result,
+            error=error,
+        )
+    except Exception:
+        logger.warning("Failed to record schedule.toggle audit", exc_info=True)
 
 
 @router.patch(
     "/{name}/schedules/{schedule_id}/toggle",
-    response_model=ApiResponse[dict],
+    response_model=ApiResponse[ScheduleToggleResult],
 )
 async def toggle_schedule(
     name: str,
     schedule_id: UUID,
+    body: ScheduleToggleRequest,
     mgr: MCPClientManager = Depends(get_mcp_manager),
     db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[dict]:
-    """Toggle a scheduled task's enabled/disabled state via MCP."""
-    summary = {"schedule_id": str(schedule_id)}
+) -> ApiResponse[ScheduleToggleResult] | JSONResponse:
+    """Persist and report a requested schedule state via the canonical MCP action."""
+    summary: dict[str, object] = {
+        "schedule_id": str(schedule_id),
+        "requested_enabled": body.enabled,
+    }
+    arguments: dict[str, object] = {"id": str(schedule_id), "enabled": body.enabled}
     try:
-        result = await _call_mcp_tool(mgr, name, "schedule_toggle", {"id": str(schedule_id)})
-        await log_audit_entry(db, name, "schedule.toggle", summary)
-        return ApiResponse[dict](data=result)
+        result = await _call_mcp_tool(mgr, name, "schedule_toggle", arguments)
+        if result.get("status") == "error":
+            code = str(result.get("code") or "SCHEDULE_TOGGLE_FAILED")
+            message = str(result.get("message") or result.get("error") or "Schedule toggle failed")
+            summary["code"] = code
+            await _log_schedule_toggle_audit(
+                db, name, schedule_id, summary, result="error", error=code
+            )
+            return _schedule_toggle_error_response(code, message, name, schedule_id)
+
+        typed_result = ScheduleToggleResult.model_validate(result)
+        summary.update(
+            {
+                "observed_enabled": typed_result.observed_enabled,
+                "changed": typed_result.changed,
+                "outcome": typed_result.outcome,
+            }
+        )
+        await _log_schedule_toggle_audit(db, name, schedule_id, summary)
+        return ApiResponse[ScheduleToggleResult](data=typed_result)
     except HTTPException:
-        await log_audit_entry(
-            db, name, "schedule.toggle", summary, result="error", error="MCP call failed"
+        await _log_schedule_toggle_audit(
+            db, name, schedule_id, summary, result="error", error="MCP call failed"
         )
         raise
+
+
+def _schedule_toggle_error_response(
+    code: str,
+    message: str,
+    butler: str,
+    schedule_id: UUID,
+) -> JSONResponse:
+    """Return the typed public refusal for a failed schedule toggle."""
+    status_code = {
+        "SCHEDULE_NOT_FOUND": 404,
+        "SCHEDULE_TOML_MANAGED": 409,
+        "SCHEDULE_MANAGED": 409,
+    }.get(code, 400)
+    return JSONResponse(
+        status_code=status_code,
+        content=ErrorResponse(
+            error=ErrorDetail(
+                code=code,
+                message=message,
+                butler=butler,
+                details={"schedule_id": str(schedule_id)},
+            )
+        ).model_dump(mode="json"),
+    )

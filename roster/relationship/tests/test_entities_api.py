@@ -45,9 +45,9 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.tools.relationship.relationship_assert_fact import AssertOutcome
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 
@@ -661,7 +661,7 @@ class TestCreateEntity:
         mock_pool = AsyncMock()
         owner_row = _make_owner_row() if owner_exists else None
         mock_pool.fetchrow = AsyncMock(return_value=owner_row)
-        mock_pool.acquire = MagicMock(return_value=_acquire())
+        mock_pool.acquire = MagicMock(side_effect=_acquire)
         return _wire_app(mock_pool)
 
     async def test_happy_path_returns_201_on_create(self):
@@ -1154,15 +1154,24 @@ class TestForgetEntity:
 # ===========================================================================
 
 
+def _make_merge_lock_row(entity_id: UUID, metadata: dict | None = None) -> MagicMock:
+    """Build the production-shaped row returned by the merge authority's lock query."""
+    data = {
+        "id": entity_id,
+        "canonical_name": "Opaque entity",
+        "entity_type": "person",
+        "aliases": [],
+        "metadata": metadata or {},
+        "roles": [],
+        "updated_at": None,
+    }
+    row = MagicMock()
+    row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
+    return row
+
+
 class TestMergeEntities:
     """POST /entities/{id}/merge — §9.9."""
-
-    def _make_lock_row(self, entity_id: UUID, metadata: dict | None = None) -> MagicMock:
-        """Build a MagicMock for the FOR UPDATE lock SELECT row in the merge transaction."""
-        data = {"id": entity_id, "metadata": metadata or {}}
-        row = MagicMock()
-        row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
-        return row
 
     def _make_app(
         self,
@@ -1187,9 +1196,9 @@ class TestMergeEntities:
         # Build the lock rows (conn.fetch returns a list of rows ordered by id)
         lock_rows: list = []
         if entity_a_exists:
-            lock_rows.append(self._make_lock_row(_ENT_ID))
+            lock_rows.append(_make_merge_lock_row(_ENT_ID))
         if entity_b_exists:
-            lock_rows.append(self._make_lock_row(_ENT_ID_B))
+            lock_rows.append(_make_merge_lock_row(_ENT_ID_B))
         # Sort by id ascending (mimics ORDER BY id in the query)
         lock_rows.sort(key=lambda r: r["id"])
 
@@ -1205,6 +1214,29 @@ class TestMergeEntities:
         mock_conn.fetch = AsyncMock(side_effect=_conn_fetch)
         mock_conn.execute = AsyncMock(return_value="UPDATE 1")
         mock_conn.fetchval = AsyncMock(return_value=0)  # moved row count
+
+        async def _conn_fetchrow(query, *args):
+            if "FROM public.entity_rebind_log" in query:
+                return {
+                    "rebind_id": args[0],
+                    "source_entity_id": _ENT_ID,
+                    "target_entity_id": _ENT_ID_B,
+                    "target_schema": "relationship",
+                    "references_rebound": 3,
+                    "status": "pending",
+                    "error_class": None,
+                }
+            if "UPDATE public.entity_rebind_log" in query:
+                return {
+                    "rebind_id": args[0],
+                    "target_schema": "relationship",
+                    "references_rebound": args[4],
+                    "status": args[5],
+                    "error_class": args[6],
+                }
+            return None
+
+        mock_conn.fetchrow = AsyncMock(side_effect=_conn_fetchrow)
 
         mock_txn = AsyncMock()
         mock_txn.__aenter__ = AsyncMock(return_value=None)
@@ -1234,7 +1266,7 @@ class TestMergeEntities:
         )
         mock_pool.fetch = AsyncMock(side_effect=[[], [], [], [], []])
         mock_pool.fetchval = AsyncMock(return_value=uuid4())
-        mock_pool.acquire = MagicMock(return_value=_acquire())
+        mock_pool.acquire = MagicMock(side_effect=_acquire)
         return _wire_app(mock_pool), mock_pool
 
     async def test_happy_path_returns_200_with_merge_response(self):
@@ -1468,6 +1500,8 @@ class TestEntityActivity:
         data = {
             "id": uuid4(),
             "predicate": predicate,
+            "object": "identity value",
+            "observed_at": None,
             "last_seen": last_seen or _NOW,
             "created_at": _NOW,
         }
@@ -1502,7 +1536,7 @@ class TestEntityActivity:
         entity_val = 1 if entity_exists else None
         mock_pool.fetchrow = AsyncMock(return_value=owner_row)
         mock_pool.fetchval = AsyncMock(return_value=entity_val)
-        mock_pool.fetch = AsyncMock(return_value=fact_rows or [])
+        mock_pool.fetch = AsyncMock(side_effect=[[], fact_rows or []])
 
         mock_mcp_manager = MagicMock()
         if chronicler_unreachable:
@@ -1547,9 +1581,12 @@ class TestEntityActivity:
         fact_row = self._make_fact_row(last_seen=_NOW)
         app, pool = self._make_app(fact_rows=[fact_row], chronicler_episodes=[])
         await _get(app, _ACTIVITY_PATH)
-        fetch_call_sql = pool.fetch.call_args_list[0][0][0]
+        narrative_sql = pool.fetch.call_args_list[0][0][0]
+        fetch_call_sql = pool.fetch.call_args_list[1][0][0]
+        assert "FROM facts" in narrative_sql
+        assert "entity_facts" not in narrative_sql
         assert "relationship.entity_facts" in fetch_call_sql
-        assert "relationship.facts" not in fetch_call_sql
+        assert "FROM facts" not in fetch_call_sql
 
     async def test_chronicler_unreachable_is_explicitly_degraded(self):
         """A failed Chronicler read cannot impersonate complete activity."""
@@ -2059,6 +2096,8 @@ class TestEntityActivityBinning:
         data = {
             "id": uuid4(),
             "predicate": "contact_note",
+            "object": "identity value",
+            "observed_at": None,
             "last_seen": last_seen,
             "created_at": last_seen,
         }
@@ -2090,7 +2129,7 @@ class TestEntityActivityBinning:
         mock_pool = AsyncMock()
         mock_pool.fetchrow = AsyncMock(return_value=_make_owner_row() if owner_exists else None)
         mock_pool.fetchval = AsyncMock(return_value=1 if entity_exists else None)
-        mock_pool.fetch = AsyncMock(return_value=fact_rows or [])
+        mock_pool.fetch = AsyncMock(side_effect=[[], fact_rows or []])
 
         mock_mcp = MagicMock()
         mock_client = AsyncMock()
@@ -2913,12 +2952,6 @@ class TestDismissPair:
 class TestMergeWritesAuditRow:
     """POST /entities/{id}/merge writes a merge_reviews row regardless of entry path."""
 
-    def _make_lock_row(self, entity_id: UUID, metadata: dict | None = None) -> MagicMock:
-        data = {"id": entity_id, "metadata": metadata or {}}
-        row = MagicMock()
-        row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
-        return row
-
     async def test_merge_writes_merged_audit_row(self):
         """A successful merge writes a merge_reviews row with outcome='merged'."""
         owner_row = _make_owner_row()
@@ -2937,7 +2970,7 @@ class TestMergeWritesAuditRow:
         mock_pool.fetch = AsyncMock(side_effect=[[], [], [], [], []])
 
         lock_rows = sorted(
-            [self._make_lock_row(_ENT_ID), self._make_lock_row(_ENT_ID_B)],
+            [_make_merge_lock_row(_ENT_ID), _make_merge_lock_row(_ENT_ID_B)],
             key=lambda r: r["id"],
         )
         mock_conn = AsyncMock()
@@ -2954,6 +2987,29 @@ class TestMergeWritesAuditRow:
         # object-rewire count, then the merge_reviews INSERT ... RETURNING id.
         # The two counts are ints; the audit row returns a UUID review id.
         mock_conn.fetchval = AsyncMock(side_effect=[0, 0, uuid4()])
+
+        async def _conn_fetchrow(query, *args):
+            if "FROM public.entity_rebind_log" in query:
+                return {
+                    "rebind_id": args[0],
+                    "source_entity_id": _ENT_ID,
+                    "target_entity_id": _ENT_ID_B,
+                    "target_schema": "relationship",
+                    "references_rebound": 1,
+                    "status": "pending",
+                    "error_class": None,
+                }
+            if "UPDATE public.entity_rebind_log" in query:
+                return {
+                    "rebind_id": args[0],
+                    "target_schema": "relationship",
+                    "references_rebound": args[4],
+                    "status": args[5],
+                    "error_class": args[6],
+                }
+            return None
+
+        mock_conn.fetchrow = AsyncMock(side_effect=_conn_fetchrow)
         mock_txn = AsyncMock()
         mock_txn.__aenter__ = AsyncMock(return_value=None)
         mock_txn.__aexit__ = AsyncMock(return_value=False)
@@ -2963,7 +3019,7 @@ class TestMergeWritesAuditRow:
         async def _acquire():
             yield mock_conn
 
-        mock_pool.acquire = MagicMock(return_value=_acquire())
+        mock_pool.acquire = MagicMock(side_effect=_acquire)
 
         app = _wire_app(mock_pool)
         resp = await _post(

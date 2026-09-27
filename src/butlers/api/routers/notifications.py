@@ -34,6 +34,10 @@ from butlers.api.models.notification import (
     NotificationStats,
     NotificationSummary,
 )
+from butlers.core.approval_recovery_exclusion import (
+    notification_metadata_is_recovery,
+    notification_recovery_exclusion_sql,
+)
 from butlers.core.attention_ledger import record_attention_event
 from butlers.credential_store import resolve_owner_entity_info
 
@@ -167,6 +171,7 @@ _RETRIED_EXISTS_SQL = (
     "AND n2.channel = notifications.channel "
     "AND n2.message = notifications.message "
     "AND n2.status = 'sent' "
+    f"AND {notification_recovery_exclusion_sql('n2')} "
     "AND n2.created_at > notifications.created_at"
     ")"
 )
@@ -203,7 +208,7 @@ async def _query_notifications(
     Shared by both the cross-butler and butler-scoped endpoints.
     """
     # Build dynamic WHERE clause
-    conditions: list[str] = []
+    conditions: list[str] = [notification_recovery_exclusion_sql()]
     args: list[object] = []
     idx = 1
 
@@ -466,7 +471,12 @@ async def notification_stats(
     # window's own bound values are re-used verbatim (unaliased vs. aliased
     # predicate text differs, args do not).
     window_clause, window_args = _window_predicate(since, until, "created_at")
-    window_where = f" WHERE {window_clause}" if window_clause else ""
+    exclusion = notification_recovery_exclusion_sql()
+    n_exclusion = notification_recovery_exclusion_sql("n")
+    n2_exclusion = notification_recovery_exclusion_sql("n2")
+    window_where = f" WHERE {exclusion}"
+    if window_clause:
+        window_where += f" AND {window_clause}"
     window_and = f" AND {window_clause}" if window_clause else ""
     n_clause, n_args = _window_predicate(since, until, "n.created_at")
     n_and = f" AND {n_clause}" if n_clause else ""
@@ -478,7 +488,8 @@ async def notification_stats(
         )
         sent = (
             await pool.fetchval(
-                f"SELECT count(*) FROM notifications WHERE status = 'sent'{window_and}",
+                f"SELECT count(*) FROM notifications WHERE status = 'sent' "
+                f"AND {exclusion}{window_and}",
                 *window_args,
             )
             or 0
@@ -489,7 +500,7 @@ async def notification_stats(
             await pool.fetchval(
                 f"""
                 SELECT count(*) FROM notifications n
-                WHERE n.status = 'failed'{n_and}
+                WHERE n.status = 'failed' AND {n_exclusion}{n_and}
                 AND NOT (
                     n.session_id IS NOT NULL
                     AND EXISTS (
@@ -499,6 +510,7 @@ async def notification_stats(
                         AND n2.message = n.message
                         AND n2.status = 'sent'
                         AND n2.created_at > n.created_at
+                        AND {n2_exclusion}
                     )
                 )
                 """,
@@ -517,7 +529,7 @@ async def notification_stats(
         # the ``failed`` count shown by the notifications verdict opener.
         butler_rows = await pool.fetch(
             f"SELECT source_butler, count(*) AS cnt FROM notifications "
-            f"WHERE status = 'failed'{window_and} "
+            f"WHERE status = 'failed' AND {exclusion}{window_and} "
             f"AND NOT ({_RETRIED_EXISTS_SQL}) GROUP BY source_butler",
             *window_args,
         )
@@ -575,10 +587,11 @@ async def mark_notification_read(
 
     try:
         row = await pool.fetchrow(
-            """
+            f"""
             UPDATE notifications
             SET status = 'read'
             WHERE id = $1
+              AND {notification_recovery_exclusion_sql()}
             RETURNING id, source_butler, channel, recipient, message, metadata,
                       status, error, session_id, trace_id, created_at
             """,
@@ -653,7 +666,8 @@ async def ack_failed_notifications(
 
     try:
         result = await pool.execute(
-            "UPDATE notifications SET status = 'read' WHERE status = 'failed'"
+            "UPDATE notifications SET status = 'read' WHERE status = 'failed' AND "
+            + notification_recovery_exclusion_sql()
         )
     except Exception as exc:
         if _is_missing_notifications_table_error(exc):
@@ -690,11 +704,12 @@ async def _fetch_notification_row(
 ) -> asyncpg.Record | None:
     try:
         return await pool.fetchrow(
-            """
+            f"""
             SELECT id, source_butler, channel, recipient, message, metadata,
                    status, error, session_id, trace_id, created_at
             FROM notifications
             WHERE id = $1
+              AND {notification_recovery_exclusion_sql()}
             """,
             notification_id,
         )
@@ -718,6 +733,8 @@ def _extract_stored_envelope(row: Mapping[str, Any]) -> dict[str, Any]:
     is retryable, not just the ones that happen to carry one.
     """
     metadata = row.get("metadata")
+    if notification_metadata_is_recovery(metadata):
+        raise ValueError("notification recovery has no generic replay envelope")
     if isinstance(metadata, Mapping):
         stored = metadata.get("notify_request")
         if isinstance(stored, Mapping):
@@ -795,10 +812,11 @@ async def _claim_failed_notification(
     recoverable by inspection; a duplicate real send is not.
     """
     return await pool.fetchrow(
-        """
+        f"""
         UPDATE notifications
         SET status = 'read'
         WHERE id = $1 AND status = 'failed'
+          AND {notification_recovery_exclusion_sql()}
         RETURNING id, source_butler, channel, recipient, message, metadata,
                   status, error, session_id, trace_id, created_at
         """,

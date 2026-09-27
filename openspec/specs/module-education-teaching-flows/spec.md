@@ -213,8 +213,47 @@ While in `planning` status, the ephemeral session decomposes the topic into a co
 
 ### Requirement: Teaching Phase — Explain, Question, Evaluate
 
-The implementation SHALL provide the behavior described by this requirement.
-While in `teaching` status, the session moves through three sub-phases for the current node: `explaining` → `questioning` → `evaluating`. After a successful evaluation, mastery is updated and the flow advances to `quizzing`.
+While in `teaching` status, the session SHALL move through three sub-phases for the current node: `explaining` → `questioning` → `evaluating`. After a successful evaluation, mastery is updated and the flow advances to `quizzing`.
+
+The teaching phase SHALL select a primary pedagogical technique based on the concept node's `metadata.concept_type` when set (`factual` → retrieval practice, `procedural` → worked example then guided practice, `conceptual` → Socratic questioning with analogy, `creative` → divergent prompts then critique), falling back to Socratic questioning when unset. The teaching session SHALL explain its technique choice when the owner asks, citing the pedagogical principle; SHALL include source citations in explanations when relevant registered or model-recalled sources exist; and SHALL suggest reading pathways after concept explanation completes.
+
+ID: REQ-module-education-teaching-flows-006
+Source: Education MANIFESTO.md amendment (evidence-based pedagogy)
+
+#### Scenario: Technique selection by concept type
+
+- **WHEN** the teaching session begins explaining a concept node with
+  `metadata.concept_type = "procedural"`
+- **THEN** the session uses a worked-example-then-practice approach rather
+  than starting with Socratic questions
+- **AND** the flow state records the technique used
+
+#### Scenario: Default technique when concept type is unset
+
+- **WHEN** the teaching session begins explaining a concept node without a
+  `concept_type` in its metadata
+- **THEN** the session uses Socratic questioning as the default technique
+- **AND** existing teaching behavior is unchanged (backward compatible)
+
+#### Scenario: Pedagogy transparency on request
+
+- **WHEN** the owner asks "why are you teaching it this way?" during a
+  teaching session
+- **THEN** the butler explains its technique choice by naming the concept
+  type, the selected technique, and the pedagogical principle (e.g.,
+  "this is a procedural skill, so I'm using worked examples — research
+  on cognitive load theory shows this reduces extraneous processing")
+- **AND** the explanation does not interrupt the teaching flow (the session
+  continues from where it was after the explanation)
+
+#### Scenario: Source citation during explanation
+
+- **WHEN** the teaching session explains a concept and a relevant source
+  exists (registered or model-recalled)
+- **THEN** the explanation includes an inline citation ("as described in
+  [title], [location]")
+- **AND** a `source_refs` entry is written to the node's metadata if not
+  already present
 
 #### Scenario: Session delivers explanation for current node
 
@@ -251,8 +290,7 @@ While in `teaching` status, the session moves through three sub-phases for the c
 
 ### Requirement: Quizzing Phase — Comprehension Testing
 
-The implementation SHALL provide the behavior described by this requirement.
-In `quizzing` status the session asks 1–3 additional quiz questions that vary in format (free-form, multiple-choice) to solidify comprehension. After the final question is evaluated, the session calls `teaching_flow_advance()` to branch toward the next frontier node or toward `completed`.
+In `quizzing` status the session SHALL ask 1–3 additional quiz questions that vary in format (free-form, multiple-choice) to solidify comprehension. After the final question is evaluated, the session calls `teaching_flow_advance()` to branch toward the next frontier node or toward `completed`.
 
 #### Scenario: Session asks at least one quiz question in quizzing phase
 
@@ -279,8 +317,7 @@ In `quizzing` status the session asks 1–3 additional quiz questions that vary 
 
 ### Requirement: Reviewing Phase — Spaced Repetition Sessions
 
-The implementation SHALL provide the behavior described by this requirement.
-A scheduled trigger fires when a review is due. The spawned session reads all nodes with `next_review_at <= now()` for the mind map, asks 1–3 recall questions per batch, records responses, updates SM-2 parameters, and schedules the next review. After processing, the session calls `teaching_flow_advance()`.
+A scheduled trigger SHALL fire when a review is due. The spawned session reads all nodes with `next_review_at <= now()` for the mind map, asks 1–3 recall questions per batch, records responses, updates SM-2 parameters, and schedules the next review. After processing, the session calls `teaching_flow_advance()`.
 
 #### Scenario: Scheduled trigger fires for due review
 
@@ -334,8 +371,7 @@ A scheduled trigger fires when a review is due. The spawned session reads all no
 
 ### Requirement: Mid-Flow User Questions — Contextual Help
 
-The implementation SHALL provide the behavior described by this requirement.
-When a user sends a freeform question (e.g., "I don't understand recursion") during an active teaching flow, the Switchboard routes it to the education butler. The session identifies the relevant node in the current mind map, provides a targeted explanation, asks a follow-up comprehension question, and records the response — without disrupting the main flow sequence.
+When a user sends a freeform question (e.g., "I don't understand recursion") during an active teaching flow, the Switchboard SHALL route it to the education butler. The session identifies the relevant node in the current mind map, provides a targeted explanation, asks a follow-up comprehension question, and records the response — without disrupting the main flow sequence.
 
 #### Scenario: Mid-flow question matched to current node
 

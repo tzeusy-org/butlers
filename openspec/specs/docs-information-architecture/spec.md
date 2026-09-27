@@ -261,7 +261,6 @@ docs/
     approvals.md
     email.md
     telegram.md
-    mailbox.md
     metrics.md
     pipeline.md
     knowledge-base.md
@@ -279,9 +278,7 @@ docs/
     index.md
     purpose-and-single-pane.md
     information-architecture.md
-    feature-inventory.md
     data-access-and-refresh.md
-    backend-api-contract.md
   data_and_storage/
     index.md
     schema-topology.md
@@ -292,7 +289,6 @@ docs/
   identity_and_secrets/
     index.md
     owner-identity.md
-    contact-system.md
     oauth-flows.md
     cli-runtime-auth.md
     environment-variables.md
@@ -343,9 +339,4 @@ docs/
     testing/
   archive/                      # retained research and evidence with an explicit purpose
     README.md                   # successors for retired bodies; git history preserves them
-    draft-discord.md
-    home-assistant-draft.md
-    photos-screenshots-draft.md
-    voice-draft.md
-    whatsapp-draft.md
 ```

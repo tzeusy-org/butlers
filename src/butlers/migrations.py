@@ -347,7 +347,7 @@ async def run_migrations(db_url: str, chain: str = "core", schema: str | None = 
         db_url: SQLAlchemy-compatible database URL
             (e.g. ``postgresql://user:pass@host:port/dbname``).
         chain: Version chain to migrate. Must be one of the recognized chains
-            (core, mailbox, approvals, or any butler name with a migrations/
+            (core, approvals, or any butler name with a migrations/
             directory). Pass ``"all"`` to migrate all chains.
         schema: Optional target schema for one-db/multi-schema topology.
     """

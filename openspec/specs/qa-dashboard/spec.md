@@ -256,9 +256,10 @@ The QA dashboard SHALL render any single case (either as the right-pane on `/qa?
 
 #### Scenario: Failure banner quotes the crash
 - **WHEN** the Case Dossier renders a case whose `state_track_stage` is `failed`
-- **THEN** the diagnosis column opens with a destructive (red) serif-italic banner quoting the attempt's `error_detail` verbatim (`The investigation crashed: "<error_detail>"`), or a generic crash line when `error_detail` is null
+- **THEN** the diagnosis column opens with a destructive (red) serif-italic banner and a bounded raw `error_detail` block
+- **AND** a failed case with `proposal_state = "unpublished"` says that a local proposal was produced but publication failed; other failed cases use the generic crash copy
 - **AND** the Diagnosis/Hypothesis/Evidence/Considered sections beneath it fall back to "No investigation notes were captured for this case." (the same fallback `pr`/`landed`/`escalated` use) rather than the in-flight "Diagnosing…" copy, since a `failed` case is terminal, not still working
-- **AND** the Proposed Fix column renders "No PR. Investigation failed." in the destructive color (not the calm "No PR yet." reserved for in-flight, pr-less stages, and not "No PR. Escalated to user.", which asserts a human hand-off that never happened for a crash)
+- **AND** a failed case with no retained proposal renders "No PR. Investigation failed." in the destructive color (not the calm "No PR yet." reserved for in-flight, pr-less stages, and not "No PR. Escalated to user.", which asserts a human hand-off that never happened for a crash)
 
 #### Scenario: Diagnosis column
 - **WHEN** the Case Dossier renders the left column
@@ -267,6 +268,7 @@ The QA dashboard SHALL render any single case (either as the right-pane on `/qa?
   - **Hypothesis** — single mono line rendered from `investigation_notes.hypothesis`
   - **Evidence · log fragments** — mono grid rows rendered from `investigation_notes.evidence_lines[]`; each row shows ts, level, butler, msg, and the bracketed claim numbers `[N]` it supports
   - **Considered & ruled out** — rendered from `investigation_notes.counter_evidence[]`; one row per entry showing hypothesis + reason + verdict
+- **AND** for `proposal_state = "unpublished"`, the diagnosis uses the root-cause `hypothesis` and does not render agent-authored `blurb_segments` that may describe proposed code in present tense
 - **AND** when the user hovers a claim segment in the Diagnosis paragraph, every evidence row whose id appears in that claim's `evidence_ids[]` is visually highlighted; when the user hovers an evidence row, the claim segments referencing that row's id are highlighted (bidirectional linkage)
 
 #### Scenario: Proposed fix column
@@ -280,6 +282,7 @@ The QA dashboard SHALL render any single case (either as the right-pane on `/qa?
   - "Diff preview" eyebrow followed by a line-kind-aware diff renderer for `investigation_notes.diff_snapshot[]`
   - Mono footer caption with `opened <HH:MM>` and optional `· merged <HH:MM>`
 - **AND** when `pr` is null, the column renders a single serif-italic line "No PR — escalated to user."
+- **AND** when `proposal_state = "unpublished"`, the column instead labels the artifact `Local proposal`, explains that publication failed and no PR was created, and retains `why_this_fix` plus the diff under proposal-specific labels
 
 #### Scenario: Session trace doors
 - **WHEN** the Case Dossier renders a case whose attempt carries a `healing_session_id` and/or a non-empty `session_ids[]`
@@ -290,6 +293,7 @@ The QA dashboard SHALL render any single case (either as the right-pane on `/qa?
 - **WHEN** the Case Dossier renders the full-width patrol journal section
 - **THEN** the section renders a mono row for each event from `/api/qa/cases/:id/journal`, in chronological order: ts (`HH:MM`), step name in step color (flagged/opened amber, sampled/cross-checked/drafted neutral, considered/wait/tick dim, concluded/merged green, escalated amber), text, and an optional dim detail line beneath
 - **AND** an eyebrow above the section reads "Patrol journal · every QA decision on this case" with a right-aligned `<count> entries · patrol every <P>m` caption
+- **AND** when `proposal_state = "unpublished"`, a `concluded` event's agent-authored proposal detail is replaced with the factual projection `Proposal remained unpublished.` so proposed behavior cannot read as deployed
 - **AND** when the case has no journal events yet, the section is hidden entirely
 
 ### Requirement: QA Cases API
@@ -303,7 +307,7 @@ The dashboard API SHALL expose case-shaped resources under `/api/qa/cases` for t
 
 #### Scenario: GET /api/qa/cases/:id
 - **WHEN** `GET /api/qa/cases/:id` is called with an attempt UUID
-- **THEN** it returns the full dossier payload: the case summary, `state_track_stage`, `investigation_notes` (or null when no notes have been emitted yet), a `pr` summary block (or null), the most recent 50 journal events, the attempt's `healing_session_id` (or null), its `session_ids[]` (empty when none), and `error_detail` (the raw `healing_attempts.error_detail` text, or null — populated regardless of state, but only rendered by the UI's failure banner in the `failed` state)
+- **THEN** it returns the full dossier payload: the case summary, `state_track_stage`, derived `proposal_state` (`none`, `unpublished`, or `published`), `proposal_diff_snapshot` (validated independently so a diff-only fallback remains visible), `investigation_notes` (or null when no notes have been emitted yet), a `pr` summary block (or null), the most recent 50 journal events, the attempt's `healing_session_id` (or null), its `session_ids[]` (empty when none), and `error_detail` (the raw `healing_attempts.error_detail` text, or null — populated regardless of state, but only rendered by the UI's failure banner in the `failed` state)
 - **AND** when the attempt id does not exist, it returns the standard 404 envelope from RFC 0007
 
 #### Scenario: GET /api/qa/cases/:id/journal
@@ -347,3 +351,109 @@ The dashboard SHALL render the case index at `/qa/investigations` using the Disp
 #### Scenario: Empty list
 - **WHEN** no cases match the active filters
 - **THEN** the page renders a single serif-italic line "Nothing matches." with no other chrome
+
+### Requirement: QA Patrol Status Semantics
+
+The QA dashboard SHALL treat the existing `public.qa_patrols.status` vocabulary
+as an explicit cross-layer contract. The canonical accepted values are `running`,
+`clean`, `findings_dispatched`, `error`, `skipped_overlap`, and `suppressed`; this
+change SHALL NOT add a status value or alter how the QA patrol loop chooses one.
+
+#### Scenario: Canonical patrol-status filter validation
+
+- **WHEN** an operator requests `GET /api/qa/patrols` with `status` equal to one of
+  the six canonical values
+- **THEN** the API accepts the filter and returns matching patrol records
+- **AND** when `status` is any other value, the API returns HTTP 422 naming the
+  rejected value and the canonical vocabulary
+
+#### Scenario: Persisted unknown status remains observable
+
+- **WHEN** a patrol list or patrol-detail read returns a persisted status outside
+  the canonical vocabulary
+- **THEN** the API preserves that raw response value for read-only presentation
+- **AND** it SHALL NOT coerce that value to `clean`, reject the whole response, or
+  mutate the patrol record
+
+#### Scenario: Summary derives an explicit unknown-status condition
+
+- **WHEN** `GET /api/qa/summary` selects a latest completed patrol whose persisted
+  `status` is outside the canonical vocabulary
+- **THEN** `last_patrol.status` preserves that raw value for forensic API consumers
+- **AND** `staffer_status` is `unknown_patrol_status`, not `healthy`, `unknown`, or
+  `error`
+- **AND** the endpoint SHALL NOT add or normalize a persisted patrol status or change
+  patrol-dispatch policy
+
+#### Scenario: Total overview status presentation
+
+- **WHEN** the QA overview renders a recent patrol
+- **THEN** its status dot and accessible patrol-link name use these semantics:
+  - `clean`: label `clean`, healthy green
+  - `findings_dispatched`: label `findings dispatched`, amber attention
+  - `suppressed`: label `findings suppressed`, amber warning
+  - `error`: label `patrol error`, destructive red
+  - `running`: label `patrol running`, explicit muted non-success
+  - `skipped_overlap`: label `patrol skipped due to overlap`, explicit muted
+    non-success
+- **AND** no supported non-clean status uses the healthy green token
+
+#### Scenario: Unknown patrol status fails closed in the overview
+
+- **WHEN** the QA overview receives a future, malformed, or corrupt patrol-status
+  value
+- **THEN** it renders the label `unknown patrol status` with a destructive status
+  dot
+- **AND** it SHALL NOT render healthy green or a clean label
+
+#### Scenario: Patrol detail uses the same human status label
+
+- **WHEN** an operator opens a QA patrol detail
+- **THEN** its metadata caption renders the same human-readable status label as
+  the overview mapping for every canonical value
+- **AND** an unknown persisted value renders `unknown patrol status`, not the raw
+  storage identifier or a clean label
+
+#### Scenario: QA butler patrol cadence uses the total status presentation
+
+- **WHEN** an operator opens the QA butler detail's recent-patrol cadence stripe
+- **THEN** each status badge renders the same human-readable label as the shared
+  patrol-status mapping for every canonical value
+- **AND** only `clean` is green; `findings_dispatched` and `suppressed` use amber
+  attention semantics; `error` and an unknown persisted value are destructive; and
+  `running` and `skipped_overlap` remain explicit muted non-success states
+- **AND** an unknown persisted value renders `unknown patrol status`, never its raw
+  storage identifier or a healthy presentation
+
+#### Scenario: Status meaning is accessible without motion
+
+- **WHEN** an operator reaches a recent-patrol link by keyboard or assistive
+  technology
+- **THEN** its accessible name contains the human status label and finding count,
+  while the visual dot remains decorative
+- **AND** status changes use no added animation or pulse, so reduced-motion users
+  receive the same immediate state information
+
+#### Scenario: Polling remains presentation-only
+
+- **WHEN** dashboard polling returns a newer patrol row while another patrol is
+  running or completing
+- **THEN** the overview and detail render the latest returned status through the
+  same mapping
+- **AND** neither view changes patrol status, dispatches work, or changes
+  suppression policy
+
+### Requirement: QA summary and case rail source honesty
+
+The QA overview SHALL distinguish an unavailable summary or case source from a successful empty result.
+
+#### Scenario: Summary unavailable
+
+- **WHEN** the QA summary is loading or errors without cached data
+- **THEN** KPI context names the summary as unavailable and MUST NOT claim no repairs or a calm zero
+
+#### Scenario: Case rail unavailable
+
+- **WHEN** the case rail query errors
+- **THEN** it renders a named degraded note with retry
+- **AND** a successful empty query continues to render "Nothing in the dossier."

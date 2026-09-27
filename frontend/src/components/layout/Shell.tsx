@@ -1,5 +1,6 @@
-import { type ReactNode, useState } from 'react'
+import { type ReactNode, useMemo, useRef, useState } from 'react'
 import Sidebar from './Sidebar'
+import { ShellScrollContext, type ShellScrollContextValue } from './ShellScrollContext'
 import {
   Sheet,
   SheetContent,
@@ -9,6 +10,12 @@ import {
 interface ShellProps {
   header: ReactNode
   children: ReactNode
+  /**
+   * The docked chat rail (bu-0ynlk.11) — a sibling column of `<main>`, never
+   * an overlay. Omit to render no dock (the popover posture handles chat
+   * instead, see RootLayout's posture host).
+   */
+  chatDock?: ReactNode
 }
 
 const SIDEBAR_COLLAPSED_KEY = 'butlers.sidebar-collapsed'
@@ -21,9 +28,14 @@ function readCollapsedPreference(): boolean {
   }
 }
 
-export default function Shell({ header, children }: ShellProps) {
+export default function Shell({ header, children, chatDock }: ShellProps) {
   const [mobileOpen, setMobileOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(readCollapsedPreference)
+  const mainScrollContainerRef = useRef<HTMLElement>(null)
+  const scrollContextValue = useMemo<ShellScrollContextValue>(
+    () => ({ mainScrollContainerRef }),
+    [],
+  )
 
   const toggleCollapsed = () => {
     setCollapsed((prev) => {
@@ -38,7 +50,15 @@ export default function Shell({ header, children }: ShellProps) {
   }
 
   return (
-    <div className="flex h-screen overflow-hidden bg-background">
+    <ShellScrollContext.Provider value={scrollContextValue}>
+      <div
+        className="flex h-dvh overflow-hidden bg-background"
+        style={{
+          paddingTop: 'var(--safe-area-top)',
+          paddingLeft: 'var(--safe-area-left)',
+          paddingRight: 'var(--safe-area-right)',
+        }}
+      >
       {/* Mobile sidebar (Sheet/drawer) — only rendered below md */}
       <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
         <SheetContent side="left" className="w-64 p-0 md:hidden" showCloseButton={false}>
@@ -86,10 +106,42 @@ export default function Shell({ header, children }: ShellProps) {
         </header>
 
         {/* Content */}
-        <main id="main-content" tabIndex={-1} className="flex-1 overflow-y-auto p-6">
+        <main
+          ref={mainScrollContainerRef}
+          id="main-content"
+          tabIndex={-1}
+          className="flex-1 overflow-y-auto"
+          style={{
+            // POP restoration is owned by useShellScrollMemory. Native scroll
+            // anchoring can otherwise move that deliberate offset as route
+            // content settles.
+            overflowAnchor: 'none',
+            paddingTop: 'var(--page-gutter-y)',
+            paddingLeft: 'var(--page-gutter-x)',
+            paddingRight: 'var(--page-gutter-x)',
+            // Bottom safe-area is stacked here (not on the outer shell) so it
+            // scrolls with content -- the last item stays clear of a phone's
+            // home-indicator gesture bar instead of being cropped by it.
+            paddingBottom: 'calc(var(--page-gutter-y) + var(--safe-area-bottom))',
+          }}
+        >
           {children}
         </main>
       </div>
-    </div>
+
+      {/* Docked chat rail (bu-0ynlk.11) — a sibling column, never an overlay
+          over main. Whether to pass `chatDock` at all is RootLayout's call
+          (viewport + persisted open state, see useMediaQuery there); Shell
+          itself only lays it out. Hairline border only, deliberately no
+          shadow class (the dashboard design language reserves shadows for
+          elevated overlays; the dock pushes, it does not float). */}
+      {chatDock && (
+        // aside is implicitly role=complementary — no explicit role attribute needed.
+        <aside aria-label="Chat" className="flex flex-col border-l border-border">
+          {chatDock}
+        </aside>
+      )}
+      </div>
+    </ShellScrollContext.Provider>
   )
 }

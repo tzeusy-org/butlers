@@ -170,7 +170,7 @@ function StickyTopBar({
   const breakerTripped = breakerState === "tripped";
   const breakerUnknown = breakerState === "unknown";
   const circuitBreakerButtonClass = [
-    "rounded border px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.1em] transition-colors duration-fast focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+    "rounded border px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.1em] transition-colors duration-fast focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus",
     breakerTripped
       ? "border-destructive/50 text-destructive hover:border-destructive hover:text-destructive disabled:cursor-not-allowed disabled:opacity-50"
       : breakerUnknown
@@ -189,7 +189,7 @@ function StickyTopBar({
               type="button"
               onClick={() => onSeverityChange(opt.value)}
               className={[
-                "rounded px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.1em] transition-colors duration-fast focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                "rounded px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.1em] transition-colors duration-fast focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus",
                 severity === opt.value
                   ? "bg-foreground text-background"
                   : "text-muted-foreground hover:text-foreground",
@@ -212,7 +212,7 @@ function StickyTopBar({
               type="button"
               onClick={() => onSinceChange(opt.value)}
               className={[
-                "rounded px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.1em] transition-colors duration-fast focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                "rounded px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.1em] transition-colors duration-fast focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus",
                 since === opt.value
                   ? "bg-foreground text-background"
                   : "text-muted-foreground hover:text-foreground",
@@ -234,7 +234,7 @@ function StickyTopBar({
             aria-label="Filter by state"
             value={state}
             onChange={(event) => onStateChange(event.target.value as StateFilter)}
-            className="h-6 rounded border border-border/60 bg-transparent px-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-muted-foreground outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="h-6 rounded border border-border/60 bg-transparent px-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-muted-foreground outline-none focus-visible:ring-1 focus-visible:ring-focus"
           >
             {STATE_OPTIONS.map((opt) => (
               <option key={opt.value} value={opt.value}>
@@ -271,7 +271,7 @@ function StickyTopBar({
                   role="menuitemcheckbox"
                   aria-checked={selectedButlers.has(name)}
                   onClick={() => onToggleButler(name)}
-                  className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left font-mono text-[11px] text-foreground outline-none hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:text-accent-foreground"
+                  className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left font-mono text-[11px] text-foreground outline-none hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:text-accent-foreground focus-visible:ring-focus"
                 >
                   <span className="w-3 text-center" aria-hidden="true">
                     {selectedButlers.has(name) ? "x" : ""}
@@ -313,7 +313,7 @@ function StickyTopBar({
           onClick={onForcePatrol}
           disabled={forcePatrolPending}
           aria-label="Force patrol"
-          className="rounded px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground transition-colors duration-fast hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+          className="rounded px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground transition-colors duration-fast hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus disabled:cursor-not-allowed disabled:opacity-50"
         >
           {forcePatrolPending ? "Patrolling…" : "Force patrol"}
         </button>

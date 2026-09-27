@@ -18,6 +18,7 @@ core_groups = [
     "temporal",       # deadlines, event_chains, seasonal_periods
     "delegation",     # delegate_ask/receive/answer/wake — cross-butler questions
     "fleet_cases",    # find_open_case/open_case/contribute_case_evidence/propose_case_posture/close_case/read_case
+    "cost_claims",    # typed cross-butler money claims; writes fenced by runtime role
 ]
 
 [butler.db]
@@ -100,6 +101,12 @@ dispatch_mode = "job"
 job_name = "interaction_sync"
 
 [[butler.schedule]]
+name = "loan-cost-claim-backfill"
+cron = "35 4 * * *"
+dispatch_mode = "job"
+job_name = "loan_cost_claim_backfill"
+
+[[butler.schedule]]
 name = "memory-curation"
 cron = "0 3 * * 0"
 dispatch_mode = "job"
@@ -116,6 +123,12 @@ name = "fact-retraction-curation"
 cron = "0 5 * * 1"
 dispatch_mode = "job"
 job_name = "fact_retraction_curation"
+
+[[butler.schedule]]
+name = "prepared-action-orphan-sweep"
+cron = "30 3 * * *"
+dispatch_mode = "job"
+job_name = "prepared_action_orphan_sweep"
 
 [[butler.schedule]]
 name = "entity-dedup-curation"
@@ -171,7 +184,19 @@ enabled = true
 risk_tier = "medium"
 
 [modules.relationship]
-groups = ["contacts", "interactions", "management", "tracking"]
+# The enabled Relationship groups are manifesto-owned. The mixed entity group
+# remains disabled until the adopted read-only split is implemented; activating
+# it today would also expose two writes the owner explicitly kept pruned.
+groups = [
+    "contacts",
+    "contacts_extended",
+    "interactions",
+    "relationships",
+    "social",
+    "notes",
+    "tracking",
+    "management",
+]
 
 # Google Drive module (optional — requires 'drive' scope on connected Google account).
 # Enable by uncommenting and re-authorizing via /api/oauth/google/start?force_consent=true

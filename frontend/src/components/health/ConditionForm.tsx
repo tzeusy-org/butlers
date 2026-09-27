@@ -135,7 +135,7 @@ export function ConditionForm({ condition, onDone, onCancel }: ConditionFormProp
             id="cond-status"
             value={status}
             onChange={(e) => setStatus(e.target.value as ConditionStatus)}
-            className="border-input bg-background ring-offset-background focus-visible:ring-ring flex h-10 w-full rounded-md border px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
+            className="border-input bg-background ring-offset-background focus-visible:ring-focus flex h-10 w-full rounded-md border px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
           >
             {STATUS_OPTIONS.map((opt) => (
               <option key={opt} value={opt}>

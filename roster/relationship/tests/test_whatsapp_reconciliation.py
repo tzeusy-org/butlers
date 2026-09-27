@@ -19,6 +19,7 @@ import butlers.tools.relationship.whatsapp_reconciliation as reconciliation
 from butlers.testing.schema_standins import (
     CONTACT_ENTITY_MAP,
     ENTITY_PREDICATE_REGISTRY,
+    ENTITY_REBIND_LOG,
     PENDING_ACTIONS,
 )
 from butlers.tools.relationship.entity_merge import (
@@ -89,6 +90,7 @@ async def reconciliation_pool(provisioned_postgres_pool):
             """
         )
         await pool.execute(ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship"))
+        await pool.execute(ENTITY_REBIND_LOG.ddl(schema="public"))
         await pool.execute(
             """
             CREATE TABLE relationship.entity_facts (

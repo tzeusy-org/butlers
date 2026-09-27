@@ -17,7 +17,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.models.google_health import GoogleHealthConnectorState
 from butlers.api.routers.google_health import (
@@ -28,6 +27,7 @@ from butlers.api.routers.google_health import (
 from butlers.api.routers.google_health import (
     _get_db_manager as _gh_get_db,
 )
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 

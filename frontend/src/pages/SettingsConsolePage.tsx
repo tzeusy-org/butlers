@@ -117,6 +117,15 @@ function fetchApprovalMetrics(): Promise<ApprovalMetricsSummary> {
 
 // ---------------------------------------------------------------------------
 // AttentionStrip
+//
+// Not shared with components/ingestion/connectors/AttentionStrip.tsx
+// (bu-q5mb1): that one renders a horizontal wrapping strip of links derived
+// client-side from raw ConnectorSummary[], with no truncation or expand
+// state. This one renders a vertical bordered list of pre-computed,
+// bus-live AttentionItem rows with server-side capping and an
+// expand/collapse control. The data shapes and layouts don't overlap enough
+// to share render logic, so they're kept as two deliberately separate
+// components rather than one parameterized primitive.
 // ---------------------------------------------------------------------------
 
 function AttentionStrip({

@@ -44,7 +44,7 @@ import { cn } from "@/lib/utils.ts";
 const PILL =
   "inline-flex items-center justify-center gap-1.5 h-7 rounded-[3px] border px-2.5 " +
   "font-mono text-[11px] leading-none transition-colors " +
-  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30 " +
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus " +
   "disabled:pointer-events-none disabled:opacity-40";
 
 const MATCH_STRATEGIES: { value: CalendarDedupMatchStrategy; label: string; hint: string }[] = [
@@ -262,7 +262,7 @@ export function CalendarDuplicatesPanel({
                   void commitThreshold();
                 }
               }}
-              className="h-7 w-20 rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 font-mono text-[12px] tabular-nums text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30"
+              className="h-7 w-20 rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 font-mono text-[12px] tabular-nums text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
             />
           </label>
         </div>

@@ -359,13 +359,13 @@ describe("resolveApiHref", () => {
     // /butlers-api/api or /butlers-dev-api/api behind the path mounts), so the
     // expectation is derived from the configured base rather than hardcoded.
     const apiBase = import.meta.env.VITE_API_URL ?? "/api";
-    expect(resolveApiHref("/oauth/spotify/start?page_of_origin=secrets")).toBe(
-      `${apiBase}/oauth/spotify/start?page_of_origin=secrets`,
+    expect(resolveApiHref("/oauth/example-provider/start?page_of_origin=secrets")).toBe(
+      `${apiBase}/oauth/example-provider/start?page_of_origin=secrets`,
     );
   });
 
   it("passes an absolute provider URL through untouched", () => {
-    const url = "https://accounts.spotify.com/authorize?client_id=test";
+    const url = "https://oauth.test.invalid/authorize?client_id=test";
     expect(resolveApiHref(url)).toBe(url);
   });
 });
@@ -384,14 +384,16 @@ describe("API-base resolution for backend export paths", () => {
       apiBase: "/butlers-dev-api/api",
     },
     {
-      name: "an absolute API base",
-      configuredBase: "https://example.test/butlers-dev-api/api",
-      apiBase: "https://example.test/butlers-dev-api/api",
+      name: "an absolute same-origin API base",
+      configuredBase: `${location.origin}/butlers-dev-api/api`,
+      apiBase: `${location.origin}/butlers-dev-api/api`,
     },
   ])("uses $name for export requests and download links", async ({ configuredBase, apiBase }) => {
     vi.stubEnv("VITE_API_URL", configuredBase);
     vi.resetModules();
     const { apiFetch: isolatedApiFetch, resolveApiHref: isolatedResolveApiHref } = await import("./client.ts");
+    const { rememberOwnerCsrf } = await import("./owner-session");
+    rememberOwnerCsrf({ csrf_token: "synthetic-export-csrf", csrf_expires_at: new Date(Date.now() + 1_800_000).toISOString() });
     const exportPath = "/data/export/download/export-123?scope=all&issued_at=1&token=signed";
 
     mockApiResponse({});

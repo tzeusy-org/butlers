@@ -59,6 +59,8 @@ export const EVENT_CACHE_COVERAGE_MANIFEST: CoverageEntry[] = [
   { eventType: "session", queryKey: ["butler-sessions"], source: "use-sessions.ts (useButlerSessions)" },
   { eventType: "session", queryKey: ["butlers", "board"], source: "use-butlers.ts (useButlersBoard)" },
   { eventType: "session", queryKey: ["timeline"], source: "use-timeline.ts (useTimeline)" },
+  { eventType: "session", queryKey: ["entity-activity", "entity-001"], source: "use-entities.ts (useEntityActivity after session completion)" },
+  { eventType: "session", queryKey: ["entity-activity-bins", "entity-001", "90d"], source: "use-entities.ts (useEntityActivityBins after session completion)" },
   { eventType: "session", queryKey: ["session-detail-global", "sess-1"], source: "use-sessions.ts (useGlobalSessionDetail / SessionDetailPage)" },
   // bu-01r64.4: the session-stripe chart above SessionsPage's list lagged the
   // list itself by up to 60s because sessionPatch never touched its key.
@@ -74,7 +76,7 @@ export const EVENT_CACHE_COVERAGE_MANIFEST: CoverageEntry[] = [
   { eventType: "issue", queryKey: ["issues"], source: "use-issues.ts (useIssues, both active and dismissed views)" },
 
   // ingestion
-  { eventType: "ingestion", queryKey: ["ingestion", "events"], source: "use-ingestion-events.ts (ingestionEventKeys.list)" },
+  { eventType: "ingestion", queryKey: ["ingestion", "events", "list"], source: "use-ingestion-events.ts (ingestionEventKeys.list)" },
   { eventType: "ingestion", queryKey: ["ingestion", "window-rollup"], source: "use-ingestion-events.ts (window rollup)" },
   { eventType: "ingestion", queryKey: ["ingestion", "events-histogram"], source: "use-ingestion-events.ts (histogram)" },
 
@@ -92,6 +94,14 @@ export const EVENT_CACHE_COVERAGE_MANIFEST: CoverageEntry[] = [
 
   // chronicles — deterministic scheduled projections
   { eventType: "chronicles", queryKey: ["chronicles"], source: "use-chronicles.ts (projection-backed queries)" },
+  { eventType: "chronicles", queryKey: ["entity-activity", "entity-001"], source: "use-entities.ts (useEntityActivity)" },
+  { eventType: "chronicles", queryKey: ["entity-activity-bins", "entity-001", "90d"], source: "use-entities.ts (useEntityActivityBins)" },
+
+  // entity.rebound.v1 — survivor/tombstone detail plus receipt cohort
+  { eventType: "entity.rebound.v1", queryKey: ["memory-entity", "entity-1"], source: "use-memory.ts (useEntity)" },
+  { eventType: "entity.rebound.v1", queryKey: ["relationship-entities"], source: "use-entities.ts (useRelationshipEntities)" },
+  { eventType: "entity.rebound.v1", queryKey: ["entity-activity", "entity-1"], source: "use-entities.ts (useEntityActivity)" },
+  { eventType: "entity.rebound.v1", queryKey: ["entity-activity-bins", "entity-1", "90d"], source: "use-entities.ts (useEntityActivityBins)" },
 ];
 
 /** Every event type in EVENT_CACHE_COVERAGE_MANIFEST -- used by the coverage
@@ -106,4 +116,5 @@ export const CACHE_AFFECTING_EVENT_TYPES = [
   "ingestion",
   "calendar",
   "chronicles",
+  "entity.rebound.v1",
 ] as const;

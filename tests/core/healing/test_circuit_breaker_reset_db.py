@@ -28,11 +28,11 @@ import asyncpg
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_mcp_manager
 from butlers.api.routers.healing import _get_db_manager
 from butlers.core.healing.dispatch import _is_circuit_breaker_tripped
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.integration
 

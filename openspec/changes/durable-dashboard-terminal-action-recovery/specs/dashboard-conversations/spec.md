@@ -172,6 +172,16 @@ of `recovery_started`, `already_pending`, `already_accepted`,
 `rejected`, `ambiguous`, or `conflict`. `recovery_started` means only that this
 exact message acquired the ingress fence and began the original ingress workflow;
 it SHALL not claim that Switchboard or a downstream butler received the message.
+The central `dashboard-owner-auth` boundary SHALL admit a valid configured
+`X-API-Key` or a valid server-managed owner session before protected body reads,
+domain-pool acquisition, caches or handlers. Passkey verification issues a session;
+it is not a new per-route credential. Cookie-backed unsafe actions additionally
+require independent synchronizer CSRF and exact Origin validation. Unavailable
+authoritative auth state returns safe `503`; missing, expired, revoked or invalid
+caller authority returns `401`. An absent API key alone is not unavailability when
+healthy keyless session authority exists. Domain checks remain mandatory after
+central authentication; auth-store reads necessary for verification are distinct
+from forbidden pre-authentication domain access.
 
 ID: REQ-dashboard-conversations-006
 Source: dashboard-turn cancellation migration core_193; dashboard-terminal-action-recovery REQ-dashboard-terminal-action-recovery-003; design.md Decision 6
@@ -313,12 +323,13 @@ Scope: v1-mandatory
 ### Requirement: Conversation Reply Channel
 
 A routed butler session SHALL confirm its interpretation of a dashboard
-statement or a durable terminal-action outcome by calling the
-`conversation_reply` MCP tool, which persists an assistant-role message into
-the originating conversation. The SSE poller SHALL watch that persisted message
-rather than raw session completion. A terminal-lane reply SHALL carry its
-stable child-effect idempotency key and SHALL not claim a report was filed
-until the corresponding durable QA receipt is complete.
+statement (or acknowledge a filed bug report, or answer a question) by
+calling the `conversation_reply` MCP tool, which persists an assistant-role
+message directly into the conversation it was routed from. The SSE poller
+MUST watch for this message rather than the routed session's raw completion
+(see the SSE Response Streaming requirement).
+
+For a durable terminal-action outcome, the persisted reply SHALL carry its stable child-effect idempotency key and SHALL not claim a report was filed until the corresponding durable QA receipt is complete.
 
 ID: REQ-dashboard-conversations-003
 Source: dashboard-conversations § Conversation Reply Channel; dashboard-terminal-action-recovery REQ-dashboard-terminal-action-recovery-002; design.md Decision 4
@@ -381,6 +392,25 @@ Scope: v1-mandatory
 
 - **WHEN** any butler's MCP server registers its core tools
 - **THEN** `conversation_reply` SHALL be registered regardless of `core_groups` configuration — any butler can be the classification or pinned-target destination of a dashboard conversation, so the tool cannot be scoped to a subset of butlers
+
+#### Scenario: conversation_reply accepts an optional sources list for an answer-lane reply
+
+- **WHEN** a routed butler session calls `conversation_reply(conversation_id, message, sources=[...])` with a non-empty list of strings
+- **THEN** the inserted message row's `sources` column SHALL persist the given list
+- **AND** the tool's success response SHALL be unaffected in shape otherwise
+
+#### Scenario: conversation_reply is unaffected when sources is omitted
+
+- **WHEN** `conversation_reply` is called without a `sources` argument (the existing confirm-loop, action-proposal, and bug-report call sites)
+- **THEN** the inserted message row's `sources` column SHALL be NULL
+- **AND** behavior SHALL be identical to before `sources` existed
+
+#### Scenario: conversation_reply rejects empty or blank source names
+
+- **WHEN** `conversation_reply` is called with `sources=[]` or with any blank source name
+- **THEN** no message row is inserted
+- **AND** the tool returns `{"status": "error", "error": "..."}` guiding the caller to either name what it consulted or omit `sources` entirely and give an honest decline instead of fabricating a citation
+
 ## ADDED Requirements
 
 ### Requirement: Dashboard Turn Cancellation API

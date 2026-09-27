@@ -63,11 +63,9 @@ process started.
 ### Requirement: Deployment Ledger Facts
 
 The `/api/system/deployments` endpoint SHALL return the current (most recent) deployment
-and a short recent history, drawn from `public.deployments` (bu-9r3hd.2, epic bu-9r3hd
-"Deploy spine"). This is the ledger the owner reads to answer "what code is actually
-running, and did it survive the last deploy" -- merged-but-undeployed drift is
-otherwise invisible (bd bu-zhfd0: seven merged migrations sat dark in prod with no
-record of when, or whether, any deploy actually took effect).
+and a short recent history, drawn from `public.deployments`. This is the ledger the owner reads to answer "what code
+is actually running, and did it survive the last deploy", so merged-but-undeployed drift
+is visible.
 
 #### Scenario: Deployments endpoint returns current and recent history
 
@@ -165,7 +163,7 @@ record of when, or whether, any deploy actually took effect).
 - **AND** this endpoint does NOT itself detect drift between schemas or between the
   recorded head and the live database state -- the hourly alembic-head vs per-schema
   DB-revision vs deployed-SHA comparison surfaced as a red `/system` clause is a
-  separate capability (bu-9r3hd.1); this ledger is what that sentinel (and this
+  separate capability; this ledger is what that sentinel (and this
   endpoint) reads to answer "what was last recorded as deployed"
 
 #### Scenario: The Deployment tile renders a null migration_head as an explicit unknown
@@ -346,10 +344,7 @@ the "your data has been seen by these endpoints" surface.
 
 - **WHEN** the egress catalog is assembled
 - **THEN** it reads exclusively from the canonical audit log table
-  (`public.audit_log`) -- no new write path is introduced. The legacy
-  `switchboard.dashboard_audit_log` rows were backfilled into `public.audit_log` by
-  migration `core_124` and the UNION arm was removed; there is no
-  `audit.events` table. Actor identity is derived from the `action` column (aliased
+  (`public.audit_log`) -- no new write path is introduced. Actor identity is derived from the `action` column (aliased
   `operation`, with `ts` aliased `created_at`) via the server-side actor registry.
   (`request_summary` JSONB is not used for actor derivation in v1; the registry maps
   `operation` strings directly to actor identifiers and display names.)
@@ -524,8 +519,8 @@ the dashboard instead of only via direct database access.
   decisions (Gate 5.5, `decision="infra_condition_open"`, joined on the
   shared `fingerprint` identity)
 - **THEN** the panel shows a count of suppressed QA dispatches for that
-  condition, so a previously invisible suppression is now traceable back to
-  the condition that caused it
+  condition, so each suppression is traceable back to the condition that
+  caused it
 
 ### Requirement: System Page Privacy Contract
 
@@ -569,6 +564,110 @@ MUST be denied in v1.
 - **AND** this contract is explicitly noted as a v1 simplification; if the dashboard
   gains non-owner viewers, these endpoints SHALL require a capability review before
   being exposed to non-owner sessions
+
+### Requirement: Backup Run Outcome
+
+The `/api/system/backups` endpoint SHALL report the outcome of the most recent
+backup *run* separately from the age of the most recent backup *artifact*.
+
+These are different questions and one cannot answer the other. The backup script
+refuses to publish a bad dump, so a failed run leaves the previous good artifact
+in place: after a failure the backup directory is byte-identical to what it was
+before, and artifact freshness stays green for up to
+`BACKUP_STALE_THRESHOLD_HOURS` more.
+
+Every backup run SHALL therefore record its own outcome where the dashboard
+reads it, on a path that survives the failures it reports: the run outcome SHALL
+NOT depend on a database connection (the producer is an isolated backup sidecar,
+and a database failure is one of the failures it must report), and SHALL NOT be
+written only on the success path or only from enumerated failure branches.
+
+A run outcome that is absent, unreadable, or malformed SHALL be reported as
+unknown. It SHALL NOT be reported as, or defaulted to, a successful run: an
+older deployment and a first-ever run both produce no evidence, and absence of
+evidence is not evidence of success.
+
+#### Scenario: Fresh artifact, failed run
+
+- **WHEN** the most recent backup artifact is within the staleness threshold and
+  the most recent backup run failed
+- **THEN** the response reports `backup_stale: false` and a healthy
+  `last_backup_status` — the artifact really is fine —
+- **AND** `last_run.result` is `"failed"` with the reason the run failed, so the
+  failure is visible on the night it happens rather than 36 hours later as
+  staleness of an unrelated file
+
+#### Scenario: Fresh artifact, successful run
+
+- **WHEN** the most recent backup artifact is within the staleness threshold and
+  the most recent backup run succeeded
+- **THEN** `last_run.result` is `"success"`, distinguishable from the failed
+  case by this field alone
+
+#### Scenario: No run outcome recorded
+
+- **WHEN** no run outcome exists for the configured backup directory, or the
+  recorded outcome cannot be parsed
+- **THEN** `last_run.result` is `"unknown"` with a fixed operator-safe reason
+- **AND** no consumer treats it as a successful run
+
+#### Scenario: Run outcome reaches an operator
+
+- **WHEN** the QA infra-state discovery source observes a failed most-recent run
+- **THEN** it raises a finding for the failed run itself, rather than waiting
+  for the artifact staleness that failure would eventually cause
+- **AND** an absent or unparseable run outcome raises no finding, because
+  inventing a failure from missing evidence is the mirror image of the bug this
+  requirement closes
+
+### Requirement: Standing Conditions Panel Spans Both Ledgers
+
+`GET /api/system/conditions` SHALL accept an optional `ledger` query
+parameter (`infra`, the default, or `owner`), reading `public.
+infra_conditions` or `public.owner_conditions` respectively through the
+matching facade, and returning the same `ConditionsFacts` envelope shape
+with each `ConditionEntry` tagged with its `ledger`. The System page's
+existing Standing Conditions panel SHALL query both ledgers and render them
+merged into one most-recently-detected-first list, rather than a second
+duplicate panel.
+
+#### Scenario: Omitting ledger preserves existing infra behavior
+
+- **WHEN** `GET /api/system/conditions` is called without a `ledger`
+  parameter
+- **THEN** it behaves exactly as the existing "Standing Infrastructure
+  Conditions" requirement describes, reading `public.infra_conditions`, with
+  each returned `ConditionEntry` additionally carrying `ledger: "infra"`
+
+#### Scenario: ledger=owner reads the owner condition ledger
+
+- **WHEN** `GET /api/system/conditions?ledger=owner` is called
+- **THEN** the response reads `public.owner_conditions` via `butlers.core.
+  owner_conditions.list_conditions`, with each `ConditionEntry` carrying
+  `ledger: "owner"`
+- **AND** an invalid `ledger` value returns HTTP 400
+
+#### Scenario: Panel merges both ledgers into one list
+
+- **WHEN** the System page renders the Standing Conditions panel
+- **THEN** it queries both `ledger=infra` (default) and `ledger=owner`,
+  merges the results deduplicated by `id` and sorted by `first_detected_at`
+  descending, and labels each row with a small ledger badge
+
+#### Scenario: One ledger degraded does not hide the other
+
+- **WHEN** one ledger's query reports `conditions_available: false` (or
+  errors) while the other succeeds
+- **THEN** the panel still renders the available ledger's rows plus a named
+  degraded note for the unavailable one, rather than treating the whole
+  panel as degraded or silently omitting the failed ledger
+
+#### Scenario: QA-dispatch suppression counts apply only to infra rows
+
+- **WHEN** the panel renders a merged list containing an owner-ledger row
+- **THEN** that row never computes or displays a QA-dispatch suppression
+  count (owner conditions have no QA-dispatch suppression concept), while
+  infra-ledger rows retain the existing suppression-count behavior
 
 ## Source References
 

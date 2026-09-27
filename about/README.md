@@ -102,8 +102,9 @@ a contract test that projects from the highest-level artefact downward.
 
 ## Key Architectural Facts
 
-- **11 daemons** — 3 staffers (Switchboard, Messenger, QA) + 8 domain
-  butlers, each a FastMCP server on its own port.
+- **One daemon per `roster/` entry** — staffers carry `type = "staffer"` in
+  `butler.toml`, the rest are domain butlers; each is a FastMCP server on its
+  own port.
 - **MCP everywhere** — LLM-to-butler, butler-to-butler (via Switchboard),
   and connector-to-Switchboard all use MCP.
 - **Single PostgreSQL, per-butler schemas** — Logical isolation without

@@ -130,7 +130,7 @@ export function SymptomForm({ symptom, onDone, onCancel }: SymptomFormProps) {
             id="sym-severity"
             value={severity}
             onChange={(e) => setSeverity(Number(e.target.value))}
-            className="border-input bg-background ring-offset-background focus-visible:ring-ring flex h-10 w-full rounded-md border px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
+            className="border-input bg-background ring-offset-background focus-visible:ring-focus flex h-10 w-full rounded-md border px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
           >
             {SEVERITY_OPTIONS.map((opt) => (
               <option key={opt} value={opt}>

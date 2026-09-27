@@ -1,163 +1,57 @@
 # Relationship Butler
 
-> **Purpose:** Personal CRM that manages contacts, relationships, important dates, interactions, gifts, loans, and reminders so the user never forgets what matters about the people in their life.
-> **Audience:** Contributors and operators.
-> **Prerequisites:** [Concepts](../concepts/butler-lifecycle.md), [Architecture](../architecture/butler-daemon.md).
+A personal CRM: contacts, relationships, important dates, interactions, gifts, loans, and
+reminders, so the owner never forgets what matters about the people in their life. Data is
+entity-first: every contact links to a shared entity, and facts attach to the entity.
 
-## Overview
+- **Identity and scope:** [`roster/relationship/MANIFESTO.md`](../../roster/relationship/MANIFESTO.md)
+- **Required behavior:** [`butler-relationship` spec](../../openspec/specs/butler-relationship/spec.md)
+- **Schedules, modules, and port:** [`roster/relationship/butler.toml`](../../roster/relationship/butler.toml)
+- **Entity model:** [Identity Model](../concepts/identity-model.md)
 
 ![Relationship Butler Flows](./relationship-flows.svg)
 
-The Relationship Butler is the system's personal CRM -- an external memory for the people the user cares about. It tracks contacts with full context (interests, preferences, history), logs interactions with type, direction, and emotion, manages gift pipelines from idea through delivery, tracks important dates with proactive reminders, and monitors stay-in-touch cadences to flag relationships that need attention.
-
-The design philosophy centers on three principles: **thoughtfulness** (never miss what matters), **richness** (capture the full texture of relationships, not just facts), and **connection** (reduce cognitive overhead so the user can focus on being present).
-
-## Profile
-
-| Property | Value |
-|----------|-------|
-| **Port** | 41102 |
-| **Schema** | `relationship` |
-| **Modules** | calendar, contacts, memory, relationship |
-| **Runtime** | codex (gpt-5.4-mini) |
-
-## Schedule
-
-| Task | Cron | Description |
-|------|------|-------------|
-| `upcoming-dates-check` | `25 21 * * 0` | Check for birthdays and anniversaries in the next 7 days and send Telegram reminders |
-| `relationship-maintenance` | `0 9 * * 1` | Review contacts not interacted with in 30+ days, suggest 3 people to reach out to this week with context |
-| `memory_consolidation` | `0 */6 * * *` | Consolidate episodic memory into durable facts |
-| `memory_episode_cleanup` | `0 4 * * *` | Prune expired episodic memory entries |
-
-## Tools
-
-The Relationship Butler has a rich tool surface organized by domain:
-
-**Entity and Contact Management**
-- `entity_resolve / get / update / neighbors` -- Entity graph operations for identity resolution.
-- `contact_create / get / update / search / resolve` -- Full contact lifecycle. `contact_create` automatically creates a linked entity.
-- `fact_set / list` -- Store and retrieve structured key-value facts on contacts (stored on the linked entity).
-
-**Relationships and Groups**
-- `relationship_add / list / remove` -- Bidirectional typed relationships between contacts. Seeded with 15 types across Love, Family, Friend, Work, and Custom categories.
-- `group_create / add_member / list / members` -- Contact groups (family, couple, friends, team, custom).
-- `label_create / assign` and `contact_search_by_label` -- Flexible tagging and filtering.
-
-**Interactions and Notes**
-- `interaction_log / list` -- Log calls, meetings, meals, messages, video calls, and events with direction, duration, and emotion metadata.
-- `note_create / list / search` -- Freeform notes with emotion tagging and full-text search.
-
-**Dates and Reminders**
-- `date_add / list` and `upcoming_dates` -- Track birthdays, anniversaries, and custom milestones. Year is optional.
-- `reminder_create / list / dismiss` -- One-time or recurring reminders, optionally scoped to a contact.
-
-**Gifts and Loans**
-- `gift_add / update_status / list` -- Gift pipeline: idea, purchased, wrapped, given, thanked.
-- `loan_create / settle / list` -- Track loans between user and contacts in either direction.
-
-**Calendar** -- Used for relationship-related scheduling: birthday dinners, catch-up meetings, follow-ups. Events go to the shared butler calendar, not the user's primary calendar.
-
-## Data Model
-
-The data hierarchy follows an entity-first pattern:
-
-1. **Entity** (top level) -- A person, organization, or place in the shared memory graph. Facts and relationships attach here.
-2. **Contact** (child of entity) -- A CRM record with name fields, linked to exactly one entity via `entity_id`.
-3. **Contact details** -- Phone numbers, email addresses, physical addresses attached to a contact.
-
-Key invariant: every contact must link to an entity, and facts must be stored on entities (not contacts directly). The contacts module syncs with Google and Telegram contacts every 15 minutes.
-
-## Interaction Patterns
-
-**Natural language capture.** Most data enters through conversational messages routed from Switchboard. The user says "Had coffee with Sarah today, she got promoted" and the butler logs the interaction, updates the contact, and stores the promotion fact.
-
-**Weekly maintenance suggestions.** Every Monday at 09:00, the butler reviews contacts that have gone quiet and suggests three people to reach out to, with context on the last interaction and any upcoming dates.
-
-**Important date reminders.** Every Sunday evening, the butler checks for birthdays and anniversaries in the coming week and sends proactive reminders via Telegram.
-
 ## Stale-contact source authority
 
-Elapsed time does not, by itself, prove that a contact has gone quiet. Before an overdue contact can
-appear in `insight-scan`, the Monday `relationship-maintenance` message, the on-demand
-`reconnect-planner`, the Relationship Contacts overdue panel, or the Plex attention rail, the
-contact must have exactly one provable source that was expected to record the next interaction.
+Elapsed time alone does not prove a contact has gone quiet. A contact can be surfaced as overdue
+(in insight scans, the weekly maintenance message, the reconnect planner, the Contacts overdue
+panel, or the attention rail) only when exactly one server-attested producer was expected to
+record the next interaction, and the heartbeat for that exact producer endpoint is healthy. A
+healthy sibling endpoint never substitutes; stale, missing, unhealthy, or mixed provenance makes
+the contact `unmeasurable` and pauses every nudge. Caller-settable `extra_metadata.source` is not
+producer authority. `unmeasurable` describes the instrument, not the owner's behavior, so an
+empty overdue list is not an all-clear.
 
-| Interaction input | Required identity corroboration | Expected producer | Current disposition |
-|---|---|---|---|
-| Gmail `email` | active exact `has-email` | `connector:gmail` + exact endpoint | mapped after server attestation |
-| Telegram user-client | active `has-handle=telegram:<id>` | `connector:telegram_user_client` + exact endpoint | mapped after server attestation |
-| WhatsApp user-client | exact WhatsApp JID or canonical E.164 `has-phone` fallback | `connector:whatsapp_user_client` + exact endpoint | mapped after server attestation |
-| Explicit owner manual entry | server-derived owner principal | `owner` | mapped after server attestation |
-| Current un-attested manual rows | none persisted | none | unmeasurable |
-| Telegram bot | Telegram handle is shared with user-client; no passive peer-interaction writer | none | unmeasurable |
-| Discord | Discord handle exists, but passive Relationship sync does not consume the channel | none | unmeasurable |
-| Calendar attendee interaction | attendee email does not prove the calendar event's producer | none | unmeasurable |
-| Legacy, missing, unknown, or mixed provenance | missing or more than one source | none | unmeasurable |
+The channel-to-producer mapping lives in the `butler-relationship` spec and
+[RFC 0029](../../about/legends-and-lore/rfcs/0029-expected-signals-and-honest-absence.md). For
+triage, check the contact's expected-signal state and exact producer, then that same connector
+endpoint's heartbeat.
 
-A mapped connector may authorize absence only while the heartbeat for its exact server-attested
-endpoint identity is healthy and current. A healthy sibling endpoint of the same connector type
-cannot substitute. A stale, dead/offline, unhealthy, missing, or unreadable producer endpoint makes
-the contact unmeasurable and pauses every stale-contact nudge. Mixed sources also fail closed; the
-system never picks the first row or substitutes another healthy connector. Healthy elapsed data
-keeps the existing Dunbar or `stay_in_touch_days` cadence, priorities, and ranking.
+## Implementation Notes
 
-This is an adoption contract, not a claim that current rows are already safe. Existing free-form
-`extra_metadata.source` values are caller-settable and are not producer authority. PR #3965 merged
-the shared RFC 0029 primitive. After this prerequisite lands, continued `bu-8cdl1.3` adoption opens
-a new PR from `main`, adds the reserved server attestation with exact endpoint identity, and wires
-the expected-signals state into every consumer above.
-
-For operator triage after adoption, check the contact's expected-signal state and exact producer,
-then the heartbeat for that same connector and endpoint identity. Do not treat an absent ledger
-row, an empty overdue list, or a sibling endpoint's healthy heartbeat as an all-clear.
-`unmeasurable` is an instrument or provenance condition; it is not evidence about the owner's
-relationship behavior.
-
-## Verification
-
-To confirm the Relationship Butler's entity-contact hierarchy, scheduled tasks, and fact storage are operating as described:
-
-```bash
-# 1. Confirm the butler is listening on the expected port
-curl -s http://localhost:41102/health | python3 -m json.tool
-# Expected: {"status": "ok", ...}
-
-# 2. Verify entity-contact linkage: every contact must have an entity_id
-psql -h localhost -U butlers -d butlers -c \
-  "SELECT COUNT(*) AS contacts_without_entity
-   FROM public.contacts
-   WHERE entity_id IS NULL;"
-# Expected: 0 -- all contacts link to an entity (the entity-first invariant)
-
-# 3. Confirm facts are stored on entities, not contacts directly
-psql -h localhost -U butlers -d butlers -c \
-  "SELECT predicate, COUNT(*) FROM relationship.entity_facts
-   GROUP BY predicate ORDER BY count DESC LIMIT 10;"
-# Expected: key-value facts are present; predicates use kebab-case naming (e.g. 'job-title', 'interests')
-
-# 4. Verify relationship types are seeded (15 types across Love/Family/Friend/Work/Custom)
-psql -h localhost -U butlers -d butlers -c \
-  "SELECT type_name, category FROM relationship.relationship_types
-   ORDER BY category, type_name;"
-# Expected: ≥ 15 rows across Love, Family, Friend, Work, and Custom categories
-
-# 5. Confirm scheduled tasks are seeded from butler.toml
-psql -h localhost -U butlers -d butlers -c \
-  "SELECT name, cron, enabled FROM relationship.scheduled_tasks
-   ORDER BY name;"
-# Expected: relationship-maintenance (Mon 09:00) and upcoming-dates-check (Sun 21:25) present
-
-# 6. Verify contacts module syncs every 15 minutes
-psql -h localhost -U butlers -d butlers -c \
-  "SELECT key, value FROM relationship.state
-   WHERE key LIKE 'contacts_sync%'
-   ORDER BY key;"
-# Expected: sync cursor and last_synced_at entries updated within the past 15 minutes
-```
+- `relationship.facts` is a multi-valued log store: `activity` and `interaction_*` carry many
+  active rows per `(entity_id, predicate)`. Contradiction detection in
+  `run_fact_retraction_curation` (`roster/relationship/jobs/relationship_jobs.py`) is therefore
+  gated to the `_CONTRADICTION_FUNCTIONAL_PREDICATES` allowlist, so a new log predicate can never
+  flood approvals. Cardinality cannot be read from `entity_predicate_registry`, which covers only
+  the `entity_facts` store.
+- `run_interaction_sync_job` reads `switchboard.message_inbox` directly, so `scripts/init-db.sql`
+  grants `butler_relationship_rw` read-only access to schema `switchboard` (plus matching default
+  privileges).
+- `POST /api/relationship/contacts/sync` dispatches to the `contacts_sync_now` MCP tool with
+  `{"provider": "google", "mode": "incremental|full"}`. `mode` is strict, and credential failures
+  surface as `400` errors pointing at `/api/oauth/google/start`.
+- `relationship.facts` and `relationship.predicate_registry` belong to the memory module; domain
+  triple-store work uses `relationship.entity_facts` and `relationship.entity_predicate_registry`.
+  Interaction facts use `subject='entity:{entity_id}'` (`interaction_log` / `interaction_list`
+  still resolve legacy contact UUIDs).
+- Active-surface queries share one filter excluding `metadata.archived = true`, `archived_at`,
+  `tombstone = true`, `deleted_at` and `merged_into`.
+- Dunbar decay counts connector LLM-extraction facts as mentions unless
+  `extra_metadata.source == "interaction_sync"`; `email`, `interview` and `calendar_event`
+  interactions weigh `0.2`.
 
 ## Related Pages
 
 - [Switchboard Butler](switchboard.md) -- routes people-related messages here
 - [General Butler](general.md) -- handles freeform data that is not contact-specific
-- [Messenger Butler](messenger.md) -- delivers the butler's notifications to the user

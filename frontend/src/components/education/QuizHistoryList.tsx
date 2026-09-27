@@ -117,7 +117,7 @@ export default function QuizHistoryList({
               role={!compact ? "button" : undefined}
               tabIndex={!compact ? 0 : undefined}
               aria-expanded={!compact ? isExpanded : undefined}
-              className={`flex items-start justify-between gap-2 px-3 py-2 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring${
+              className={`flex items-start justify-between gap-2 px-3 py-2 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus${
                 !compact ? " cursor-pointer hover:bg-muted/50" : ""
               }`}
               onClick={!compact ? () => toggleExpand(r.id) : undefined}

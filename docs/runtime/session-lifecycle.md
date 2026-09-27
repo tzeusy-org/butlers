@@ -12,38 +12,32 @@ A session represents one ephemeral LLM CLI invocation. The session log (`src/but
 
 ## Session Creation
 
-`session_create()` inserts a new row into the `sessions` table and returns a UUID. It is called by the spawner before invoking the runtime adapter. The row captures:
+`session_create()` inserts the row and returns its UUID; the spawner calls it before invoking the
+runtime adapter. Columns come from `core_001_foundation` plus later core migrations under
+`alembic/versions/core/`; the function signature in `src/butlers/core/sessions.py` is the
+authoritative field list. Invariants:
 
-| Field | Source | Description |
-| --- | --- | --- |
-| `prompt` | Caller | The prompt text sent to the runtime (NUL bytes stripped) |
-| `trigger_source` | Caller | What caused this session |
-| `trace_id` | OTel | OpenTelemetry trace ID for distributed tracing |
-| `model` | Model routing | The resolved model identifier |
-| `request_id` | Ingestion/generated | UUIDv7 from the ingestion request context, or freshly generated |
-| `ingestion_event_id` | Connector | UUID of the ingestion event (NULL for non-connector triggers) |
-| `complexity` | Trigger/scheduler | Complexity tier used for model selection |
-| `resolution_source` | Model routing | How the model was resolved (`"catalog"` or `"toml_fallback"`) |
-
-The `trigger_source` field is validated against a fixed set: `tick`, `external`, `trigger`, `route`, `healing`, or `schedule:<task-name>`. The `request_id` parameter is required and must not be `None`.
+- **`trigger_source`** must be one of `TRIGGER_SOURCES` in `sessions.py`, or
+  `schedule:<task-name>` / `deadline:<task-name>`.
+- **`request_id`** is required: the ingestion UUIDv7 for connector traffic, freshly generated
+  otherwise.
+- **`purpose_lane`** is a closed `standard` / `private_content` value taken from trusted routing or
+  connector context, never inferred from prompt text.
+- **`resolution_source`** is `catalog` for live dispatch; `direct_runtime` appears only in pool-free
+  harnesses (see [Model Routing](model-routing.md#resolution-flow-in-the-spawner)).
+- **`effective_prompt` / `prompt_digest` / `prompt_provenance`** form the effective-system-prompt
+  receipt. It is immutable creation evidence, separate from the caller's `prompt`. It is returned
+  only by the authenticated `GET /api/sessions/{id}/prompt` door after digest and byte-count
+  verification; list, aggregate, ordinary detail, audit, metric, and telemetry surfaces do not
+  copy it. Legacy rows may lack a receipt and are reported as unavailable rather than
+  reconstructed from current files.
 
 ## Session Completion
 
-`session_complete()` is the only mutation allowed after creation. It fills in the result fields:
-
-| Field | Type | Description |
-| --- | --- | --- |
-| `result` | text | Textual output from the runtime, or NULL on failure |
-| `tool_calls` | jsonb | List of tool call records (merged parser + executed) |
-| `duration_ms` | integer | Wall-clock duration in milliseconds |
-| `success` | boolean | Whether the session completed successfully |
-| `error` | text | Error message on failure, NULL on success |
-| `cost` | jsonb | Token usage and cost breakdown |
-| `input_tokens` | integer | Input tokens consumed |
-| `output_tokens` | integer | Output tokens produced |
-| `completed_at` | timestamptz | Set to `now()` by the UPDATE |
-
-NUL characters are stripped from text fields before writing, because PostgreSQL text columns reject them. If `session_id` does not match an existing row, a `ValueError` is raised.
+`session_complete()` is the only mutation allowed after creation. It fills the result, merged tool
+calls, duration, success/error, cost, and token counts, and sets `completed_at`. NUL characters are
+stripped from text fields first, because PostgreSQL text columns reject them. An unknown
+`session_id` raises `ValueError`.
 
 ## Healing Fingerprint
 
@@ -55,14 +49,13 @@ After a session fails and the self-healing module computes an error fingerprint,
 
 ## Session Queries
 
-The session log supports several query patterns:
-
-- **`sessions_list(pool, limit, offset)`** --- Paginated listing ordered by `started_at DESC`.
-- **`sessions_get(pool, session_id)`** --- Single session lookup by UUID.
-- **`sessions_summary(pool, period)`** --- Aggregate statistics grouped by model for `today`, `7d`, or `30d`. Returns total sessions, total input/output tokens, and per-model token breakdowns.
-- **`sessions_daily(pool, from_date, to_date)`** --- Per-day session counts and token usage with per-model breakdowns. Powers the dashboard usage chart.
-- **`top_sessions(pool, limit)`** --- Highest-token completed sessions, ordered by total tokens descending.
-- **`schedule_costs(pool)`** --- Joins `scheduled_tasks` with `sessions` via the `trigger_source` convention to compute per-schedule token usage, plus a forecast: `projected_monthly_runs` per schedule, the cron expression's own cadence over an average Gregorian calendar month (30.436875 days), and a top-level `forecast_basis` stating that basis once for the whole result (it is a constant, so it is not repeated per row). The cadence is counted over a whole number of the expression's own repeat cycles from a fixed anchor, so it is a pure function of the cron string and does not change with the time of the request; a cadence that cannot be established yields `0.0`, meaning "unknown", not "never runs", and never raises. Keep it separate from the measured totals in the same row.
+Read helpers (`sessions_list`, `sessions_get`, `sessions_summary`, `sessions_daily`,
+`top_sessions`, `schedule_costs`) live in `src/butlers/core/sessions.py`. One contract there is not
+obvious from the signature: `schedule_costs()` joins `scheduled_tasks` to sessions through the
+`trigger_source` convention and adds `projected_monthly_runs`, the cron expression's own cadence
+over an average Gregorian month, with the basis stated once as `forecast_basis`. The projection is
+a pure function of the cron string. A cadence that cannot be established yields `0.0`, meaning
+"unknown" rather than "never runs". Keep it separate from the measured totals in the same row.
 
 ## Friction Ledger
 
@@ -105,12 +98,20 @@ psql -h localhost -U butlers -d butlers -c \
 # 4. Trigger source conventions are followed
 psql -h localhost -U butlers -d butlers -c \
   "SELECT DISTINCT trigger_source FROM general.sessions;"
-# Expected: values from the set: tick, external, trigger, route, healing, schedule:<name>
+# Expected: values from TRIGGER_SOURCES in sessions.py, or schedule:<name> / deadline:<name>
 
 # 5. Sessions API endpoint returns the same data
 curl -s http://localhost:41200/api/butlers/general/sessions | python3 -m json.tool | head -50
 # Expected: matches the SQL query results above
 ```
+
+## Implementation Notes
+
+- Dashboard chat Stop is message-scoped: the immutable dashboard user-message id travels through
+  ingress, route inbox, recovery and `Spawner`, and cancellation renders only after the durable
+  control row confirms it. Route-inbox workers hold fenced processing leases; a worker that loses
+  its lease cancels its runtime but leaves the session unresolved for recovery to mark `ambiguous`
+  (no replay or retry, but Stop intent is recorded and every known session is cancelled).
 
 ## Related Pages
 

@@ -1,6 +1,6 @@
 """E2E data contract validation tests.
 
-Validates data contracts between pipeline stages per docs/tests/e2e/contracts.md:
+Validates data contracts between pipeline stages (see docs/testing/e2e/README.md):
 1. Idempotency contract (same key -> same request_id)
 
 Note: IngestEnvelopeV1 schema validation, classification response validation,

@@ -1,31 +1,7 @@
 # Discord Connector
 
-## STATUS: Bot-Token Gateway Connector Shipped; User-Context OAuth Flow is TARGET-STATE (v2)
-
-**The shipped reference implementation (`src/butlers/connectors/discord_user.py`) is a functional bot-token Discord Gateway client. The broader user-account-context OAuth user-flow described later in this spec is TARGET-STATE (v2) and is not yet implemented.**
-
-This spec covers two distinct layers, and they must not be confused:
-
-- **Currently shipped (as-built):** a Discord bot-token Gateway connector. It authenticates with a Discord bot token (`Authorization: Bot <token>`, `discord_user.py:479`), connects to the Discord Gateway over WebSocket, normalizes message events to `ingest.v1`, and submits them to Switchboard. Configuration resolves `DISCORD_BOT_TOKEN` from env or the DB credential store (`discord_user.py:42-51,216`) plus optional guild/channel allowlists. The runtime loop lives in `start()` (`discord_user.py:458-635`).
-- **Target-state (v2, not built):** a full user-account-context ingestion model authenticated by an OAuth user-flow (`DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET`, `DISCORD_REDIRECT_URI`, `DISCORD_REFRESH_TOKEN`). This remains a draft, gated behind platform Terms of Service review, consent and scope-disclosure UI, and the remaining items listed below.
-
-Still-incomplete components for the v2 target-state:
-
-- User-context OAuth user-flow finalization (the shipped connector uses a bot token instead)
-- Scope validation and least-privilege defaults
-- User revocation and connector shutdown behavior
-- Retention and redaction policy implementation
-- Platform Terms of Service alignment review
-- Explicit user consent and scope disclosure UI
-- Full error recovery and retry logic
-- Production-grade testing and monitoring
-
-> **OPEN OWNER DECISION (auth model):** The intended long-term Discord auth model is not settled. The connector ships today as a bot-token Gateway client, while this spec's v2 target describes an OAuth user-flow for user-account-context ingestion. Which model is canonical for Discord (bot-token gateway vs OAuth user-flow) is an open owner decision and is deliberately left unresolved here. This spec does not pick a winner; it only records what is shipped versus what is targeted.
-
-**Decision:** Rather than presenting the OAuth user-flow as the shipped contract, this spec documents the as-built bot-token Gateway connector as current and parks the OAuth user-flow as v2 target-state. Future work should resolve the auth-model decision above and validate Discord ToS alignment and user privacy requirements before pursuing the user-context implementation.
-
 ## Purpose
-The Discord connector ingests Discord message events into the butler ecosystem for passive contextualization, giving butlers awareness of conversations happening on Discord without requiring manual upload. The currently-shipped connector is a bot-token Gateway client (see STATUS above); a broader user-account-context model (DMs and user-visible server contexts), authenticated by an OAuth user-flow, is a v2 target-state described later in this spec. This connector is ingestion-only and does not define outbound delivery.
+The Discord connector ingests Discord message events into the butler ecosystem for passive contextualization, giving butlers awareness of conversations happening on Discord without requiring manual upload. The connector is a bot-token Gateway client; a broader user-account-context model (DMs and user-visible server contexts), authenticated by an OAuth user-flow, is a v2 target-state described later in this spec. This connector is ingestion-only and does not define outbound delivery.
 
 ## Requirements
 
@@ -34,9 +10,9 @@ The currently-shipped Discord connector SHALL authenticate with a Discord bot to
 
 #### Scenario: Bot-token Gateway authentication (current)
 - **WHEN** the shipped Discord connector starts
-- **THEN** it authenticates to Discord using a bot token via the `Authorization: Bot <token>` HTTP header (`discord_user.py:479`)
-- **AND** the bot token is resolved from `DISCORD_BOT_TOKEN` (env fallback) or the DB credential store (`discord_user.py:42-51,216`)
-- **AND** it connects to the Discord Gateway over WebSocket and runs the identify/resume handshake in `start()` (`discord_user.py:458-635`)
+- **THEN** it authenticates to Discord using a bot token via the `Authorization: Bot <token>` HTTP header
+- **AND** the bot token is resolved from `DISCORD_BOT_TOKEN` (env fallback) or the DB credential store
+- **AND** it connects to the Discord Gateway over WebSocket and runs the identify/resume handshake
 - **AND** it does NOT use an OAuth user-flow today (none of `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET`, `DISCORD_REDIRECT_URI`, `DISCORD_REFRESH_TOKEN` is required to run)
 
 #### Scenario: Current configuration variables

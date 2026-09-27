@@ -160,15 +160,29 @@ or session context was lost (see Execution discipline §3).
 
 ## Phase 4 — Deliverables
 
-1. **Durable dossier** — commit to main (docs-only, safe for direct commit):
-   `docs/redesigns/YYYY-MM-DD-jarvis-pursuit.md` (north star, tier board + movement, themes,
-   ranked moves) and `-data.json` (full per-agent structured output; document the
-   `jq '.audits[] | select(.page=="<key>")'` access pattern in the md).
-2. **Artifact report** for the owner (load `artifact-design` skill first) — the readable
+1. **Durable dossier (size-capped)** — land via the worktree + PR flow:
+   `docs/redesigns/YYYY-MM-DD-jarvis-pursuit.md` and `-data.json`.
+   - The md stays under **25 KB**: north star, tier board + movement, themes, and at most
+     **15 ranked moves**, one short paragraph each. Per-move detail belongs in the bead's
+     structured fields and the JSON, not the md.
+   - The JSON holds per-agent structured output only (no transcripts, prompts or raw tool
+     output) and stays under **500 KB**. Document the
+     `jq '.audits[] | select(.page=="<key>")'` access pattern in the md.
+   - **Retention:** only the two newest runs keep their `-data.json` in the tree. The PR that
+     adds a new pair `git rm`s older JSONs and repoints each pruned run's md to
+     `git show <sha>:docs/redesigns/<file>`, pinned to the last commit that held it. Git
+     history is the archive; the tree is not.
+2. **Index-append (same commit as the dossier pair)** — append one row for the new run to the
+   "Pursuit / audit dossiers" table in `docs/redesigns/README.md` (newest run first, numbered
+   sequentially from the prior top row): `| N (YYYY-MM-DD) | [YYYY-MM-DD-jarvis-pursuit.md](YYYY-MM-DD-jarvis-pursuit.md) |`,
+   with a trailing `— <lens>` note only for a non-standard-lens run (cf. the 2026-09-02
+   dashboard-chat and 2026-07-28 talk-to-butlers rows). Do this for every dated dossier pair
+   this skill writes, so the index cannot rot again.
+3. **Artifact report** for the owner (load `artifact-design` skill first) — the readable
    version of the dossier.
-3. **Gated beads epic** — see protocol below; every child ships packet-complete (structured
+4. **Gated beads epic** — see protocol below; every child ships packet-complete (structured
    `design` + `acceptance_criteria`) or the fleet will skip it after release.
-4. **Memory** — write/update a `reference` memory with the artifact URL, dossier path, epic id,
+5. **Memory** — write/update a `reference` memory with the artifact URL, dossier path, epic id,
    and gate id, linking `[[reference-jarvis-frontend-audit-2026-07]]` and successors.
 
 ## Bead-filing protocol (CRITICAL — fleet-trigger hazard)
@@ -180,7 +194,8 @@ run is *planning*, not execution. Always:
 2. Create the epic + one child per move; make every child depend on the gate so all are
    blocked. bd rejects a task blocking an epic ("epics can only block other epics") — so also
    **assign the epic itself to the owner** to keep it off `bd ready`.
-3. Every bead description cites its evidence and points at the dossier JSON.
+3. Every bead description cites its evidence and points at the dossier JSON by pinned commit
+   (`<sha>:docs/redesigns/<file>`), so retention pruning never breaks the pointer.
 4. **Every child is created with a full Dispatch Readiness Packet in its structured fields** —
    `bd create --design "…" --acceptance "…"` (or `bd update <id> --design/--acceptance` after
    the fact). Normative shape:
@@ -260,7 +275,8 @@ Never let harvested findings live only in conversation context or an unfinished 
 - After **each batch** completes (2–3 agents), harvest their structured outputs from the run's
   transcript dir — `journal.jsonl` records each `agent()` return value; `agent-<id>.jsonl` files
   are the fallback — and **append** them to a durable harvest file
-  (`docs/redesigns/<date>-jarvis-pursuit-harvest.json` or the scratchpad state dir), keyed by
+  (`docs/redesigns/<date>-jarvis-pursuit-harvest.json`, gitignored and never committed, or the
+  scratchpad state dir), keyed by
   agent label.
 - Write **atomically**: write to a temp path in the same dir and `rename()` over the target, so a
   crash mid-write never leaves a torn/half-JSON file.

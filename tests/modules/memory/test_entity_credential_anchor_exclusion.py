@@ -27,9 +27,9 @@ import asyncpg
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.routers.memory import _get_db_manager
 from butlers.modules.memory.tools.entities import entity_neighbors, entity_resolve
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = [
     pytest.mark.integration,

@@ -58,8 +58,8 @@ Acceptance:
 - [ ] 5.1 `roster/education/tools/`: `mind_map_create()` creates `draft` and refuses a
       caller-supplied status; `mind_map_update_status()` enforces the transition
       table and the node-count guard in-transaction; `mind_map_list()` accepts
-      `draft`; node deletion of the last node of an `active` map transitions it out
-      of `active`.
+      `draft`; node deletion of the last node of an `active` map is refused and
+      leaves both the node and the map status unchanged.
 
 Acceptance:
 - `module-education-mind-map` scenarios pass.
@@ -93,27 +93,20 @@ Acceptance:
 - `module-education-teaching-flows` and `butler-education` scenarios pass,
   including the map-with-no-flow-state scenario.
 
-### 9. Curriculum-request lock: lease and deterministic release
+### 9. Preserve receipt-backed curriculum submission
 
-- [ ] 9.1 `roster/education/api/router.py`: add `lease_expires_at` and a
-      per-acquisition `request_token` to the lock payload. The lease TTL is computed
-      from the model catalog (max eligible `session_timeout_s` + >=300s margin,
-      falling back to 2100s), never hardcoded — a 15-minute lease would expire under
-      an ordinary session, since `session_timeout_s` defaults to 1800. 409 only on a live lease;
-      release the lock from the API layer when the triggered session terminates,
-      whatever the outcome. The release MUST be an atomic token-scoped
-      compare-and-delete, not `state_delete(pool, _CURRICULUM_REQUEST_KEY)` — that
-      includes the existing trigger-failure release at `router.py:699`. Delete step 4
-      of `_drain_prompt()` entirely; the session is no longer a release path.
+- [ ] 9.1 Keep curriculum request submission on the PR #3757 contract while
+      implementing this change: persist `education.curriculum_requests` before
+      detached work, use `uq_curriculum_requests_one_open` as the single active
+      request guard, settle terminal outcomes idempotently, and retain the bounded
+      abandoned-receipt sweep. Do not add a second admission or release mechanism.
 
 Acceptance:
-- `dashboard-education-api` curriculum-request scenarios pass, including the
-  superseded-release, absent-key, prompt-has-no-clear-instruction, and
-  daemon-restart scenarios.
-- A test asserts a release carrying a superseded token leaves the current
-  lock intact.
-- A test asserts the computed TTL exceeds the catalog's `session_timeout_s`,
-  and moves when that value moves.
+- The current `dashboard-education-api` submission and receipt-lifecycle scenarios
+  remain unchanged and pass.
+- A duplicate `accepted` or `running` receipt still returns 409.
+- A stale non-terminal receipt is still settled to `failed` with
+  `failure_reason = "timed_out"` before admission is retried.
 
 ### 10. Status endpoint 409 path
 

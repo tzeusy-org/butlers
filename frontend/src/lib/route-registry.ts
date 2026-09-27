@@ -12,6 +12,7 @@ export interface RouteEntry {
   butler?: string;
   keywords?: readonly string[];
   chord?: string;
+  discoverability: ShellCapability["discoverability"];
   loader: ShellCapability["loader"];
 }
 
@@ -30,6 +31,7 @@ export const ALL_ROUTES: RouteEntry[] = SHELL_CAPABILITIES.filter(
   butler: capability.placement?.butler,
   keywords: capability.keywords,
   chord: capability.chord,
+  discoverability: capability.discoverability,
   loader: capability.loader,
 }));
 

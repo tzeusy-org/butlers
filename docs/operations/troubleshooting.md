@@ -71,8 +71,8 @@ The `docker-compose.yml` sets `max_connections=200`. If connection exhaustion is
 
 **Diagnosis:**
 ```bash
-# Check CLI auth health via dashboard API
-curl http://localhost:41200/api/cli-auth/health
+# CLI auth status: dashboard Settings page, or the owner-authenticated
+# GET /api/cli-auth/providers (runs a live probe per provider)
 
 # Check if binary is available
 which claude
@@ -210,8 +210,8 @@ docker compose ps
 # Butler-specific logs
 docker compose logs <butler-name> --tail=50 --follow
 
-# CLI auth status for all providers
-curl http://localhost:41200/api/cli-auth/health
+# CLI auth status for all providers: dashboard Settings page
+# (owner-authenticated GET /api/cli-auth/providers)
 ```
 
 ## Observability Debugging

@@ -44,6 +44,7 @@ class TestMemoryStats:
             "proven",
             "anti_pattern",
             "forgotten",
+            "retired",
         }
 
     async def test_returns_integer_counts(self, pool: AsyncMock) -> None:
@@ -71,6 +72,30 @@ class TestMemoryStats:
         assert len(maturity_queries) == 4, maturity_queries
         for query in maturity_queries:
             assert "(metadata->>'forgotten')::boolean IS NOT TRUE" in query, query
+
+    async def test_every_maturity_bucket_excludes_retired_rules(self, pool: AsyncMock) -> None:
+        """bu-rjdihn: a retired rule (retired_at set, bu-6t8ix.3) is a deliberate
+        decommission, not a live standing order — every maturity bucket must
+        exclude it the same way it excludes forgotten rules, and the retired
+        count must be reported separately rather than silently dropped.
+        """
+        queries: list[str] = []
+
+        async def _fetchval(query: str, *args: object) -> int:
+            queries.append(query)
+            return 0
+
+        pool.fetchval = AsyncMock(side_effect=_fetchval)
+        result = await memory_stats(pool)
+
+        maturity_queries = [q for q in queries if "FROM rules WHERE maturity" in q]
+        assert len(maturity_queries) == 4, maturity_queries
+        for query in maturity_queries:
+            assert "retired_at IS NULL" in query, query
+
+        retired_queries = [q for q in queries if "retired_at IS NOT NULL" in q]
+        assert len(retired_queries) == 1, queries
+        assert result["rules"]["retired"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +160,11 @@ async def _call_context(
 
     pool.fetch = _fake_fetch
     pool.execute = AsyncMock()
+    # No runtime_config row / no withheld facts in this mocked pool -- both
+    # load_catalog_read_policy and the profile-facts withheld-count query
+    # call pool.fetchval, so it must return a real falsy value rather than
+    # AsyncMock's default (a MagicMock, whose __int__ defaults to 1).
+    pool.fetchval = AsyncMock(return_value=None)
 
     with patch(
         "butlers.modules.memory.tools.context._search.recall",
@@ -158,19 +188,49 @@ class TestMemoryContext:
         assert result == "# Memory Context\n"
 
     async def test_facts_section_present(self) -> None:
-        result = await _call_context([_fact("dark mode")])
+        fact = _fact("dark mode")
+        result = await _call_context([fact])
         assert "## Task-Relevant Facts" in result
         assert "dark mode" in result
+        assert f"[memory_ref=fact:{fact['id']}]" in result
+
+        profile_result = await _call_context([], profile_rows=[fact])
+        assert "## Profile Facts" in profile_result
+        assert f"[memory_ref=fact:{fact['id']}]" in profile_result
 
     async def test_rules_section_present(self) -> None:
-        result = await _call_context([_rule("Be concise")])
+        rule = _rule("Be concise")
+        result = await _call_context([rule])
         assert "## Active Rules" in result
         assert "Be concise" in result
+        assert f"[memory_ref=rule:{rule['id']}]" in result
 
     async def test_token_budget_respected(self) -> None:
         big_items = [_fact("x" * 200) for _ in range(50)] + [_rule("y" * 200) for _ in range(20)]
         result = await _call_context(big_items, token_budget=500)
-        assert len(result) <= 500 * 4 + 50
+        assert len(result) <= 500 * 4
+
+    async def test_reference_overhead_can_omit_an_otherwise_fitting_line(self) -> None:
+        fact = _fact("x")
+        header = "\n## Task-Relevant Facts\n"
+        legacy_line = "- [User] [info]: x (confidence: 1.00)\n"
+        reference = f" [memory_ref=fact:{fact['id']}]"
+        # The section can afford the pre-reference representation but not the
+        # complete actionable line. Partial references are never emitted.
+        preamble_chars = len("# Memory Context\n")
+        token_budget = next(
+            budget
+            for budget in range(1, 1000)
+            if len(header) + len(legacy_line)
+            <= int((budget * 4 - preamble_chars) * 0.35)
+            < len(header) + len(legacy_line.rstrip("\n")) + len(reference) + 1
+        )
+
+        result = await _call_context([fact], token_budget=token_budget)
+
+        assert "Task-Relevant Facts" not in result
+        assert "memory_ref=" not in result
+        assert len(result) <= token_budget * 4
 
     async def test_proven_rules_before_candidate(self) -> None:
         candidate = _rule("cand", maturity="candidate")
@@ -268,6 +328,7 @@ class TestMemoryContextFleetKnowledge:
         assert "## Fleet Knowledge (cross-butler)" in result
         assert "Budget rule" in result
         assert "Own knowledge" not in result
+        assert "memory_ref=" not in result
 
     async def test_catalog_search_failure_degrades_to_empty_section(self) -> None:
         pool = await self._pool()

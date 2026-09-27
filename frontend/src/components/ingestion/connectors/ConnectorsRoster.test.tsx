@@ -29,8 +29,14 @@ const archiveMutate = vi.fn()
 const unarchiveMutate = vi.fn()
 
 vi.mock('@/hooks/use-ingestion', () => ({
-  useConnectorSummariesWithAggregates: vi.fn(),
+  useConnectorSummaries: vi.fn(),
   useAvailableConnectors: vi.fn(),
+  useConnectorFanout: vi.fn(() => ({
+    data: { data: [], meta: { aggregates_available: true } },
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  })),
   // ArchiveCandidatesList (bu-u19yv) calls this unconditionally; return a stable
   // idle mutation so the roster mounts without a real QueryClient.
   useArchiveConnector: vi.fn(() => ({
@@ -49,7 +55,7 @@ vi.mock('@/hooks/use-ingestion', () => ({
 }))
 
 import {
-  useConnectorSummariesWithAggregates,
+  useConnectorSummaries,
   useAvailableConnectors,
 } from '@/hooks/use-ingestion'
 import type { ConnectorSummary, ConnectorProfile } from '@/api/types'
@@ -139,6 +145,13 @@ const STALE_CONNECTOR: ConnectorSummary = {
   hourly_events: Array(24).fill(0),
 }
 
+const PAUSED_CONNECTOR: ConnectorSummary = {
+  ...HEALTHY_CONNECTOR,
+  connector_type: 'google_calendar',
+  endpoint_identity: 'primary',
+  state: 'paused',
+}
+
 const SPARSE_OWNTRACKS_CONNECTOR: ConnectorSummary = {
   connector_type: 'owntracks',
   endpoint_identity: 'owntracks:phone',
@@ -191,10 +204,10 @@ function mockHooks(
 ) {
   // The endpoint returns { connectors: [...] } (all fields DB-sourced),
   // wrapped in ApiResponse<ConnectorSummariesResponse>: { data: { connectors } }
-  vi.mocked(useConnectorSummariesWithAggregates).mockReturnValue(
+  vi.mocked(useConnectorSummaries).mockReturnValue(
     makeResult({
       data: { connectors, ...responseOverrides },
-    }) as ReturnType<typeof useConnectorSummariesWithAggregates>,
+    }) as ReturnType<typeof useConnectorSummaries>,
   )
 
   vi.mocked(useAvailableConnectors).mockReturnValue(
@@ -236,6 +249,13 @@ describe('AC1: dense roster layout', () => {
     // Must NOT render shadcn Card elements (card grid rejected by spec)
     const cards = container.querySelectorAll('[data-slot="card"]')
     expect(cards.length).toBe(0)
+  })
+
+  it('mounts the routing distribution as an independent aggregate surface', () => {
+    mockHooks([HEALTHY_CONNECTOR])
+    renderRoster(container, root)
+
+    expect(container.querySelector('[data-testid="connector-fanout-empty"]')).not.toBeNull()
   })
 
   it('renders roster rows for each connector', () => {
@@ -329,6 +349,13 @@ describe('AC2: auth issues appear consistently in attention strip and row', () =
     // Both should contain 'reauth' (the consistent label for needs_reauth status)
     expect(rowText).toContain('reauth')
     expect(stripText).toContain('reauth')
+    // The connector is unhealthy (state=error), but its genuine auth failure
+    // must keep the actionable reauth label and its auth severity tone.
+    expect(rowAuthLabel?.className).toContain('var(--red-text)')
+    const stripAuthLabel = Array.from(stripItem?.querySelectorAll('span') ?? []).find((span) =>
+      span.textContent?.toLowerCase().includes('reauth'),
+    )
+    expect(stripAuthLabel?.className).toContain('var(--red-text)')
   })
 
   it('uses the registered Google OAuth route for Gmail reauth', () => {
@@ -379,6 +406,33 @@ describe('AC2: auth issues appear consistently in attention strip and row', () =
       (element) => element.textContent?.trim() === 'needs attention',
     )
     expect(attentionKpiLabel?.parentElement?.lastElementChild?.textContent?.trim()).toBe('1')
+  })
+
+  it('keeps a paused live connector in the roster, attention strip, and health KPIs', () => {
+    mockHooks([HEALTHY_CONNECTOR, PAUSED_CONNECTOR])
+    renderRoster(container, root)
+
+    expect(
+      container.querySelector('[data-testid="health-verdict-google_calendar"]')?.textContent?.trim(),
+    ).toBe('paused')
+
+    const pausedStatus = container.querySelector('[data-testid="auth-status-google_calendar"]')
+    expect(pausedStatus?.textContent?.toLowerCase()).toContain('connector paused')
+    expect(pausedStatus?.className).toContain('var(--amber-text)')
+
+    const pausedAttention = container.querySelector('[data-testid="attention-item-google_calendar"]')
+    expect(pausedAttention?.textContent?.toLowerCase()).toContain('connector paused')
+    const attentionCount = container.querySelector('[data-testid="attention-count"]')
+    expect(attentionCount?.textContent?.trim()).toBe('1')
+    expect(attentionCount?.className).toContain('var(--red-text)')
+
+    const kpiFooter = container.querySelector('[data-testid="connectors-kpi-footer"]')
+    const kpiValue = (label: string) =>
+      Array.from(kpiFooter?.children ?? []).find(
+        (item) => item.firstElementChild?.textContent?.trim() === label,
+      )?.lastElementChild?.textContent?.trim()
+    expect(kpiValue('healthy')).toBe('1')
+    expect(kpiValue('needs attention')).toBe('1')
   })
 })
 
@@ -528,14 +582,34 @@ describe('bu-14gso: offline connector with frozen error state', () => {
   })
   afterEach(() => cleanup(root, container))
 
-  it('does not render the reauth pill for an offline connector with a frozen error label', () => {
+  it('ConnectorRosterRow uses the offline health note, not green authorization, for a frozen error label', () => {
     mockHooks([OFFLINE_FROZEN_ERROR_CONNECTOR])
     renderRoster(container, root)
 
     const status = container.querySelector('[data-testid="auth-status-spotify"]')
-    // Not a reauth link — plain-text 'authorized'/ok rendering, same as a healthy connector.
+    // A frozen error is not a live auth diagnosis, but offline runtime health
+    // must still not be presented as an all-clear authorization state.
     expect(status?.tagName).not.toBe('A')
     expect(status?.textContent?.toLowerCase()).not.toContain('reauth')
+    expect(status?.textContent?.toLowerCase()).toContain('connector offline')
+    expect(status?.textContent?.toLowerCase()).not.toContain('authorized')
+    expect(status?.className).toContain('var(--red-text)')
+    expect(status?.className).not.toContain('--green')
+  })
+
+  it('AttentionStrip uses the offline auth note in the health tone, not a green authorization label', () => {
+    mockHooks([OFFLINE_FROZEN_ERROR_CONNECTOR])
+    renderRoster(container, root)
+
+    const item = container.querySelector('[data-testid="attention-item-spotify"]')
+    expect(item?.textContent?.toLowerCase()).toContain('connector offline')
+    expect(item?.textContent?.toLowerCase()).not.toContain('authorized')
+
+    const healthNote = Array.from(item?.querySelectorAll('span') ?? []).find((span) =>
+      span.textContent?.toLowerCase().includes('connector offline'),
+    )
+    expect(healthNote?.className).toContain('var(--red-text)')
+    expect(healthNote?.className).not.toContain('--green')
   })
 
   it('still reports the "offline" verdict word (connectivity), not "error"', () => {
@@ -607,8 +681,7 @@ describe('reauth pill is the reauth action', () => {
 
   it('links the auth pill to the Spotify Passport card when needs_reauth', () => {
     // Spotify recovers through its Passport card (the connector PKCE drawer),
-    // not the generalized /oauth/spotify/start dance — that entry is a
-    // confidential-client flow whose app credentials were never provisioned.
+    // not a generalized OAuth route; Spotify authorization is connector-owned.
     // The pill keeps the "reauth" wording of the attention strip; only
     // WhatsApp's Passport recovery reads "pair".
     mockHooks([REAUTH_CONNECTOR])
@@ -627,6 +700,8 @@ describe('reauth pill is the reauth action', () => {
 
     const pill = container.querySelector('[data-testid="auth-status-gmail"]')
     expect(pill?.tagName).not.toBe('A')
+    expect(pill?.textContent?.toLowerCase()).toBe('authorized')
+    expect(pill?.className).toContain('var(--green')
   })
 })
 
@@ -1126,13 +1201,13 @@ describe('connector roster source failures are named and retryable', () => {
 
   it('keeps a successful dormant catalog visible when the active roster reader fails', () => {
     const retryRoster = vi.fn()
-    vi.mocked(useConnectorSummariesWithAggregates).mockReturnValue({
+    vi.mocked(useConnectorSummaries).mockReturnValue({
       data: undefined,
       isLoading: false,
       isError: true,
       error: new Error('connector summaries offline'),
       refetch: retryRoster,
-    } as unknown as ReturnType<typeof useConnectorSummariesWithAggregates>)
+    } as unknown as ReturnType<typeof useConnectorSummaries>)
     vi.mocked(useAvailableConnectors).mockReturnValue(
       makeResult({ data: [DORMANT_PROFILE] }) as ReturnType<typeof useAvailableConnectors>,
     )
@@ -1155,9 +1230,9 @@ describe('connector roster source failures are named and retryable', () => {
 
   it('does not present a failed available-catalog reader as an empty dormant catalog', () => {
     const retryCatalog = vi.fn()
-    vi.mocked(useConnectorSummariesWithAggregates).mockReturnValue(
+    vi.mocked(useConnectorSummaries).mockReturnValue(
       makeResult({ data: { connectors: [HEALTHY_CONNECTOR] } }) as ReturnType<
-        typeof useConnectorSummariesWithAggregates
+        typeof useConnectorSummaries
       >,
     )
     vi.mocked(useAvailableConnectors).mockReturnValue({

@@ -15,6 +15,7 @@ below. Their presence does not grant implementation or deployment authority.
 | [Beads projection exporter](../superpowers/plans/2026-08-13-beads-projection-exporter.md) | Contract tests read this exact packet; implementation tasks remain in its change | [Beads bridge](../architecture/beads-runtime-data-bridge.md) |
 | [Approval delivery recovery](../superpowers/plans/2026-08-13-durable-approval-delivery-intent-recovery.md) | Exact-path contract tests and pending approval/implementation gates | [Approval recovery change](../../openspec/changes/durable-approval-delivery-intent-recovery/) |
 | [Codex rotation provenance](../superpowers/plans/2026-08-13-generation-fenced-codex-auth-rotation-provenance.md) | Exact-path contract tests and outstanding generation-fencing work | [Rotation provenance change](../../openspec/changes/generation-fenced-codex-auth-rotation-provenance/) |
+| [System prompt authority](system-prompt-authority-decision.md) | Proposed governing-spec amendment awaiting the owner's roster vs `system_prompt_history` authority decision | [Roster identity overlay change](../../openspec/changes/specify-roster-identity-owner-operations-overlay/) |
 | [WhatsApp identity design](../superpowers/specs/2026-08-24-whatsapp-identity-reconciliation-design.md) | Active proposal and spec deltas reference its decision detail | [WhatsApp repair change](../../openspec/changes/repair-whatsapp-identity-reconciliation/) |
 
 ## Maintenance and Verification

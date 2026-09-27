@@ -1,12 +1,27 @@
-import { readFileSync, readdirSync } from "node:fs"
-import { extname, relative } from "node:path"
-import { fileURLToPath } from "node:url"
-import { describe, expect, it } from "vitest"
+// @vitest-environment jsdom
 
-const SRC_DIR = fileURLToPath(new URL("..", import.meta.url))
-const CSS_SOURCE = readFileSync(fileURLToPath(new URL("../index.css", import.meta.url)), "utf-8")
+import { existsSync, readFileSync, readdirSync } from "node:fs"
+import { extname, relative, resolve } from "node:path"
+import { afterEach, describe, expect, it } from "vitest"
+
+const FRONTEND_DIR = process.cwd()
+const SRC_DIR = resolve(FRONTEND_DIR, "src")
+const CSS_SOURCE = readFileSync(resolve(SRC_DIR, "index.css"), "utf-8")
+const HTML_SOURCE = readFileSync(resolve(FRONTEND_DIR, "index.html"), "utf-8")
 const ARBITRARY_SURFACE_TOKEN_CLASS =
   /\b[a-z-]+-\[var\(--(?:fg|bg)\)\](?:\/[\w.[\]-]+)?/g
+const REMOTE_ASSET_URL = /^(?:https?:)?\/\//i
+const VENDORED_FONT_URL = /^\/fonts\/[a-z0-9-]+\.woff2$/
+const EXPECTED_FONT_URLS = [
+  "/fonts/inter-tight-latin-400-normal.woff2",
+  "/fonts/inter-tight-latin-500-normal.woff2",
+  "/fonts/source-serif-4-latin-400-normal.woff2",
+  "/fonts/source-serif-4-latin-400-italic.woff2",
+  "/fonts/source-serif-4-latin-500-normal.woff2",
+  "/fonts/source-serif-4-latin-500-italic.woff2",
+  "/fonts/jetbrains-mono-latin-400-normal.woff2",
+  "/fonts/jetbrains-mono-latin-500-normal.woff2",
+]
 
 function extractTopLevelBlock(source: string, selector: string): string {
   const startPattern = new RegExp(`^${selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\{$`, "m")
@@ -61,5 +76,67 @@ describe("Dispatch Tailwind theme utilities", () => {
     "text-[var(--mfg)]",
   ])("allows non-retired token syntax: %s", (source) => {
     expect(source.match(ARBITRARY_SURFACE_TOKEN_CLASS)).toBeNull()
+  })
+})
+
+describe("first-frame identity", () => {
+  afterEach(() => {
+    window.localStorage.clear()
+    document.documentElement.className = ""
+  })
+
+  it("uses local identity assets and a real document title", () => {
+    const shellAssetUrls = [
+      ...HTML_SOURCE.matchAll(/<(?:link|script)\b[^>]+(?:href|src)=["']([^"']+)["'][^>]*>/gi),
+    ].map((match) => match[1])
+    expect(shellAssetUrls.filter((url) => REMOTE_ASSET_URL.test(url))).toEqual([])
+    expect(HTML_SOURCE).not.toMatch(/\b(?:href|src)\s*=\s*["'](?:https?:)?\/\//i)
+    expect(HTML_SOURCE).not.toMatch(/@import\s+(?:url\()?\s*["']?(?:https?:)?\/\//i)
+    expect(HTML_SOURCE).not.toContain("fonts.googleapis.com")
+    expect(HTML_SOURCE).not.toContain("fonts.gstatic.com")
+
+    const title = /<title>([^<]+)<\/title>/.exec(HTML_SOURCE)?.[1]
+    expect(title).toBe("Butlers Dispatch")
+
+    const faviconPath = /<link\s+rel="icon"[^>]+href="([^"]+)"/.exec(HTML_SOURCE)?.[1]
+    expect(faviconPath).toBeTruthy()
+    expect(existsSync(resolve(FRONTEND_DIR, "public", faviconPath!.replace(/^\//, "")))).toBe(true)
+  })
+
+  it.each(["dark", "light"] as const)(
+    "stamps the stored %s theme before the app module runs",
+    (theme) => {
+      const themeScript = /<script>([\s\S]*?)<\/script>/.exec(HTML_SOURCE)?.[1]
+      if (!themeScript) throw new Error("Could not find the inline theme script in index.html")
+      expect(HTML_SOURCE.indexOf(themeScript)).toBeLessThan(HTML_SOURCE.indexOf('type="module"'))
+
+      window.localStorage.setItem("theme", theme)
+      Function(themeScript)()
+
+      expect(document.documentElement.classList.contains(theme)).toBe(true)
+      expect(
+        document.documentElement.classList.contains(theme === "dark" ? "light" : "dark"),
+      ).toBe(false)
+    },
+  )
+
+  it("loads every declared face from a vendored WOFF2 file", () => {
+    const fontFaceBlocks = CSS_SOURCE.match(/@font-face\s*\{[\s\S]*?\}/g) ?? []
+    expect(fontFaceBlocks).toHaveLength(EXPECTED_FONT_URLS.length)
+
+    const fontUrls = fontFaceBlocks.flatMap((block) => {
+      expect(block).not.toMatch(/\blocal\s*\(/i)
+      return [...block.matchAll(/url\(\s*["']?([^"')\s]+)["']?\s*\)/gi)].map(
+        (match) => match[1],
+      )
+    })
+
+    expect(new Set(fontUrls).size).toBe(EXPECTED_FONT_URLS.length)
+    expect([...fontUrls].sort()).toEqual([...EXPECTED_FONT_URLS].sort())
+    for (const fontUrl of fontUrls) {
+      expect(fontUrl).toMatch(VENDORED_FONT_URL)
+      expect(existsSync(resolve(FRONTEND_DIR, "public", fontUrl.replace(/^\//, "")))).toBe(true)
+    }
+    expect(CSS_SOURCE).not.toMatch(/(?:url\(|@import\s+(?:url\()?)\s*["']?(?:https?:)?\/\//i)
   })
 })

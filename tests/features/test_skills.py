@@ -7,10 +7,14 @@ from pathlib import Path
 import pytest
 
 from butlers.core.skills import (
+    SkillIdentityError,
     append_agents_md,
     get_skills_dir,
+    list_skill_identities,
     read_agents_md,
     read_system_prompt,
+    read_system_prompt_with_sources,
+    resolve_skill_identity,
     write_agents_md,
 )
 
@@ -194,6 +198,31 @@ def test_read_system_prompt_db_override_falls_back_when_absent(tmp_path: Path) -
     assert read_system_prompt(config_dir, "test", db_override="   \n ") == "# On-disk seed prompt"
 
 
+def test_unreadable_roster_prompt_falls_back_with_unavailable_provenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unreadable source does not erase the session receipt or start silently."""
+    config_dir = _setup_roster(tmp_path)
+    claude_md = config_dir / "CLAUDE.md"
+    claude_md.write_text("Synthetic identity", encoding="utf-8")
+    original_read_text = Path.read_text
+
+    def read_text(path: Path, *args, **kwargs):
+        if path == claude_md:
+            raise OSError("synthetic unreadable source")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    resolved = read_system_prompt_with_sources(config_dir, "test")
+
+    assert resolved.prompt == "You are the test butler."
+    assert [(source.source, source.status) for source in resolved.sources] == [
+        ("roster:test-butler/CLAUDE.md", "unavailable"),
+        ("generated_default", "present"),
+    ]
+
+
 def test_read_system_prompt_db_override_resolves_includes_and_shared(tmp_path: Path) -> None:
     """The DB override is processed through include + shared-file resolution too."""
     config_dir = _setup_roster(tmp_path)
@@ -201,12 +230,25 @@ def test_read_system_prompt_db_override_resolves_includes_and_shared(tmp_path: P
     shared.mkdir()
     (shared / "NOTIFY.md").write_text("Notify body.", encoding="utf-8")
     (shared / "BUTLER_SKILLS.md").write_text("## Skills\n- a", encoding="utf-8")
+    (config_dir / "CLAUDE.md").write_text("@AGENTS.md", encoding="utf-8")
+    (config_dir / "AGENTS.md").write_text("# Shadowed disk identity", encoding="utf-8")
 
     override = "# Live\n<!-- @include shared/NOTIFY.md -->\nEnd."
     result = read_system_prompt(config_dir, "test", db_override=override)
     assert "Notify body." in result
     assert "<!-- @include" not in result
     assert result.endswith("## Skills\n- a")
+
+    resolved = read_system_prompt_with_sources(config_dir, "test", db_override=override)
+    assert resolved.prompt == result
+    assert [(source.source, source.status) for source in resolved.sources] == [
+        ("system_prompt_history", "present"),
+        ("roster:shared/NOTIFY.md", "present"),
+        ("roster:shared/BUTLER_SKILLS.md", "present"),
+        ("roster:shared/MCP_LOGGING.md", "unavailable"),
+        ("roster:test-butler/CLAUDE.md", "shadowed"),
+        ("roster:test-butler/AGENTS.md", "shadowed"),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +275,48 @@ def test_get_skills_dir(tmp_path: Path) -> None:
     assert skill_dirs == ["calendar-check", "email-send"]
     for skill_name in skill_dirs:
         assert (result / skill_name / "SKILL.md").is_file()
+
+
+def test_skill_identity_uses_canonical_agents_source_for_claude_alias(tmp_path: Path) -> None:
+    skill_file = tmp_path / ".agents" / "skills" / "email-send" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True)
+    skill_file.write_text("# Email send\n", encoding="utf-8")
+    (tmp_path / ".claude").symlink_to(".agents", target_is_directory=True)
+
+    identity = resolve_skill_identity(tmp_path, "email-send")
+
+    assert identity.name == "email-send"
+    assert identity.canonical_source == ".agents/skills/email-send/SKILL.md"
+    assert identity.compatibility_aliases == (".claude/skills/email-send/SKILL.md",)
+    assert identity.content_digest == list_skill_identities(tmp_path)[0].content_digest
+
+
+def test_skill_identity_missing_or_unreadable_source_is_explicit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with pytest.raises(SkillIdentityError, match="missing"):
+        resolve_skill_identity(tmp_path, "absent")
+
+    skill_file = tmp_path / ".agents" / "skills" / "present" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True)
+    skill_file.write_text("# Present\n", encoding="utf-8")
+    original_read_bytes = Path.read_bytes
+
+    def read_bytes(path: Path) -> bytes:
+        if path == skill_file:
+            raise OSError("synthetic unreadable source")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    with pytest.raises(SkillIdentityError, match="unreadable"):
+        resolve_skill_identity(tmp_path, "present")
+
+    monkeypatch.setattr(Path, "read_bytes", original_read_bytes)
+    divergent = tmp_path / ".claude" / "skills" / "present"
+    divergent.mkdir(parents=True)
+    (divergent / "SKILL.md").write_text("# Forked\n", encoding="utf-8")
+    with pytest.raises(SkillIdentityError, match="forks canonical identity"):
+        resolve_skill_identity(tmp_path, "present")
 
 
 # ---------------------------------------------------------------------------

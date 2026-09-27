@@ -20,7 +20,7 @@ application-code discipline.
 
 ## Motivation
 
-The dashboard chat's question lane (bu-0ynlk.2) needs to answer questions
+The dashboard chat's question lane needs to answer questions
 about the fleet's own operation — spend, session failures, uptime — without
 either fabricating an answer or misrouting an operational question to a
 domain butler that has no authority over it (a butler answering "how much did
@@ -156,7 +156,7 @@ uninformative `'other'` bucket, never a content leak.
 ### Data Flow
 
 ```
-dashboard chat question lane (bu-0ynlk.2)
+dashboard chat question lane
   -> Switchboard tool routing -> concierge.dashboard_read_* MCP tool
      -> SELECT ... FROM concierge.v_fleet_sessions | v_fleet_spend
         (single query against Concierge's own schema; no MCP fan-out,

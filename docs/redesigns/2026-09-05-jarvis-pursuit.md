@@ -12,12 +12,12 @@ deep-design agents (inference-economics, fleet cost-claim contract), and 2 cross
 success via Workflow resume; the retry's duplicate config-governance run was ignored. Mobile was not
 audited.
 
-Full per-agent structured output lives in `2026-09-05-jarvis-pursuit-data.json`. Access pattern:
+Full per-agent structured output lives in `git show b23d5b76afab:docs/redesigns/2026-09-05-jarvis-pursuit-data.json`. Access pattern:
 
 ```bash
-jq '.audits[] | select(.page=="rot: travel-logistics")' docs/redesigns/2026-09-05-jarvis-pursuit-data.json
-jq '.synthesis.ranked_moves[] | {rank, title, cost}' docs/redesigns/2026-09-05-jarvis-pursuit-data.json
-jq '.synthesis.ranked_moves[0].behavior_matrix' docs/redesigns/2026-09-05-jarvis-pursuit-data.json
+git show b23d5b76afab:docs/redesigns/2026-09-05-jarvis-pursuit-data.json | jq '.audits[] | select(.page=="rot: travel-logistics")'
+git show b23d5b76afab:docs/redesigns/2026-09-05-jarvis-pursuit-data.json | jq '.synthesis.ranked_moves[] | {rank, title, cost}'
+git show b23d5b76afab:docs/redesigns/2026-09-05-jarvis-pursuit-data.json | jq '.synthesis.ranked_moves[0].behavior_matrix'
 ```
 
 ## North star (unchanged from run 09)

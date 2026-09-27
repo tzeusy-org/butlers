@@ -4,7 +4,8 @@ Coverage areas
 --------------
 - Response-snapshot tests: every pre-change Google route returns identical JSON
   shapes and HTTP statuses after the refactor.
-- Spotify happy path: mocked OAuth begin + callback for the new provider.
+- Synthetic-provider happy path: mocked OAuth begin + callback for a second
+  provider injected only by tests.
 - page_of_origin round-trip: begin sets it; callback honours it.
 - Audit row tests: ``attempted`` written BEFORE redirect; ``connected`` and
   ``failed`` written at callback.
@@ -56,10 +57,11 @@ _FAKE_TOKEN = {
 }
 _FAKE_USERINFO = {"email": "test@example.com", "name": "Test User", "id": "12345"}
 
-_SPOTIFY_TOKEN = {
-    "access_token": "BQD-fake",
-    "refresh_token": "AQD-fake-refresh",
-    "scope": "user-read-email user-read-private",
+_SYNTHETIC_PROVIDER = "test-provider"
+_SYNTHETIC_TOKEN = {
+    "access_token": "synthetic-access",
+    "refresh_token": "synthetic-refresh",
+    "scope": "identity.read activity.read",
     "token_type": "Bearer",
     "expires_in": 3600,
 }
@@ -81,9 +83,9 @@ def _make_app(app, *, client_id="test-client-id", client_secret="test-secret"):
     secrets = {
         "GOOGLE_OAUTH_CLIENT_ID": client_id,
         "GOOGLE_OAUTH_CLIENT_SECRET": client_secret,
-        # Provider-specific credential keys used by _resolve_provider_credentials.
-        "SPOTIFY_OAUTH_CLIENT_ID": client_id,
-        "SPOTIFY_OAUTH_CLIENT_SECRET": client_secret,
+        # Synthetic provider keys used only by the generalized-route tests.
+        "TEST_PROVIDER_OAUTH_CLIENT_ID": client_id,
+        "TEST_PROVIDER_OAUTH_CLIENT_SECRET": client_secret,
     }
     conn = AsyncMock()
 
@@ -176,9 +178,9 @@ def test_build_success_redirect_settings_owner():
     assert url == "/settings/owner?toast=connected&provider=google"
 
 
-def test_build_success_redirect_spotify():
-    url = _build_success_redirect_url("spotify", "secrets")
-    assert url == "/secrets?focus=u:spotify&toast=connected"
+def test_build_success_redirect_for_synthetic_provider():
+    url = _build_success_redirect_url(_SYNTHETIC_PROVIDER, "secrets")
+    assert url == "/secrets?focus=u:test-provider&toast=connected"
 
 
 def test_build_error_redirect_secrets():
@@ -207,6 +209,7 @@ async def test_unknown_provider_start_returns_404(app):
     body = resp.json()
     assert body["error"] == "unknown_provider"
     assert "google" in body["known"]
+    assert set(oauth_module._PROVIDER_REGISTRY) == {"google"}
 
 
 async def test_unknown_provider_callback_returns_404(app):
@@ -219,6 +222,58 @@ async def test_unknown_provider_callback_returns_404(app):
             params={"code": "test-code", "state": "fake-state"},
         )
     assert resp.status_code == 404
+
+
+async def test_spotify_start_returns_fixed_404_without_provider_or_state_write(app):
+    """Spotify is connector-owned, not a generic OAuth provider."""
+    _make_app(app)
+    with (
+        patch(_RESOLVE_PROVIDER_CREDS_PATCH, AsyncMock()) as resolve_creds,
+        patch(_EMIT_AUDIT_PATCH, AsyncMock()) as emit_audit,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/oauth/spotify/start",
+                params={"redirect": "false", "account_ref": str(uuid.uuid4())},
+            )
+    assert resp.status_code == 404
+    body = resp.json()
+    assert body["error"] == "unknown_provider"
+    assert body["known"] == ["google"]
+    resolve_creds.assert_not_awaited()
+    emit_audit.assert_not_awaited()
+    assert not oauth_module._state_store
+
+
+async def test_spotify_callback_returns_fixed_404_without_provider_or_token_write(app):
+    """A generic Spotify callback cannot consume state or persist token material."""
+    _make_app(app)
+    state = _generate_state()
+    _store_state(state, provider="spotify")
+    with (
+        patch(_EXCHANGE_PATCH, AsyncMock()) as exchange,
+        patch(_RESOLVE_PROVIDER_CREDS_PATCH, AsyncMock()) as resolve_creds,
+        patch("butlers.api.routers.oauth._make_credential_store", MagicMock()) as make_store,
+        patch(_EMIT_AUDIT_PATCH, AsyncMock()) as emit_audit,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/oauth/spotify/callback",
+                params={"code": "synthetic-code", "state": state},
+            )
+    assert resp.status_code == 404
+    body = resp.json()
+    assert body["error"] == "unknown_provider"
+    assert body["known"] == ["google"]
+    exchange.assert_not_awaited()
+    resolve_creds.assert_not_awaited()
+    make_store.assert_not_called()
+    emit_audit.assert_not_awaited()
+    assert _validate_and_consume_state(state) is not None
 
 
 async def test_catalog_oauth_provider_not_in_registry_returns_not_configured(app):
@@ -253,7 +308,7 @@ def test_whatsapp_is_catalog_oauth_but_unregistered():
 # ===========================================================================
 
 
-async def test_generalised_google_start_returns_api_response_envelope(app):
+async def test_generalised_start_returns_api_response_envelope(app, synthetic_oauth_provider):
     """The /{provider}/start route (when provider=google) wraps in ApiResponse."""
     _make_app(app)
     # Use the generalised route explicitly by making it NOT match the legacy route.
@@ -262,26 +317,28 @@ async def test_generalised_google_start_returns_api_response_envelope(app):
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        # The generalised route is /{provider}/start — google is matched by literal
-        # /google/start first. To test the generalised envelope we use spotify.
-        resp = await client.get("/api/oauth/spotify/start", params={"redirect": "false"})
+        # Google is matched by the literal route first, so use a synthetic
+        # provider registered only for this test.
+        resp = await client.get(
+            f"/api/oauth/{_SYNTHETIC_PROVIDER}/start", params={"redirect": "false"}
+        )
     assert resp.status_code == 200
     body = resp.json()
     # ApiResponse<T> envelope: {data: {...}, meta: {...}}
     assert "data" in body
     assert "meta" in body
     assert "authorization_url" in body["data"]
-    assert "spotify.com" in body["data"]["authorization_url"]
+    assert "oauth.test.invalid" in body["data"]["authorization_url"]
 
 
-async def test_generalised_start_page_of_origin_round_trip(app):
+async def test_generalised_start_page_of_origin_round_trip(app, synthetic_oauth_provider):
     """page_of_origin supplied to /{provider}/start is threaded through state."""
     _make_app(app)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         resp = await client.get(
-            "/api/oauth/spotify/start",
+            f"/api/oauth/{_SYNTHETIC_PROVIDER}/start",
             params={"redirect": "false", "page_of_origin": "ingestion"},
         )
     assert resp.status_code == 200
@@ -298,58 +355,64 @@ async def test_generalised_start_page_of_origin_round_trip(app):
 # ===========================================================================
 
 
-async def test_generalised_start_writes_attempted_audit_before_redirect(app):
+async def test_generalised_start_writes_attempted_audit_before_redirect(
+    app, synthetic_oauth_provider
+):
     """Generalised /{provider}/start writes 'attempted' audit row before redirecting."""
     _make_app(app)
     with patch(_EMIT_AUDIT_PATCH, AsyncMock()) as mock_audit:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/oauth/spotify/start", params={"redirect": "false"})
+            resp = await client.get(
+                f"/api/oauth/{_SYNTHETIC_PROVIDER}/start", params={"redirect": "false"}
+            )
     assert resp.status_code == 200
     mock_audit.assert_called_once()
     call_kwargs = mock_audit.call_args
     assert call_kwargs.kwargs.get("action") == "attempted"
-    assert call_kwargs.kwargs.get("provider") == "spotify"
+    assert call_kwargs.kwargs.get("provider") == _SYNTHETIC_PROVIDER
 
 
 # ===========================================================================
-# 7. Spotify happy-path (mocked OAuth) — generalised begin + callback
+# 7. Synthetic-provider happy-path (mocked OAuth) — generalised begin + callback
 # ===========================================================================
 
 
-async def test_spotify_start_redirects_to_spotify(app):
+async def test_synthetic_provider_start_redirects_to_provider(app, synthetic_oauth_provider):
     _make_app(app)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test", follow_redirects=False
     ) as client:
-        resp = await client.get("/api/oauth/spotify/start")
+        resp = await client.get(f"/api/oauth/{_SYNTHETIC_PROVIDER}/start")
     assert resp.status_code in (302, 307)
-    assert "accounts.spotify.com" in resp.headers.get("location", "")
+    assert "oauth.test.invalid" in resp.headers.get("location", "")
 
 
-async def test_spotify_start_json_mode_scope_base(app):
-    """Spotify default scopes include user-read-email from the 'base' set."""
+async def test_synthetic_provider_start_json_mode_scope_base(app, synthetic_oauth_provider):
+    """Synthetic-provider defaults include the base scope."""
     _make_app(app)
     from urllib.parse import parse_qs, urlparse
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.get("/api/oauth/spotify/start", params={"redirect": "false"})
+        resp = await client.get(
+            f"/api/oauth/{_SYNTHETIC_PROVIDER}/start", params={"redirect": "false"}
+        )
     assert resp.status_code == 200
     auth_url = resp.json()["data"]["authorization_url"]
     qs = parse_qs(urlparse(auth_url).query)
     scope_str = qs.get("scope", [""])[0]
-    assert "user-read-email" in scope_str
+    assert "identity.read" in scope_str
 
 
-async def test_spotify_callback_happy_path(app):
-    """Spotify callback stores the canonical runtime tokens and redirects to /secrets."""
-    app_with_pool, pool = _make_app(app)
+async def test_synthetic_provider_callback_happy_path(app, synthetic_oauth_provider):
+    """A registered generic provider stores a namespaced refresh token."""
+    _make_app(app)
 
     state = _generate_state()
-    _store_state(state, page_of_origin=None, provider="spotify")
+    _store_state(state, page_of_origin=None, provider=_SYNTHETIC_PROVIDER)
 
     # Mock the cred_store.store() call
     mock_cred_store = AsyncMock()
@@ -357,7 +420,7 @@ async def test_spotify_callback_happy_path(app):
 
     with (
         patch(_RESOLVE_PROVIDER_CREDS_PATCH, AsyncMock(return_value=("cid", "csec"))),
-        patch(_EXCHANGE_PATCH, AsyncMock(return_value=_SPOTIFY_TOKEN)),
+        patch(_EXCHANGE_PATCH, AsyncMock(return_value=_SYNTHETIC_TOKEN)),
         patch("butlers.api.routers.oauth._make_credential_store", return_value=mock_cred_store),
         patch(_EMIT_AUDIT_PATCH, AsyncMock()) as mock_audit,
     ):
@@ -365,40 +428,19 @@ async def test_spotify_callback_happy_path(app):
             transport=httpx.ASGITransport(app=app), base_url="http://test", follow_redirects=False
         ) as client:
             resp = await client.get(
-                "/api/oauth/spotify/callback", params={"code": "auth-code", "state": state}
+                f"/api/oauth/{_SYNTHETIC_PROVIDER}/callback",
+                params={"code": "auth-code", "state": state},
             )
 
-    # Callback now always redirects; default (None) → /secrets
     assert resp.status_code in (302, 307)
-    location = resp.headers.get("location", "")
-    assert "/secrets" in location
-    assert "u:spotify" in location
-
-    stored = {
-        call.args[0]: {
-            "value": call.args[1],
-            "category": call.kwargs["category"],
-            "is_sensitive": call.kwargs["is_sensitive"],
-        }
-        for call in mock_cred_store.store.await_args_list
-    }
-    assert stored["SPOTIFY_ACCESS_TOKEN"] == {
-        "value": _SPOTIFY_TOKEN["access_token"],
-        "category": "spotify",
-        "is_sensitive": True,
-    }
-    assert stored["SPOTIFY_REFRESH_TOKEN"] == {
-        "value": _SPOTIFY_TOKEN["refresh_token"],
-        "category": "spotify",
-        "is_sensitive": True,
-    }
-    assert stored["SPOTIFY_TOKEN_EXPIRES_AT"]["category"] == "spotify"
-    assert stored["SPOTIFY_TOKEN_EXPIRES_AT"]["is_sensitive"] is False
-    assert stored["SPOTIFY_GRANTED_SCOPES"] == {
-        "value": _SPOTIFY_TOKEN["scope"],
-        "category": "spotify",
-        "is_sensitive": False,
-    }
+    assert resp.headers["location"] == "/secrets?focus=u:test-provider&toast=connected"
+    mock_cred_store.store.assert_awaited_once_with(
+        "oauth_test-provider_refresh_token",
+        _SYNTHETIC_TOKEN["refresh_token"],
+        category=_SYNTHETIC_PROVIDER,
+        description="test-provider OAuth refresh token",
+        is_sensitive=True,
+    )
 
     # connected audit row emitted
     audit_calls = mock_audit.call_args_list
@@ -406,11 +448,13 @@ async def test_spotify_callback_happy_path(app):
     assert "connected" in actions
 
 
-async def test_spotify_callback_token_exchange_failure_writes_failed_audit(app):
+async def test_synthetic_provider_callback_token_exchange_failure_writes_failed_audit(
+    app, synthetic_oauth_provider
+):
     """When token exchange fails the callback writes a 'failed' audit row."""
     _make_app(app)
     state = _generate_state()
-    _store_state(state, provider="spotify")
+    _store_state(state, provider=_SYNTHETIC_PROVIDER)
 
     with (
         patch(_RESOLVE_PROVIDER_CREDS_PATCH, AsyncMock(return_value=("cid", "csec"))),
@@ -424,7 +468,8 @@ async def test_spotify_callback_token_exchange_failure_writes_failed_audit(app):
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             resp = await client.get(
-                "/api/oauth/spotify/callback", params={"code": "bad-code", "state": state}
+                f"/api/oauth/{_SYNTHETIC_PROVIDER}/callback",
+                params={"code": "bad-code", "state": state},
             )
 
     assert resp.status_code == 400
@@ -439,15 +484,19 @@ async def test_spotify_callback_token_exchange_failure_writes_failed_audit(app):
 # ---------------------------------------------------------------------------
 
 _MALFORMED_TOKEN_PAYLOADS = {
-    "missing_access_token": {"refresh_token": "AQD-fake-refresh", "expires_in": 3600},
+    "missing_access_token": {"refresh_token": "synthetic-refresh", "expires_in": 3600},
     "non_string_access_token": {"access_token": 12345, "expires_in": 3600},
     "blank_access_token": {"access_token": "   ", "expires_in": 3600},
-    "blank_refresh_token": {"access_token": "BQD-fake", "refresh_token": "", "expires_in": 3600},
-    "string_expires_in": {"access_token": "BQD-fake", "expires_in": "3600"},
-    "bool_expires_in": {"access_token": "BQD-fake", "expires_in": True},
-    "float_expires_in": {"access_token": "BQD-fake", "expires_in": 3600.5},
-    "negative_expires_in": {"access_token": "BQD-fake", "expires_in": -1},
-    "absurd_expires_in": {"access_token": "BQD-fake", "expires_in": 10**12},
+    "blank_refresh_token": {
+        "access_token": "synthetic-access",
+        "refresh_token": "",
+        "expires_in": 3600,
+    },
+    "string_expires_in": {"access_token": "synthetic-access", "expires_in": "3600"},
+    "bool_expires_in": {"access_token": "synthetic-access", "expires_in": True},
+    "float_expires_in": {"access_token": "synthetic-access", "expires_in": 3600.5},
+    "negative_expires_in": {"access_token": "synthetic-access", "expires_in": -1},
+    "absurd_expires_in": {"access_token": "synthetic-access", "expires_in": 10**12},
 }
 
 
@@ -456,11 +505,13 @@ _MALFORMED_TOKEN_PAYLOADS = {
     list(_MALFORMED_TOKEN_PAYLOADS.values()),
     ids=list(_MALFORMED_TOKEN_PAYLOADS),
 )
-async def test_generic_callback_rejects_malformed_token_payload(app, payload):
+async def test_generic_callback_rejects_malformed_token_payload(
+    app, synthetic_oauth_provider, payload
+):
     """A malformed 200 from the token endpoint persists nothing and leaks nothing."""
     _make_app(app)
     state = _generate_state()
-    _store_state(state, provider="spotify")
+    _store_state(state, provider=_SYNTHETIC_PROVIDER)
 
     mock_cred_store = AsyncMock()
     mock_cred_store.store = AsyncMock()
@@ -475,7 +526,8 @@ async def test_generic_callback_rejects_malformed_token_payload(app, payload):
             transport=httpx.ASGITransport(app=app), base_url="http://test", follow_redirects=False
         ) as client:
             resp = await client.get(
-                "/api/oauth/spotify/callback", params={"code": "auth-code", "state": state}
+                f"/api/oauth/{_SYNTHETIC_PROVIDER}/callback",
+                params={"code": "auth-code", "state": state},
             )
 
     assert resp.status_code == 502
@@ -496,18 +548,18 @@ async def test_generic_callback_rejects_malformed_token_payload(app, payload):
     assert [c.kwargs.get("action") for c in mock_audit.call_args_list] == ["failed"]
 
 
-async def test_generic_callback_accepts_a_valid_token_payload(app):
-    """The validated happy path still persists the canonical Spotify credentials."""
+async def test_generic_callback_accepts_a_valid_token_payload(app, synthetic_oauth_provider):
+    """The validated happy path persists the synthetic provider credential."""
     _make_app(app)
     state = _generate_state()
-    _store_state(state, provider="spotify")
+    _store_state(state, provider=_SYNTHETIC_PROVIDER)
 
     mock_cred_store = AsyncMock()
     mock_cred_store.store = AsyncMock()
 
     with (
         patch(_RESOLVE_PROVIDER_CREDS_PATCH, AsyncMock(return_value=("cid", "csec"))),
-        patch(_EXCHANGE_PATCH, AsyncMock(return_value=dict(_SPOTIFY_TOKEN))),
+        patch(_EXCHANGE_PATCH, AsyncMock(return_value=dict(_SYNTHETIC_TOKEN))),
         patch("butlers.api.routers.oauth._make_credential_store", return_value=mock_cred_store),
         patch(_EMIT_AUDIT_PATCH, AsyncMock()),
     ):
@@ -515,13 +567,13 @@ async def test_generic_callback_accepts_a_valid_token_payload(app):
             transport=httpx.ASGITransport(app=app), base_url="http://test", follow_redirects=False
         ) as client:
             resp = await client.get(
-                "/api/oauth/spotify/callback", params={"code": "auth-code", "state": state}
+                f"/api/oauth/{_SYNTHETIC_PROVIDER}/callback",
+                params={"code": "auth-code", "state": state},
             )
 
     assert resp.status_code in (302, 307)
     stored = {call.args[0] for call in mock_cred_store.store.await_args_list}
-    assert "SPOTIFY_ACCESS_TOKEN" in stored
-    assert "SPOTIFY_REFRESH_TOKEN" in stored
+    assert "oauth_test-provider_refresh_token" in stored
 
 
 # ===========================================================================
@@ -529,18 +581,20 @@ async def test_generic_callback_accepts_a_valid_token_payload(app):
 # ===========================================================================
 
 
-async def test_callback_page_of_origin_ingestion_redirects_to_ingestion(app):
+async def test_callback_page_of_origin_ingestion_redirects_to_ingestion(
+    app, synthetic_oauth_provider
+):
     """When page_of_origin=ingestion the callback redirects to /ingestion/connectors."""
     _make_app(app)
     state = _generate_state()
-    _store_state(state, page_of_origin="ingestion", provider="spotify")
+    _store_state(state, page_of_origin="ingestion", provider=_SYNTHETIC_PROVIDER)
 
     mock_cred_store = AsyncMock()
     mock_cred_store.store = AsyncMock()
 
     with (
         patch(_RESOLVE_PROVIDER_CREDS_PATCH, AsyncMock(return_value=("cid", "csec"))),
-        patch(_EXCHANGE_PATCH, AsyncMock(return_value=_SPOTIFY_TOKEN)),
+        patch(_EXCHANGE_PATCH, AsyncMock(return_value=_SYNTHETIC_TOKEN)),
         patch("butlers.api.routers.oauth._make_credential_store", return_value=mock_cred_store),
         patch(_EMIT_AUDIT_PATCH, AsyncMock()),
     ):
@@ -548,7 +602,8 @@ async def test_callback_page_of_origin_ingestion_redirects_to_ingestion(app):
             transport=httpx.ASGITransport(app=app), base_url="http://test", follow_redirects=False
         ) as client:
             resp = await client.get(
-                "/api/oauth/spotify/callback", params={"code": "auth-code", "state": state}
+                f"/api/oauth/{_SYNTHETIC_PROVIDER}/callback",
+                params={"code": "auth-code", "state": state},
             )
 
     assert resp.status_code in (302, 307)
@@ -556,19 +611,19 @@ async def test_callback_page_of_origin_ingestion_redirects_to_ingestion(app):
     assert location == "/ingestion/connectors"
 
 
-async def test_callback_success_with_dashboard_base_url(app, monkeypatch):
+async def test_callback_success_with_dashboard_base_url(app, monkeypatch, synthetic_oauth_provider):
     """OAUTH_DASHBOARD_URL is the frontend base URL prefixed onto the built path [bu-e6k2h]."""
     monkeypatch.setenv("OAUTH_DASHBOARD_URL", "https://example.test/butlers-dev")
     _make_app(app)
     state = _generate_state()
-    _store_state(state, page_of_origin="secrets", provider="spotify")
+    _store_state(state, page_of_origin="secrets", provider=_SYNTHETIC_PROVIDER)
 
     mock_cred_store = AsyncMock()
     mock_cred_store.store = AsyncMock()
 
     with (
         patch(_RESOLVE_PROVIDER_CREDS_PATCH, AsyncMock(return_value=("cid", "csec"))),
-        patch(_EXCHANGE_PATCH, AsyncMock(return_value=_SPOTIFY_TOKEN)),
+        patch(_EXCHANGE_PATCH, AsyncMock(return_value=_SYNTHETIC_TOKEN)),
         patch("butlers.api.routers.oauth._make_credential_store", return_value=mock_cred_store),
         patch(_EMIT_AUDIT_PATCH, AsyncMock()),
     ):
@@ -576,34 +631,38 @@ async def test_callback_success_with_dashboard_base_url(app, monkeypatch):
             transport=httpx.ASGITransport(app=app), base_url="http://test", follow_redirects=False
         ) as client:
             resp = await client.get(
-                "/api/oauth/spotify/callback", params={"code": "auth-code", "state": state}
+                f"/api/oauth/{_SYNTHETIC_PROVIDER}/callback",
+                params={"code": "auth-code", "state": state},
             )
 
     assert resp.status_code == 302
     assert (
         resp.headers["location"]
-        == "https://example.test/butlers-dev/secrets?focus=u:spotify&toast=connected"
+        == "https://example.test/butlers-dev/secrets?focus=u:test-provider&toast=connected"
     )
 
 
-async def test_callback_provider_error_with_dashboard_base_url(app, monkeypatch):
+async def test_callback_provider_error_with_dashboard_base_url(
+    app, monkeypatch, synthetic_oauth_provider
+):
     """Provider error with OAUTH_DASHBOARD_URL set redirects to base + built error path."""
     monkeypatch.setenv("OAUTH_DASHBOARD_URL", "https://example.test/butlers-dev")
     _make_app(app)
     state = _generate_state()
-    _store_state(state, page_of_origin="secrets", provider="spotify")
+    _store_state(state, page_of_origin="secrets", provider=_SYNTHETIC_PROVIDER)
 
     with patch(_EMIT_AUDIT_PATCH, AsyncMock()):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test", follow_redirects=False
         ) as client:
             resp = await client.get(
-                "/api/oauth/spotify/callback", params={"error": "access_denied", "state": state}
+                f"/api/oauth/{_SYNTHETIC_PROVIDER}/callback",
+                params={"error": "access_denied", "state": state},
             )
 
     assert resp.status_code == 302
     assert resp.headers["location"] == (
-        "https://example.test/butlers-dev/secrets?focus=u:spotify&oauth_error=provider_error"
+        "https://example.test/butlers-dev/secrets?focus=u:test-provider&oauth_error=provider_error"
     )
 
 
@@ -800,28 +859,29 @@ async def test_google_credentials_delete_snapshot_503_without_db(app):
 # ===========================================================================
 
 
-async def test_generalised_start_envelope_has_data_and_meta(app):
+async def test_generalised_start_envelope_has_data_and_meta(app, synthetic_oauth_provider):
     """All /{provider}/start responses (redirect=false) carry ApiResponse envelope."""
     _make_app(app)
-    for provider in ("spotify",):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get(f"/api/oauth/{provider}/start", params={"redirect": "false"})
-        assert resp.status_code == 200, f"Expected 200 for provider={provider}"
-        body = resp.json()
-        assert "data" in body, f"Missing 'data' in response for provider={provider}"
-        assert "meta" in body, f"Missing 'meta' in response for provider={provider}"
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            f"/api/oauth/{_SYNTHETIC_PROVIDER}/start", params={"redirect": "false"}
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "data" in body
+    assert "meta" in body
 
 
-async def test_generalised_callback_error_envelope(app):
+async def test_generalised_callback_error_envelope(app, synthetic_oauth_provider):
     """When callback fails validation, response has ApiResponse envelope."""
     _make_app(app)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         resp = await client.get(
-            "/api/oauth/spotify/callback",
+            f"/api/oauth/{_SYNTHETIC_PROVIDER}/callback",
             params={"code": "test-code", "state": "invalid-state"},
         )
     assert resp.status_code == 400
@@ -835,8 +895,8 @@ async def test_generalised_callback_error_envelope(app):
 # ===========================================================================
 
 
-async def test_spotify_scope_set_selector_listening_history(app):
-    """scope_set=listening_history includes recently-played scopes."""
+async def test_synthetic_scope_set_selector(app, synthetic_oauth_provider):
+    """A named scope set is composed for a generalized provider."""
     _make_app(app)
     from urllib.parse import parse_qs, urlparse
 
@@ -844,24 +904,24 @@ async def test_spotify_scope_set_selector_listening_history(app):
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         resp = await client.get(
-            "/api/oauth/spotify/start",
-            params={"redirect": "false", "scope_set": "listening_history"},
+            f"/api/oauth/{_SYNTHETIC_PROVIDER}/start",
+            params={"redirect": "false", "scope_set": "activity"},
         )
     assert resp.status_code == 200
     auth_url = resp.json()["data"]["authorization_url"]
     qs = parse_qs(urlparse(auth_url).query)
     scope_str = qs.get("scope", [""])[0]
-    assert "user-read-recently-played" in scope_str
-    assert "user-top-read" in scope_str
+    assert "identity.read" in scope_str
+    assert "activity.read" in scope_str
 
 
-async def test_spotify_unknown_scope_set_returns_400(app):
+async def test_synthetic_unknown_scope_set_returns_400(app, synthetic_oauth_provider):
     _make_app(app)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         resp = await client.get(
-            "/api/oauth/spotify/start",
+            f"/api/oauth/{_SYNTHETIC_PROVIDER}/start",
             params={"redirect": "false", "scope_set": "nonexistent_set"},
         )
     assert resp.status_code == 400
@@ -880,7 +940,7 @@ async def test_spotify_unknown_scope_set_returns_400(app):
 def test_validate_connector_detail_path_valid():
     """Well-formed <type>/<identity> paths are accepted."""
     assert _validate_connector_detail_path("google/alice@example.com") == "google/alice@example.com"
-    assert _validate_connector_detail_path("spotify/spotify-user-01") == "spotify/spotify-user-01"
+    assert _validate_connector_detail_path("music/provider-user-01") == "music/provider-user-01"
     assert (
         _validate_connector_detail_path("steam_connector/76561198000000001")
         == "steam_connector/76561198000000001"
@@ -978,8 +1038,8 @@ def test_build_success_redirect_connector_detail_path():
 
 def test_build_success_redirect_connector_detail_path_takes_priority_over_page_of_origin():
     """connector_detail_path takes priority over page_of_origin."""
-    url = _build_success_redirect_url("google", "secrets", "spotify/my-spotify-id")
-    assert url == "/ingestion/connectors/spotify/my-spotify-id"
+    url = _build_success_redirect_url("google", "secrets", "music/synthetic-account")
+    assert url == "/ingestion/connectors/music/synthetic-account"
 
 
 def test_build_success_redirect_no_connector_detail_path_falls_back():
@@ -1039,36 +1099,38 @@ def test_state_entry_connector_detail_path_defaults_to_none():
 # --- HTTP round-trip tests ---
 
 
-async def test_generalised_start_connector_detail_path_round_trips(app):
+async def test_generalised_start_connector_detail_path_round_trips(app, synthetic_oauth_provider):
     """connector_detail_path passed to /{provider}/start is stored in the CSRF state."""
     _make_app(app)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         resp = await client.get(
-            "/api/oauth/spotify/start",
+            f"/api/oauth/{_SYNTHETIC_PROVIDER}/start",
             params={
                 "redirect": "false",
                 "page_of_origin": "ingestion",
-                "connector_detail_path": "spotify/my-spotify-id",
+                "connector_detail_path": "music/synthetic-account",
             },
         )
     assert resp.status_code == 200
     state_token = resp.json()["data"]["state"]
     entry = _validate_and_consume_state(state_token)
     assert entry is not None
-    assert entry.connector_detail_path == "spotify/my-spotify-id"
+    assert entry.connector_detail_path == "music/synthetic-account"
     assert entry.page_of_origin == "ingestion"
 
 
-async def test_generalised_start_invalid_connector_detail_path_is_ignored(app):
+async def test_generalised_start_invalid_connector_detail_path_is_ignored(
+    app, synthetic_oauth_provider
+):
     """An invalid connector_detail_path (open redirect attempt) is silently ignored."""
     _make_app(app)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         resp = await client.get(
-            "/api/oauth/spotify/start",
+            f"/api/oauth/{_SYNTHETIC_PROVIDER}/start",
             params={
                 "redirect": "false",
                 "connector_detail_path": "https://evil.example.com/steal-tokens",
@@ -1082,7 +1144,7 @@ async def test_generalised_start_invalid_connector_detail_path_is_ignored(app):
     assert entry.connector_detail_path is None
 
 
-async def test_spotify_callback_redirects_to_connector_detail_page(app):
+async def test_synthetic_callback_redirects_to_connector_detail_page(app, synthetic_oauth_provider):
     """When state carries connector_detail_path the callback deep-links to the connector."""
     app_with_pool, pool = _make_app(app)
 
@@ -1090,8 +1152,8 @@ async def test_spotify_callback_redirects_to_connector_detail_page(app):
     _store_state(
         state,
         page_of_origin="ingestion",
-        provider="spotify",
-        connector_detail_path="spotify/my-spotify-id",
+        provider=_SYNTHETIC_PROVIDER,
+        connector_detail_path="music/synthetic-account",
     )
 
     mock_cred_store = AsyncMock()
@@ -1099,7 +1161,7 @@ async def test_spotify_callback_redirects_to_connector_detail_page(app):
 
     with (
         patch(_RESOLVE_PROVIDER_CREDS_PATCH, AsyncMock(return_value=("cid", "csec"))),
-        patch(_EXCHANGE_PATCH, AsyncMock(return_value=_SPOTIFY_TOKEN)),
+        patch(_EXCHANGE_PATCH, AsyncMock(return_value=_SYNTHETIC_TOKEN)),
         patch("butlers.api.routers.oauth._make_credential_store", return_value=mock_cred_store),
         patch(_EMIT_AUDIT_PATCH, AsyncMock()),
     ):
@@ -1109,28 +1171,30 @@ async def test_spotify_callback_redirects_to_connector_detail_page(app):
             follow_redirects=False,
         ) as client:
             resp = await client.get(
-                "/api/oauth/spotify/callback",
+                f"/api/oauth/{_SYNTHETIC_PROVIDER}/callback",
                 params={"code": "test-code", "state": state},
             )
 
     assert resp.status_code == 302
     location = resp.headers["location"]
-    assert location == "/ingestion/connectors/spotify/my-spotify-id"
+    assert location == "/ingestion/connectors/music/synthetic-account"
 
 
-async def test_spotify_callback_without_connector_detail_path_falls_back_to_roster(app):
+async def test_synthetic_callback_without_connector_detail_path_falls_back_to_roster(
+    app, synthetic_oauth_provider
+):
     """Without connector_detail_path the callback redirects to the roster (existing behaviour)."""
     app_with_pool, pool = _make_app(app)
 
     state = _generate_state()
-    _store_state(state, page_of_origin="ingestion", provider="spotify")
+    _store_state(state, page_of_origin="ingestion", provider=_SYNTHETIC_PROVIDER)
 
     mock_cred_store = AsyncMock()
     mock_cred_store.store = AsyncMock()
 
     with (
         patch(_RESOLVE_PROVIDER_CREDS_PATCH, AsyncMock(return_value=("cid", "csec"))),
-        patch(_EXCHANGE_PATCH, AsyncMock(return_value=_SPOTIFY_TOKEN)),
+        patch(_EXCHANGE_PATCH, AsyncMock(return_value=_SYNTHETIC_TOKEN)),
         patch("butlers.api.routers.oauth._make_credential_store", return_value=mock_cred_store),
         patch(_EMIT_AUDIT_PATCH, AsyncMock()),
     ):
@@ -1140,7 +1204,7 @@ async def test_spotify_callback_without_connector_detail_path_falls_back_to_rost
             follow_redirects=False,
         ) as client:
             resp = await client.get(
-                "/api/oauth/spotify/callback",
+                f"/api/oauth/{_SYNTHETIC_PROVIDER}/callback",
                 params={"code": "test-code", "state": state},
             )
 

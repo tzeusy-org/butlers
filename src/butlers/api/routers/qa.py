@@ -52,7 +52,7 @@ from typing import Any, Literal
 import asyncpg
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from butlers.api.briefing.cache import BriefingCache, get_cache
 from butlers.api.db import DatabaseManager
@@ -75,7 +75,7 @@ from butlers.core.healing.fingerprint import compute_fingerprint_from_report
 from butlers.core.model_routing import get_breaker_states
 from butlers.core.qa.github_pr import GithubPrClient, get_pr_client, parse_pr_url
 from butlers.core.qa.models import QaFinding
-from butlers.core.qa.notes import InvestigationNotes
+from butlers.core.qa.notes import DiffLine, InvestigationNotes
 from butlers.core.qa.patrol_status import (
     VALID_PATROL_STATUSES,
     is_valid_patrol_status,
@@ -539,6 +539,8 @@ class QaCaseDossier(BaseModel):
 
     case: QaCaseSummary
     state_track_stage: Literal["detect", "diagnose", "pr", "landed", "escalated", "failed"]
+    proposal_state: Literal["none", "unpublished", "published"] = "none"
+    proposal_diff_snapshot: list[DiffLine] = Field(default_factory=list)
     fingerprint: str | None = None
     dismissal: QaActiveDismissal | None = None
     investigation_notes: InvestigationNotes | None = None
@@ -1152,6 +1154,23 @@ def _investigation_notes_from_case_row(row: Any) -> InvestigationNotes | None:
         except ValidationError:
             return None
     return None
+
+
+_DIFF_SNAPSHOT_ADAPTER = TypeAdapter(list[DiffLine])
+
+
+def _proposal_diff_from_case_row(row: Any) -> list[DiffLine]:
+    """Recover a retained proposal diff independently of narrative-note validity."""
+    structured_evidence = _jsonb_dict(row.get("finding_structured_evidence"))
+    if not structured_evidence:
+        return []
+    notes = structured_evidence.get("investigation_notes")
+    if not isinstance(notes, dict):
+        return []
+    try:
+        return _DIFF_SNAPSHOT_ADAPTER.validate_python(notes.get("diff_snapshot", []))
+    except ValidationError:
+        return []
 
 
 def _pr_number_from_url(url: str | None) -> int | None:
@@ -2262,14 +2281,23 @@ async def get_case(
         case_id,
     )
     case = _row_to_case_summary(row)
+    investigation_notes = _investigation_notes_from_case_row(row)
+    proposal_diff_snapshot = _proposal_diff_from_case_row(row)
     gh_token = await _resolve_github_token(db)
     pr_summary = await _row_to_pr_summary_live(row, token=gh_token, client=get_pr_client())
+    proposal_state: Literal["none", "unpublished", "published"] = "none"
+    if pr_summary is not None:
+        proposal_state = "published"
+    elif proposal_diff_snapshot:
+        proposal_state = "unpublished"
     dossier = QaCaseDossier(
         case=case,
         state_track_stage=case.state,
+        proposal_state=proposal_state,
+        proposal_diff_snapshot=proposal_diff_snapshot,
         fingerprint=row.get("finding_fingerprint"),
         dismissal=dismissal,
-        investigation_notes=_investigation_notes_from_case_row(row),
+        investigation_notes=investigation_notes,
         pr=pr_summary,
         journal=[_row_to_journal_event(journal_row) for journal_row in journal_rows],
         healing_session_id=row.get("healing_session_id"),

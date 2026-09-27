@@ -48,7 +48,7 @@ Module migration chains run next. The daemon builds a DB-first `CredentialStore`
 
 ### Phase 9: Resolve Runtime Config
 
-The daemon seeds and reads the DB-backed runtime configuration from `[butler.runtime_seed]` when necessary. The resulting operational limits are the source of truth for core-tool registration and the Spawner.
+The daemon seeds DB-owned operational tuning from `[butler.runtime_seed]` when necessary. Git remains authoritative for declared `core_groups`: an existing DB subset is effective only when it carries a non-empty `core_groups_narrowing_reason`; otherwise startup reconciles the row to Git and appends one digest-keyed audit record for a non-empty diff. Concurrency, queue, catalog-read, and other operational values remain DB-owned. The resolved config feeds core-tool registration and the Spawner.
 
 ### Phase 10: Sync TOML Schedules
 
@@ -68,7 +68,7 @@ A `FastMCP` server is created and core MCP tools are registered: `status`, `trig
 
 ### Phase 14: Register Module Tools and Gates
 
-Healthy modules register tools through `register_tools(mcp, config, db)`. Approval gates and module-runtime wiring are then applied; a module-tool failure remains isolated to that module.
+Healthy modules register tools through `register_tools(mcp, config, db)`. Approval gates and module-runtime wiring are then applied; a module-tool failure remains isolated to that module and is retained in the tool-surface diff so the console does not confuse a partial surface with the Git declaration.
 
 ### Phase 15: Start the FastMCP Server
 
@@ -94,11 +94,11 @@ Cron-driven task dispatch. The scheduler maintains a `scheduled_tasks` table wit
 
 ### Session Log
 
-An append-only record of LLM CLI invocations. Each session row is created before the runtime is invoked and completed when it returns. Fields include prompt, trigger source, model, duration, token counts, tool calls, and outcome. The only mutation after creation is `session_complete`. See [Session Lifecycle](../runtime/session-lifecycle.md).
+An append-only record of LLM CLI invocations. Each session row is created before the runtime is invoked and completed when it returns. Fields include prompt, trigger source, purpose lane, model, duration, token counts, tool calls, and outcome. New rows also carry an immutable effective-system-prompt receipt: the exact bytes sent to the runtime, their SHA-256 digest, and an ordered content-free provenance list. The effective prompt is available only through its dedicated session-detail door and is not added to list, metric, audit, or telemetry payloads. The only mutation after creation is `session_complete`. See [Session Lifecycle](../runtime/session-lifecycle.md).
 
 ### Spawner
 
-The component that invokes ephemeral AI runtime instances. Controlled by an `asyncio.Semaphore` for per-butler concurrency limiting (default 1 = serial dispatch) and a process-wide global semaphore (default 3 max concurrent sessions across all butlers). See [Spawner](../runtime/spawner.md).
+The component that invokes ephemeral AI runtime instances. Controlled by an `asyncio.Semaphore` for per-butler concurrency limiting (default 1 = serial dispatch) and a process-wide global semaphore (default 3 max concurrent sessions across all butlers). Before invoking an adapter it composes and receipts the effective system prompt, and it enforces the content-blind private-content model lane before provider setup. See [Spawner](../runtime/spawner.md).
 
 ## Module Loading
 
@@ -158,6 +158,35 @@ kill -TERM $(pgrep -f "butlers run --config roster/general")
 # Expected: log shows each shutdown step; process exits cleanly (exit code 0)
 # No "active sessions dropped" error lines should appear
 ```
+
+## Implementation Notes
+
+- Core tools register through `butlers.core_tools.register_all_core_tools()` and the effective
+  `core_groups` decorator; keep group, name and role gates in those modules, never in a second
+  catalog. `tests/contracts/test_tool_surface_isolation.py` guards completeness. The call log line
+  `MCP tool called (butler=%s module=%s tool=%s)` is parsed downstream; keep it stable.
+- `sessions_summary` must stay advertised (dashboard cost fan-out relies on the tool metadata) and
+  raises `ValueError("Invalid period ...")` for an unsupported period.
+- The liveness reporter treats a heartbeat `404` as misconfiguration: one warning, then it stops.
+- `_McpSseDisconnectGuard` suppresses `ClientDisconnect` only for `POST .../messages`; every other
+  disconnect or exception still propagates.
+- `notify` normalises an omitted `message` to `""`, so `intent="react"` passes `notify.v1`
+  validation.
+- The core `trigger` tool awaits the spawned session and returns
+  `{output, success, error, duration_ms, session_id}`, so a caller can persist a terminal outcome
+  from the return value without polling or a callback.
+- Daemons serve streamable HTTP MCP at `/mcp` and legacy SSE at `/sse` + `/messages`. Runtime
+  sessions use `runtime_mcp_url()` (`/mcp`); never hardcode `/sse` in the spawner. Connector ingest
+  clients still use SSE (`SWITCHBOARD_MCP_URL=.../sse`).
+- The dashboard's per-butler MCP debug tab calls `GET /api/butlers/{name}/mcp/tools` and
+  `POST /api/butlers/{name}/mcp/call`.
+- `butlers up` runs every daemon in one process, so `public.deployments` is written once per boot in
+  `cli.py::_start_all` (`_record_deployment_boot`), never in per-butler startup. Its
+  `migration_head` is one schema's snapshot, not a drift proof. `GIT_SHA` is a Docker build arg
+  baked into the image.
+- Diagnose tool drift through the daemon status snapshot and the Butler Management three-way diff
+  (declared, effective, registered), not the `runtime_config` row alone. Exposing a mixed group's
+  reads must never activate its writes as a side effect.
 
 ## Related Pages
 

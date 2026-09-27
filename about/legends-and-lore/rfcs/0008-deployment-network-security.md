@@ -186,3 +186,82 @@ sudo iptables -L DOCKER-USER -n --line-numbers | grep butlers
 docker compose -f docker-compose.yml -f docker-compose.dev.yml config \
   | python3 -c "import sys,yaml; d=yaml.safe_load(sys.stdin); [print(f'{k}: {list(v.get(\"networks\",{}).keys())}') for k,v in sorted(d['services'].items())]"
 ```
+
+## Dashboard owner-authentication composition
+
+The owner adopted the exact successor
+`3686954b8477b150e617b555727830a1602b2b17` on 2026-09-15; see
+[adoption](../../../openspec/changes/specify-host-authorized-dashboard-enrollment/adoption.md).
+Its fixed-origin passkey/session contract composes with this RFC's loopback and
+Tailscale boundary. Tailnet membership is network access, not dashboard-owner
+authentication. The server pins one canonical HTTPS origin/RP hostname and
+accepts proxy authority metadata only through the explicitly trusted path.
+No arbitrary forwarded header or localhost HTTP exception widens that identity.
+
+Host commands authorize initial registration and lost-credential recovery in
+dedicated authentication state; no public request, daemon/model tool or first
+visitor can create that authority. Sessions, independent CSRF and domain checks
+remain separate controls. Ordinary passkey login does not require a host command.
+Same-host deployment path prefixes are not browser-origin isolation.
+
+The successor's [design D2-D7](../../../openspec/changes/specify-host-authorized-dashboard-enrollment/design.md)
+owns the exact wire/lifecycle contract; the
+[operator runbook](../../../docs/identity_and_secrets/dashboard-owner-auth.md)
+owns procedures. Its adoption is not a live proxy, credential, migration or
+deployment action. Existing network isolation and egress rules remain binding.
+
+## Amendment (2026-09-23): Internal Observer and Deployment Readiness Boundary
+
+**Status:** Approved target contract in
+`openspec/changes/restore-butler-control-plane-liveness`; deployment and
+external-monitor activation remain separate operations.
+
+The dashboard/control-plane observer reaches only exact same-host,
+backend-network daemon endpoints from the Git roster. Each daemon exposes
+`GET /internal/control-plane/identity` on its existing port with a bounded
+`butler.control.v1` response: `butler_name`, UUIDv7 `boot_instance_id`,
+the server-allocated durable `boot_epoch`, `route_contract` minimum/maximum,
+and `accepting_routes`. It is not a public
+discovery service. The observer verifies the expected host, port, path, name,
+generation, and contract before writing liveness with DB-server time. Both the
+periodic Dashboard observer and Switchboard's bounded stale-route recheck use
+the same verifier and DB-reserved per-daemon probe sequence; the conditional
+write fences old boot epochs and overlapping probes without granting either
+receiver broad registry or administrative-policy write authority. It does
+not follow a caller-supplied URL. A later split-host topology needs a new
+trust-design amendment before these same-host observations become authority.
+
+L2's shared receiver constructs only the configured `BUTLERS_HOST` plus each
+Git-roster port and the fixed identity path. It does not use environment proxy
+settings or follow redirects, caps the response at 2 KiB, and separately
+bounds reserve-plus-network and record phases at three seconds each. The
+entire response shape is closed:
+timestamps, endpoint claims, extra fields, an unregistered UUID, a mismatched
+epoch, and unsupported route contracts cannot advance healthy observation.
+Dashboard's supervised periodic pass and Switchboard's later on-demand caller
+share this verifier and the L1 reserve/record database CAS; neither receives
+an owner cookie or general registry/policy write permission.
+
+The daemon does not receive a dashboard owner cookie, API key, approval token,
+or runtime-probe signing key for liveness. `POST /api/switchboard/heartbeat`
+is retired after cutover; owner-auth middleware must not exempt it as an
+anonymous mutation. Connector MCP heartbeats keep their separate protocol.
+
+Dashboard `/health` remains process liveness. The canonical public
+`GET /ready` returns a boolean `ready` response shape with content-blind checks for PostgreSQL,
+roster, observer freshness, fleet identity and routability, QA patrol age,
+supervised loops, and L3's effect-free internal Switchboard route preflight.
+Q4 alone owns public `/ready` and its exact owner-auth exception; the Compose
+launcher consumes that route. The preflight checks fixed-target
+selection and reachability without target MCP calls or durable evidence
+writes, not transactional target acceptance. Compose and production deployment
+completion require two distinct complete observer cycles, two distinct
+qualifying scheduled QA patrol completions, and true sampled readiness over
+more than the longest fleet TTL. The finite default timeout covers two
+configured patrol cadences, that TTL, and a ten-minute margin (35 minutes at
+current defaults); shorter overrides fail configuration validation. A single
+successful process probe is insufficient. Public readiness
+exposes categories only and grants no control authority. The separate-host
+minimal `/api/health` pull monitor retains its already adopted scope; a new
+external functional monitor or public readiness consumption needs its own
+owner authorization.

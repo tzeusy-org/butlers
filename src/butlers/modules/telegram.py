@@ -49,6 +49,31 @@ REACTION_TO_EMOJI = {
 }
 
 
+class TelegramProviderResponseError(RuntimeError):
+    """Telegram returned no provider-confirmed message receipt."""
+
+    def __init__(self, message: str, *, provider_rejected: bool = False) -> None:
+        super().__init__(message)
+        self.provider_rejected = provider_rejected
+
+
+def _telegram_send_failure_category(exc: BaseException) -> str:
+    """Return a fixed, credential-safe audit category for a send failure."""
+    if isinstance(exc, httpx.TimeoutException):
+        return "telegram_transport_timeout"
+    if isinstance(exc, httpx.TransportError):
+        return "telegram_transport_error"
+    if isinstance(exc, httpx.HTTPStatusError):
+        return "telegram_provider_http_error"
+    if isinstance(exc, TelegramProviderResponseError):
+        return "telegram_provider_response_invalid"
+    if isinstance(exc, TelegramReplyMarkupValidationError):
+        return "telegram_reply_markup_invalid"
+    if type(exc).__name__ == "PermissionDenied":
+        return "telegram_permission_denied"
+    return "telegram_internal_error"
+
+
 def _validate_env_var_name(value: str, *, scope: str, field_name: str) -> str:
     """Validate a configured env var name for an identity credential field."""
     if not value or not value.strip():
@@ -384,47 +409,66 @@ class TelegramModule(Module):
         any Telegram traffic. require_permission fails open, so a DB error never
         wedges delivery.
         """
-        validated_reply_markup = validate_telegram_reply_markup(reply_markup)
-        await require_permission(self._permission_pool(), self._butler_name, NOTIFY_PERMISSION)
-        url = f"{self._base_url()}/sendMessage"
-        payload: dict[str, Any] = {
-            "chat_id": chat_id,
-            "text": _markdown_to_telegram_html(text),
-            "parse_mode": "HTML",
-        }
-        if reply_to_message_id is not None:
-            payload["reply_to_message_id"] = reply_to_message_id
-        if validated_reply_markup is not None:
-            payload["reply_markup"] = validated_reply_markup
-        client = self._get_client()
-        resp = await client.post(url, json=payload)
-        if resp.status_code >= 400:
-            body = resp.text
+        audit_summary: dict[str, Any] = {"chat_id": chat_id, "text_length": len(text)}
+        response_status: int | None = None
+        try:
+            validated_reply_markup = validate_telegram_reply_markup(reply_markup)
+            await require_permission(self._permission_pool(), self._butler_name, NOTIFY_PERMISSION)
+            url = f"{self._base_url()}/sendMessage"
+            payload: dict[str, Any] = {
+                "chat_id": chat_id,
+                "text": _markdown_to_telegram_html(text),
+                "parse_mode": "HTML",
+            }
+            if reply_to_message_id is not None:
+                payload["reply_to_message_id"] = reply_to_message_id
+            if validated_reply_markup is not None:
+                payload["reply_markup"] = validated_reply_markup
+            client = self._get_client()
+            resp = await client.post(url, json=payload)
+            response_status = resp.status_code
+            resp.raise_for_status()
             try:
-                detail = resp.json().get("description", body)
-            except Exception:
-                detail = body
+                data = resp.json()
+            except Exception as exc:
+                raise TelegramProviderResponseError(
+                    "telegram_provider_response: invalid JSON"
+                ) from exc
+            if not isinstance(data, dict) or data.get("ok") is not True:
+                raise TelegramProviderResponseError(
+                    "telegram_provider_response: provider did not confirm delivery",
+                    provider_rejected=isinstance(data, dict) and data.get("ok") is False,
+                )
+            result = data.get("result")
+            message_id = result.get("message_id") if isinstance(result, dict) else None
+            if not isinstance(message_id, int) or isinstance(message_id, bool) or message_id <= 0:
+                raise TelegramProviderResponseError(
+                    "telegram_provider_response: invalid message_id"
+                )
+        except Exception as exc:
+            failure_category = _telegram_send_failure_category(exc)
             logger.error(
-                "Telegram sendMessage failed: status=%d chat_id=%r detail=%s",
-                resp.status_code,
+                "Telegram sendMessage failed: category=%s status=%s chat_id=%r",
+                failure_category,
+                response_status,
                 chat_id,
-                detail,
             )
             await write_audit_entry(
                 self._audit_pool,
                 self._butler_name,
                 "telegram_send",
-                {"chat_id": chat_id, "text_length": len(text)},
+                audit_summary,
                 result="error",
-                error=f"HTTP {resp.status_code}: {detail}",
+                error=failure_category,
             )
-            resp.raise_for_status()
-        data: dict[str, Any] = resp.json()
+            raise
+
+        audit_summary["provider_message_id"] = message_id
         await write_audit_entry(
             self._audit_pool,
             self._butler_name,
             "telegram_send",
-            {"chat_id": chat_id, "text_length": len(text)},
+            audit_summary,
         )
         return data
 

@@ -13,10 +13,26 @@ import asyncpg
 import httpx
 import pytest
 
+from butlers.api.app import create_app as create_guarded_app
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.model_settings import _get_db_manager
+from tests.api.auth_helpers import _DomainOwnerState, create_authenticated_domain_app
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(scope="module")
+def app():
+    return create_authenticated_domain_app(api_key="owner-key")
+
+
+def _guarded_app(monkeypatch, configured=True):
+    monkeypatch.setenv("DASHBOARD_AUTH_ORIGIN", "https://owner.test.invalid")
+    monkeypatch.setenv("DASHBOARD_AUTH_RP_ID", "owner.test.invalid")
+    app = create_guarded_app(api_key="owner-key" if configured else "")
+    if configured:
+        app.state.owner_auth_service = _DomainOwnerState("owner-key")
+    return app
 
 
 def _db(app, *, fetch_rows=(), fetchrow=None, fetch_side_effect=None):
@@ -49,25 +65,22 @@ def _episode_row(*, episode_id=None, state="uncertain", successor_id=None, manua
     "configured,header,expected", [(False, None, 503), (True, None, 401), (True, "wrong", 401)]
 )
 async def test_attention_owner_gate_precedes_observation(
-    app, monkeypatch: pytest.MonkeyPatch, configured: bool, header: str | None, expected: int
+    monkeypatch: pytest.MonkeyPatch, configured: bool, header: str | None, expected: int
 ) -> None:
     """REQ-dashboard-model-settings-002: no protected read occurs before owner auth."""
-    if configured:
-        monkeypatch.setenv("DASHBOARD_API_KEY", "owner-key")
-    else:
-        monkeypatch.delenv("DASHBOARD_API_KEY", raising=False)
+    app = _guarded_app(monkeypatch, configured)
     pool = _db(app)
     headers = {"X-API-Key": header} if header is not None else {}
 
     with patch("butlers.api.owner_control.dashboard_owner_control_total") as counter:
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
+            transport=httpx.ASGITransport(app=app), base_url="https://owner.test.invalid"
         ) as client:
             response = await client.get("/api/settings/models/attention", headers=headers)
 
     assert response.status_code == expected
     pool.fetch.assert_not_awaited()
-    counter.labels.assert_called_once_with(outcome="unavailable" if expected == 503 else "denied")
+    counter.labels.assert_not_called()  # Central denial precedes the route dependency.
 
 
 async def test_attention_observation_distinguishes_no_episode_from_unavailable(
@@ -143,16 +156,17 @@ async def test_uncertain_manual_successor_is_not_advertised_as_reissue_eligible(
     assert episode["reissue_eligible"] is False
 
 
-async def test_reissue_owner_gate_precedes_side_effect(
-    app, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("DASHBOARD_API_KEY", "owner-key")
+async def test_reissue_owner_gate_precedes_side_effect(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = _guarded_app(monkeypatch)
     pool = _db(app)
     episode_id = uuid.uuid4()
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+        transport=httpx.ASGITransport(app=app), base_url="https://owner.test.invalid"
     ) as client:
-        response = await client.post(f"/api/settings/models/attention/{episode_id}/reissue")
+        response = await client.post(
+            f"/api/settings/models/attention/{episode_id}/reissue",
+            headers={"Origin": "https://owner.test.invalid"},
+        )
 
     assert response.status_code == 401
     pool.fetchrow.assert_not_awaited()

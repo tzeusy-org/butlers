@@ -256,12 +256,12 @@ class TestResolveOwnerChannelViaDefiner:
         assert contact.entity_id == entity_id
         assert is_primary is True
 
-        # The candidate array must include both the verbatim and telegram-prefixed forms.
+        # One typed universe includes both verbatim and prefixed handle forms.
         call = pool.fetchrow.await_args
         predicate, candidates = call.args[1], call.args[2]
-        assert predicate == "has-handle"
-        assert "206570151" in candidates
-        assert "telegram:206570151" in candidates
+        assert predicate == "owner-channel"
+        assert "has-handle:206570151" in candidates
+        assert "has-handle:telegram:206570151" in candidates
 
     async def test_no_match_returns_none(self):
         from unittest.mock import AsyncMock
@@ -296,3 +296,99 @@ class TestResolveOwnerChannelViaDefiner:
 
         result = await resolve_owner_channel_via_definer(pool, "telegram", "206570151")
         assert result is None
+
+
+class TestOwnerCorroborationPolicy:
+    """One shared policy governs all approval-gate channel resolution."""
+
+    async def test_direct_non_owner_is_authoritative(self):
+        from unittest.mock import AsyncMock, patch
+
+        from butlers.identity import (
+            ResolvedContact,
+            resolve_channel_contact_with_owner_corroboration,
+        )
+
+        direct = ResolvedContact(
+            contact_id=None,
+            name="External contact",
+            roles=["contact"],
+            entity_id=uuid.uuid4(),
+        )
+        owner_lookup = AsyncMock()
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=direct),
+            ),
+            patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=owner_lookup,
+            ),
+        ):
+            result = await resolve_channel_contact_with_owner_corroboration(
+                AsyncMock(), "email", "external@example.test"
+            )
+
+        assert result == direct
+        owner_lookup.assert_not_awaited()
+
+    async def test_owner_looking_direct_result_requires_definer_corroboration(self):
+        from unittest.mock import AsyncMock, patch
+
+        from butlers.identity import (
+            ResolvedContact,
+            resolve_channel_contact_with_owner_corroboration,
+        )
+
+        direct = ResolvedContact(
+            contact_id=None,
+            name="Owner-looking",
+            roles=["owner"],
+            entity_id=uuid.uuid4(),
+        )
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=direct),
+            ),
+            patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=None),
+            ),
+        ):
+            result = await resolve_channel_contact_with_owner_corroboration(
+                AsyncMock(), "telegram", "owner-looking"
+            )
+
+        assert result is None
+
+    async def test_schema_isolated_miss_accepts_only_definer_verified_owner(self):
+        from unittest.mock import AsyncMock, patch
+
+        from butlers.identity import (
+            ResolvedContact,
+            resolve_channel_contact_with_owner_corroboration,
+        )
+
+        verified_owner = ResolvedContact(
+            contact_id=None,
+            name=None,
+            roles=["owner"],
+            entity_id=uuid.uuid4(),
+        )
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=(verified_owner, False)),
+            ),
+        ):
+            result = await resolve_channel_contact_with_owner_corroboration(
+                AsyncMock(), "email", "secondary-owner@example.test"
+            )
+
+        assert result == verified_owner

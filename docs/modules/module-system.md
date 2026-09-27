@@ -10,145 +10,104 @@
 
 Every butler is a long-running MCP server with a fixed core (state store, scheduler, LLM spawner, session log) and a set of opt-in **modules**. Modules are the only mechanism for adding domain-specific MCP tools to a butler. They never touch core infrastructure directly.
 
-The module system provides three things:
+This page is the single definition of the module contract. The code is authoritative for names and
+signatures; this page states only the invariants the code cannot say for itself.
 
-1. **A contract** -- the `Module` abstract base class that every module must implement.
-2. **A registry** -- auto-discovery of all built-in and roster-defined module classes.
-3. **Dependency ordering** -- topological sort so that modules start only after their dependencies.
+Source of truth:
 
-Source files:
+- `src/butlers/modules/base.py` -- the `Module` ABC, `ToolMeta`, and the `ToolGroupMixin` /
+  `group_enabled()` tool-group filter
+- `src/butlers/modules/registry.py` -- `ModuleRegistry`, `default_registry()`, `_topological_sort()`
+- `src/butlers/lifecycle.py` -- the startup sequence that drives the hooks (numbered steps)
 
-- `src/butlers/modules/base.py` -- `Module` ABC and `ToolMeta`
-- `src/butlers/modules/registry.py` -- `ModuleRegistry`, `default_registry()`, Kahn's algorithm
+## The Contract
 
-## The Module ABC
+Every module subclasses `Module` (`src/butlers/modules/base.py`) and implements all of its abstract
+members: the `name`, `config_schema` and `dependencies` properties, plus `register_tools`,
+`migration_revisions`, `on_startup` and `on_shutdown`. Read the signatures and docstrings there.
+The invariants:
 
-Every concrete module subclasses `Module` from `butlers.modules.base` and implements the following abstract members:
-
-### Properties
-
-| Property | Return type | Description |
-|----------|-------------|-------------|
-| `name` | `str` | Unique module identifier (e.g. `"email"`, `"memory"`). Used as the key in `butler.toml` config sections and dependency declarations. |
-| `config_schema` | `type[BaseModel]` | Pydantic model class for the module's `[modules.<name>]` configuration block. The daemon validates config against this schema at startup. |
-| `dependencies` | `list[str]` | Names of other modules that must be started before this one. An empty list means no dependencies. |
-
-### Abstract Methods
-
-| Method | Signature | Description |
-|--------|-----------|-------------|
-| `register_tools` | `async (mcp, config, db) -> None` | Register MCP tools on the butler's FastMCP server. Called after dependency resolution. The `mcp` argument is the FastMCP server instance; `config` is the validated module config; `db` is the butler's database handle. |
-| `migration_revisions` | `() -> str \| None` | Return an Alembic branch label for this module's database migrations, or `None` if the module has no custom tables. |
-| `on_startup` | `async (config, db, credential_store?) -> None` | Called after dependency resolution and migrations have run. Used to initialize connections, start background tasks, and resolve credentials. The optional `credential_store` parameter provides DB-first credential resolution. |
-| `on_shutdown` | `async () -> None` | Called during butler shutdown. Clean up connections, stop background tasks, release resources. |
-
-### Optional: Tool Metadata
-
-The `tool_metadata()` method (non-abstract, defaults to `{}`) returns a `dict[str, ToolMeta]` mapping tool names to sensitivity metadata. The `ToolMeta` dataclass declares which tool arguments are safety-critical:
-
-```python
-@dataclass
-class ToolMeta:
-    arg_sensitivities: dict[str, bool]  # arg_name -> is_sensitive
-```
-
-When a module does not declare metadata, the approvals subsystem falls back to heuristic classification (matching argument names like `to`, `recipient`, `password`, etc.).
+- **Modules only add tools.** A module never modifies core infrastructure (state store, scheduler,
+  spawner, session log); everything it contributes reaches the butler through `register_tools`.
+- **`name` is the stable key** for the `[modules.<name>]` section in `butler.toml`, for
+  dependency declarations, and for runtime enable/disable state.
+- **Config is validated, not trusted.** The daemon validates the raw `[modules.<name>]` table
+  against `config_schema` and passes the validated object to the hooks. Configs that mix in
+  `ToolGroupMixin` gain an optional `groups` list; `register_tools` should gate each tool family
+  with `group_enabled(config, "<group>")` so a butler can load only part of a module.
+- **Identity comes from `butler_name`.** `register_tools` receives the canonical butler name from
+  the daemon; modules must use it and never derive identity from `db.schema` or similar.
+- **`on_startup` owns connections and background work; `on_shutdown` must release them.**
+  Secrets resolve DB-first through the optional `credential_store` argument.
+- **Tool sensitivity is declared, not guessed, when it matters.** `tool_metadata()` (optional,
+  default `{}`) maps tool names to `ToolMeta` argument sensitivities. Without a declaration the
+  approvals subsystem falls back to name-based heuristics (see [Approvals](approvals.md)).
+- Other optional hooks (`wire_audit_pool`, `extra_status_fields`) default to no-ops; see their
+  docstrings in `base.py`.
 
 ## Module Registry
 
-`ModuleRegistry` is the central catalog of all available module classes. It supports two loading modes:
+`default_registry()` discovers every concrete `Module` subclass under the `butlers.modules`
+package, plus butler-specific modules in `roster/<butler>/modules/__init__.py`. Registration is
+idempotent.
 
-- **`load_from_config(modules_config)`** -- instantiate and order only the modules listed in the config dict. Raises if a module depends on something not in the enabled set.
-- **`load_all(modules_config)`** -- instantiate and order every registered module, regardless of config presence. Modules in the config dict receive their explicit config; absent modules receive `{}`. This is the preferred startup path since butlers-949, allowing runtime enable/disable without static config changes.
+The daemon loads modules with `load_all()`: **every** registered module is instantiated, whether or
+not `butler.toml` mentions it (absent modules get an empty config). Which modules are active is
+runtime enable/disable state, not static config. `load_from_config()` loads only the listed
+modules and is stricter: an unknown name or a dependency outside the enabled set raises
+`ValueError`.
 
-### Auto-Discovery
+## Dependency Order
 
-`default_registry()` builds a pre-populated registry by:
+`_topological_sort()` orders modules so that every module's `dependencies` come before it
+(Kahn's algorithm, alphabetical within a tier, so the order is deterministic). A cycle raises
+`ValueError`. This single order governs module migrations, `on_startup`, and `register_tools`;
+`on_shutdown` runs in reverse.
 
-1. Walking all sub-packages under `butlers.modules` via `pkgutil.walk_packages`.
-2. Inspecting each discovered Python module for concrete `Module` subclasses.
-3. Scanning `roster/*/modules/__init__.py` for butler-specific custom modules (loaded under synthetic names like `butlers.modules._roster_{butler}`).
+## Migrations
 
-Registration is idempotent -- duplicate class registrations are silently skipped.
+A module that owns tables returns an Alembic branch label from `migration_revisions()` (or `None`
+if it has no tables). The label names a migration chain, resolved by `src/butlers/migrations.py`
+(`_CHAIN_ROOT_FAMILIES`) to `src/butlers/modules/<label>/migrations/`. Module migrations run into
+the butler's own schema unless the module config declares a private schema (for example memory's
+`memory_schema`). See [Migration patterns](../data_and_storage/migration-patterns.md).
 
-## Dependency Resolution
+## Startup Order
 
-Module ordering uses **Kahn's algorithm** (in-degree counting) to produce a deterministic topological sort. The implementation lives in `_topological_sort()`:
+The authoritative step list is the module docstring of `src/butlers/daemon.py` and the numbered
+comments in `src/butlers/lifecycle.py`. For modules, the order that matters is:
 
-1. Build an adjacency graph from each module's `dependencies` list.
-2. Seed a processing queue with all modules that have zero in-degree (no dependencies).
-3. Process each batch in sorted order (alphabetical within each tier for determinism).
-4. Decrement in-degree for each neighbor; add newly zero-degree nodes to the queue.
-5. If any modules remain with non-zero in-degree after processing, a cycle exists and a `ValueError` is raised.
+1. **Load and order** -- `load_all()` instantiates every module in dependency order.
+2. **Validate config** -- each module's config is validated against `config_schema`.
+3. **Migrate** -- core, butler-specific, then module migration chains.
+4. **Start** -- `on_startup(config, db, credential_store, blob_store)` in dependency order.
+5. **Register tools** -- only after the FastMCP server exists and core tools are registered,
+   `register_tools(mcp, config, db, butler_name)` runs in dependency order; approval gates are
+   applied afterwards.
 
-The result is a list of module instances ordered so that every module's dependencies appear before it. This order governs `on_startup` invocation, `register_tools` invocation, and migration execution.
-
-### Error Handling
-
-- **Unknown module**: `load_from_config` raises `ValueError` if a config key references a module name not in the registry.
-- **Missing dependency**: Raises `ValueError` if module A depends on module B, but B is not in the enabled set.
-- **Circular dependency**: Raises `ValueError` listing the modules involved in the cycle.
-
-## Migration Branching
-
-Modules that own database tables return a branch label string from `migration_revisions()`. This label corresponds to an Alembic branch in `src/butlers/migrations/versions/`. At startup, the daemon runs migrations for all enabled modules' branches before calling `on_startup`.
-
-Modules with no custom tables (e.g. email, telegram) return `None` and require no migrations.
-
-## Tool Registration Flow
-
-The full module lifecycle during butler startup:
-
-1. **Parse config** -- `butler.toml` is parsed; `[modules.*]` sections are extracted.
-2. **Build registry** -- `default_registry()` discovers all module classes.
-3. **Load modules** -- `load_all()` or `load_from_config()` instantiates and orders modules.
-4. **Run migrations** -- For each module with a non-None `migration_revisions()`, run Alembic migrations.
-5. **Register tools** -- For each module in dependency order, call `register_tools(mcp, config, db)`.
-6. **Start modules** -- For each module in dependency order, call `on_startup(config, db, credential_store)`.
-
-During shutdown, `on_shutdown()` is called in reverse dependency order.
+So `on_startup` runs **before** `register_tools`: a tool body may assume the module has started.
+Module-specific steps are non-fatal per module: a module that fails config validation, credentials,
+migration, `on_startup` or registration is recorded as failed and skipped in later phases, and the
+butler starts with the remaining modules. If startup aborts, modules already started get
+`on_shutdown()`.
 
 ## Writing a New Module
 
-A minimal module implementation:
+Place the module in `src/butlers/modules/` (single file or package) and auto-discovery finds it;
+butler-specific modules go in `roster/<butler>/modules/__init__.py`. Copy the shape of a small
+existing module (for example `src/butlers/modules/metrics/`) rather than a template, and follow the
+`adding-connectors-and-modules` subskill of the `butlers-development` skill.
 
-```python
-from pydantic import BaseModel
-from butlers.modules.base import Module
+## Implementation Notes
 
-class MyConfig(BaseModel):
-    setting: str = "default"
-
-class MyModule(Module):
-    @property
-    def name(self) -> str:
-        return "my_module"
-
-    @property
-    def config_schema(self) -> type[BaseModel]:
-        return MyConfig
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []  # or ["memory"] if you need memory tools
-
-    def migration_revisions(self) -> str | None:
-        return None  # or "my_module" if you have tables
-
-    async def register_tools(self, mcp, config, db) -> None:
-        @mcp.tool()
-        async def my_tool(arg: str) -> dict:
-            """My tool description."""
-            return {"result": arg}
-
-    async def on_startup(self, config, db, credential_store=None) -> None:
-        pass
-
-    async def on_shutdown(self) -> None:
-        pass
-```
-
-Place the module in `src/butlers/modules/` (single file or package) and auto-discovery will find it. For butler-specific modules, place them in `roster/<butler>/modules/__init__.py`.
+- `ButlerDaemon` filters `load_all()` through `_select_startup_modules`: a module with required
+  `config_schema` fields and no `[modules.<name>]` section is skipped (info log), keeping
+  intentionally omitted modules out of migrations, startup and tool registration.
+- Module configs pass through `_validate_module_configs`, which rejects extra and missing fields.
+- Egress audit: every outbound call emits one `dashboard_audit_log` operation at its call site
+  (`llm_api_call` from the spawner, `telegram_send`, `google_calendar_write`, `gmail_send`) via
+  `write_audit_entry` or `emit_dashboard_audit`; `GET /api/system/egress` reads them. Modules get
+  the pool through `Module.wire_audit_pool(pool)`, a post-startup no-op by default.
 
 ## Related Pages
 

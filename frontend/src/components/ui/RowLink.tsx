@@ -89,7 +89,7 @@ export const RowLink = React.forwardRef<HTMLAnchorElement | HTMLDivElement, RowL
           role="link"
           tabIndex={0}
           className={cn(
-            "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
+            "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus focus-visible:ring-inset",
             className,
           )}
           onClick={(event) => {

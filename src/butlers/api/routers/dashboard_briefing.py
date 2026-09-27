@@ -11,7 +11,7 @@ Returns a six-field Briefing object:
     generated_at ISO 8601 wall-clock timestamp of composition.
 
 Access: owner-only. HTTP 403 for non-owner sessions, HTTP 401 for
-unauthenticated (via ApiKeyMiddleware).
+unauthenticated (via the central owner-authentication boundary).
 
 Caching: per-owner LRU+TTL, 5-minute TTL. Cache hit preserves
 the original generated_at.

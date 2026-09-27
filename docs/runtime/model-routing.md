@@ -10,16 +10,11 @@ Model routing (`src/butlers/core/model_routing.py`) selects the best AI model fo
 
 ## Complexity Tiers
 
-The `Complexity` enum defines six tiers that drive model selection:
-
-| Tier | Value | Typical Use |
-| --- | --- | --- |
-| `TRIVIAL` | `trivial` | Simple lookups, status checks, quick responses |
-| `MEDIUM` | `medium` | Standard tasks (default for most triggers) |
-| `HIGH` | `high` | Complex reasoning, multi-step analysis |
-| `EXTRA_HIGH` | `extra_high` | Very complex tasks requiring top-tier models |
-| `DISCRETION` | `discretion` | Model selection delegated to the catalog's priority ordering |
-| `SELF_HEALING` | `self_healing` | Reserved for self-healing dispatch |
+Tiers are the `Complexity` enum in `src/butlers/core/model_routing.py`. They are ordered from most
+to least capable, and `TIER_FALLTHROUGH_ORDER` is the order resolution falls through when a tier
+has no usable candidate. `WORKHORSE` is the default for triggers and scheduled tasks. A caller that
+still emits the retired vocabulary (`trivial`, `medium`, ...) is remapped with a loud warning by
+`_check_deprecated_tier()`, so fix the caller when you see that warning.
 
 ## The Model Catalog
 
@@ -41,18 +36,25 @@ The `public.model_catalog` table is the global registry of available models. Eac
 
 ### Field ownership: catalog vs. runtime config
 
-As of migration `core_073`, `model`, `runtime_type`, `args`, and `session_timeout_s` live **on
-`public.model_catalog`** (`session_timeout_s INT NOT NULL DEFAULT 1800`), not on
+`model`, `runtime_type`, `args`, and `session_timeout_s` live **on `public.model_catalog`** (`session_timeout_s INT NOT NULL DEFAULT 1800`), not on
 `{schema}.runtime_config`. They are resolved per complexity tier by `resolve_model()`, which returns
 the chosen catalog entry id and its `session_timeout_s`, and are edited via the dashboard's **Models
 tab** / `GET/PATCH /api/model-settings` (`src/butlers/api/routers/model_settings.py`).
 
-`{schema}.runtime_config` retains only the cold operational fields --- `core_groups`,
-`max_concurrent`, `max_queued` --- which are seeded from `[butler.runtime_seed]` in `butler.toml` on
-first boot, read through the 30s TTL cache in `RuntimeConfigAccessor`
-(`src/butlers/core/runtime_config.py`), edited via `GET/PATCH /api/butlers/{name}/runtime-config`,
-and require a daemon restart to take effect. Do not look for model settings on the runtime-config
-surface, and do not add operational limits to the catalog.
+`{schema}.runtime_config` holds `core_groups`, `max_concurrent`, and `max_queued` (cold: require a
+daemon restart to take effect) alongside `catalog_read_sensitivity` and `tool_exposure_policy` (hot: a PATCH takes effect for the next
+planned session with no restart). All five fields are seeded from `[butler.runtime_seed]` in
+`butler.toml` on first boot and edited via `GET/PATCH /api/butlers/{name}/runtime-config`
+(`src/butlers/api/routers/runtime_config.py`), which reports each field's tier in the response's
+`field_tiers` map.
+
+Cold fields are read through the 30s TTL cache in `RuntimeConfigAccessor`
+(`src/butlers/core/runtime_config.py`). `tool_exposure_policy` is closed to `eager_filtered` (default,
+conservative) or `auto`, and every per-attempt caller MUST resolve it through
+`RuntimeConfigAccessor.get_tool_exposure_policy()`, which always reads the DB directly instead of the
+TTL cache --- the dashboard API and the butler daemon can be separate processes, so a cached read
+cannot guarantee the first session planned after a committed PATCH sees the new policy. Do not look
+for model settings on the runtime-config surface, and do not add operational limits to the catalog.
 
 ### Verification evidence is not routing evidence
 
@@ -111,9 +113,28 @@ The `public.butler_model_overrides` table allows per-butler customization withou
 4. Order by effective `priority DESC`, then `created_at ASC` (stable tie-break).
 5. Return the first matching row as `(runtime_type, model_id, extra_args, catalog_entry_id)`, or `None`.
 
-When `resolve_model()` returns `None`, the spawner falls back to the model configured in `[butler.runtime].model` in `butler.toml`.
+There is no `butler.toml` model fallback: when no candidate resolves, a live spawner fails with
+`ModelResolutionError` (see *Resolution Flow in the Spawner* below).
 
-## Capability fit (bu-6jv4m.7)
+### Private-content purpose lane
+
+Dispatch purpose is a closed, content-blind dimension. A trusted WhatsApp or Telegram source marks
+the dispatch `private_content`; all other and unknown sources remain `standard`. The classifier
+reads only the established routing/connector channel token. It never inspects prompt, message,
+sender, recipient, or thread content to infer sensitivity.
+
+`private_content` is provenance, not model-selection authority. It neither adds nor removes a
+catalog candidate and does not change effective tier, priority, fit, verification, quota, breaker,
+provider/runtime selection, or same-tier failover. Normal operator routing rules retain their
+ordinary evaluation and authority; the lane itself creates no local-only requirement or special
+remote-model exception.
+
+New private discretion usage retains its existing spend purpose and carries the separate closed
+`purpose_lane=private_content` on token-usage and dispatch-attempt evidence with the stable
+dispatcher identity, never a raw chat or sender identifier. New ordinary sessions and their
+dispatch attempts persist the same purpose lane for session-list and dossier visibility.
+
+## Capability fit
 
 Everything above decides whether an entry is *allowed*. It does not decide whether the entry can do
 the job. `resolve_dispatch(pool, butler_name, intent)` adds that step, and the spawner reaches it by
@@ -146,11 +167,44 @@ selects.
 
 **The receipt.** `resolve_dispatch` returns a `DispatchResolution`: requested vs effective intent
 (differing only in tier, when fallthrough occurred), every candidate with its outcome
-(`selected` / `eligible` / `excluded_hard_fit` / `excluded_quota` / `not_top_priority` /
-`tier_not_reached`) and fit findings, evidence age, and the winner reason (`sole_candidate` /
-`evidence_score` / `round_robin`). It is prompt-free by construction and `describe()` is JSON-safe.
-It is carried on `TierQuotaExhausted.resolution` when quota blocks the tier. Persisting it and
-exposing it as a session dossier door is deliberately not done yet.
+(`selected` / `eligible` / `excluded_hard_fit` / `excluded_breaker` / `excluded_quota` /
+`not_top_priority` / `tier_not_reached`) and fit findings, evidence age, and the winner reason
+(`sole_candidate` / `evidence_score` / `round_robin`). An `excluded_breaker` candidate records
+`exclusion="breaker_open"` in the persisted projection. It is prompt-free by construction and
+`describe()` is JSON-safe.
+It is carried on `TierQuotaExhausted.resolution` when quota blocks the tier. Catalog-backed
+Spawner and DiscretionDispatcher attempts persist a projection of that receipt. Discretion receipt
+capture observes the legacy winner without parsing capability envelopes or changing eligibility. A
+spend-rule override may re-project the final winner only after the replacement is confirmed
+fit-eligible for the original intent and effective tier. A hard-fit
+exclusion remains non-invocable and is never cleared merely because an override selected it.
+Failover projections carry the preceding failure class, while a
+transparent retry of the same candidate after a failed resume handle is labeled
+`same_candidate_cold_retry` instead. The durable JSON is measured with the registered asyncpg JSONB
+encoder and bounded to 32 KiB across the entire projection, not only its candidate list; requested
+and effective intent remain present in the bounded fallback. The row and receipt share one
+monotonically increasing `attempt_index` across quota skips and runtime attempts.
+
+**Vision is an exact-path claim.** The adopted target is
+[RFC0036](../../about/legends-and-lore/rfcs/0036-models-exact-path-vision-proof.md) and the
+active [Models vision-proof change](../../openspec/changes/models-exact-path-vision-proof/).
+It requires image delivery through the production attachment path, an exact runtime/model/config
+and account identity, and three same-tuple controls: a positive image, a text-only control, and a
+removed-image control. Ordinary text Verify, a direct `attachment_view()` unit test, and model or
+adapter-wide claims do not establish vision support. The direct API adapter cannot satisfy the
+MCP attachment path because it does not accept the butler MCP server configuration.
+
+The bounded diagnostic executor and proof application are not implemented yet. A passing check
+will produce evidence only; Enable vision, Apply proof, or Refresh applied proof must then use an
+explicit exact-row compare-and-swap action. A generic catalog `PUT` is not the adopted path for a
+new `vision=true` declaration or an identity-changing write to an existing true row. Existing
+unchanged historical declarations retain their current behavior until explicitly moved into the
+managed proof lifecycle. Do not use a text-only canary or manually set `vision=true` to claim
+proof under the new contract.
+
+**Never give `attachment_view` structured output.** Codex CLI and Claude Code forward only
+`structuredContent` when a tool result carries it, dropping `content[]` and the image with it
+(openai/codex#10334). `tests/core/test_attachment_view.py` pins the wire shape.
 
 ## Token Quotas
 
@@ -162,7 +216,9 @@ The quota system prevents runaway costs by limiting token consumption per model 
 
 ### Token Usage Recording
 
-`record_token_usage()` writes to `public.token_usage_ledger` after each session completes. This is best-effort: errors are logged and never propagate to the caller.
+`record_token_usage()` writes to `public.token_usage_ledger` once per invoked spawner attempt. The row references the matching `public.model_dispatch_attempts.id`: parseable provider usage is stored with `usage_source=measured`, while a timeout or other invocation with no parseable usage stores `usage_source=unmeasurable` and NULL token buckets. Historical rows remain `measured` with a NULL attempt link. Month-to-date pricing sums measured rows and separately reports `unmeasurable_attempts`, so failover storms and unknown usage cannot disappear behind one confident session total. Recording remains best-effort: errors are logged and never propagate to the caller.
+
+The ledger also carries a token digest for five tracked layers of the composed system prompt (`base_prompt_tokens`, `timezone_instruction_tokens`, `context_preamble_tokens`, `routing_instructions_tokens`, `memory_context_tokens`, from `spawner_context.compose_prompt_digest()`) and `resume_outcome` (whether a conversational turn resumed a provider-native session: `resumed`, `resume_failed_retried_cold`, `resume_failed_terminal`, or `NULL` when resume was never attempted). The separately governed blind-spot preamble is outside this ledger schema. Both fields are additive and nullable — a caller with no composed prompt of its own (the discretion dispatcher lane) omits them and the columns stay honestly `NULL` rather than a fabricated `0`.
 
 ## Resolution Flow in the Spawner
 
@@ -177,11 +233,13 @@ The `effective_tier` is pinned at initial resolution and used to scope all same-
 1. Call `resolve_model_with_effective_tier(pool, butler_name, complexity, intent=...)` to query the
    catalog, where `intent` is the dispatch intent derived from the trigger source (see *Capability
    fit* above); candidates that cannot satisfy it are excluded before ranking.
-2. If found, set `resolution_source = "catalog"`. If not, fall back to TOML model with `resolution_source = "static_fallback"`.
-3. Call `check_token_quota()` for catalog-resolved models (see quota section above).
-4. If quota returns `allowed=False`, record a `quota_skip` row in `public.model_dispatch_attempts` and seek the next same-tier candidate via `next_same_tier_candidate()`.
-5. Invoke the selected adapter.
-6. After completion, call `record_token_usage()` to update the ledger.
+2. If found, set `resolution_source = "catalog"`.
+3. If a populated receipt has no winner, return `ModelResolutionError` before adapter setup and retain the receipt on the failed result.
+4. If the catalog is empty or unavailable on a live Spawner, return `ModelResolutionError` before invocation because catalog-keyed authorization, budget, breaker, and provenance gates cannot run. Pool-free direct-adapter harnesses alone may evaluate `DEFAULT_RUNTIME_TYPE`'s adapter baseline and invoke it with no explicit model under `resolution_source = "direct_runtime"`.
+5. Call `check_token_quota()` for catalog-resolved models (see quota section above).
+6. If quota returns `allowed=False`, record a `quota_skip` row in `public.model_dispatch_attempts` and seek the next same-tier candidate via `next_same_tier_candidate()`.
+7. Invoke the selected adapter.
+8. After completion, call `record_token_usage()` to update the ledger.
 
 Both `resolution_source` and `complexity` are recorded on the session row for observability.
 
@@ -197,6 +255,9 @@ The `next_same_tier_candidate()` function returns the next enabled catalog entry
 2. **Enabled** — `effective_enabled = true` after applying per-butler overrides.
 3. **Not already attempted** — the catalog entry UUID is not in the `_attempted_ids` list.
 4. **Priority ordering** — sorted by effective priority descending, then `created_at ASC` (stable tie-break).
+5. **Original intent fit** — the initial `DispatchResolution` recorded the candidate as selected,
+   eligible, or fit-but-lower-priority in the same effective tier. A candidate excluded for vision,
+   tool use, context, deadline, or budget is recorded as a non-invoked suppressed attempt and skipped.
 
 Butler-level overrides (`public.butler_model_overrides`) are applied via COALESCE: when an override field is NULL, the catalog value is used.
 
@@ -211,7 +272,7 @@ Before invoking any adapter, the spawner checks `check_token_quota()` for the cu
 
 All `quota_skip` rows share the same `logical_session_id` as subsequent attempt rows, enabling end-to-end provenance correlation even when the initial `request_id` is None (scheduler/tick triggers).
 
-### Adapter Signals (bu-ojiij.5)
+### Adapter Signals
 
 Each runtime adapter exposes adapter-level signals in `last_process_info` that inform the failover classifier:
 
@@ -245,114 +306,36 @@ Every attempt in the failover sequence writes a row to `public.model_dispatch_at
 |---|---|
 | `quota_skip` | Candidate skipped before invocation due to quota exhaustion |
 | `runtime_failure` | Adapter raised a failover-eligible error |
+| `resume_failure` | Provider-native resume failed safely; the same candidate is retried cold without affecting its breaker |
 | `suppressed` | Failover decision was ineligible (side effects or unknown error) |
 | `exhausted` | All same-tier candidates tried, none succeeded |
-| `success` | This attempt produced the final successful result (only written on failover) |
+| `success` | This attempt produced the final successful result |
 
 Query provenance via the API: `GET /api/dispatch/attempts?session_id=<uuid>` or directly from `public.model_dispatch_attempts`.
 
-Qualifying `runtime_failure` and `success` rows use one serialized recorder per
-catalog entry. The recorder takes the advisory transaction lock before assigning
-`clock_timestamp()` and the stable bigint ID, so `(ts, id)` reflects recorder
-order even when an older transaction reaches the lock late. A breaker opening
-and its runtime-attention episode commit in that same transaction. Fleet-halt
-denials use the same recorder and create at most one episode per UTC month, but
-they take no recorder-held lock of their own: that guarantee is the producer's,
-which serializes on its own month-scoped advisory lock behind the partial unique
-`fleet_halt` month key, so the deny path — which fires on every spawn while the
-fleet is halted — is not serialized fleet-wide (bu-86t7r). A month already
-breached before producer activation is not paged retrospectively.
+Each catalog-backed row also carries `resolution_receipt`, the prompt-free
+explanation computed by intent-aware resolution: requested/effective intent,
+the winner and tie-break reason, and the ordered candidates with exclusions
+such as `breaker_open`, capability fit, budget, or quota. A same-tier failover
+receipt names the preceding attempt and its classified failure. A safe resume-handle failure that
+retries the same candidate cold instead records `retry.kind="same_candidate_cold"`; it is not a
+model failover. Receipts are bounded to 32 KiB by retaining an ordered candidate prefix and setting
+`truncated=true` plus the original `candidate_count`; they are never silently dropped for size. The
+size check uses the exact registered JSONB serializer, including its default ASCII escaping, and
+the minimal projection retains both requested and effective intent. Historical and explicit
+pool-free direct-runtime attempts honestly expose a null receipt rather than reconstructing a
+decision from current catalog state.
 
-Migration `core_199` installs the version-2 producer control and a database
-trigger, `public.runtime_attention_plant_legacy_debounce_marker()`. New
-recorders set a transaction-local ABI marker. A canonical runtime without that
-marker is treated as an old direct-delivery binary, and the trigger plants one
-`public.audit_log` row for it.
+Qualifying `runtime_failure` and `success` rows use one serialized recorder per catalog entry. The
+recorder takes the advisory transaction lock before assigning `clock_timestamp()` and the stable
+bigint ID, so `(ts, id)` reflects recorder order even when an older transaction reaches the lock
+late. A breaker opening and its runtime-attention episode commit in that same transaction.
+Fleet-halt denials use the same recorder and create at most one episode per UTC month without a
+recorder-held lock of their own, so the deny path (which fires on every spawn while the fleet is
+halted) is not serialized fleet-wide.
 
-**That trigger blocks nothing.** It returns `NEW` unconditionally; every insert
-it sees proceeds. Suppression is cooperative: the retired
-`model_breaker_attention` and `fleet_halt_attention` helpers debounced on
-`(target, action)` in `audit_log` with no actor filter, so a row planted under a
-different actor still satisfied their lookup and they skipped before transport.
-The old binary suppresses itself. Nothing in the database compels it, and a
-producer that never performs that lookup, that hits a lookup error (both helpers
-failed open), or that is past the window — 15 minutes for the breaker, the
-current UTC month for the ceiling — is unaffected. Both helpers were retired in
-PR 3742, so nothing in this repository reads the markers today; they matter only
-against a deployed binary older than that. It was previously named
-`runtime_attention_legacy_producer_fence` and two reviewers read that name as an
-ingress gate, which is why it was renamed.
-
-The rows it plants carry actor `runtime_attention_legacy_debounce_marker`. The
-`runtime_failure` branch notes `legacy_debounce_planted`; the ceiling branch's
-note is the current UTC month as `YYYY-MM`, which is load-bearing — the retired
-fleet-halt helper compared it against the current window — and must not be
-reformatted.
-
-**Rows written before the audit vocabulary changed keep the old strings.** They
-carry actor `runtime_attention_cutover_fence`, and on the `runtime_failure`
-branch note `blocked_old_binary`. Nothing rewrites them: the convergence is a
-rewrite of the planter's stored body, not a backfill, so the two vocabularies
-coexist in `public.audit_log` forever. Any query that filters on actor must
-accept both. Neither retired helper filtered on actor, which is why changing it
-was safe.
-
-The body is defined once, in
-`runtime_attention_admin.install_legacy_debounce_marker()`. `upgrade_producers_v2`
-emits it on a fresh bootstrap and `finalize_interface` re-adopts it on every
-`scripts/init-db.sql` rerun, so a database that predates a change to the body
-converges the next time the bootstrap runs. `upgrade_producers_v2` alone could
-not do this: it never re-runs once a database is at version 2, and Alembic cannot
-do it either — the planter is owned by the NOLOGIN
-`runtime_attention_outbox_owner` and the migration role is deliberately not a
-member. That rerun is an operator action, not part of an Alembic deploy: until it
-happens, an existing database keeps planting the old actor and note. Nothing
-breaks in the meantime — no code in this repository reads either literal.
-
-**The gap between a committed body and a deployed one is reported, not silent**
-(bu-bi5an). `butlers.core.stored_function_drift` parses every
-`CREATE [OR REPLACE] FUNCTION` in the configured bootstrap source. The source
-defaults to `scripts/init-db.sql`; `STORED_FUNCTION_DRIFT_INIT_DB_SQL_PATH` may
-select a source mounted elsewhere. This includes the ones nested inside an
-installer and compares each committed body against the body in `pg_proc.prosrc`.
-It runs once at dashboard-api startup, and
-`GET /api/system/stored-functions` serves the same comparison live. A mismatch
-is *reported*, never fatal: one WARNING line naming the function, plus a
-`drifted` entry in the envelope. It never converges anything — re-running
-the configured bootstrap source remains the operator action — not part of an
-Alembic deploy — but the state is now visible instead of indefinite. The
-comparison ignores whitespace only, so a reindented or differently line-ended
-body does not cry wolf, and it carries short digests rather than bodies, because
-a stored body can hold operator-supplied literals. A function defined by the
-configured bootstrap source that the database does not have yet is reported as
-`not_deployed`, separately from drift: that is the ordinary state before the
-chain has invoked its bootstrap installer.
-
-Producer rollback disables new episodes while retaining attempts, the outbox,
-evidence, and this trigger.
-
-Applying `core_199` closes the `core_198` teardown permanently. The `core_199`
-downgrade clears `producers_enabled` but deliberately leaves
-`public.runtime_attention_producer_control` and
-`public.runtime_attention_plant_legacy_debounce_marker()` installed, and no
-migration, bootstrap, or script drops either one. The `core_198` downgrade precondition
-requires both to be absent, so on any database that has ever reached `core_199`
-it refuses:
-
-```
-core_198 downgrade requires trusted bootstrap rollback interface
-```
-
-Downgrading below `core_198` is not a supported operation on such a database,
-and no rollback restores the pre-outbox schema.
-
-To stop paging, downgrade `core_199` alone. Episode production stops; the
-outbox, the delivery lease, the attempt rows, and the marker planter stay in
-place, and every repair from there is forward remediation. Retaining the planter
-is the point of the design: removing it would stop planting the markers an old
-direct-delivery binary debounces itself on, so such a binary would reach
-transport again. It is worth being exact about that — retention keeps a
-cooperating old binary quiet, it does not make an uncooperative one impossible.
+Checking, repairing, and pausing runtime-attention paging is covered in the
+[Runtime Attention runbook](../operations/runtime-attention.md).
 
 ### Metrics
 
@@ -364,14 +347,8 @@ Three counters track failover at the process level:
 | `butlers.spawner.failover_suppressed_total` | `butler, reason` | Failover suppressed by classifier |
 | `butlers.spawner.failover_exhausted_total` | `butler, tier` | All same-tier candidates exhausted |
 
-`runtime_attention_recorder_total{outcome,edge}` separately reports bounded
-recorder results (`persisted`, `degraded`, or `rejected`) and edge outcomes; it
-does not label or log raw provider errors.  `outcome=persisted` with
-`edge=model_breaker_unauthorized` / `edge=fleet_halt_unauthorized` is the
-degraded-but-durable case: the attempt row committed, but the producer refused
-the call (SQLSTATE `42501`) because the pool holds no canonical `butler_*_rw`
-`SET ROLE` — expected on a non-hardened stack, and a misconfiguration anywhere
-role enforcement is meant to be active.
+`runtime_attention_recorder_total` is covered in the
+[Runtime Attention runbook](../operations/runtime-attention.md#check).
 
 ## Verification
 
@@ -389,8 +366,8 @@ psql -h localhost -U butlers -d butlers -c \
   "SELECT model, complexity, resolution_source, COUNT(*) as sessions
    FROM general.sessions WHERE completed_at IS NOT NULL
    GROUP BY model, complexity, resolution_source ORDER BY sessions DESC LIMIT 10;"
-# Expected: resolution_source is "catalog" for catalog-resolved sessions,
-#           "toml_fallback" when no catalog entry matched the tier
+# Expected: resolution_source is "catalog" for live catalog-resolved sessions;
+#           "direct_runtime" appears only in explicit pool-free harnesses
 
 # 3. Token quota ledger records usage
 psql -h localhost -U butlers -d butlers -c \

@@ -20,6 +20,7 @@ class ApprovalEventType(enum.StrEnum):
     ACTION_ABANDONED = "action_abandoned"
     ACTION_EXECUTION_SUCCEEDED = "action_execution_succeeded"
     ACTION_EXECUTION_FAILED = "action_execution_failed"
+    APPROVAL_DELIVERY_TERMINAL = "approval_delivery_terminal"
     RULE_CREATED = "rule_created"
     RULE_REVOKED = "rule_revoked"
     # Progressive autonomy ladder — promotion lifecycle
@@ -35,7 +36,7 @@ class ApprovalEventType(enum.StrEnum):
 
 # Event types that represent suggestion lifecycle transitions rather than
 # action/rule operations; these may legitimately lack both action_id and rule_id.
-_SUGGESTION_EVENT_TYPES: frozenset[ApprovalEventType] = frozenset(
+_LINKLESS_EVENT_TYPES: frozenset[ApprovalEventType] = frozenset(
     {
         ApprovalEventType.PROMOTION_SUGGESTED,
         ApprovalEventType.PROMOTION_CONFIRMED,
@@ -44,6 +45,7 @@ _SUGGESTION_EVENT_TYPES: frozenset[ApprovalEventType] = frozenset(
         ApprovalEventType.DEMOTION_SUGGESTED,
         ApprovalEventType.DEMOTION_CONFIRMED,
         ApprovalEventType.DEMOTION_DISMISSED,
+        ApprovalEventType.APPROVAL_DELIVERY_TERMINAL,
     }
 )
 
@@ -69,8 +71,8 @@ async def record_approval_event(
         except ValueError:
             canonical_type = None
 
-    is_suggestion_event = canonical_type in _SUGGESTION_EVENT_TYPES
-    if action_id is None and rule_id is None and not is_suggestion_event:
+    is_linkless_event = canonical_type in _LINKLESS_EVENT_TYPES
+    if action_id is None and rule_id is None and not is_linkless_event:
         raise ValueError("Approval event must include action_id and/or rule_id")
 
     event_name = event_type.value if isinstance(event_type, ApprovalEventType) else str(event_type)

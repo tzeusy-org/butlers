@@ -48,6 +48,12 @@ The daemon calls `tick()` at a regular interval. Each tick:
 
 Dispatch failures are logged but do not prevent subsequent tasks from running. The error is stored in `last_result` for operator visibility.
 
+## Task Continuity (opt-in)
+
+A prompt-mode task can set `continuity = true` (per-task, default `false`) to have the scheduler inject what its previous run concluded into its next dispatched prompt. The task's own session calls the `carry_forward(task_name, content)` core tool to record that conclusion; the record lives in the shared `public.task_continuity` ledger, keyed by `(butler_name, task_name)` for the single "live" row and `(butler_name, task_name, session_id)` so calling it twice in one session updates the same row rather than duplicating it.
+
+At the next opted-in dispatch, `tick()` reads that live row and appends a `## Task Continuity — <task_name>` block naming the previous session, its age, and its content --- or, if the task has run under continuity but never called `carry_forward`, an honest "the last run recorded no carry-forward" block, never silence. This is a general primitive for the pattern the chronicler's day-close cache implements bespoke (`src/butlers/chronicler/day_close_writer.py`); migrating that hook onto this layer is a deliberate non-goal until a regression test proves equivalence.
+
 ## Staggering
 
 When multiple butler instances share the same cron schedule, simultaneous dispatch would create a thundering herd. The scheduler applies deterministic staggering:
@@ -60,25 +66,19 @@ The default `max_stagger_seconds` is 900 (15 minutes). The offset never exceeds 
 
 ## Complexity Tiers
 
-Each scheduled task can specify a `complexity` value that influences model selection during dispatch. Valid values: `trivial`, `medium` (default), `high`, `extra_high`, `discretion`, `self_healing`. Invalid values in the database are logged as warnings and fall back to `medium`.
+Each scheduled task can set a `complexity` tier (the `Complexity` enum in
+`src/butlers/core/model_routing.py`; see [Model Routing](model-routing.md#complexity-tiers)). A
+missing value defaults to `Complexity.WORKHORSE`. A stored retired tier (`medium`, `high`, ...) is
+remapped to its canonical successor rather than collapsed, and any other unrecognized value
+degrades to `WORKHORSE` with a warning (`_parse_complexity_from_db_row`).
 
-## Scheduled Task Fields
+## Scheduled Task Rows
 
-| Field | Type | Description |
-| --- | --- | --- |
-| `name` | text | Unique task identifier |
-| `cron` | text | Cron expression (validated by croniter) |
-| `dispatch_mode` | text | `"prompt"` or `"job"` |
-| `prompt` | text | Prompt text (prompt mode only) |
-| `job_name` | text | Registered job function name (job mode only) |
-| `job_args` | jsonb | Arguments dict for job dispatch (job mode only) |
-| `complexity` | text | Complexity tier for model selection |
-| `source` | text | `"toml"` (from config) or `"db"` (runtime-created) |
-| `enabled` | bool | Whether the task is active |
-| `next_run_at` | timestamptz | Next scheduled execution time |
-| `last_run_at` | timestamptz | Most recent execution time |
-| `last_result` | jsonb | Result or error from last dispatch |
-| `until_at` | timestamptz | Auto-disable after this time |
+`scheduled_tasks` is created in `alembic/versions/core/core_001_foundation.py` and extended by
+later core migrations (deadlines, token budgets, calendar linkage, delegation wake, continuity).
+Invariants worth knowing: `name` is unique per butler schema, `source` is `toml` or `db` and decides
+whether `sync_schedules()` owns the row, and an expired task is left with `enabled=false` and
+`next_run_at=NULL`.
 
 ## Verification
 
@@ -117,6 +117,27 @@ psql -h localhost -U butlers -d butlers -c \
    WHERE until_at IS NOT NULL;"
 # Expected: tasks past their until_at show enabled=false, next_run_at=NULL
 ```
+
+## Implementation Notes
+
+- `sw_038` supplies `public.qa_local_schedule_policy()` for QA's separately
+  wired scheduler consumer. It accepts no arguments, requires effective
+  `SET ROLE butler_qa_rw`, and returns only `policy_state` and
+  `policy_provenance` for `qa`. The role-less audit pool is not an authorized
+  caller. SQLSTATE `42501` is denied, `P0002` is missing policy, and `22023`
+  is malformed policy; transport/function absence is unavailable. Consumers
+  must suppress new admission on these outcomes, never reuse cached `active`.
+  The migration retains the function and ACL on downgrade because migration
+  state cannot prove that all readers were retired. Remove it only after a
+  separately reviewed replacement; policy rows and owner holds are unchanged.
+  Installing this producer does not wire or activate the QA consumer.
+
+- `job_args` JSONB can round-trip through asyncpg as a JSON string: serialize dicts explicitly on
+  write and normalize back to dicts before diffing, validation merges, list responses or dispatch.
+- Scheduler context must match across the background loop, the `tick` tool and
+  `schedule_trigger`: resolve it through `ButlerDaemon._build_scheduler_runtime_context()` and
+  prepare prompt-mode tasks with the same captured `run_at` and effective timezone passed to
+  completion. Otherwise Chronicler's early-morning day-close derives the prior UTC date.
 
 ## Related Pages
 

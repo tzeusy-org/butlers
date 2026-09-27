@@ -280,6 +280,41 @@ def test_unknown_or_newer_schema_version_fails_deterministically(
 
 
 # ---------------------------------------------------------------------------
+# IngestPayloadV1 normalized_text / attachments constraint tests (bu-2jtfw.7)
+# ---------------------------------------------------------------------------
+
+
+def test_ingest_v1_rejects_empty_normalized_text_with_no_attachments() -> None:
+    """normalized_text may only be empty when attachments carries the content."""
+    payload = _valid_ingest_payload()
+    payload["payload"]["normalized_text"] = ""
+
+    with pytest.raises(ValidationError) as exc_info:
+        IngestEnvelopeV1.model_validate(payload)
+
+    error = exc_info.value.errors()[0]
+    assert error["loc"] == ("payload",)
+    assert error["type"] == "normalized_text_or_attachments_required"
+
+
+def test_ingest_v1_accepts_empty_normalized_text_with_attachments() -> None:
+    """A captionless media message may have empty normalized_text if attachments is set."""
+    payload = _valid_ingest_payload()
+    payload["payload"]["normalized_text"] = ""
+    payload["payload"]["attachments"] = [
+        {
+            "media_type": "image/jpeg",
+            "storage_ref": "s3://test-bucket/abc123.jpg",
+            "size_bytes": 51200,
+        }
+    ]
+
+    envelope = IngestEnvelopeV1.model_validate(payload)
+    assert envelope.payload.normalized_text == ""
+    assert len(envelope.payload.attachments) == 1
+
+
+# ---------------------------------------------------------------------------
 # RouteInputV1 complexity field tests
 # ---------------------------------------------------------------------------
 

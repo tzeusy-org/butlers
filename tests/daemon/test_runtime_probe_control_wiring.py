@@ -14,12 +14,16 @@ asserted here rather than assumed.
 
 from __future__ import annotations
 
+import uuid
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastmcp import FastMCP as RuntimeFastMCP
 from starlette.testclient import TestClient
 
+from butlers.core.control_plane_identity import IDENTITY_PATH
 from butlers.core.runtime_probe_control.coordinator import ProbeResult, ProbeStatus
 from butlers.core.runtime_probe_control.endpoint import CONTROL_PATH, READINESS_PATH
 from butlers.daemon import ButlerDaemon, _McpSseDisconnectGuard
@@ -170,3 +174,87 @@ def test_switchboard_coordinator_uses_its_own_pool_and_credential_store() -> Non
     assert coordinator is not None
     assert coordinator._pool is pool
     assert coordinator._codex_authority is store
+
+
+def test_same_port_identity_is_not_an_mcp_tool_and_refuses_until_committed_boot() -> None:
+    daemon = ButlerDaemon.__new__(ButlerDaemon)
+    daemon.config = SimpleNamespace(
+        name="health",
+        runtime_seed=SimpleNamespace(route_contract_min=1, route_contract_max=1),
+    )
+    daemon._boot_instance_id = uuid.UUID("0199a5b0-0000-7000-8000-000000000001")
+    daemon._boot_epoch = None
+    daemon._accepting_connections = False
+    daemon._shutting_down = False
+    daemon.spawner = SimpleNamespace(_accepting=True)
+    daemon._server_task = SimpleNamespace(done=lambda: False)
+    mcp = RuntimeFastMCP("health")
+    app = ButlerDaemon._build_mcp_http_app(
+        mcp, butler_name="health", identity_provider=daemon._identity_facts
+    )
+
+    with TestClient(app) as client:
+        before = client.get(IDENTITY_PATH)
+        daemon._boot_epoch = 4
+        daemon._accepting_connections = True
+        ready = client.get(IDENTITY_PATH)
+        daemon._shutting_down = True
+        stopping = client.get(IDENTITY_PATH)
+
+    assert before.status_code == 200 and before.json()["accepting_routes"] is False
+    assert before.json()["boot_epoch"] == 0
+    assert ready.json()["accepting_routes"] is True
+    assert ready.json()["boot_epoch"] == 4
+    assert stopping.json()["accepting_routes"] is False
+    assert set(ready.json()) == {
+        "schema_version",
+        "butler_name",
+        "boot_instance_id",
+        "boot_epoch",
+        "route_contract",
+        "accepting_routes",
+    }
+    assert IDENTITY_PATH in _paths(app)
+    assert f"/mcp{IDENTITY_PATH}" not in _paths(app)
+
+
+async def test_switchboard_seeds_only_missing_roster_rows_before_boot_registration(
+    tmp_path,
+) -> None:
+    daemon = ButlerDaemon.__new__(ButlerDaemon)
+    daemon.config = SimpleNamespace(name="switchboard")
+    daemon.config_dir = tmp_path / "switchboard"
+    daemon._shutting_down = False
+    daemon._boot_instance_id = uuid.UUID("0199a5b0-0000-7000-8000-000000000002")
+    daemon._boot_epoch = None
+    order: list[str] = []
+
+    async def register(_sql, _name, _uuid):
+        order.append("register")
+        return 1
+
+    pool = SimpleNamespace(fetchval=AsyncMock(side_effect=register))
+    daemon.db = SimpleNamespace(pool=pool)
+
+    async def seed(_pool, _roster_dir):
+        order.append("seed")
+        return 1
+
+    with patch(
+        "butlers.tools.switchboard.registry.registry.seed_missing_roster_butlers",
+        new=AsyncMock(side_effect=seed),
+    ):
+        assert await daemon._register_boot_epoch() is True
+    assert order == ["seed", "register"]
+    assert daemon._boot_epoch == 1
+
+
+async def test_identity_route_does_not_expand_model_tool_enumeration() -> None:
+    mcp = RuntimeFastMCP("health")
+    before = {tool.name for tool in await mcp.list_tools()}
+    ButlerDaemon._build_mcp_http_app(
+        mcp,
+        butler_name="health",
+        identity_provider=lambda: {"accepting_routes": False},
+    )
+    assert {tool.name for tool in await mcp.list_tools()} == before

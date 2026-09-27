@@ -13,7 +13,6 @@
 - [Approvals](approvals.md) — human-in-the-loop approval gates
 - [Email](email.md) — IMAP/SMTP email integration
 - [Telegram](telegram.md) — Telegram bot and user client integration
-- [Mailbox](mailbox.md) — internal mailbox for butler messages
 - [Metrics](metrics.md) — Prometheus metrics and storage
 - [Pipeline](pipeline.md) — message processing pipeline
 - [Knowledge Base](knowledge-base.md) — entity-predicate knowledge graph

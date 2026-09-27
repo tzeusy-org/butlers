@@ -116,19 +116,34 @@ async def test_conversation_reply_create_persists_message_and_bumps_count(
         conv = await conversation_create(pool, butler_name="switchboard", first_message="hi")
 
         msg = await conversation_reply_create(
-            pool, conv["id"], message="Recorded: Alice child-of Bob — correct?"
+            pool,
+            conv["id"],
+            message="Recorded: Alice child-of Bob — correct?",
+            sources=["Relationship fact"],
+            citations=[{"label": "Relationship fact", "target": "/entities", "kind": "internal"}],
+            routed_butler="relationship",
         )
 
         assert msg is not None
         assert msg["role"] == "assistant"
         assert msg["content"] == "Recorded: Alice child-of Bob — correct?"
+        assert msg["citations"] == [
+            {"label": "Relationship fact", "target": "/entities", "kind": "internal"}
+        ]
+        assert msg["routed_butler"] == "relationship"
 
         stored = await pool.fetchrow(
-            "SELECT role, content FROM public.dashboard_messages WHERE conversation_id = $1",
+            "SELECT role, content, sources, citations, routed_butler "
+            "FROM public.dashboard_messages WHERE conversation_id = $1",
             conv["id"],
         )
         assert stored["role"] == "assistant"
         assert stored["content"] == "Recorded: Alice child-of Bob — correct?"
+        assert stored["sources"] == ["Relationship fact"]
+        assert stored["citations"] == [
+            {"label": "Relationship fact", "target": "/entities", "kind": "internal"}
+        ]
+        assert stored["routed_butler"] == "relationship"
 
         conv_row = await pool.fetchrow(
             "SELECT message_count FROM public.dashboard_conversations WHERE id = $1",

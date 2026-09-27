@@ -15,7 +15,6 @@ currency SHALL be explicitly marked degraded and SHALL NOT carry a fabricated cu
 
 ID: REQ-finance-overview-currency-honesty-001
 Source: RFC 0012; Jarvis pursuit run 11 move 5
-Scope: v1-mandatory
 
 #### Scenario: Single-currency aggregate carries its real currency
 

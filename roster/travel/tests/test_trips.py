@@ -146,6 +146,34 @@ CREATE TABLE IF NOT EXISTS travel.documents (
 )
 """
 
+# bu-2jtfw.8: trip_summary() now also queries travel.connections.
+CREATE_CONNECTIONS_SQL = """
+CREATE TABLE IF NOT EXISTS travel.connections (
+    id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    trip_id            UUID NOT NULL REFERENCES travel.trips(id) ON DELETE CASCADE,
+    inbound_leg_id     UUID NOT NULL REFERENCES travel.legs(id) ON DELETE CASCADE,
+    outbound_leg_id    UUID NOT NULL REFERENCES travel.legs(id) ON DELETE CASCADE,
+    verdict            TEXT NOT NULL CHECK (verdict IN ('holds', 'tight', 'broken', 'unknown')),
+    available_minutes  INT,
+    evidence           JSONB NOT NULL DEFAULT '{}'::jsonb,
+    computed_at        TIMESTAMPTZ NOT NULL,
+    verdict_changed_at TIMESTAMPTZ NOT NULL,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (inbound_leg_id, outbound_leg_id)
+)
+"""
+
+CREATE_TRAVELLERS_SQL = """
+CREATE TABLE IF NOT EXISTS travel.travellers (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    trip_id UUID NOT NULL REFERENCES travel.trips(id) ON DELETE CASCADE,
+    entity_id UUID,
+    traveller_key TEXT NOT NULL,
+    display_name TEXT
+)
+"""
+
 
 @pytest.fixture
 async def pool(provisioned_postgres_pool):
@@ -157,6 +185,8 @@ async def pool(provisioned_postgres_pool):
         await p.execute(CREATE_ACCOMMODATIONS_SQL)
         await p.execute(CREATE_RESERVATIONS_SQL)
         await p.execute(CREATE_DOCUMENTS_SQL)
+        await p.execute(CREATE_CONNECTIONS_SQL)
+        await p.execute(CREATE_TRAVELLERS_SQL)
         yield p
 
 
@@ -590,7 +620,20 @@ class TestTripSummary:
             "documents",
             "timeline",
             "alerts",
+            "party",
+            "connections",
+            "connection_reason",
         }
+        assert result["connection_reason"] is None
+
+        await pool.execute(
+            "UPDATE travel.trips SET metadata = jsonb_build_object("
+            "'connection_derivation_completed_at', '2026-10-16T00:00:00+00:00') "
+            "WHERE id = $1::uuid",
+            trip_id,
+        )
+        derived = await trip_summary(pool, trip_id)
+        assert derived["connection_reason"] == "no_connection_on_journey"
 
     async def test_empty_trip_no_alerts(self, pool):
         """A trip with no legs has no flight-related alerts."""

@@ -1,6 +1,6 @@
 # RFC 0023: Durable Approval Delivery Intent Recovery
 
-**Status:** Proposed — owner sign-off required before implementation
+**Status:** Accepted (owner sign-off 2026-09-12; rollout separately gated)
 **Date:** 2026-08-13
 **Related:** RFC 0006 (schema isolation), RFC 0017 (owner-routing safety),
 RFC 0019 (parked automation), RFC 0021 (one-tap approvals), RFC 0022
@@ -187,6 +187,14 @@ terminal/expired, or a provider outcome is ambiguous. This is at-least-once
 recovery for work that has not crossed an uncertain side-effect boundary; it is
 not an unsound exactly-once claim.
 
+The v1 worker polls idle schemas every 5 seconds and claims a 30-second lease.
+Safe retries start at 15 seconds, double through six bounded exponent steps,
+add deterministic 0-20% jitter derived from the immutable presentation key and
+attempt number, and cap at 15 minutes. A due presentation older than 15
+minutes, an expired lease, or any ambiguous presentation is derived as stuck.
+These values belong only to approval recovery and do not inherit the generic
+scheduler or deferred-notification cadence.
+
 ### 4. Trusted provider handoff and ambiguity
 
 The source worker carries an immutable logical recovery subject plus a
@@ -242,6 +250,23 @@ same presentation key, but it cannot reissue the send merely because the source
 worker did not receive a response. `delivered` means a confirmed
 handoff/acceptance at the implemented boundary, never a claim that the owner
 read or acted on it.
+
+The current adapter inventory is fail-closed at the actual Messenger boundary:
+
+| Adapter | Acceptance evidence | Presentation-key idempotency or reconciliation | Post-start uncertainty |
+| --- | --- | --- | --- |
+| Telegram (`TelegramModule._send_message`) | Telegram `sendMessage` response, including its message identifier | None; the adapter accepts no presentation key and exposes no recovery lookup | `ambiguous`; reconciliation cannot resend |
+| Email (`EmailModule._send_email`) | Gmail send response / normalized `sent` result | None; the adapter accepts no presentation key and exposes no recovery lookup | `ambiguous`; reconciliation cannot resend |
+| WhatsApp (`WhatsAppModule._send_message`) | Bridge send response / normalized message identifier | None; the bridge accepts no presentation key and exposes no recovery lookup | `ambiguous`; reconciliation cannot resend |
+
+`src/butlers/core_tools/_routing.py` is the complete recovery provider switch
+and only wires reconciliation when an adapter implements
+`reconcile_approval_delivery`; none of these three current adapters does. A
+pre-provider failure remains `safe_retry` under the existing tuple, while any
+exception, explicit failure, malformed acceptance, timeout, or lost response
+after `provider_started_at` remains `ambiguous`. Adding a proof-bearing adapter
+capability requires updating this inventory and behavior evidence before it
+can relax that classification.
 
 ### 5. Decision and expiry cancellation
 
@@ -366,11 +391,21 @@ inserts. At proposal time the inventory is:
 | Entity merge | `roster/relationship/jobs/relationship_jobs.py` | Atomic semantic-key parking intent. |
 | Email identity enrichment | `roster/relationship/jobs/relationship_jobs.py` | Atomic curation parking intent. |
 | Memory reclassification | `roster/relationship/jobs/relationship_jobs.py` | Atomic curation parking intent. |
+| Prepared relationship reach-out | `roster/relationship/jobs/relationship_jobs.py` | Atomic prepared admission with one standalone terminal `collapsed` presentation; no provider work or burst membership. |
+| Prepared travel connection-risk door | `roster/travel/tools/connections.py` | Atomic prepared admission with one standalone terminal `collapsed` presentation; no provider work or burst membership. |
 
 Auto-approved inserts remain outside this contract because they are never
 pending and never require owner notification. New producers may not opt out by
 omitting a live runtime; admission creates the intent even when the delivery
 worker is temporarily unavailable.
+
+Prepared insight doors are pending actions, so they do not opt out. Their
+existing digest-only behavior is represented inside the same durable protocol:
+`origin='prepared'`, one intent classified `collapsed`, and one standalone
+terminal `collapsed` action presentation. They never join or influence an
+ordinary burst cohort, never become due, and dashboard defer cannot activate a
+notification generation for them. The default-off path still writes only the
+prepared pending row.
 
 ## Rollout and rollback
 

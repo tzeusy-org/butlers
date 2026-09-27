@@ -161,7 +161,6 @@ copied, mixed, or unreadable provenance MUST make it `unmeasurable`.
 
 ID: REQ-finance-supporting-tables-001
 Source: RFC 0012 §Expected-signal producer provenance; RFC 0029 §Initial adoption
-Scope: v1-mandatory
 
 #### Scenario: Gmail-only attested group maps to Gmail
 

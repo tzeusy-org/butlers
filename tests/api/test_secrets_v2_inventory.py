@@ -41,7 +41,6 @@ import pytest
 from asyncpg.exceptions import UndefinedColumnError, UndefinedTableError
 from fastapi.testclient import TestClient
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
 from butlers.api.routers.secrets_v2 import (
@@ -77,6 +76,7 @@ from butlers.api.routers.secrets_v2 import (
     get_inventory,
     resolve_staleness_window_s,
 )
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 
@@ -2244,7 +2244,7 @@ def test_non_primary_google_account_excluded_from_owner_default():
     Spec: §Multi-Account Leak Prevention (dashboard-google-accounts) and
           §Only the primary account appears in owner-default — non-primary excluded
 
-    This is the core security invariant: a non-primary account (e.g. tzeuse@)
+    This is the core security invariant: a non-primary account (e.g. owner.secondary@)
     MUST NOT appear in the owner-default view.
     """
     primary_entity_id = str(uuid4())
@@ -2509,7 +2509,7 @@ def test_primary_google_account_entity_appears_in_identities():
     # _fetch_identity_info queries public.entities for canonical_name+roles.
     google_entity_row = _make_entity_row(
         entity_id=primary_entity_id,
-        canonical_name="google-account:uniquosity@gmail.com",
+        canonical_name="google-account:owner@example.com",
         roles=["google_account"],
     )
 
@@ -2608,7 +2608,7 @@ def test_owner_entity_first_in_identities_when_google_type_sorts_before_owner_ty
     )
     google_entity_row = _make_entity_row(
         entity_id=google_entity_id,
-        canonical_name="google-account:uniquosity@gmail.com",
+        canonical_name="google-account:owner@example.com",
         roles=["google_account"],
     )
 
@@ -3576,9 +3576,9 @@ def test_inventory_user_row_for_unknown_type_publishes_other_not_the_type():
 # ---------------------------------------------------------------------------
 # Owner decision Option C puts "audit/probe/failure free text" off the wire
 # with no qualification by credential family, so the system and CLI arrays of
-# this same response are bound by it as well. Operator-authored labels (key,
-# category, description) are NOT covered by that decision and deliberately
-# still ship; whether they should is an open policy question.
+# this same response are bound by it as well. The adopted follow-up
+# minimization also withholds operator-authored ``category`` and ``description``
+# labels from the inventory while preserving the raw ``key`` identifier.
 # ---------------------------------------------------------------------------
 
 
@@ -3660,8 +3660,6 @@ def test_inventory_system_and_cli_rows_omit_every_probe_and_audit_sentinel():
     # The published field lists, locked so a new internal field cannot ride out.
     assert set(system_entry) == {
         "key",
-        "category",
-        "description",
         "state",
         "fingerprint",
         "last_verified",
@@ -3675,8 +3673,6 @@ def test_inventory_system_and_cli_rows_omit_every_probe_and_audit_sentinel():
     }
     assert set(cli_entry) == {
         "key",
-        "category",
-        "description",
         "state",
         "fingerprint",
         "issued",
@@ -3694,6 +3690,74 @@ def test_inventory_system_and_cli_rows_omit_every_probe_and_audit_sentinel():
     assert system_entry["last_test_code"] == 401
     assert system_entry["audit"] == [{"ts": ANY, "actor": "owner", "action": "verified"}]
 
-    # Operator-authored labels are outside the owner decision and still ship.
-    assert system_entry["description"] == "sentinel-system-description"
-    assert cli_entry["description"] == "sentinel-cli-description"
+
+# ---------------------------------------------------------------------------
+# bu-y5uq4: partial metadata minimization for system/CLI inventory rows
+# ---------------------------------------------------------------------------
+# bu-yk2hb (owner ruling, Choice B) decided the open policy question the test
+# above documents: a system/CLI inventory row keeps its raw `key` for operator
+# identification but withholds `description` and `category`, because an
+# operator-authored description ("Stripe live secret for billing webhooks")
+# can itself be reconnaissance-useful even though the operator, not a
+# credential provider, authored it. This is deliberately narrower than the
+# `user[]` family's content-blind projection — `key` remains a raw,
+# purpose-revealing string on the wire, so it is metadata minimization, not
+# content-blind identity.
+#
+# The approved contract is implemented by the inventory projections below. The
+# sentinel values remain on the internal records, but neither label may reach
+# the serialized inventory row.
+# ---------------------------------------------------------------------------
+
+
+def test_inventory_system_and_cli_rows_omit_description_and_category_but_retain_key():
+    """Target contract: system/CLI inventory rows keep `key`, drop `description`
+    and `category`. Each withheld field is planted with a distinct sentinel value
+    that must not appear anywhere in the response bytes; `key` must survive so an
+    operator can still identify the row.
+    """
+    system_row = _make_system_row(
+        key="SENTINEL_MINIMIZATION_SYSTEM_KEY",
+        value="fake-system-value",
+        category="sentinel-system-category",
+        description="sentinel-system-minimization-description",
+        last_test_ok=True,
+    )
+    cli_row = _make_system_row(
+        key="sentinel-minimization-cli-key",
+        value="fake-cli-value",
+        category="sentinel-cli-category",
+        description="sentinel-cli-minimization-description",
+        last_test_ok=True,
+    )
+    mock_db = _make_db_manager(
+        butler_names=["switchboard"],
+        system_rows=[system_row],
+        cli_rows=[cli_row],
+    )
+
+    resp = _build_app(mock_db).get("/api/secrets/inventory")
+
+    assert resp.status_code == 200, resp.text
+    for sentinel in (
+        "sentinel-system-category",
+        "sentinel-system-minimization-description",
+        "sentinel-cli-category",
+        "sentinel-cli-minimization-description",
+    ):
+        assert sentinel not in resp.text, f"{sentinel} leaked into the inventory response"
+
+    body = resp.json()["data"]
+    system_entry = next(
+        row for row in body["system"] if row["key"] == "SENTINEL_MINIMIZATION_SYSTEM_KEY"
+    )
+    cli_entry = next(row for row in body["cli"] if row["key"] == "sentinel-minimization-cli-key")
+
+    assert "description" not in system_entry
+    assert "category" not in system_entry
+    assert "description" not in cli_entry
+    assert "category" not in cli_entry
+
+    # The raw key survives so the row remains operator-identifiable.
+    assert system_entry["key"] == "SENTINEL_MINIMIZATION_SYSTEM_KEY"
+    assert cli_entry["key"] == "sentinel-minimization-cli-key"

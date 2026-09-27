@@ -183,7 +183,7 @@ def test_files(root: Path) -> list[Path]:
 
     They are pruned during the walk rather than filtered out of its results,
     which is a cost decision, not a correctness one -- a post-filter reaches the
-    same answer. AGENTS.md puts a full checkout, ``.venv`` and all, under
+    same answer. Agent tooling can put a full checkout, ``.venv`` and all, under
     ``.worktrees/parallel-agents/<id>/``. Measured on one such repo root:
     descending into them and discarding them afterwards traverses 2.3M entries
     in ~19s to select the same ~1.2k files a pruning walk reaches in 0.3s, and

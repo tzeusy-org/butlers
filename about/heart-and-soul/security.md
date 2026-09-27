@@ -284,74 +284,10 @@ what the storage layer already provides.
 
 Butlers runs in Docker Compose with a layered network isolation model.
 The principle: **services get the minimum network access they need and
-nothing more.**
-
-### Network Isolation Model
-
-Four Docker bridge networks separate connectivity by function:
-
-| Network | Purpose |
-|---------|---------|
-| `db` | Database and storage (postgres, minio). |
-| `backend` | Inter-service communication (butlers, switchboard, connectors). |
-| `frontend` | Vite dev server to dashboard-api only. |
-| `egress` | Outbound internet for services that call external APIs (LLM providers, Google OAuth, Telegram, Gmail). |
-
-Services that need external API access join the `egress` network in addition to
-their functional networks.
-
-None of these networks set Docker's `internal: true` flag. Docker's
-`DOCKER-ISOLATION-STAGE-1` rules for multiple internal networks interfere with
-each other and break inter-container communication, so isolation is enforced by
-the egress firewall (`scripts/egress-firewall.sh`) using per-bridge iptables
-rules on the `DOCKER-USER` chain rather than by the `internal` flag. The firewall
-is what blocks a compromised container from reaching private subnets; see the
-next section for its allow and deny rules.
-
-### Private Subnet Firewall
-
-The `egress` network allows internet access but blocks private subnets by
-default using iptables rules on the `DOCKER-USER` chain:
-
-- **Blocked:** RFC1918 (LAN), Tailscale CGNAT (100.64.0.0/10), link-local.
-- **Allowed:** Specific tailnet hosts listed in `ALLOWED_TAILNET_HOSTS`
-  (resolved dynamically by `compose.sh` at startup).
-
-This prevents a compromised container from pivoting to LAN machines, SSH'ing
-into other hosts, or scanning the tailnet --- while still allowing the specific
-tailnet services Butlers depends on (OTEL collector, Garage S3, Ollama, external
-Postgres).
-
-### Host Port Binding
-
-All port mappings bind to `127.0.0.1` only. No service is accessible from the
-LAN or tailnet via its Docker port. External access (when needed) is handled
-by Tailscale serve, which provides HTTPS termination and tailnet-level
-authentication.
-
-### Container Environment Isolation
-
-Docker containers receive a clean environment. Host environment variables (API
-keys, SSH credentials, cloud provider tokens) do not leak into containers.
-Only variables explicitly declared in `environment:` or `env_file:` are visible.
-
-The spawner's `_build_env()` is even more restrictive: LLM runtime subprocesses
-receive only `PATH` plus explicitly declared credentials resolved from the
-credential store. `HOME` is NOT included by default; adapters that need it
-(e.g. CodexAdapter) set it explicitly per invocation, pointing to an isolated
-temp directory containing session-specific config.
-
-### Persistent Runtime State
-
-LLM runtime CLIs (codex, opencode, claude-code, gemini) store OAuth tokens and
-settings in their config directories (`~/.codex/`, `~/.claude/`, etc.). These
-are backed by named Docker volumes so tokens survive container restarts without
-requiring re-authentication.
-
-Note: The CodexAdapter overrides `HOME` to a per-invocation temp directory for
-MCP config discovery. The persistent `runtime_codex` volume at `/root/.codex`
-stores auth tokens used by the container-level `codex` binary, but session MCP
-config is always ephemeral and written to the temp directory.
+nothing more.** The network, firewall, and port-binding contract lives in
+[RFC 0008](../legends-and-lore/rfcs/0008-deployment-network-security.md).
+Containers receive only the environment they declare, and LLM runtime
+subprocesses receive only `PATH` plus explicitly resolved credentials.
 
 ### Principles
 

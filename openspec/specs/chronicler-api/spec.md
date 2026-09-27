@@ -5,7 +5,9 @@
 Defines the backend API contract for Chronicler-owned retrospective time reads
 and owner corrections. This capability intentionally does not define dashboard
 UX or claim the existing operational `/timeline` route.
+
 ## Requirements
+
 ### Requirement: Chronicler Temporal Reads
 
 The API SHALL expose Chronicler-owned read endpoints under `/api/chronicler/*`
@@ -429,15 +431,28 @@ evaluates staleness, SHALL detect staleness against the canonical
 `chronicler.episodes`, `chronicler.point_events`, and `chronicler.overrides`
 rows in the cached window, and SHALL expose an explicit invalid-without-prose
 state. The re-invocation endpoint SHALL be rate-limited and SHALL NOT introduce
-a new LLM call path beyond the one already declared in RFC 0014 §D5. A manual
-refresh SHALL target only a settled historical local day in its supplied IANA
-timezone, and a successful executed empty bundle SHALL remain distinct from a
-persisted cache response.
+a new LLM call path beyond the one already declared in RFC 0014 §D5. Its
+successful response SHALL expose a deterministic invalid generated-candidate
+outcome without exposing candidate prose or provenance.
 
 The endpoints SHALL be:
 
-- `GET /api/chronicler/aggregate/day-close?date=YYYY-MM-DD&tz=...`
+- `GET /api/chronicler/aggregate/day-close?date=YYYY-MM-DD&tz=IANA-name`
 - `POST /api/chronicler/aggregate/day-close/refresh` (body: `{date, tz}`)
+
+Both endpoints SHALL require a non-empty IANA `tz` that `zoneinfo.ZoneInfo`
+resolves. They SHALL use the exact accepted `(date, tz)` tuple as their cache
+identity: `day_close:{YYYY-MM-DD}:tz:{IANA-name}`. The tuple key SHALL be used
+for cache read/write, staleness provenance lookup,
+refresh rate limiting, and refresh response lookup. Neither endpoint SHALL
+default, canonicalize, or substitute a timezone for a missing value.
+
+The writer SHALL serialize its exact `(date, tz)` tuple through a
+collision-safe transaction lock backed by the actual tuple values, not a
+fixed-width advisory-lock hash. The public OpenAPI contract SHALL describe
+`tz` as a required, non-nullable non-empty string on both endpoints, while an
+omitted or null runtime value remains eligible for the structured `400`
+validation envelope below.
 
 #### Scenario: Admissible cache hit returns prose with provenance
 
@@ -503,6 +518,37 @@ The endpoints SHALL be:
   go through the same Tier-2 token-bound input path the cron-driven schedule
   uses
 
+#### Scenario: Contained invalid refresh candidate remains distinguishable
+
+- **WHEN** a refresh generates an invalid candidate while an admissible active
+  cache row exists for the requested `(date, tz)`
+- **THEN** the API SHALL return `200` with `{cache_key, cache_built_at,
+  invalid: true, invalid_reason}` where `cache_built_at` belongs to the
+  preserved admissible row
+- **AND** `invalid_reason` SHALL be the writer's deterministic
+  `inadmissible_prose` or `date_mismatch` result
+- **AND** the response SHALL NOT contain `prose` or `provenance_refs`
+
+#### Scenario: Audit-only invalid refresh candidate has no prose response
+
+- **WHEN** a refresh generates an invalid candidate and no admissible active
+  cache row exists for the requested `(date, tz)`
+- **THEN** the API SHALL retain the invalid candidate only for audit/recovery
+  and return `200` with `{cache_key, cache_built_at, invalid: true,
+  invalid_reason}`
+- **AND** the response SHALL NOT contain `prose` or `provenance_refs`
+
+#### Scenario: Refresh rate limit enforced
+
+- **WHEN** a client POSTs the refresh endpoint for a `(date, tz)` that has
+  already been refreshed within the last 24 hours by any caller
+- **THEN** the API SHALL respond `429 Too Many Requests` with `code:
+  day_close_rate_limited`
+- **AND** the response SHALL match the existing `ErrorResponse` envelope
+  (`{ error: { code, message, butler, details } }`) with
+  `retry_after_seconds` carried inside `details`
+- **AND** no Tier-2 invocation SHALL occur
+
 #### Scenario: Unsettled refresh target is rejected before rate-limit or dispatch
 
 - **WHEN** a client POSTs the refresh endpoint for today or a future date in
@@ -534,16 +580,33 @@ The endpoints SHALL be:
   cache_write_failed`
 - **AND** it SHALL not reuse an older cache row as the refresh result
 
-#### Scenario: Refresh rate limit enforced
+#### Scenario: Missing or invalid timezone fails before cache work
 
-- **WHEN** a client POSTs the refresh endpoint for a `(date, tz)` that has
-  already been refreshed within the last 24 hours by any caller
-- **THEN** the API SHALL respond `429 Too Many Requests` with `code:
-  day_close_rate_limited`
-- **AND** the response SHALL match the existing `ErrorResponse` envelope
-  (`{ error: { code, message, butler, details } }`) with
-  `retry_after_seconds` carried inside `details`
-- **AND** no Tier-2 invocation SHALL occur
+- **WHEN** a day-close GET omits `tz`, or either day-close endpoint receives an
+  empty or unresolvable IANA timezone
+- **THEN** the API SHALL reject the request with a structured `400` error whose
+  code is `missing_parameter` or `invalid_timezone`
+- **AND** it SHALL not query `tier2_cache`, acquire a cache lock, apply a rate
+  limit, or dispatch a Tier-2 invocation
+
+#### Scenario: Same date is isolated by exact timezone
+
+- **WHEN** two valid cache entries address the same ISO date with different
+  IANA timezone strings
+- **THEN** each entry SHALL have a distinct tuple key and local-day window
+- **AND** a GET, refresh rate limit, writer lock, staleness provenance lookup,
+  or refresh response for one tuple SHALL not select or block the other
+- **AND** the writer lock SHALL retain the exact date and timezone values rather
+  than relying on a collision-prone fixed-width hash
+
+#### Scenario: Legacy date-only cache is a miss
+
+- **WHEN** only a legacy `day_close:{YYYY-MM-DD}` row exists for a requested
+  date and timezone
+- **THEN** the tuple-keyed GET SHALL return the existing `404` cache-miss
+  behavior
+- **AND** the endpoint SHALL not rewrite, delete, relabel, or return the
+  legacy row
 
 ### Requirement: Episode Participant Resolution Read Path
 
@@ -720,6 +783,78 @@ overlay for writes.
 - **THEN** low-confidence activities are returned with their best-guess lane and
   evidence
 - **AND** confirming or relabeling writes a non-destructive correction overlay
+
+### Requirement: Manual Historical Day-Close Regeneration
+
+Manual historical regeneration SHALL execute inside the owning Chronicler
+daemon through the existing MCP control boundary, reuse the scheduled
+`chronicler_day_close` Tier-2 prompt/bundle and deterministic writer, and remain
+notification-silent. The dashboard-facing result SHALL contain only safe
+cache/admission metadata.
+
+#### Scenario: Split-process dashboard reaches the owning daemon
+
+- **WHEN** the dashboard refresh endpoint receives a valid settled `(date, tz)`
+- **THEN** it SHALL call a Chronicler-only daemon control over MCP
+- **AND** the daemon SHALL derive the exact manual-refresh trigger source,
+  preserve configured complexity, invoke the existing token-bounded day-close
+  path, run normal cache admission, and verify the exact coverage witness
+- **AND** the dashboard SHALL NOT depend on an in-process spawner callback
+
+#### Scenario: Manual regeneration is owner-silent
+
+- **WHEN** a day-close session executes with the daemon-derived
+  `api:day_close_refresh:<date>` trigger source
+- **THEN** the Chronicler MCP boundary SHALL permit only the
+  `chronicler_day_close_bundle` evidence read for that runtime session
+- **AND** every other core or module tool SHALL return a non-retryable
+  suppressed outcome before its handler executes
+- **AND** this SHALL prevent notification, reminder, scheduler, child-trigger,
+  routing, and deferred side paths independently of prompt compliance
+- **AND** `schedule:chronicler_day_close` SHALL retain its existing once-daily
+  notification behavior
+
+#### Scenario: Administrative control refuses runtime recursion
+
+- **WHEN** the Chronicler refresh control is invoked with a runtime session or
+  runtime trigger context
+- **THEN** it SHALL refuse before cache lookup or dispatch
+- **AND** direct control invocation SHALL enforce timezone validity, settled
+  date, and tuple rate limiting rather than trusting REST pre-validation
+- **AND** concurrent calls for one tuple SHALL serialize in the owning daemon
+  and re-check durable success before any second dispatch
+
+#### Scenario: Missing witness remains retry-safe
+
+- **WHEN** admissible cache persistence succeeds but its coverage-witness write
+  does not
+- **THEN** the operation SHALL NOT claim a recovered day
+- **AND** cache presence alone SHALL NOT be promoted into coverage proof
+- **AND** a later call SHALL remain eligible to re-run the canonical bounded
+  evidence read and retry witness persistence
+- **AND** a successful or quiet tuple SHALL retain the existing 24-hour rate
+  limit
+
+#### Scenario: Administrative response is content-blind
+
+- **WHEN** the daemon returns a refresh outcome to the dashboard
+- **THEN** it MAY include only status, cache key/timestamp, quiet, invalid,
+  invalid reason, and safe structured error metadata
+- **AND** it SHALL NOT include prompt text, prose, tool calls, bundle content,
+  or provenance
+- **AND** malformed or unknown daemon responses SHALL produce a contained API
+  failure rather than a success claim
+
+#### Scenario: Server execution deadline precedes client timeout
+
+- **WHEN** the daemon refresh does not finish within the dashboard's bounded
+  MCP execution window
+- **THEN** the owning daemon SHALL cancel the operation before cache/witness
+  work can continue in the background
+- **AND** the dashboard SHALL return `504` with
+  `error.code=dispatch_timeout`
+- **AND** the daemon-operation deadline SHALL be shorter than the dashboard MCP
+  deadline, which SHALL be shorter than the browser request budget
 
 ## Source References
 

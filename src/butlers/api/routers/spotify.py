@@ -199,6 +199,14 @@ def _store_state(state: str, *, code_verifier: str, redirect_uri: str) -> None:
     )
 
 
+def has_valid_callback_state(state: str) -> bool:
+    """Check only this connector's existing PKCE authority before domain access."""
+    if len(state) > 256:
+        return False
+    entry = _state_store.get(state)
+    return bool(entry and time.monotonic() < entry.expiry)
+
+
 def _validate_and_consume_state(state: str) -> _SpotifyStateEntry | None:
     """Validate a state token and consume it (one-time-use).
 

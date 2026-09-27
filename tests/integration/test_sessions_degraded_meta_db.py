@@ -28,10 +28,10 @@ from uuid import uuid4
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.sessions import _get_db_manager as _sessions_get_db
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [

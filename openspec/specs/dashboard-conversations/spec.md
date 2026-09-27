@@ -22,12 +22,21 @@ The `public.dashboard_conversations` table SHALL store conversation thread metad
   - `updated_at` (TIMESTAMPTZ, NOT NULL, default `now()`) — when the last message was added
   - `message_count` (INTEGER, NOT NULL, default `0`) — denormalized count of messages
   - `routed_butler` (TEXT, nullable): the butler this conversation's first message was routed to by Switchboard classification; NULL for pinned per-butler conversations (already deterministic) and for classification-routed conversations that haven't routed yet (e.g. a bug-lane report, which never targets a domain butler)
+  - `source_channel` (TEXT, NOT NULL, default `'dashboard'`): origin channel for the conversation (`'dashboard'`, `'telegram'`, `'email'`, ...); every pre-existing row backfills as `'dashboard'`
+  - `source_thread_identity` (TEXT, nullable): the channel-normalized thread identity (mirrors `message_inbox.request_context ->> 'source_thread_identity'`); NULL for dashboard-created rows, which are already anchored 1:1 on `id`
+  - `provider_session_id` (TEXT, nullable): the most recent provider-native session/resume handle minted for this conversation
+  - `provider_runtime_type` (TEXT, nullable): which runtime adapter type minted `provider_session_id` — a handle is only resumable by the same adapter type
+  - `provider_session_updated_at` (TIMESTAMPTZ, nullable): when `provider_session_id` was last refreshed; governs TTL-based resume eligibility
 
 #### Scenario: Conversation table indexes
 
 - **WHEN** the migration creates indexes
 - **THEN** a composite index on `(butler_name, status, updated_at DESC)` SHALL exist for listing active conversations per butler
 - **AND** a composite index on `(butler_name, updated_at DESC)` SHALL exist for chronological listing
+- **AND** a unique index on `(butler_name, source_channel, source_thread_identity)` WHERE `source_thread_identity IS NOT NULL` SHALL exist so concurrent ingress for the same thread converges on one anchor row
+- **AND** core_208 application callers SHALL serialize resolution by stable
+  conversation identity before using that index, so legacy per-message inputs
+  converge without requiring a core_209 column or trigger
 
 #### Scenario: Sticky routed_butler stamping
 
@@ -37,7 +46,11 @@ The `public.dashboard_conversations` table SHALL store conversation thread metad
 
 ### Requirement: Message Data Model
 
-The `public.dashboard_messages` table SHALL store individual messages within a conversation, including both user inputs and assistant responses with full attribution.
+The `public.dashboard_messages` table SHALL store individual messages within a conversation, including both user inputs and assistant responses with full attribution. Structured citations and per-message butler attribution SHALL be nullable so legacy and non-session-authored rows remain truthful without backfilled guesses.
+
+ID: REQ-dashboard-conversations-009
+Source: dashboard-conversations § Message Data Model and Conversation Reply Channel; heart-and-soul/security.md § Session Sandboxing; design.md Decisions 2-4
+Scope: v1-mandatory
 
 #### Scenario: Message table schema
 
@@ -56,6 +69,9 @@ The `public.dashboard_messages` table SHALL store individual messages within a c
   - `tool_calls` (JSONB, nullable) — array of tool calls made during response; NULL for user messages
   - `error` (TEXT, nullable) — error message if the response failed; NULL on success and for user messages
   - `request_id` (UUID, nullable) — the Switchboard request_id for lineage; NULL for user messages
+  - `sources` (JSONB, nullable) — deprecated compatibility array of source strings named by an answer-lane `conversation_reply` call; NULL when omitted and retained only through the bounded migration window
+  - `citations` (JSONB, nullable) — server-normalized array of structured citation objects; NULL for user messages and assistant replies that did not pass `sources`
+  - `routed_butler` (TEXT, nullable) — server-derived butler that authored this assistant message through `conversation_reply`; NULL for user, legacy, and non-session-authored messages
 
 #### Scenario: Message table indexes
 
@@ -221,18 +237,30 @@ The dashboard API SHALL allow operators to archive, unarchive, and rename conver
 
 ### Requirement: Conversation Messages List
 
-The dashboard API SHALL retrieve the full message history for a conversation.
+The dashboard API SHALL retrieve the full message history for a conversation, including the same canonical answer provenance that completes over SSE.
+
+ID: REQ-dashboard-conversations-012
+Source: dashboard-conversations § Conversation Messages List and Conversation Pydantic Response Models; RFC 0007 § API Surface; design.md Decisions 3-4
+Scope: v1-mandatory
 
 #### Scenario: List messages
 
 - **WHEN** `GET /api/butlers/{name}/conversations/{conversation_id}/messages?limit=50&offset=0` is called
 - **THEN** messages are returned ordered by `created_at ASC` with pagination metadata
-- **AND** each message includes `id`, `role`, `content`, `created_at`, `session_id`, `model_name`, `input_tokens`, `output_tokens`, `duration_ms`, `tool_calls`, `error`, `request_id`
+- **AND** each message includes `id`, `role`, `content`, `created_at`, `session_id`, `model_name`, `input_tokens`, `output_tokens`, `duration_ms`, `tool_calls`, `error`, `request_id`, `citations`, and `routed_butler`
+- **AND** `citations` is always an array on the wire (`[]` when persistence is NULL), while `routed_butler` remains nullable
+- **AND** during the bounded compatibility window, assistant rows also include the deprecated `sources` string array (`[]` when persistence is NULL) defined by the compatibility requirement
 
 #### Scenario: Messages for non-existent conversation
 
 - **WHEN** messages are requested for a conversation that does not exist or belongs to a different butler
 - **THEN** a 404 response with `code: "CONVERSATION_NOT_FOUND"` is returned
+
+#### Scenario: Stored and streamed provenance are equivalent
+
+- **WHEN** a client receives an assistant reply's `message_complete` event and later retrieves that message through the messages list after reload or reconnect
+- **THEN** the message ID, content, canonical `citations`, nullable `routed_butler`, and nullable `session_id` are equivalent to the persisted row
+- **AND** the history response does not reconstruct citation trust or authorship from conversation-level routing, live phase events, or model text
 
 ### Requirement: Conversation Search
 
@@ -284,15 +312,19 @@ The dashboard API SHALL provide owner-scoped full-text search across every butle
 
 ### Requirement: SSE Response Streaming
 
-Assistant responses SHALL be streamed to the dashboard via Server-Sent Events on the conversation creation and message continuation endpoints. The reply text and attribution MUST come from the routed butler's `conversation_reply` call (see the Conversation Reply Channel requirement), not from the raw completion of its spawned session.
+Assistant responses SHALL be streamed to the dashboard via Server-Sent Events on the conversation creation and message continuation endpoints. The reply text and attribution MUST come from the routed butler's `conversation_reply` call (see the Conversation Reply Channel requirement), not from the raw completion of its spawned session. `message_complete` SHALL project the persisted message's canonical citations and per-message butler attribution rather than a client-derived interpretation.
+
+ID: REQ-dashboard-conversations-013
+Source: dashboard-conversations § SSE Response Streaming and Conversation Reply Channel; RFC 0007 § API Surface; design.md Decisions 3-4
+Scope: v1-mandatory
 
 #### Scenario: SSE stream for new conversation
 
 - **WHEN** `POST /api/butlers/{name}/conversations` is called
 - **THEN** the response is a `StreamingResponse` with `media_type: "text/event-stream"`
 - **AND** the first event is `event: conversation_created` with `data: {"conversation_id": "...", "title": "..."}`
-- **AND** an `event: token` with `data: {"content": "..."}` carries the full `conversation_reply` message text once it arrives (not incremental generation — token-level streaming is out of scope)
-- **AND** a final `event: message_complete` with `data: {"message_id": "...", "model_name": null, "input_tokens": null, "output_tokens": null, "duration_ms": null, "tool_calls": []}` is sent — attribution fields are `null` because the reply is persisted mid-session, before the routed session's own accounting (tokens/duration/model) is known
+- **AND** one or more `event: token` events with `data: {"content": "..."}` carry the `conversation_reply` message text — a single event carrying the full text when the routed runtime cannot stream incrementally (every runtime adapter today), or several events whose concatenated `content` fields are byte-for-byte identical to the persisted reply row's content when a streaming-capable producer publishes incremental deltas on the turn's chat-stream channel (see the Real-Time Processing Phase Events requirement's Trust boundary)
+- **AND** a final `event: message_complete` carries the persisted `message_id`, nullable session/model/token/duration fields, `tool_calls`, canonical `citations` (`[]` when persistence is NULL), and nullable `routed_butler`; during the bounded compatibility window it also carries the deprecated `sources` string array (`[]` when persistence is NULL)
 - **AND** an `event: done` is sent to signal the stream is finished
 
 #### Scenario: SSE stream for follow-up message
@@ -345,6 +377,36 @@ Assistant responses SHALL be streamed to the dashboard via Server-Sent Events on
 
 - **WHEN** the butler session is processing but no tokens have been emitted for 15 seconds
 - **THEN** a `: keepalive` SSE comment is sent to prevent connection timeout
+
+#### Scenario: Message completion is persistence-authoritative
+
+- **WHEN** display-only token events disagree with the eventual persisted reply or a client reconnects after missing `message_complete`
+- **THEN** the persisted row remains authoritative for content, `citations`, `routed_butler`, and `session_id`
+- **AND** the client reconciles to the stored message without inventing citations or message authorship from the token stream
+
+### Requirement: Real-Time Processing Phase Events
+
+The conversation streaming endpoints SHALL emit `event: phase` with `data: {"phase": "...", "target"?: "...", "tool"?: "..."}` whenever the API can truthfully observe a real-time processing transition for the current turn. A phase is never fabricated or guessed to fill a gap in the sequence — only a phase the backend can actually observe is emitted, and any phase a given turn's runtime cannot observe (e.g. `thinking`, which requires a streaming-capable producer) is simply not emitted for that turn.
+
+Trust boundary: `phase` and `token` events are display-only, sourced from the routed butler's live processing where observable. The persisted `conversation_reply` row (see the Conversation Reply Channel requirement) remains the sole source of truth — `message_complete` is always emitted from that row, and a turn with no streaming producer at all still completes normally via a single `token` event followed by `message_complete`, exactly as before this requirement existed.
+
+#### Scenario: Classifying and routed phases
+
+- **WHEN** a Switchboard-addressed (widget) conversation turn begins
+- **THEN** an `event: phase` with `data: {"phase": "classifying"}` is sent before the classification request is submitted
+- **AND** once classification resolves, an `event: phase` with `data: {"phase": "routed", "target": "<butler_name>"}` is sent naming the butler now handling the turn
+- **WHEN** a pinned per-butler conversation turn begins (no classification occurs)
+- **THEN** an `event: phase` with `data: {"phase": "routed", "target": "<butler_name>"}` is sent immediately, naming the pinned butler
+
+#### Scenario: Starting-session phase
+
+- **WHEN** the API has registered the turn as cancellable and is about to begin polling for the routed butler's `conversation_reply`
+- **THEN** an `event: phase` with `data: {"phase": "starting_session", "target": "<routed_butler>"}` is sent
+
+#### Scenario: Writing phase precedes streamed content
+
+- **WHEN** the first `event: token` of a turn (whether a single full-text event or the first of several incremental deltas) is about to be sent
+- **THEN** an `event: phase` with `data: {"phase": "writing"}` is sent immediately before it, at most once per turn
 
 ### Requirement: Dashboard Ingestion Envelope Construction
 
@@ -439,11 +501,11 @@ Conversation endpoint API response models SHALL provide typed response shapes.
 ### Requirement: Conversation Reply Channel
 
 A routed butler session SHALL confirm its interpretation of a dashboard
-statement (or acknowledge a filed bug report) by calling the
-`conversation_reply` MCP tool, which persists an assistant-role message
-directly into the conversation it was routed from. The SSE poller MUST watch
-for this message rather than the routed session's raw completion (see the
-SSE Response Streaming requirement).
+statement (or acknowledge a filed bug report, or answer a question) by
+calling the `conversation_reply` MCP tool, which persists an assistant-role
+message directly into the conversation it was routed from. The SSE poller
+MUST watch for this message rather than the routed session's raw completion
+(see the SSE Response Streaming requirement).
 
 #### Scenario: conversation_reply persists the confirm-loop message
 
@@ -463,14 +525,32 @@ SSE Response Streaming requirement).
 - **WHEN** any butler's MCP server registers its core tools
 - **THEN** `conversation_reply` SHALL be registered regardless of `core_groups` configuration — any butler can be the classification or pinned-target destination of a dashboard conversation, so the tool cannot be scoped to a subset of butlers
 
+#### Scenario: conversation_reply accepts an optional sources list for an answer-lane reply
+
+- **WHEN** a routed butler session calls `conversation_reply(conversation_id, message, sources=[...])` with a non-empty list of strings
+- **THEN** the inserted message row's `sources` column SHALL persist the given list
+- **AND** the tool's success response SHALL be unaffected in shape otherwise
+
+#### Scenario: conversation_reply is unaffected when sources is omitted
+
+- **WHEN** `conversation_reply` is called without a `sources` argument (the existing confirm-loop, action-proposal, and bug-report call sites)
+- **THEN** the inserted message row's `sources` column SHALL be NULL
+- **AND** behavior SHALL be identical to before `sources` existed
+
+#### Scenario: conversation_reply rejects empty or blank source names
+
+- **WHEN** `conversation_reply` is called with `sources=[]` or with any blank source name
+- **THEN** no message row is inserted
+- **AND** the tool returns `{"status": "error", "error": "..."}` guiding the caller to either name what it consulted or omit `sources` entirely and give an honest decline instead of fabricating a citation
+
 ### Requirement: Dashboard Message Intent Lanes
 
-A dashboard chat-widget turn SHALL be classified into exactly one of STATEMENT, ACTION REQUEST, or ambiguous before it produces any effect. Consent MUST precede effect for an ACTION REQUEST (`about/heart-and-soul/security.md`, "Approval gates must never be bypassable by the LLM session"): a dashboard turn that asks the routed butler to DO something with a real-world or hard-to-reverse effect SHALL never apply a write before the owner has approved it, and SHALL never be reported to the owner as already done.
+A dashboard chat-widget turn SHALL be classified into exactly one of STATEMENT, ACTION REQUEST, QUESTION, or ambiguous before it produces any effect. Consent MUST precede effect for an ACTION REQUEST (`about/heart-and-soul/security.md`, "Approval gates must never be bypassable by the LLM session"): a dashboard turn that asks the routed butler to DO something with a real-world or hard-to-reverse effect SHALL never apply a write before the owner has approved it, and SHALL never be reported to the owner as already done. A QUESTION turn SHALL never apply a write and SHALL never be reported as an action taken.
 
 #### Scenario: Classifier offers a distinct ACTION lane alongside statement and bug lanes
 
 - **WHEN** the Switchboard's dashboard classification prompt is built for a chat-widget message
-- **THEN** it SHALL present three lanes: LANE A (data statement/correction, routed via `route_to_butler`), LANE B (bug/system report, filed via `file_bug_report`), and LANE C (action request, also routed via `route_to_butler` — the classifier's job is only to pick the target butler; the propose-don't-apply contract is enforced by the routed envelope's injected instructions, not by the classifier itself)
+- **THEN** it SHALL present four lanes: LANE A (data statement/correction, routed via `route_to_butler`), LANE B (bug/system report, filed via `file_bug_report`), LANE C (action request, also routed via `route_to_butler` — the classifier's job is only to pick the target butler; the propose-don't-apply contract is enforced by the routed envelope's injected instructions, not by the classifier itself), and LANE D (question, answered via `answer_question` or dead-lettered via `cannot_answer`)
 
 #### Scenario: The routed envelope carries distinct STATEMENT and ACTION-REQUEST instructions
 
@@ -478,6 +558,8 @@ A dashboard chat-widget turn SHALL be classified into exactly one of STATEMENT, 
 - **THEN** the block SHALL contain a STATEMENT instruction set (interpret, apply the write, then call `conversation_reply` to confirm) and a distinct ACTION-REQUEST instruction set
 - **AND** the ACTION-REQUEST set SHALL instruct the routed session to route the write through its normal approval-gated tool (never an ungated path) so the gate parks it before anything happens, and to call `conversation_reply` describing the action as proposed and awaiting approval — never as already completed
 - **AND** the block SHALL state the failure mode explicitly: applying an action's write before the gate parks it, or claiming completion for a pending action, is never acceptable
+- **WHEN** `answer_question(scope="domain")` injects the deterministic dashboard answer block into a routed envelope's `input.context` instead of the confirm-loop block
+- **THEN** the block SHALL instruct the routed session to answer strictly read-only, from its own tools only, and to call `conversation_reply` citing what it consulted via `sources` when grounded, or to give an honest decline (never fabricate a citation) when it cannot ground the answer
 
 #### Scenario: A parked action request produces zero domain writes and no completion claim
 
@@ -488,6 +570,209 @@ A dashboard chat-widget turn SHALL be classified into exactly one of STATEMENT, 
 
 #### Scenario: An ambiguous dashboard turn yields a clarifying reply, never a best-guess route
 
-- **WHEN** the dashboard classification session cannot confidently place a message into LANE A, B, or C
-- **THEN** it SHALL call neither `route_to_butler` nor `file_bug_report` rather than guessing a target butler
+- **WHEN** the dashboard classification session cannot confidently place a message into LANE A, B, C, or D
+- **THEN** it SHALL call neither `route_to_butler` nor `file_bug_report` rather than guessing a target butler, and SHALL likewise not call `answer_question` or `cannot_answer` while the turn remains ambiguous
 - **AND** the pipeline's existing dashboard dead-letter path (see the Durable Dashboard Turn Control requirement's failure handling) SHALL capture the turn and reply in-thread asking the owner to clarify, with no route to any domain butler
+
+### Requirement: Channel-Agnostic Conversation Anchor
+
+`conversation_get_or_create_by_thread` SHALL let any inbound channel that
+already normalizes a `source_thread_identity` at ingest (Telegram, email,
+...) obtain a durable `public.dashboard_conversations` anchor row for that
+thread, without needing its own separate conversation-identity concept. This
+generalizes conversation creation beyond the dashboard-only
+`conversation_create` path. On the core_208 schema, the helper SHALL normalize
+legacy Telegram bot reply targets of the form `<chat_id>:<message_id>` to the
+stable anchor key `telegram:<chat_id>` without changing the ingest envelope.
+
+#### Scenario: First ingress for a thread creates the anchor
+
+- **WHEN** `conversation_get_or_create_by_thread` is called with a
+  `(butler_name, source_channel, source_thread_identity)` combination that
+  has no existing row
+- **THEN** a new `dashboard_conversations` row is inserted with that
+  `source_channel` and `source_thread_identity`, an auto-generated title from
+  `first_message`, `status = 'active'`, and `message_count = 0`
+- **AND** the function returns `(conversation, is_new=True)`
+
+#### Scenario: Repeat ingress for the same thread reuses the anchor
+
+- **WHEN** `conversation_get_or_create_by_thread` is called again with the
+  same `(butler_name, source_channel, source_thread_identity)` combination
+- **THEN** no new row is inserted
+- **AND** the function returns the existing row with `is_new=False`, even if
+  a different `first_message` was supplied on the repeat call
+
+#### Scenario: Legacy Telegram message targets share one provider lineage
+
+- **WHEN** two core_208 callers supply distinct `<chat_id>:<message_id>`
+  `source_thread_identity` values for messages in the same Telegram chat
+- **THEN** both calls return the same conversation anchor in either arrival order
+- **AND** the persisted `source_thread_identity` is `telegram:<chat_id>`
+- **AND** a provider session stored after the first call is available to the
+  second call
+
+#### Scenario: Concurrent anchor conflict resolution is connection-bound
+
+- **WHEN** callers for one stable conversation overlap, including while an
+  insert conflict commits or rolls back
+- **THEN** canonicalization, insert, conflict fallback, and result selection
+  execute under one transaction-scoped advisory lock
+- **AND** the insert and fallback select use one acquired PostgreSQL connection
+- **AND** rollback leaves no anchor from the failed transaction, while retry
+  creates or resolves exactly one anchor without timing-based sleeps
+
+#### Scenario: Different channel or thread identity never collides
+
+- **WHEN** two calls share a `butler_name` but differ in `source_channel` or
+  stable conversation identity (after legacy Telegram normalization)
+- **THEN** each gets its own distinct anchor row
+
+#### Scenario: Pre-existing dashboard-created rows are unaffected
+
+- **WHEN** a conversation was created via `conversation_create` (the
+  dashboard-only path, `source_thread_identity IS NULL`)
+- **THEN** it is never matched or overwritten by
+  `conversation_get_or_create_by_thread`, and the partial unique index on
+  `(butler_name, source_channel, source_thread_identity)` (which only governs
+  rows where `source_thread_identity IS NOT NULL`) never conflicts with it
+
+### Requirement: Provider Resume Ledger
+
+Each conversation SHALL carry at most one provider-native resume handle
+("one memory per thread") that a runtime adapter capable of resuming a prior
+session (see `RuntimeAdapter.supports_resume`) can use to continue that
+conversation's provider-side session state instead of cold-starting.
+
+#### Scenario: Recording a provider session handle
+
+- **WHEN** `conversation_set_provider_session` is called with a
+  `provider_session_id` and `provider_runtime_type` for a conversation
+- **THEN** those values are stored along with a fresh
+  `provider_session_updated_at = now()`
+- **AND** a later call for the same conversation overwrites the prior handle
+  entirely — only the most recent provider session is ever resumable
+
+#### Scenario: Resolving a usable resume handle
+
+- **WHEN** `resolve_resume_handle` is evaluated for a conversation's stored
+  provider session against a target `runtime_type`
+- **THEN** it returns the handle only if one is present, it was minted by
+  that same `runtime_type`, and `provider_session_updated_at` is within the
+  TTL window (24 hours) of the evaluation time
+- **AND** it returns `None` in every other case (absent, runtime-type
+  mismatch, or expired) — callers MUST treat `None` as an ordinary cold
+  start, never as an error
+
+#### Scenario: Evicting a stale or rejected handle
+
+- **WHEN** `conversation_clear_provider_session` is called for a conversation
+  (e.g. because a resume attempt was rejected by the provider as expired or
+  unknown)
+- **THEN** `provider_session_id`, `provider_runtime_type`, and
+  `provider_session_updated_at` are all cleared to `NULL`
+- **AND** the next call to `resolve_resume_handle` for that conversation
+  returns `None`, so the next turn cold-starts cleanly
+
+### Requirement: Assistant Citation Normalization and Trust
+
+The server SHALL normalize the existing `conversation_reply(..., sources=...)` input into one canonical `citations` representation before persistence. A canonical citation SHALL contain a non-empty plain-text `label`, a nullable `target`, and exactly one `kind` of `internal`, `external`, or `unlinked`. Citation labels SHALL NOT be parsed as markdown. A structurally valid citation establishes only a safe navigation target, never the truth, completeness, availability, or evidentiary quality of the model's claim.
+
+ID: REQ-dashboard-conversations-010
+Source: heart-and-soul/security.md § Session Sandboxing; dashboard-conversations § Conversation Reply Channel; design.md Decisions 2-3
+Scope: v1-mandatory
+
+#### Scenario: Structured internal source is accepted by server authority
+
+- **WHEN** `conversation_reply` receives a `sources` entry with a non-empty label and an internal target matching a server-held citation-eligible shell route pattern
+- **THEN** the server normalizes it to `{label, target, kind: "internal"}` and persists it in `citations`
+- **AND** the client cannot expand the accepted route set by changing its own route registry or request payload
+- **AND** target validation does not assert that the referenced resource exists or proves the answer text
+
+#### Scenario: Structured external source is accepted safely
+
+- **WHEN** `conversation_reply` receives a `sources` entry with a non-empty label and an absolute HTTPS target with no embedded credentials
+- **THEN** the server normalizes it to `{label, target, kind: "external"}` and persists it in `citations`
+- **AND** HTTP, script, data, file, protocol-relative, credential-bearing, or malformed targets are invalid
+- **AND** acceptance does not assert that the remote destination is reachable or trustworthy
+
+#### Scenario: Legacy source string remains compatible but unlinked
+
+- **WHEN** `conversation_reply` receives an existing non-empty string entry in `sources`
+- **THEN** the server normalizes it to `{label: <trimmed string>, target: null, kind: "unlinked"}`
+- **AND** the string cannot become a link by resembling a path or URL
+- **AND** the reply success shape remains compatible with the existing tool contract
+
+#### Scenario: Invalid structured targets are removed content-blindly
+
+- **WHEN** a non-empty `sources` input contains at least one valid entry and one structured entry with a malformed, unsafe, or non-allowlisted target
+- **THEN** only the valid normalized entries are persisted in `citations`
+- **AND** the server emits a content-blind warning with reason code and rejected count, without labels, targets, answer text, request arguments, session IDs, or sensitive payloads
+- **AND** the tool success response does not echo the rejected entry
+
+#### Scenario: Empty blank or over-budget sources are rejected
+
+- **WHEN** `sources` is explicitly empty, contains any blank label, exceeds an item or total payload budget, or leaves no usable entry after structured-target validation
+- **THEN** no assistant message is inserted
+- **AND** the tool returns a structured error directing the caller to supply usable sources or omit `sources` and give an honest decline
+- **AND** no rejected label or target is copied into logs, telemetry, or the error response
+
+#### Scenario: Omitted sources preserve refusal and non-answer semantics
+
+- **WHEN** `conversation_reply` is called without `sources` for a confirm loop, action proposal, bug report, or honest answer decline
+- **THEN** the message persists with `citations = null` and `sources = null`
+- **AND** omission is not relabeled as grounded, invalid, or verified
+
+### Requirement: Assistant Message Author Attribution
+
+Every assistant message created by `conversation_reply` SHALL persist the authoring butler name from server-held tool registration context. The system MUST NOT accept caller-asserted message authorship or infer a missing author from conversation-level routing, model text, phase events, or session lookup.
+
+ID: REQ-dashboard-conversations-011
+Source: heart-and-soul/security.md § Session Sandboxing; heart-and-soul/vision.md § Domain specialization; dashboard-conversations § Conversation Reply Channel; design.md Decision 4
+Scope: v1-mandatory
+
+#### Scenario: conversation_reply records its registered butler
+
+- **WHEN** a butler's registered `conversation_reply` tool persists an assistant message
+- **THEN** that message's `routed_butler` equals the server-held butler identity bound when the tool was registered
+- **AND** a `sources` object, message text, conversation field, request field, or browser value cannot override it
+- **AND** the tool's existing success and unknown-conversation error shapes remain otherwise unchanged
+
+#### Scenario: Classification and sticky routing are not message authorship
+
+- **WHEN** a Switchboard-owned conversation has a sticky conversation `routed_butler` or the current SSE stream names a routed target
+- **THEN** that value does not populate or repair an assistant message's `routed_butler`
+- **AND** only the server-held identity at the assistant-message write boundary can establish message authorship
+
+#### Scenario: Legacy and non-session-authored rows remain unknown
+
+- **WHEN** an existing assistant row predates per-message attribution or a deterministic API failure row is created outside a registered butler's `conversation_reply`
+- **THEN** its `routed_butler` remains NULL
+- **AND** migration, read, SSE, and frontend paths do not guess or backfill an author
+
+### Requirement: Assistant Message Compatibility Lifecycle
+
+The citation and attribution rollout SHALL be additive and reversible until all repository consumers read the canonical fields. The `citations` field is the sole forward representation; `sources` is a bounded read-compatibility projection, not a second evidence contract.
+
+ID: REQ-dashboard-conversations-014
+Source: craft-and-care/interfaces-and-dependencies.md § Compatibility Rules; design.md Decision 6 and Migration Plan
+Scope: v1-mandatory
+
+#### Scenario: Mixed-version reads remain safe during rollout
+
+- **WHEN** the additive migration is deployed while a repository consumer still reads `sources`
+- **THEN** new writes persist canonical `citations` and a string-only `sources` projection sufficient for that verified consumer, and both read APIs serialize absent arrays as `[]`
+- **AND** canonical readers use `citations` and do not merge, rank, or infer additional trust from the deprecated projection
+- **AND** nullable new fields allow old rows to remain readable without a guessed author or fabricated target
+
+#### Scenario: Same-repo compatibility projection is retired
+
+- **WHEN** every verified repository consumer reads `citations` and `routed_butler`
+- **THEN** the same implementation change removes the `sources` response projection and its compatibility branches
+- **AND** the retained database column is removed only after downgrade safety and deployment ordering no longer depend on it
+
+#### Scenario: Downgrade preserves legacy readers
+
+- **WHEN** runtime code is rolled back during the compatibility window
+- **THEN** the previous code can still read the retained `sources` strings and ignore nullable `citations` and message `routed_butler`
+- **AND** downgrade never converts a structured target into a string that appears server-validated

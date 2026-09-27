@@ -52,8 +52,7 @@ vi.mock("sonner", () => ({
 // Mock the ingestion-events hooks so we don't need a real API
 vi.mock("@/hooks/use-ingestion-events", () => ({
   useIngestionEvents: vi.fn(),
-  useIngestionEventLineage: vi.fn(),
-  useIngestionEventRollup: vi.fn(),
+  useIngestionEventSessions: vi.fn(),
   useIngestionEventSenderContact: vi.fn(),
   useIngestionEventReplays: vi.fn(),
   useIngestionEventPayload: vi.fn(),
@@ -71,8 +70,6 @@ import { ApiError, bulkRetryEvents, replayIngestionEvent } from "@/api/index.ts"
 import { toast } from "sonner";
 import {
   useIngestionEvents,
-  useIngestionEventLineage,
-  useIngestionEventRollup,
   useIngestionEventSenderContact,
   useIngestionEventSessions,
   useIngestionEventReplays,
@@ -208,6 +205,138 @@ describe("TimelineTab — passive background refresh", () => {
     expect(dim.getAttribute("aria-busy")).toBe("true");
     expect(dim.className).toContain("opacity-60");
   });
+
+  it("retains rows through a failed background refresh and recovery with an honest retry cue", () => {
+    const refetch = vi.fn();
+    renderWithQueryState({ isError: false, refetch });
+    const originalRow = container.querySelector("[data-testid='ledger-row-trigger']");
+
+    renderWithQueryState({ isError: true, refetch });
+    expect(container.textContent).toContain("live@example.com");
+    expect(container.querySelector("[data-testid='ledger-row-trigger']")).toBe(originalRow);
+    expect(container.textContent).toContain("Refresh failed. Showing previously loaded events.");
+    act(() => {
+      (container.querySelector("[data-testid='events-retry-button']") as HTMLButtonElement).click();
+    });
+    expect(refetch).toHaveBeenCalledTimes(1);
+
+    renderWithQueryState({ isError: false, refetch });
+    expect(container.querySelector("[data-testid='ledger-row-trigger']")).toBe(originalRow);
+    expect(container.querySelector("[data-testid='events-retry-button']")).toBeNull();
+  });
+
+  it("preserves row identity, drawer, selection, and focus during an aggregate refresh", () => {
+    renderWithQueryState({});
+    const row = container.querySelector("[data-testid='ledger-row']") as HTMLElement;
+    const trigger = container.querySelector("[data-testid='ledger-row-trigger']") as HTMLElement;
+    const checkbox = container.querySelector("[data-testid='row-checkbox']") as HTMLElement;
+
+    act(() => {
+      trigger.click();
+      checkbox.click();
+    });
+    expect(container.querySelector("[data-testid='event-drawer']")).not.toBeNull();
+    expect(container.querySelector("[data-testid='bulk-action-bar']")).not.toBeNull();
+    act(() => trigger.focus());
+
+    vi.mocked(useIngestionEventsHistogram).mockReturnValue({
+      data: { buckets: [], bucket: "1m" },
+      isLoading: false,
+      isFetching: true,
+      isError: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useIngestionEventsHistogram>);
+    vi.mocked(useIngestionWindowRollup).mockReturnValue({
+      data: { events: 1, sessions: 1, cost: null, window: { from: null, to: null } },
+      isLoading: false,
+      isFetching: true,
+      isError: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useIngestionWindowRollup>);
+    renderWithQueryState({});
+
+    expect(container.querySelector("[data-testid='ledger-row']")).toBe(row);
+    expect(container.querySelector("[data-testid='event-drawer']")).not.toBeNull();
+    expect(container.querySelector("[data-testid='bulk-action-bar']")).not.toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+});
+
+describe("TimelineTab — aggregate time scopes", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    queryClient = makeQueryClient();
+    setupDefaultMocks();
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult([]) as unknown as ReturnType<typeof useIngestionEvents>,
+    );
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    queryClient.clear();
+    vi.clearAllMocks();
+  });
+
+  function renderAt(url = "/") {
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={[url]}>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+  }
+
+  it("uses a stable live duration for ordinary histogram and rollup reads", () => {
+    renderAt("/?range=24h");
+    const histogramCall = vi.mocked(useIngestionEventsHistogram).mock.calls.at(-1)!;
+    const rollupCall = vi.mocked(useIngestionWindowRollup).mock.calls.at(-1)!;
+
+    expect(histogramCall[0]).not.toHaveProperty("from");
+    expect(histogramCall[0]).not.toHaveProperty("to");
+    expect(histogramCall[1]).toMatchObject({
+      enabled: true,
+      timeScope: { kind: "live", durationMs: 24 * 60 * 60 * 1000 },
+    });
+    expect(rollupCall[0]).not.toHaveProperty("from");
+    expect(rollupCall[0]).not.toHaveProperty("to");
+    expect(rollupCall[1]).toMatchObject({
+      enabled: true,
+      timeScope: { kind: "live", durationMs: 24 * 60 * 60 * 1000 },
+    });
+  });
+
+  it("keeps minute rollup bounds fixed while the full-range histogram stays live", () => {
+    renderAt("/?range=1h&scopedMinute=2026-01-01T10%3A15%3A00.000Z&scopedBucketMinutes=5");
+    const eventsCall = vi.mocked(useIngestionEvents).mock.calls.at(-1)!;
+    const histogramCall = vi.mocked(useIngestionEventsHistogram).mock.calls.at(-1)!;
+    const rollupCall = vi.mocked(useIngestionWindowRollup).mock.calls.at(-1)!;
+
+    expect(eventsCall[0]).toMatchObject({
+      from: "2026-01-01T10:15:00.000Z",
+      to: "2026-01-01T10:20:00.000Z",
+    });
+    expect(histogramCall[0]).not.toHaveProperty("from");
+    expect(histogramCall[0]).not.toHaveProperty("to");
+    expect(histogramCall[1]).toMatchObject({
+      timeScope: { kind: "live", durationMs: 60 * 60 * 1000 },
+    });
+    expect(rollupCall[0]).toMatchObject({
+      from: "2026-01-01T10:15:00.000Z",
+      to: "2026-01-01T10:20:00.000Z",
+    });
+    expect(rollupCall[1]).not.toHaveProperty("timeScope");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -215,11 +344,7 @@ describe("TimelineTab — passive background refresh", () => {
 // ---------------------------------------------------------------------------
 
 function setupDefaultMocks() {
-  vi.mocked(useIngestionEventRollup).mockReturnValue({
-    data: undefined,
-    isLoading: false,
-    isError: false,
-  } as unknown as ReturnType<typeof useIngestionEventRollup>);
+
 
   vi.mocked(useIngestionEventSenderContact).mockReturnValue({
     data: undefined,
@@ -247,14 +372,11 @@ function setupDefaultMocks() {
   } as unknown as ReturnType<typeof useIngestionEventDetail>);
 
   // Default: no sessions (drawer stubs)
-  vi.mocked(useIngestionEventLineage).mockReturnValue({
-    sessions: { data: { data: [] }, isLoading: false, isError: false } as unknown as ReturnType<typeof useIngestionEventSessions>,
-    rollup: { data: undefined, isLoading: false, isError: false } as unknown as ReturnType<typeof useIngestionEventRollup>,
-  });
+  vi.mocked(useIngestionEventSessions).mockReturnValue({ data: { data: [] }, isLoading: false, isError: false } as unknown as ReturnType<typeof useIngestionEventSessions>);
 
   // Default: no connector issues (strip hidden)
   vi.mocked(useConnectorSummaries).mockReturnValue({
-    data: { data: [] },
+    data: { data: { connectors: [] } },
     isLoading: false,
     isError: false,
   } as unknown as ReturnType<typeof useConnectorSummaries>);
@@ -1014,14 +1136,11 @@ describe("TimelineTab — §2.5 Drawer: session index and copy button", () => {
 
   it("session table rows have id='session-<uuid>' anchors", () => {
     const sessions = makeSessions(1);
-    vi.mocked(useIngestionEventLineage).mockReturnValue({
-      sessions: {
+    vi.mocked(useIngestionEventSessions).mockReturnValue({
         data: { data: sessions },
         isLoading: false,
         isError: false,
-      } as unknown as ReturnType<typeof useIngestionEventSessions>,
-      rollup: { data: undefined, isLoading: false, isError: false } as unknown as ReturnType<typeof useIngestionEventRollup>,
-    });
+      } as unknown as ReturnType<typeof useIngestionEventSessions>);
 
     vi.mocked(useIngestionEvents).mockReturnValue(
       makeInfiniteEventsResult([makeEvent({ id: SESSION_ID, status: "ingested", source_sender_identity: null })]) as unknown as ReturnType<typeof useIngestionEvents>,
@@ -1044,14 +1163,11 @@ describe("TimelineTab — §2.5 Drawer: session index and copy button", () => {
 
   it("session index right rail renders when more than one session exists", () => {
     const sessions = makeSessions(2);
-    vi.mocked(useIngestionEventLineage).mockReturnValue({
-      sessions: {
+    vi.mocked(useIngestionEventSessions).mockReturnValue({
         data: { data: sessions },
         isLoading: false,
         isError: false,
-      } as unknown as ReturnType<typeof useIngestionEventSessions>,
-      rollup: { data: undefined, isLoading: false, isError: false } as unknown as ReturnType<typeof useIngestionEventRollup>,
-    });
+      } as unknown as ReturnType<typeof useIngestionEventSessions>);
 
     vi.mocked(useIngestionEvents).mockReturnValue(
       makeInfiniteEventsResult([makeEvent({ id: SESSION_ID, status: "ingested", source_sender_identity: null })]) as unknown as ReturnType<typeof useIngestionEvents>,
@@ -1073,14 +1189,11 @@ describe("TimelineTab — §2.5 Drawer: session index and copy button", () => {
 
   it("session index renders even when only one session exists (drawer shows all sessions)", () => {
     const sessions = makeSessions(1);
-    vi.mocked(useIngestionEventLineage).mockReturnValue({
-      sessions: {
+    vi.mocked(useIngestionEventSessions).mockReturnValue({
         data: { data: sessions },
         isLoading: false,
         isError: false,
-      } as unknown as ReturnType<typeof useIngestionEventSessions>,
-      rollup: { data: undefined, isLoading: false, isError: false } as unknown as ReturnType<typeof useIngestionEventRollup>,
-    });
+      } as unknown as ReturnType<typeof useIngestionEventSessions>);
 
     vi.mocked(useIngestionEvents).mockReturnValue(
       makeInfiniteEventsResult([makeEvent({ id: SESSION_ID, status: "ingested", source_sender_identity: null })]) as unknown as ReturnType<typeof useIngestionEvents>,
@@ -1103,14 +1216,11 @@ describe("TimelineTab — §2.5 Drawer: session index and copy button", () => {
 
   it("copy-session-id button is present for each session row", () => {
     const sessions = makeSessions(1);
-    vi.mocked(useIngestionEventLineage).mockReturnValue({
-      sessions: {
+    vi.mocked(useIngestionEventSessions).mockReturnValue({
         data: { data: sessions },
         isLoading: false,
         isError: false,
-      } as unknown as ReturnType<typeof useIngestionEventSessions>,
-      rollup: { data: undefined, isLoading: false, isError: false } as unknown as ReturnType<typeof useIngestionEventRollup>,
-    });
+      } as unknown as ReturnType<typeof useIngestionEventSessions>);
 
     vi.mocked(useIngestionEvents).mockReturnValue(
       makeInfiniteEventsResult([makeEvent({ id: SESSION_ID, status: "ingested", source_sender_identity: null })]) as unknown as ReturnType<typeof useIngestionEvents>,
@@ -1150,16 +1260,9 @@ describe("TimelineTab — §2.6 Drawer: sender identity resolution", () => {
     queryClient = makeQueryClient();
     setupDefaultMocks();
 
-    vi.mocked(useIngestionEventRollup).mockReturnValue({
-      data: undefined,
-      isLoading: false,
-      isError: false,
-    } as unknown as ReturnType<typeof useIngestionEventRollup>);
 
-    vi.mocked(useIngestionEventLineage).mockReturnValue({
-      sessions: { data: { data: [] }, isLoading: false, isError: false } as unknown as ReturnType<typeof useIngestionEventSessions>,
-      rollup: { data: undefined, isLoading: false, isError: false } as unknown as ReturnType<typeof useIngestionEventRollup>,
-    });
+
+    vi.mocked(useIngestionEventSessions).mockReturnValue({ data: { data: [] }, isLoading: false, isError: false } as unknown as ReturnType<typeof useIngestionEventSessions>);
   });
 
   afterEach(() => {
@@ -1405,7 +1508,7 @@ describe("TimelineTab — §2.9 Connector Attention Strip", () => {
   let root: Root;
   let queryClient: QueryClient;
 
-  function makeConnector(overrides: Partial<{ connector_type: string; endpoint_identity: string; state: string; liveness: string; error_message: string | null }> = {}) {
+  function makeConnector(overrides: Partial<{ connector_type: string; endpoint_identity: string; state: string; liveness: string; error_message: string | null; archived: boolean }> = {}) {
     return {
       connector_type: "gmail",
       endpoint_identity: "inbox@example.com",
@@ -1428,11 +1531,7 @@ describe("TimelineTab — §2.9 Connector Attention Strip", () => {
     queryClient = makeQueryClient();
     setupDefaultMocks();
 
-    vi.mocked(useIngestionEventRollup).mockReturnValue({
-      data: undefined,
-      isLoading: false,
-      isError: false,
-    } as unknown as ReturnType<typeof useIngestionEventRollup>);
+
 
     vi.mocked(useIngestionEventSenderContact).mockReturnValue({
       data: undefined,
@@ -1454,7 +1553,7 @@ describe("TimelineTab — §2.9 Connector Attention Strip", () => {
 
   it("strip is hidden when all connectors are healthy", () => {
     vi.mocked(useConnectorSummaries).mockReturnValue({
-      data: { data: [makeConnector()] },
+      data: { data: { connectors: [makeConnector()] } },
       isLoading: false,
       isError: false,
     } as unknown as ReturnType<typeof useConnectorSummaries>);
@@ -1474,7 +1573,7 @@ describe("TimelineTab — §2.9 Connector Attention Strip", () => {
 
   it("strip is hidden when connector list is empty", () => {
     vi.mocked(useConnectorSummaries).mockReturnValue({
-      data: { data: [] },
+      data: { data: { connectors: [] } },
       isLoading: false,
       isError: false,
     } as unknown as ReturnType<typeof useConnectorSummaries>);
@@ -1495,10 +1594,12 @@ describe("TimelineTab — §2.9 Connector Attention Strip", () => {
   it("strip renders for connectors with state=error", () => {
     vi.mocked(useConnectorSummaries).mockReturnValue({
       data: {
-        data: [
-          makeConnector({ state: "healthy", liveness: "online" }),
-          makeConnector({ connector_type: "telegram", endpoint_identity: "bot@t.me", state: "error", liveness: "online", error_message: "auth expired" }),
-        ],
+        data: {
+          connectors: [
+            makeConnector({ state: "healthy", liveness: "online" }),
+            makeConnector({ connector_type: "telegram", endpoint_identity: "bot@t.me", state: "error", liveness: "online", error_message: "auth expired" }),
+          ],
+        },
       },
       isLoading: false,
       isError: false,
@@ -1523,9 +1624,11 @@ describe("TimelineTab — §2.9 Connector Attention Strip", () => {
   it("strip renders for connectors with liveness=offline", () => {
     vi.mocked(useConnectorSummaries).mockReturnValue({
       data: {
-        data: [
-          makeConnector({ liveness: "offline", state: "healthy" }),
-        ],
+        data: {
+          connectors: [
+            makeConnector({ liveness: "offline", state: "healthy" }),
+          ],
+        },
       },
       isLoading: false,
       isError: false,
@@ -1547,14 +1650,48 @@ describe("TimelineTab — §2.9 Connector Attention Strip", () => {
     expect(items.length).toBe(1);
   });
 
+  it("keeps an archived offline identity out of the attention strip", () => {
+    vi.mocked(useConnectorSummaries).mockReturnValue({
+      data: {
+        data: {
+          connectors: [
+            makeConnector(),
+            makeConnector({
+              connector_type: "google_health",
+              endpoint_identity: "retired-account",
+              liveness: "offline",
+              archived: true,
+            }),
+          ],
+        },
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useConnectorSummaries>);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    expect(container.querySelector("[data-testid='attention-strip']")).toBeNull();
+  });
+
   it("shows multiple attention items when multiple connectors are unhealthy", () => {
     vi.mocked(useConnectorSummaries).mockReturnValue({
       data: {
-        data: [
-          makeConnector({ connector_type: "gmail", endpoint_identity: "a@example.com", state: "error" }),
-          makeConnector({ connector_type: "gmail", endpoint_identity: "b@example.com", liveness: "offline" }),
-          makeConnector({ connector_type: "telegram", endpoint_identity: "bot", state: "healthy", liveness: "online" }),
-        ],
+        data: {
+          connectors: [
+            makeConnector({ connector_type: "gmail", endpoint_identity: "a@example.com", state: "error" }),
+            makeConnector({ connector_type: "gmail", endpoint_identity: "b@example.com", liveness: "offline" }),
+            makeConnector({ connector_type: "telegram", endpoint_identity: "bot", state: "healthy", liveness: "online" }),
+          ],
+        },
       },
       isLoading: false,
       isError: false,
@@ -1577,13 +1714,15 @@ describe("TimelineTab — §2.9 Connector Attention Strip", () => {
   it("navigates an attention item to the connector detail route", () => {
     vi.mocked(useConnectorSummaries).mockReturnValue({
       data: {
-        data: [
-          makeConnector({
-            connector_type: "google_health",
-            endpoint_identity: "owner@example.com",
-            state: "error",
-          }),
-        ],
+        data: {
+          connectors: [
+            makeConnector({
+              connector_type: "google_health",
+              endpoint_identity: "owner@example.com",
+              state: "error",
+            }),
+          ],
+        },
       },
       isLoading: false,
       isError: false,
@@ -2571,6 +2710,7 @@ describe("TimelineTab — ?trace= drill-down spine filter", () => {
     const lastParams = calls[calls.length - 1][0];
     expect(lastParams).not.toHaveProperty("from");
     expect(lastParams).not.toHaveProperty("to");
+    expect(calls[calls.length - 1][1]).not.toHaveProperty("timeScope");
   });
 
   it("omits trace_id from the rollup query when no ?trace= param is present", () => {
@@ -2610,6 +2750,7 @@ describe("TimelineTab — ?trace= drill-down spine filter", () => {
     const lastParams = calls[calls.length - 1][0];
     expect(lastParams).not.toHaveProperty("from");
     expect(lastParams).not.toHaveProperty("to");
+    expect(calls[calls.length - 1][1]).not.toHaveProperty("timeScope");
   });
 
   it("omits trace_id from the histogram query when no ?trace= param is present", () => {

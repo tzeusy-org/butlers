@@ -23,6 +23,7 @@ from uuid import UUID
 from opentelemetry import metrics, trace
 from pydantic import BaseModel, ConfigDict, Field
 
+from butlers.core.approval_recovery_exclusion import message_inbox_recovery_exclusion_sql
 from butlers.core.model_routing import Complexity
 from butlers.core.routing_context import _routing_ctx_var
 from butlers.core.utils import coerce_request_id as _coerce_request_id
@@ -72,6 +73,18 @@ _ANSWER_QUESTION_TOOL_NAME_RE = re.compile(r"(?:^|[^a-z0-9])answer_question$", r
 _CANNOT_ANSWER_TOOL_NAME_RE = re.compile(r"(?:^|[^a-z0-9])cannot_answer$", re.IGNORECASE)
 _TELEGRAM_CHAT_ID_RE = re.compile(r"^-?\d+$")
 _TELEGRAM_CHAT_MESSAGE_RE = re.compile(r"^(?P<chat_id>-?\d+):(?P<message_id>\d+)$")
+_ROUTE_RESULT_ERROR_CLASSES = frozenset(
+    {
+        "delivery_error",
+        "internal_error",
+        "overload_rejected",
+        "policy_denied",
+        "route_error",
+        "target_unavailable",
+        "timeout",
+        "validation_error",
+    }
+)
 
 # ---------------------------------------------------------------------------
 # Conversation History Loading
@@ -132,6 +145,7 @@ async def _load_realtime_history(
     Ordered chronologically (oldest first).
     """
     time_cutoff = received_at - timedelta(minutes=max_time_window_minutes)
+    history_exclusion = message_inbox_recovery_exclusion_sql()
 
     telegram_chat_id: str | None = None
     if source_channel in ("telegram_bot", "telegram_user_client"):
@@ -144,7 +158,7 @@ async def _load_realtime_history(
     async with pool.acquire() as conn:
         # Load time-based window
         time_window_messages = await conn.fetch(
-            """
+            f"""
             SELECT
                 normalized_text AS raw_content,
                 request_context ->> 'source_sender_identity' AS sender_id,
@@ -152,7 +166,8 @@ async def _load_realtime_history(
                 raw_payload -> 'metadata' AS raw_metadata,
                 COALESCE(direction, 'inbound') AS direction
             FROM message_inbox
-            WHERE (
+            WHERE {history_exclusion}
+                AND (
                     request_context ->> 'source_thread_identity' = $1
                     OR (
                         $4::text IS NOT NULL
@@ -180,7 +195,7 @@ async def _load_realtime_history(
 
         # Load count-based window
         count_window_messages = await conn.fetch(
-            """
+            f"""
             SELECT
                 normalized_text AS raw_content,
                 request_context ->> 'source_sender_identity' AS sender_id,
@@ -188,7 +203,8 @@ async def _load_realtime_history(
                 raw_payload -> 'metadata' AS raw_metadata,
                 COALESCE(direction, 'inbound') AS direction
             FROM message_inbox
-            WHERE (
+            WHERE {history_exclusion}
+                AND (
                     request_context ->> 'source_thread_identity' = $1
                     OR (
                         $3::text IS NOT NULL
@@ -254,10 +270,11 @@ async def _load_email_history(
 
     Returns messages in chronological order (oldest first).
     """
+    history_exclusion = message_inbox_recovery_exclusion_sql()
     async with pool.acquire() as conn:
         # Load all messages in thread
         chain_messages = await conn.fetch(
-            """
+            f"""
             SELECT
                 normalized_text AS raw_content,
                 request_context ->> 'source_sender_identity' AS sender_id,
@@ -265,7 +282,8 @@ async def _load_email_history(
                 raw_payload -> 'metadata' AS raw_metadata,
                 COALESCE(direction, 'inbound') AS direction
             FROM message_inbox
-            WHERE request_context ->> 'source_thread_identity' = $1
+            WHERE {history_exclusion}
+                AND request_context ->> 'source_thread_identity' = $1
                 AND received_at < $2
             ORDER BY received_at ASC
             """,
@@ -1505,13 +1523,19 @@ class MessagePipeline:
         """
         subrequest_id = f"decomposition-{concept_index}"
         segment_id = f"decomp-{concept_index}-{target_butler}"
+        source_sender_identity = (
+            request_context.get("source_sender_identity") if request_context is not None else None
+        )
         route_request_context: dict[str, Any] = {
             "request_id": request_id,
             "received_at": received_at.isoformat(),
             "source_channel": source,
             "source_endpoint_identity": "switchboard",
             "source_sender_identity": str(
-                source_metadata.get("source_id") or source_metadata.get("identity") or "unknown"
+                source_sender_identity
+                or source_metadata.get("source_id")
+                or source_metadata.get("identity")
+                or "unknown"
             ),
             "subrequest_id": subrequest_id,
             "segment_id": segment_id,
@@ -1726,7 +1750,7 @@ class MessagePipeline:
                     original_payload={"message_text": message_text},
                     request_context=request_context or {},
                     error_details={"cc_output": cc_output[:500] if cc_output else ""},
-                    replay_eligible=False,
+                    replay_eligible=True,
                 )
             dead_letter_id = str(dl_id)
         except Exception:
@@ -1780,7 +1804,11 @@ class MessagePipeline:
 
         return RoutingResult(
             target_butler="dead_letter",
-            route_result={"dead_letter_id": dead_letter_id},
+            route_result={"status": "unroutable", "dead_letter_id": dead_letter_id},
+            routing_error="unroutable",
+            routed_targets=[],
+            acked_targets=[],
+            failed_targets=[],
         )
 
     @staticmethod
@@ -1798,11 +1826,71 @@ class MessagePipeline:
             "identity": identity,
             "tool_name": source_tool,
         }
+        if args.get("source_provider") not in (None, ""):
+            metadata["provider"] = str(args["source_provider"])
         if args.get("source_id") not in (None, ""):
             metadata["source_id"] = str(args["source_id"])
         if args.get("dashboard_message_id") not in (None, ""):
             metadata["dashboard_message_id"] = str(args["dashboard_message_id"])
         return metadata
+
+    @staticmethod
+    def _route_wire_source_metadata(source_metadata: dict[str, str]) -> dict[str, str]:
+        """Project internal ingress metadata onto the closed route.v1 wire shape."""
+        allowed = ("channel", "identity", "tool_name", "source_id", "dashboard_message_id")
+        return {
+            key: source_metadata[key]
+            for key in allowed
+            if source_metadata.get(key) not in (None, "")
+        }
+
+    @classmethod
+    def _route_sender_identity(
+        cls,
+        args: dict[str, Any],
+        source_metadata: dict[str, str],
+        request_context: dict[str, Any] | None,
+    ) -> str:
+        """Preserve the original sender rather than substituting the connector endpoint."""
+        if request_context is not None:
+            sender = request_context.get("source_sender_identity")
+            if isinstance(sender, str) and sender.strip():
+                return sender
+        sender = cls._source_sender_identity(args, source_metadata)
+        if sender != "unknown":
+            return sender
+        return source_metadata.get("identity", "unknown")
+
+    @staticmethod
+    def _bounded_route_error_class(value: Any) -> str:
+        """Project a downstream error class onto the stable routing taxonomy."""
+        normalized = normalize_error_class(value)
+        return normalized if normalized in _ROUTE_RESULT_ERROR_CLASSES else "route_error"
+
+    @staticmethod
+    def _route_result_error_class(result: Any) -> str | None:
+        """Return a bounded failure class from a Switchboard route wrapper."""
+        if not isinstance(result, dict):
+            return "invalid_route_response"
+        outer_error = result.get("error")
+        if outer_error is not None:
+            if isinstance(outer_error, dict):
+                return MessagePipeline._bounded_route_error_class(outer_error.get("class"))
+            return "route_error"
+        if "result" not in result and result.get("status") in {"accepted", "ok"}:
+            return None
+        route_response = result.get("result")
+        if not isinstance(route_response, dict):
+            return "invalid_route_response"
+        status = route_response.get("status")
+        if status in {"accepted", "ok"}:
+            return None
+        if status == "error":
+            inner_error = route_response.get("error")
+            if isinstance(inner_error, dict):
+                return MessagePipeline._bounded_route_error_class(inner_error.get("class"))
+            return "route_error"
+        return "invalid_route_response"
 
     @staticmethod
     def _message_preview(text: str, max_chars: int = 80) -> str:
@@ -2338,6 +2426,8 @@ class MessagePipeline:
             request_context = dict(request_context)
         else:
             request_context = None
+        route_source_metadata = self._route_wire_source_metadata(source_metadata)
+        route_sender_identity = self._route_sender_identity(args, source_metadata, request_context)
         routing_verdict_identity = self._routing_verdict_identity(
             args, source_metadata, request_context
         )
@@ -2639,9 +2729,7 @@ class MessagePipeline:
                                 # trusted_route_callers check passes.  The original ingestion
                                 # source is preserved in source_metadata and source_sender_identity.
                                 "source_endpoint_identity": "switchboard",
-                                "source_sender_identity": source_metadata.get(
-                                    "identity", "unknown"
-                                ),
+                                "source_sender_identity": route_sender_identity,
                                 "source_thread_identity": (
                                     request_context.get("source_thread_identity")
                                     if request_context
@@ -2654,7 +2742,7 @@ class MessagePipeline:
                                 "butler": _triage_target,
                                 "tool": "route.execute",
                             },
-                            "source_metadata": source_metadata,
+                            "source_metadata": route_source_metadata,
                             "__switchboard_route_context": {
                                 "request_id": request_id,
                                 "fanout_mode": "policy_bypass",
@@ -2675,9 +2763,10 @@ class MessagePipeline:
                                 args=bypass_envelope,
                                 source_butler="switchboard",
                             )
-                            if isinstance(bypass_result, dict) and bypass_result.get("error"):
+                            bypass_error = self._route_result_error_class(bypass_result)
+                            if bypass_error is not None:
                                 failed = [_triage_target]
-                                failed_details = [f"{_triage_target}: {bypass_result['error']}"]
+                                failed_details = [f"{_triage_target}: {bypass_error}"]
                             else:
                                 acked = [_triage_target]
                         except Exception as bypass_exc:
@@ -3886,9 +3975,7 @@ class MessagePipeline:
                                 "received_at": datetime.now(UTC).isoformat(),
                                 "source_channel": source,
                                 "source_endpoint_identity": "switchboard",
-                                "source_sender_identity": source_metadata.get(
-                                    "identity", "unknown"
-                                ),
+                                "source_sender_identity": route_sender_identity,
                                 "source_thread_identity": (
                                     request_context.get("source_thread_identity")
                                     if request_context
@@ -3901,7 +3988,7 @@ class MessagePipeline:
                                 "butler": fallback_target,
                                 "tool": "route.execute",
                             },
-                            "source_metadata": source_metadata,
+                            "source_metadata": route_source_metadata,
                             "__switchboard_route_context": {
                                 "request_id": request_id,
                                 "fanout_mode": "tool_routed",
@@ -3918,8 +4005,10 @@ class MessagePipeline:
                                 source_butler="switchboard",
                             )
                             routed = [fallback_target]
-                            if isinstance(fallback_result, dict) and fallback_result.get("error"):
+                            fallback_error_class = self._route_result_error_class(fallback_result)
+                            if fallback_error_class is not None:
                                 failed = [fallback_target]
+                                failed_details = [f"{fallback_target}: {fallback_error_class}"]
                             else:
                                 acked = [fallback_target]
                         except Exception as fallback_exc:
@@ -4039,7 +4128,7 @@ class MessagePipeline:
                         },
                     )
                     logger.warning(
-                        "Classification failed; falling back to general",
+                        "Classification failed; attempting general fallback",
                         extra=self._log_fields(
                             source=source,
                             chat_id=chat_id,
@@ -4053,7 +4142,7 @@ class MessagePipeline:
                         ),
                     )
 
-                    if message_inbox_id:
+                    if message_inbox_id and source == "dashboard":
                         with tracer.start_as_current_span("butlers.switchboard.persistence.write"):
                             await self._update_message_inbox_lifecycle(
                                 message_inbox_id=message_inbox_id,
@@ -4089,9 +4178,128 @@ class MessagePipeline:
                             ),
                         )
 
+                    fallback_target = "general"
+                    fallback_envelope: dict[str, Any] = {
+                        "schema_version": "route.v1",
+                        "request_context": {
+                            "request_id": request_id,
+                            "received_at": datetime.now(UTC).isoformat(),
+                            "source_channel": source,
+                            "source_endpoint_identity": "switchboard",
+                            "source_sender_identity": route_sender_identity,
+                            "source_thread_identity": (
+                                request_context.get("source_thread_identity")
+                                if request_context
+                                else None
+                            ),
+                            "trace_context": {},
+                        },
+                        "input": {"prompt": message_text},
+                        "target": {
+                            "butler": fallback_target,
+                            "tool": "route.execute",
+                        },
+                        "source_metadata": route_source_metadata,
+                        "__switchboard_route_context": {
+                            "request_id": request_id,
+                            "fanout_mode": "tool_routed",
+                            "segment_id": "fallback-general",
+                            "attempt": 1,
+                        },
+                    }
+                    fallback_result: dict[str, Any] | None = None
+                    routed = [fallback_target]
+                    acked: list[str] = []
+                    failed: list[str] = []
+                    fallback_error: str | None = None
+                    try:
+                        fallback_result = await _fallback_route(
+                            self._pool,
+                            target_butler=fallback_target,
+                            tool_name="route.execute",
+                            args=fallback_envelope,
+                            source_butler="switchboard",
+                        )
+                        fallback_error_class = self._route_result_error_class(fallback_result)
+                        if fallback_error_class is not None:
+                            failed = [fallback_target]
+                            fallback_error = (
+                                f"general fallback route was rejected: {fallback_error_class}"
+                            )
+                        else:
+                            acked = [fallback_target]
+                    except Exception as fallback_exc:
+                        logger.warning(
+                            "Classification-error fallback route failed: failure_class=%s",
+                            type(fallback_exc).__name__,
+                        )
+                        failed = [fallback_target]
+                        fallback_error = f"general fallback failed: {type(fallback_exc).__name__}"
+
+                    total_latency_ms = (time.perf_counter() - start) * 1000
+                    lifecycle_state = "parsed" if acked else "errored"
+                    outcome = "success" if acked else "failure"
+                    telemetry.end_to_end_latency_ms.record(
+                        total_latency_ms,
+                        {**request_attrs, "outcome": outcome},
+                    )
+                    telemetry.lifecycle_transition.add(
+                        1,
+                        {
+                            **request_attrs,
+                            "lifecycle_state": lifecycle_state,
+                            "outcome": outcome,
+                            "error_class": error_class,
+                        },
+                    )
+                    logger.info(
+                        "Classification-error General fallback completed",
+                        extra=self._log_fields(
+                            source=source,
+                            chat_id=chat_id,
+                            target_butler=fallback_target,
+                            latency_ms=total_latency_ms,
+                            content_blind=content_blind_observability,
+                            request_id=request_id,
+                            lifecycle_state=lifecycle_state,
+                            error_class=error_class,
+                            fallback_outcome=outcome,
+                        ),
+                    )
+
+                    if message_inbox_id:
+                        completed_at = datetime.now(UTC)
+                        with tracer.start_as_current_span("butlers.switchboard.persistence.write"):
+                            await self._update_message_inbox_lifecycle(
+                                message_inbox_id=message_inbox_id,
+                                decomposition_output={
+                                    **decomposition_error,
+                                    "fallback_target": fallback_target,
+                                },
+                                dispatch_outcomes={
+                                    "request_id": request_id,
+                                    "acked": acked,
+                                    "failed": failed,
+                                },
+                                response_summary=(
+                                    "Classification failed; fallback acknowledged"
+                                    if acked
+                                    else "Classification and fallback failed"
+                                ),
+                                lifecycle_state="parsed" if acked else "errored",
+                                classified_at=completed_at,
+                                classification_duration_ms=spawn_latency_ms,
+                                final_state_at=completed_at,
+                            )
+
                     return RoutingResult(
-                        target_butler="general",
-                        classification_error=error_msg,
+                        target_butler=fallback_target,
+                        route_result=fallback_result,
+                        classification_error=None if acked else error_msg,
+                        routing_error=fallback_error,
+                        routed_targets=routed,
+                        acked_targets=acked,
+                        failed_targets=failed,
                     )
 
                 finally:

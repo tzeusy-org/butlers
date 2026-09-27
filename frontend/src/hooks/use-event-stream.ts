@@ -1,3 +1,4 @@
+import { clearOwnerSession, onOwnerSessionLost } from "@/api/owner-session";
 /**
  * useEventStream — WebSocket hook for the multiplexed /api/events/stream.
  *
@@ -28,9 +29,6 @@ export type EventBusHealth = "healthy" | "late" | "down";
 export const EVENT_HEARTBEAT_DEADLINE_MS = 45_000;
 
 export interface UseEventStreamOptions {
-  /** Optional DASHBOARD_API_KEY for query-param auth. Leave undefined when
-   *  the server has no API key configured (dev mode). */
-  apiKey?: string;
   /** Disable the hook (no-op when false). Defaults to true. */
   enabled?: boolean;
   /** Called for every valid incoming event, including snapshot-replayed ones
@@ -61,7 +59,7 @@ export interface UseEventStreamResult {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function buildWsUrl(apiKey?: string): string {
+function buildWsUrl(): string {
   const apiBase: string = (
     typeof import.meta !== "undefined" ? (import.meta.env?.VITE_API_URL ?? "/api") : "/api"
   ) as string;
@@ -80,7 +78,8 @@ function buildWsUrl(apiKey?: string): string {
   }
 
   const url = `${wsBase}/events/stream`;
-  return apiKey ? `${url}?api_key=${encodeURIComponent(apiKey)}` : url;
+  if (new URL(url).host !== window.location.host) throw new Error("Event stream must use the dashboard origin");
+  return url;
 }
 
 interface SnapshotMessage {
@@ -124,7 +123,6 @@ function isFleetEnvelope(payload: unknown): payload is FleetEvent | SnapshotMess
 // ---------------------------------------------------------------------------
 
 export function useEventStream({
-  apiKey,
   enabled = true,
   onEvent,
 }: UseEventStreamOptions = {}): UseEventStreamResult {
@@ -147,9 +145,28 @@ export function useEventStream({
   const onEventRef = useRef(onEvent);
   const connectRef = useRef<() => void>(() => undefined);
   const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const ingestionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const patchEvent = useCallback((event: FleetEvent) => {
+    if (event.type !== "ingestion") {
+      applyFleetEvent(qc, event);
+      return;
+    }
+    // Fixed window rather than trailing debounce: continuous ingestion must
+    // not indefinitely postpone list freshness. Snapshot replay shares it.
+    if (ingestionTimerRef.current !== null) return;
+    ingestionTimerRef.current = setTimeout(() => {
+      ingestionTimerRef.current = null;
+      if (mountedRef.current) applyFleetEvent(qc, event);
+    }, 250);
+  }, [qc]);
 
   const disconnect = useCallback(() => {
     mountedRef.current = false;
+    if (ingestionTimerRef.current !== null) {
+      clearTimeout(ingestionTimerRef.current);
+      ingestionTimerRef.current = null;
+    }
     if (retryTimerRef.current !== null) {
       clearTimeout(retryTimerRef.current);
       retryTimerRef.current = null;
@@ -195,7 +212,7 @@ export function useEventStream({
     // function being invoked — calling setState directly inside an effect
     // body (see the mount effect further down) trips
     // react-hooks/set-state-in-effect otherwise.
-    const ws = new WebSocket(buildWsUrl(apiKey));
+    const ws = new WebSocket(buildWsUrl());
     socketRef.current = ws;
 
     ws.onopen = () => {
@@ -231,13 +248,13 @@ export function useEventStream({
         // Replay each buffered event through the registry too — a reconnect's
         // snapshot may carry state changes missed while the socket was down.
         for (const replayed of payload.events) {
-          applyFleetEvent(qc, replayed);
+          patchEvent(replayed);
           onEventRef.current?.(replayed, { replayed: true });
         }
         return;
       }
 
-      applyFleetEvent(qc, payload);
+      patchEvent(payload);
       onEventRef.current?.(payload, { replayed: false });
     };
 
@@ -245,8 +262,9 @@ export function useEventStream({
       // onclose will fire next and handle reconnect.
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       if (socketRef.current !== ws) return;
+      if (event.code === 4401 || event.code === 4403) { clearOwnerSession(); return; }
       socketRef.current = null;
       if (!mountedRef.current) return;
       setStatus(everConnectedRef.current ? "reconnecting" : "connecting");
@@ -258,7 +276,9 @@ export function useEventStream({
       }, retryDelayRef.current);
       retryDelayRef.current = Math.min(retryDelayRef.current * 2, 30_000);
     };
-  }, [enabled, apiKey, qc]);
+  }, [enabled, patchEvent]);
+
+  useEffect(() => onOwnerSessionLost(disconnect), [disconnect]);
 
   // Keep connectRef and onEventRef pointing at the latest callbacks.
   useEffect(() => {

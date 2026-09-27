@@ -420,6 +420,21 @@ describe("Page -- archetype layout", () => {
 // ---------------------------------------------------------------------------
 
 describe("Page -- editorial archetype", () => {
+  it("inherits the shell gutter instead of adding a second responsive padding layer", () => {
+    const html = render({
+      title: "Overview",
+      archetype: "editorial",
+      children: <div data-testid="editorial-body">body</div>,
+    });
+
+    expect(html).toContain('style="max-width:1280px"');
+    expect(html).not.toContain("px-4");
+    expect(html).not.toContain("sm:px-8");
+    expect(html).not.toContain("lg:px-14");
+    expect(html).not.toContain("py-8");
+    expect(html).not.toContain("lg:py-12");
+  });
+
   it("renders children without shell h1 when no breadcrumbs or actions supplied", () => {
     const html = render({
       title: "Overview",

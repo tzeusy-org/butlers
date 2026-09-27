@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import asyncpg
 import pytest
@@ -78,6 +78,27 @@ def _pool(*, fetchrow=None, fetchrow_side_effect=None, fetchval=None, fetch=None
     pool.fetchval = AsyncMock(return_value=fetchval)
     pool.fetch = AsyncMock(return_value=fetch if fetch is not None else [])
     return pool
+
+
+def _acquiring_pool() -> tuple[AsyncMock, AsyncMock]:
+    """A pool whose ``acquire()``/``conn.transaction()`` behave as real
+    asyncpg async context managers -- mirrors
+    ``tests/api/test_conversations.py``'s ``_transactional_anchor_pool``.
+    Needed only by ``evaluate_case_attention`` tests that reach the
+    advisory-lock transaction (bu-zss8w)."""
+    connection = AsyncMock()
+
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock(return_value=transaction)
+    transaction.__aexit__ = AsyncMock(return_value=False)
+    connection.transaction = MagicMock(return_value=transaction)
+
+    acquired = MagicMock()
+    acquired.__aenter__ = AsyncMock(return_value=connection)
+    acquired.__aexit__ = AsyncMock(return_value=False)
+    pool = MagicMock()
+    pool.acquire.return_value = acquired
+    return pool, connection
 
 
 class TestVocabulary:
@@ -454,8 +475,9 @@ class TestEvaluateCaseAttention:
         record_mock = AsyncMock(return_value="attn-row-1")
         monkeypatch.setattr(fleet_cases_module, "record_attention_event", record_mock)
 
+        pool, connection = _acquiring_pool()
         result = await evaluate_case_attention(
-            _pool(),
+            pool,
             case_id=_CASE_ID,
             correlation_key=self._CORRELATION_KEY,
             posture="urgent",
@@ -469,8 +491,14 @@ class TestEvaluateCaseAttention:
             "reason": "urgent_case_bypass",
             "attention_ledger_id": "attn-row-1",
         }
+        # The check-then-insert runs inside one advisory-locked transaction
+        # on a single acquired connection (bu-zss8w) -- not against the pool.
+        connection.execute.assert_awaited_once()
+        assert "pg_advisory_xact_lock" in connection.execute.await_args.args[0]
+        connection.transaction.assert_called_once()
         record_mock.assert_awaited_once()
-        _, kwargs = record_mock.await_args
+        args, kwargs = record_mock.await_args
+        assert args[0] is connection
         assert kwargs["dedup_key"] == case_attention_dedup_key(self._CORRELATION_KEY)
         assert kwargs["metadata"] == {
             "case_id": _CASE_ID,
@@ -500,8 +528,9 @@ class TestEvaluateCaseAttention:
         record_mock = AsyncMock()
         monkeypatch.setattr(fleet_cases_module, "record_attention_event", record_mock)
 
+        pool, connection = _acquiring_pool()
         result = await evaluate_case_attention(
-            _pool(),
+            pool,
             case_id=_CASE_ID,
             correlation_key=self._CORRELATION_KEY,
             posture="urgent",
@@ -515,6 +544,10 @@ class TestEvaluateCaseAttention:
             "reason": "already_bypassed_this_window",
             "attention_ledger_id": None,
         }
+        # Still takes the lock before the (negative) check -- the whole
+        # check belongs inside the locked section, not just the insert.
+        connection.execute.assert_awaited_once()
+        assert "pg_advisory_xact_lock" in connection.execute.await_args.args[0]
         record_mock.assert_not_awaited()
 
 

@@ -85,3 +85,10 @@ the original accepted location payload in
 `connectors.owntracks_points.raw_payload` as durable Chronicler evidence,
 including `SSID` and `inregions` when the phone sends them. Restrict database
 access accordingly and use SSID/region names that reveal no more than intended.
+
+## Implementation Notes
+
+- The Chronicler `owntracks.ssid_presence` adapter keeps `_source_cursor = {watermark, uuid}` in
+  checkpoint carryover (OwnTracks ids are UUIDs, `watermark_id` is BIGINT) and pages by `(ts, id)`.
+  A malformed or mismatched cursor triggers a bounded replay. One `run()` transaction under a
+  source-keyed advisory lock holds every write and the checkpoint.

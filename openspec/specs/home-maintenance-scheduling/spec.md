@@ -8,8 +8,7 @@ Track recurring home maintenance items (filter replacements, HVAC service, appli
 
 ### Requirement: Maintenance Items Table
 
-The implementation SHALL provide the behavior described by this requirement.
-Recurring maintenance items are stored in the `home.maintenance_items` database table.
+Recurring maintenance items SHALL be stored in the `home.maintenance_items` database table.
 
 #### Scenario: Table schema
 
@@ -34,8 +33,7 @@ Recurring maintenance items are stored in the `home.maintenance_items` database 
 
 ### Requirement: Maintenance Schedule Check Job
 
-The implementation SHALL provide the behavior described by this requirement.
-The `maintenance_schedule_check` deterministic job checks all maintenance items for due or overdue status and sends reminders.
+The `maintenance_schedule_check` deterministic job SHALL check all maintenance items for due or overdue status and send reminders.
 
 #### Scenario: Due item detection
 
@@ -61,7 +59,7 @@ The `maintenance_schedule_check` deterministic job checks all maintenance items 
 
 - **WHEN** one or more items are due, overdue, or upcoming
 - **THEN** the job SHALL send a notification via the shared `_send_notify` helper (`src/butlers/jobs/home.py`) with `intent="send"`, which the daemon wrapper `_run_home_maintenance_schedule_check_job` (`src/butlers/scheduled_jobs.py`) wires as `notify_fn` on every scheduled run — mirroring the three sibling home jobs (`device_health_check`, `environment_report`, `energy_digest`), which call `_send_notify` directly
-- **AND** `_send_notify` SHALL route the notification through the notify boundary: quiet-hours/context-bus suppression gating and a `public.attention_ledger` row on every terminal outcome (suppressed, no recipient configured, switchboard client unavailable, delivery error, or delivered) — see bu-tdd4k.3
+- **AND** `_send_notify` SHALL route the notification through the notify boundary: quiet-hours/context-bus suppression gating and a `public.attention_ledger` row on every terminal outcome (suppressed, no recipient configured, switchboard client unavailable, delivery error, or delivered)
 - **AND** the message SHALL list items grouped by status (critical overdue first, then overdue, then due, then upcoming)
 - **AND** each item SHALL show name, category, days overdue or days until due
 
@@ -79,8 +77,7 @@ The `maintenance_schedule_check` deterministic job checks all maintenance items 
 
 ### Requirement: Maintenance Item Management via MCP Tools
 
-The implementation SHALL provide the behavior described by this requirement.
-The Home butler provides MCP tools for creating, completing, listing, and removing maintenance items.
+The Home butler SHALL provide MCP tools for creating, completing, listing, and removing maintenance items.
 
 #### Scenario: Create maintenance item
 
@@ -116,8 +113,7 @@ The Home butler provides MCP tools for creating, completing, listing, and removi
 
 ### Requirement: Maintenance Memory Integration
 
-The implementation SHALL provide the behavior described by this requirement.
-Maintenance completion events are stored as memory facts for historical tracking.
+Maintenance completion events SHALL be stored as memory facts for historical tracking.
 
 #### Scenario: Completion fact stored
 

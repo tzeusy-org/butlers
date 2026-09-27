@@ -19,7 +19,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from functools import lru_cache
 from typing import Any, Literal
 from uuid import UUID
@@ -27,6 +27,7 @@ from uuid import UUID
 import asyncpg
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
 
+from butlers.api.audit_emit import authenticated_principal
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
 from butlers.api.deps import MCPClientManager, get_mcp_manager
@@ -43,6 +44,8 @@ from butlers.api.models.approval import (
     ApprovalActionRejectRequest,
     ApprovalApproveRequest,
     ApprovalDeferRequest,
+    ApprovalDeliveryCohort,
+    ApprovalDeliveryTruth,
     ApprovalDenyRequest,
     ApprovalDetail,
     ApprovalGatedTool,
@@ -59,6 +62,8 @@ from butlers.api.models.approval import (
     ExpireStaleActionsResponse,
     RuleConstraintSuggestion,
     TargetContact,
+    UnroutableAttentionItem,
+    UnroutableRetryResult,
 )
 from butlers.api.routers import audit as audit_router
 from butlers.modules.approvals import operations as approvals_ops
@@ -66,6 +71,12 @@ from butlers.modules.approvals.decision_memory import (
     DecisionMemoryWriter,
     memory_pool_for_schema,
 )
+from butlers.modules.approvals.delivery_lifecycle import (
+    defer_pending_action,
+    emit_lifecycle_success,
+    transition_pending_action,
+)
+from butlers.modules.approvals.delivery_recovery import ApprovalDeliveryRepository
 from butlers.modules.approvals.executor import execute_approved_action
 from butlers.modules.approvals.models import (
     ActionStatus,
@@ -356,26 +367,167 @@ def _decision_memory_writer_for(
     )
 
 
-_UNPUSHED_OUTCOMES = (None, "failed")
+_DELIVERY_SELECT_COLUMNS = """
+    pa.*, ape.outcome AS push_outcome, ape.action_id AS legacy_push_action_id,
+    adi.id AS delivery_intent_id, adi.admission_mode AS delivery_admission_mode,
+    direct_p.state AS delivery_state,
+    direct_p.presentation_mode AS delivery_mode,
+    direct_p.presentation_generation AS delivery_generation,
+    direct_p.last_reason_code AS delivery_reason,
+    direct_p.attempt_count AS delivery_attempt_count,
+    direct_p.next_attempt_at AS delivery_next_at,
+    direct_p.stuck AS delivery_stuck,
+    member.eligible AS delivery_cohort_eligible,
+    cohort_p.state AS delivery_cohort_state,
+    cohort_p.presentation_generation AS delivery_cohort_generation,
+    cohort_p.attempt_count AS delivery_cohort_attempt_count,
+    cohort_p.next_attempt_at AS delivery_cohort_next_at,
+    cohort_p.stuck AS delivery_cohort_stuck
+"""
+_DELIVERY_SELECT_JOINS = """
+    LEFT JOIN approval_push_emissions AS ape ON ape.action_id = pa.id
+    LEFT JOIN approval_delivery_intents AS adi ON adi.action_id = pa.id
+    LEFT JOIN LATERAL (
+        SELECT p.state, p.presentation_mode, p.presentation_generation,
+               p.last_reason_code, p.attempt_count, p.next_attempt_at,
+               (p.state = 'ambiguous'
+                OR (p.state IN ('claimed', 'handoff_started')
+                    AND p.claim_expires_at <= clock_timestamp())
+                OR (p.state IN ('ready', 'retry_wait')
+                    AND p.next_attempt_at <= clock_timestamp() - interval '15 minutes')) AS stuck
+          FROM approval_delivery_presentations AS p
+         WHERE p.intent_id = adi.id
+         ORDER BY p.presentation_generation DESC
+         LIMIT 1
+    ) AS direct_p ON true
+    LEFT JOIN approval_delivery_cohort_members AS member ON member.intent_id = adi.id
+    LEFT JOIN LATERAL (
+        SELECT p.state, p.presentation_generation, p.attempt_count,
+               p.next_attempt_at,
+               (p.state = 'ambiguous'
+                OR (p.state IN ('claimed', 'handoff_started')
+                    AND p.claim_expires_at <= clock_timestamp())
+                OR (p.state IN ('ready', 'retry_wait')
+                    AND p.next_attempt_at <= clock_timestamp() - interval '15 minutes')) AS stuck
+          FROM approval_delivery_presentations AS p
+         WHERE p.cohort_id = member.cohort_id
+         ORDER BY p.presentation_generation DESC
+         LIMIT 1
+    ) AS cohort_p ON true
+"""
 
 
-def _push_failed(action: PendingAction) -> bool:
-    """True when a still-pending action was never actually pushed to the owner.
+async def _fetch_actions_with_delivery(
+    connection: Any,
+    suffix: str,
+    *args: Any,
+    one: bool = False,
+) -> Any:
+    """Read additive delivery truth while preserving pre-migration actions."""
+    has_delivery = bool(
+        await connection.fetchval(
+            "SELECT to_regclass('approval_delivery_intents') IS NOT NULL "
+            "AND to_regclass('approval_delivery_presentations') IS NOT NULL"
+        )
+    )
+    if has_delivery:
+        query = f"SELECT {_DELIVERY_SELECT_COLUMNS} FROM pending_actions AS pa "
+        query += _DELIVERY_SELECT_JOINS + suffix
+    else:
+        query = (
+            "SELECT pa.*, ape.outcome AS push_outcome, "
+            "ape.action_id AS legacy_push_action_id, "
+            "NULL::uuid AS delivery_intent_id, NULL::text AS delivery_admission_mode, "
+            "NULL::text AS delivery_state, NULL::text AS delivery_mode, "
+            "NULL::integer AS delivery_generation, NULL::text AS delivery_reason, "
+            "NULL::integer AS delivery_attempt_count, NULL::timestamptz AS delivery_next_at, "
+            "false AS delivery_stuck, NULL::boolean AS delivery_cohort_eligible, "
+            "NULL::text AS delivery_cohort_state, "
+            "NULL::integer AS delivery_cohort_generation, "
+            "NULL::integer AS delivery_cohort_attempt_count, "
+            "NULL::timestamptz AS delivery_cohort_next_at, "
+            "false AS delivery_cohort_stuck "
+            "FROM pending_actions AS pa "
+            "LEFT JOIN approval_push_emissions AS ape ON ape.action_id = pa.id " + suffix
+        )
+    if one:
+        return await connection.fetchrow(query, *args)
+    return await connection.fetch(query, *args)
 
-    A ``pending`` action whose push outcome is ``None`` (no push runtime was
-    wired, or the reservation never resolved) or ``"failed"`` (resolved but
-    delivery did not go out, e.g. a missing ``APPROVAL_CALLBACK_SECRET``) must
-    not render as an ordinary pending row -- that is the fabricated-calm
-    failure mode this flag exists to prevent (bu-mda0r). Decided actions are
-    never flagged: their outcome no longer changes whether the owner acts.
+
+def _delivery_truth(row: Any, action: PendingAction) -> ApprovalDeliveryTruth | None:
+    if action.origin == "prepared":
+        return None
+    if row.get("delivery_intent_id") is None:
+        source: Literal["legacy", "unknown"] = (
+            "legacy" if row.get("legacy_push_action_id") is not None else "unknown"
+        )
+        return ApprovalDeliveryTruth(
+            source=source,
+            legacy_outcome=action.push_outcome if source == "legacy" else None,
+        )
+
+    cohort: ApprovalDeliveryCohort | None = None
+    if row.get("delivery_cohort_eligible") is not None:
+        cohort_state = row.get("delivery_cohort_state")
+        cohort = ApprovalDeliveryCohort(
+            eligible=bool(row["delivery_cohort_eligible"]),
+            state=cohort_state,
+            generation=row.get("delivery_cohort_generation"),
+            attempt_count=int(row.get("delivery_cohort_attempt_count") or 0),
+            next_eligible_at=row.get("delivery_cohort_next_at"),
+            stuck=bool(row.get("delivery_cohort_stuck")),
+            ambiguous=cohort_state == "ambiguous",
+        )
+
+    state = row.get("delivery_state")
+    mode = row.get("delivery_mode")
+    generation = row.get("delivery_generation")
+    reason = row.get("delivery_reason")
+    attempt_count = int(row.get("delivery_attempt_count") or 0)
+    next_at = row.get("delivery_next_at")
+    stuck = bool(row.get("delivery_stuck"))
+    if state is None and cohort is not None:
+        state = cohort.state
+        mode = "burst_digest"
+        generation = cohort.generation
+        attempt_count = cohort.attempt_count
+        next_at = cohort.next_eligible_at
+        stuck = cohort.stuck
+    return ApprovalDeliveryTruth(
+        source="durable",
+        state=state,
+        mode=mode,
+        generation=generation,
+        last_reason_code=reason,
+        attempt_count=attempt_count,
+        next_eligible_at=next_at,
+        stuck=stuck,
+        ambiguous=state == "ambiguous",
+        cohort=cohort,
+    )
+
+
+def _push_failed(
+    action: PendingAction,
+    delivery: ApprovalDeliveryTruth | None = None,
+) -> bool:
+    """True only for an explicit legacy failure on a still-pending action.
+
+    Absence of durable or legacy evidence is unknown, not proof that a provider
+    attempt never happened. Decided actions are not flagged because notification
+    outcome no longer changes whether the owner can act.
     """
-    return action.status == ActionStatus.PENDING and action.push_outcome in _UNPUSHED_OUTCOMES
+    if action.status != ActionStatus.PENDING or delivery is None:
+        return False
+    return delivery.source in {"legacy", "unknown"} and action.push_outcome == "failed"
 
 
 def _pending_action_to_api(
     action: PendingAction,
     butler_name: str,
     target_contact: TargetContact | None = None,
+    delivery: ApprovalDeliveryTruth | None = None,
 ) -> ApprovalAction:
     """Convert a PendingAction to API representation with redacted sensitive data."""
     return ApprovalAction(
@@ -397,8 +549,10 @@ def _pending_action_to_api(
         evidence=action.evidence,
         blast_radius=action.blast_radius,
         reversibility=action.reversibility,
+        origin=action.origin,
         push_outcome=action.push_outcome,
-        push_failed=_push_failed(action),
+        push_failed=_push_failed(action, delivery),
+        delivery=delivery,
     )
 
 
@@ -440,6 +594,7 @@ def _pending_action_to_detail(
     referenced_entities: list[EntityRef] | None = None,
     *,
     denial_reason: str | None = None,
+    delivery: ApprovalDeliveryTruth | None = None,
 ) -> ApprovalDetail:
     """Convert a PendingAction to the full Dispatch dossier ApprovalDetail."""
     title = f"{action.tool_name.replace('_', ' ').title()} ({butler_name})"
@@ -472,11 +627,16 @@ def _pending_action_to_detail(
         session_id=str(action.session_id) if action.session_id else None,
         referenced_entities=referenced_entities or [],
         push_outcome=action.push_outcome,
-        push_failed=_push_failed(action),
+        push_failed=_push_failed(action, delivery),
+        delivery=delivery,
     )
 
 
-def _pending_action_to_summary(action: PendingAction, butler_name: str) -> ApprovalSummary:
+def _pending_action_to_summary(
+    action: PendingAction,
+    butler_name: str,
+    delivery: ApprovalDeliveryTruth | None = None,
+) -> ApprovalSummary:
     """Convert a PendingAction to a compact ApprovalSummary for the flat-list endpoint."""
     return ApprovalSummary(
         id=str(action.id),
@@ -494,7 +654,8 @@ def _pending_action_to_summary(action: PendingAction, butler_name: str) -> Appro
         blast_radius=action.blast_radius,
         reversibility=action.reversibility,
         push_outcome=action.push_outcome,
-        push_failed=_push_failed(action),
+        push_failed=_push_failed(action, delivery),
+        delivery=delivery,
     )
 
 
@@ -668,6 +829,7 @@ async def list_actions(
     since: str | None = Query(default=None),
     until: str | None = Query(default=None),
     butler: str | None = Query(default=None),
+    origin: str | None = Query(default=None),
     db_mgr: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[ApprovalAction]:
     """List pending actions with filtering and pagination.
@@ -717,6 +879,11 @@ async def list_actions(
         args.append(tool_name)
         idx += 1
 
+    if origin is not None:
+        conditions.append(f"origin = ${idx}")
+        args.append(origin)
+        idx += 1
+
     if since is not None:
         try:
             since_dt = datetime.fromisoformat(since)
@@ -747,9 +914,8 @@ async def list_actions(
                     f"SELECT COUNT(*) FROM pending_actions{where_clause}",
                     *args,
                 )
-                rows = await conn.fetch(
-                    "SELECT pa.*, ape.outcome AS push_outcome FROM pending_actions pa "
-                    "LEFT JOIN approval_push_emissions ape ON ape.action_id = pa.id"
+                rows = await _fetch_actions_with_delivery(
+                    conn,
                     f"{where_clause} ORDER BY pa.requested_at DESC",
                     *args,
                 )
@@ -765,7 +931,7 @@ async def list_actions(
     for butler_name, row in page_rows:
         pa = PendingAction.from_row(row)
         tc = await _resolve_target_contact(db_mgr, pa)
-        actions.append(_pending_action_to_api(pa, butler_name, tc))
+        actions.append(_pending_action_to_api(pa, butler_name, tc, _delivery_truth(row, pa)))
 
     meta = (
         PaginationMeta(
@@ -906,11 +1072,11 @@ async def get_action(
     for butler_name, pool in named_pools:
         try:
             async with pool.acquire() as conn:
-                row = await conn.fetchrow(
-                    "SELECT pa.*, ape.outcome AS push_outcome FROM pending_actions pa "
-                    "LEFT JOIN approval_push_emissions ape ON ape.action_id = pa.id "
+                row = await _fetch_actions_with_delivery(
+                    conn,
                     "WHERE pa.id = $1",
                     parsed_id,
+                    one=True,
                 )
             if row is not None:
                 found_butler = butler_name
@@ -923,7 +1089,7 @@ async def get_action(
 
     pa = PendingAction.from_row(row)
     tc = await _resolve_target_contact(db_mgr, pa)
-    action = _pending_action_to_api(pa, found_butler, tc)
+    action = _pending_action_to_api(pa, found_butler, tc, _delivery_truth(row, pa))
     return ApiResponse(data=action)
 
 
@@ -1181,6 +1347,7 @@ async def _dispatch_approved_action_outcome(
             tool_args=tool_args,
             tool_fn=_deliver_notify,
             decision_memory_writer=decision_memory_writer,
+            origin_butler=action_butler,
         )
         if not execution.success:
             if dispatch_failure is not None:
@@ -1396,12 +1563,24 @@ async def expire_stale_actions(
         try:
             async with pool.acquire() as conn:
                 rows = await conn.fetch(
-                    "UPDATE pending_actions SET status = 'expired', decided_by = 'system:expiry', "
-                    "decided_at = $1 WHERE status = 'pending' AND expires_at IS NOT NULL "
-                    "AND expires_at < $1 RETURNING id",
+                    "SELECT id, tool_name FROM pending_actions "
+                    "WHERE status = 'pending' AND expires_at IS NOT NULL "
+                    "AND expires_at < $1",
                     now,
                 )
-                expired_ids.extend(str(row["id"]) for row in rows)
+                for row in rows:
+                    transition = await transition_pending_action(
+                        conn,
+                        action_id=row["id"],
+                        target_status=ActionStatus.EXPIRED,
+                        decided_by="system:expiry",
+                        event_actor="system:expiry",
+                        event_reason="approval window elapsed",
+                        event_metadata={"tool_name": row["tool_name"]},
+                        now=now,
+                    )
+                    if transition.changed:
+                        expired_ids.append(str(row["id"]))
         except Exception:
             logger.warning("Failed to expire stale actions from a pool", exc_info=True)
 
@@ -1813,6 +1992,15 @@ async def get_metrics(
     failure_count_today = 0
     latency_sum = 0.0
     latency_count = 0
+    delivery_due_count = 0
+    delivery_retry_wait_count = 0
+    delivery_expired_lease_count = 0
+    delivery_ambiguous_count = 0
+    delivery_stuck_count = 0
+    delivery_oldest_due_age_seconds: float | None = None
+    delivery_by_state: dict[str, int] = {}
+    delivery_by_reason: dict[str, int] = {}
+    delivery_sources_complete = bool(action_pools)
 
     for butler_name, pool in action_pools:
         try:
@@ -1890,7 +2078,42 @@ async def get_metrics(
                     )
                     or 0
                 )
+                has_delivery = bool(
+                    await conn.fetchval(
+                        "SELECT to_regclass('approval_delivery_presentations') IS NOT NULL"
+                    )
+                )
+                if has_delivery:
+                    try:
+                        snapshot = await ApprovalDeliveryRepository(conn).backlog_snapshot()
+                    except Exception:
+                        # Delivery observability is additive. A partial/mixed
+                        # rollout must not erase otherwise healthy approval
+                        # counts or mislabel the whole source as unavailable.
+                        delivery_sources_complete = False
+                    else:
+                        delivery_due_count += snapshot.due_count
+                        delivery_retry_wait_count += snapshot.retry_wait_count
+                        delivery_expired_lease_count += snapshot.expired_lease_count
+                        delivery_ambiguous_count += snapshot.ambiguous_count
+                        delivery_stuck_count += snapshot.stuck_count
+                        if snapshot.oldest_due_age_seconds is not None:
+                            delivery_oldest_due_age_seconds = max(
+                                delivery_oldest_due_age_seconds or 0.0,
+                                snapshot.oldest_due_age_seconds,
+                            )
+                        for state_name, count in snapshot.by_state.items():
+                            delivery_by_state[state_name] = (
+                                delivery_by_state.get(state_name, 0) + count
+                            )
+                        for reason_name, count in snapshot.by_reason.items():
+                            delivery_by_reason[reason_name] = (
+                                delivery_by_reason.get(reason_name, 0) + count
+                            )
+                else:
+                    delivery_sources_complete = False
         except Exception:
+            delivery_sources_complete = False
             action_sources.mark(
                 butler_name,
                 msg="Failed to collect pending-actions metrics",
@@ -1937,6 +2160,15 @@ async def get_metrics(
         callback_secret_configured=(
             await _callback_secret_configured(db_mgr) if action_pools else None
         ),
+        delivery_due_count=delivery_due_count,
+        delivery_retry_wait_count=delivery_retry_wait_count,
+        delivery_expired_lease_count=delivery_expired_lease_count,
+        delivery_ambiguous_count=delivery_ambiguous_count,
+        delivery_stuck_count=delivery_stuck_count,
+        delivery_oldest_due_age_seconds=delivery_oldest_due_age_seconds,
+        delivery_by_state=delivery_by_state,
+        delivery_by_reason=delivery_by_reason,
+        delivery_sources_complete=delivery_sources_complete,
     )
 
     sources_degraded = sorted(set(action_sources.names) | set(rule_sources.names))
@@ -1995,6 +2227,28 @@ _STALLED_STATUS = "approved"
 
 _ACTOR_DASHBOARD = "dashboard:rest-api"
 _TELEGRAM_CALLBACK_ACTOR = "owner@telegram"
+
+
+def _switchboard_pool(db_mgr: DatabaseManager) -> asyncpg.Pool:
+    """Return the Switchboard pool that owns the dead-letter queue."""
+    try:
+        return db_mgr.pool("switchboard")
+    except KeyError as exc:
+        raise HTTPException(status_code=503, detail="Switchboard database is unavailable") from exc
+
+
+def _unroutable_question(raw_payload: object) -> str:
+    """Extract only the owner-authored question from a dead-letter payload."""
+    payload = raw_payload
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except (json.JSONDecodeError, ValueError):
+            return "Message content unavailable"
+    if not isinstance(payload, dict):
+        return "Message content unavailable"
+    question = payload.get("message_text") or payload.get("content")
+    return str(question).strip() if question else "Message content unavailable"
 
 
 def _decision_actor_id(callback_actor: str | None, *, callback_authenticated: bool) -> str:
@@ -2070,27 +2324,23 @@ async def list_approvals_flat(
                 )
 
                 if state == "stalled":
-                    rows = await conn.fetch(
-                        "SELECT pa.*, ape.outcome AS push_outcome FROM pending_actions pa "
-                        "LEFT JOIN approval_push_emissions ape ON ape.action_id = pa.id "
+                    rows = await _fetch_actions_with_delivery(
+                        conn,
                         "WHERE pa.status = $1 AND pa.execution_result IS NULL "
                         "ORDER BY pa.requested_at DESC LIMIT $2",
                         _STALLED_STATUS,
                         limit,
                     )
                 elif status_filter:
-                    rows = await conn.fetch(
-                        "SELECT pa.*, ape.outcome AS push_outcome FROM pending_actions pa "
-                        "LEFT JOIN approval_push_emissions ape ON ape.action_id = pa.id "
-                        "WHERE pa.status = ANY($1::text[]) "
-                        "ORDER BY pa.requested_at DESC LIMIT $2",
+                    rows = await _fetch_actions_with_delivery(
+                        conn,
+                        "WHERE pa.status = ANY($1::text[]) ORDER BY pa.requested_at DESC LIMIT $2",
                         status_filter,
                         limit,
                     )
                 else:
-                    rows = await conn.fetch(
-                        "SELECT pa.*, ape.outcome AS push_outcome FROM pending_actions pa "
-                        "LEFT JOIN approval_push_emissions ape ON ape.action_id = pa.id "
+                    rows = await _fetch_actions_with_delivery(
+                        conn,
                         "ORDER BY pa.requested_at DESC LIMIT $1",
                         limit,
                     )
@@ -2104,7 +2354,7 @@ async def list_approvals_flat(
     summaries = []
     for butler_name, row in page_rows:
         pa = PendingAction.from_row(row)
-        summaries.append(_pending_action_to_summary(pa, butler_name))
+        summaries.append(_pending_action_to_summary(pa, butler_name, _delivery_truth(row, pa)))
 
     meta_kwargs: dict[str, Any] = {"stalled_count": stalled_count}
     if tracker.failed:
@@ -2144,19 +2394,18 @@ async def list_approvals_history(
         try:
             async with pool.acquire() as conn:
                 if since_dt is not None:
-                    rows = await conn.fetch(
-                        "SELECT * FROM pending_actions "
-                        "WHERE status = ANY($1::text[]) AND decided_at >= $2 "
-                        "ORDER BY decided_at DESC LIMIT $3",
+                    rows = await _fetch_actions_with_delivery(
+                        conn,
+                        "WHERE pa.status = ANY($1::text[]) AND pa.decided_at >= $2 "
+                        "ORDER BY pa.decided_at DESC LIMIT $3",
                         decided_statuses,
                         since_dt,
                         limit,
                     )
                 else:
-                    rows = await conn.fetch(
-                        "SELECT * FROM pending_actions "
-                        "WHERE status = ANY($1::text[]) "
-                        "ORDER BY decided_at DESC LIMIT $2",
+                    rows = await _fetch_actions_with_delivery(
+                        conn,
+                        "WHERE pa.status = ANY($1::text[]) ORDER BY pa.decided_at DESC LIMIT $2",
                         decided_statuses,
                         limit,
                     )
@@ -2170,9 +2419,10 @@ async def list_approvals_history(
     )
     page_rows = all_rows[:limit]
 
-    summaries = [
-        _pending_action_to_summary(PendingAction.from_row(row), name) for name, row in page_rows
-    ]
+    summaries = []
+    for name, row in page_rows:
+        action = PendingAction.from_row(row)
+        summaries.append(_pending_action_to_summary(action, name, _delivery_truth(row, action)))
     meta = ApiMeta(sources_degraded=tracker.names) if tracker.failed else ApiMeta()
     return ApiResponse(data=summaries, meta=meta)
 
@@ -2249,6 +2499,96 @@ async def update_approvals_policy(
         raise HTTPException(status_code=500, detail=f"Failed to update policy: {exc}") from exc
 
     return ApiResponse(data=request)
+
+
+@router.get("/unroutable", response_model=ApiResponse[list[UnroutableAttentionItem]])
+async def list_unroutable_attention(
+    limit: int = Query(default=50, ge=1, le=200),
+    db_mgr: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[list[UnroutableAttentionItem]]:
+    """List replayable dashboard routing failures on the Command surface."""
+    pool = _switchboard_pool(db_mgr)
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, failure_reason, original_payload, created_at
+            FROM switchboard.dead_letter_queue
+            WHERE source_table = 'message_inbox'
+              AND replay_eligible
+              AND replayed_at IS NULL
+              AND request_context->>'source_channel' = 'dashboard'
+            ORDER BY created_at DESC
+            LIMIT $1
+            """,
+            limit,
+        )
+    return ApiResponse(
+        data=[
+            UnroutableAttentionItem(
+                id=str(row["id"]),
+                question=_unroutable_question(row["original_payload"]),
+                failure_reason=str(row["failure_reason"]),
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
+    )
+
+
+@router.post(
+    "/unroutable/{dead_letter_id}/retry",
+    response_model=ApiResponse[UnroutableRetryResult],
+)
+async def retry_unroutable_attention(
+    dead_letter_id: str,
+    db_mgr: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[UnroutableRetryResult]:
+    """Re-enqueue one dashboard dead-letter with its existing lineage."""
+    try:
+        parsed_id = UUID(dead_letter_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid dead_letter_id: {dead_letter_id}"
+        ) from exc
+
+    from butlers.tools.switchboard.dead_letter import replay_dead_letter_request
+
+    pool = _switchboard_pool(db_mgr)
+    async with pool.acquire() as conn, conn.transaction():
+        eligible = await conn.fetchval(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM switchboard.dead_letter_queue
+                WHERE id = $1
+                  AND source_table = 'message_inbox'
+                  AND request_context->>'source_channel' = 'dashboard'
+            )
+            """,
+            parsed_id,
+        )
+        if not eligible:
+            raise HTTPException(status_code=404, detail="Unroutable message not found")
+        result = await replay_dead_letter_request(
+            conn,
+            dead_letter_id=parsed_id,
+            operator_identity=authenticated_principal(),
+            reason="Owner requested retry from the Command surface",
+        )
+
+    if not result.get("success"):
+        error = result.get("error")
+        if error in {"already_replayed", "not_replay_eligible"}:
+            raise HTTPException(status_code=409, detail=str(error))
+        if error == "dead_letter_not_found":
+            raise HTTPException(status_code=404, detail=str(error))
+        raise HTTPException(status_code=500, detail="Unroutable replay failed")
+
+    return ApiResponse(
+        data=UnroutableRetryResult(
+            dead_letter_id=str(parsed_id),
+            replayed_request_id=str(result["replayed_request_id"]),
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2612,11 +2952,11 @@ async def get_approval_detail(
     for butler_name, pool in named_pools:
         try:
             async with pool.acquire() as conn:
-                row = await conn.fetchrow(
-                    "SELECT pa.*, ape.outcome AS push_outcome FROM pending_actions pa "
-                    "LEFT JOIN approval_push_emissions ape ON ape.action_id = pa.id "
+                row = await _fetch_actions_with_delivery(
+                    conn,
                     "WHERE pa.id = $1",
                     parsed_id,
+                    one=True,
                 )
                 if row is not None:
                     pa = PendingAction.from_row(row)
@@ -2635,6 +2975,7 @@ async def get_approval_detail(
                         target_contact,
                         referenced_entities,
                         denial_reason=denial_reason,
+                        delivery=_delivery_truth(row, pa),
                     )
                 )
         except Exception:
@@ -2874,43 +3215,34 @@ async def defer_approval(
         raise HTTPException(status_code=404, detail=f"Approval not found: {action_id}")
     action_butler, target_pool = found
 
-    now = datetime.now(UTC)
-    new_expires_at = now + timedelta(hours=request.hours)
-
     # AuditTableNotAvailableError is intentionally NOT caught here — it
     # propagates to the app-level handler, which returns 503
     # {"error": "audit_unavailable"} (dashboard-audit-log spec), rolling the
     # expiry-extension UPDATE back with it.
-    expired_error: str | None = None
-    updated: Any = None
+    transition_error: str | None = None
+    updated: PendingAction | None = None
+    updated_delivery: ApprovalDeliveryTruth | None = None
     async with target_pool.acquire() as conn, conn.transaction():
-        row = await conn.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
-        if row is None:
-            raise HTTPException(status_code=404, detail=f"Approval not found: {action_id}")
-
-        if row["status"] != "pending":
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"Cannot defer action with status '{row['status']}'; "
-                    "only 'pending' actions can be deferred"
-                ),
-            )
-
-        expired_result = await approvals_ops.expire_pending_action_if_stale(
+        transition = await defer_pending_action(
             conn,
-            PendingAction.from_row(row),
-            now=now,
-            target_action="deferred",
+            action_id=parsed_id,
+            hours=request.hours,
+            actor=_ACTOR_DASHBOARD,
+            _already_in_transaction=True,
         )
-        if expired_result is not None:
-            expired_error = str(expired_result["error"])
-        else:
-            updated = await conn.fetchrow(
-                "UPDATE pending_actions SET expires_at = $1 WHERE id = $2 RETURNING *",
-                new_expires_at,
-                parsed_id,
+        if transition.action is None:
+            transition_error = f"Approval not found: {action_id}"
+        elif transition.expired_instead:
+            transition_error = f"Action {action_id} expired and cannot be deferred"
+        elif transition.delivery_missing:
+            transition_error = "Approval delivery intent is unavailable for defer"
+        elif not transition.changed:
+            transition_error = (
+                f"Cannot defer action with status '{transition.action.status.value}'; "
+                "only 'pending' actions can be deferred"
             )
+        else:
+            updated = transition.action
             await audit_router.append(
                 conn,
                 _ACTOR_DASHBOARD,
@@ -2919,16 +3251,26 @@ async def defer_approval(
                 note=str(request.hours),
                 result="success",
             )
+            projected = await _fetch_actions_with_delivery(
+                conn,
+                "WHERE pa.id = $1",
+                parsed_id,
+                one=True,
+            )
+            if projected is not None:
+                updated_delivery = _delivery_truth(projected, updated)
 
-    if expired_error is not None:
-        if "not found" in expired_error.lower():
-            raise HTTPException(status_code=404, detail=expired_error)
-        raise HTTPException(status_code=409, detail=expired_error)
+    emit_lifecycle_success(transition.success_observation)
+
+    if transition_error is not None:
+        if "not found" in transition_error.lower():
+            raise HTTPException(status_code=404, detail=transition_error)
+        raise HTTPException(status_code=409, detail=transition_error)
 
     if updated is None:
         raise HTTPException(status_code=500, detail="Failed to defer approval")
 
-    pa = PendingAction.from_row(updated)
+    pa = updated
     tc = await _resolve_target_contact(db_mgr, pa)
     emit_approvals_event(
         "deferred",
@@ -2937,9 +3279,9 @@ async def defer_approval(
         tool_name=pa.tool_name,
         status="pending",
         hours=request.hours,
-        new_expires_at=new_expires_at.isoformat(),
+        new_expires_at=pa.expires_at.isoformat() if pa.expires_at else None,
     )
-    return ApiResponse(data=_pending_action_to_api(pa, action_butler, tc))
+    return ApiResponse(data=_pending_action_to_api(pa, action_butler, tc, updated_delivery))
 
 
 @router.post("/{action_id}/retry")

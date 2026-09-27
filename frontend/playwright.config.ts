@@ -33,6 +33,11 @@ const API_MOCK_URL = `http://127.0.0.1:${API_MOCK_PORT}`;
 export default defineConfig({
   testDir: "tests/e2e",
 
+  // Route A is an isolated disposable-runtime evidence lane. Its module-level
+  // fail-closed guards require that lane's service-only environment, so the
+  // ordinary mocked E2E suite must never discover or import it.
+  testIgnore: "**/meeting-prep-route-a.evidence.spec.ts",
+
   timeout: 30_000,
 
   retries: process.env.CI ? 2 : 0,

@@ -248,6 +248,7 @@ async def test_travel_module_wires_and_registers_parameterless_consumer() -> Non
     await module.register_tools(_Mcp(), {}, db, butler_name="travel")
     module.wire_runtime(None, "/repo", switchboard_client=client)
 
+    assert "acknowledge_connection_risk" in registered
     consumer = registered["health_medication_snapshot"]
     result = await consumer()  # type: ignore[operator]
     assert result == _health_snapshot()

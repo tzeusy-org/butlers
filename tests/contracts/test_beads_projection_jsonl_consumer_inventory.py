@@ -113,7 +113,7 @@ def test_current_bead_detail_is_a_distinct_jsonl_consumer() -> None:
     """REQ-beads-projection-005: retain detail until it has its own safe migration."""
     route = _read("src/butlers/api/routers/beads.py")
     reader = _read("src/butlers/beads_snapshot.py")
-    detail_contract = _read("docs/frontend/backend-api-contract.md")
+    detail_contract = _read("openspec/specs/dashboard-api/spec.md")
     projection_spec = _read(
         "openspec/changes/beads-projection-exporter/specs/beads-projection/spec.md"
     )
@@ -138,7 +138,6 @@ def test_retirement_packet_requires_a_complete_jsonl_consumer_inventory() -> Non
     )
     planning_artifacts = (
         "about/legends-and-lore/rfcs/0025-tracker-host-beads-projection-exporter.md",
-        "docs/architecture/beads-runtime-data-bridge.md",
         "docs/superpowers/plans/2026-08-13-beads-projection-exporter.md",
         "openspec/changes/beads-projection-exporter/design.md",
         "openspec/changes/beads-projection-exporter/specs/beads-projection/spec.md",
@@ -290,7 +289,6 @@ def test_suspicious_empty_or_regressed_candidate_requires_source_completeness_ev
     projection_spec = _read(
         "openspec/changes/beads-projection-exporter/specs/beads-projection/spec.md"
     )
-    architecture = _read("docs/architecture/beads-runtime-data-bridge.md")
     design = _read("openspec/changes/beads-projection-exporter/design.md")
     tasks = _read("openspec/changes/beads-projection-exporter/tasks.md")
     implementation_plan = _read("docs/superpowers/plans/2026-08-13-beads-projection-exporter.md")
@@ -314,7 +312,7 @@ def test_suspicious_empty_or_regressed_candidate_requires_source_completeness_ev
         ):
             assert requirement in text
 
-    for text in map(_normalise, (architecture, design, tasks, implementation_plan)):
+    for text in map(_normalise, (design, tasks, implementation_plan)):
         assert "source_completeness_unverified" in text
         assert "availability override" in text
         assert "regression" in text

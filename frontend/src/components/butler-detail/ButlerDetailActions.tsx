@@ -77,7 +77,7 @@ function actionLinkClassName(): string {
     "inline-flex h-7 items-center rounded-[3px] border border-border bg-transparent px-2.5",
     "font-mono text-[10px] font-medium uppercase tracking-[0.06em] text-foreground shadow-none",
     "transition-colors hover:bg-muted/50 hover:text-foreground",
-    "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+    "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus",
   ].join(" ");
 }
 
@@ -206,7 +206,7 @@ export function ButlerDetailActions({ butlerName }: ButlerDetailActionsProps) {
           disabled={isRunning}
           aria-label={`Prompt ${butlerName}`}
           data-testid="butler-command-input"
-          className="h-7 w-40 rounded-[3px] border border-border bg-transparent px-2 font-mono text-[11px] text-foreground placeholder:truncate placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring sm:w-56"
+          className="h-7 w-40 rounded-[3px] border border-border bg-transparent px-2 font-mono text-[11px] text-foreground placeholder:truncate placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus sm:w-56"
         />
         <Select value={complexity} onValueChange={setComplexity} disabled={isRunning}>
           <SelectTrigger

@@ -1,6 +1,6 @@
 # RFC 0031: Public Entity Graph Projection
 
-**Status:** Draft (Slice 1 of 7 landed: substrate only)
+**Status:** Draft (Slices 1-4 implemented; Slices 5-7 open)
 **Date:** 2026-09-05
 
 ## Summary
@@ -14,11 +14,6 @@ know about this person" today costs an LLM session per butler. This RFC
 gives the fleet a single, zero-LLM-traversable table instead.
 
 This document also records the RFC's full slice plan (`Slice Plan` below).
-**Only Slice 1 — the table substrate and this RFC — has landed.** Slices 2-7
-(writers, backfill, traversal tools, catalog read, dossier API, dashboard
-surface, and debt riders) are future work; this RFC describes their intended
-shape so later slices implement against one design rather than re-deriving
-it, but nothing past the substrate is live yet.
 
 ## Motivation
 
@@ -147,9 +142,9 @@ Slice Plan, S5) can then report "N relationships known, M withheld for
 sensitivity" honestly, without ever exposing what the M withheld relationships
 are.
 
-### Traversal Shape (Future: Slice 3)
+### Traversal Shape (Slice 3)
 
-Both intended core tools (`entity_graph_walk`, `entity_graph_path`) are plain
+Both core tools (`entity_graph_walk`, `entity_graph_path`) are plain
 recursive CTEs over `subject_entity_id` / `object_entity_id`, filtered to
 `withheld_reason IS NULL` (a withheld stub has no `object_entity_id` to
 traverse through) and depth-capped to bound worst-case fan-out. Neither tool
@@ -174,21 +169,21 @@ directly.
 
 ## Slice Plan
 
-- **S1 (this RFC + `core_215_entity_graph_edges.py`, landed):** substrate
+- **S1 (`core_215_entity_graph_edges.py`):** substrate
   table, indexes, grants.
-- **S2 (future):** write-behind writers in memory storage, `relationship`
+- **S2:** write-behind writers in memory storage, `relationship`
   `assert_fact`, and commitments, plus the idempotent backfill job over
   existing source rows.
-- **S3 (future):** zero-LLM `entity_graph_walk` / `entity_graph_path` core
+- **S3:** zero-LLM `entity_graph_walk` / `entity_graph_path` core
   tools (recursive CTE), added to a new `graph` core tool group.
-- **S4 (future):** entity catalog read integration — surfacing graph
+- **S4:** entity catalog read integration — surfacing graph
   coverage alongside existing catalog search results.
-- **S5 (future):** `/api/entities/{id}/dossier` — per-source receipts plus a
+- **S5:** `/api/entities/{id}/dossier` — per-source receipts plus a
   coverage statement (`N relationships known, M withheld for sensitivity`,
   counts drawn from this table, never fabricated).
-- **S6 (future):** dashboard surface — an `EntityDetailPage` dossier panel
+- **S6:** dashboard surface — an `EntityDetailPage` dossier panel
   consuming S5's API.
-- **S7 (future, debt riders):** fixes the `init-db.sql:376-379` DELETE grant
+- **S7 (debt riders):** fixes the `init-db.sql:376-379` DELETE grant
   contradiction and the degraded-envelope gap for entity activity, both
   discovered during this epic's evidence-gathering but out of scope for the
   graph substrate itself.

@@ -10,26 +10,19 @@ Butlers uses a two-level conftest architecture: a root `conftest.py` that makes 
 
 ## Markers
 
-Markers are defined in `pyproject.toml` under `[tool.pytest.ini_options]`:
+The marker list and the default `addopts` live in `pyproject.toml` (`[tool.pytest.ini_options]`);
+read them there. The semantics that matter:
 
-| Marker | Description | Default CI |
-|--------|-------------|------------|
-| `unit` | Pure unit tests -- no Docker, no external services | Included |
-| `integration` | Require Docker (testcontainers) | Included |
-| `e2e` | Require authenticated CLI runtime, claude binary, and Docker | Included |
-| `benchmark` | Benchmark mode -- iterate over models, generate scorecards | Excluded |
-| `routing_accuracy` | E2E routing accuracy -- verify triage_target matches expected | Included |
-| `tool_accuracy` | E2E tool-call accuracy -- verify expected tool names are called | Included |
-| `nightly` | Long-running tests excluded from default CI | Excluded |
-| `bench` | All Ollama model benchmarks -- require live endpoint | Excluded |
-| `discretion_bench` | Discretion layer FORWARD/IGNORE benchmarks | Excluded |
-| `switchboard_bench` | Switchboard routing accuracy benchmarks | Excluded |
-| `db` | Database integration tests -- testcontainers with real PostgreSQL | Included |
-
-The default `addopts` excludes `nightly` and `bench` markers:
-```ini
--m 'not nightly and not bench'
-```
+- **Deselected by default:** `addopts` carries `-m 'not nightly and not bench and not perf'` and
+  ignores `tests/benchmarks`, so those tests run only when asked for with `-m`.
+- **`e2e` is not deselected by marker.** Every gate keeps it out with `--ignore=tests/e2e`, and its
+  own conftest skips without credentials; see the [E2E suite](e2e/README.md). `benchmark`,
+  `routing_accuracy` and `tool_accuracy` subdivide that suite.
+- **`pg_clock` and `faketime_fragile`** are deselected only from the nightly faketime legs: the
+  first mixes Postgres and Python clocks that libfaketime skews apart, the second waits on a timed
+  thread primitive that never expires under a shifted clock. Everywhere else they run.
+- **`smoke`** is the fast operational gate with no real LLM; **`contract`** marks architectural
+  invariant tests drawn from doctrine and RFCs.
 
 ## Root Conftest Fixtures
 
@@ -114,7 +107,7 @@ The root conftest patches testcontainers with resilient startup and teardown han
 
 `_install_resilient_testcontainers_stop()` is the **only** patch on `DockerContainer.stop`, and it wraps the container removal (not the whole `stop`) so the retry cannot also re-run a removal that already succeeded. Failures classify through the single predicate `_is_transient_docker_teardown_error()`: a `requests` read timeout is transient by type, and otherwise the message and any docker-py `.explanation` are matched -- across the whole `__cause__`/`__context__` chain -- against `_TRANSIENT_DOCKER_TEARDOWN_ERROR_MARKERS` ("did not receive an exit event", "tried to kill container", "no such container", "removal of container", "is already in progress", "is dead or marked for removal", "read timed out"). Transient failures are retried 4 times with exponential backoff (0.1s, 0.2s, 0.4s).
 
-A **final transient** failure warns and lets the run finish; that leaks a container, and the `RuntimeWarning` names it so the leak is traceable (see [Orphaned Test Containers](orphaned-testcontainers.md)). A **non-transient** failure raises on the first attempt. Both halves of that decision are pinned by `tests/scripts/test_conftest_teardown_patch.py`, which also fails if a second `DockerContainer.stop` patch is ever reintroduced (bu-1y1qs).
+A **final transient** failure warns and lets the run finish; that leaks a container, and the `RuntimeWarning` names it so the leak is traceable (see [Orphaned Test Containers](orphaned-testcontainers.md)). A **non-transient** failure raises on the first attempt. Both halves of that decision are pinned by `tests/scripts/test_conftest_teardown_patch.py`, which also fails if a second `DockerContainer.stop` patch is ever reintroduced.
 
 The patches are idempotent -- they check for sentinel attributes to avoid double-patching.
 
@@ -122,14 +115,14 @@ The patches are idempotent -- they check for sentinel attributes to avoid double
 
 | Setting | Value | Rationale |
 |---------|-------|-----------|
-| `-n 3` | 3 xdist workers | Avoids OOM when polecats run alongside k3s |
+| `-n 3` | 3 xdist workers | Avoids OOM when polecats run alongside the Compose stack |
 | `--dist loadfile` | File-level distribution | Preserves module-scoped fixtures |
 | `--import-mode=importlib` | Importlib mode | Avoids name collisions across `roster/*/tests/` |
 
 These live in `addopts`, which pytest prepends to **every** invocation in this repo. So an
 omitted `-n` is not "the default" -- it is three workers. Anything that needs a different
 mode has to say so on its own command line: `make test-qg-serial` passes `-n 0` for exactly
-this reason, and ran on three workers until it did (bu-bcujm). `-p no:xdist` is not a
+this reason, and ran on three workers until it did. `-p no:xdist` is not a
 substitute; it turns the inherited `-n 3` into an unrecognized-argument error.
 `tests/contracts/test_qg_serial_target.py` pins the merged value for both gate targets,
 because a grep of the Makefile cannot see it.
@@ -154,6 +147,25 @@ docker_available = shutil.which("docker") is not None
 ```
 
 Tests can use this to skip gracefully when Docker is not installed.
+
+## Implementation Notes
+
+- Root `conftest.py` also serialises testcontainers `DockerClient.run()` across xdist workers and
+  caps `-n auto` at 3 workers (`PYTEST_XDIST_AUTO_WORKERS` overrides).
+- Startup timeouts (before a container starts) are host contention: reduce load and rely on the
+  init retry. Teardown races happen in `container.remove()` and are the teardown patch's job.
+- DB tests use `testcontainers.postgres.PostgresContainer` with `asyncpg.create_pool()`.
+- The guarded core integration modules (`tests/core/test_core_{state,sessions,scheduler}.py`) apply
+  session loop scope per async test (`@pytest.mark.asyncio(loop_scope="session")` or the local
+  `_asyncio_session` alias), never to a whole module or class, because synchronous guards may be
+  collected there.
+- Root `conftest.py` is the only global registration layer for `shared_fixtures`; nested conftests
+  must not re-register them but may define tree-scoped fixtures and hooks.
+- Patch testcontainers teardown at exactly one layer: assign `DockerContainer.stop` once and retry
+  `container.remove()`, not `stop()`. The transient errors are 404 "no such container", 409
+  "removal already in progress" and read timeouts, so match markers anywhere in the exception chain
+  (including docker-py's `explanation`) rather than gating on HTTP 500. Swallow the final transient
+  failure with a `RuntimeWarning`; fail fast on anything else.
 
 ## Related Pages
 

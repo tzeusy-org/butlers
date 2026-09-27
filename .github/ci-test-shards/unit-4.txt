@@ -31,6 +31,7 @@ tests/api/test_domain_events.py
 tests/api/test_google_health_grant_flow.py
 tests/api/test_google_userinfo_payload.py
 tests/api/test_home_dashboard.py
+tests/api/test_home_person_mappings.py
 tests/api/test_hourly_activity.py
 tests/api/test_ingestion_connector_lifecycle_phase4b.py
 tests/api/test_memory_episode_provenance.py
@@ -81,6 +82,7 @@ tests/chronicler/test_sleep_stitching.py
 tests/chronicler/test_storage.py
 tests/chronicler/test_telemetry_participant_resolution.py
 tests/cli/test_cli.py
+tests/cli/test_owner_auth_commands.py
 tests/config/test_bounded_revision_downgrade_guard.py
 tests/config/test_config.py
 tests/config/test_credential_store.py
@@ -103,6 +105,7 @@ tests/connectors/test_home_assistant_reorder_buffer.py
 tests/connectors/test_oauth_token_payload_sites.py
 tests/connectors/test_spotify_connector.py
 tests/connectors/test_telegram_user_client.py
+tests/contracts/test_citation_route_manifest.py
 tests/contracts/test_codex_auth_generation_plan_contract.py
 tests/contracts/test_commitment_grace_rfc_contract.py
 tests/contracts/test_graceful_shutdown.py
@@ -187,6 +190,7 @@ tests/migrations/test_entities_listed_flag_migration.py
 tests/migrations/test_memory_catalog_migration.py
 tests/migrations/test_model_catalog_session_timeout_migration.py
 tests/migrations/test_pending_actions_why_evidence_repair.py
+tests/migrations/test_qa_repo_org_rename_migration.py
 tests/migrations/test_retire_legacy_permission_seeds_migration.py
 tests/migrations/test_secrets_be6_migration.py
 tests/migrations/test_whatsapp_session_rotation_migration.py

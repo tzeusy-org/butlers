@@ -3253,9 +3253,17 @@ class CalendarModule(Module):
                     ("mornings only", "avoid Fridays") happens at the call site.
                 limit: Maximum number of slots to return (default 10).
 
-            Returns ``{"slots": [{"start_at", "end_at", "timezone"}],
+            On success, returns ``{"slots": [{"start_at", "end_at", "timezone"}],
             "duration_minutes", "calendar_ids"}``. A fully-busy window yields an
-            empty ``slots`` list (fail-open, not an error).
+            empty ``slots`` list (the free/busy lookup completed successfully,
+            so this is not an error). If the provider free/busy lookup raises a
+            ``CalendarAuthError`` (including an authentication or request
+            failure), returns the module's structured error dictionary with
+            ``status="error"``, redacted diagnostic metadata, empty ``slots``,
+            the requested duration, and the resolved calendar IDs. The workspace
+            API maps that structured failure to its fixed content-blind
+            unavailable reason; callers must not treat it as a successful empty
+            result.
             """
             return await module._find_free_slots(
                 duration_minutes=duration_minutes,
@@ -11280,7 +11288,10 @@ class CalendarModule(Module):
         Read-only: queries the provider's free/busy, subtracts busy windows,
         clips to owner scheduling preferences, and ranks the duration-sized open
         slots. Raises ``ValueError`` on invalid duration/window/constraints;
-        fails open (empty slots) on a provider free/busy error.
+        returns a structured provider error dictionary (rather than a successful
+        empty result) when a free/busy authentication/request failure occurs.
+        The workspace API maps that error to its fixed content-blind unavailable
+        reason.
         """
         if duration_minutes <= 0:
             raise ValueError("duration_minutes must be a positive integer")

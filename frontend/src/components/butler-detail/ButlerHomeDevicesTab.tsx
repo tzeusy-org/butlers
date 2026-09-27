@@ -34,6 +34,7 @@ import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Panel, KpiCell, ErrorLine } from "@/components/butler-detail/atoms";
 import { chartColor } from "@/lib/chart-colors";
 import { HomeAtmosphereLocationPanel } from "@/components/butler-detail/HomeAtmosphereLocationPanel";
+import { HomePersonMappingPanel } from "@/components/butler-detail/HomePersonMappingPanel";
 import {
   useHomeSnapshotStatus,
   useHomeDevices,
@@ -640,6 +641,10 @@ export default function ButlerHomeDevicesTab() {
       />
 
       <HomeAtmosphereLocationPanel />
+
+      <Panel title="Person mappings" span={4} testId="home-person-mapping-card">
+        <HomePersonMappingPanel />
+      </Panel>
 
       {/* Row 2: Active devices (span 2) | Maintenance (span 1) | Commands (span 1) */}
       <Panel

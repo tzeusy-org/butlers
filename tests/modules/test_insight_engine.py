@@ -25,7 +25,7 @@ import shutil
 import sys
 import uuid
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -43,11 +43,11 @@ pytestmark = pytest.mark.asyncio(loop_scope="session")
 
 
 # The instant handed to every broker call below that takes ``now=``. The broker
-# derives its whole window from the instant it is given — compute_effective_budget
-# looks back ``window_days``, check_total_disengagement_auto_off truncates to
-# midnight and counts fourteen day buckets, delivery_cycle asks the Owner
-# Attention Policy whether this hour is quiet — so naming the instant is what
-# makes those windows mean the same thing on a 03:00 run and a 23:00 one.
+# derives its whole window from the instant it is given —
+# check_total_disengagement_auto_off truncates to midnight and counts fourteen
+# day buckets, delivery_cycle asks the Owner Attention Policy whether this hour
+# is quiet — so naming the instant is what makes those windows mean the same
+# thing on a 03:00 run and a 23:00 one.
 #
 # 12:00 UTC is 20:00 in Asia/Singapore, comfortably outside the quiet window the
 # ``insight_pool`` fixture seeds below, so a cycle run at this instant is awake.
@@ -339,6 +339,15 @@ class TestEndToEndInsightFlow:
         assert not cycle_result["skipped"]
         assert len(cycle_result["delivered"]) == 1
         assert notify_mock.called
+        feedback_actions = notify_mock.await_args.args[1]["feedback_actions"]
+        assert feedback_actions == [
+            {
+                "insight_id": cycle_result["delivered"][0],
+                "useful": (f"/api/switchboard/insights/{cycle_result['delivered'][0]}/useful"),
+                "snooze": (f"/api/switchboard/insights/{cycle_result['delivered'][0]}/snooze"),
+                "mute": f"/api/switchboard/insights/{cycle_result['delivered'][0]}/mute",
+            }
+        ]
 
         # Message should be standalone (prefix + message)
         delivered_msg = cycle_result["delivery_message"]
@@ -365,6 +374,8 @@ class TestEndToEndInsightFlow:
         engagement = await insight_pool.fetchrow("SELECT * FROM insight_engagement")
         assert engagement is not None
         assert engagement["engaged"] is False
+        assert engagement["category"] == "birthday"
+        assert engagement["origin_butler"] == "relationship"
 
     async def test_candidate_not_redelivered_after_delivery(self, insight_pool):
         """A delivered candidate is not re-delivered in a subsequent cycle."""
@@ -426,7 +437,11 @@ class TestEndToEndInsightFlow:
         )
 
         notify_mock = AsyncMock(return_value={"status": "sent"})
-        result = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=_PINNED_NOW)
+        with patch(
+            "butlers.tools.switchboard.insight.broker.record_attention_event",
+            new=AsyncMock(),
+        ) as ledger_mock:
+            result = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=_PINNED_NOW)
 
         assert result["expired"] >= 1
         assert len(result["delivered"]) == 0
@@ -437,6 +452,201 @@ class TestEndToEndInsightFlow:
             "health:old:user-1:2025",
         )
         assert status == "expired"
+        ledger_mock.assert_awaited_once()
+        assert ledger_mock.await_args.kwargs["outcome"] == "expired"
+        assert ledger_mock.await_args.kwargs["reason"] == "blocked_by:budget"
+
+    async def test_feedback_never_not_now_and_useful_are_reversible(self, insight_pool):
+        from butlers.tools.switchboard.insight.broker import (
+            filter_by_cooldown,
+            propose_insight_candidate,
+            record_insight_feedback,
+        )
+
+        await propose_insight_candidate(
+            insight_pool,
+            origin_butler="health",
+            priority=70,
+            category="Health",
+            dedup_key="health:medication:2026-08",
+            message="Medication check",
+            expires_at=_future(),
+            now=_PINNED_NOW,
+        )
+        first = await insight_pool.fetchrow(
+            "SELECT id FROM insight_candidates WHERE dedup_key='health:medication:2026-08'"
+        )
+        insight_id = str(first["id"])
+
+        never = await record_insight_feedback(
+            insight_pool,
+            insight_id=insight_id,
+            verdict="never",
+            actor="owner",
+            now=_PINNED_NOW,
+        )
+        assert never == {
+            "status": "recorded",
+            "verdict": "never",
+            "insight_id": insight_id,
+            "snooze_until": None,
+        }
+        cooldown = await insight_pool.fetchrow(
+            "SELECT cooldown_until, reason FROM insight_cooldowns WHERE dedup_key=$1",
+            "health:medication",
+        )
+        assert cooldown["reason"] == "never"
+        assert cooldown["cooldown_until"].year == 9999
+
+        useful = await record_insight_feedback(
+            insight_pool,
+            insight_id=insight_id,
+            verdict="useful",
+            actor="owner",
+            now=_PINNED_NOW + timedelta(minutes=1),
+        )
+        assert useful == {
+            "status": "recorded",
+            "verdict": "useful",
+            "insight_id": insight_id,
+            "snooze_until": None,
+        }
+        assert (
+            await insight_pool.fetchval(
+                "SELECT count(*) FROM insight_cooldowns WHERE dedup_key=$1", "health:medication"
+            )
+            == 0
+        )
+
+        snooze_until = _PINNED_NOW + timedelta(days=3)
+        await record_insight_feedback(
+            insight_pool,
+            insight_id=insight_id,
+            verdict="not_now",
+            snooze_until=snooze_until,
+            actor="owner",
+            now=_PINNED_NOW,
+        )
+        assert (
+            await filter_by_cooldown(
+                insight_pool, [insight_id], now=_PINNED_NOW + timedelta(days=1)
+            )
+            == []
+        )
+
+    async def test_category_weights_keep_global_capacity_for_an_engaged_category(
+        self, insight_pool
+    ):
+        from butlers.tools.switchboard.insight.broker import (
+            compute_category_budget_weights,
+            delivery_cycle,
+            record_insight_feedback,
+        )
+
+        for index in range(10):
+            await insight_pool.execute(
+                """
+                INSERT INTO insight_engagement
+                    (insight_id, delivered_at, engaged, category, origin_butler)
+                VALUES (gen_random_uuid(), $1, $2, 'Health', 'health')
+                """,
+                _PINNED_NOW - timedelta(minutes=index),
+                index == 0,
+            )
+        await insight_pool.execute(
+            """
+            INSERT INTO insight_engagement
+                (insight_id, delivered_at, engaged, category, origin_butler)
+            VALUES (gen_random_uuid(), $1, TRUE, 'Finance', 'finance')
+            """,
+            _PINNED_NOW,
+        )
+
+        decisions = await compute_category_budget_weights(
+            insight_pool,
+            ["Health", "Finance"],
+            configured_budget=3,
+            now=_PINNED_NOW,
+        )
+        assert decisions["Health"]["weight"] == 0.5
+        assert decisions["Finance"]["weight"] == 1.0
+        assert decisions["Health"]["budget"] == 1
+        assert decisions["Finance"]["budget"] == 3
+        assert decisions["Health"]["reason"] == "hearing less from Health: 9 of last 10 ignored"
+
+        insight_id = await insight_pool.fetchval(
+            """
+            INSERT INTO insight_candidates
+                (origin_butler, priority, category, dedup_key, expires_at, message)
+            VALUES ('health', 60, 'Health', 'health:restore:2026', $1, 'restore')
+            RETURNING id
+            """,
+            _future(),
+        )
+        await insight_pool.execute(
+            """
+            INSERT INTO insight_candidates
+                (origin_butler, priority, category, dedup_key, expires_at, message)
+            VALUES ('finance', 60, 'Finance', 'finance:budget:2026', $1, 'budget')
+            """,
+            _future(),
+        )
+        await insight_pool.execute(
+            "INSERT INTO insight_settings (id, verbosity) VALUES (1, 'normal') "
+            "ON CONFLICT (id) DO UPDATE SET verbosity = 'normal'"
+        )
+        cycle = await delivery_cycle(
+            insight_pool,
+            notify_fn=AsyncMock(return_value={"status": "sent"}),
+            now=_PINNED_NOW,
+        )
+        assert cycle["effective_budget"] == 3
+        assert len(cycle["delivered"]) == 2
+
+        await record_insight_feedback(
+            insight_pool,
+            insight_id=str(insight_id),
+            verdict="useful",
+            actor="owner",
+            now=_PINNED_NOW + timedelta(minutes=1),
+        )
+        restored = await compute_category_budget_weights(
+            insight_pool,
+            ["Health", "Finance"],
+            configured_budget=3,
+            now=_PINNED_NOW + timedelta(minutes=1),
+        )
+        assert restored["Health"]["weight"] == 1.0
+        assert restored["Health"]["budget"] == 3
+        assert restored["Finance"]["weight"] == 1.0
+
+    async def test_equal_priority_prefers_candidate_expiring_before_next_cycle(self, insight_pool):
+        from butlers.tools.switchboard.insight.broker import delivery_cycle
+
+        await insight_pool.execute(
+            "INSERT INTO insight_settings (id, verbosity) VALUES (1, 'minimal') "
+            "ON CONFLICT (id) DO UPDATE SET verbosity='minimal'"
+        )
+        await insight_pool.execute(
+            """
+            INSERT INTO insight_candidates
+                (origin_butler, priority, category, dedup_key, expires_at, message, created_at)
+            VALUES
+                ('health', 70, 'Health', 'health:later:2026', $1, 'survives', $3),
+                ('health', 70, 'Health', 'health:soon:2026', $2, 'expires soon', $3 + interval '1 minute')
+            """,
+            _PINNED_NOW + timedelta(days=2),
+            _PINNED_NOW + timedelta(hours=6),
+            _PINNED_NOW,
+        )
+        notify_mock = AsyncMock(return_value={"status": "sent"})
+
+        result = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=_PINNED_NOW)
+
+        delivered = await insight_pool.fetchval(
+            "SELECT message FROM insight_candidates WHERE id=$1::uuid", result["delivered"][0]
+        )
+        assert delivered == "expires soon"
 
 
 # ===========================================================================
@@ -792,82 +1002,22 @@ class TestCooldownEnforcement:
 
 
 # ===========================================================================
-# Category 7: Adaptive delivery with low engagement (requires Docker)
+# Category 7: Configured global capacity (requires Docker)
 # ===========================================================================
 
 
 @pytest.mark.skipif(not _docker_available, reason="Docker not available")
 @pytest.mark.integration
-class TestAdaptiveDelivery:
-    """Adaptive delivery: budget reduces when user engagement is low."""
+class TestConfiguredGlobalCapacity:
+    """Category signals must not lower the owner's global delivery capacity."""
 
-    async def test_full_budget_when_engagement_above_50_percent(self, insight_pool):
-        """engagement_rate >= 0.5 → full configured budget."""
+    async def test_aggregate_disengagement_does_not_reduce_configured_cap(self, insight_pool):
         from butlers.tools.switchboard.insight.broker import compute_effective_budget
 
         settings = {"verbosity": "normal", "custom_budget": None}
         now = _PINNED_NOW
-        # Insert 10 deliveries, 6 engaged (60%)
-        for i in range(6):
-            await insight_pool.execute(
-                """
-                INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
-                VALUES ($1::uuid, $2, TRUE)
-            """,
-                str(uuid.uuid4()),
-                now - timedelta(days=i),
-            )
-        for i in range(4):
-            await insight_pool.execute(
-                """
-                INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
-                VALUES ($1::uuid, $2, FALSE)
-            """,
-                str(uuid.uuid4()),
-                now - timedelta(days=i),
-            )
-
-        budget = await compute_effective_budget(insight_pool, settings, now=now)
-        # normal budget=3, engagement=60% → no reduction
-        assert budget == 3
-
-    async def test_budget_reduced_one_when_moderate_disengagement(self, insight_pool):
-        """0.25 <= engagement_rate < 0.5 → max(1, configured_budget - 1)."""
-        from butlers.tools.switchboard.insight.broker import compute_effective_budget
-
-        settings = {"verbosity": "normal", "custom_budget": None}
-        now = _PINNED_NOW
-        # 3 engaged, 10 total → 30% engagement
-        for i in range(3):
-            await insight_pool.execute(
-                """
-                INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
-                VALUES ($1::uuid, $2, TRUE)
-            """,
-                str(uuid.uuid4()),
-                now - timedelta(days=i),
-            )
-        for i in range(7):
-            await insight_pool.execute(
-                """
-                INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
-                VALUES ($1::uuid, $2, FALSE)
-            """,
-                str(uuid.uuid4()),
-                now - timedelta(days=i),
-            )
-
-        budget = await compute_effective_budget(insight_pool, settings, now=now)
-        # normal budget=3, engagement=30% → max(1, 3-1) = 2
-        assert budget == 2
-
-    async def test_budget_becomes_1_when_severe_disengagement(self, insight_pool):
-        """engagement_rate < 0.25 → effective budget = 1."""
-        from butlers.tools.switchboard.insight.broker import compute_effective_budget
-
-        settings = {"verbosity": "verbose", "custom_budget": None}
-        now = _PINNED_NOW
-        # 1 engaged, 10 total → 10%
+        # One engaged delivery across ten records is severe aggregate
+        # disengagement, but category shaping must not turn it into a global cap.
         await insight_pool.execute(
             """
             INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
@@ -887,42 +1037,7 @@ class TestAdaptiveDelivery:
             )
 
         budget = await compute_effective_budget(insight_pool, settings, now=now)
-        assert budget == 1
-
-    async def test_no_penalty_when_no_engagement_history(self, insight_pool):
-        """No deliveries in 14-day window → engagement_rate = 1.0 (no reduction)."""
-        from butlers.tools.switchboard.insight.broker import compute_effective_budget
-
-        settings = {"verbosity": "verbose", "custom_budget": None}
-        budget = await compute_effective_budget(insight_pool, settings)
-        assert budget == 5  # verbose budget with no history
-
-    async def test_no_automatic_increase_after_improvement(self, insight_pool):
-        """Improvement in engagement does NOT automatically restore budget.
-
-        Once reduced by adaptive logic, the user MUST explicitly change their
-        verbosity setting. We verify the engine uses the configured budget
-        as ceiling — it never exceeds it.
-        """
-        from butlers.tools.switchboard.insight.broker import compute_effective_budget
-
-        # Start with minimal budget=1
-        settings = {"verbosity": "minimal", "custom_budget": None}
-        now = _PINNED_NOW
-        # Perfect engagement
-        for i in range(5):
-            await insight_pool.execute(
-                """
-                INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
-                VALUES ($1::uuid, $2, TRUE)
-            """,
-                str(uuid.uuid4()),
-                now - timedelta(days=i),
-            )
-
-        budget = await compute_effective_budget(insight_pool, settings, now=now)
-        # Engagement rate = 100%, configured = 1 → cannot exceed configured
-        assert budget == 1
+        assert budget == 3
 
 
 # ===========================================================================

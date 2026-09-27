@@ -59,10 +59,10 @@ both permits and forbids the same state is worse than either.
   staleness sweep enumerates `mind_maps` rows rather than flow-state keys, so
   a map whose flow state was never written is still reachable.
 - `dashboard-education-api`: the status endpoint refuses to activate an empty
-  map. The curriculum-request lock gains a deterministic release path, a
-  bounded lease, and a per-acquisition request token, so LLM obedience is no
-  longer the only thing standing between the owner and a permanent 409 — and a
-  late release from a superseded acquisition cannot free somebody else's lock.
+  map. Curriculum submission remains on the receipt-backed contract landed in
+  PR #3757: `education.curriculum_requests` records acceptance before detached
+  work, `uq_curriculum_requests_one_open` guards admission, terminal settlement
+  is idempotent, and a bounded abandoned-receipt sweep releases stale work.
 - `dashboard-education-ui`: the evergreen empty-state string is removed
   outright and replaced with age-aware copy keyed to the map's status and
   `created_at`. Per-map review fetch failures are surfaced instead of folding
@@ -78,8 +78,8 @@ both permits and forbids the same state is worse than either.
 - The `draft` mind map status and the transitions into and out of it.
 - The one-time legacy transition for existing `active` zero-node maps,
   including the named live phantom.
-- Deterministic release, bounded lease, and token-scoped compare-and-delete
-  for `pending_curriculum_request`.
+- Preservation of the receipt-backed curriculum submission contract while the
+  mind-map lifecycle changes land.
 - Age-aware empty-curriculum copy.
 - Per-map review fetch-failure surfacing on both the `/education` Reviews tab
   and the education butler-detail Reviews tab.
@@ -94,7 +94,8 @@ both permits and forbids the same state is worse than either.
   `module-education-mastery`'s "Map summary for empty mind map" scenario
   remains correct because a zero-node map is still legal in `draft` and
   `abandoned`.
-- Retiring the `pending_curriculum_request` KV lock in favour of a real queue.
+- Changing the receipt-backed curriculum request admission, settlement, or
+  abandoned-receipt sweep behavior landed in PR #3757.
 
 ## Impact
 

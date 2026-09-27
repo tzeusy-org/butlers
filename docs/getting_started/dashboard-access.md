@@ -6,11 +6,18 @@
 
 ## Overview
 
-The Butlers dashboard is a web application for real-time monitoring and management of all butler instances. It consists of two components: a FastAPI backend (the Dashboard API) and a Vite-powered React frontend. In development, these run as separate processes; in production, they can run together via Docker Compose.
+The Butlers dashboard is a web application for real-time monitoring and management of all butler instances. It consists of two components: a FastAPI backend (the Dashboard API) and a Vite-powered React frontend. Docker Compose runs both; you can also run them as separate processes.
 
 ## Starting the Dashboard
 
-### Option 1: Separate Processes (Development)
+### Option 1: Docker Compose
+
+`./scripts/compose.sh` starts the dashboard API (`dashboard-api`) and the Vite frontend
+(`frontend-dev`) with the rest of the stack; see [Dev Environment](dev-environment.md). The host
+ports differ between dev and prod mode and are listed in the
+[deployment port map](../../about/lay-and-land/deployment.md#port-assignments).
+
+### Option 2: Separate Processes
 
 Start the backend API in one terminal:
 
@@ -18,7 +25,8 @@ Start the backend API in one terminal:
 uv run butlers dashboard --port 41200
 ```
 
-The `butlers dashboard` command launches a Uvicorn server hosting the FastAPI application. It requires a running PostgreSQL instance since it queries butler databases for session data, state, contacts, and configuration.
+The `butlers dashboard` command launches a Uvicorn server hosting the FastAPI application. It
+requires a running PostgreSQL instance.
 
 Start the frontend dev server in another terminal:
 
@@ -26,35 +34,12 @@ Start the frontend dev server in another terminal:
 cd frontend && npm install && npm run dev
 ```
 
-The Vite dev server starts on port 41173 and proxies API requests to the backend on port 41200.
+Vite prints the URL it serves on; `frontend/vite.config.ts` sets no port, so it uses Vite's default
+unless you pass `--port`. It proxies `/api` to `VITE_PROXY_TARGET`, defaulting to
+`http://localhost:41200`.
 
-**Access the dashboard at:** `http://localhost:41173`
-
-### Option 2: Docker Compose (dev profile)
-
-Run the database, API, and frontend together:
-
-```bash
-docker compose --profile dev up
-```
-
-This starts:
-
-| Service | Port | Description |
-| --- | --- | --- |
-| PostgreSQL | 5432 | Database server |
-| Dashboard API | 41200 | FastAPI backend |
-| Frontend | 41173 | Vite dev server |
-
-### Option 3: Full tmux Development
-
-If you use `dev.sh`, the dashboard is included automatically:
-
-```bash
-./scripts/dev.sh
-```
-
-This starts all services (database, butlers, connectors, dashboard) in tmux panes. The dashboard API and frontend each get their own pane.
+Every `/api` route except `GET /api/health` requires owner authentication; see
+[Dashboard Owner Authentication](../identity_and_secrets/dashboard-owner-auth.md).
 
 ## Dashboard Capabilities
 
@@ -78,15 +63,18 @@ Each butler's detail page lists its sessions. Session records include:
 - Full session output text
 - Model used for the invocation
 
-### Contact and Identity Management
+### Identity Management
 
-The dashboard is the primary interface for managing the identity model:
+The dashboard is the primary interface for the identity model:
 
-- **Owner contact setup** --- add your email address, Telegram handle, and Telegram chat ID so butlers can recognize you across channels
-- **Secured credentials** --- add app passwords, Telegram API keys, and other sensitive credentials that modules need to act on your behalf. These are stored in PostgreSQL and masked in the dashboard UI (API-level masking excludes raw values from list responses, with a "Reveal" button for individual viewing)
-- **Contact directory** --- browse and manage all known contacts
+- **Owner setup** --- the owner entity's page shows a setup banner until your name, email, and
+  Telegram handle are configured, so butlers can recognize you across channels
+- **Secured credentials** --- app passwords, Telegram API keys, and other sensitive credentials
+  that modules need to act on your behalf are stored in PostgreSQL and masked in the UI (list
+  responses exclude raw values; a "Reveal" button shows one on demand)
+- **Entity directory** --- browse and manage known people and unidentified senders
 
-A one-time setup banner appears on the contacts page when identity fields are missing.
+See [Owner Identity](../identity_and_secrets/owner-identity.md).
 
 ### LLM Runtime Authentication
 
@@ -112,17 +100,10 @@ The main dashboard API application is defined in `src/butlers/api/app.py` and in
 
 - Butler status and discovery endpoints
 - Session listing and detail endpoints
-- Contact and identity CRUD endpoints
+- Entity and identity endpoints
 - Credential and secrets management
 - OAuth flow endpoints for runtime authentication
 - Butler-specific routes auto-discovered from the roster
-
-## Port Summary
-
-| Service | Port | Notes |
-| --- | --- | --- |
-| Dashboard API | 41200 | Configurable via `--port` flag |
-| Frontend (dev) | 41173 | Vite default; configurable in `vite.config.ts` |
 
 ## Verification
 
@@ -133,19 +114,18 @@ To confirm the dashboard is running and wired correctly:
 curl -s http://localhost:41200/api/health
 # Expected: {"status": "ok"} or similar
 
-# 2. Butler discovery endpoint returns known butlers
-curl -s http://localhost:41200/api/butlers | python3 -m json.tool
-# Expected: array of butler objects with name, port, and status
+# 2. Private routes are protected
+curl -s -o /dev/null -w "%{http_code}" http://localhost:41200/api/butlers
+# Expected: 401 (sign in through the browser to see butler records)
 
-# 3. Frontend is reachable (when Vite dev server is running)
-curl -s -o /dev/null -w "%{http_code}" http://localhost:41173/
-# Expected: 200
+# 3. Frontend is reachable: open the URL Vite printed, or the Compose frontend host port
 ```
 
-If the API returns butler records and the frontend serves HTTP 200, the dashboard matches what this page describes. Session records appear in `GET /api/butlers/<name>/sessions` after triggering a butler. If auto-discovery of butler-specific API routes is not loading, check that `router.py` exports a module-level `router` variable.
+If the health check passes, the private route refuses anonymous access, and the signed-in
+dashboard lists your butlers, the dashboard matches what this page describes. Session records appear in `GET /api/butlers/<name>/sessions` after triggering a butler. If auto-discovery of butler-specific API routes is not loading, check that `router.py` exports a module-level `router` variable.
 
 ## Related Pages
 
 - [Dev Environment](dev-environment.md) --- full dev stack setup
-- [Identity Model](../concepts/identity-model.md) --- how contacts and identity work
+- [Identity Model](../concepts/identity-model.md) --- how entities and identity work
 - [First Butler Launch](first-butler-launch.md) --- triggering butlers and viewing session logs

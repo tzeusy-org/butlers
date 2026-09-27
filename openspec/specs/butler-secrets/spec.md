@@ -127,6 +127,22 @@ in divergent row chrome.
 - **AND** the authenticated session flow persists a versioned non-secret consent grant and the API ID, API hash, and user session only after successful verification
 - **AND** dismissing the inline setup region returns keyboard focus to its `set up Telegram` trigger
 
+#### Scenario: Telegram session status loading is distinct from setup state
+- **WHEN** the Passport Telegram region is waiting for its session-status probe
+- **THEN** it SHALL render a loading skeleton and SHALL NOT infer that credentials are absent, that setup is required, or that a session is ready
+- **AND** it SHALL NOT expose credential inputs or session-auth actions until a successful status response selects the existing setup path.
+
+#### Scenario: Telegram session status is unavailable
+- **WHEN** the Passport Telegram session-status probe fails
+- **THEN** the region SHALL render a named unavailable state with a retry action that re-queries only the status probe
+- **AND** it MUST NOT render the normal setup flow, infer missing credentials or an unready session, expose credential inputs, or initiate session authentication
+- **AND** it MUST NOT disclose an API ID, API hash, user session, or any other credential value.
+
+#### Scenario: Successful unready Telegram status keeps the guided setup path
+- **WHEN** the Passport Telegram session-status probe succeeds and reports that the session is not ready
+- **THEN** the region SHALL render the existing guided setup trigger and credential-status indicators
+- **AND** it SHALL NOT render the unavailable state or retry action unless a later status probe fails.
+
 ### Requirement: Connector-owned Passport projections
 
 `u:spotify` is a connector-owned Passport projection and SHALL remain
@@ -210,9 +226,9 @@ The owner-default `/secrets` inventory (`GET /api/secrets/inventory` without `?i
 
 Including the primary Google account credential in the owner-default inventory makes the scope-set picker (including `Google Health`) reachable at `/secrets?focus=u:google` WITHOUT requiring the owner to first discover or manually specify an `?identity=<entity_id>` parameter.
 
-The behavioral outcome MUST be that `u:google` appears in the spine and `PageGoogleAccounts` is reachable from the owner-default `/secrets` view, regardless of whether the primary account's status is `active` or `expired`. The backend join strategy (how to resolve the credential from `public.google_accounts` and `public.entity_info`) is an implementation detail owned by bead `bu-2kejb`.
+The behavioral outcome MUST be that `u:google` appears in the spine and `PageGoogleAccounts` is reachable from the owner-default `/secrets` view, regardless of whether the primary account's status is `active` or `expired`. The backend join strategy (how to resolve the credential from `public.google_accounts` and `public.entity_info`) is an implementation detail.
 
-This requirement is **co-owned** with the `dashboard-google-accounts` spec (§Multi-Account Leak Prevention), which binds the leak-prevention invariant: the owner-default projection SHALL surface ONLY the primary account's credential. Implementation is owned by bead `bu-2kejb`.
+This requirement is **co-owned** with the `dashboard-google-accounts` spec (§Multi-Account Leak Prevention), which binds the leak-prevention invariant: the owner-default projection SHALL surface ONLY the primary account's credential.
 
 #### Scenario: Owner-default inventory includes primary Google account credential
 
@@ -252,7 +268,7 @@ The identity switcher chip SHALL include connected Google accounts as selectable
 - **AND** any mutation triggered from the page (rotate, reauthorize, etc.) is dispatched with owner privilege regardless of `?identity=` state
 
 #### Scenario: Identity switch to a non-primary Google account
-- **WHEN** the owner clicks the identity chip and selects a Google account entity (e.g. the companion entity for `tzeuse@gmail.com`)
+- **WHEN** the owner clicks the identity chip and selects a Google account entity (e.g. the companion entity for `owner.secondary@example.com`)
 - **THEN** the URL updates to `/secrets?identity=<google_account_entity_id>`
 - **AND** the User-tab spine re-renders to show the `google_oauth_refresh` credential for that non-primary account
 - **AND** `PageGoogleAccounts` renders with that account's scope-set picker and connector health data
@@ -396,6 +412,23 @@ This requirement defines a scope boundary, not a UI contract; the UI contract fo
 - **THEN** within the same page-load cycle, both `/secrets` (User row for `u:google`, spine) and `/ingestion/connectors` (the Google connector card) reflect state `expired`
 - **AND** neither surface caches a stale `ok` state past the standard TanStack Query refresh interval
 
+### Requirement: Connector Status Drives Spotify Passport State
+
+The presentation-only `u:spotify` projection SHALL derive its spine state from the closed response of `GET /api/connectors/spotify/status`. It SHALL NOT use generic credential `warn` as a standing state and SHALL NOT expose a generic Secrets probe action.
+
+#### Scenario: Spotify projection maps closed connector status
+
+- **WHEN** Spotify status is loading, connected, unconfigured, authorization-needed, needs-reauth, failed, or unavailable
+- **THEN** the projection renders respectively as checking, healthy, not-set, authorization-needed, authorization-needed, failed, or failed
+- **AND** authorization-needed and failed states appear in `needs hand`
+- **AND** checking never appears in `stale`
+
+#### Scenario: CLI Test refreshes persisted evidence
+
+- **WHEN** a CLI Test request completes with an HTTP success response
+- **THEN** Passport invalidates the Secrets inventory and CLI provider queries
+- **AND** the persisted healthy or failed outcome becomes visible without a page reload
+
 ## Source References
 
 - Non-Negotiable Rule 1 (user-federated, one user one instance) — `about/heart-and-soul/vision.md:60-63`
@@ -404,15 +437,12 @@ This requirement defines a scope boundary, not a UI contract; the UI contract fo
 - Read-mostly observability / design language tokens — `about/heart-and-soul/design-language.md:25-43`
 - Binding integration brief (§0 design intent, §3 backend contract, §4 LLM-cost de-scopes, §5 Q8/Q13) — `docs/redesigns/2026-05-25-secrets-brief.md`
 - Dispatch design language — `openspec/specs/dashboard-design-language/spec.md`
-- Canonical imminent-expiry state derivation and inventory aggregation — `src/butlers/api/routers/secrets_v2.py:539-580, 1616-1670`
-- Passport credential-state union and `needs-hand` membership — `frontend/src/components/secrets/passport/types.ts:6-17`; `frontend/src/components/secrets/passport/constants.ts:9-49`
-- `_fetch_user_secrets` owner-default join (current behavior being extended) — `src/butlers/api/routers/secrets_v2.py:701-721`
+- Canonical imminent-expiry state derivation and inventory aggregation — `src/butlers/api/routers/secrets_v2.py` (`_derive_state`, `get_inventory`)
+- Passport credential-state union and `needs-hand` membership — `frontend/src/components/secrets/passport/types.ts` (`CredentialState`); `frontend/src/components/secrets/passport/constants.ts` (`STATE_CATALOG`, `SPINE_GROUP_BY_STATE`, `NEEDS_HAND_STATES`)
+- Owner-default user-secrets join — `src/butlers/api/routers/secrets_v2.py` (`_fetch_user_secrets`)
 - `{google_account}` companion entity model and exclusion from entity resolution — `openspec/specs/google-account-registry/spec.md:71-89`
 - Primary account is_primary constraint — `openspec/specs/google-account-registry/spec.md:32-33`
-- Co-owning leak-prevention invariant — `openspec/changes/google-health-secrets-surface/specs/dashboard-google-accounts/spec.md:§Multi-Account Leak Prevention`
+- Co-owning leak-prevention invariant — `openspec/specs/dashboard-google-accounts/spec.md` §Multi-Account Leak Prevention
 - Response envelope contract (`ApiResponse<T>` / `PaginatedResponse<T>`) — RFC 0007 §Response Envelope
 - Focus-key URL safety — RFC 3986 §3.4
-- Cross-page reauth co-ownership — `openspec/changes/complete-ingestion-redesign-parity`
-- Systemic auth_status taxonomy (cross-link, NOT re-specced here) — `openspec/changes/add-connector-oauth-scope-surface/proposal.md:43-72`
-- Implementation bead for backend join — `bu-2kejb`
 - OpenSpec config rule on Source References footer — `openspec/config.yaml:9-15`

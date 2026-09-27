@@ -25,8 +25,17 @@ from butlers.core.tool_call_capture import (
 )
 from butlers.identity import resolve_contacts_by_channel_bulk
 from butlers.modules.approvals.command_contracts import MEMORY_RECLASSIFY_COMMAND
+from butlers.modules.approvals.park import park_prepared_action
 
 logger = logging.getLogger(__name__)
+
+
+async def run_loan_cost_claim_backfill(db_pool: asyncpg.Pool) -> dict[str, int]:
+    """Repair missing loan projections; idempotence makes scheduled retries safe."""
+    from butlers.tools.relationship.loans import backfill_loan_cost_claims
+
+    return await backfill_loan_cost_claims(db_pool)
+
 
 # Every pending_actions row these curation jobs park belongs to the
 # relationship butler -- they only ever run inside this daemon (bu-g27ib).
@@ -305,6 +314,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
         expires_at: datetime,
         cooldown_days: int | None = None,
         metadata: dict[str, Any] | None = None,
+        prepared_action_id: uuid.UUID | None = None,
     ) -> bool:
         """Submit one candidate; return False if verbosity=off (early-exit signal)."""
         stats["candidates_proposed"] += 1
@@ -318,6 +328,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
             expires_at=expires_at,
             cooldown_days=cooldown_days,
             metadata=metadata,
+            prepared_action_id=prepared_action_id,
         )
         status = result.get("status", "error")
         if status == "accepted":
@@ -542,21 +553,52 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
             priority = _STALE_PRIORITY_MODERATE  # 1–2x cadence
 
         dedup_key = f"relationship:stale-contact:{contact_id}:{year_week}"
-        message = (
+        why = (
             f"{contact_name} is overdue for a check-in "
             f"({int(days_since)} days since last interaction, "
             f"cadence: {effective_cadence} days)."
         )
 
+        # bu-2jtfw.11: park a prepared reach-out alongside the informational
+        # candidate, so the digest can offer a door instead of only stating
+        # the fact. Deliberately silent (park_prepared_action never pushes) --
+        # the owner sees it only through this candidate's door.
+        #
+        # Idempotent by design: the shared admission transaction resolves the
+        # durable winner for a concurrent or repeated semantic key.
+        prepared_dedup_key = f"relationship:prepared-reach-out:{contact_id}:{year_week}"
+        prepared_action_id = uuid.uuid4()
+        draft_message = (
+            f"Hey {contact_name}, it's been a while since we caught up -- how have you been?"
+        )
+        admission = await park_prepared_action(
+            db_pool,
+            action_id=prepared_action_id,
+            tool_name="notify",
+            tool_args={
+                "entity_id": str(entity_id),
+                "message": draft_message,
+                "intent": "send",
+            },
+            agent_summary=f"Prepared reach-out to {contact_name} (overdue check-in)",
+            requested_at=now_utc,
+            expires_at=stale_expires_at,
+            why=why,
+            origin_butler="relationship",
+            deduplication_key=prepared_dedup_key,
+        )
+        prepared_action_id = admission.action_id
+
         should_continue = await _submit(
             priority=priority,
             category="stale-contact",
             dedup_key=dedup_key,
-            message=message,
+            message=why,
             expires_at=stale_expires_at,
             # A stale-contact candidate concerns this entity, but its weekly
             # scan boundary is not an event date and must not drive clustering.
             metadata={"entity_id": str(entity_id)},
+            prepared_action_id=prepared_action_id,
         )
         if not should_continue:
             logger.info(
@@ -2707,12 +2749,8 @@ async def run_fact_retraction_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
                         f"content_preview={content[:120]}",
                     )
                 ]
-                # park_pending_action is the single choke point for PENDING
-                # inserts: it writes the row AND attempts the owner-facing
-                # push in one call (bu-mda0r/bu-g27ib). Routed through *pool*
-                # (not *conn*) because the push path needs real pool
-                # semantics; the dedup read above has no transactional
-                # dependency on it.
+                # Atomic action + delivery-intent admission. The dedup read
+                # above has no transactional dependency on it.
                 await park_pending_action(
                     db_pool,
                     action_id=action_id,
@@ -2740,14 +2778,25 @@ async def run_fact_retraction_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
     async def _auto_retract_owner_fact(fact_id: uuid.UUID) -> bool:
         """Soft-retract an owner-entity fact (mark validity='retracted').
 
-        Mirrors the memory_forget tool's retraction SQL. Idempotent: only flips
-        rows still 'active'. Returns True on success, False on DB error.
+        Idempotent: only flips rows still 'active', leaving an already
+        'retracted'/'superseded' row untouched -- unlike memory_forget's
+        unconditional UPDATE, which has no such guard. When a row is actually
+        flipped, cascades the same memory_catalog disownment + entity_graph_edges
+        deletion forget_memory() performs, in the same transaction (bu-9ltqm).
+        Returns True on success, False on DB error.
         """
+        from butlers.modules.memory.storage import cascade_fact_retraction
+
         try:
-            await db_pool.execute(
-                "UPDATE facts SET validity = 'retracted' WHERE id = $1 AND validity = 'active'",
-                fact_id,
-            )
+            async with db_pool.acquire() as conn:
+                async with conn.transaction():
+                    row = await conn.fetchrow(
+                        "UPDATE facts SET validity = 'retracted' "
+                        "WHERE id = $1 AND validity = 'active' RETURNING id",
+                        fact_id,
+                    )
+                    if row is not None:
+                        await cascade_fact_retraction(conn, [row["id"]])
             return True
         except Exception:
             logger.exception(
@@ -3237,11 +3286,10 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 )
             ]
 
-            # The durable key closes the check-then-insert interval without
-            # holding a connection across the owner-push path. The approvals
-            # writer attempts a push only after a successful INSERT.
+            # The atomic admission helper owns the semantic-key race and
+            # returns the durable winner's action/intent pair.
             try:
-                await park_pending_action(
+                admission = await park_pending_action(
                     db_pool,
                     action_id=action_id,
                     tool_name="memory_entity_merge",
@@ -3262,10 +3310,13 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
                     approval_push_runtime=get_current_approval_push_runtime(),
                     deduplication_key=deduplication_key,
                 )
+                if admission.duplicate:
+                    existing = await _existing_action()
+                    if existing is not None:
+                        return _existing_outcome(existing)
+                    raise RuntimeError("duplicate approval admission has no active action")
             except asyncpg.UniqueViolationError:
-                # A concurrent curation run won the unique-key race. Resolve
-                # the durable winner rather than treating its benign conflict
-                # as an operator-visible job error.
+                # Compatibility fallback for a pre-approvals_015 schema.
                 existing = await _existing_action()
                 if existing is not None:
                     return _existing_outcome(existing)
@@ -3736,9 +3787,7 @@ async def run_email_identity_enrichment(db_pool: asyncpg.Pool) -> dict[str, Any]
                 )
             ]
 
-            # park_pending_action is the single choke point for PENDING
-            # inserts: it writes the row AND attempts the owner-facing push
-            # in one call (bu-mda0r/bu-g27ib).
+            # Atomic action + delivery-intent admission.
             await park_pending_action(
                 db_pool,
                 action_id=action_id,
@@ -4085,12 +4134,8 @@ async def run_episodic_predicate_curation(db_pool: asyncpg.Pool) -> dict[str, An
                     }
                 )
 
-                # park_pending_action is the single choke point for PENDING
-                # inserts: it writes the row AND attempts the owner-facing
-                # push in one call (bu-mda0r/bu-g27ib). Routed through *pool*
-                # (not *conn*) because the push path needs real pool
-                # semantics; the dedup read above has no transactional
-                # dependency on it.
+                # Atomic action + delivery-intent admission. The dedup read
+                # above has no transactional dependency on it.
                 await park_pending_action(
                     db_pool,
                     action_id=action_id,

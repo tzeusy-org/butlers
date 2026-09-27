@@ -10,6 +10,7 @@ Tests cover:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import uuid
@@ -685,6 +686,129 @@ class TestDeadLetterReplay:
             )
             assert result2["success"] is False
             assert result2["error"] == "already_replayed"
+
+    @pytest.mark.pg_clock
+    async def test_concurrent_replay_creates_one_inbox_row_and_success_audit(
+        self, switchboard_pool
+    ):
+        """The row lock spans replay insertion and the success audit."""
+        from butlers.tools.switchboard.dead_letter.capture import capture_to_dead_letter
+        from butlers.tools.switchboard.dead_letter.replay import replay_dead_letter_request
+
+        async with switchboard_pool.acquire() as conn:
+            failed_request_id = uuid.uuid4()
+            dl_id = await capture_to_dead_letter(
+                conn,
+                original_request_id=failed_request_id,
+                source_table="message_inbox",
+                failure_reason="Test",
+                failure_category="unknown",
+                retry_count=0,
+                last_retry_at=None,
+                original_payload={"content": "Concurrent replay"},
+                request_context={"source_channel": "test"},
+                error_details={},
+            )
+
+        async def replay(operator: str):
+            async with switchboard_pool.acquire() as conn:
+                return await replay_dead_letter_request(
+                    conn,
+                    dead_letter_id=dl_id,
+                    operator_identity=operator,
+                    reason="Concurrent retry",
+                )
+
+        outcomes = await asyncio.gather(replay("operator-a"), replay("operator-b"))
+
+        assert sum(result["success"] is True for result in outcomes) == 1
+        assert {result.get("error") for result in outcomes if not result["success"]} == {
+            "already_replayed"
+        }
+        inbox_rows = await switchboard_pool.fetch(
+            "SELECT processing_metadata FROM switchboard.message_inbox"
+        )
+        matching_inbox_rows = [
+            row
+            for row in inbox_rows
+            if json.loads(row["processing_metadata"]).get("replayed_from_dead_letter") == str(dl_id)
+        ]
+        assert len(matching_inbox_rows) == 1
+        assert (
+            await switchboard_pool.fetchval(
+                "SELECT count(*) FROM switchboard.operator_audit_log "
+                "WHERE action_type = 'controlled_replay' "
+                "AND target_request_id = $1 "
+                "AND outcome = 'success'",
+                failed_request_id,
+            )
+            == 1
+        )
+
+    @pytest.mark.pg_clock
+    async def test_inbox_insert_failure_persists_failed_outcome_and_audit(self, switchboard_pool):
+        """A replay SQL error does not abort the failure-recording transaction."""
+        from butlers.tools.switchboard.dead_letter.capture import capture_to_dead_letter
+        from butlers.tools.switchboard.dead_letter.replay import replay_dead_letter_request
+
+        failed_request_id = uuid.uuid4()
+        async with switchboard_pool.acquire() as conn:
+            dl_id = await capture_to_dead_letter(
+                conn,
+                original_request_id=failed_request_id,
+                source_table="message_inbox",
+                failure_reason="Test",
+                failure_category="unknown",
+                retry_count=0,
+                last_retry_at=None,
+                original_payload={"content": None},
+                request_context={"source_channel": "test"},
+                error_details={},
+            )
+
+            result = await replay_dead_letter_request(
+                conn,
+                dead_letter_id=dl_id,
+                operator_identity="test_operator",
+                reason="Exercise failed replay",
+            )
+
+        assert result["success"] is False
+        assert result["error"] == "replay_failed"
+
+        dead_letter = await switchboard_pool.fetchrow(
+            """
+            SELECT replay_outcome, replayed_at, replayed_request_id
+            FROM switchboard.dead_letter_queue
+            WHERE id = $1
+            """,
+            dl_id,
+        )
+        assert dead_letter["replay_outcome"] == "failed"
+        assert dead_letter["replayed_at"] is None
+        assert dead_letter["replayed_request_id"] is None
+        assert (
+            await switchboard_pool.fetchval(
+                """
+                SELECT count(*)
+                FROM switchboard.message_inbox
+                WHERE processing_metadata ->> 'replayed_from_dead_letter' = $1
+                """,
+                str(dl_id),
+            )
+            == 0
+        )
+
+        audit_rows = await switchboard_pool.fetch(
+            """
+            SELECT outcome
+            FROM switchboard.operator_audit_log
+            WHERE action_type = 'controlled_replay'
+              AND target_request_id = $1
+            """,
+            failed_request_id,
+        )
+        assert [row["outcome"] for row in audit_rows] == ["failed"]
 
 
 class TestOperatorControls:

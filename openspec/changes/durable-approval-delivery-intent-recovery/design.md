@@ -222,6 +222,11 @@ Messenger routes `approval_request` inline. Future recovery delivery uses a
 separate, narrowly typed `NotifyDeliveryV1` mode. Its logical action-or-cohort
 subject key and generation-specific presentation key are correlation values,
 not credentials; a digest never reuses the fourth action's key.
+Recovery mode is selected only for a non-null serialized `recovery` member.
+Ordinary producers omit the member when unset; an explicit null is equivalent
+to absence. Any malformed non-null value still enters the content-blind
+recovery pre-authentication boundary and fails closed, so malformed material
+cannot bypass recovery authentication by falling back to generic delivery.
 Switchboard derives the issuer and owning schema from the authenticated daemon
 transport principal, validates that they are registered for the recovered
 action or cohort subject through a non-caller-serializable source-schema attestation,

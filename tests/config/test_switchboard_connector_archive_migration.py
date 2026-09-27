@@ -3,9 +3,8 @@
 Covers bu-33dm2:
   - ``archived_at`` column + ``ix_connector_registry_live`` partial index exist
     after the switchboard chain runs.
-  - The idempotent data-seed archives exactly the four dead identities (including
-    the UUID-suffixed google_health identity matched by prefix) and leaves live
-    identities untouched.
+  - The idempotent data-seed archives exactly the dead identities and leaves live
+    identities — including per-account google_health cursor rows — untouched.
   - Downgrade cleanly drops the column and index.
 
 The seed runs *inside* sw_022's upgrade, so the test upgrades to sw_021 first,
@@ -98,32 +97,30 @@ def test_archived_at_column_and_index_exist(postgres_container):
     assert index_exists(db_url, "ix_connector_registry_live")
 
 
-def test_seed_archives_only_the_four_dead_identities(postgres_container):
-    """The seed archives the four dead identities (UUID one by prefix) and no others."""
+def test_seed_archives_only_the_dead_identities(postgres_container):
+    """The seed archives the dead identities and no others."""
     db_url = _prepare_pre_seed_db(postgres_container)
 
-    # Four dead identities. endpoint_identity is stored in its full,
+    # Dead identities. endpoint_identity is stored in its full,
     # connector-type-prefixed form (the value connectors emit + cursor_store
     # persists verbatim), so the fixtures — like the seed — use the prefixed
-    # form. The google_health user one carries a volatile UUID + resource suffix,
-    # matched by the stable ``google_health:user:<owner>:`` prefix.
+    # form.
     dead = [
         ("google_health", "google_health:degraded"),
-        (
-            "google_health",
-            "google_health:user:uniquosity@gmail.com:3f9a1c22-dead-4beef-0000-000000000001:spo2",
-        ),
         ("owntracks", "owntracks:unknown"),
         ("home_assistant", "home_assistant:homeassistant.parrot-hen.ts.net:443"),
     ]
     # Live identities that must remain active (archived_at NULL).
     live = [
         ("gmail", "gmail:live@example.com"),
-        # different owner → no prefix match
-        ("google_health", "google_health:user:someone-else@gmail.com:abc"),
-        # canonical owner heartbeat (no trailing ``:`` after the email) → the
-        # ``google_health:user:<owner>:`` prefix must NOT archive it.
-        ("google_health", "google_health:user:uniquosity@gmail.com"),
+        # Per-resource cursor rows share the legacy UUID/resource key shape; the
+        # seed is account-agnostic and must NOT archive them on any install.
+        (
+            "google_health",
+            "google_health:user:owner@example.com:3f9a1c22-dead-4bee-0000-000000000001:spo2",
+        ),
+        # canonical account heartbeat row stays active.
+        ("google_health", "google_health:user:owner@example.com"),
         ("owntracks", "owntracks:phone-1"),
         ("home_assistant", "home_assistant:v-on-shenton.ts.net:8123"),
     ]

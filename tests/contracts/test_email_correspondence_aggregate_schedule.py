@@ -59,7 +59,6 @@ def test_private_email_rfc_uses_a_unique_indexed_number_and_coherent_packet_refe
     for relative_path in (
         "openspec/changes/true-bidirectional-email-correspondence/proposal.md",
         "openspec/changes/true-bidirectional-email-correspondence/tasks.md",
-        "openspec/changes/true-bidirectional-email-correspondence/implementation-plan.md",
     ):
         text = _packet_text(relative_path)
         assert "RFC 0024" in text, f"{relative_path} must name the private-email RFC"
@@ -85,63 +84,26 @@ def test_rfc_0024_binds_all_rfc_0010_scheduled_reader_guardrails() -> None:
     )
 
 
-def test_active_deltas_keep_the_aggregate_database_bounded_and_noninteractive() -> None:
-    """The relevant OpenSpec deltas must preserve the RFC's implementation boundary."""
+def test_trimmed_packet_keeps_the_aggregate_read_only_and_non_negative() -> None:
+    """The trimmed change keeps one read-only view, a deterministic job, and no `false`."""
+    change = "openspec/changes/true-bidirectional-email-correspondence"
     _assert_contains(
-        "openspec/changes/true-bidirectional-email-correspondence/specs/butler-relationship/spec.md",
+        f"{change}/specs/database-security/spec.md",
         "RFC 0010",
+        "`SELECT` on `messenger.v_confirmed_email_outbound`",
+    )
+    _assert_contains(
+        f"{change}/specs/butler-relationship/spec.md",
         "email_correspondence_enrichment",
         '`dispatch_mode="job"`',
         "zero-LLM",
-        "no MCP/API/on-demand/interactive consumer",
-        "maximum 100",
-        "up to 101 LLM sessions per daily batch",
+        "at most 100",
+        "never `false`",
     )
     _assert_contains(
-        "openspec/changes/true-bidirectional-email-correspondence/specs/database-security/spec.md",
-        "database-enforced narrow reader",
-        "migration-managed",
-        "no MCP/API/on-demand/interactive aggregate path",
-    )
-    _assert_contains(
-        "openspec/changes/true-bidirectional-email-correspondence/specs/butler-messenger/spec.md",
-        "no MCP/API/on-demand/interactive aggregate path",
-    )
-
-
-def test_tasks_and_implementation_plan_name_the_scheduler_wiring_and_regressions() -> None:
-    """Future implementation must have an exact job surface and regression plan."""
-    for relative_path in (
-        "openspec/changes/true-bidirectional-email-correspondence/tasks.md",
-        "openspec/changes/true-bidirectional-email-correspondence/implementation-plan.md",
-    ):
-        _assert_contains(
-            relative_path,
-            "email_correspondence_enrichment",
-            "`src/butlers/scheduled_jobs.py`",
-            "`roster/relationship/butler.toml`",
-            "`35 6 * * *`",
-            '`dispatch_mode="job"`',
-            "no MCP/API/on-demand/interactive",
-            "static packet contract",
-            "migrated PostgreSQL",
-        )
-
-
-def test_proposal_and_design_keep_the_cost_case_bounded_and_planning_only() -> None:
-    """The change records both the cost rationale and its non-execution boundary."""
-    _assert_contains(
-        "openspec/changes/true-bidirectional-email-correspondence/proposal.md",
-        "RFC 0010",
-        "email_correspondence_enrichment",
-        "planning only",
-    )
-    _assert_contains(
-        "openspec/changes/true-bidirectional-email-correspondence/design.md",
-        "maximum 100",
-        "up to 101 LLM sessions per daily batch",
-        "zero-LLM",
-        "no MCP/API/on-demand/interactive",
+        f"{change}/design.md",
+        "## Deferred",
+        "Scheduler protected-job registry",
     )
 
 
@@ -160,46 +122,3 @@ def test_rfc_0024_requires_scheduler_admission_for_the_protected_job() -> None:
         "auditable rejection",
         "metric",
     )
-
-
-def test_active_packet_binds_protected_job_admission_at_the_scheduler_seam() -> None:
-    """Future work must protect trigger, create, and update without blocking the TOML job."""
-    _assert_contains(
-        "openspec/changes/true-bidirectional-email-correspondence/specs/core-scheduler/spec.md",
-        "protected-job registry",
-        "email_correspondence_enrichment",
-        "`schedule_trigger`",
-        "`schedule_create`",
-        "`schedule_update`",
-        "before dispatch",
-        "before persistence",
-        "`source='toml'`",
-        "fixed TOML schedule",
-        "auditable rejection",
-        "metric",
-    )
-    _assert_contains(
-        "openspec/changes/true-bidirectional-email-correspondence/specs/butler-relationship/spec.md",
-        "protected-job registry",
-        "no generic interactive trigger/create/update path",
-        "fixed TOML schedule",
-    )
-    _assert_contains(
-        "openspec/changes/true-bidirectional-email-correspondence/specs/database-security/spec.md",
-        "scheduler-level protected-job enforcement",
-        "not application convention",
-    )
-    for relative_path in (
-        "openspec/changes/true-bidirectional-email-correspondence/proposal.md",
-        "openspec/changes/true-bidirectional-email-correspondence/design.md",
-        "openspec/changes/true-bidirectional-email-correspondence/tasks.md",
-        "openspec/changes/true-bidirectional-email-correspondence/implementation-plan.md",
-    ):
-        _assert_contains(
-            relative_path,
-            "protected-job registry",
-            "email_correspondence_enrichment",
-            "schedule_trigger",
-            "schedule_create",
-            "schedule_update",
-        )

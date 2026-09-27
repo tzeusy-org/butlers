@@ -4508,6 +4508,49 @@ describe("CalendarWorkspacePage", () => {
         document.querySelector('[data-testid="find-time-unavailable"]'),
       ).toBeNull();
     });
+
+    it("keeps a successful empty search distinct from unavailable free/busy", async () => {
+      const mutateAsync = vi.fn().mockResolvedValue({
+        data: {
+          slots: [],
+          duration_minutes: 30,
+          calendar_ids: ["primary"],
+          available: true,
+          reason: null,
+        },
+      });
+      vi.mocked(useFindCalendarWorkspaceTime).mockReturnValue({
+        mutateAsync,
+        isPending: false,
+        isError: false,
+      } as unknown as ReturnType<typeof useFindCalendarWorkspaceTime>);
+
+      renderPage("/calendar?view=user&range=week&anchor=2026-03-01");
+
+      await act(async () => {
+        findButton("Find time")?.dispatchEvent(
+          new MouseEvent("click", { bubbles: true }),
+        );
+        await flush();
+      });
+
+      const form = container
+        .querySelector("#find-time-duration")
+        ?.closest("form");
+      await act(async () => {
+        form?.dispatchEvent(
+          new Event("submit", { bubbles: true, cancelable: true }),
+        );
+        await flush();
+      });
+
+      expect(document.body.textContent).toContain(
+        "No open slots match those constraints in the selected window.",
+      );
+      expect(
+        document.querySelector('[data-testid="find-time-unavailable"]'),
+      ).toBeNull();
+    });
   });
 
   describe("find-time grid overlays", () => {

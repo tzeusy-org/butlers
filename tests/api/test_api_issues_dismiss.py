@@ -15,12 +15,12 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.audit_grouping import audit_group_key
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_butler_configs, get_mcp_manager
 from butlers.api.models import compute_issue_key
 from butlers.api.routers.issues import _get_db_manager
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 

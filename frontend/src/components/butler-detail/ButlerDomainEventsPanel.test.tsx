@@ -13,6 +13,12 @@
  *  - Wake transport and domain reaction are labelled separately (bu-6jv4m.8)
  *  - A delivered wake with no receipt is called out, not left blank
  *  - The trace is a real keyboard-reachable button that expands the ledger
+ *  - Each subscription shows its contract's current schema_version, joined
+ *    client-side by event_type from GET /api/domain-events/contracts
+ *  - An active subscription no longer in the contract's permitted_subscribers,
+ *    or whose event_type has no contract at all, is marked as drifted
+ *  - A contracts-fetch failure never renders a false "aligned" (or invents a
+ *    version) -- it says the version is unavailable instead
  */
 
 import { describe, it, expect, vi, afterEach } from "vitest"
@@ -20,13 +26,15 @@ import { render, screen, cleanup } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 
-import type { SubscriptionEntry, DeliveryEntry, ReactionEntry } from "@/api/types"
+import type { SubscriptionEntry, DeliveryEntry, ReactionEntry, ContractEntry } from "@/api/types"
 import { ButlerDomainEventsPanel } from "./ButlerDomainEventsPanel"
 
 vi.mock("@/hooks/use-domain-events", () => ({
   useDomainEventSubscriptions: vi.fn(),
   useDomainEventDeliveries: vi.fn(),
   useDomainEventReactions: vi.fn(),
+  useDomainEventContracts: vi.fn(),
+  useReplayDomainEventDelivery: vi.fn(),
 }))
 
 vi.mock("@/components/ui/time", () => ({
@@ -37,11 +45,15 @@ import {
   useDomainEventSubscriptions,
   useDomainEventDeliveries,
   useDomainEventReactions,
+  useDomainEventContracts,
+  useReplayDomainEventDelivery,
 } from "@/hooks/use-domain-events"
 
 const mockUseSubscriptions = useDomainEventSubscriptions as unknown as ReturnType<typeof vi.fn>
 const mockUseDeliveries = useDomainEventDeliveries as unknown as ReturnType<typeof vi.fn>
 const mockUseReactions = useDomainEventReactions as unknown as ReturnType<typeof vi.fn>
+const mockUseContracts = useDomainEventContracts as unknown as ReturnType<typeof vi.fn>
+const mockUseReplay = useReplayDomainEventDelivery as unknown as ReturnType<typeof vi.fn>
 
 function makeSubscription(overrides: Partial<SubscriptionEntry> = {}): SubscriptionEntry {
   return {
@@ -91,6 +103,23 @@ function makeReaction(overrides: Partial<ReactionEntry> = {}): ReactionEntry {
   }
 }
 
+function makeContract(overrides: Partial<ContractEntry> = {}): ContractEntry {
+  return {
+    event_type: "travel.trip_booked",
+    publisher: "travel",
+    schema_version: 1,
+    summary: "A brand-new trip container was created.",
+    retention_policy: "standard",
+    reaction_expectation: "expected",
+    reaction_contract: "Consider a pre-budget check.",
+    permitted_subscribers: ["finance"],
+    required_fields: ["trip_id"],
+    optional_fields: [],
+    materialized_at: "2026-07-25T09:00:00Z",
+    ...overrides,
+  }
+}
+
 function renderPanel(butlerName = "finance") {
   const queryClient = new QueryClient()
   return render(
@@ -103,13 +132,17 @@ function renderPanel(butlerName = "finance") {
 function stubQueries({
   subscriptions = { data: undefined, isLoading: false, isError: false },
   deliveries = { data: undefined, isLoading: false, isError: false },
+  contracts = { data: undefined, isLoading: false, isError: false },
 }: {
   subscriptions?: { data: unknown; isLoading: boolean; isError: boolean }
   deliveries?: { data: unknown; isLoading: boolean; isError: boolean }
+  contracts?: { data: unknown; isLoading: boolean; isError: boolean }
 } = {}) {
   mockUseSubscriptions.mockReturnValue(subscriptions)
   mockUseDeliveries.mockReturnValue(deliveries)
   mockUseReactions.mockReturnValue({ data: undefined, isLoading: false, isError: false })
+  mockUseContracts.mockReturnValue(contracts)
+  mockUseReplay.mockReturnValue({ mutate: vi.fn(), isPending: false, variables: undefined })
 }
 
 afterEach(() => {
@@ -117,6 +150,8 @@ afterEach(() => {
   mockUseSubscriptions.mockReset()
   mockUseDeliveries.mockReset()
   mockUseReactions.mockReset()
+  mockUseContracts.mockReset()
+  mockUseReplay.mockReset()
 })
 
 describe("ButlerDomainEventsPanel", () => {
@@ -189,6 +224,53 @@ describe("ButlerDomainEventsPanel", () => {
     renderPanel()
     const badge = screen.getByTestId("delivery-status-badge")
     expect(badge.textContent).toContain("failed")
+  })
+
+  it("exposes failed_permanent deliveries with a single idempotent replay control", async () => {
+    const user = userEvent.setup()
+    const mutate = vi.fn()
+    const entry = makeDelivery({ status: "failed_permanent", error_message: "Unknown tool" })
+    stubQueries({ deliveries: { data: { data: [entry] }, isLoading: false, isError: false } })
+    mockUseReplay.mockReturnValue({ mutate, isPending: false, variables: undefined })
+
+    renderPanel()
+    const replay = screen.getByRole("button", { name: "Replay travel.trip_booked delivery" })
+    expect(screen.getByTestId("delivery-status-badge").textContent).toContain("failed_permanent")
+    await user.click(replay)
+
+    expect(mutate).toHaveBeenCalledTimes(1)
+    expect(mutate).toHaveBeenCalledWith(entry.id)
+  })
+
+  it("disables replay while the exact delivery is being requeued", () => {
+    const entry = makeDelivery({ status: "failed_permanent" })
+    stubQueries({ deliveries: { data: { data: [entry] }, isLoading: false, isError: false } })
+    mockUseReplay.mockReturnValue({ mutate: vi.fn(), isPending: true, variables: entry.id })
+
+    renderPanel()
+
+    const replay = screen.getByRole("button", { name: "Replaying travel.trip_booked delivery" })
+    expect(replay).toHaveProperty("disabled", true)
+  })
+
+  it("keeps the failed terminal row retryable after a replay error", () => {
+    const entry = makeDelivery({ status: "failed_permanent", error_message: "Still failed" })
+    stubQueries({ deliveries: { data: { data: [entry] }, isLoading: false, isError: false } })
+    mockUseReplay.mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+      isError: true,
+      error: new Error("Replay transport unavailable"),
+      variables: entry.id,
+    })
+
+    renderPanel()
+
+    expect(screen.getByTestId("delivery-row")).toBeDefined()
+    expect(screen.getByTestId("delivery-status-badge").textContent).toContain("failed_permanent")
+    expect(
+      screen.getByRole("button", { name: "Replay travel.trip_booked delivery" }),
+    ).toHaveProperty("disabled", false)
   })
 
   it("renders inactive subscriptions with a distinct label", () => {
@@ -275,5 +357,60 @@ describe("ButlerDomainEventsPanel", () => {
     await user.click(screen.getByTestId("delivery-trace-toggle"))
     expect(screen.getByTestId("reaction-trace-error")).toBeDefined()
     expect(screen.queryByTestId("reaction-trace")).toBeNull()
+  })
+
+  it("shows the contract's current schema_version beside an aligned subscription", () => {
+    const entry = makeSubscription({ subscriber_butler: "finance", event_type: "travel.trip_booked" })
+    const contract = makeContract({ event_type: "travel.trip_booked", permitted_subscribers: ["finance"] })
+    stubQueries({
+      subscriptions: { data: { data: [entry] }, isLoading: false, isError: false },
+      contracts: { data: { data: [contract] }, isLoading: false, isError: false },
+    })
+    renderPanel()
+    expect(screen.getByTestId("subscription-contract-version").textContent).toContain("v1")
+    expect(screen.queryByTestId("subscription-drift")).toBeNull()
+  })
+
+  it("flags an active subscription no longer in the contract's permitted_subscribers", () => {
+    const entry = makeSubscription({ subscriber_butler: "health", event_type: "travel.trip_booked" })
+    const contract = makeContract({ event_type: "travel.trip_booked", permitted_subscribers: ["finance"] })
+    stubQueries({
+      subscriptions: { data: { data: [entry] }, isLoading: false, isError: false },
+      contracts: { data: { data: [contract] }, isLoading: false, isError: false },
+    })
+    renderPanel("health")
+    expect(screen.getByTestId("subscription-drift").textContent).toContain("not permitted")
+  })
+
+  it("flags an active subscription whose event_type has no declared contract", () => {
+    const entry = makeSubscription({ event_type: "travel.trip_retired" })
+    stubQueries({
+      subscriptions: { data: { data: [entry] }, isLoading: false, isError: false },
+      contracts: { data: { data: [] }, isLoading: false, isError: false },
+    })
+    renderPanel()
+    expect(screen.getByTestId("subscription-drift").textContent).toContain("no contract")
+  })
+
+  it("does not flag an inactive subscription as drifted", () => {
+    const entry = makeSubscription({ active: false, subscriber_butler: "health" })
+    stubQueries({
+      subscriptions: { data: { data: [entry] }, isLoading: false, isError: false },
+      contracts: { data: { data: [] }, isLoading: false, isError: false },
+    })
+    renderPanel("health")
+    expect(screen.queryByTestId("subscription-drift")).toBeNull()
+  })
+
+  it("says the contract is unavailable rather than fabricating alignment when contracts fail", () => {
+    const entry = makeSubscription()
+    stubQueries({
+      subscriptions: { data: { data: [entry] }, isLoading: false, isError: false },
+      contracts: { data: undefined, isLoading: false, isError: true },
+    })
+    renderPanel()
+    expect(screen.getByTestId("subscription-contract-unavailable")).toBeDefined()
+    expect(screen.queryByTestId("subscription-drift")).toBeNull()
+    expect(screen.queryByTestId("subscription-contract-version")).toBeNull()
   })
 })

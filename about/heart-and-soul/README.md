@@ -14,7 +14,7 @@ scope arguments, and feature debates. When in doubt, start here.
 | 3 | [v1.md](v1.md) | What ships in v1 and what gets deferred |
 | 4 | [security.md](security.md) | Trust model and threat boundaries |
 | 5 | [development.md](development.md) | How work gets done on this project |
-| 6 | [design-language.md](design-language.md) | What the dashboard's design language is, what is drifting, and the doctrine for an `/impeccable` redesign. Includes the **[Voice and Copy](design-language.md#voice-and-copy)** section: register, capitalization, button labels, empty states, errors, and the em-dash ban (non-negotiable #6). |
+| 6 | [design-language.md](design-language.md) | Why the dashboard looks and speaks the way it does, including [Voice and Copy](design-language.md#voice-and-copy) |
 
 ## How to Use These
 
@@ -28,4 +28,4 @@ scope arguments, and feature debates. When in doubt, start here.
 ## What These Are Not
 
 These are not implementation guides, API references, or deployment runbooks.
-For those, see the main [documentation index](../index.md).
+For those, see the main [documentation index](../../docs/index.md).

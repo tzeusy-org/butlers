@@ -2,24 +2,24 @@
 
 **Status:** Accepted
 **Date:** 2026-07-12
-**Amended:** 2026-07-18 — ingestion producers plus Calendar and Chronicler projection producers; 2026-07-19 — isolated OS-process delivery proof for those two producers; see [Amendments](#amendments).
+**Amended:** 2026-07-18 (ingestion, Calendar, and Chronicler producers); see [Amendments](#amendments).
 
 ## Summary
 
-Cross-process live events (session lifecycle, per-call spend, `notify()` deliveries, approval gate decisions, accepted Switchboard ingests, committed connector filtered-event batches, Calendar projections, and Chronicler projections) are published from their owning process via `SELECT pg_notify(channel, payload)` on its database pool. The dashboard-api container LISTENs on that same Postgres channel and bridges every NOTIFY back into its existing in-process fleet event bus (`butlers.api.routers.events.emit_event`, `WS /api/events/stream`), so every existing WebSocket consumer keeps working unchanged. The original producers publish additively alongside their pre-existing in-process `emit_event()` / `emit_spend_event()` / `emit_approvals_event()` calls; later producers publish bridge-only because daemon-local `emit_event()` calls are known to be inert (see the 2026-07-18 amendments).
+Cross-process live events (session lifecycle, per-call spend, `notify()` deliveries, approval gate decisions, accepted Switchboard ingests, committed connector filtered-event batches, Calendar projections, and Chronicler projections) are published from their owning process via `SELECT pg_notify(channel, payload)` on its database pool. The dashboard-api container LISTENs on that same Postgres channel and bridges every NOTIFY back into its existing in-process fleet event bus (`butlers.api.routers.events.emit_event`, `WS /api/events/stream`), so every existing WebSocket consumer keeps working unchanged. Every daemon-side producer publishes bridge-only: daemon-local `emit_event()` calls are inert and have been removed.
 
 ## Motivation
 
 The dashboard-api process (`dashboard-api` / `dashboard-api-hotreload` container) and the butler daemon process (`butlers-up` / `butlers-up-hotreload` container) are separate OS processes in separate containers (`docker-compose.yml`). `butlers.api.routers.events.emit_event()` — the function backing `WS /api/events/stream` — is a plain in-process pub/sub broker: a module-level ring buffer (`_events_ring`) and a list of `asyncio.Queue` subscribers (`_events_subscribers`), both process-local Python state.
 
-Several original daemon-side and module-side call sites import and call `emit_event()` (and the older per-feature `emit_spend_event()` / `emit_approvals_event()`, which additionally fan onto the same bus) directly:
+Several original daemon-side and module-side call sites imported and called `emit_event()` (and the older per-feature `emit_spend_event()` / `emit_approvals_event()`, which additionally fan onto the same bus) directly:
 
 - `src/butlers/core/sessions.py` — `session` events (`phase: started|ended`)
 - `src/butlers/core/spawner.py` — `spend` events (per-call cost)
 - `src/butlers/core_tools/_notifications.py` — `notification` events (`notify()` deliveries)
 - `src/butlers/modules/approvals/gate.py`, `src/butlers/modules/approvals/email_guard.py` — `approval` events (`created` pending actions)
 
-Every one of these runs inside the daemon process. Calling `emit_event()` there mutates the **daemon's own, unobserved** copy of `_events_ring` / `_events_subscribers` — no WebSocket client is ever connected to that process. The call succeeds, logs nothing, raises nothing, and produces zero observable effect. The dashboard's Live indicator (which only reflects socket connectivity to the dashboard-api process) shows "connected" throughout — this is failure impersonating liveness, not an outage anyone would notice from the UI. The only visible symptom is staleness: an approval created by a daemon-side gate, a session that just finished, a notification that was just sent — none of it appears live; the page only catches up on its next poll (see bu-01r64.3 for the complementary poll-interval hardening).
+Every one of these runs inside the daemon process. Calling `emit_event()` there mutates the **daemon's own, unobserved** copy of `_events_ring` / `_events_subscribers` — no WebSocket client is ever connected to that process. The call succeeds, logs nothing, raises nothing, and produces zero observable effect. The dashboard's Live indicator (which only reflects socket connectivity to the dashboard-api process) shows "connected" throughout — this is failure impersonating liveness, not an outage anyone would notice from the UI. The only visible symptom is staleness: an approval created by a daemon-side gate, a session that just finished, a notification that was just sent — none of it appears live; the page only catches up on its next poll.
 
 `roster/switchboard/tools/ingestion/ingest.py` is a later daemon-side producer: a
 new committed `public.ingestion_events` row emits an `ingestion` event through
@@ -29,7 +29,7 @@ write path for the unified ingestion feed: after its `connectors.filtered_events
 batch INSERT succeeds, it publishes the same event type from the connector
 process so the dashboard invalidates the merged feed immediately.
 
-Some call sites *also* emit onto older, per-feature dedicated streams (`/api/approvals/stream`, `/api/spend/stream`) via `emit_approvals_event()` / `emit_spend_event()`. Those are equally broken when invoked from the daemon process, for the identical reason — and are separately known to have zero remaining WS consumers now that the unified bus exists (bu-01r64.2 deletes those routes and the now-fully-dead upward `from butlers.api.routers.X import emit_Y_event` imports once this RFC's bridge supersedes them).
+Some call sites *also* emit onto older, per-feature dedicated streams (`/api/approvals/stream`, `/api/spend/stream`) via `emit_approvals_event()` / `emit_spend_event()`. Those are equally broken when invoked from the daemon process, for the identical reason — and had zero remaining WS consumers once the unified bus existed; those routes and the dead upward `from butlers.api.routers.X import emit_Y_event` imports have since been deleted.
 
 ## Design
 
@@ -63,25 +63,9 @@ A single shared, best-effort helper: JSON-encodes the envelope and runs `SELECT 
 
 - **Never raises.** Every failure mode (oversized payload, non-serializable `data`, connection loss, pool exhaustion) is caught, logged at `warning` (payload-shape problems) or `debug` (transient delivery problems), and reported back only via a `bool` return value that call sites are free to ignore.
 - **Payload size guard.** Postgres hard-caps a single NOTIFY payload at 8000 bytes (server-enforced — exceeding it raises `payload string too long`). `publish_fleet_event` checks the encoded size against a 7800-byte budget *before* attempting the NOTIFY and drops (logs + returns `False`) rather than risking that exception. The `ingestion` shape is intentionally bounded to identifiers and triage values (or empty for filtered-event batches), never raw content; a future event type carrying unbounded user content would need to publish a reference (e.g. a row id) rather than the full payload, not raise the cap.
-- **No queuing, no replay, no delivery guarantee.** A NOTIFY sent while nobody is LISTENing (dashboard-api restarting, bridge not yet started) is simply not delivered — Postgres does not persist or queue NOTIFYs for later delivery to a channel with zero current listeners. This matches the pre-existing behavior of the in-process bus itself (a WS client that isn't connected when an event fires misses it; the ring-buffer snapshot-on-connect only covers events that *did* reach the bus) and is an acceptable loss profile for a live-UI freshness signal that is always backed by a poll-based fallback (bu-01r64.3) and the underlying durable row (the `sessions` table, `pending_actions` table, etc.) as source of truth.
+- **No queuing, no replay, no delivery guarantee.** A NOTIFY sent while nobody is LISTENing (dashboard-api restarting, bridge not yet started) is simply not delivered — Postgres does not persist or queue NOTIFYs for later delivery to a channel with zero current listeners. This matches the pre-existing behavior of the in-process bus itself (a WS client that isn't connected when an event fires misses it; the ring-buffer snapshot-on-connect only covers events that *did* reach the bus) and is an acceptable loss profile for a live-UI freshness signal that is always backed by a bus-aware poll fallback (`useBusAwarePollInterval`) and the underlying durable row (the `sessions` table, `pending_actions` table, etc.) as source of truth.
 
-The original call sites publish *additively*, alongside their existing (silently-inert-from-the-daemon) `emit_event()`/`emit_spend_event()`/`emit_approvals_event()` calls, each independently wrapped so a NOTIFY failure can never affect the other. The later bridge-only `ingestion` producer is the documented exception:
-
-```python
-try:
-    from butlers.api.routers.events import emit_event
-    emit_event("session", session_event_data)          # dead when run in the daemon process
-except Exception:
-    logger.debug(...)
-
-try:
-    from butlers.fleet_events import publish_fleet_event
-    await publish_fleet_event(pool, "session", session_event_data)  # the real cross-process path
-except Exception:
-    logger.debug(...)
-```
-
-This additive shape is deliberate: bu-01r64.2 deletes the first block (and the upward `from butlers.api.routers.X import emit_Y_event` imports it requires) once the NOTIFY-based path has proven itself in production, without this slice needing to coordinate a simultaneous cutover.
+Each call site wraps its publish so a NOTIFY failure never affects the caller's real work. The pre-bridge in-process `emit_event()` / `emit_spend_event()` / `emit_approvals_event()` calls from daemon processes were removed once the bridge carried their traffic.
 
 ### Bridge Side (`butlers.api.fleet_events_bridge.run_fleet_events_listener`)
 
@@ -105,13 +89,13 @@ A background `asyncio.Task` started from the dashboard-api `lifespan` handler (`
 | Malformed/foreign-channel NOTIFY reaches `_on_notify` | Dropped and logged; listener connection stays up. |
 | `publish_fleet_event()` itself raises for any reason | It doesn't — every internal step is caught; worst case is a debug-level log and a `False` return. |
 
-None of these failure modes affect the durable record each event describes (the `sessions` row, the `pending_actions` row, the delivered notification, or a `connectors.filtered_events` row) — this transport only carries a **best-effort live freshness signal** layered on top of state that already persists correctly. bu-01r64.3's bus-aware poll intervals are the deliberate backstop for the "live signal was lost" case.
+None of these failure modes affect the durable record each event describes (the `sessions` row, the `pending_actions` row, the delivered notification, or a `connectors.filtered_events` row) — this transport only carries a **best-effort live freshness signal** layered on top of state that already persists correctly. Bus-aware poll intervals (`useBusAwarePollInterval`) are the deliberate backstop for the "live signal was lost" case.
 
 ## Integration
 
 - `src/butlers/fleet_events.py` — shared publish-side contract (`FLEET_EVENTS_CHANNEL`, `publish_fleet_event`). Imported by both daemon-side call sites and (for the channel constant only) the bridge, with no import cycle: it depends on nothing else in `butlers.core` or `butlers.api`.
 - `src/butlers/api/fleet_events_bridge.py` — bridge implementation, started/stopped from `src/butlers/api/app.py`'s `lifespan()`.
-- `src/butlers/core/sessions.py`, `src/butlers/core/spawner.py`, `src/butlers/core_tools/_notifications.py`, `src/butlers/modules/approvals/gate.py`, `src/butlers/modules/approvals/email_guard.py` — original daemon-side `publish_fleet_event()` call sites, added alongside their pre-existing (now cross-process-dead) `emit_event()`/`emit_spend_event()`/`emit_approvals_event()` calls.
+- `src/butlers/core/sessions.py`, `src/butlers/core/spawner.py`, `src/butlers/core_tools/_notifications.py`, `src/butlers/modules/approvals/gate.py`, `src/butlers/modules/approvals/email_guard.py` — daemon-side `session`, `spend`, `notification`, and `approval` publishes.
 - `roster/switchboard/tools/ingestion/ingest.py` — daemon-side bridge-only `ingestion` publish immediately after its `public.ingestion_events` transaction commits.
 - `src/butlers/connectors/filtered_event_buffer.py` — connector-side bridge-only `ingestion` publish after its `connectors.filtered_events` batch INSERT commits.
 - `src/butlers/modules/calendar.py` — bridge-only `calendar` publishes after durable provider or internal-scheduler projection writes.
@@ -123,95 +107,16 @@ None of these failure modes affect the durable record each event describes (the 
 
 - **HTTP callback from daemon to dashboard-api.** Rejected — requires an authenticated ingress surface on dashboard-api reachable from every daemon container, for a best-effort UI-freshness signal that doesn't need request/response semantics.
 - **A dedicated message broker (Redis pub/sub, NATS, etc.).** Rejected — adds a new service to the deployment topology (RFC 0008) for exactly the pub/sub primitive Postgres already provides between two processes that already share a database connection.
-- **Route the event through a durable table + polling.** Rejected as the *primary* mechanism (it already exists, and is the reason the bug was invisible to automated checks: polling still worked, so nothing paged anyone) — but is retained as the correctness backstop; this RFC only fixes the *live* signal, and bu-01r64.3 tightens the poll fallback specifically for when the live signal is absent.
+- **Route the event through a durable table + polling.** Rejected as the *primary* mechanism (it already exists, and is the reason the bug was invisible to automated checks: polling still worked, so nothing paged anyone) — but is retained as the correctness backstop; this RFC only fixes the *live* signal, and the bus-aware poll fallback covers the case where the live signal is absent.
 - **Have the daemon call `emit_event()` over an internal RPC to the api process.** Rejected — reinvents a bespoke transport for something Postgres already solves at the connection level the two processes already share; would also need its own reconnect/backoff/auth story that NOTIFY/LISTEN gets for free from the existing DB connection.
 
 ## Amendments
 
-### 2026-07-18 — Switchboard ingestion event bridge (bu-k8888)
+Each amendment's contract is folded into the Wire Contract and Integration sections above.
 
-`ingest_v1()` is the production choke point that creates a new
-`public.ingestion_events` row. Once its transaction commits, it publishes a
-small `ingestion` envelope through `publish_fleet_event()` so the dashboard
-bridge invalidates the unified ingestion timeline immediately.
+- **2026-07-18, Switchboard ingestion bridge.** `ingest_v1()` publishes a bridge-only `ingestion` envelope after its `public.ingestion_events` transaction commits.
+- **2026-07-18, connector filtered-event bridge.** `FilteredEventBuffer.flush()` clears its buffer, then publishes one empty-data `ingestion` envelope after its batch INSERT succeeds; the unified ingestion feed keeps its 30-second primary poll.
+- **2026-07-18, Calendar projection bridge.** `CalendarModule` publishes a bridge-only `calendar` envelope only after a projection with a non-empty provider delta or a user-visible internal-sweep change; bookkeeping-only writes emit nothing.
+- **2026-07-18, Chronicler projection bridge.** The scheduled adapter handler publishes a bridge-only `chronicles` envelope only after a successful, material projection; empty and skipped runs emit nothing.
 
-This producer is deliberately bridge-only. Its previous direct call to the
-daemon process's local `emit_event()` broker was unobservable to dashboard
-WebSocket clients, so retaining it would preserve known-dead code rather than
-provide compatibility. The durable row remains authoritative and the
-publication remains best-effort.
-
-### 2026-07-18 — Connector filtered-event batch bridge (bu-rqk6w)
-
-`FilteredEventBuffer.flush()` is the production choke point that writes batches
-to `connectors.filtered_events`. After its batch INSERT succeeds, it publishes
-one empty-data `ingestion` envelope through `publish_fleet_event()`. It clears
-the buffer before the best-effort publication, so a NOTIFY failure cannot cause
-a later flush to duplicate the durable rows or their signal.
-
-The unified ingestion feed retains its 30-second primary poll despite both live
-signals. `NOTIFY` remains best-effort, and the merged durable rows remain the
-correctness path when the dashboard listener is unavailable or a notification is
-missed.
-
-### 2026-07-18 — Calendar projection freshness bridge (bu-v6uas)
-
-`CalendarModule` publishes a bridge-only `calendar` envelope only after a
-successful provider projection with a non-empty provider delta, or after an
-internal scheduler sweep changes the user-visible event/instance projection.
-Cursor, source-registration, and timestamp-only bookkeeping writes do not make
-an internal sweep material, so a successful no-op emits no freshness event.
-The calendar cache patch invalidates the workspace, its derived views, metadata,
-and audit feed; each of those bus-covered queries reconciles every five minutes
-while the bus is open and falls back to 30-second polling while it is not.
-
-The original tests for this amendment exercise the producer and cache-patch
-seams. They do not claim a live cross-container PostgreSQL
-LISTEN-to-WebSocket end-to-end delivery. The later isolated OS-process proof
-described below exercises this producer's actual transport path without
-claiming Compose/container wiring; the durable projection rows and the
-bus-aware poll fallback remain the correctness path when that best-effort
-signal is unavailable.
-
-### 2026-07-18 — Chronicler projection freshness bridge (bu-v6uas)
-
-The scheduled Chronicler adapter handler publishes a bridge-only `chronicles`
-envelope only after the adapter completes without error and reports a
-non-skipped, material projection (projected rows, point events, opened episodes,
-or closed episodes). The aggregate envelope carries counts rather than source
-content, and it invalidates the existing Chronicles query prefix. Empty and
-skipped adapter runs emit nothing.
-
-The original producer tests verify its deterministic job/bridge seam. The later
-isolated OS-process proof described below reaches a real WebSocket route, but
-does not claim a Compose/container E2E. Its durable episode, point-event, and
-checkpoint writes remain authoritative when a best-effort NOTIFY is missed.
-
-### 2026-07-19 — Calendar and Chronicler isolated OS-process delivery proof (bu-jw33x)
-
-`tests/integration/test_fleet_events_notify_bridge.py::test_calendar_and_chronicler_child_processes_reach_websocket`
-is the repeatable live-boundary proof for the two projection producers. It
-creates an isolated testcontainer PostgreSQL database migrated with the
-Chronicler chain, starts the real `run_fleet_events_listener()` alongside the
-real `WS /api/events/stream` router, and waits for `add_listener()` to complete
-before publishing. It then launches **two fresh child Python processes**:
-
-- the Calendar child calls `CalendarModule._publish_calendar_fleet_event()`;
-- the Chronicler child runs `jobs._run_adapter()` with a fixture adapter that
-  writes a canonical `point_events` row before it reports a material
-  projection.
-
-The test asserts that each child PID differs from the dashboard test process,
-then consumes the resulting `calendar` and `chronicles` frames from the actual
-WebSocket route with their production payload shapes.
-The listener and WebSocket handler intentionally share the dashboard process,
-as they do in production; the boundary under test is each producer process to
-that dashboard process through PostgreSQL `NOTIFY`/`LISTEN`.
-
-This is deliberately **not** a live Docker Compose/container or browser E2E:
-it starts no shared dev stack, full dashboard lifespan, daemon scheduler, or
-React client. It therefore does not certify Compose mounts, service discovery,
-or browser WebSocket connectivity. The frontend's downstream cache patches are
-separately covered by `frontend/src/hooks/event-cache-registry.test.ts`; this
-harness proves the preceding producer-to-WebSocket transport delivery without
-overstating that coverage.
+The producer-process-to-WebSocket path for Calendar and Chronicler is proven by `tests/integration/test_fleet_events_notify_bridge.py::test_calendar_and_chronicler_child_processes_reach_websocket`; it does not certify Compose wiring or browser connectivity.

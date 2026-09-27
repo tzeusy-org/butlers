@@ -7,8 +7,7 @@ Defines the SM-2-inspired spaced repetition engine for the education butler, cov
 
 ### Requirement: SM-2 Interval Calculation — Successful Recall
 
-The implementation SHALL provide the behavior described by this requirement.
-When a user successfully recalls a node (quality >= 3), the next review interval is determined by the node's current repetition count following a stepped ramp: repetitions == 0 reviews again after 6 hours (`0.25` days); repetitions == 1 after 12 hours (`0.5` days); repetitions == 2 after 1 day (`1.0`); repetitions == 3 after 6 days (`6.0`). For repetitions >= 4 the interval is `last_interval * ease_factor`, producing exponential spacing thereafter.
+When a user successfully recalls a node (quality >= 3), the next review interval SHALL be determined by the node's current repetition count following a stepped ramp: repetitions == 0 reviews again after 6 hours (`0.25` days); repetitions == 1 after 12 hours (`0.5` days); repetitions == 2 after 1 day (`1.0`); repetitions == 3 after 6 days (`6.0`). For repetitions >= 4 the interval is `last_interval * ease_factor`, producing exponential spacing thereafter.
 
 #### Scenario: First successful recall (repetitions == 0)
 
@@ -52,12 +51,9 @@ When a user successfully recalls a node (quality >= 3), the next review interval
 - **THEN** `interval_days` is `0.25` (6 hours; the repetitions == 0 step applies regardless of quality when in the 0-state)
 - **AND** `repetitions` in the returned dict is `1`
 
----
-
 ### Requirement: Ease Factor Adjustment
 
-The implementation SHALL provide the behavior described by this requirement.
-After every review, the ease factor is updated using the SM-2 formula:
+After every review, the ease factor SHALL be updated using the SM-2 formula:
 
 ```
 new_ef = max(1.3, old_ef + (0.1 - (5 - quality) * (0.08 + (5 - quality) * 0.02)))
@@ -97,12 +93,9 @@ The minimum ease factor is 1.3. Quality values 0-5 are all valid inputs.
 - **THEN** the formula produces `2.5 + (0.1 - 5*(0.08 + 5*0.02)) = 2.5 - 0.8 = 1.7`
 - **AND** returned `ease_factor` is `1.7` (above floor; floor is only clamped when result < 1.3)
 
----
-
 ### Requirement: Failed Recall Reset
 
-The implementation SHALL provide the behavior described by this requirement.
-A quality score below 3 (0, 1, or 2) constitutes a failed recall. On failure, repetitions are reset to 0 and the interval resets to the repetitions == 0 step of 6 hours (`0.25` days). The ease factor is still adjusted (penalized) per the standard formula, it is not reset.
+A quality score below 3 (0, 1, or 2) SHALL constitute a failed recall. On failure, repetitions are reset to 0 and the interval resets to the repetitions == 0 step of 6 hours (`0.25` days). The ease factor is still adjusted (penalized) per the standard formula, it is not reset.
 
 #### Scenario: Quality 2 triggers reset
 
@@ -130,12 +123,9 @@ A quality score below 3 (0, 1, or 2) constitutes a failed recall. On failure, re
 - **THEN** the returned `repetitions` is `3` (incremented, not reset)
 - **AND** the returned `interval_days` is NOT `1.0` (interval progression continues)
 
----
-
 ### Requirement: Schedule Creation via Core Scheduler
 
-The implementation SHALL provide the behavior described by this requirement.
-After computing the new SM-2 state, `spaced_repetition_record_response()` creates a one-shot review schedule via `schedule_create()`. The cron expression encodes the exact target review datetime (minute and hour resolution). The schedule's `until_at` is set to `next_review_at + 24 hours` so that if the review window is missed, the schedule auto-disables without firing.
+After computing the new SM-2 state, `spaced_repetition_record_response()` SHALL create a one-shot review schedule via `schedule_create()`. The cron expression encodes the exact target review datetime (minute and hour resolution). The schedule's `until_at` is set to `next_review_at + 24 hours` so that if the review window is missed, the schedule auto-disables without firing.
 
 #### Scenario: One-shot cron computed from next review datetime
 
@@ -161,12 +151,9 @@ After computing the new SM-2 state, `spaced_repetition_record_response()` create
 - **THEN** the core scheduler sets the task to `enabled=false` and `next_run_at=NULL` without dispatching
 - **AND** the node's `next_review_at` in `mind_map_nodes` remains set until the next manual or rescheduled review
 
----
-
 ### Requirement: Schedule Naming Convention
 
-The implementation SHALL provide the behavior described by this requirement.
-Each review schedule is named following the pattern `review-{node_id}-rep{N}`, where `node_id` is the node's UUID and `N` is the new repetition count after the update. This ensures schedule names are unique per node per repetition cycle, and that stale schedules from prior repetitions are identifiable by name.
+Each review schedule SHALL be named following the pattern `review-{node_id}-rep{N}`, where `node_id` is the node's UUID and `N` is the new repetition count after the update. This ensures schedule names are unique per node per repetition cycle, and that stale schedules from prior repetitions are identifiable by name.
 
 #### Scenario: Schedule name encodes node and repetition
 
@@ -190,12 +177,9 @@ Each review schedule is named following the pattern `review-{node_id}-rep{N}`, w
 - **THEN** the core scheduler raises a `ValueError`
 - **AND** `spaced_repetition_record_response()` deletes the prior schedule with the same name before creating the new one
 
----
-
 ### Requirement: Batch Review Cap — Maximum 20 Pending Schedules Per Mind Map
 
-The implementation SHALL provide the behavior described by this requirement.
-To prevent schedule proliferation, no mind map may have more than 20 pending review schedules active simultaneously. If the cap would be exceeded, `spaced_repetition_record_response()` checks the current count before calling `schedule_create()`. When pending reviews exceed 20, all overdue nodes are batched into a single "review session" schedule rather than creating individual schedules.
+To prevent schedule proliferation, no mind map SHALL have more than 20 pending review schedules active simultaneously. If the cap would be exceeded, `spaced_repetition_record_response()` checks the current count before calling `schedule_create()`. When pending reviews exceed 20, all overdue nodes are batched into a single "review session" schedule rather than creating individual schedules.
 
 #### Scenario: Schedule created when under cap
 
@@ -233,12 +217,9 @@ To prevent schedule proliferation, no mind map may have more than 20 pending rev
 - **THEN** the count is the number of active (enabled=true) rows in `scheduled_tasks` whose names match the pattern `review-{node_id}-*` for nodes belonging to `mind_map_id`
 - **AND** the batch schedule `review-{mind_map_id}-batch` counts as one schedule regardless of how many nodes it covers
 
----
-
 ### Requirement: Schedule Cleanup on Mind Map Completion or Abandonment
 
-The implementation SHALL provide the behavior described by this requirement.
-When a mind map transitions to `status='completed'` or `status='abandoned'`, all pending review schedules for its nodes are removed. This prevents stale review prompts from firing after the user has finished or given up on a topic.
+When a mind map transitions to `status='completed'` or `status='abandoned'`, all pending review schedules for its nodes SHALL be removed. This prevents stale review prompts from firing after the user has finished or given up on a topic.
 
 #### Scenario: Cleanup removes all node review schedules on completion
 
@@ -268,12 +249,9 @@ When a mind map transitions to `status='completed'` or `status='abandoned'`, all
 - **THEN** the function returns `0` and no schedules are deleted
 - **AND** a warning is logged indicating the mind map is still active
 
----
-
 ### Requirement: Node State Updates and Mastery Status Transitions
 
-The implementation SHALL provide the behavior described by this requirement.
-`spaced_repetition_record_response()` updates the node's persistent state in `mind_map_nodes` after every call: `ease_factor`, `repetitions`, `next_review_at`, `last_reviewed_at`, and `mastery_status`. Within the spaced-repetition engine, the `mastery_status` field changes only on regression (a failed recall demotes the node); forward promotions (`learning` to `reviewing`, `reviewing` to `mastered`) are owned by the mastery module's `mastery_record_response()` write path and are specified in `module-education-mastery`, not here. A successful recall in this engine advances scheduling state (`repetitions`, `interval`, `next_review_at`) but leaves `mastery_status` unchanged.
+`spaced_repetition_record_response()` SHALL update the node's persistent state in `mind_map_nodes` after every call: `ease_factor`, `repetitions`, `next_review_at`, `last_reviewed_at`, and `mastery_status`. Within the spaced-repetition engine, the `mastery_status` field changes only on regression (a failed recall demotes the node); forward promotions (`learning` to `reviewing`, `reviewing` to `mastered`) are owned by the mastery module's `mastery_record_response()` write path and are specified in `module-education-mastery`, not here. A successful recall in this engine advances scheduling state (`repetitions`, `interval`, `next_review_at`) but leaves `mastery_status` unchanged.
 
 #### Scenario: Successful recall leaves mastery_status unchanged
 
@@ -306,12 +284,9 @@ The implementation SHALL provide the behavior described by this requirement.
 - **WHEN** `spaced_repetition_record_response()` is called for any node
 - **THEN** the node's `updated_at` column is set to `now()`
 
----
-
 ### Requirement: Review Delivery via notify()
 
-The implementation SHALL provide the behavior described by this requirement.
-Review prompts are delivered to the user via the `notify()` core tool, targeting the user's preferred channel. The education butler does not hold direct Telegram or email credentials — it routes all outbound messages through the Switchboard to the Messenger butler.
+Review prompts SHALL be delivered to the user via the `notify()` core tool, targeting the user's preferred channel. The education butler does not hold direct Telegram or email credentials — it routes all outbound messages through the Switchboard to the Messenger butler.
 
 #### Scenario: Scheduled review session dispatches a notify call
 

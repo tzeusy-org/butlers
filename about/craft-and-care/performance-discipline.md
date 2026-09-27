@@ -11,22 +11,8 @@ operability.
 - Prefer simple structural wins over clever micro-optimizations.
 - Preserve diagnosability while improving speed.
 
-## Good Performance Work
+## Anti-patterns
 
-Examples of the right kind of improvement:
-
-- removing N+1 query patterns in overview and analytics paths
-- batching DB reads instead of per-row follow-up queries
-- reducing duplicate async work in pollers or recovery loops
-- tightening test scope to speed iteration without weakening final verification
-- eliminating unnecessary compatibility layers that keep extra code paths alive
-
-## Bad Performance Work
-
-These are anti-patterns:
-
-- adding caching without proving repeated work is the bottleneck
-- making control flow harder to understand for speculative gains
 - reducing verification depth in the name of throughput
 - suppressing logs or traces just because they are noisy
 - changing behavior to look faster while losing guarantees

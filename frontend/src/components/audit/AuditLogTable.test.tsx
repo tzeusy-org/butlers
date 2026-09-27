@@ -5,9 +5,8 @@
  *
  * Every actor cell links to /audit-log?actor=<actor> (the page's own
  * filter bar already understands ?actor=). A target cell links out to its
- * owning surface when the scheme is recognised (butler:, u:); unrecognised
- * schemes (e.g. rule:<id>, which has no per-rule deep link yet) render as
- * plain text rather than a misleading link.
+ * owning surface when the scheme is recognised (butler:, u:, rule:);
+ * unrecognised schemes render as plain text rather than a misleading link.
  */
 
 import { act } from "react";
@@ -114,11 +113,16 @@ describe("AuditLogTable -- target pivot", () => {
     expect(html).toContain('href="/secrets?focus=u%3Agoogle"');
   });
 
-  it("renders an unrecognised scheme (e.g. rule:) as plain text, not a link", () => {
+  it("links a rule: (spend rule) target to the SpendPage deep link", () => {
     const html = render([entry({ target: "rule:42" })]);
-    expect(html).toContain("rule:42");
+    expect(html).toContain('href="/spend?rule=42"');
+  });
+
+  it("renders an unrecognised scheme as plain text, not a link", () => {
+    const html = render([entry({ target: "widget:42" })]);
+    expect(html).toContain("widget:42");
     // No anchor should target a page that doesn't understand this predicate.
-    expect(html).not.toMatch(/<a[^>]*>rule:42<\/a>/);
+    expect(html).not.toMatch(/<a[^>]*>widget:42<\/a>/);
   });
 
   it("renders the em-dash placeholder (no link) when target is absent", () => {

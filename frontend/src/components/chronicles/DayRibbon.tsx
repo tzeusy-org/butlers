@@ -211,7 +211,7 @@ export function DayRibbon({
                 key={b.episode.id}
                 type="button"
                 onClick={() => onEpisodeClick?.(b.episode.id)}
-                className="absolute top-0 h-full rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                className="absolute top-0 h-full rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-focus"
                 style={{
                   left: `${b.leftPct}%`,
                   width: `${b.widthPct}%`,

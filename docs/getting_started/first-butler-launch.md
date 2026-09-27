@@ -83,7 +83,7 @@ Session logs are stored in PostgreSQL. You can view them through:
 To create your own butler from scratch:
 
 ```bash
-butlers init mybutler --port 41105
+butlers init mybutler --port 41113
 ```
 
 This creates a scaffold directory:

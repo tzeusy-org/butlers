@@ -141,6 +141,11 @@ function histogramBucketForRange(range: IngestionRange): IngestionHistogramBucke
   return range === "7d" ? "5m" : "1m";
 }
 
+function rangeDurationMs(range: IngestionRange): number {
+  const hours = range === "1h" ? 1 : range === "7d" ? 7 * 24 : 24;
+  return hours * 60 * 60 * 1000;
+}
+
 function histogramBucketMinutes(bucket: IngestionHistogramBucketSize): number {
   switch (bucket) {
     case "1h":
@@ -409,7 +414,7 @@ function Toolbar({
             className={[
               "pl-7 pr-2 py-1 font-mono text-[11px] bg-transparent border border-border rounded",
               "text-foreground placeholder:text-muted-foreground",
-              "focus:outline-none focus:ring-1 focus:ring-ring transition-colors",
+              "focus:outline-none focus:ring-1 focus:ring-focus transition-colors",
               "w-44",
             ].join(" ")}
             data-testid="search-input"
@@ -852,7 +857,9 @@ function BulkActionBar({
 
 function ConnectorAttentionStrip({ isActive }: { isActive: boolean }) {
   const { data: connectorsResp } = useConnectorSummaries({ enabled: isActive });
-  const connectors = connectorsResp?.data ?? [];
+  const connectors = (connectorsResp?.data?.connectors ?? []).filter(
+    (connector) => !connector.archived,
+  );
 
   return <AttentionStrip connectors={connectors} />;
 }
@@ -1066,9 +1073,6 @@ function LedgerRow({
         data-event-id={event.id}
         aria-keyshortcuts="ArrowUp ArrowDown"
         onKeyDown={onRowNavigationKeyDown}
-        // The drawer is URL-backed as /ingestion?event=<id>; this maps to
-        // useIngestionEventDetail's exact cache key via the shared registry.
-        prefetchTo={`/ingestion?event=${encodeURIComponent(event.id)}`}
       >
         <span
           className="truncate font-serif text-[13px] leading-[1.5] shrink-0 max-w-[55%]"
@@ -2101,13 +2105,16 @@ export function TimelineTab({
     setActiveViewId("all");
   }, []);
 
-  // Connector summaries — already fetched for the attention strip; reused
-  // (same query key, no extra request) to build the "+ channel" adder's
-  // option list so it stays cheap (no per-chip requests).
+  // Canonical role-aware connector summaries are already fetched for the
+  // attention strip and reused (same query key, no extra request) to build
+  // the "+ channel" adder's option list. Archived identities are historical,
+  // not live channels, so they must not become picker choices.
   const { data: connectorsResp } = useConnectorSummaries({ enabled: isActive });
 
   const channelOptions = useMemo((): ChannelOption[] => {
-    const connectors: ConnectorSummary[] = connectorsResp?.data ?? [];
+    const connectors: ConnectorSummary[] = (connectorsResp?.data?.connectors ?? []).filter(
+      (connector) => !connector.archived,
+    );
     const counts = new Map<string, number | null>();
     for (const c of connectors) {
       const today = c.today?.messages_ingested ?? null;
@@ -2123,18 +2130,20 @@ export function TimelineTab({
     return Array.from(counts.entries())
       .map(([channel, count]) => ({ channel, count }))
       .sort((a, b) => a.channel.localeCompare(b.channel));
-  }, [connectorsResp?.data]);
+  }, [connectorsResp?.data?.connectors]);
 
-  // Compute ISO-8601 bounds from the range picker selection.
-  // The rollup band uses these to scope its aggregate; the events list is
-  // not time-bounded (it fetches newest-first and the user loads more pages).
-  const rangeWindow = useMemo((): { from: string; to: string } => {
+  // Capture only the live ledger's lower bound when the selected range
+  // changes. Aggregate hooks receive the stable duration below and resolve
+  // fresh bounds at request time without re-keying or resetting history.
+  const rangeFrom = useMemo(() => {
     const now = new Date();
-    const to = now.toISOString();
-    const hoursBack = range === "1h" ? 1 : range === "7d" ? 7 * 24 : 24;
-    const from = new Date(now.getTime() - hoursBack * 60 * 60 * 1000).toISOString();
-    return { from, to };
+    return new Date(now.getTime() - rangeDurationMs(range)).toISOString();
   }, [range]);
+
+  const liveAggregateTimeScope = useMemo(() => ({
+    kind: "live" as const,
+    durationMs: rangeDurationMs(range),
+  }), [range]);
 
   // When a strip minute is scoped, the ledger/rollup window collapses to that
   // exact minute (a fixed historical snapshot) instead of the live-tracking
@@ -2182,11 +2191,11 @@ export function TimelineTab({
           // range changed, causing the refetch to silently miss new events. A
           // minute-scoped window is an intentional fixed snapshot, so it uses
           // both bounds.
-          from: effectiveWindow?.from ?? rangeWindow.from,
+          from: effectiveWindow?.from ?? rangeFrom,
           ...(effectiveWindow ? { to: effectiveWindow.to } : {}),
         }),
     ...(activeSort ? { sort: activeSort } : {}),
-  }), [debouncedQ, activeChannels, statusesCsv, rangeWindow.from, effectiveWindow, activeSort, urlTrace]);
+  }), [debouncedQ, activeChannels, statusesCsv, rangeFrom, effectiveWindow, activeSort, urlTrace]);
 
   const {
     data: infiniteData,
@@ -2197,28 +2206,30 @@ export function TimelineTab({
     hasNextPage,
     isFetchingNextPage,
     fetchNextPage,
+    isFetchNextPageError,
+    newCount,
+    isFollowingLive,
+    latestReceivedAt: headLatestReceivedAt,
+    showNewEvents,
     refetch,
   } = useIngestionEvents(eventsFilters, { enabled: isActive });
 
   // Hour strip data source (bu-4utdw.7): one histogram request for the whole
-  // picker range/filters, sliced per hour below. Always uses `rangeWindow`
-  // (not `effectiveWindow`) so the strip keeps showing full-range context
-  // even while the ledger itself is minute-scoped.
+  // picker range/filters, sliced per hour below. The stable live duration is
+  // resolved by the hook at each request, so the strip keeps full-range
+  // context and advances even while the ledger is minute-scoped.
   const histogramBucket = histogramBucketForRange(range);
   const histogramParams = useMemo(() => ({
     // A trace-scoped hour strip must not be silently clipped by the range
     // picker's window either — same reasoning as eventsFilters above. The
     // server auto-widens to the trace's own event bounds when `from`/`to`
     // are omitted and `trace_id` is present (bu-1f81d).
-    ...(urlTrace ? {} : { from: rangeWindow.from, to: rangeWindow.to }),
     bucket: histogramBucket,
     ...(activeChannels.length > 0 ? { channels: activeChannels.join(",") } : {}),
     ...(statusesCsv ? { statuses: statusesCsv } : {}),
     ...(debouncedQ ? { q: debouncedQ } : {}),
     ...(urlTrace ? { trace_id: urlTrace } : {}),
   }), [
-    rangeWindow.from,
-    rangeWindow.to,
     histogramBucket,
     activeChannels,
     statusesCsv,
@@ -2231,7 +2242,10 @@ export function TimelineTab({
     isLoading: histogramLoading,
     isError: histogramError,
     refetch: refetchHistogram,
-  } = useIngestionEventsHistogram(histogramParams, { enabled: isActive });
+  } = useIngestionEventsHistogram(histogramParams, {
+    enabled: isActive,
+    ...(urlTrace ? {} : { timeScope: liveAggregateTimeScope }),
+  });
 
   // The server can return a coarser actual bucket after its bounded fallback
   // or trace-scoped auto-widening. That response bucket is authoritative for
@@ -2269,16 +2283,16 @@ export function TimelineTab({
       // too rather than sending a window the server will ignore anyway.
       ...(urlTrace
         ? {}
-        : {
-            from: effectiveWindow?.from ?? rangeWindow.from,
-            to: effectiveWindow?.to ?? rangeWindow.to,
-          }),
+        : effectiveWindow ?? {}),
       ...(debouncedQ ? { q: debouncedQ } : {}),
       ...(rollupChannels ? { channels: rollupChannels } : {}),
       ...(rollupStatuses ? { statuses: rollupStatuses } : {}),
       ...(urlTrace ? { trace_id: urlTrace } : {}),
     },
-    { enabled: isActive },
+    {
+      enabled: isActive,
+      ...(!urlTrace && !effectiveWindow ? { timeScope: liveAggregateTimeScope } : {}),
+    },
   );
 
   const rawEvents = useMemo(
@@ -2289,7 +2303,9 @@ export function TimelineTab({
   // Report the most-recent event's received_at to the parent for live-status.
   // We use the first page's first event (newest-first ordering) so the badge
   // reflects true pipeline freshness rather than the client-side filter view.
-  const latestReceivedAt = infiniteData?.pages[0]?.data[0]?.received_at ?? null;
+  const latestReceivedAt = headLatestReceivedAt === undefined
+    ? (infiniteData?.pages[0]?.data[0]?.received_at ?? null)
+    : headLatestReceivedAt;
   useEffect(() => {
     if (!isLoading && onFreshnessChange) {
       // `isError` stays true while React Query retains the last successful
@@ -2575,6 +2591,11 @@ export function TimelineTab({
       )}
 
       {/* Ledger */}
+      {isFollowingLive === false && (
+        <Button variant="outline" size="sm" onClick={showNewEvents}>
+          {newCount > 0 ? `Show ${newCount} new events` : "Return to latest events"}
+        </Button>
+      )}
       <FetchingDim
         isFetching={
           isFetching && isPlaceholderData && !isLoading && !isError && !isFetchingNextPage
@@ -2583,10 +2604,12 @@ export function TimelineTab({
       <div ref={ledgerRef} className="border border-border rounded" data-testid="timeline-ledger">
         <LedgerColumnHeaders />
 
-        {isError ? (
-          <div className="px-6 py-4 space-y-2">
+        {isError && (
+          <div className="px-6 py-4 space-y-2" role="status">
             <p className="font-serif text-[15px] leading-[1.55] text-muted-foreground italic">
-              Failed to load ingestion events.
+              {events.length > 0
+                ? "Refresh failed. Showing previously loaded events."
+                : "Failed to load ingestion events."}
             </p>
             <Button
               variant="outline"
@@ -2599,7 +2622,9 @@ export function TimelineTab({
               Retry
             </Button>
           </div>
-        ) : isLoading ? (
+        )}
+
+        {isError && events.length === 0 ? null : isLoading ? (
           <LedgerSkeleton />
         ) : events.length === 0 ? (
           <div className="px-6 py-8">
@@ -2667,7 +2692,7 @@ export function TimelineTab({
               className="font-mono text-[11px]"
             >
               {isFetchingNextPage ? <Loader2 className="size-3 animate-spin mr-1" /> : null}
-              Load more
+              {isFetchNextPageError ? "Retry loading older events" : "Load more"}
             </Button>
           )}
         </div>

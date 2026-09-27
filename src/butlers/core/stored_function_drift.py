@@ -7,11 +7,11 @@ defines the body of every managed stored function -- some at the top level,
 most nested inside a bootstrap-owned installer or finalizer whose whole job is
 to emit them.  Changing one of those bodies reaches an **already installed**
 database only when an operator re-runs that script by hand: nothing in
-``deploy/`` or the Makefile invokes it, and ``AGENTS.md`` tells operators to
-re-run it "only when the managed schema/role surface changes" -- which a change
-to a stored body is not.  Alembic cannot close the gap either; several of these
-functions are owned by NOLOGIN roles the migration role is deliberately not a
-member of.
+``deploy/`` or the Makefile invokes it, and
+``docs/data_and_storage/schema-topology.md`` tells operators to re-run it when
+the schema or role surface changes -- which a change to a stored body is not.
+Alembic cannot close the gap either; several of these functions are owned by
+NOLOGIN roles the migration role is deliberately not a member of.
 
 So a deployed database can keep executing an old body indefinitely, and --
 before this module -- nothing anywhere reported that the deployed body and the

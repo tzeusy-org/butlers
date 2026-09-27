@@ -181,7 +181,7 @@ async def test_owner_definer_resolution_keeps_tally_entity_linked(pool, monkeypa
         )
 
     monkeypatch.setattr(
-        "butlers.modules.approvals.gate.resolve_owner_channel_via_definer",
+        "butlers.identity.resolve_owner_channel_via_definer",
         _owner_fallback,
     )
     action = PendingAction(

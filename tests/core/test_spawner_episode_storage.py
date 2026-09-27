@@ -13,7 +13,8 @@ import pytest
 from butlers.config import ButlerConfig
 from butlers.core.spawner import Spawner, store_session_episode
 
-pytestmark = pytest.mark.unit
+pytest_plugins = ("tests.core.spawner_fixtures",)
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("spawner_catalog_candidate")]
 
 
 def _make_config(

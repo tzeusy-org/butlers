@@ -8,7 +8,7 @@ The spawner is responsible for:
 5. Enforcing serial dispatch (one instance at a time per butler)
 6. Logging sessions before and after invocation
 7. Passing the configured model to the SDK when set
-8. Resolving models dynamically from the catalog (with TOML fallback)
+8. Resolving models dynamically from the catalog, failing closed for live dispatches
 9. Enforcing a process-wide global concurrency cap across all butlers
 
 Global concurrency cap
@@ -32,6 +32,8 @@ import os
 import sys
 import time
 import uuid
+from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -49,6 +51,7 @@ from butlers.api.conversations import (
 )
 from butlers.config import ButlerConfig
 from butlers.core.audit import write_audit_entry
+from butlers.core.child_env import without_owner_auth
 from butlers.core.dashboard_turns import (
     acknowledge_cancel,
     claim_invoke,
@@ -57,8 +60,20 @@ from butlers.core.dashboard_turns import (
     register_session_and_check_cancel,
     release_invoke,
 )
-from butlers.core.dispatch_intent import derive_dispatch_intent
-from butlers.core.dispatch_outcomes import record_dispatch_attempt
+from butlers.core.dispatch_intent import (
+    DispatchIntent,
+    FitVerdict,
+    derive_dispatch_intent,
+    evaluate_fit,
+)
+from butlers.core.dispatch_outcomes import (
+    DispatchUsageEvidence,
+    bound_resolution_receipt,
+    record_dispatch_attempt,
+)
+from butlers.core.dispatch_outcomes import (
+    project_resolution_receipt as _attempt_resolution_receipt,
+)
 from butlers.core.failover_classifier import FailoverContext, classify_failover_eligibility
 from butlers.core.logging import resolve_log_root
 from butlers.core.mcp_urls import (
@@ -67,27 +82,36 @@ from butlers.core.mcp_urls import (
     runtime_mcp_url,
 )
 from butlers.core.metrics import ButlerMetrics
+from butlers.core.model_capabilities import ModelFeature, adapter_capability_baseline
 from butlers.core.model_routing import (
     BREAKER_OPEN_RULE_OVERRIDE_OUTCOME,
     BREAKER_OPEN_RULE_OVERRIDE_REASON_PREFIX,
     CEILING_DENIAL_REASON_PREFIX,
+    CandidateOutcome,
     Complexity,
+    DispatchResolution,
+    SpendRoutingResult,
     TierQuotaExhausted,
     apply_spend_routing_rules,
     check_monthly_ceiling,
     check_token_quota,
     next_same_tier_candidate,
-    record_token_usage,
     resolve_model_with_effective_tier,
 )
 from butlers.core.permissions import SPAWN_PERMISSION, check_permission
+from butlers.core.purpose_lane import (
+    PURPOSE_LANE_PRIVATE_CONTENT,
+    PURPOSE_LANE_STANDARD,
+    PurposeLane,
+    purpose_lane_from_routing_context,
+)
 from butlers.core.route_inbox import RouteInboxLeaseLost
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter, validated_session_timeout_overhead_s
 from butlers.core.runtimes.codex import MCPToolDiscoveryError
 from butlers.core.session_process_logs import write as session_process_log_write
 from butlers.core.sessions import session_complete, session_create
-from butlers.core.skills import read_system_prompt
+from butlers.core.skills import read_system_prompt_with_sources
 
 # ---------------------------------------------------------------------------
 # Seam imports — functions extracted to focused sub-modules.
@@ -95,11 +119,14 @@ from butlers.core.skills import read_system_prompt
 # ``butlers.core.spawner.<name>`` continue to resolve correctly.
 # ---------------------------------------------------------------------------
 from butlers.core.spawner_context import (
-    _compose_system_prompt,
+    ComposedPrompt,
     _is_missing_memory_table_error,  # noqa: F401 — re-export for test patches
     _log_missing_memory_table_once,  # noqa: F401 — re-export for test patches
     _memory_context_token_budget,
     _memory_module_enabled,
+    compose_effective_system_prompt_receipt,
+    compose_prompt_digest,
+    fetch_blind_spot_preamble,
     fetch_general_timezone_instruction,
     fetch_memory_context,
     fetch_routing_instructions,
@@ -158,17 +185,14 @@ _global_semaphore: asyncio.Semaphore | None = None
 # Avoids disk I/O on every session completion.
 _cached_pricing: object | None = None  # PricingConfig when populated
 
-# Last-resort model id used only when the model catalog returns nothing
-# (no matching entry or DB unreachable). This is a hard-coded fallback
-# constant, not config — nothing in git can override it. It exists so that
-# the spawner keeps a deterministic dispatch model when the catalog path is
-# fully degraded; the catalog path is the canonical source of truth.
-_FALLBACK_MODEL_ID = "claude-haiku-4-5-20251001"
-
-# Last-resort session timeout (seconds), paired with ``_FALLBACK_MODEL_ID``.
-# Used only when neither the catalog nor a ``timeout_override`` supplies a
-# timeout for the current spawn.
-_FALLBACK_SESSION_TIMEOUT_S = 1800
+# Last-resort session timeout and null model sentinel for the explicit pool-free
+# direct-adapter mode used by isolated harnesses. Live daemons always supply a
+# database pool and fail closed when catalog resolution is unavailable.
+_DIRECT_RUNTIME_MODEL_ID: None = None
+_DEFAULT_SESSION_TIMEOUT_S = 1800
+_MAX_FAILOVER_ATTEMPTS = 10
+_MAX_MODEL_RESOLUTION_ERROR_CHARS = 1024
+_MAX_FIT_FINDING_DETAIL_CHARS = 128
 
 # Runtime adapters own subprocess timeout handling because they can kill child
 # processes and preserve adapter-specific diagnostics. The spawner keeps an
@@ -270,6 +294,155 @@ class SpawnerResult:
     session_id: uuid.UUID | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
+    # Prompt-free explanation of model selection. Populated on pre-invocation
+    # resolution failures so callers do not lose the no-winner receipt.
+    resolution_receipt: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class _AdmittedFailoverCandidate:
+    """One same-tier candidate that passed intent fit and runtime preparation."""
+
+    runtime_type: str
+    model: str
+    extra_args: list[str]
+    catalog_entry_id: uuid.UUID
+    timeout_s: int
+    runtime: RuntimeAdapter
+    resolution_receipt: dict[str, Any] | None
+
+
+class ModelResolutionError(RuntimeError):
+    """The model catalog could not produce a safe invocation candidate."""
+
+
+def _fit_summary(intent: DispatchIntent, verdict: FitVerdict) -> str:
+    """Return a bounded, content-blind summary of one failed capability fit."""
+    required = ",".join(sorted(str(feature) for feature in intent.required_features)) or "none"
+    exclusions = (
+        ",".join(
+            sorted(
+                f"{finding.code}:"
+                f"{(finding.detail or 'unspecified')[:_MAX_FIT_FINDING_DETAIL_CHARS]}"
+                for finding in verdict.exclusions
+            )
+        )
+        or "none"
+    )
+    return f"required_features={required}; exclusions={exclusions}"[
+        :_MAX_MODEL_RESOLUTION_ERROR_CHARS
+    ]
+
+
+def _no_selection_error(resolution: DispatchResolution) -> ModelResolutionError:
+    """Classify a no-winner receipt without exposing prompts or candidate identifiers."""
+    candidates = tuple(getattr(resolution, "candidates", ()))
+    if candidates and all(
+        candidate.outcome is CandidateOutcome.EXCLUDED_BREAKER for candidate in candidates
+    ):
+        return ModelResolutionError(
+            f"all_candidates_breaker_open: candidate_count={len(candidates)}"
+        )
+
+    requested_intent = resolution.requested_intent
+    required = (
+        ",".join(sorted(str(feature) for feature in requested_intent.required_features)) or "none"
+    )
+    exclusions = sorted(
+        {
+            f"{finding.code}:{(finding.detail or 'unspecified')[:_MAX_FIT_FINDING_DETAIL_CHARS]}"
+            for candidate in candidates
+            for finding in candidate.exclusions
+        }
+    )
+    exclusion_text = ",".join(exclusions) or "none"
+    detail = (
+        "no_fitting_candidate: "
+        f"required_features={required}; exclusions={exclusion_text}; "
+        f"candidate_count={len(candidates)}"
+    )
+    return ModelResolutionError(detail[:_MAX_MODEL_RESOLUTION_ERROR_CHARS])
+
+
+_FIT_ELIGIBLE_RECEIPT_OUTCOMES = frozenset(
+    {"selected", "eligible", "not_top_priority", "excluded_quota", "excluded_breaker"}
+)
+
+
+def _receipt_candidate_fit_eligible(
+    receipt: dict[str, Any] | None,
+    *,
+    catalog_entry_id: uuid.UUID,
+    effective_tier: str,
+) -> bool | None:
+    """Return the initial intent-fit verdict for one failover candidate.
+
+    ``None`` is reserved for legacy/test resolutions that emitted no receipt.
+    A present but truncated/missing candidate fails closed: required capability
+    fit must not be guessed during failover.
+    """
+    if receipt is None:
+        return None
+    candidates = receipt.get("candidates")
+    if not isinstance(candidates, list):
+        return False
+    expected_id = str(catalog_entry_id)
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        if candidate.get("catalog_entry_id") != expected_id:
+            continue
+        exclusions = candidate.get("exclusions", [])
+        if not isinstance(exclusions, list):
+            return False
+        return (
+            candidate.get("effective_tier") == effective_tier
+            and candidate.get("outcome") in _FIT_ELIGIBLE_RECEIPT_OUTCOMES
+            and not exclusions
+        )
+    return False
+
+
+def _suppressed_candidate_receipt(
+    base: dict[str, Any] | None,
+    *,
+    attempt_index: int,
+    previous_failure_class: str,
+) -> dict[str, Any] | None:
+    """Attach attempt provenance without rewriting a hard-fit exclusion as selected."""
+    if base is None:
+        return None
+    receipt = deepcopy(base)
+    receipt["attempt_index"] = attempt_index
+    receipt["failover"] = {
+        "from_attempt_index": max(0, attempt_index - 1),
+        "failure_class": previous_failure_class,
+    }
+    return bound_resolution_receipt(receipt)
+
+
+def _composed_prompt_ledger_kwargs(digest: ComposedPrompt | None) -> dict[str, int | None]:
+    """Expand a composed-prompt digest into record_token_usage()'s per-layer kwargs.
+
+    ``None`` (no composition happened this dispatch, e.g. the guardrail
+    early-write before a resume outcome is known) maps every column to
+    ``None`` rather than a fabricated 0.
+    """
+    if digest is None:
+        return {
+            "base_prompt_tokens": None,
+            "timezone_instruction_tokens": None,
+            "context_preamble_tokens": None,
+            "routing_instructions_tokens": None,
+            "memory_context_tokens": None,
+        }
+    return {
+        "base_prompt_tokens": digest.base_prompt_tokens,
+        "timezone_instruction_tokens": digest.timezone_instruction_tokens,
+        "context_preamble_tokens": digest.context_preamble_tokens,
+        "routing_instructions_tokens": digest.routing_instructions_tokens,
+        "memory_context_tokens": digest.memory_context_tokens,
+    }
 
 
 def _append_runtime_session_query(
@@ -347,13 +520,21 @@ async def _write_dispatch_attempt(
     tool_call_count: int | None = None,
     logical_session_id: str | None = None,
     duration_ms: int | None = None,
+    purpose_lane: PurposeLane = PURPOSE_LANE_STANDARD,
     produce_fleet_halt: bool = False,
+    usage: dict[str, Any] | None = None,
+    usage_purpose: str | None = None,
+    resume_outcome: str | None = None,
+    composed_prompt: ComposedPrompt | None = None,
+    invoked: bool = False,
+    resolution_receipt: dict[str, Any] | None = None,
 ) -> int | None:
     """Write one attempt row to public.model_dispatch_attempts (best-effort).
 
     ``outcome`` must be one of:
     - ``'quota_skip'``    — candidate skipped before invocation due to quota
     - ``'runtime_failure'`` — adapter raised a failover-eligible error
+    - ``'resume_failure'`` — a failed provider resume will retry the same candidate cold
     - ``'suppressed'``    — failover decision was ineligible (side effects / unknown)
     - ``'exhausted'``     — all same-tier candidates tried, none succeeded
     - ``'success'``       — this attempt produced the final successful result
@@ -366,10 +547,26 @@ async def _write_dispatch_attempt(
     Consumed by ``model_routing.get_routing_evidence`` for evidence-based
     routing (bu-ep4ks.13).
 
-    Qualifying breaker outcomes and fleet-halt denials use the atomic recorder;
-    other outcomes retain lightweight best-effort persistence.  Never raises,
-    so provenance degradation cannot disrupt the caller-visible runtime result.
+    Invoked outcomes commit their measured or explicitly unmeasurable usage in
+    the same transaction. Synthetic outcomes omit ``invoked`` and retain
+    lightweight best-effort persistence. Never raises, so provenance
+    degradation cannot disrupt the caller-visible runtime result.
     """
+    usage_evidence = None
+    if invoked:
+        measured = usage is not None and usage.get("input_tokens") is not None
+        usage_evidence = DispatchUsageEvidence(
+            input_tokens=usage.get("input_tokens") if measured else None,
+            output_tokens=(usage.get("output_tokens") or 0) if measured else None,
+            cached_input_tokens=(usage.get("cache_read_input_tokens") or 0) if measured else None,
+            cache_creation_tokens=(usage.get("cache_creation_input_tokens") or 0)
+            if measured
+            else None,
+            purpose=usage_purpose,
+            resume_outcome=resume_outcome,
+            usage_source="measured" if measured else "unmeasurable",
+            **_composed_prompt_ledger_kwargs(composed_prompt),
+        )
     return await record_dispatch_attempt(
         pool,
         catalog_entry_id=catalog_entry_id,
@@ -383,7 +580,10 @@ async def _write_dispatch_attempt(
         tool_call_count=tool_call_count,
         logical_session_id=logical_session_id,
         duration_ms=duration_ms,
+        purpose_lane=purpose_lane,
         produce_fleet_halt=produce_fleet_halt,
+        usage_evidence=usage_evidence,
+        resolution_receipt=resolution_receipt,
     )
 
 
@@ -609,6 +809,140 @@ class Spawner:
         logger.debug("Lazily instantiated adapter for runtime_type=%s", runtime_type)
         return adapter
 
+    async def _next_admissible_failover_candidate(
+        self,
+        *,
+        effective_tier: str,
+        attempted_ids: list[uuid.UUID],
+        attempt_index: int,
+        previous_failure_class: str,
+        base_resolution_receipt: dict[str, Any] | None,
+        selection_reason: str | None,
+        session_id: uuid.UUID | None,
+        logical_session_id: str,
+        purpose_lane: PurposeLane,
+    ) -> tuple[_AdmittedFailoverCandidate | None, int]:
+        """Return the next fit-eligible, registered same-tier candidate.
+
+        Capability admission and non-invoked provenance are deliberately shared by
+        quota and runtime failover. Keeping those paths on one policy prevents a
+        candidate rejected for the original dispatch intent from becoming eligible
+        merely because the preceding attempt failed for a different reason.
+        """
+        if self._pool is None:
+            return None, attempt_index
+
+        while attempt_index < _MAX_FAILOVER_ATTEMPTS:
+            candidate = await next_same_tier_candidate(
+                self._pool,
+                self._config.name,
+                effective_tier,
+                attempted_ids,
+            )
+            if candidate is None:
+                return None, attempt_index
+
+            runtime_type, model, extra_args, entry_id, timeout_s = candidate
+            fit_eligible = _receipt_candidate_fit_eligible(
+                base_resolution_receipt,
+                catalog_entry_id=entry_id,
+                effective_tier=effective_tier,
+            )
+            if fit_eligible is False:
+                failure_reason = (
+                    "intent_mismatch: candidate was not fit-eligible in the initial "
+                    "dispatch resolution"
+                )
+                logger.warning(
+                    "Skipping failover candidate that did not satisfy the original "
+                    "dispatch intent for butler=%s catalog_entry_id=%s tier=%s",
+                    self._config.name,
+                    entry_id,
+                    effective_tier,
+                )
+                attempted_ids.append(entry_id)
+                await _write_dispatch_attempt(
+                    self._pool,
+                    catalog_entry_id=entry_id,
+                    butler=self._config.name,
+                    outcome="suppressed",
+                    attempt_index=attempt_index,
+                    session_id=session_id,
+                    failure_reason=failure_reason,
+                    error_code="ModelResolutionError",
+                    error_message=failure_reason,
+                    tool_call_count=0,
+                    logical_session_id=logical_session_id,
+                    purpose_lane=purpose_lane,
+                    resolution_receipt=_suppressed_candidate_receipt(
+                        base_resolution_receipt,
+                        attempt_index=attempt_index,
+                        previous_failure_class=previous_failure_class,
+                    ),
+                    invoked=False,
+                )
+                attempt_index += 1
+                continue
+
+            resolution_receipt = _attempt_resolution_receipt(
+                base_resolution_receipt,
+                catalog_entry_id=entry_id,
+                runtime_type=runtime_type,
+                model_id=model,
+                effective_tier=effective_tier,
+                attempt_index=attempt_index,
+                previous_failure_class=previous_failure_class,
+                selection_reason=selection_reason,
+            )
+            provider_config = await self._resolve_provider_config(model)
+            try:
+                runtime = self._get_or_create_adapter(runtime_type, provider_config).create_worker()
+            except ValueError:
+                failure_reason = (
+                    "runtime_config_error: unregistered failover runtime before invocation"
+                )
+                logger.warning(
+                    "Skipping unregistered failover runtime_type=%s for butler=%s "
+                    "catalog_entry_id=%s",
+                    runtime_type,
+                    self._config.name,
+                    entry_id,
+                )
+                attempted_ids.append(entry_id)
+                await _write_dispatch_attempt(
+                    self._pool,
+                    catalog_entry_id=entry_id,
+                    butler=self._config.name,
+                    outcome="runtime_failure",
+                    attempt_index=attempt_index,
+                    session_id=session_id,
+                    failure_reason=failure_reason,
+                    error_code="ModelResolutionError",
+                    error_message=failure_reason,
+                    tool_call_count=0,
+                    logical_session_id=logical_session_id,
+                    purpose_lane=purpose_lane,
+                    resolution_receipt=resolution_receipt,
+                    invoked=False,
+                )
+                attempt_index += 1
+                continue
+
+            return (
+                _AdmittedFailoverCandidate(
+                    runtime_type=runtime_type,
+                    model=model,
+                    extra_args=extra_args,
+                    catalog_entry_id=entry_id,
+                    timeout_s=timeout_s,
+                    runtime=runtime,
+                    resolution_receipt=resolution_receipt,
+                ),
+                attempt_index,
+            )
+
+        return None, attempt_index
+
     async def trigger(
         self,
         prompt: str,
@@ -628,6 +962,7 @@ class Spawner:
         conversation_id: uuid.UUID | None = None,
         dashboard_turn_id: uuid.UUID | None = None,
         route_lease_lost: asyncio.Event | None = None,
+        attachments: Sequence[Mapping[str, Any]] | None = None,
     ) -> SpawnerResult:
         """Spawn an ephemeral runtime instance.
 
@@ -655,7 +990,8 @@ class Spawner:
         complexity:
             Task complexity tier used to select a model from the catalog.
             Defaults to ``Complexity.WORKHORSE``.  The catalog is queried with this
-            tier; when no catalog entry matches the TOML-configured model is used.
+            tier. Live pooled dispatches fail closed when no catalog entry fits;
+            only pool-free test harnesses use direct-adapter mode.
         cwd:
             Optional working directory for the runtime invocation. When ``None``,
             defaults to the butler's config directory. Used by the self-healing
@@ -710,6 +1046,15 @@ class Spawner:
             invocation, but for a dashboard turn it deliberately leaves the
             durable session unresolved so recovery can surface ambiguity rather
             than inventing a failed terminal outcome.
+        attachments:
+            Optional ``IngestAttachment``-shaped dicts (``media_type``,
+            ``storage_ref``, ...) carried by the triggering message
+            (bu-2jtfw.7). When any entry's ``media_type`` starts with
+            ``"image/"``, the derived :class:`~butlers.core.dispatch_intent.DispatchIntent`
+            requires :attr:`~butlers.core.model_capabilities.ModelFeature.VISION`,
+            so a catalog with no vision-capable model resolves this dispatch as
+            unmeetable rather than silently handing the image to a text-only
+            model that would hallucinate a description.
 
         Returns
         -------
@@ -729,7 +1074,7 @@ class Spawner:
                 return await self._dashboard_preflight_failure(
                     dashboard_turn_id=dashboard_turn_id,
                     error="Spawner is shutting down; not accepting new triggers",
-                    model=_FALLBACK_MODEL_ID,
+                    model=None,
                 )
             raise RuntimeError("Spawner is shutting down; not accepting new triggers")
 
@@ -755,7 +1100,7 @@ class Spawner:
             return await self._dashboard_preflight_failure(
                 dashboard_turn_id=dashboard_turn_id,
                 error=error_msg,
-                model=_FALLBACK_MODEL_ID,
+                model=None,
             )
 
         # Implementation note: queue-depth checks read Semaphore._waiters, which
@@ -774,7 +1119,7 @@ class Spawner:
             return await self._dashboard_preflight_failure(
                 dashboard_turn_id=dashboard_turn_id,
                 error=error_msg,
-                model=_FALLBACK_MODEL_ID,
+                model=None,
             )
 
         self._in_flight_event.clear()
@@ -825,6 +1170,7 @@ class Spawner:
                         conversation_id=conversation_id,
                         dashboard_turn_id=dashboard_turn_id,
                         route_lease_lost=route_lease_lost,
+                        attachments=attachments,
                     )
                 finally:
                     self._metrics.spawner_active_sessions_dec()
@@ -856,6 +1202,7 @@ class Spawner:
                             conversation_id=conversation_id,
                             dashboard_turn_id=dashboard_turn_id,
                             route_lease_lost=route_lease_lost,
+                            attachments=attachments,
                         )
                     finally:
                         self._metrics.spawner_active_sessions_dec()
@@ -1050,6 +1397,7 @@ class Spawner:
         dashboard_turn_id: uuid.UUID | None,
         error: str,
         model: str | None,
+        resolution_receipt: dict[str, Any] | None = None,
     ) -> SpawnerResult:
         """Record a pre-invocation dashboard failure before returning it."""
         if dashboard_turn_id is not None and self._pool is not None:
@@ -1073,7 +1421,12 @@ class Spawner:
                         dashboard_turn_id,
                         terminal.outcome,
                     )
-        return SpawnerResult(success=False, error=error, model=model)
+        return SpawnerResult(
+            success=False,
+            error=error,
+            model=model,
+            resolution_receipt=resolution_receipt,
+        )
 
     @staticmethod
     def _normalize_mcp_warmup_url(url: str) -> str | None:
@@ -1217,6 +1570,7 @@ class Spawner:
         conversation_id: uuid.UUID | None = None,
         dashboard_turn_id: uuid.UUID | None = None,
         route_lease_lost: asyncio.Event | None = None,
+        attachments: Sequence[Mapping[str, Any]] | None = None,
     ) -> SpawnerResult:
         """Internal: run the runtime invocation (called under lock)."""
         session_id: uuid.UUID | None = None
@@ -1244,6 +1598,7 @@ class Spawner:
         # block skips classification for exceptions that are already classified.
         _failover_already_classified: bool = False
         routing_context = _capture_pipeline_routing_context()
+        purpose_lane = purpose_lane_from_routing_context(routing_context)
         # Ledger token tracking: set as soon as the adapter reports usage so that
         # ledger recording in the finally block captures tokens even when post-invoke
         # processing fails (e.g. session_complete raises). Tokens are consumed by the
@@ -1252,6 +1607,13 @@ class Spawner:
         _ledger_output_tokens: int | None = None
         _ledger_cached_input_tokens: int = 0
         _ledger_cache_creation_tokens: int = 0
+        # Resume-outcome tracking (bu-hz0g0): set only when a conversational
+        # (trigger_source == "route") turn on a resume-capable adapter actually
+        # attempts a provider-native session resume. Stays None for every
+        # other dispatch -- see record_token_usage()'s resume_outcome docstring
+        # for the exact vocabulary.
+        _resume_outcome: str | None = None
+        _composed_prompt_digest: ComposedPrompt | None = None
 
         # Prepend context to prompt if provided
         final_prompt = prompt
@@ -1268,13 +1630,21 @@ class Spawner:
                 model=None,
             )
 
-        # Resolve model from the catalog; fall back to the hard-coded default
-        # constants only when no catalog entry exists or catalog resolution fails.
+        # Resolve model from the catalog. A populated catalog whose candidates
+        # all fail hard fit is an explicit refusal, not a reason to bypass the
+        # dispatch intent through a hidden model. When the catalog itself is
+        # empty/unavailable, a live daemon fails before invocation: proceeding
+        # without a catalog entry would bypass permission, quota, ceiling,
+        # breaker, and dispatch-provenance gates keyed by catalog_entry_id.
+        # Pool-free direct-adapter mode remains available for isolated harnesses
+        # and still checks the adapter baseline against the required intent.
         # resolve_model_with_effective_tier returns a 6-tuple including the effective tier
         # needed to restrict same-tier failover attempts.
-        fallback_runtime_type = DEFAULT_RUNTIME_TYPE
-        fallback_model = _FALLBACK_MODEL_ID
+        direct_runtime_type = DEFAULT_RUNTIME_TYPE
+        direct_runtime_model = _DIRECT_RUNTIME_MODEL_ID
         catalog_result = None
+        _resolution_receipts = []
+        _catalog_resolution_error: Exception | None = None
         # ---------------------------------------------------------------------------
         # Quota gate fold (bu-ep4ks.13 follow-up / bu-k9te9): quota_aware=True folds
         # the pre-spawn token-quota check for the top-priority tier candidate into
@@ -1297,8 +1667,16 @@ class Spawner:
         # runtime that cannot accept tools (``ApiAdapter`` raises on non-empty
         # ``mcp_servers``) must be disqualified during resolution rather than at invoke
         # time, when the session has already been created and the fallback is a failure.
+        _has_image_attachment = bool(attachments) and any(
+            str(att.get("media_type", "")).startswith("image/") for att in attachments
+        )
+        _vision_required = (ModelFeature.VISION,) if _has_image_attachment else ()
         dispatch_intent = derive_dispatch_intent(
-            trigger_source, complexity, deadline_s=timeout_override
+            trigger_source,
+            complexity,
+            deadline_s=timeout_override,
+            extra_required_features=_vision_required,
+            purpose_lane=purpose_lane,
         )
         if self._pool is not None:
             try:
@@ -1308,23 +1686,23 @@ class Spawner:
                     complexity,
                     quota_aware=True,
                     intent=dispatch_intent,
+                    receipt_sink=_resolution_receipts,
                 )
                 _initial_quota_confirmed = catalog_result is not None
             except TierQuotaExhausted as _quota_exc:
                 catalog_result = _quota_exc.representative
                 _initial_quota_confirmed = False
-            except Exception:
-                logger.debug(
+            except Exception as exc:
+                _catalog_resolution_error = exc
+                logger.warning(
                     "Catalog model resolution failed for butler=%s complexity=%s; "
-                    "using TOML config",
+                    "live dispatch will fail closed (error_class=%s)",
                     self._config.name,
                     complexity,
-                    exc_info=True,
+                    type(exc).__name__,
                 )
 
-        # Only trust the catalog result when it is a properly-typed tuple; fall back to TOML
-        # for any unexpected value (e.g. a MagicMock from a test pool that does not stub
-        # the catalog tables).
+        # Only trust the catalog result when it is a properly-typed tuple.
         _catalog_valid = (
             catalog_result is not None
             and isinstance(catalog_result, tuple)
@@ -1338,7 +1716,7 @@ class Spawner:
         catalog_entry_id: uuid.UUID | None = None
         catalog_timeout_s: int | None = None
         # Effective tier pinned from initial resolution for same-tier failover.
-        # None when using static_fallback (no failover in that path).
+        # None in explicit pool-free direct-adapter mode (no catalog tier).
         _failover_effective_tier: str | None = None
         if _catalog_valid:
             assert catalog_result is not None  # narrowing for type checker
@@ -1352,11 +1730,78 @@ class Spawner:
             ) = catalog_result
             resolution_source = "catalog"
         else:
-            resolved_runtime_type = fallback_runtime_type
-            model = fallback_model
+            _resolution = _resolution_receipts[-1] if _resolution_receipts else None
+            _base_resolution_receipt = (
+                bound_resolution_receipt(_resolution.describe())
+                if _resolution is not None
+                else None
+            )
+            if _resolution is not None and _resolution.candidates:
+                resolution_error = _no_selection_error(_resolution)
+                logger.error(
+                    "Model resolution refused invocation for butler=%s complexity=%s: %s",
+                    self._config.name,
+                    complexity,
+                    resolution_error,
+                )
+                return await self._dashboard_preflight_failure(
+                    dashboard_turn_id=dashboard_turn_id,
+                    error=f"ModelResolutionError: {resolution_error}",
+                    model=None,
+                    resolution_receipt=_base_resolution_receipt,
+                )
+
+            if self._pool is not None:
+                code = (
+                    "catalog_unavailable"
+                    if _catalog_resolution_error is not None
+                    else "no_eligible_catalog_entries"
+                )
+                resolution_error = ModelResolutionError(code)
+                logger.error(
+                    "Model resolution refused invocation for butler=%s complexity=%s: %s",
+                    self._config.name,
+                    complexity,
+                    resolution_error,
+                )
+                return await self._dashboard_preflight_failure(
+                    dashboard_turn_id=dashboard_turn_id,
+                    error=f"ModelResolutionError: {resolution_error}",
+                    model=None,
+                    resolution_receipt=_base_resolution_receipt,
+                )
+
+            direct_runtime_fit = evaluate_fit(
+                dispatch_intent,
+                adapter_capability_baseline(direct_runtime_type),
+            )
+            if not direct_runtime_fit.eligible:
+                resolution_error = ModelResolutionError(
+                    f"direct_runtime_unfit: {_fit_summary(dispatch_intent, direct_runtime_fit)}"
+                )
+                logger.error(
+                    "Model resolution refused pool-free direct invocation for "
+                    "butler=%s complexity=%s: %s",
+                    self._config.name,
+                    complexity,
+                    resolution_error,
+                )
+                return await self._dashboard_preflight_failure(
+                    dashboard_turn_id=dashboard_turn_id,
+                    error=f"ModelResolutionError: {resolution_error}",
+                    model=None,
+                    resolution_receipt=_base_resolution_receipt,
+                )
+
+            resolved_runtime_type = direct_runtime_type
+            model = direct_runtime_model
             catalog_extra_args = []
             catalog_timeout_s = None
-            resolution_source = "static_fallback"
+            resolution_source = "direct_runtime"
+        if _catalog_valid:
+            _base_resolution_receipt = (
+                _resolution_receipts[-1].describe() if _resolution_receipts else None
+            )
 
         # ---------------------------------------------------------------------------
         # Ceiling gate fold (bu-ep4ks.13 follow-up / bu-k9te9): kick off the monthly
@@ -1370,7 +1815,7 @@ class Spawner:
         # (evaluated after the quota gate settles, against the final resolved
         # catalog_entry_id) -- this task is only awaited there, not consulted early.
         # Gated on catalog_entry_id is not None to match the existing ceiling gate's
-        # own gating (static_fallback never touches the catalog tables), so no new
+        # own gating (direct_runtime never touches the catalog tables), so no new
         # query fires on a path that previously issued none.
         _ceiling_task: asyncio.Task | None = None
         if catalog_entry_id is not None and self._pool is not None:
@@ -1399,7 +1844,7 @@ class Spawner:
         # operate on the rule-selected model. This is a SELECTION step (which model),
         # distinct from the authorization (permissions) and budget (quota/ceiling) DENY
         # gates below. apply_spend_routing_rules fails open, so a rules error never
-        # wedges spawns. Only runs on a real catalog resolution (static_fallback has no
+        # wedges spawns. Only runs on a real catalog resolution (direct_runtime has no
         # catalog_entry_id to route from).
         # ---------------------------------------------------------------------------
         # Per-call USD cap surfaced by a matching spend rule's action.max_cost_per_call
@@ -1418,6 +1863,8 @@ class Spawner:
         # -- exactly the pre-fold behavior, since the old code always quota-checked
         # whatever apply_spend_routing_rules produced.
         _pre_rule_catalog_entry_id = catalog_entry_id
+        _receipt_selection_reason: str | None = None
+        _routing_result: SpendRoutingResult | None = None
         if catalog_entry_id is not None and self._pool is not None:
             try:
                 _routing_result = await apply_spend_routing_rules(
@@ -1431,7 +1878,11 @@ class Spawner:
                         catalog_entry_id,
                         catalog_timeout_s,
                     ),
-                    trigger_source=trigger_source,
+                    trigger_source=(
+                        purpose_lane
+                        if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
+                        else trigger_source
+                    ),
                 )
                 (
                     resolved_runtime_type,
@@ -1451,10 +1902,51 @@ class Spawner:
                     exc_info=True,
                 )
         _spend_rule_fired = catalog_entry_id != _pre_rule_catalog_entry_id
+        if _spend_rule_fired:
+            _receipt_selection_reason = "spend_rule_override"
+
+        # Every post-resolution override remains subordinate to the original
+        # dispatch intent. Spend policy may change the winner,
+        # but they cannot turn a hard-fit exclusion into an invocable selection.
+        final_fit_eligible = (
+            None
+            if catalog_entry_id is None or _failover_effective_tier is None
+            else _receipt_candidate_fit_eligible(
+                _base_resolution_receipt,
+                catalog_entry_id=catalog_entry_id,
+                effective_tier=_failover_effective_tier,
+            )
+        )
+        if final_fit_eligible is False:
+            required = (
+                ",".join(sorted(str(feature) for feature in dispatch_intent.required_features))
+                or "none"
+            )
+            selection_reason = _receipt_selection_reason or "post_resolution_selection"
+            resolution_error = ModelResolutionError(
+                (
+                    "post_resolution_selection_unfit: "
+                    f"selection_reason={selection_reason}; required_features={required}"
+                )[:_MAX_MODEL_RESOLUTION_ERROR_CHARS]
+            )
+            logger.error(
+                "Post-resolution model selection refused invocation for "
+                "butler=%s complexity=%s selection_reason=%s: %s",
+                self._config.name,
+                complexity,
+                selection_reason,
+                resolution_error,
+            )
+            return await self._dashboard_preflight_failure(
+                dashboard_turn_id=dashboard_turn_id,
+                error=f"ModelResolutionError: {resolution_error}",
+                model=model,
+                resolution_receipt=_base_resolution_receipt,
+            )
 
         # Speculative prewarm (bu-ep4ks.13 follow-up / bu-k9te9, slice 4): the runtime_type
-        # this dispatch will use is now fully settled (post spend-rule override), regardless
-        # of whether resolution came from the catalog or the static TOML fallback. Fire the
+        # this dispatch will use is now settled before quota failover, regardless of
+        # whether resolution came from the catalog or pool-free direct mode. Fire the
         # warmup speculatively here -- fire-and-forget, off the critical path -- so it
         # overlaps with the permission/quota/ceiling gates and pre-invocation context
         # fetches below instead of only starting right before the actual invoke() call.
@@ -1475,6 +1967,16 @@ class Spawner:
         # (suppressed / runtime_failure / success) even when request_id is None
         # (scheduler/tick triggers).
         effective_request_id: str = request_id or generate_uuid7_string()
+        _current_resolution_receipt = _attempt_resolution_receipt(
+            _base_resolution_receipt,
+            catalog_entry_id=catalog_entry_id,
+            runtime_type=resolved_runtime_type,
+            model_id=model,
+            effective_tier=_failover_effective_tier,
+            attempt_index=0,
+            selection_reason=_receipt_selection_reason,
+        )
+        _next_attempt_index = 0
 
         # Breaker-open rule override (bu-14j0m, decision (b)): if an operator
         # spend rule routed to a model whose dispatch-outcome circuit breaker
@@ -1503,9 +2005,22 @@ class Spawner:
                 ),
                 tool_call_count=0,
                 logical_session_id=effective_request_id,
+                purpose_lane=purpose_lane,
+                resolution_receipt=_current_resolution_receipt,
+            )
+            _next_attempt_index += 1
+            _current_resolution_receipt = _attempt_resolution_receipt(
+                _base_resolution_receipt,
+                catalog_entry_id=catalog_entry_id,
+                runtime_type=resolved_runtime_type,
+                model_id=model,
+                effective_tier=_failover_effective_tier,
+                attempt_index=_next_attempt_index,
+                selection_reason=_receipt_selection_reason,
             )
 
         _attempted_ids: list[uuid.UUID] = []
+        _prepared_runtime: RuntimeAdapter | None = None
 
         # ---------------------------------------------------------------------------
         # Permissions-matrix enforcement (public.permissions)
@@ -1539,10 +2054,12 @@ class Spawner:
                     catalog_entry_id=catalog_entry_id,
                     butler=self._config.name,
                     outcome="quota_skip",
-                    attempt_index=len(_attempted_ids),
+                    attempt_index=_next_attempt_index,
                     failure_reason=perm_msg,
                     tool_call_count=0,
                     logical_session_id=effective_request_id,
+                    purpose_lane=purpose_lane,
+                    resolution_receipt=_current_resolution_receipt,
                 )
                 return await self._dashboard_preflight_failure(
                     dashboard_turn_id=dashboard_turn_id,
@@ -1584,7 +2101,7 @@ class Spawner:
                     catalog_entry_id,
                     quota_msg,
                 )
-                _skipped_attempt_index = len(_attempted_ids)
+                _skipped_attempt_index = _next_attempt_index
                 _attempted_ids.append(catalog_entry_id)
                 await _write_dispatch_attempt(
                     self._pool,
@@ -1595,7 +2112,10 @@ class Spawner:
                     failure_reason=quota_msg,
                     tool_call_count=0,
                     logical_session_id=effective_request_id,
+                    purpose_lane=purpose_lane,
+                    resolution_receipt=_current_resolution_receipt,
                 )
+                _next_attempt_index += 1
 
                 if _failover_effective_tier is None:
                     # No tier pinned (shouldn't happen in this branch, but be safe)
@@ -1605,13 +2125,21 @@ class Spawner:
                         model=model,
                     )
 
-                next_candidate = await next_same_tier_candidate(
-                    self._pool,
-                    self._config.name,
-                    _failover_effective_tier,
-                    _attempted_ids,
+                (
+                    admitted_candidate,
+                    _next_attempt_index,
+                ) = await self._next_admissible_failover_candidate(
+                    effective_tier=_failover_effective_tier,
+                    attempted_ids=_attempted_ids,
+                    attempt_index=_next_attempt_index,
+                    previous_failure_class="quota_exhausted",
+                    base_resolution_receipt=_base_resolution_receipt,
+                    selection_reason=_receipt_selection_reason,
+                    session_id=None,
+                    logical_session_id=effective_request_id,
+                    purpose_lane=purpose_lane,
                 )
-                if next_candidate is None:
+                if admitted_candidate is None:
                     # No candidates remain: hard block.
                     self._metrics.record_failover_exhausted(tier=_failover_effective_tier)
                     logger.warning(
@@ -1629,17 +2157,18 @@ class Spawner:
                     )
 
                 # Advance to the next candidate.
-                next_rt, next_model, next_extra_args, next_entry_id, next_timeout_s = next_candidate
                 self._metrics.record_failover_attempt(
                     from_model=model,
-                    to_model=next_model,
+                    to_model=admitted_candidate.model,
                     reason="quota_exhausted",
                 )
-                resolved_runtime_type = next_rt
-                model = next_model
-                catalog_extra_args = next_extra_args
-                catalog_entry_id = next_entry_id
-                catalog_timeout_s = next_timeout_s
+                resolved_runtime_type = admitted_candidate.runtime_type
+                model = admitted_candidate.model
+                catalog_extra_args = admitted_candidate.extra_args
+                catalog_entry_id = admitted_candidate.catalog_entry_id
+                catalog_timeout_s = admitted_candidate.timeout_s
+                _prepared_runtime = admitted_candidate.runtime
+                _current_resolution_receipt = admitted_candidate.resolution_receipt
                 # Loop again to check quota for the new candidate.
 
         # ---------------------------------------------------------------------------
@@ -1683,11 +2212,13 @@ class Spawner:
                     catalog_entry_id=catalog_entry_id,
                     butler=self._config.name,
                     outcome="quota_skip",
-                    attempt_index=len(_attempted_ids),
+                    attempt_index=_next_attempt_index,
                     failure_reason=ceiling_msg,
                     tool_call_count=0,
                     logical_session_id=effective_request_id,
+                    purpose_lane=purpose_lane,
                     produce_fleet_halt=True,
+                    resolution_receipt=_current_resolution_receipt,
                 )
                 return await self._dashboard_preflight_failure(
                     dashboard_turn_id=dashboard_turn_id,
@@ -1744,10 +2275,12 @@ class Spawner:
                     catalog_entry_id=catalog_entry_id,
                     butler=self._config.name,
                     outcome="quota_skip",
-                    attempt_index=len(_attempted_ids),
+                    attempt_index=_next_attempt_index,
                     failure_reason=cap_msg,
                     tool_call_count=0,
                     logical_session_id=effective_request_id,
+                    purpose_lane=purpose_lane,
+                    resolution_receipt=_current_resolution_receipt,
                 )
                 return await self._dashboard_preflight_failure(
                     dashboard_turn_id=dashboard_turn_id,
@@ -1757,28 +2290,32 @@ class Spawner:
 
         # Resolve provider config (e.g. Ollama base URL) for the model
         try:
-            provider_config = await self._resolve_provider_config(model)
+            if _prepared_runtime is not None:
+                runtime = _prepared_runtime
+            else:
+                provider_config = await self._resolve_provider_config(model)
 
-            # Select adapter for the resolved runtime type (lazy instantiation on demand).
-            # Fall back to the default adapter if the catalog resolved an unregistered runtime type.
-            try:
-                runtime = self._get_or_create_adapter(
-                    resolved_runtime_type, provider_config
-                ).create_worker()
-            except ValueError:
-                logger.warning(
-                    "Catalog resolved unregistered runtime_type=%s for butler=%s; "
-                    "falling back to default runtime_type=%s",
-                    resolved_runtime_type,
-                    self._config.name,
-                    fallback_runtime_type,
-                )
-                resolved_runtime_type = fallback_runtime_type
-                model = fallback_model
-                catalog_extra_args = []
-                catalog_timeout_s = None
-                resolution_source = "static_fallback"
-                runtime = self._get_or_create_adapter(fallback_runtime_type).create_worker()
+                # Select adapter for the resolved runtime type (lazy instantiation on demand).
+                try:
+                    runtime = self._get_or_create_adapter(
+                        resolved_runtime_type, provider_config
+                    ).create_worker()
+                except ValueError:
+                    resolution_error = ModelResolutionError(
+                        f"unregistered_runtime_type: runtime_type={resolved_runtime_type}"
+                    )
+                    logger.error(
+                        "Catalog resolved unregistered runtime_type=%s for butler=%s; "
+                        "refusing invocation",
+                        resolved_runtime_type,
+                        self._config.name,
+                    )
+                    return await self._dashboard_preflight_failure(
+                        dashboard_turn_id=dashboard_turn_id,
+                        error=f"ModelResolutionError: {resolution_error}",
+                        model=model,
+                        resolution_receipt=_base_resolution_receipt,
+                    )
         except Exception as exc:
             if dashboard_turn_id is not None:
                 return await self._dashboard_preflight_failure(
@@ -1809,10 +2346,92 @@ class Spawner:
             if span.is_recording():
                 trace_id = format(span.get_span_context().trace_id, "032x")
 
+            # Read system prompt. The live override (HEAD of
+            # public.system_prompt_history, set via the dashboard prompt editor)
+            # takes precedence over the on-disk CLAUDE.md seed when present.
+            shared_pool = (
+                self._credential_store.shared_pool if self._credential_store is not None else None
+            )
+            prompt_override = await fetch_system_prompt_override(
+                shared_pool or self._pool, self._config.name
+            )
+            resolved_system_prompt = read_system_prompt_with_sources(
+                self._config_dir, self._config.name, db_override=prompt_override
+            )
+            system_prompt = resolved_system_prompt.prompt
+
+            # Fetch situational context preamble (fail-open)
+            context_preamble_ctx = await fetch_situational_context_preamble(
+                self._pool, self._config.name
+            )
+            general_timezone_instruction = await fetch_general_timezone_instruction(
+                self._pool,
+                self._config.name,
+                self._credential_store,
+            )
+
+            # Fetch owner routing instructions (switchboard only)
+            # Intentional name check: routing instructions are the switchboard's classifier
+            # context. No other staffer or domain butler uses this context injection.
+            routing_ctx: str | None = None
+            if self._config.name == "switchboard":
+                routing_ctx = await fetch_routing_instructions(self._pool, self._config.name)
+
+            memory_ctx: str | None = None
+            memory_enabled = _memory_module_enabled(self._config)
+            if memory_enabled:
+                memory_ctx = await fetch_memory_context(
+                    self._pool,
+                    self._config.name,
+                    final_prompt,
+                    token_budget=_memory_context_token_budget(self._config),
+                )
+
+            blind_spot_preamble_enabled = True
+            if self._runtime_config_accessor is not None:
+                try:
+                    blind_spot_preamble_enabled = (
+                        await self._runtime_config_accessor.get()
+                    ).blind_spot_preamble_enabled
+                except Exception:
+                    logger.warning(
+                        "Failed to read blind_spot_preamble_enabled for %s; defaulting to on",
+                        self._config.name,
+                        exc_info=True,
+                    )
+            blind_spot_preamble = await fetch_blind_spot_preamble(
+                self._pool,
+                self._config.name,
+                self._config,
+                enabled=blind_spot_preamble_enabled,
+            )
+
+            _composed_prompt_digest = compose_prompt_digest(
+                system_prompt,
+                memory_ctx,
+                general_timezone_instruction=general_timezone_instruction,
+                routing_instructions=routing_ctx,
+                context_preamble=context_preamble_ctx,
+            )
+            prompt_receipt = compose_effective_system_prompt_receipt(
+                system_prompt,
+                memory_ctx,
+                base_sources=[
+                    (source.source, source.status, source.content)
+                    for source in resolved_system_prompt.sources
+                ],
+                general_timezone_instruction=general_timezone_instruction,
+                routing_instructions=routing_ctx,
+                context_preamble=context_preamble_ctx,
+                blind_spot_preamble=blind_spot_preamble,
+            )
+            system_prompt = prompt_receipt.prompt
+
             # effective_request_id was minted before the quota-skip loop above
             # (non-null for both connector-sourced and internal triggers).
-
-            # Create session record with trace_id and request_id
+            # Prompt composition intentionally completes before the row is
+            # created: every new runtime session is born with an exact receipt,
+            # and no adapter can start between composition and persistence.
             if self._pool is not None:
                 session_id = await session_create(
                     self._pool,
@@ -1825,6 +2444,10 @@ class Spawner:
                     complexity=str(complexity),
                     resolution_source=resolution_source,
                     butler_name=self._config.name,
+                    effective_system_prompt=prompt_receipt.prompt,
+                    prompt_digest=prompt_receipt.digest,
+                    prompt_provenance=[entry.as_dict() for entry in prompt_receipt.provenance],
+                    purpose_lane=purpose_lane,
                 )
                 logger.debug(
                     "Session created with model=%s runtime_type=%s complexity=%s source=%s "
@@ -1835,17 +2458,12 @@ class Spawner:
                     resolution_source,
                     session_id,
                 )
-                # Set session_id on span
                 span.set_attribute("session_id", str(session_id))
                 runtime_session_id = str(session_id)
                 ensure_runtime_session_capture(runtime_session_id)
                 set_runtime_session_routing_context(runtime_session_id, routing_context)
-                # Mark the session as real-but-not-yet-invoked so a Stop
-                # click landing in the pre-invocation window below (system-
-                # prompt/context/memory fetches, MCP warmup) is recognized by
-                # cancel_session() instead of falsely reporting "already
-                # finished". Discarded once the invoke_task is registered
-                # (or, defensively, in this method's finally block).
+                # Mark the session as real-but-not-yet-invoked so a Stop click
+                # in the remaining setup window is recognized honestly.
                 self._pending_invoke_sessions.add(runtime_session_id)
 
                 if dashboard_turn_id is not None:
@@ -1884,58 +2502,8 @@ class Spawner:
                         )
                     dashboard_turn_session_registered = True
                     if dashboard_gate.outcome == "cancelled":
-                        # The durable Stop bit won before this process reached
-                        # runtime.invoke. Reuse the owner-cancel path so the
-                        # local session row remains honest and no adapter starts.
                         self._owner_cancelled_sessions.add(runtime_session_id)
                         raise asyncio.CancelledError()
-
-            # Read system prompt. The live override (HEAD of
-            # public.system_prompt_history, set via the dashboard prompt editor)
-            # takes precedence over the on-disk CLAUDE.md seed when present.
-            shared_pool = (
-                self._credential_store.shared_pool if self._credential_store is not None else None
-            )
-            prompt_override = await fetch_system_prompt_override(
-                shared_pool or self._pool, self._config.name
-            )
-            system_prompt = read_system_prompt(
-                self._config_dir, self._config.name, db_override=prompt_override
-            )
-
-            # Fetch situational context preamble (fail-open)
-            context_preamble_ctx = await fetch_situational_context_preamble(
-                self._pool, self._config.name
-            )
-            general_timezone_instruction = await fetch_general_timezone_instruction(
-                self._pool,
-                self._config.name,
-                self._credential_store,
-            )
-
-            # Fetch owner routing instructions (switchboard only)
-            # Intentional name check: routing instructions are the switchboard's classifier
-            # context. No other staffer or domain butler uses this context injection.
-            routing_ctx: str | None = None
-            if self._config.name == "switchboard":
-                routing_ctx = await fetch_routing_instructions(self._pool, self._config.name)
-
-            memory_ctx: str | None = None
-            memory_enabled = _memory_module_enabled(self._config)
-            if memory_enabled:
-                memory_ctx = await fetch_memory_context(
-                    self._pool,
-                    self._config.name,
-                    final_prompt,
-                    token_budget=_memory_context_token_budget(self._config),
-                )
-            system_prompt = _compose_system_prompt(
-                system_prompt,
-                memory_ctx,
-                general_timezone_instruction=general_timezone_instruction,
-                routing_instructions=routing_ctx,
-                context_preamble=context_preamble_ctx,
-            )
 
             # Build credential env.
             # Caller-supplied env_override replaces the default env entirely (used by
@@ -1963,6 +2531,10 @@ class Spawner:
                 env = await _build_env(
                     self._config, self._module_credentials_env, self._credential_store
                 )
+
+            # Owner authentication belongs to the dashboard, including when an
+            # explicit caller override or a custom adapter is used.
+            env = without_owner_auth(env)
 
             # Build MCP server config for the adapter.
             # Healing sessions use a minimal env (PATH + GH_TOKEN only) and no MCP servers.
@@ -2035,11 +2607,12 @@ class Spawner:
             # row's model field is updated to reflect the model that actually ran.
             # ---------------------------------------------------------------------------
             # Hard cap on attempts as a defensive backstop against unbounded looping.
-            _MAX_FAILOVER_ATTEMPTS = 10
             _attempt_count = 0
 
             while True:
                 _attempt_count += 1
+                _current_attempt_index = _next_attempt_index
+                _next_attempt_index += 1
                 # Per-attempt clock (distinct from the outer `t0`, which spans the
                 # whole session including pre-invoke setup and post-invoke guardrail
                 # checks). Used to attribute duration_ms to the specific catalog
@@ -2067,7 +2640,7 @@ class Spawner:
                 elif catalog_timeout_s is not None:
                     timeout_s = catalog_timeout_s
                 else:
-                    timeout_s = _FALLBACK_SESSION_TIMEOUT_S
+                    timeout_s = _DEFAULT_SESSION_TIMEOUT_S
                 invoke_kwargs["timeout"] = timeout_s
                 # Attach the resolved resume handle to attempt 1 only (bu-bkthr) --
                 # every later attempt in this loop is either a same-tier failover
@@ -2080,6 +2653,8 @@ class Spawner:
 
                 _attempt_exc: BaseException | None = None
                 _attempt_tool_calls: list[dict[str, Any]] = []
+                _empty_response_usage: dict[str, Any] | None = None
+                usage: dict[str, Any] | None = None
                 dashboard_invoke_claimed = False
                 dashboard_release_event: asyncio.Event | None = None
                 dashboard_cancel_acknowledged_event: asyncio.Event | None = None
@@ -2205,6 +2780,7 @@ class Spawner:
                 except DashboardTurnControlError:
                     raise
                 except MCPToolDiscoveryError as exc:
+                    usage = exc.usage
                     executed_tool_calls = (
                         consume_runtime_session_tool_calls(runtime_session_id)
                         if runtime_session_id
@@ -2256,6 +2832,9 @@ class Spawner:
                 except Exception as attempt_exc:
                     # Capture the failure for classification below.
                     _attempt_exc = attempt_exc
+                    reported_usage = getattr(attempt_exc, "usage", None)
+                    if isinstance(reported_usage, dict):
+                        usage = reported_usage
                     # Collect tool calls captured before the failure.
                     if preconsumed_runtime_tool_calls is not None:
                         _attempt_tool_calls = list(preconsumed_runtime_tool_calls)
@@ -2289,19 +2868,7 @@ class Spawner:
                             and catalog_entry_id is not None
                             and usage.get("input_tokens") is not None
                         ):
-                            await record_token_usage(
-                                self._pool,
-                                catalog_entry_id=catalog_entry_id,
-                                butler_name=self._config.name,
-                                session_id=session_id,
-                                input_tokens=usage["input_tokens"],
-                                output_tokens=usage.get("output_tokens") or 0,
-                                cached_input_tokens=usage.get("cache_read_input_tokens") or 0,
-                                cache_creation_tokens=(
-                                    usage.get("cache_creation_input_tokens") or 0
-                                ),
-                                purpose=trigger_source,
-                            )
+                            _empty_response_usage = usage
                         _attempt_exc = RuntimeError(
                             "Runtime returned no response: no result text or MCP tool calls"
                         )
@@ -2312,6 +2879,8 @@ class Spawner:
                 # ------------------------------------------------------------------
                 if _attempt_exc is None:
                     # Invocation succeeded — exit the failover loop.
+                    if _attempt_count == 1 and invoke_kwargs.get("resume_session_id"):
+                        _resume_outcome = "resumed"
                     break
 
                 # Invocation failed: classify for failover eligibility.
@@ -2322,6 +2891,16 @@ class Spawner:
                         process_info=runtime.last_process_info,
                     )
                 )
+
+                attempted_resume = _attempt_count == 1 and bool(
+                    invoke_kwargs.get("resume_session_id")
+                )
+                if attempted_resume:
+                    _resume_outcome = (
+                        "resume_failed_retried_cold"
+                        if _failover_decision.eligible
+                        else "resume_failed_terminal"
+                    )
 
                 if not _failover_decision.eligible:
                     # Failover suppressed — emit metric and re-raise to the outer handler.
@@ -2338,14 +2917,25 @@ class Spawner:
                             catalog_entry_id=catalog_entry_id,
                             butler=self._config.name,
                             outcome="suppressed",
-                            attempt_index=len(_attempted_ids),
+                            attempt_index=_current_attempt_index,
                             session_id=session_id,
                             failure_reason=_failover_decision.reason,
                             error_code=type(_attempt_exc).__name__,
                             error_message=str(_attempt_exc),
                             tool_call_count=len(_attempt_tool_calls),
                             logical_session_id=effective_request_id,
+                            purpose_lane=purpose_lane,
                             duration_ms=int((time.monotonic() - _attempt_t0) * 1000),
+                            usage=_empty_response_usage or usage,
+                            usage_purpose=(
+                                purpose_lane
+                                if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
+                                else trigger_source
+                            ),
+                            resume_outcome=_resume_outcome,
+                            composed_prompt=_composed_prompt_digest,
+                            invoked=True,
+                            resolution_receipt=_current_resolution_receipt,
                         )
                     # Mark as already classified so the outer except handler does not
                     # double-emit the suppressed metric for this exception.
@@ -2363,10 +2953,9 @@ class Spawner:
                 # SAME candidate cold instead of routing this through ordinary
                 # same-tier failover -- the failure may be entirely about the resume
                 # handle (expired/rejected/unknown session), not the model's health.
-                # Evict the now-suspect handle and loop back without writing a
-                # runtime_failure row or advancing to another candidate: this must
-                # never consume a failover slot or count against the model's
-                # circuit breaker.
+                # Record it under a non-breaker outcome, then evict the handle and
+                # loop back without advancing to another candidate: this must never
+                # consume a failover slot or count against the model's circuit breaker.
                 if _attempt_count == 1 and invoke_kwargs.get("resume_session_id"):
                     logger.info(
                         "Provider resume attempt failed for butler=%s conversation=%s "
@@ -2387,12 +2976,48 @@ class Spawner:
                                 conversation_id,
                                 exc_info=True,
                             )
+                    if self._pool is not None and catalog_entry_id is not None:
+                        await _write_dispatch_attempt(
+                            self._pool,
+                            catalog_entry_id=catalog_entry_id,
+                            butler=self._config.name,
+                            outcome="resume_failure",
+                            attempt_index=_current_attempt_index,
+                            session_id=session_id,
+                            failure_reason=_failover_decision.reason,
+                            error_code=type(_attempt_exc).__name__,
+                            error_message=str(_attempt_exc),
+                            tool_call_count=len(_attempt_tool_calls),
+                            logical_session_id=effective_request_id,
+                            purpose_lane=purpose_lane,
+                            duration_ms=int((time.monotonic() - _attempt_t0) * 1000),
+                            usage=_empty_response_usage or usage,
+                            usage_purpose=(
+                                purpose_lane
+                                if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
+                                else trigger_source
+                            ),
+                            resume_outcome=_resume_outcome,
+                            composed_prompt=_composed_prompt_digest,
+                            invoked=True,
+                            resolution_receipt=_current_resolution_receipt,
+                        )
+                    _current_resolution_receipt = _attempt_resolution_receipt(
+                        _base_resolution_receipt,
+                        catalog_entry_id=catalog_entry_id,
+                        runtime_type=resolved_runtime_type,
+                        model_id=model,
+                        effective_tier=_failover_effective_tier,
+                        attempt_index=_next_attempt_index,
+                        retry_failure_class=_failover_decision.reason,
+                        selection_reason=_receipt_selection_reason,
+                    )
                     continue
 
                 # Failover eligible — record runtime_failure provenance for the
                 # attempt that just failed before advancing to the next candidate.
                 _failed_catalog_entry_id = catalog_entry_id
-                _failed_attempt_index = len(_attempted_ids)
+                _failed_attempt_index = _current_attempt_index
                 _failed_attempt_duration_ms = int((time.monotonic() - _attempt_t0) * 1000)
                 if self._pool is not None and _failed_catalog_entry_id is not None:
                     await _write_dispatch_attempt(
@@ -2407,7 +3032,18 @@ class Spawner:
                         error_message=str(_attempt_exc),
                         tool_call_count=len(_attempt_tool_calls),
                         logical_session_id=effective_request_id,
+                        purpose_lane=purpose_lane,
                         duration_ms=_failed_attempt_duration_ms,
+                        usage=_empty_response_usage or usage,
+                        usage_purpose=(
+                            purpose_lane
+                            if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
+                            else trigger_source
+                        ),
+                        resume_outcome=_resume_outcome,
+                        composed_prompt=_composed_prompt_digest,
+                        invoked=True,
+                        resolution_receipt=_current_resolution_receipt,
                     )
 
                 # Attempt next same-tier candidate.
@@ -2417,19 +3053,28 @@ class Spawner:
                 if (
                     _failover_effective_tier is None
                     or self._pool is None
-                    or _attempt_count >= _MAX_FAILOVER_ATTEMPTS
+                    or _next_attempt_index >= _MAX_FAILOVER_ATTEMPTS
                 ):
-                    # No tier pinned (static_fallback), no pool, or safety cap reached.
+                    # No catalog tier pinned, no pool, or safety cap reached.
                     preconsumed_runtime_tool_calls = _attempt_tool_calls
                     raise _attempt_exc
 
-                next_candidate = await next_same_tier_candidate(
-                    self._pool,
-                    self._config.name,
-                    _failover_effective_tier,
-                    _attempted_ids,
+                (
+                    admitted_candidate,
+                    _next_attempt_index,
+                ) = await self._next_admissible_failover_candidate(
+                    effective_tier=_failover_effective_tier,
+                    attempted_ids=_attempted_ids,
+                    attempt_index=_next_attempt_index,
+                    previous_failure_class=_failover_decision.reason,
+                    base_resolution_receipt=_base_resolution_receipt,
+                    selection_reason=_receipt_selection_reason,
+                    session_id=session_id,
+                    logical_session_id=effective_request_id,
+                    purpose_lane=purpose_lane,
                 )
-                if next_candidate is None:
+
+                if admitted_candidate is None:
                     # All same-tier candidates exhausted — terminal failure.
                     self._metrics.record_failover_exhausted(tier=_failover_effective_tier)
                     logger.warning(
@@ -2437,7 +3082,7 @@ class Spawner:
                         "after %d attempt(s)",
                         self._config.name,
                         _failover_effective_tier,
-                        _attempt_count,
+                        _next_attempt_index,
                     )
                     # The runtime_failure row for the last attempt was already written
                     # above. Write an explicit terminal 'exhausted' provenance row so
@@ -2450,63 +3095,54 @@ class Spawner:
                             catalog_entry_id=catalog_entry_id,
                             butler=self._config.name,
                             outcome="exhausted",
-                            attempt_index=len(_attempted_ids),
+                            attempt_index=_next_attempt_index,
                             session_id=session_id,
                             failure_reason=(
                                 f"same_tier_failover_exhausted: tier={_failover_effective_tier} "
-                                f"after {_attempt_count} attempt(s)"
+                                f"after {_next_attempt_index} attempt(s)"
                             ),
                             error_code=type(_attempt_exc).__name__,
                             error_message=str(_attempt_exc),
                             tool_call_count=len(_attempt_tool_calls),
                             logical_session_id=effective_request_id,
+                            purpose_lane=purpose_lane,
                             duration_ms=_failed_attempt_duration_ms,
+                            resolution_receipt=_attempt_resolution_receipt(
+                                _base_resolution_receipt,
+                                catalog_entry_id=catalog_entry_id,
+                                runtime_type=resolved_runtime_type,
+                                model_id=model,
+                                effective_tier=_failover_effective_tier,
+                                attempt_index=_next_attempt_index,
+                                previous_failure_class=_failover_decision.reason,
+                                selection_reason=_receipt_selection_reason,
+                            ),
                         )
                     preconsumed_runtime_tool_calls = _attempt_tool_calls
                     raise _attempt_exc
 
-                next_rt, next_model, next_extra_args, next_entry_id, next_timeout_s = next_candidate
                 self._metrics.record_failover_attempt(
                     from_model=model,
-                    to_model=next_model,
+                    to_model=admitted_candidate.model,
                     reason=_failover_decision.reason.split(":")[0],
                 )
                 logger.info(
                     "Same-tier failover for butler=%s: %s → %s (tier=%s, reason=%s)",
                     self._config.name,
                     model,
-                    next_model,
+                    admitted_candidate.model,
                     _failover_effective_tier,
                     _failover_decision.reason,
                 )
 
                 # Update candidate variables for the next attempt.
-                resolved_runtime_type = next_rt
-                model = next_model
-                merged_args = list(next_extra_args)
-                catalog_entry_id = next_entry_id
-                catalog_timeout_s = next_timeout_s
-
-                # Re-create the runtime adapter for the new model's runtime type.
-                next_provider_config = await self._resolve_provider_config(model)
-                try:
-                    runtime = self._get_or_create_adapter(
-                        resolved_runtime_type, next_provider_config
-                    ).create_worker()
-                except ValueError:
-                    logger.warning(
-                        "Failover candidate resolved unregistered runtime_type=%s for "
-                        "butler=%s; falling back to default runtime_type=%s",
-                        resolved_runtime_type,
-                        self._config.name,
-                        fallback_runtime_type,
-                    )
-                    resolved_runtime_type = fallback_runtime_type
-                    model = fallback_model
-                    merged_args = []
-                    catalog_timeout_s = None
-                    resolution_source = "static_fallback"
-                    runtime = self._get_or_create_adapter(fallback_runtime_type).create_worker()
+                resolved_runtime_type = admitted_candidate.runtime_type
+                model = admitted_candidate.model
+                merged_args = list(admitted_candidate.extra_args)
+                catalog_entry_id = admitted_candidate.catalog_entry_id
+                catalog_timeout_s = admitted_candidate.timeout_s
+                _current_resolution_receipt = admitted_candidate.resolution_receipt
+                runtime = admitted_candidate.runtime
                 # Loop back to try the next candidate.
 
             # End of failover loop — invocation succeeded.
@@ -2540,6 +3176,34 @@ class Spawner:
                     _ledger_output_tokens = output_tokens or 0
                     _ledger_cached_input_tokens = cached_input_tokens or 0
                     _ledger_cache_creation_tokens = cache_creation_tokens or 0
+
+            # The provider invocation itself succeeded. Persist its attempt and
+            # usage before session bookkeeping or guardrails can fail, so every
+            # paid invocation remains linked even when later deterministic work
+            # downgrades the logical session outcome.
+            if self._pool is not None and catalog_entry_id is not None:
+                await _write_dispatch_attempt(
+                    self._pool,
+                    catalog_entry_id=catalog_entry_id,
+                    butler=self._config.name,
+                    outcome="success",
+                    attempt_index=_current_attempt_index,
+                    session_id=session_id,
+                    tool_call_count=len(tool_calls) if tool_calls else 0,
+                    logical_session_id=effective_request_id,
+                    purpose_lane=purpose_lane,
+                    duration_ms=int((time.monotonic() - _attempt_t0) * 1000),
+                    usage=usage,
+                    usage_purpose=(
+                        purpose_lane
+                        if purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
+                        else trigger_source
+                    ),
+                    resume_outcome=_resume_outcome,
+                    composed_prompt=_composed_prompt_digest,
+                    invoked=True,
+                    resolution_receipt=_current_resolution_receipt,
+                )
 
             # ------------------------------------------------------------------
             # Guardrail checks — run after tool-call merge and token extraction.
@@ -2633,27 +3297,6 @@ class Spawner:
                             exc_info=True,
                         )
 
-                # Record successful-attempt provenance. Written on EVERY success, not
-                # only when failover occurred (attempt_index=0, no prior _attempted_ids,
-                # is the common single-shot case) -- otherwise a model that always
-                # succeeds on the first try but is slow (cf. the 436s opencode incident)
-                # never leaves a duration_ms trace anywhere evidence-based routing can
-                # see it (bu-ep4ks.13). `_attempt_t0` is the per-attempt clock from the
-                # failover loop iteration that just succeeded (still in scope after the
-                # `break`, whether or not that loop ever retried).
-                if self._pool is not None and catalog_entry_id is not None:
-                    await _write_dispatch_attempt(
-                        self._pool,
-                        catalog_entry_id=catalog_entry_id,
-                        butler=self._config.name,
-                        outcome="success",
-                        attempt_index=len(_attempted_ids),
-                        session_id=session_id,
-                        tool_call_count=len(tool_calls) if tool_calls else 0,
-                        logical_session_id=effective_request_id,
-                        duration_ms=int((time.monotonic() - _attempt_t0) * 1000),
-                    )
-
                 # Write process-level diagnostics (best-effort, never blocks result)
                 proc_info = runtime.last_process_info
                 if proc_info is not None:
@@ -2733,7 +3376,7 @@ class Spawner:
                 self._config.name,
                 "llm_api_call",
                 {
-                    "provider": _derive_llm_provider(model),
+                    "provider": _derive_llm_provider(model, resolved_runtime_type),
                     "model": model,
                     "session_id": str(session_id) if session_id else None,
                     "input_tokens": input_tokens,
@@ -2983,7 +3626,7 @@ class Spawner:
             # Record dispatch failure in public.dispatch_failures (best-effort).
             # Gated only on pool and catalog_entry_id — session_id is nullable so
             # early-stage failures (e.g. session_create raising) are still tracked.
-            # TOML-fallback dispatches have no catalog_entry_id and are not tracked.
+            # Pool-free direct-runtime dispatches have no catalog entry and are not tracked.
             if self._pool is not None and catalog_entry_id is not None:
                 try:
                     _error_code = type(exc).__name__
@@ -3070,7 +3713,7 @@ class Spawner:
                 self._config.name,
                 "llm_api_call",
                 {
-                    "provider": _derive_llm_provider(model),
+                    "provider": _derive_llm_provider(model, resolved_runtime_type),
                     "model": model,
                     "session_id": str(session_id) if session_id else None,
                 },
@@ -3235,27 +3878,6 @@ class Spawner:
                     output_tokens=spawner_result.output_tokens or 0,
                     model=spawner_result.model or "unknown",
                     butler=self._config.name,
-                )
-            # Record token usage to ledger for both successful and failed sessions.
-            # Uses _ledger_input_tokens set as soon as the adapter reports usage,
-            # so the ledger receives token data even when post-invoke processing
-            # fails (e.g. session_complete raises). Tokens are consumed by the
-            # upstream provider on invocation regardless of session outcome.
-            if (
-                _ledger_input_tokens is not None
-                and catalog_entry_id is not None
-                and self._pool is not None
-            ):
-                await record_token_usage(
-                    self._pool,
-                    catalog_entry_id=catalog_entry_id,
-                    butler_name=self._config.name,
-                    session_id=session_id,
-                    input_tokens=_ledger_input_tokens,
-                    output_tokens=_ledger_output_tokens or 0,
-                    cached_input_tokens=_ledger_cached_input_tokens,
-                    cache_creation_tokens=_ledger_cache_creation_tokens,
-                    purpose=trigger_source,
                 )
             # Emit per-call cost event onto the multiplexed fleet event bus via
             # Postgres LISTEN/NOTIFY (RFC 0022, bu-01r64.1). Uses the same

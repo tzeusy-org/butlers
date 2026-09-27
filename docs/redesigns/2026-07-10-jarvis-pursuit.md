@@ -12,7 +12,7 @@ PRs since 07-04. Backward compatibility waived.
 
 **Full per-agent dossiers** (verdicts, JARVIS gaps, ideal designs, findings with file:line evidence,
 QC landing grades, ecosystem proposals) live in
-[`2026-07-10-jarvis-pursuit-data.json`](2026-07-10-jarvis-pursuit-data.json) — query one agent with
+`git show b23d5b76afab:docs/redesigns/2026-07-10-jarvis-pursuit-data.json` — query one agent with
 `jq '.audits[] | select(.page=="<key>")' <file>` (QC agents use keys `qc:*` and carry a `landings`
 array; engineering lenses `eng:*`, governance `proj:*`, ecosystem `eco:*`, sweeps `cross:*`).
 

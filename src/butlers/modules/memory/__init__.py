@@ -8,11 +8,12 @@ module state at call time.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-import uuid
 from typing import Annotated, Any, Literal
 
+import asyncpg
 from pydantic import BaseModel, BeforeValidator, Field
 
 from butlers.core.tool_call_capture import get_current_runtime_session_routing_context
@@ -297,6 +298,7 @@ class MemoryModule(Module):
         # Opaque lifecycle token for the per-butler scheduled-maintenance runtime.
         self._maintenance_runtime: Any = None
         self._maintenance_runtime_owner: str | None = None
+        self._entity_rebind_tasks: list[asyncio.Task[None]] = []
 
     @property
     def name(self) -> str:
@@ -335,6 +337,49 @@ class MemoryModule(Module):
 
         # Bind the dedicated memory-schema pool (no-op unless memory_schema set).
         await self._ensure_memory_schema_pool()
+
+        # Register LISTEN before draining the durable ledger. Events committed
+        # during replay are then queued rather than lost at the startup boundary.
+        try:
+            from butlers.entity_rebind import (
+                process_pending_entity_rebinds,
+                run_entity_rebind_listener,
+            )
+
+            memory_pool = self._get_pool()
+            target_schema = await memory_pool.fetchval("SELECT current_schema()")
+
+            async def _start_rebind_consumer(pool: Any, schema: str) -> None:
+                if not isinstance(pool, asyncpg.Pool):
+                    # Lightweight test pools cannot retain a LISTEN connection.
+                    await process_pending_entity_rebinds(pool, target_schema=schema)
+                    return
+                ready = asyncio.Event()
+                task = asyncio.create_task(
+                    run_entity_rebind_listener(
+                        pool,
+                        target_schema=schema,
+                        ready_event=ready,
+                    ),
+                    name=f"entity-rebind-listener:{schema}",
+                )
+                self._entity_rebind_tasks.append(task)
+                await ready.wait()
+
+            if isinstance(target_schema, str) and target_schema:
+                await _start_rebind_consumer(memory_pool, target_schema)
+            # Chronicler deliberately keeps narrative memory in
+            # ``chronicler_mem`` while episode associations remain in its
+            # domain schema. The daemon owns both pools and settles each
+            # schema's independent receipt; no sibling-butler access occurs.
+            if getattr(self._db, "schema", None) == "chronicler" and target_schema != "chronicler":
+                chronicler_pool = await self._get_or_create_chronicler_pool()
+                if chronicler_pool is not None:
+                    await _start_rebind_consumer(chronicler_pool, "chronicler")
+        except asyncpg.UndefinedTableError:
+            logger.debug("entity_rebind_log is not installed yet; startup drain skipped")
+        except Exception:
+            logger.warning("Pending entity rebind startup drain failed", exc_info=True)
 
         # Register memory hooks so core (spawner, corrections) can call
         # memory operations without importing from modules directly
@@ -567,6 +612,12 @@ class MemoryModule(Module):
             unregister_memory_maintenance_runtime,
             unregister_memory_session_runtime,
         )
+
+        for task in self._entity_rebind_tasks:
+            task.cancel()
+        if self._entity_rebind_tasks:
+            await asyncio.gather(*self._entity_rebind_tasks, return_exceptions=True)
+        self._entity_rebind_tasks.clear()
 
         if self._session_runtime_owner is not None and self._session_runtime is not None:
             unregister_memory_session_runtime(
@@ -1211,6 +1262,7 @@ class MemoryModule(Module):
               "limit": 10
             }
             """
+            read_policy = await module._catalog_read_policy()
             return await _reading.memory_search(
                 module._get_pool(),
                 module._get_embedding_engine(),
@@ -1221,6 +1273,7 @@ class MemoryModule(Module):
                 limit=limit,
                 min_confidence=min_confidence,
                 filters=filters,
+                read_policy=read_policy,
             )
 
         @_tool("core")
@@ -1251,6 +1304,7 @@ class MemoryModule(Module):
             ] = None,
         ) -> list[dict[str, Any]]:
             """High-level composite-scored retrieval of relevant facts and rules."""
+            read_policy = await module._catalog_read_policy()
             return await _reading.memory_recall(
                 module._get_pool(),
                 module._get_embedding_engine(),
@@ -1259,6 +1313,7 @@ class MemoryModule(Module):
                 limit=limit,
                 filters=filters,
                 request_context=request_context,
+                read_policy=read_policy,
             )
 
         @_tool("core")
@@ -1267,46 +1322,60 @@ class MemoryModule(Module):
             memory_id: str,
         ) -> dict[str, Any] | None:
             """Retrieve a specific memory by type and ID."""
+            read_policy = await module._catalog_read_policy()
             return await _reading.memory_get(
                 module._get_pool(),
                 memory_type,
                 memory_id,
+                read_policy=read_policy,
             )
 
         # --- Feedback tools ---
 
         @_tool("core")
         async def memory_confirm(
-            memory_type: str,
-            memory_id: str,
+            memory_type: str | None = None,
+            memory_id: str | None = None,
+            memory_ref: str | None = None,
         ) -> dict[str, Any]:
-            """Confirm a fact or rule is still accurate, resetting confidence decay."""
+            """Confirm a fact/rule by typed memory_ref or legacy type and ID."""
+            read_policy = await module._catalog_read_policy()
             return await _feedback.memory_confirm(
                 module._get_pool(),
                 memory_type,
                 memory_id,
+                memory_ref=memory_ref,
+                read_policy=read_policy,
             )
 
         @_tool("feedback")
         async def memory_mark_helpful(
-            rule_id: str,
+            rule_id: str | None = None,
+            memory_ref: str | None = None,
         ) -> dict[str, Any]:
-            """Report a rule was applied successfully."""
+            """Report helpful feedback by typed rule reference or legacy rule ID."""
+            read_policy = await module._catalog_read_policy()
             return await _feedback.memory_mark_helpful(
                 module._get_pool(),
                 rule_id,
+                memory_ref=memory_ref,
+                read_policy=read_policy,
             )
 
         @_tool("feedback")
         async def memory_mark_harmful(
-            rule_id: str,
+            rule_id: str | None = None,
             reason: str | None = None,
+            memory_ref: str | None = None,
         ) -> dict[str, Any]:
-            """Report a rule caused problems."""
+            """Report harmful feedback by typed rule reference or legacy rule ID."""
+            read_policy = await module._catalog_read_policy()
             return await _feedback.memory_mark_harmful(
                 module._get_pool(),
                 rule_id,
+                memory_ref=memory_ref,
                 reason=reason,
+                read_policy=read_policy,
             )
 
         # --- Management tools ---
@@ -1469,18 +1538,23 @@ class MemoryModule(Module):
             """Build a deterministic, sectioned memory context block for CC system prompt injection.
 
             Sections (in order, empty sections omitted):
-            - ## Profile Facts (30% of budget): owner entity facts sorted by importance
+            - ## Profile Facts (20% of budget): owner entity facts sorted by importance
             - ## Task-Relevant Facts (35% of budget): recall matches excluding profile facts
             - ## Active Rules (20% of budget): sorted by maturity rank then effectiveness
             - ## Recent Episodes (15% of budget): opt-in via include_recent_episodes=True
             - ## Fleet Knowledge (10% of budget): opt-in via include_fleet_knowledge=True,
               cross-butler facts/rules discovered via public.memory_catalog
 
+            Local fact and rule lines include a typed ``memory_ref`` accepted by
+            the existing confirm/helpful/harmful tools. Reference text counts
+            inside the same section and total budgets.
+
             Same inputs always produce identical output (deterministic section compiler).
             """
-            catalog_read_policy = None
-            if include_fleet_knowledge:
-                catalog_read_policy = await module._catalog_read_policy()
+            # Loaded unconditionally: the read ceiling now governs Profile
+            # Facts and Task-Relevant Facts (recall) in every assembly, not
+            # only the opt-in Fleet Knowledge section.
+            catalog_read_policy = await module._catalog_read_policy()
             return await _context.memory_context(
                 module._get_pool(),
                 module._get_embedding_engine(),
@@ -1739,87 +1813,22 @@ class MemoryModule(Module):
                 str, Field(description="UUID string of the surviving entity.")
             ],
         ) -> dict[str, Any] | None:
-            """Merge source entity into target entity in the memory entity graph.
+            """Dispatch an entity merge to Relationship's single authority.
 
-            All facts referencing the source entity are re-pointed to the target.
-            Uniqueness conflicts are resolved via supersession (higher-confidence fact wins).
-            Source aliases are appended to target's alias list (deduplicated). Source metadata
-            is merged into target's (target wins on conflict). Source entity is
-            tombstoned (excluded from future entity_resolve results). An audit event
-            is emitted to memory_events.
-
-            A ``relationship.merge_reviews`` audit row is also written so this
-            session-side merge leaves history regardless of entry path (spec:
-            relationship-merge-review — "merges executed outside the dashboard flow
-            (e.g. session-side tooling) still leave history; when no compare context
-            exists, the merge endpoint computes the shared/divergent snapshot
-            server-side at merge time"). The audit write is best-effort: a failure
-            (e.g. the relationship schema is absent in a memory-only deployment)
-            never blocks the merge.
-
-            Returns the updated target entity dict, or None if target not found.
-            Raises ValueError if source entity not found or IDs are identical.
+            Per-schema memory references are rebound asynchronously from the
+            durable receipt cohort; this tool never reaches into sibling schemas.
             """
-            chronicler_pool = await module._get_or_create_chronicler_pool()
-            # chronicler_pool is None when the DB is not initialised (e.g. tests
-            # that inject a mock pool directly into entity_merge). When provided,
-            # episode_entities rows are re-pointed as part of the merge.
-
-            # Compute the shared/divergent audit evidence BEFORE the merge mutates
-            # rows so the snapshot reflects the pre-merge state (matches the API
-            # merge endpoint). The relationship pool is None in memory-only
-            # deployments / tests with no DB — then we skip the audit row.
-            relationship_pool = await module._get_or_create_relationship_pool()
-            merge_evidence = None
-            if relationship_pool is not None:
-                try:
-                    from butlers.tools.relationship.merge_review import compute_merge_evidence
-
-                    merge_evidence = await compute_merge_evidence(
-                        relationship_pool,
-                        uuid.UUID(str(source_entity_id)),
-                        uuid.UUID(str(target_entity_id)),
-                    )
-                except Exception:
-                    logger.warning(
-                        "memory_entity_merge: failed to compute merge-review evidence "
-                        "(source=%s target=%s) — audit row will be skipped",
-                        source_entity_id,
-                        target_entity_id,
-                        exc_info=True,
-                    )
-
-            result = await _entities.entity_merge(
-                module._get_pool(),
+            if getattr(module._db, "schema", None) == "relationship":
+                relationship_pool = module._get_pool()
+            else:
+                relationship_pool = await module._get_or_create_relationship_pool()
+            if relationship_pool is None:
+                raise RuntimeError("Relationship merge authority is unavailable.")
+            return await _entities.entity_merge(
+                relationship_pool,
                 source_entity_id,
                 target_entity_id,
-                chronicler_pool=chronicler_pool,
             )
-
-            # Write the merge_reviews audit row regardless of entry path. Best-effort:
-            # never block or fail the (already-committed) merge on an audit failure.
-            if relationship_pool is not None and merge_evidence is not None:
-                try:
-                    from butlers.tools.relationship.merge_review import write_merge_review
-
-                    await write_merge_review(
-                        relationship_pool,
-                        entity_a=uuid.UUID(str(source_entity_id)),
-                        entity_b=uuid.UUID(str(target_entity_id)),
-                        shared_facts=merge_evidence["shared"],
-                        divergent_facts=merge_evidence["divergent"],
-                        outcome="merged",
-                    )
-                except Exception:
-                    logger.warning(
-                        "memory_entity_merge: failed to write merge_reviews audit row "
-                        "(source=%s target=%s) — merge already committed",
-                        source_entity_id,
-                        target_entity_id,
-                        exc_info=True,
-                    )
-
-            return result
 
         # --- Cross-butler catalog search tool ---
 

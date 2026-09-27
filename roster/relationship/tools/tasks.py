@@ -249,7 +249,6 @@ async def task_delete(pool: asyncpg.Pool, task_id: uuid.UUID) -> None:
     if row is None:
         raise ValueError(f"Task {task_id} not found")
 
-    await pool.execute(
-        "UPDATE facts SET validity = 'retracted' WHERE id = $1",
-        task_id,
-    )
+    from butlers.modules.memory.storage import forget_memory
+
+    await forget_memory(pool, "fact", task_id)

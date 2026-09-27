@@ -2,14 +2,14 @@
  * TanStack Query hooks for the /ingestion page analytics.
  *
  * Shared query-key strategy (spec §7):
- * - ingestionKeys.connectorsList()            → list of ConnectorSummary
+ * - ingestionKeys.connectorSummaries()        → ConnectorSummariesResponse
  * - ingestionKeys.connectorDetail(type, id)           → ConnectorDetail
  * - ingestionKeys.connectorStats(type, id, period)  → ConnectorStats timeseries
- * - ingestionKeys.connectorSummariesWithAggregates()  → ConnectorSummariesResponse
  * - ingestionKeys.pipelineStats(window)               → PipelineStats
+ * - ingestionKeys.connectorFanout(period)              → ConnectorFanoutResponse
  *
- * Overview and Connectors tabs share the connectors list key so switching
- * tabs reuses warm cache.
+ * Timeline, System, and Connectors views share the canonical summaries key so
+ * switching surfaces reuses the same role-aware response.
  */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -18,13 +18,13 @@ import {
   archiveConnector,
   getConnectorDetail,
   getConnectorEvents,
+  getConnectorFanout,
   getConnectorIncidents,
   getConnectorRoutingRules,
   getConnectorStats,
-  getConnectorSummariesWithAggregates,
+  getConnectorSummaries,
   getPipelineStats,
   listAvailableConnectors,
-  listConnectorSummaries,
   unarchiveConnector,
   updateConnectorSettings,
 } from "@/api/index.ts";
@@ -46,7 +46,7 @@ const INGESTION_POLL_SLOW_MS = 120_000;
 
 export const ingestionKeys = {
   all: ["ingestion"] as const,
-  connectorsList: () => [...ingestionKeys.all, "connectors-list"] as const,
+  connectorSummaries: () => [...ingestionKeys.all, "connectors-summaries"] as const,
   connectorsAvailable: () => [...ingestionKeys.all, "connectors-available"] as const,
   connectorDetail: (connectorType: string, endpointIdentity: string) =>
     [...ingestionKeys.all, "connector-detail", connectorType, endpointIdentity] as const,
@@ -62,10 +62,10 @@ export const ingestionKeys = {
       endpointIdentity,
       period,
     ] as const,
-  connectorSummariesWithAggregates: () =>
-    [...ingestionKeys.all, "connectors-summaries-with-aggregates"] as const,
   pipelineStats: (window: string) =>
     [...ingestionKeys.all, "pipeline-stats", window] as const,
+  connectorFanout: (period: IngestionPeriod) =>
+    [...ingestionKeys.all, "fanout", period] as const,
   connectorEvents: (connectorType: string, endpointIdentity: string, limit: number) =>
     [
       ...ingestionKeys.all,
@@ -94,18 +94,6 @@ export const ingestionKeys = {
 // ---------------------------------------------------------------------------
 // Hooks
 // ---------------------------------------------------------------------------
-
-/**
- * List all connector summaries (shared between Overview and Connectors tabs).
- */
-export function useConnectorSummaries(options?: { enabled?: boolean }) {
-  return useQuery({
-    queryKey: ingestionKeys.connectorsList(),
-    queryFn: () => listConnectorSummaries(),
-    refetchInterval: INGESTION_POLL_MS,
-    enabled: options?.enabled !== false,
-  });
-}
 
 /**
  * Full detail for a single connector (used in detail page).
@@ -188,7 +176,7 @@ export function useArchiveConnector() {
     }) => archiveConnector(connectorType, endpointIdentity),
     onSuccess: () => {
       queryClient.invalidateQueries({
-        queryKey: ingestionKeys.connectorSummariesWithAggregates(),
+        queryKey: ingestionKeys.connectorSummaries(),
       });
     },
   });
@@ -214,7 +202,7 @@ export function useUnarchiveConnector() {
     }) => unarchiveConnector(connectorType, endpointIdentity),
     onSuccess: () => {
       queryClient.invalidateQueries({
-        queryKey: ingestionKeys.connectorSummariesWithAggregates(),
+        queryKey: ingestionKeys.connectorSummaries(),
       });
     },
   });
@@ -238,13 +226,13 @@ export function useAvailableConnectors(options?: { enabled?: boolean }) {
 }
 
 /**
- * Connector list (all fields DB-sourced; no aggregates_available flag).
- * Uses the /api/ingestion/connectors/summaries endpoint.
+ * Role-aware connector summaries. Checkpoint records are nested under their
+ * runtime instance, and archived rows remain available only for history.
  */
-export function useConnectorSummariesWithAggregates(options?: { enabled?: boolean }) {
+export function useConnectorSummaries(options?: { enabled?: boolean }) {
   return useQuery({
-    queryKey: ingestionKeys.connectorSummariesWithAggregates(),
-    queryFn: () => getConnectorSummariesWithAggregates(),
+    queryKey: ingestionKeys.connectorSummaries(),
+    queryFn: () => getConnectorSummaries(),
     refetchInterval: INGESTION_POLL_MS,
     enabled: options?.enabled !== false,
   });
@@ -263,6 +251,22 @@ export function usePipelineStats(
     queryFn: () => getPipelineStats(window),
     refetchInterval: INGESTION_POLL_MS,
     enabled: options?.enabled !== false,
+  });
+}
+
+/**
+ * Cross-butler routing distribution. The 120-second cadence matches the
+ * dashboard contract for this Prometheus-backed aggregate.
+ */
+export function useConnectorFanout(
+  period: IngestionPeriod = "7d",
+  options?: { enabled?: boolean },
+) {
+  return useQuery({
+    queryKey: ingestionKeys.connectorFanout(period),
+    queryFn: () => getConnectorFanout(period),
+    enabled: options?.enabled !== false,
+    refetchInterval: INGESTION_POLL_SLOW_MS,
   });
 }
 

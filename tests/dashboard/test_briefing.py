@@ -29,7 +29,7 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 import pytest
 
-from butlers.api.app import create_app
+from butlers.api.app import create_app as create_guarded_app
 from butlers.api.briefing.cache import BriefingCache
 from butlers.api.briefing.classify import classify, headline_for, time_of_day
 from butlers.api.briefing.fallback import elaborate_fallback
@@ -53,6 +53,8 @@ from butlers.api.routers.dashboard_briefing import (
     get_dashboard_briefing,
 )
 from butlers.core.model_routing import Complexity
+from tests.api.auth_helpers import _DomainOwnerState
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 
@@ -1877,7 +1879,7 @@ class TestNonOwnerAccess:
 
 
 class TestUnauthenticated:
-    async def test_401_when_api_key_required_and_missing(self):
+    async def test_401_when_api_key_required_and_missing(self, monkeypatch):
         """ApiKeyMiddleware returns 401 when DASHBOARD_API_KEY is set
         and the request lacks the X-API-Key header."""
         pool = _make_owner_pool()
@@ -1885,15 +1887,19 @@ class TestUnauthenticated:
         mock_db.pool.return_value = pool
 
         # Create app with an explicit API key to enable auth.
-        app = create_app(api_key="test-secret-key")
+        monkeypatch.setenv("DASHBOARD_AUTH_ORIGIN", "https://owner.test.invalid")
+        monkeypatch.setenv("DASHBOARD_AUTH_RP_ID", "owner.test.invalid")
+        app = create_guarded_app(api_key="test-secret-key")
+        app.state.owner_auth_service = _DomainOwnerState("test-secret-key")
         app.dependency_overrides[_get_db_manager] = lambda: mock_db
 
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
+            transport=httpx.ASGITransport(app=app), base_url="https://owner.test.invalid"
         ) as client:
             resp = await client.get("/api/dashboard/briefing")  # no X-API-Key header
 
         assert resp.status_code == 401
+        mock_db.pool.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

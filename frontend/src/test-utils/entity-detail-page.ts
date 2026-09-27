@@ -44,6 +44,7 @@ export const ENTITY: EntityDetail = {
   recent_facts_limit: 20,
   recent_facts_has_more: false,
   entity_info: [],
+  rebind_receipts: [],
 };
 
 // ---------------------------------------------------------------------------

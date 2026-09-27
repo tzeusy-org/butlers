@@ -3,8 +3,8 @@
 This delta extends `connector-base-spec` additively to expose the auth and
 scope state needed by `connector-oauth-scope-surface/spec`. It modifies
 neither the existing connector lifecycle nor the existing
-`ConnectorSummary` / `ConnectorDetail` field shape; it only adds new fields
-and new connector-side responsibilities for OAuth providers.
+`ConnectorSummary` list-entry / flat `ConnectorDetailEntry` wire shape; it only
+adds new fields and new connector-side responsibilities for OAuth providers.
 
 The fully detailed scope-surface behavior lives in
 `connector-oauth-scope-surface/spec`. This delta provides the data-model
@@ -42,14 +42,17 @@ required.
 - **AND** dashboard surfaces SHALL NOT treat NULL as a database error — NULL
   is the documented absence-of-observation state
 
-### Requirement: ConnectorDetail Pydantic auth and scopes blocks
+### Requirement: ConnectorDetailEntry Pydantic auth and scopes blocks
 
-The `ConnectorDetail` Pydantic response model SHALL be extended additively to include an `auth` block and a `scopes` block, populated per `connector-oauth-scope-surface/spec` §Dashboard API response shape. The model is defined by `connector-base-spec`.
+The flat `ConnectorDetailEntry` Pydantic response model SHALL be extended
+additively to include an `auth` block and a `scopes` block, populated per
+`connector-oauth-scope-surface/spec` §Dashboard API response shape. The model
+is defined by `connector-base-spec`.
 
-#### Scenario: ConnectorDetail includes auth block
+#### Scenario: ConnectorDetailEntry includes auth block
 
 - **WHEN** `GET /api/ingestion/connectors/{type}/{identity}` returns a
-  `ConnectorDetail` payload
+  `ConnectorDetailEntry` payload
 - **THEN** the payload SHALL include an `auth` field whose shape conforms to
   `connector-oauth-scope-surface/spec` §Dashboard API response shape
 - **AND** the `auth.status` field SHALL be a non-null enum value drawn from
@@ -60,9 +63,9 @@ The `ConnectorDetail` Pydantic response model SHALL be extended additively to in
 - **AND** `auth.recovery_reason` SHALL preserve `expired` or
   `rotation-needed` when normalization occurred, and otherwise be null
 
-#### Scenario: ConnectorDetail includes scopes block
+#### Scenario: ConnectorDetailEntry includes scopes block
 
-- **WHEN** the same endpoint returns a `ConnectorDetail` payload
+- **WHEN** the same endpoint returns a `ConnectorDetailEntry` payload
 - **THEN** the payload SHALL include a `scopes` array
 - **AND** for connectors with `auth.status = unsupported`, the array SHALL
   be the empty list `[]`
@@ -71,15 +74,15 @@ The `ConnectorDetail` Pydantic response model SHALL be extended additively to in
 
 #### Scenario: Backward compatibility for ConnectorSummary
 
-- **WHEN** the `ConnectorSummary` model (used for list endpoints, per
-  `connector-base-spec/spec.md:384-387`) is serialized
+- **WHEN** a `ConnectorSummary` list entry (per
+  `connector-base-spec/spec.md:431-443`) is serialized
 - **THEN** the model SHALL NOT be extended with the `auth` or `scopes`
   blocks (those are detail-only to keep list-page payloads small)
 - **AND** the list endpoint MAY include a single `auth_status` enum field on
   each summary entry for the connector-attention strip; despite the legacy
   field name, this public value SHALL use
   `{ok, degraded, needs_reauth, unsupported, unconfigured}` and SHALL apply
-  the same stored-cause normalization as `ConnectorDetail.auth.status`
+  the same stored-cause normalization as `ConnectorDetailEntry.auth.status`
 - **AND** full scope state is reserved for the detail endpoint
 
 ### Requirement: OAuth connector observation responsibility
@@ -109,8 +112,8 @@ OAuth-bound connectors SHALL maintain `observed_scopes` and `observed_scopes_fet
 
 - Parent capability — `connector-oauth-scope-surface/spec` (this change)
 - Connector base spec being extended —
-  `openspec/specs/connector-base-spec/spec.md:319-348,381-419`
+  `openspec/specs/connector-base-spec/spec.md:425-451`
 - Non-Negotiable Rule 7 (transport is connector responsibility) —
   `about/heart-and-soul/vision.md:110-115`
 - Connector-detail endpoint owner —
-  `openspec/specs/connector-base-spec/spec.md:388-392`
+  `openspec/specs/connector-base-spec/spec.md:435-443`

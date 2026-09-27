@@ -8,6 +8,7 @@ The session log is append-only: after creation the only mutation is
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -76,7 +77,7 @@ def _sanitize_json_value(value: Any) -> Any:
 
 
 # JSONB columns that need deserialization from string → Python object
-_JSONB_FIELDS = ("tool_calls", "cost")
+_JSONB_FIELDS = ("tool_calls", "cost", "prompt_provenance")
 _SUMMARY_PERIODS = frozenset({"today", "7d", "30d"})
 
 
@@ -219,6 +220,10 @@ async def session_create(
     complexity: str | None = None,
     resolution_source: str | None = None,
     butler_name: str | None = None,
+    effective_system_prompt: str | None = None,
+    prompt_digest: str | None = None,
+    prompt_provenance: list[dict[str, Any]] | None = None,
+    purpose_lane: str = "standard",
 ) -> uuid.UUID:
     """Insert a new session row and return its UUID.
 
@@ -248,6 +253,14 @@ async def session_create(
         butler_name: Optional owning butler name, used only to enrich the
             ``session`` event emitted onto the fleet event bus (bu-86c4c.8);
             not persisted.
+        effective_system_prompt: Exact composed system-prompt text passed to
+            the runtime adapter. New Spawner sessions provide this together
+            with its digest and provenance receipt; legacy/direct callers may
+            omit all three fields.
+        prompt_digest: Lowercase SHA-256 of ``effective_system_prompt`` UTF-8
+            bytes.
+        prompt_provenance: Ordered content-blind source receipt for the
+            effective prompt.
 
     Returns:
         The UUID of the newly created session.
@@ -258,6 +271,8 @@ async def session_create(
     """
     if request_id is None:
         raise ValueError("request_id is required and must not be None")
+    if purpose_lane not in {"standard", "private_content"}:
+        raise ValueError("purpose_lane must be 'standard' or 'private_content'")
     if not _is_valid_trigger_source(trigger_source):
         raise ValueError(
             f"Invalid trigger_source {trigger_source!r}; must be 'tick', "
@@ -265,16 +280,38 @@ async def session_create(
             f"'dashboard', 'qa', 'schedule:<task-name>', or 'deadline:<task-name>'"
         )
 
+    receipt_values = (effective_system_prompt, prompt_digest, prompt_provenance)
+    if any(value is not None for value in receipt_values) and not all(
+        value is not None for value in receipt_values
+    ):
+        raise ValueError(
+            "effective_system_prompt, prompt_digest, and prompt_provenance "
+            "must be provided together"
+        )
+    if effective_system_prompt is not None:
+        if "\x00" in effective_system_prompt:
+            raise ValueError("effective_system_prompt contains a NUL character")
+        encoded_prompt = effective_system_prompt.encode("utf-8")
+        expected_digest = hashlib.sha256(encoded_prompt).hexdigest()
+        if prompt_digest != expected_digest:
+            raise ValueError("prompt_digest does not match effective_system_prompt")
+        if not isinstance(prompt_provenance, list):
+            raise ValueError("prompt_provenance must be a list")
+
     # Sanitize once up front so the retry path does not redo the work.
     sanitized_prompt = _strip_untranslatable_chars(prompt)
+    safe_prompt_provenance = (
+        _sanitize_json_value(prompt_provenance) if prompt_provenance is not None else None
+    )
 
     async def _insert(resolved_ingestion_event_id: str | None) -> uuid.UUID:
         return await pool.fetchval(
             """
             INSERT INTO sessions
                 (prompt, trigger_source, trace_id, model, request_id, ingestion_event_id,
-                 complexity, resolution_source)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                 complexity, resolution_source, effective_system_prompt, prompt_digest,
+                 prompt_provenance, purpose_lane)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             RETURNING id
             """,
             sanitized_prompt,
@@ -285,6 +322,10 @@ async def session_create(
             resolved_ingestion_event_id,
             complexity,
             resolution_source,
+            effective_system_prompt,
+            prompt_digest,
+            safe_prompt_provenance,
+            purpose_lane,
         )
 
     try:
@@ -536,7 +577,7 @@ async def sessions_list(
                duration_ms, trace_id, model, cost, success, error,
                input_tokens, output_tokens, cached_input_tokens, cache_creation_tokens,
                request_id, ingestion_event_id,
-               complexity, resolution_source, started_at, completed_at
+               complexity, resolution_source, purpose_lane, started_at, completed_at
         FROM sessions
         ORDER BY started_at DESC
         LIMIT $1 OFFSET $2
@@ -567,7 +608,8 @@ async def sessions_active(
         """
         SELECT id, prompt, trigger_source, result, tool_calls,
                duration_ms, trace_id, model, cost, success, error, request_id,
-               ingestion_event_id, complexity, resolution_source, started_at, completed_at
+               ingestion_event_id, complexity, resolution_source, purpose_lane,
+               started_at, completed_at
         FROM sessions
         WHERE completed_at IS NULL
         ORDER BY started_at DESC
@@ -595,7 +637,7 @@ async def sessions_get(
                duration_ms, trace_id, model, cost, success, error,
                input_tokens, output_tokens, cached_input_tokens, cache_creation_tokens,
                request_id, ingestion_event_id,
-               complexity, resolution_source, started_at, completed_at
+               complexity, resolution_source, purpose_lane, started_at, completed_at
         FROM sessions
         WHERE id = $1
         """,
@@ -1069,6 +1111,7 @@ async def top_sessions(
             COALESCE(model, '') AS model,
             COALESCE(input_tokens, 0)::bigint AS input_tokens,
             COALESCE(output_tokens, 0)::bigint AS output_tokens,
+            purpose_lane,
             started_at
         FROM sessions
         WHERE completed_at IS NOT NULL
@@ -1091,6 +1134,7 @@ async def top_sessions(
                 "model": str(row["model"]),
                 "input_tokens": int(row["input_tokens"]),
                 "output_tokens": int(row["output_tokens"]),
+                "purpose_lane": row["purpose_lane"],
                 "started_at": started_at.isoformat() if started_at else "",
             }
         )

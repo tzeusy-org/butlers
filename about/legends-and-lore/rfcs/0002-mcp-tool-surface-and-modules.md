@@ -141,9 +141,13 @@ registration-time group and manifesto boundaries authoritative.
 #### Core Tool Gating via `core_groups`
 
 Core tools are organized into named **groups** and gated at registration time
-by the `core_groups` allowlist from the per-schema `runtime_config` table. When
-`core_groups` is NULL, all groups are registered (backward compatibility). When
-set, only tools belonging to the listed groups are registered on the MCP server.
+by an effective `core_groups` allowlist. Git-owned
+`[butler.runtime_seed].core_groups` declares capability; a per-schema
+`runtime_config.core_groups` value may narrow that declaration only while
+`core_groups_narrowing_reason` is non-empty. An unreasoned stale row is
+transactionally reconciled to Git at startup. When the effective value is NULL,
+all groups are registered (backward compatibility). When set, only tools
+belonging to the effective groups are registered on the MCP server.
 
 The complete merged-tree group inventory is:
 
@@ -151,7 +155,7 @@ The complete merged-tree group inventory is:
 |-------|------:|-------|------------------------------|
 | `infra` | 11 | `status`, `trigger`, `tick`, `correct`, `memory_access`, `memory_catalog_fetch`, `conversation_reply`, `conversation_recall`, `conversation_thread_read`, `shutdown`, `chronicler_day_close_refresh` | `chronicler_day_close_refresh` requires `butler_name == "chronicler"`; the other ten have no type/name gate. |
 | `state` | 4 | `state_get`, `state_set`, `state_delete`, `state_list` | None. |
-| `scheduling` | 6 | `schedule_list`, `schedule_create`, `schedule_update`, `schedule_delete`, `schedule_trigger`, `schedule_costs` | `schedule_trigger` and `schedule_costs` require a non-staffer; the other four do not. |
+| `scheduling` | 7 | `schedule_list`, `schedule_create`, `schedule_update`, `schedule_toggle`, `schedule_delete`, `schedule_trigger`, `schedule_costs` | `schedule_trigger` and `schedule_costs` require a non-staffer; the other five do not. |
 | `sessions` | 5 | `sessions_list`, `sessions_get`, `sessions_summary`, `sessions_daily`, `top_sessions` | All five require a non-staffer. |
 | `notifications` | 2 | `remind`, `notify` | `notify` requires a non-staffer; `remind` does not. |
 | `media` | 1 | `get_attachment` | None. |
@@ -188,9 +192,10 @@ Switchboard-routed delivery and `cancel_session` for dashboard cancellation.
 Both remain on canonical FastMCP `tools/list` but are infrastructure-only in the
 RFC 0027 LLM-presentation inventory.
 
-**Implementation.** The daemon reads `core_groups` from the effective
-`RuntimeConfig` (resolved from the `runtime_config` DB table via
-`RuntimeConfigAccessor`) and passes it to `_register_core_tools()`. A
+**Implementation.** `RuntimeConfigAccessor` resolves the Git declaration and
+the optional reasoned DB narrowing, persists any unreasoned reconciliation,
+and passes the effective groups plus source/diff metadata to
+`_register_core_tools()`. A
 group-aware decorator `_core_tool(group)` replaces the prior post-registration
 prune pass. The former tier catalog and the `_tools_to_remove` pruning section
 are removed. Registration correctness is derived from the dispatcher,
@@ -357,7 +362,7 @@ runtimes:
 
 ## Accepted Amendment 2 (2026-08-31) — Adapter-Owned Search Corpus and Complete MCP Listing
 
-**Status:** Owner-selected Option B in `bu-g5fha`; effective in the canonical
+**Status:** Owner-selected Option B (2026-08-31); effective in the canonical
 contract when the paired RFC/OpenSpec amendment merges.
 
 Amendment 2 supersedes Amendment 1 only on where the searchable LLM corpus is

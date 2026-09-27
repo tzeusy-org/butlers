@@ -5,7 +5,7 @@
 
 ## Summary
 
-A three-phase pipeline for delivering proactive insights to the user: butler-side generation, Switchboard-side brokering, and delivery via the existing `notify` contract. Butlers propose structured `insight.v1` candidates through the Switchboard's `propose_insight_candidate()` MCP tool. The insight broker module on the Switchboard validates, deduplicates, ranks, and budget-gates candidates before delivering winners as a digest or standalone message via `notify(intent='insight')`. Anti-spam guarantees are structural — a global daily budget, per-key cooldowns, and adaptive delivery ratcheting are enforced by the broker, not by individual butlers. Butlers never deliver insights directly; they compete for delivery slots.
+A three-phase pipeline for delivering proactive insights to the user: butler-side generation, Switchboard-side brokering, and delivery via the existing `notify` contract. Butlers propose structured `insight.v1` candidates through the Switchboard's `propose_insight_candidate()` MCP tool. The insight broker module on the Switchboard validates, deduplicates, ranks, and budget-gates candidates before delivering winners as a digest or standalone message via `notify(intent='insight')`. Anti-spam guarantees are structural — a global daily budget, per-key cooldowns, owner quiet hours, and category-local adaptive shaping are enforced by the broker, not by individual butlers. Butlers never deliver insights directly; they compete for delivery slots.
 
 ## Motivation
 
@@ -38,7 +38,7 @@ Phase 1: Generation                Phase 2: Brokering              Phase 3: Deli
                                    │ • expire           │
                                    │ • cooldown filter  │
                                    │ • dedup by key     │
-                                   │ • adaptive budget  │
+                                   │ • global budget    │
                                    │ • select top-B     │
                                    │ • deliver          │
                                    │ • record cooldowns │
@@ -49,7 +49,7 @@ Phase 1: Generation                Phase 2: Brokering              Phase 3: Deli
 
 **Phase 1 — Generation.** Each butler's `insight-scan` scheduled task runs at its natural cadence (daily, staggered by butler). The job evaluates domain data and calls the Switchboard's `propose_insight_candidate()` MCP tool for each candidate. Butlers use the existing `dispatch_mode='job'` with `job_name='insight-scan'` — no changes to `core-scheduler` are required. If the tool returns `{"status": "filtered"}`, the butler skips remaining candidate generation (early exit on verbosity `off`).
 
-**Phase 2 — Brokering.** The `propose_insight_candidate()` tool on the Switchboard validates the candidate (priority range, dedup key format, non-empty message, future expiry), checks the global verbosity setting, and inserts a row into `public.insight_candidates`. The `insight-delivery-cycle` scheduled task runs once daily (default 8:00 UTC) and orchestrates: expiry, cooldown filtering, deduplication, adaptive budget computation, top-B selection, delivery, cooldown recording, engagement tracking, and cleanup.
+**Phase 2 — Brokering.** The `propose_insight_candidate()` tool on the Switchboard validates the candidate (priority range, dedup key format, non-empty message, future expiry), checks the global verbosity setting, and inserts a row into `public.insight_candidates`. The `insight-delivery-cycle` scheduled task runs once daily (default 8:00 UTC) and orchestrates: expiry, cooldown filtering, deduplication, budget computation, top-B selection, delivery, cooldown recording, engagement tracking, and cleanup. An hourly urgent sub-cycle (see Urgent Sub-Cycle) delivers priority >= 90 candidates between daily runs.
 
 **Phase 3 — Delivery.** Winners are delivered via `notify(intent='insight')` through the existing Switchboard-to-Messenger pipeline. Budget > 1 produces a single digest message; budget = 1 produces a standalone message. The Messenger treats `intent='insight'` as functionally equivalent to `intent='send'` for delivery mechanics, with optional visual differentiation.
 
@@ -176,27 +176,27 @@ The first two segments (or three for 4-segment keys) use lowercase alphanumeric 
 
 The `insight-delivery-cycle` job runs as a daily scheduled task on the Switchboard (default cron: `0 8 * * *`). It executes the following steps in strict order:
 
-**Step 1 — Quiet hours check.** Read `public.insight_settings`. Convert current time to the user's configured timezone. If the current time falls within `[quiet_start, quiet_end)`, skip the entire cycle. Candidates remain `pending` for the next non-quiet cycle.
+**Step 1 — Attention gate.** Evaluate the Owner Attention Policy and the situational context bus (see Quiet Hours and Owner Attention Policy). If either suppresses the cycle, narrow the working set to candidates at or above `URGENT_PRIORITY_THRESHOLD` (90); if there are none, skip the cycle. Sub-threshold candidates stay `pending`: never delivered early, never dropped.
 
-**Step 2 — Expire old candidates.** Mark all candidates with `status='pending'` and `expires_at < now()` as `status='expired'`.
+**Step 2 — Expire old candidates.** Mark all candidates with `status='pending'` and `expires_at < now()` as `status='expired'`. Each transition commits together with its content-blind `expired` attention-ledger row; if the ledger write fails, the candidate stays `pending` for a later retry.
 
 **Step 3 — Cooldown filtering.** Exclude candidates whose `dedup_key` has an active cooldown in `public.insight_cooldowns` (where `cooldown_until > now()`). Filtered candidates remain `pending` — they are not marked as filtered, because the cooldown may expire before the candidate does.
 
 **Step 4 — Deduplication.** Within each `dedup_key` group among remaining candidates, retain only the highest-priority candidate. Break ties by `created_at` ascending. Mark losers as `status='filtered'`.
 
-**Step 5 — Compute effective budget.** Read the user's verbosity preset from `public.insight_settings`. Map preset to base budget (`off`=0, `minimal`=1, `normal`=3, `verbose`=5, or a custom integer 1-10). Apply adaptive reduction based on the 14-day engagement rate (see Adaptive Delivery below). If effective budget is 0 (verbosity `off`), mark all remaining pending candidates as `status='filtered'` and return.
+**Step 5 — Compute budget.** Read the user's verbosity preset from `public.insight_settings`. Map preset to budget (`off`=0, `minimal`=1, `normal`=3, `verbose`=5, or a custom integer 1-10). Engagement never changes the budget (see Adaptive Delivery Shaping). If the budget is 0 (verbosity `off`), mark all remaining pending candidates as `status='filtered'` and return.
 
 **Step 6 — Check already-delivered today.** Count candidates with `delivered_at` within the current calendar day (in the user's configured timezone, or UTC if none configured). Subtract from the effective budget to get the remaining delivery slots. If zero, return without delivery.
 
-**Step 7 — Select top-B.** From remaining candidates after steps 2-6, select the top B by descending `priority`, then ascending `created_at`. Candidates not selected remain `pending` for the next cycle.
+**Step 7 — Select top-B.** From remaining candidates after steps 2-6, select the top B by descending `priority` weighted by each candidate's category weight (see Adaptive Delivery Shaping), then ascending `created_at`. Candidates not selected remain `pending` for the next cycle.
 
-**Step 8 — Deliver.** If B > 1, compose a digest message and deliver via a single `notify(intent='insight')` call. If B = 1, deliver the single candidate as a standalone message with butler-origin prefix. On `notify` failure, the candidate's status remains `pending` and is retried next cycle. After 3 consecutive delivery failures for the same candidate, mark it `status='filtered'` with failure metadata.
+**Step 8 — Deliver.** If B > 1, compose a digest message and deliver via a single `notify(intent='insight')` call. If B = 1, deliver the single candidate as a standalone message with butler-origin prefix. On `notify` failure, the candidate's status remains `pending` and is retried next cycle. After 3 consecutive delivery failures for the same candidate, mark it `status='filtered'` with failure metadata. Each delivery records an attention-ledger row: `delivered` for a standalone message, and one `coalesced` row per candidate folded into a digest.
 
 **Step 9 — Record cooldowns.** For each delivered candidate, insert a row into `public.insight_cooldowns` with `cooldown_until = now() + cooldown_days`. If the candidate did not specify `cooldown_days`, use the default for its priority range (see Cooldown Tracking below).
 
 **Step 10 — Record engagement tracking.** For each delivered candidate, insert a row into `public.insight_engagement` with `delivered_at` and `engaged=FALSE`.
 
-**Step 11 — Cleanup.** Delete non-pending candidates from `public.insight_candidates` where `created_at` is older than 30 days. Delete cooldown entries from `public.insight_cooldowns` where `cooldown_until` is older than 30 days in the past. Delete engagement entries from `public.insight_engagement` where `delivered_at` is older than 30 days.
+**Step 11 — Cleanup.** Delete non-pending candidates from `public.insight_candidates` where `created_at` is older than 30 days. Delete cooldown entries from `public.insight_cooldowns` where `cooldown_until` is older than 30 days in the past. Before deleting engagement entries from `public.insight_engagement` where `delivered_at` is older than 30 days, upsert each affected day's delivered and engaged counts into `public.attention_daily_rollup`.
 
 ### Verbosity Presets and Budget
 
@@ -207,9 +207,6 @@ CREATE TABLE public.insight_settings (
     id              INTEGER PRIMARY KEY DEFAULT 1,
     verbosity       TEXT NOT NULL DEFAULT 'minimal',
     custom_budget   INTEGER CHECK (custom_budget >= 1 AND custom_budget <= 10),
-    quiet_start     INTEGER CHECK (quiet_start >= 0 AND quiet_start <= 23),
-    quiet_end       INTEGER CHECK (quiet_end >= 0 AND quiet_end <= 23),
-    quiet_timezone  TEXT,
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -229,7 +226,7 @@ INSERT INTO public.insight_settings (id, verbosity) VALUES (1, 'minimal');
 
 If `custom_budget` is non-null, it overrides the preset-derived budget. The `verbosity` column still stores the preset name for display purposes.
 
-When verbosity is `off`, the `propose_insight_candidate()` tool returns `filtered` immediately, allowing butler insight-scan jobs to detect this and skip further candidate generation.
+When verbosity is `off`, the `propose_insight_candidate()` tool returns `filtered` immediately, allowing butler insight-scan jobs to detect this and skip further candidate generation. Quiet hours are not stored here; see Quiet Hours and Owner Attention Policy.
 
 ### Cooldown Tracking
 
@@ -261,9 +258,9 @@ CREATE INDEX idx_insight_cooldowns_active
 
 Butlers can override the default by specifying `cooldown_days` on the candidate. The cooldown applies to the `dedup_key`, not the specific candidate — any future candidate with the same key is filtered until the cooldown expires.
 
-### Adaptive Delivery Ratchet
+### Adaptive Delivery Shaping
 
-The system tracks engagement and automatically reduces delivery frequency when the user ignores insights. It never automatically increases frequency — this is a one-way ratchet, resettable only by explicit user action.
+The broker tracks engagement to shape which candidates win slots. It never changes the owner's configured budget automatically.
 
 **Engagement tracking table:**
 
@@ -279,31 +276,22 @@ CREATE INDEX idx_insight_engagement_window
     ON public.insight_engagement (delivered_at, engaged);
 ```
 
-**Engagement detection:** When the Switchboard processes any ingress request (a user message arriving on any channel), it checks `public.insight_engagement` for rows with `engaged=FALSE` and `delivered_at` within the last 60 minutes. Matching rows are updated to `engaged=TRUE`. This check is a lightweight indexed query and does not delay ingress processing.
+Engagement is detected from owner-authored ingress only (see Engagement Tracking Contract).
 
-**Engagement rate computation:** The delivery cycle computes the engagement rate as a rolling 14-day window:
+**Category-local weights.** Each category's last ten attributed deliveries derive a weight of baseline, 0.75, or 0.5, which scales only that category's candidate ordering. A lower Health weight can change Health's rank, never the number of Finance slots available under the configured cap. A later useful verdict or that category's own later engagement can restore its baseline; another category cannot. Explicit useful, not-now, and never feedback (REST and MCP) is owner-attributed, bounded, and reversible at the family boundary.
+
+**Auto-off on total disengagement.** The engagement rate is computed over a rolling 14-day window:
 
 ```
 engagement_rate = count(engaged=TRUE) / count(*) WHERE delivered_at >= now() - 14 days
 ```
 
-If no insights were delivered in the last 14 days, the engagement rate is treated as 1.0 (no penalty for idle periods).
-
-**Adaptive budget reduction:**
-
-| Engagement Rate | Effective Budget | Description |
-|----------------|-----------------|-------------|
-| >= 0.5 | Configured budget (no reduction) | User finds insights useful |
-| 0.25 to < 0.5 | `max(1, configured_budget - 1)` | Moderate disengagement — reduce by 1 |
-| < 0.25 | 1 | Severe disengagement — deliver at most 1 |
-| 0.0 for 14 consecutive days | 0 (auto-off) | Total disengagement — pause the system |
-
-**Auto-off on total disengagement:** When the engagement rate is 0.0 for 14 consecutive days (with at least 1 insight delivered per day during that period), the system:
+If no insights were delivered in the window, the rate is treated as 1.0. When the rate is 0.0 for 14 consecutive days (with at least 1 insight delivered per day during that period), the system:
 
 1. Sets `verbosity` to `off` in `public.insight_settings`.
 2. Delivers a final notification via direct `notify(intent='send')` (not through the insight pipeline): "I've paused proactive insights since you haven't found them useful. You can re-enable them anytime."
 
-**No automatic increase:** If the user's engagement rate improves after a budget reduction, the effective budget does not automatically increase. The user must explicitly change their verbosity setting to restore the original budget. This prevents the system from oscillating between "reducing because ignored" and "increasing because engaged."
+The auto-off check reads raw `insight_engagement` for days still present and falls back to `public.attention_daily_rollup` for days already purged, so the 14-day window cannot be truncated by retention. Only explicit owner action restores delivery after auto-off.
 
 ### Digest and Standalone Delivery Format
 
@@ -325,11 +313,35 @@ Daily Insights (3):
 
 Both formats are delivered via `notify(intent='insight')`. The `metadata` field of the notify envelope includes `insight_count` (int) and `insight_ids` (list of candidate UUIDs) for audit and future dashboard rendering.
 
-### Quiet Hours
+### Quiet Hours and Owner Attention Policy
 
-The user can configure quiet hours as `(quiet_start, quiet_end, quiet_timezone)` in `public.insight_settings`. During quiet hours, the delivery cycle is skipped entirely. Candidates accumulate but are NOT burst-delivered after quiet hours end — the daily budget still applies at the next non-quiet cycle.
+`public.approvals_policy` is the single Owner Attention Policy for routine direct owner-default notification holds, approval-request pushes, the insight broker's regular cycle, and the derived health sleeping context. It is evaluated in its stored IANA timezone as the end-exclusive interval `[quiet_start_hour, quiet_end_hour)`, and every defer or sleep anchor uses the exact configured local end converted to UTC. A never-configured install is seeded to 23:00-08:00 Asia/Singapore; an owner's own configuration is never overwritten. `/api/approvals/policy` writes require a complete hour pair and a recognized IANA timezone. Missing, incomplete, invalid, or unreadable policy data fails open for routine paths; approval pending-action expiry is independent of push timing.
 
-If no quiet hours are configured, delivery proceeds at the scheduled time without time-based suppression.
+Both `notify()`'s owner-default gate and the delivery cycle also make a deterministic, non-LLM read of `public.user_context` (RFC 0009) for an active `dnd` or `sleeping` signal, which suppresses like quiet hours. Neither quiet hours nor the context bus suppresses anything at or above `URGENT_PRIORITY_THRESHOLD` (90). `notify()` priorities normalize onto the same 1-100 scale via `normalize_priority()` (`high` → 90, `medium` → 50, `low` → 20).
+
+During a suppressed regular cycle, candidates accumulate but are NOT burst-delivered afterward; the daily budget still applies at the next cycle.
+
+### Notify-Path Holds and Coalescing
+
+A direct `notify()` call with no `entity_id`, no explicit `recipient`, intent `send` or `insight`, and priority other than `high` is held durably when quiet hours or the context bus suppress it. The per-butler `delivery_preferences` branch runs first and is unchanged; high-priority, explicit-target, other-intent, and approval-request paths keep their own behavior. The hold inserts the resolved `notify.v1` envelope into the calling butler schema's `deferred_notifications` table. Policy quiet hours anchor `deliver_at` at the configured end; DND or sleeping anchors at the latest active suppressor expiry; if both apply, the later anchor wins. A successful enqueue records a `deferred` ledger row with the row id in `notification_ref`. An enqueue failure records a best-effort `failed` row and returns a retryable error; it never falls through to immediate delivery. Policy or context lookup failures fail open.
+
+The scheduler flush (`_tick_deferred_notification_pass`, `src/butlers/core/scheduler.py`) is the sole later delivery engine. It delivers the stored envelope without re-gating, so a stored `deliver_at` survives later policy changes. It groups due rows by delivery target (channel plus recipient; a `None` recipient is its own group). A target with one due row is delivered verbatim and recorded `delivered`; a target with several is composed into one digest-style message, delivered by one `notify_fn` call, and recorded as one `coalesced` row per notification. A group is marked `delivered` together on success or stays `pending` together on failure, never partially.
+
+### Urgent Sub-Cycle
+
+The Switchboard schedule `insight-urgent-subcycle` (`30 * * * *`) runs `delivery_cycle(urgent_only=True)` with the same production `notify_fn` as the daily job. In this mode selection starts from `priority >= URGENT_PRIORITY_THRESHOLD`, the quiet-hours and context-bus consult is skipped (urgent always bypasses both), the daily budget cap does not apply, and end-of-cycle maintenance (cleanup, auto-off) is left to the daily cycle. Verbosity `off` still applies. Each row's own `status` transition to `delivered` is the double-send guard across both cycles.
+
+### Attention Ledger
+
+`public.attention_ledger` holds one durable row per proactive-egress decision at either choke point (`notify()` and `delivery_cycle()`). Columns: `id`, `occurred_at`, `origin_butler`, `source` (`notify` | `insight`), `channel`, `intent`, `priority_label`, `priority_score` (normalized 1-100), `dedup_key`, `outcome`, `reason`, `notification_ref`, `metadata`. `outcome` is a closed vocabulary: `delivered`, `coalesced`, `deferred`, `suppressed`, `failed`, `expired`. A ledger-write failure is logged at WARNING and never blocks or fails the egress it describes, except where this RFC requires the ledger row to commit with a state transition (candidate expiry).
+
+`public.attention_daily_rollup` holds one row per UTC day (`day`, `owner_ingress_count`, `insights_delivered`, `insights_engaged`, `updated_at`) so the engagement signal survives the 30-day purge.
+
+Readers:
+
+- `GET /api/attention/ledger`: windowed (`since`/`until` on `occurred_at`), filterable (`intent`, `source`, `outcome`, `origin_butler`), paginated raw rows, newest first.
+- `GET /api/attention/ledger/summary`: per-`origin_butler` outcome counts over a window that defaults to the last 7 days. Each row carries `suppressed_never_delivered` (`suppressed > 0 AND delivered == 0`), and `flagged_sources` lists those names. The dashboard renders flagged sources as a loud failure banner, distinct from the degraded-source note.
+- Both follow the degraded-envelope convention: an unreachable pool yields `source_available=false`; an unmigrated table yields a true empty result.
 
 ### `intent='insight'` Notify Extension
 
@@ -356,7 +368,7 @@ The following guarantees are structural — enforced by the broker's architectur
 
 4. **Cooldown enforcement.** Delivered insights create cooldown entries that the broker checks before every delivery cycle. A butler cannot re-propose the same insight and bypass cooldown because the broker filters by `dedup_key`, not by candidate ID.
 
-5. **One-way adaptive ratchet.** The system reduces delivery frequency on disengagement and never automatically increases it. The auto-off mechanism ensures that a completely ignored system eventually silences itself. Only explicit user action restores delivery.
+5. **Owner-controlled budget.** The global budget changes only by explicit owner action. Disengagement lowers a category's rank weight, never the cap, and a completely ignored system silences itself through auto-off. Only explicit owner action restores delivery after auto-off.
 
 6. **Digest batching.** When budget > 1, insights are delivered as a single message. The user receives one notification, not B notifications.
 
@@ -364,14 +376,14 @@ The following guarantees are structural — enforced by the broker's architectur
 
 ### Engagement Tracking Contract
 
-Engagement detection is a side effect of the Switchboard's existing ingress processing path:
+Engagement detection is a side effect of the Switchboard's existing ingress processing path (`MessagePipeline.process()`):
 
-1. When the Switchboard accepts an ingress request (any user message on any channel), it queries `public.insight_engagement` for rows with `engaged=FALSE` and `delivered_at` within the last 60 minutes.
-2. Matching rows are updated to `engaged=TRUE`.
-3. This query uses the `idx_insight_engagement_window` index and is bounded to a narrow time window (at most 60 minutes of rows). It does not scan the full table.
+1. When the Switchboard accepts an ingress request, it resolves the sender with a read-only `resolve_contact_by_channel()` lookup (`src/butlers/identity.py`), independent of the identity-injection feature flag and without its side effects. Only a sender with the `owner` role proceeds; connector, automated, and unresolved ingress never touch `insight_engagement`.
+2. For owner ingress, it increments that day's `owner_ingress_count` in `public.attention_daily_rollup`, then updates `public.insight_engagement` rows with `engaged=FALSE` and `delivered_at` within the last 60 minutes to `engaged=TRUE`.
+3. This query uses the `idx_insight_engagement_window` index and is bounded to at most 60 minutes of rows. It does not scan the full table.
 4. The engagement check does not delay or block ingress processing. It runs as a lightweight post-acceptance side effect.
 
-The engagement signal is intentionally rough — "any message within 60 minutes" is an imprecise proxy for "the user found the insight useful." Over-engineering engagement tracking (click tracking, read receipts, sentiment analysis) would add complexity for marginal accuracy gain. The 14-day rolling window smooths out noise from false positives.
+The engagement signal is intentionally rough — "any owner message within 60 minutes" is an imprecise proxy for "the user found the insight useful." Over-engineering engagement tracking (click tracking, read receipts, sentiment analysis) would add complexity for marginal accuracy gain. The 14-day rolling window smooths out noise from false positives.
 
 ## Integration
 
@@ -379,7 +391,7 @@ The engagement signal is intentionally rough — "any message within 60 minutes"
 - **RFC 0002:** `propose_insight_candidate` is registered as a module tool on the Switchboard via the `Module.register_tools()` interface. The `notify` core tool is extended with `intent='insight'`. The insight broker implements the `Module` abstract base class.
 - **RFC 0003:** Candidate submission flows through the Switchboard as an MCP tool call, consistent with the Switchboard's role as the single coordination point. The broker module runs within the Switchboard daemon alongside routing infrastructure.
 - **RFC 0006:** `public.insight_candidates`, `public.insight_cooldowns`, `public.insight_engagement`, and `public.insight_settings` are created in the `public` schema via an Alembic migration, following the existing shared-schema pattern. All butlers can read these tables via their `search_path`; only the Switchboard's broker module writes to them.
-- **RFC 0009:** The delivery cycle checks the situational context bus for `dnd` or `sleeping` signals as an additional suppression layer, complementing quiet hours. Eligible routine owner-default `notify()` calls instead durably defer their full envelope until the policy/context hold clears (Amendment 5). (Originally optional/deferred; landed live in Amendment 1.)
+- **RFC 0009:** The delivery cycle and `notify()`'s owner-default gate consult the situational context bus for `dnd` or `sleeping` signals alongside quiet hours (see Quiet Hours and Owner Attention Policy).
 
 ## Alternatives Considered
 
@@ -397,150 +409,12 @@ The engagement signal is intentionally rough — "any message within 60 minutes"
 
 ## Amendments Applied
 
-### Amendment 1 (2026-07-05) — Attention Ledger, Seeded Quiet Hours, Context-Bus Gating
+Each amendment is folded into the Design sections above; this log records when the contract changed.
 
-Applied per bu-qvnce.8 (2026-07-04 JARVIS pursuit, move 8, slices 1-2) via `openspec/changes/attention-ledger-broker`.
-
-**Summary:** This RFC's anti-spam machinery (budget, dedup, cooldown, adaptive ratchet — all unchanged by this amendment) governs the insight pipeline, but two adjacent gaps meant proactive egress as a whole was not fully governed: (1) `notify()`'s owner-default quiet-hours gate (`public.approvals_policy`) is a sibling mechanism to this RFC's own quiet hours (`public.insight_settings`), and both defaulted to NULL/disabled with zero owner setup; (2) neither gate consulted the situational context bus (RFC 0009), despite this RFC's own Integration section flagging that as "optional, deferred to a follow-up" back in March 2026; (3) a suppressed or deferred notification left no durable trace — the calling LLM runtime saw a status string for one tool call and nothing else survived. This amendment closes all three gaps with one new table and two small, additive checks — it does not change the delivery-cycle algorithm's steps, budget computation, dedup resolution, or cooldown periods.
-
-**Changes made:**
-
-- **New `public.attention_ledger` table** (migration `core_160`) — one durable row per proactive-egress decision at either choke point (`notify()` and `delivery_cycle()`). Columns: `id`, `occurred_at`, `origin_butler`, `source` (`notify` | `insight`), `channel`, `intent`, `priority_label`, `priority_score` (1-100, normalized — see below), `dedup_key`, `outcome`, `reason`, `notification_ref`, `metadata`. `outcome` is a closed vocabulary: `delivered`, `coalesced` (folded into a digest — see the Digest requirement below), `deferred`, `suppressed`. This is the "ledger" a future dashboard panel (slice 5, not yet built) will read; `count_attention_events_since()` in `src/butlers/core/attention_ledger.py` already provides the outcome-grouped counting query for that surface.
-- **Seeded owner-level quiet hours.** `core_160` seeds both `public.approvals_policy` and `public.insight_settings` to 23:00-08:00 Asia/Singapore, guarded by `WHERE quiet_start_hour IS NULL AND quiet_end_hour IS NULL` (and the `insight_settings` equivalent) — applies only to a never-configured install; an owner's own configuration, however it was set, is never overwritten. Two separate singleton tables are seeded (not consolidated into one) because they remain sibling mechanisms per this RFC's original design note ("this module deliberately avoids importing the delivery_preferences temporal system... sibling subsystems") — `approvals_policy` governs `notify()`'s owner-default path, `insight_settings` governs this RFC's own delivery cycle. A future slice may consolidate them; this amendment does not.
-- **Context-bus gating, now live (closes the March 2026 "deferred to a follow-up" note).** Both `notify()`'s owner-default gate and `delivery_cycle()`'s quiet-hours check call a deterministic, non-LLM read of `public.user_context` for an active `dnd` or `sleeping` signal. This is additive to the existing hour-based gates. The historical direct `notify()` destructive result described here is superseded for eligible routine owner-default sends by Amendment 5; the delivery cycle retains its existing suppression behavior.
-- **Priority-urgent bypass (fail-open for urgent, budgeted for routine).** Neither quiet hours nor the context bus suppresses a candidate/notification at or above `URGENT_PRIORITY_THRESHOLD` (90 — this RFC's existing "time-critical" floor from the Priority Scoring Convention table). In `delivery_cycle()`, when a would-be-suppressed cycle has at least one pending candidate at/above the threshold, the cycle narrows its working set to urgent candidates only for that cycle — sub-threshold candidates stay `status='pending'` untouched, eligible again on a later non-suppressed cycle. They are never delivered early (no budget bypass — the daily budget computation is unchanged) and never silently dropped (still `pending`, not `filtered`/`expired`). `notify()`'s existing `priority="high"` bypass is unchanged; this amendment adds the same bypass to the new context-bus check and normalizes `high`/`medium`/`low` onto the same 1-100 scale (`high` → 90, `medium` → 50, `low` → 20) via `normalize_priority()`, so ledger rows from both boundaries are comparable on one scale.
-- **Digest candidates recorded as `coalesced`, not `delivered`.** When `deliver_count > 1` (a digest), each of the N candidates gets its own ledger row with `outcome="coalesced"` rather than `delivered` — the ledger distinguishes "sent alone" from "folded into a composed batch" per candidate, without changing the digest formatting or delivery mechanics this RFC already specifies.
-
-**Backward compatibility:** Additive only. `propose_insight_candidate()`'s validation, the delivery cycle's 10-step order, dedup/cooldown/budget/adaptive-ratchet computation, and the `notify.v1` envelope contract are all unchanged. A ledger-write failure (e.g. an unmigrated database mid-rollout) is caught and logged at WARNING — it never blocks or fails the notification/candidate it describes. Existing quiet-hours behavior for owners who already configured either policy table is unchanged (the seed is a no-op against a configured row).
-
-**Deferred to later slices of the same move (bu-qvnce.8), not part of this amendment:** same-window coalescing of multiple `notify()`-path sends into one composed message; an hourly urgent sub-cycle (so priority>=90 means "hours," not "one daily slot" — today's priority-urgent bypass only affects quiet-hours/context-bus suppression, not the daily cycle cadence itself); converting finance's direct-notify prompt-cron tasks to insight candidates; the dashboard attention-ledger panel.
-
-### Amendment 2 (2026-07-05) — Same-Window Coalescing + Hourly Urgent Sub-Cycle
-
-Applied per bu-o8233 (2026-07-04 JARVIS pursuit, move 8, slice 4) via `openspec/changes/attention-ledger-coalescing-urgent-subcycle`. Implements the two pieces Amendment 1 explicitly deferred, without introducing a new egress path — both changes compose inside the two existing choke points (the deferred-notification flush and `delivery_cycle()`).
-
-**Summary:** Two gaps remained even after Amendment 1's ledger/context-bus/urgent-bypass work: (1) `notify()`'s per-butler quiet-hours batching (`{schema}.delivery_preferences`, `deferred_notifications` — RFC `time-aware-delivery`) let a butler defer several medium/low-priority sends to one daily batch window, but the flush pass still delivered each due row as its own `notify_fn` call — one Telegram ping per queued item, defeating the point of batching; (2) the priority-urgent bypass this RFC already had only ever affected quiet-hours/context-bus *suppression*, never the delivery cycle's *cadence* — with one daily cron slot, a priority>=90 candidate proposed shortly after the daily run could still sit `pending` for nearly 24h.
-
-**Changes made:**
-
-- **Same-window coalescing at the notify() flush.** `_tick_deferred_notification_pass` (`src/butlers/core/scheduler.py`) now groups due (`status='pending' AND deliver_at <= now`) rows by delivery target (channel + recipient — a `None` recipient, i.e. "resolve the owner's default channel," is its own group, never merged with an explicit recipient). A target with exactly one due row is delivered unchanged, verbatim. A target with more than one due row is composed into one digest-style message (mirrors the insight broker's own `_format_digest` convention) and delivered via a single `notify_fn` call; the whole group is marked `delivered` together on success, or stays `pending` together for retry on failure — never a partial send within a group.
-- **Ledger recording added to the flush pass (previously absent).** Every successful flush-time delivery now calls `record_attention_event(source="notify", ...)`: `outcome="delivered"` for a solo row, `outcome="coalesced"` (one row per underlying notification) for a composed digest — the same outcome vocabulary Amendment 1 already established for the insight engine's own digests. No migration was needed: `public.attention_ledger.outcome`'s CHECK constraint was never scoped by `source`, confirmed against a real migrated Postgres instance.
-- **`delivery_cycle(urgent_only=True)`.** A new opt-in mode: candidate selection narrows to `priority >= URGENT_PRIORITY_THRESHOLD` from the start (routine candidates are never touched); the quiet-hours/context-bus consult is skipped outright rather than computed and ignored (urgent always bypasses both per Amendment 1, so querying them is pure overhead in this mode); the daily adaptive budget cap does not apply (every eligible urgent candidate delivers this cycle, capped only by however many are eligible); end-of-cycle maintenance (`cleanup_old_rows`, disengagement auto-off) is skipped, since the daily cycle already covers those once a day. The existing `verbosity=off` opt-out is unchanged and still applies in this mode — it is a hard user preference, not a time-based deferral the urgent bypass is meant to override.
-- **New hourly schedule.** `roster/switchboard/butler.toml` gains `insight-urgent-subcycle` (`30 * * * *`), dispatching to a new `insight_urgent_subcycle` job (`src/butlers/scheduled_jobs.py`) that calls `delivery_cycle(pool, notify_fn=..., urgent_only=True)` using the exact same production `notify_fn` factory as the existing daily job.
-
-**Idempotency:** No new bookkeeping was needed for either mechanism. A delivered row (in either `insight_candidates` or `deferred_notifications`) transitions its own `status` to `'delivered'` as part of its successful-delivery step, and every due-fetch query in both pipelines filters `WHERE status = 'pending'` — the row's own status is the guard against double-send, exactly as it already was before this amendment. In particular, a candidate the hourly urgent sub-cycle delivers is simply absent from the next daily cycle's pending-candidate fetch; no cross-cycle coordination logic was added.
-
-**Backward compatibility:** Additive only. A solo-row notify() flush is delivered exactly as before (unchanged envelope, same ledger-absent behavior it had pre-amendment aside from the new `delivered`/`coalesced` recording). `delivery_cycle()`'s existing daily-cycle behavior (`urgent_only` defaulting to `False`) is completely unchanged — same 10-step order, same budget/dedup/cooldown/adaptive-ratchet computation, same quiet-hours/context-bus/priority-urgent-bypass logic Amendment 1 introduced.
-
-**Deferred, still not part of this amendment:** converting finance's direct-notify prompt-cron tasks to insight candidates (slice 3); the dashboard attention-ledger panel (slice 5).
-
-### Amendment 3 (2026-07-11) — Attention Ledger Reader + Trust Console Panel
-
-Applied per bu-tdd4k.4 (2026-07-10 JARVIS pursuit, move 1, proactivity-spine epic bu-tdd4k) via `openspec/changes/attention-ledger-broker` (section 5b of its `tasks.md`). Delivers slice 5, the last piece Amendment 1 deferred: the ledger had recorded every terminal egress decision since Amendment 1, but `grep attention_ledger src/butlers/api` returned zero readers — nothing observed the ledger back. That gap was not hypothetical: `deliver()`'s bare (unqualified-schema) `butler_registry` lookup meant the secrets-lifecycle push had been recording `outcome="suppressed"` 120 times with zero `outcome="delivered"` rows since 2026-07-05, and nothing surfaced it until bu-tdd4k.2 fixed the underlying bug.
-
-**Summary:** Adds the ledger's first reader surface: two dashboard-API endpoints and a Trust Console panel, so "a source is suppressed but never actually delivers" is a visible, loud state rather than something only discoverable by direct DB access.
-
-**Changes made:**
-
-- **`GET /api/attention/ledger`** (`src/butlers/api/routers/attention_ledger.py`) — a windowed (`since`/`until` on `occurred_at`), filterable (`intent`, `source`, `outcome`, `origin_butler`) paginated list of raw ledger rows, newest first. Follows the repo's existing paginated-list conventions (`notifications.py`'s shape: `PaginatedResponse` + `source_available`).
-- **`GET /api/attention/ledger/summary`** — a per-`origin_butler` rollup (`delivered`/`coalesced`/`deferred`/`suppressed`/`total`) over a window defaulting to the last 7 days when `since` is omitted (an unbounded scan is never the default for this aggregate). Each row carries `suppressed_never_delivered` (`suppressed > 0 AND delivered == 0`) — the exact shape of the secrets-lifecycle failure above — and the response's `flagged_sources` list is the same signal projected to just the names, for a Trust Console banner that does not need to re-derive the filter.
-- **Naming decision:** the summary's "per source" grouping is `origin_butler` (which butler/job attempted the egress), not the ledger's own `source` column (the `notify`/`insight` choke-point literal this RFC's two egress paths already write). Both dimensions are independently filterable; `origin_butler` is the grouping key for the summary because it is the operationally meaningful "which system is broken" question the Trust Console panel answers.
-- **Trust Console panel** (`ApprovalsPage.tsx`, the existing "One Trust Console" page from the 2026-07-04 JARVIS audit move 9) — renders the summary as a delivery-vs-suppression table per source, with any `suppressed_never_delivered` source surfaced in a loud (red, not amber) banner distinct from the page's existing amber `SourceDegradedNote` vocabulary (that vocabulary is reserved for "the data source is unreachable," not "a source is actively failing to deliver").
-- **Degraded-envelope compliance.** Both endpoints follow the repo's `aggregates_available` convention: an unreachable ledger pool renders `source_available=false` on an empty/zero payload; an unmigrated table (pre-`core_160`) renders a true empty result with `source_available=true`, since that is a genuinely-empty state rather than a source failure.
-
-**Backward compatibility:** Additive only — no changes to the writer (`record_attention_event`), the outcome/source vocabulary, or either egress path's delivery mechanics. Purely a new read surface over the existing table.
-
-**Deferred, still not part of this amendment:** converting finance's direct-notify prompt-cron tasks to insight candidates (slice 3, unchanged from Amendment 1/2's note).
-
-### Amendment 4 (2026-07-11) — Owner-Gated Engagement Proxy + Daily Attention Rollup
-
-Applied per bu-tdd4k.5 (2026-07-10 JARVIS pursuit, move 1, proactivity-spine epic bu-tdd4k, the epic's final slice) via `roster/switchboard/tools/insight/broker.py` and `src/butlers/modules/pipeline.py`. Closes the last gap this epic set out to fix: the "Engagement detection" behavior described above ("any ingress request... a user message arriving on any channel") was implemented literally — `check_and_update_engagement()` ran unconditionally on *every* Switchboard ingress request, including connector/automated traffic with no owner behind it. Since a fully-ignored insight stream still received a steady drip of non-owner ingress, `engagement_rate` could never settle at 0.0 for 14 consecutive days, and the one-way disengagement ratchet this RFC's Adaptive Delivery section describes as a vision success marker ("failure never impersonates health") could never fire.
-
-**Summary:** Gates the engagement proxy on owner-authored ingress only, and introduces `public.attention_daily_rollup` so the (now-meaningful) signal survives `insight_engagement`'s 30-day purge.
-
-**Changes made:**
-
-- **Owner gate at the engagement call site.** `MessagePipeline.process()`'s engagement-detection block now resolves the ingress sender via the standard channel reverse-lookup (`resolve_contact_by_channel(pool, channel_type, channel_value)`, `src/butlers/identity.py` — the same primitive `resolve_and_inject_identity()` uses for preamble injection) and only calls `check_and_update_engagement()` when the resolved sender carries the `owner` role. Connector ingress, automated sources, and unresolved/unknown senders no longer touch `insight_engagement` at all. The gate is a direct, read-only lookup rather than routing through the full `resolve_and_inject_identity()` machinery, since that path's side effects (temp-contact creation, one-time owner notification for unknown senders) have no place in a best-effort engagement check — and it runs unconditionally, independent of the `enable_identity_resolution` feature flag that gates preamble injection, since the ratchet's correctness must not depend on that flag.
-- **`public.attention_daily_rollup`** (migration `core_165`) — one row per UTC day: `day` (PK), `owner_ingress_count`, `insights_delivered`, `insights_engaged`, `updated_at`. Two independent writers populate it:
-  - `record_owner_ingress_rollup()` (`src/butlers/core/attention_ledger.py`) increments `owner_ingress_count` every time the pipeline's engagement gate resolves the sender to the owner.
-  - `cleanup_old_rows()`'s purge step now upserts each affected day's `insights_delivered`/`insights_engaged` counts into the rollup immediately before deleting the corresponding `insight_engagement` rows, so per-day history is preserved past the 30-day cutoff rather than deleted with no trace.
-- **`check_total_disengagement_auto_off()` reads a merged view**: raw `insight_engagement` for days still present, falling back to `attention_daily_rollup` for any day in the 14-day window already purged from the raw table. In practice the 14-day window sits comfortably inside the default 30-day retention, so this fallback is a correctness backstop (a shortened `retention_days` config, or any future reordering) rather than something the default configuration exercises today — but the ratchet's window is no longer silently truncatable by the purge.
-
-**Backward compatibility:** Additive. Owner-authored ingress observes identical behavior to before (engagement still marked within the 60-minute window). The merged disengagement query degrades gracefully to the original raw-only read (`asyncpg.UndefinedTableError` fallback) if `attention_daily_rollup` is ever queried against a pre-`core_165` database. No change to `insight_engagement`'s schema, the adaptive-budget table above, or the digest/standalone delivery format.
-
-### Amendment 5 (2026-07-19) — Durable Routine Owner-Default Notify Holds
-
-Applied per `bu-kqnum.3.1` via
-`openspec/changes/park-owner-default-notifications`.
-
-**Summary:** Amendment 1 made direct owner-default quiet-hours/context choices
-observable, but its eligible `notify()` branches still returned a transient
-suppression result after composing a full owner-facing envelope. This amendment
-reuses the existing originating-schema deferred-notification queue so routine
-content is held durably rather than discarded. It does not alter the insight
-delivery-cycle suppression policy described elsewhere in this RFC.
-
-**Changes made:**
-
-- **Narrow admission scope.** Only direct `notify()` calls with no `entity_id`,
-  no explicit `recipient`, intent `send` or `insight`, and priority other than
-  `high` may enter this hold. The earlier per-butler `delivery_preferences`
-  branch remains first and unchanged. High-priority, explicit-target, other
-  intent, and approval-request paths retain their existing behavior.
-- **Durable full-envelope queue.** The eligible path inserts the already
-  resolved `notify.v1` envelope into the calling butler schema's existing
-  `deferred_notifications` table. Policy quiet hours choose the first whole
-  local hour after the inclusive quiet end; DND/sleeping chooses the latest
-  active suppressor expiry. If both holds apply, the later anchor wins. The
-  existing scheduler flush is the sole later delivery engine: it supplies the
-  stored envelope without re-gating and retains its established retry and
-  coalescing behavior.
-- **Honest decision records.** A successful enqueue records
-  `outcome="deferred"` with the row id in `notification_ref` and a
-  machine-readable policy/context reason. An enqueue failure records a
-  best-effort `failed` outcome and returns a retryable error; it never falls
-  through to immediate delivery or a destructive suppression result. A ledger
-  failure after the queue write cannot change the deferred result.
-
-**Backward compatibility:** No schema, ACL, cross-schema content store,
-producer, cron, wake/catch-up, morning digest, or scheduler redesign is added.
-Policy/context lookup failures remain fail-open. Existing approval-request
-quiet-hours behavior, including `approval_push_deliver_at` and pending-action
-expiry semantics, is unchanged.
-
-### Amendment 6 (2026-07-19) — Consolidated Owner Attention Policy
-
-Applied per `bu-s182c` via
-`openspec/changes/consolidate-owner-attention-policy`.
-
-**Summary:** Amendment 1 deliberately seeded two sibling quiet-hours stores,
-and Amendment 5 used an inclusive policy-end anchor for routine durable holds.
-That left direct owner-attention readers with divergent boundaries and the
-insight broker with a second authority. This amendment consolidates the
-authority into `public.approvals_policy` without broadening proactive egress.
-
-**Changes made:**
-
-- **One global authority.** `public.approvals_policy` is the Owner Attention
-  Policy for routine direct owner-default notification holds, approval-request
-  pushes, the insight broker's regular cycle, and the derived health sleeping
-  context. It is evaluated in its stored IANA timezone as the end-exclusive
-  interval `[quiet_start_hour, quiet_end_hour)`, and every defer/sleep anchor
-  uses the exact configured local end converted to UTC.
-- **Guarded legacy migration.** A complete canonical policy wins a conflict.
-  Only when the canonical pair is incomplete may a complete, in-range legacy
-  insight hour pair be copied; a nonblank legacy timezone is preserved
-  literally, including malformed values, so runtime can fail open rather than
-  silently reinterpret user data. The migration then removes
-  `insight_settings.quiet_start`, `quiet_end`, and `quiet_timezone`; runtime
-  performs no dual read. `insight_settings` retains verbosity and budget only.
-- **Stable control surface.** The existing `/api/approvals/policy` shape stays
-  stable, but writes now require a complete hour pair and a recognized IANA
-  timezone. The dashboard calls it Owner Attention Policy.
-
-**Non-goals and compatibility:** This amendment adds no broker catch-up, wake,
-cron, digest, secret, retention, or delivery-preferences redesign. A durable
-row keeps its stored UTC `deliver_at`; the scheduler does not re-gate it when
-the policy later changes. Missing, incomplete, invalid, or unreadable policy
-data fails open for routine paths, while approval pending-action expiry remains
-independent of push timing.
+- **Amendment 1 (2026-07-05) — Attention Ledger, Seeded Quiet Hours, Context-Bus Gating.** Added the attention ledger, seeded owner quiet hours, context-bus gating, and the urgent bypass (see Attention Ledger; Quiet Hours and Owner Attention Policy). Change: `openspec/changes/attention-ledger-broker`.
+- **Amendment 2 (2026-07-05) — Same-Window Coalescing + Hourly Urgent Sub-Cycle.** See Notify-Path Holds and Coalescing; Urgent Sub-Cycle. Change: `openspec/changes/attention-ledger-coalescing-urgent-subcycle`.
+- **Amendment 3 (2026-07-11) — Attention Ledger Reader + Trust Console Panel.** Added the ledger read API and dashboard panel (see Attention Ledger).
+- **Amendment 4 (2026-07-11) — Owner-Gated Engagement Proxy + Daily Attention Rollup.** See Engagement Tracking Contract; Adaptive Delivery Shaping.
+- **Amendment 5 (2026-07-19) — Durable Routine Owner-Default Notify Holds.** See Notify-Path Holds and Coalescing. Change: `openspec/changes/park-owner-default-notifications`.
+- **Amendment 6 (2026-07-19) — Consolidated Owner Attention Policy.** `public.approvals_policy` became the single quiet-hours authority; `insight_settings` lost its quiet-hour columns (see Quiet Hours and Owner Attention Policy). Change: `openspec/changes/consolidate-owner-attention-policy`.
+- **Amendment 7 (2026-09-16) — Reversible Per-Category Insight Shaping.** Replaced the aggregate adaptive-budget reduction with category-local weights and made expiry transactional with its ledger row (see Adaptive Delivery Shaping; Delivery Cycle Execution). Change: `openspec/changes/insight-feedback-expiry`.

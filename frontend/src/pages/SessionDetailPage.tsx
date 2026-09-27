@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { Link, useParams } from "react-router";
 
 import { Page } from "@/components/ui/page";
+import { chatMessageDeepLink } from "@/components/chat/message-id.ts";
 import { StatusBadge } from "@/components/sessions/StatusBadge";
 import { SessionDossier } from "@/components/sessions/SessionDossier";
 import { useGlobalSessionDetail } from "@/hooks/use-sessions";
@@ -69,12 +70,17 @@ export default function SessionDetailPage() {
             </Link>
             {/* Reverse of MessageThread.tsx's forward "View session" link
                 (bu-0ynlk.5) -- only rendered once conversation_reply has
-                actually stamped a session_id on a dashboard message, and
-                only when the owning butler is known to link to. Never
-                fabricated: no linked_message means no affordance. */}
-            {session.linked_message && session.butler && (
+                actually stamped a linked message on the session. The
+                conversation route resolves its owning butler cross-butler,
+                so the persisted conversation/message IDs are the only link
+                inputs. Never fabricated: no linked message or incomplete IDs
+                means no affordance. */}
+            {session.linked_message?.conversation_id && session.linked_message.message_id && (
               <Link
-                to={`/butlers/${session.butler}`}
+                to={chatMessageDeepLink(
+                  session.linked_message.conversation_id,
+                  session.linked_message.message_id,
+                )}
                 className="text-xs text-muted-foreground hover:underline"
               >
                 Asked in chat &rarr;

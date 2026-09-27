@@ -44,8 +44,6 @@ function adaptInventoryResponse(data: InventoryFixtureInput) {
 
 function makeSystem(overrides: Partial<SecretsSystemRaw> & Pick<SecretsSystemRaw, "key" | "state">): SecretsSystemRaw {
   return {
-    category: "core",
-    description: null,
     fingerprint: null,
     last_verified: null,
     butler: "shared",
@@ -378,8 +376,6 @@ describe("adaptInventoryResponse: system credential grouping", () => {
       cli: [
         {
           key: "cli-auth/codex",
-          category: "cli-auth",
-          description: "Codex",
           state: "ok",
           fingerprint: "canonical",
           issued: null,
@@ -391,7 +387,6 @@ describe("adaptInventoryResponse: system credential grouping", () => {
       system: [
         makeSystem({
           key: "cli-auth/codex",
-          category: "cli-auth",
           state: "warn",
           butler: "travel",
         }),
@@ -410,17 +405,13 @@ describe("adaptInventoryResponse: system credential grouping", () => {
       system: [
         makeSystem({
           key: "cli-auth/codex",
-          category: "cli-auth",
           state: "warn",
           butler: "lifestyle",
-          description: "CLI auth token for Codex (OpenAI)",
         }),
         makeSystem({
           key: "cli-auth/codex",
-          category: "cli-auth",
           state: "warn",
           butler: "switchboard",
-          description: "CLI auth token for Codex (OpenAI)",
         }),
       ],
       user: [],
@@ -431,7 +422,7 @@ describe("adaptInventoryResponse: system credential grouping", () => {
     expect(result.cli).toHaveLength(1);
     expect(result.cli[0]).toMatchObject({
       id: "cli-auth/codex",
-      label: "CLI auth token for Codex (OpenAI)",
+      label: "cli-auth/codex",
       state: "warn",
     });
   });
@@ -442,10 +433,8 @@ describe("adaptInventoryResponse: system credential grouping", () => {
       system: [
         makeSystem({
           key: "cli-auth/codex",
-          category: "cli-auth",
           state: "warn",
           butler: "lifestyle",
-          description: "CLI auth token for Codex (OpenAI)",
           fingerprint: "abc12345",
         }),
       ],
@@ -457,7 +446,7 @@ describe("adaptInventoryResponse: system credential grouping", () => {
     expect(result.cli).toHaveLength(1);
     expect(result.cli[0]).toMatchObject({
       id: "cli-auth/codex",
-      label: "CLI auth token for Codex (OpenAI)",
+      label: "cli-auth/codex",
       state: "warn",
       fingerprint: "abc12345",
     });
@@ -469,10 +458,10 @@ describe("adaptInventoryResponse: provider-managed system credentials are hidden
     const result = adaptInventoryResponse({
       cli: [],
       system: [
-        makeSystem({ key: "owntracks_webhook_token", category: "owntracks", state: "shared" }),
-        makeSystem({ key: "SPOTIFY_ACCESS_TOKEN", category: "spotify", state: "shared" }),
-        makeSystem({ key: "SPOTIFY_CLIENT_ID", category: "spotify", state: "shared" }),
-        makeSystem({ key: "GOOGLE_OAUTH_CLIENT_ID", category: "google", state: "shared" }),
+        makeSystem({ key: "owntracks_webhook_token", state: "shared" }),
+        makeSystem({ key: "SPOTIFY_ACCESS_TOKEN", state: "shared" }),
+        makeSystem({ key: "SPOTIFY_CLIENT_ID", state: "shared" }),
+        makeSystem({ key: "GOOGLE_OAUTH_CLIENT_ID", state: "shared" }),
       ],
       user: [],
       identities: [],
@@ -490,7 +479,7 @@ describe("adaptInventoryResponse: provider-managed system credentials are hidden
     const result = adaptInventoryResponse({
       cli: [],
       system: [
-        makeSystem({ key: "owntracks_webhook_token", category: "owntracks", state: "shared" }),
+        makeSystem({ key: "owntracks_webhook_token", state: "shared" }),
       ],
       user: [],
       identities: [],
@@ -507,9 +496,9 @@ describe("adaptInventoryResponse: server KPI family contract", () => {
     const result = adaptInventoryResponse({
       cli: [],
       system: [
-        makeSystem({ key: "cli-auth/codex", category: "cli-auth", state: "failing" }),
-        makeSystem({ key: "OWNTRACKS_WEBHOOK_TOKEN", category: "owntracks", state: "failing" }),
-        makeSystem({ key: "SPOTIFY_ACCESS_TOKEN", category: "spotify", state: "warn" }),
+        makeSystem({ key: "cli-auth/codex", state: "failing" }),
+        makeSystem({ key: "OWNTRACKS_WEBHOOK_TOKEN", state: "failing" }),
+        makeSystem({ key: "SPOTIFY_ACCESS_TOKEN", state: "warn" }),
       ],
       user: [],
       identities: [],

@@ -140,12 +140,12 @@ def _project_opencode_openai_device_auth_document(content: str) -> str | None:
 
 
 def _project_codex_device_auth_document(content: str) -> str | None:
-    """Reconstruct the pinned Codex ChatGPT device-auth document exactly.
+    """Reconstruct the audited Codex ChatGPT device-auth document exactly.
 
-    ``@openai/codex@0.144.1`` writes ChatGPT device-code output with these
-    four top-level fields and the four scalar ``tokens`` fields below.  Reject
-    every other auth mode or field before the child can change the global
-    Codex authority.
+    The accepted fields were established from ``@openai/codex@0.144.1``
+    device-code output. A newer CLI must prove a shape change before this
+    projection widens. Reject every other auth mode or field before the child
+    can change the global Codex authority.
     """
     try:
         document = _parse_strict_device_auth_document(content)

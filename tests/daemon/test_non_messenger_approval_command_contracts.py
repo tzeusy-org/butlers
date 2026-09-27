@@ -28,11 +28,22 @@ from butlers.modules.approvals.command_contracts import (
 from butlers.modules.approvals.module import ApprovalsConfig, ApprovalsModule
 from butlers.modules.memory import MemoryModule, MemoryModuleConfig
 from butlers.modules.registry import default_registry
+from butlers.testing.approval_parking_fake import record_pending_action
 from tests.modules.test_module_approvals import MockDB
 
 pytestmark = pytest.mark.unit
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.fixture(autouse=True)
+def _use_non_recovery_park_recorder(monkeypatch: pytest.MonkeyPatch):
+    """Keep in-memory command tests on their explicit non-recovery seam."""
+    monkeypatch.setattr(
+        "butlers.modules.approvals.gate.park_pending_action",
+        record_pending_action,
+    )
+
 
 # Roster modules are installed dynamically by ModuleRegistry.  Load that
 # registry before importing the switchboard module's generated alias.

@@ -351,25 +351,87 @@ The system prompt is read from `CLAUDE.md` in the butler's config directory. Inc
 - **THEN** the failure is logged at WARNING level
 - **AND** the invocation proceeds with the system prompt without context preamble
 
+### Requirement: Blind-Spot Preamble Injection
+The spawner SHALL inject a composed-prompt layer summarizing the health of each module-declared "expected signal" — a signal a module has registered in `public.expected_signals` as a name it expects to arrive on a cadence. The layer is added after the context preamble and before routing instructions. Declared signal-key patterns are resolved per butler from a static per-module registry (`MODULE_BLIND_SPOT_SIGNAL_PATTERNS` in `blind_spot_declarations.py`), keyed by enabled module name.
+
+Evaluation SHALL be fail-closed by construction: `evaluate_declared_signals()` re-evaluates each declared signal fresh and catches any exception, setting `query_failed=True` rather than raising or silently omitting results.
+
+Behavior:
+- silent (no preamble layer) when there are no declared signal patterns for the butler's enabled modules, or when every declared signal currently evaluates PRESENT and the query itself succeeded.
+- byte-identical composed prompt to a butler with no declared blind-spot signals when every declared signal is PRESENT.
+- typed block naming each non-PRESENT signal's `signal_key`, `producer`, `last_observed_at`, and the evaluator's `now` clock, when at least one declared signal is not PRESENT.
+- explicit "source health could not be evaluated" text (`BLIND_SPOT_QUERY_FAILED_TEXT`) instead of any signal detail, when the query itself raised.
+
+The layer SHALL be gated by a per-butler kill switch: `runtime_config.blind_spot_preamble_enabled` (added by migration `core_228`, default `true`). Reading the flag SHALL be fail-open — if the runtime_config accessor raises, or the column does not yet exist on an unmigrated schema, the layer defaults to enabled.
+
+`GET /api/butlers/{name}` SHALL project the identical evaluation (`declared_signal_patterns()` + `evaluate_declared_signals()`) so the dashboard's `blind_spots` field never disagrees with what the next spawned session's prompt will say.
+
+#### Scenario: No declared signals means byte-identical prompt
+- **WHEN** a butler's enabled modules declare no blind-spot signal patterns
+- **THEN** `_compose_system_prompt()` receives `blind_spot_preamble=None`
+- **AND** the composed prompt is unchanged from a butler with the blind-spot feature absent
+
+#### Scenario: All declared signals present means byte-identical prompt
+- **WHEN** every signal_key_like_pattern-matched row in `public.expected_signals` evaluates to `measurability="present"`
+- **THEN** `fetch_blind_spot_preamble()` returns `None`
+- **AND** the composed system prompt is unchanged from today's
+
+#### Scenario: Non-present signal renders a typed block
+- **WHEN** at least one declared signal evaluates to `absent` or `unmeasurable`
+- **THEN** the composed prompt includes a block naming that signal's key, producer, last_observed_at (or "never observed"), and the evaluator's clock
+
+#### Scenario: Query failure renders the fail-closed disclosure
+- **WHEN** `evaluate_declared_signals()` catches an exception while querying or re-evaluating expected signals
+- **THEN** the composed prompt's blind-spot layer reads "source health could not be evaluated" instead of omitting the layer or fabricating signal state
+
+#### Scenario: Kill switch disables the layer
+- **WHEN** `runtime_config.blind_spot_preamble_enabled` is `false` for a butler
+- **THEN** the spawner SHALL NOT call `fetch_blind_spot_preamble()` and no blind-spot layer is added, regardless of declared signal state
+
+#### Scenario: Dashboard and prompt agree
+- **WHEN** `GET /api/butlers/{name}` is called for a butler with a non-present declared signal
+- **THEN** the response's `blind_spots` list contains that signal
+- **AND** the next spawned session for that butler carries the same signal in its composed prompt's blind-spot layer
+
 ### Requirement: Dynamic Model Resolution at Spawn Time
 The spawner SHALL resolve the model dynamically at spawn time using the model catalog instead of reading a static model from `butler.toml`. The `trigger()` method gains a `complexity` parameter that drives model selection. The spawner MAY use same-tier failover only after the initial catalog candidate has been selected.
 
 #### Scenario: Trigger with complexity parameter
-- **WHEN** `trigger(prompt, trigger_source, complexity="high")` is called
-- **THEN** the spawner calls `resolve_model(butler_name, "high")` to determine the runtime type, model ID, and extra args
+- **WHEN** `trigger(prompt, trigger_source, complexity="reasoning")` is called
+- **THEN** the spawner calls `resolve_model(butler_name, "reasoning")` to determine the runtime type, model ID, and extra args
 
 #### Scenario: Trigger without complexity parameter
 - **WHEN** `trigger(prompt, trigger_source)` is called without a complexity parameter
-- **THEN** the complexity defaults to `medium`
+- **THEN** the complexity defaults to `workhorse`
 
-#### Scenario: Catalog resolution overrides static fallback model
+#### Scenario: Catalog resolution selects the invocation model
 - **WHEN** `resolve_model()` returns a result
 - **THEN** the returned `runtime_type`, `model_id`, and `extra_args` are used for the invocation
-- **AND** the module-private `_FALLBACK_MODEL_ID` constant in `butlers.core.spawner` is ignored
 
-#### Scenario: Catalog empty fallback to static defaults
+#### Scenario: Catalog empty fails closed
 - **WHEN** `resolve_model()` returns `None` (no matching entries) or fails
-- **THEN** the spawner falls back to the module-private `_FALLBACK_MODEL_ID` constant paired with `DEFAULT_RUNTIME_TYPE` from `butlers.core.runtimes`; these are hard-coded last-resort constants, not butler-scoped config
+- **THEN** a live Spawner with a database pool returns `ModelResolutionError: catalog_unavailable` or `ModelResolutionError: no_eligible_catalog_entries` before invocation because catalog-keyed permission, quota, ceiling, breaker, and provenance gates cannot run
+- **AND** an explicit pool-free direct-adapter harness may invoke `DEFAULT_RUNTIME_TYPE` with no explicit model only after its adapter baseline satisfies the dispatch intent
+- **AND** it never pairs a hard-coded provider model with a different provider's runtime
+
+#### Scenario: Populated catalog with no fitting candidate fails closed
+- **WHEN** intent-aware resolution returns no selection and its receipt contains excluded catalog candidates
+- **THEN** the spawner returns a pre-invocation `ModelResolutionError` naming the bounded failure class and required capability findings
+- **AND** the failed `SpawnerResult` retains the prompt-free resolution receipt
+- **AND** no runtime adapter, speculative failover candidate, or fake model dispatch attempt is invoked
+
+#### Scenario: Unregistered catalog runtime fails closed
+- **WHEN** a selected initial or failover catalog entry names an unregistered runtime type
+- **THEN** an initial selection returns `ModelResolutionError: unregistered_runtime_type` before invocation
+- **AND** an unregistered failover candidate records a non-invoked `runtime_failure` attempt, excludes that catalog entry, and continues the bounded same-tier search
+- **AND** if no registered same-tier candidate remains, the logical session ends with ordinary failover exhaustion
+- **AND** it does not substitute the default runtime while retaining the incompatible catalog model
+
+#### Scenario: Post-resolution overrides preserve original intent fit
+- **WHEN** a spend rule or private-content policy replaces the initially selected catalog entry
+- **THEN** the spawner verifies that the replacement was fit-eligible for the original dispatch intent and effective tier before receipt projection, prewarm, session creation, or runtime invocation
+- **AND** a replacement recorded as `excluded_hard_fit` returns `ModelResolutionError: post_resolution_selection_unfit`
+- **AND** its original capability exclusions remain present in the failed result's resolution receipt
 
 #### Scenario: Runtime args sourced only from the catalog
 - **WHEN** catalog resolution returns `extra_args`
@@ -378,7 +440,7 @@ The spawner SHALL resolve the model dynamically at spawn time using the model ca
 
 #### Scenario: Session record includes model resolution metadata
 - **WHEN** a session is created via `session_create()`
-- **THEN** the session record includes: the resolved `model` (model_id from catalog or the static fallback constant), `runtime_type`, `complexity` tier, and resolution source (`catalog` or `static_fallback`)
+- **THEN** the session record includes: the resolved `model` (catalog model ID, or NULL in explicit pool-free direct-adapter mode), `runtime_type`, `complexity` tier, and resolution source (`catalog` or `direct_runtime`)
 
 #### Scenario: Initial catalog candidate establishes failover tier
 - **WHEN** `resolve_model()` returns a catalog result for a trigger
@@ -386,11 +448,12 @@ The spawner SHALL resolve the model dynamically at spawn time using the model ca
   failover tier for the logical session
 - **AND** subsequent automatic failover attempts SHALL use only that exact tier
 
-#### Scenario: Catalog resolution failure uses static fallback
+#### Scenario: Catalog resolution failure fails closed
 - **WHEN** initial catalog resolution returns `None` for every eligible tier or raises
   before a catalog candidate is selected
-- **THEN** the spawner SHALL use the existing static fallback behavior
+- **THEN** a live pooled spawner SHALL refuse invocation with a `ModelResolutionError`
 - **AND** same-tier model failover SHALL NOT run because no catalog tier was established
+- **AND** explicit pool-free direct-adapter mode remains a test-harness path, not a live fallback
 
 ### Requirement: Runtime Failure Classification
 The spawner SHALL classify runtime failures before deciding whether automatic model
@@ -424,6 +487,8 @@ failover is safe.
 ### Requirement: Logical Session Attempt Orchestration
 The spawner SHALL keep automatic model failover attempts bounded and auditable.
 
+Each provider invocation SHALL produce attempt-grained spend evidence: the spawner writes the dispatch-attempt row first, then writes exactly one token-usage row referencing that attempt. Parseable provider usage is `measured`; absence of parseable usage is `unmeasurable` with NULL token buckets.
+
 #### Scenario: Successful fallback completes logical session once
 - **WHEN** the primary model fails with a failover-eligible error
 - **AND** a fallback model succeeds
@@ -441,6 +506,12 @@ The spawner SHALL keep automatic model failover attempts bounded and auditable.
 - **THEN** the number of attempts SHALL be bounded by the number of eligible same-tier
   catalog candidates
 - **AND** no catalog entry SHALL be invoked more than once for the same logical session
+
+#### Scenario: Timeout without usage remains visible
+- **WHEN** a provider invocation times out and no token usage can be parsed
+- **THEN** the spawner SHALL write the invocation's dispatch-attempt provenance
+- **AND** SHALL write one linked `usage_source='unmeasurable'` ledger row
+- **AND** monthly spend surfaces SHALL identify that attempt as unpriced rather than presenting the measured subtotal as complete
 
 ### Requirement: Drain for Shutdown
 The spawner SHALL support `stop_accepting()` to reject new triggers and `drain(timeout)` to wait for in-flight sessions to complete, cancelling remaining sessions after timeout.
@@ -500,17 +571,16 @@ The spawner SHALL support healing-related configuration that the self-healing mo
 - **AND** if the module is not loaded, the fallback is also disabled (no separate `[healing]` section needed)
 
 ### Requirement: Spawner resolves hot config fields per-spawn from the model catalog
-The Spawner SHALL resolve the hot fields (model, runtime_type, args, session_timeout_s) on every `trigger()` call rather than reading them from the static `ButlerConfig`. As of migration `core_073` these fields live on `public.model_catalog` (resolved per complexity tier), not on the `runtime_config` table. The Spawner calls `resolve_model_with_effective_tier()` (`src/butlers/core/model_routing.py`) to obtain the catalog entry id, runtime_type, args, and session_timeout_s for the chosen tier. The `RuntimeConfigAccessor` is still consulted, but only for cold fields (core_groups, max_concurrent, max_queued).
-
-Note: an earlier design sourced these hot fields from `RuntimeConfigAccessor.get()`. That path was superseded by the catalog (core_073). The scenarios below reflect the catalog-based reality.
+The Spawner SHALL resolve the hot fields (model, runtime_type, args, session_timeout_s) on every `trigger()` call rather than reading them from the static `ButlerConfig`. These fields live on `public.model_catalog` (resolved per complexity tier), not on the `runtime_config` table. The Spawner calls `resolve_model_with_effective_tier()` (`src/butlers/core/model_routing.py`) to obtain the catalog entry id, runtime_type, args, and session_timeout_s for the chosen tier. The `RuntimeConfigAccessor` is still consulted, but only for cold fields (core_groups, max_concurrent, max_queued).
 
 Source: RFC 0001 §Trigger Pipeline, RFC 0002 §Core Tools, migration core_073
-Scope: v1-mandatory
 
-#### Scenario: Model resolved from the catalog with a constant fallback
+#### Scenario: Model resolved from the catalog
 - **WHEN** `trigger()` is called
 - **THEN** the Spawner SHALL resolve the model from `public.model_catalog` via `resolve_model_with_effective_tier()`
-- **AND** if catalog resolution fails or returns no result, the Spawner SHALL fall back to the module-level `_FALLBACK_MODEL_ID` constant (`src/butlers/core/spawner.py`), not the toml config
+- **AND** if catalog resolution fails or returns no result, a live Spawner with a database pool SHALL return a pre-invocation `ModelResolutionError`
+- **AND** only explicit pool-free direct-adapter mode may invoke the registered runtime with no explicit model after capability fit
+- **AND** a populated no-winner receipt SHALL return a pre-invocation `ModelResolutionError`
 
 #### Scenario: Runtime type from the catalog
 - **WHEN** `trigger()` is called
@@ -544,7 +614,6 @@ Scope: v1-mandatory
 The Spawner SHALL read `max_concurrent` and `max_queued` from the accessor once at construction time. These values are used to size the asyncio.Semaphore and queue limit.
 
 Source: RFC 0001 §Concurrency Control
-Scope: v1-mandatory
 
 #### Scenario: Concurrency limit from DB
 - **WHEN** the Spawner is constructed

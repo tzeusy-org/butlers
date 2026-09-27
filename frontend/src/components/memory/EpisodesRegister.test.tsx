@@ -23,12 +23,13 @@ import { MemoryRouter, useLocation } from "react-router";
 
 import EpisodesRegister from "@/components/memory/EpisodesRegister";
 import { AppTimezoneProvider } from "@/components/ui/timezone-context";
-import { useEpisodes } from "@/hooks/use-memory";
+import { useEpisodes, useRetryEpisodeConsolidation } from "@/hooks/use-memory";
 import { groupEpisodesByDay } from "@/lib/memory-derived";
 import type { Episode } from "@/api/types";
 
 vi.mock("@/hooks/use-memory", () => ({
   useEpisodes: vi.fn(),
+  useRetryEpisodeConsolidation: vi.fn(),
 }));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -55,6 +56,20 @@ function makeEpisode(overrides: Partial<Episode> = {}): Episode {
     metadata: {},
     ...overrides,
   };
+}
+
+type UseRetryEpisodeConsolidationResult = ReturnType<typeof useRetryEpisodeConsolidation>;
+
+/** Default stub: idle mutation. Individual tests override pending/error state. */
+function stubRetryMutation(
+  overrides: Partial<{ mutate: (...args: unknown[]) => void; isPending: boolean; isError: boolean }> = {},
+) {
+  vi.mocked(useRetryEpisodeConsolidation).mockReturnValue({
+    mutate: vi.fn(),
+    isPending: false,
+    isError: false,
+    ...overrides,
+  } as unknown as UseRetryEpisodeConsolidationResult);
 }
 
 let lastEpisodeParams: unknown;
@@ -158,6 +173,7 @@ describe("EpisodesRegister — the daybook", () => {
     vi.resetAllMocks();
     lastEpisodeParams = undefined;
     lastSearch = "";
+    stubRetryMutation();
   });
 
   afterEach(() => {
@@ -339,6 +355,68 @@ describe("EpisodesRegister — the daybook", () => {
     });
     // Navigation does not throw and the row link points at the detail route.
     expect(openLink.getAttribute("href")).toBe("/memory/episodes/ep-nav");
+  });
+
+  it("does not show a retry verb for a non-dead_letter expanded row", () => {
+    setEpisodes([makeEpisode({ id: "ok", consolidation_status: "consolidated" })]);
+    mounted = renderRegister();
+    const row = mounted.container.querySelector<HTMLElement>('[role="button"]')!;
+    act(() => {
+      row.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(mounted.container.textContent).not.toContain("retry");
+  });
+
+  it("shows the retry verb for an expanded dead_letter row and calls the mutation on click", () => {
+    setEpisodes([
+      makeEpisode({ id: "dead-1", butler: "atlas", consolidation_status: "dead_letter" }),
+    ]);
+    const mutate = vi.fn();
+    stubRetryMutation({ mutate });
+    mounted = renderRegister();
+
+    const row = mounted.container.querySelector<HTMLElement>('[role="button"]')!;
+    act(() => {
+      row.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const retryButton = Array.from(
+      mounted.container.querySelectorAll("button"),
+    ).find((b) => b.textContent === "retry ↺") as HTMLButtonElement | undefined;
+    expect(retryButton).toBeDefined();
+
+    act(() => {
+      retryButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(mutate).toHaveBeenCalledWith({ butler: "atlas", episodeId: "dead-1" });
+    // The row stays expanded — the click must not bubble into the row toggle.
+    expect(row.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("disables the retry verb and reads 'retrying…' while the mutation is pending", () => {
+    setEpisodes([makeEpisode({ id: "dead-2", consolidation_status: "dead_letter" })]);
+    stubRetryMutation({ isPending: true });
+    mounted = renderRegister();
+    const row = mounted.container.querySelector<HTMLElement>('[role="button"]')!;
+    act(() => {
+      row.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    const retryButton = Array.from(
+      mounted.container.querySelectorAll("button"),
+    ).find((b) => b.textContent === "retrying…") as HTMLButtonElement | undefined;
+    expect(retryButton).toBeDefined();
+    expect(retryButton!.disabled).toBe(true);
+  });
+
+  it("shows an inline failure message when the retry mutation errors", () => {
+    setEpisodes([makeEpisode({ id: "dead-3", consolidation_status: "dead_letter" })]);
+    stubRetryMutation({ isError: true });
+    mounted = renderRegister();
+    const row = mounted.container.querySelector<HTMLElement>('[role="button"]')!;
+    act(() => {
+      row.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(mounted.container.textContent).toContain("Retry failed");
   });
 
   it("renders the four status pills with all selected by default", () => {

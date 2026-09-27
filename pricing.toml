@@ -60,11 +60,27 @@ output_price_per_token = 0.0000025  # $2.50 / 1M tokens
 # gpt-5.4-pro (>272K): $60.00/$270.00 per 1M tokens
 # gpt-5.5-pro has no long-context tier.
 
-# GPT-5.6 estimates use OpenAI Standard API-equivalent token prices, independent
+# GPT-5.6 and GPT-6 estimates use OpenAI Standard API-equivalent token prices, independent
 # of the active Codex subscription, so the dashboard remains a general usage
 # heuristic. This deployment assumes every request is <=272K, so entries are
 # deliberately flat rather than context-tiered.
-# Source: https://developers.openai.com/api/docs/pricing (2026-08-01).
+# Sources: https://developers.openai.com/api/docs/models/gpt-6-sol and
+# https://developers.openai.com/api/docs/models/gpt-6-luna (2026-09-24);
+# GPT-5.6 rates: https://developers.openai.com/api/docs/pricing (2026-08-01).
+[models."gpt-6-sol"]
+billing_class = "metered"
+input_price_per_token = 0.000002  # $2.00 / 1M tokens (<=272K context)
+cached_input_price_per_token = 0.0000002  # $0.20 / 1M tokens
+cache_creation_price_per_token = 0.0000025  # $2.50 / 1M tokens
+output_price_per_token = 0.00001  # $10.00 / 1M tokens
+
+[models."gpt-6-luna"]
+billing_class = "metered"
+input_price_per_token = 0.0000001  # $0.10 / 1M tokens (<=272K context)
+cached_input_price_per_token = 0.00000001  # $0.01 / 1M tokens
+cache_creation_price_per_token = 0.000000125  # $0.125 / 1M tokens
+output_price_per_token = 0.0000005  # $0.50 / 1M tokens
+
 [models."gpt-5.6-sol"]
 billing_class = "metered"
 input_price_per_token = 0.000005  # $5.00 / 1M tokens (≤272K context)
@@ -223,6 +239,22 @@ output_price_per_token = 0.000004   # $4.00 / 1M tokens
 input_price_per_token = 0.00000014  # $0.14 / 1M tokens
 cached_input_price_per_token = 0.000000014  # $0.014 / 1M tokens (assumed 10% of input, matching the qwen3.6/3.7-plus cache discount reconciled from the same price sheet)
 output_price_per_token = 0.00000028  # $0.28 / 1M tokens
+
+# OpenCode Go price sheet (2026-09-24): https://opencode.ai/docs/go/
+[models."opencode-go/mimo-v2.6-flash"]
+input_price_per_token = 0.00000014  # $0.14 / 1M tokens
+cached_input_price_per_token = 0.0000000028  # $0.0028 / 1M tokens
+output_price_per_token = 0.00000028  # $0.28 / 1M tokens
+
+[models."opencode-go/mimo-v2.6-pro"]
+input_price_per_token = 0.000000435  # $0.435 / 1M tokens
+cached_input_price_per_token = 0.000000003625  # $0.003625 / 1M tokens
+output_price_per_token = 0.00000087  # $0.87 / 1M tokens
+
+[models."opencode-go/glm-5.3-flash"]
+input_price_per_token = 0.00000015  # $0.15 / 1M tokens
+cached_input_price_per_token = 0.00000003  # $0.03 / 1M tokens
+output_price_per_token = 0.0000005  # $0.50 / 1M tokens
 
 [models."opencode-go/mimo-v2.5-pro"]
 input_price_per_token = 0.00000174  # $1.74 / 1M tokens
