@@ -307,3 +307,14 @@ Ambiguous measurements and final-readiness failures leave authentication closed
 and fail the launcher without an alternate trust value or a success report.
 This prevents a full `down`/`up` from retaining a stale Docker bridge gateway.
 The canonical origin, RP ID, and forwarded-header checks remain required.
+
+## Implementation Notes
+
+- Owner-auth pools admit only the dedicated login and `dashboard_auth_api` in the SET ROLE
+  ancestry. `SET LOCAL ROLE` and `NOINHERIT` alone do not remove the login's own authority, so
+  preflight restricted function OIDs through `pg_proc` before activating the capability role.
+- FastAPI OpenTelemetry instrumentation wraps user middleware from outside: keep owner-auth URL
+  exclusions and credential-header sanitisation on the instrumentor itself.
+- Bitwarden's WebAuthn wrapper can return `credProps: undefined` unrequested. Treat undefined
+  optional outputs as absent, keep rejecting defined extension data, and send
+  `clientExtensionResults: {}`.

@@ -2,7 +2,7 @@
 """Enforce the decision-bead convention (bu-ckkpz.1, epic bu-ckkpz "Owner
 Decision Desk").
 
-See AGENTS.md > "Decision-bead convention" for the full convention writeup
+See docs/operations/decision-beads.md for the full convention writeup
 and docs/redesigns/2026-07-10-jarvis-pursuit.md §8 for the originating epic.
 
 The convention, in one line: a bead marked as an owner decision must carry
@@ -34,8 +34,8 @@ This script does not touch bd's own ``bd lint`` (which is unaware of the
 ``decision`` label and cannot be extended with custom per-label section
 rules from repo config) -- it is a separate, repo-owned check, run locally
 against live bd/Dolt data. It is intentionally NOT wired into CI: GitHub
-Actions runners cannot reach the Dolt server backing `bd` (see AGENTS.md
-"Beads DB Mode"), so there is no live bead data for a CI job to check.
+Actions runners cannot reach the Dolt server backing `bd` (see CLAUDE.md
+"Issue Tracking"), so there is no live bead data for a CI job to check.
 
 Non-vacuous checking (bu-hmdqz.6, ``--check-unlabeled-markers``)
 ------------------------------------------------------------------

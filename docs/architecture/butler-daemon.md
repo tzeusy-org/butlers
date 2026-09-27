@@ -159,6 +159,35 @@ kill -TERM $(pgrep -f "butlers run --config roster/general")
 # No "active sessions dropped" error lines should appear
 ```
 
+## Implementation Notes
+
+- Core tools register through `butlers.core_tools.register_all_core_tools()` and the effective
+  `core_groups` decorator; keep group, name and role gates in those modules, never in a second
+  catalog. `tests/contracts/test_tool_surface_isolation.py` guards completeness. The call log line
+  `MCP tool called (butler=%s module=%s tool=%s)` is parsed downstream; keep it stable.
+- `sessions_summary` must stay advertised (dashboard cost fan-out relies on the tool metadata) and
+  raises `ValueError("Invalid period ...")` for an unsupported period.
+- The liveness reporter treats a heartbeat `404` as misconfiguration: one warning, then it stops.
+- `_McpSseDisconnectGuard` suppresses `ClientDisconnect` only for `POST .../messages`; every other
+  disconnect or exception still propagates.
+- `notify` normalises an omitted `message` to `""`, so `intent="react"` passes `notify.v1`
+  validation.
+- The core `trigger` tool awaits the spawned session and returns
+  `{output, success, error, duration_ms, session_id}`, so a caller can persist a terminal outcome
+  from the return value without polling or a callback.
+- Daemons serve streamable HTTP MCP at `/mcp` and legacy SSE at `/sse` + `/messages`. Runtime
+  sessions use `runtime_mcp_url()` (`/mcp`); never hardcode `/sse` in the spawner. Connector ingest
+  clients still use SSE (`SWITCHBOARD_MCP_URL=.../sse`).
+- The dashboard's per-butler MCP debug tab calls `GET /api/butlers/{name}/mcp/tools` and
+  `POST /api/butlers/{name}/mcp/call`.
+- `butlers up` runs every daemon in one process, so `public.deployments` is written once per boot in
+  `cli.py::_start_all` (`_record_deployment_boot`), never in per-butler startup. Its
+  `migration_head` is one schema's snapshot, not a drift proof. `GIT_SHA` is a Docker build arg
+  baked into the image.
+- Diagnose tool drift through the daemon status snapshot and the Butler Management three-way diff
+  (declared, effective, registered), not the `runtime_config` row alone. Exposing a mixed group's
+  reads must never activate its writes as a side effect.
+
 ## Related Pages
 
 - [System Topology](system-topology.md) — how butlers fit into the overall service architecture

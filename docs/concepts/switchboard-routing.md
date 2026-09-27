@@ -181,6 +181,78 @@ psql -h localhost -U butlers -d butlers -c \
 #   Expected: "<routed_message>...user message...</routed_message>" present in prompt
 ```
 
+## Implementation Notes
+
+- Steam presence events (`status_change`, `online_status`) are both metadata-only and
+  routing-skipped. `control.ingestion_tier = "metadata"` only sets the persistence shape; the skip
+  comes from a `scope='global'` `ingestion_rules` row evaluated by `IngestionPolicyEvaluator` in
+  `ingest_v1()` before `pipeline.process()`. Migration `025_switchboard_steam_status_skip.py` seeds
+  a `substring` rule on the `"steam:status:"` prefix of `external_event_id` (surfaced as `raw_key`
+  for the `gaming` channel). A bare `source_channel='gaming'` rule would also silence play,
+  achievement, library and friend events, which stay full-tier and routable.
+- `classify_message()` returns decomposition entries (`list[{"butler", "prompt"}]`); callers
+  normalise legacy string results too. With an empty `butler_registry` it auto-discovers butlers
+  from `roster/`, and it lists only routable butlers, so stale or quarantined targets never reach
+  the planner prompt.
+- `resolve_routing_target()` (`roster/switchboard/tools/registry/registry.py`) is the single route
+  eligibility gate (TTL staleness, quarantine, route-contract and capability checks). Transitions
+  are audited in `butler_registry_eligibility_log`; the `eligibility_sweep` schedule is a job
+  dispatch, not a prompt.
+- Tool-call ground truth: Switchboard MCP URLs carry `runtime_session_id`, so
+  `_McpRuntimeSessionGuard` binds each tool invocation to its session and `tool_call_capture`
+  records outcomes. The spawner merges those with adapter-parsed calls and keeps identical
+  retried attempts in order (no signature-only dedupe).
+- `route.process` continues the incoming `trace_context`, keeps `request_id` on both the accept
+  and process spans, and links the process span to the accept span.
+- `roster/switchboard/tools/routing/telemetry.py` is the only `butlers.switchboard.*` metrics
+  surface; keep its attributes low-cardinality.
+- Switchboard fixtures that create partitioned `message_inbox` tables provision partitions for
+  `now()` dynamically, never for hard-coded months.
+- Notify delivery is route-wrapped: Switchboard dispatches `route.v1` to Messenger `route.execute`
+  with `notify.v1` in `input.context.notify_request`, and Messenger answers `route_response.v1`
+  with the normalised delivery in `result.notify_response`, including on error paths.
+  `RouteInputV1.context` therefore accepts `str | dict`, and `parse_notify_request()`
+  (`roster/switchboard/tools/routing/contracts.py`) is the one `notify.v1` parser. Messenger rejects
+  a `notify_request.origin_butler` that differs from `request_context.source_sender_identity`
+  before any side effect. Error classes match the route executors (`validation_error`,
+  `target_unavailable`, `timeout`, `overload_rejected`, `internal_error`).
+- `route.execute` checks `request_context.source_endpoint_identity` against
+  `trusted_route_callers` (default `("switchboard",)`; `[butler.security]` overrides, an empty
+  list rejects all) before any trigger or delivery, answering a non-retryable `validation_error`.
+- Switchboard ingress dedupe (`enable_ingress_dedupe`) uses channel-aware keys: Telegram
+  `<endpoint>:update:<update_id>`, email `<endpoint>:message_id:<Message-ID>`, API/MCP
+  `<endpoint>:idempotency:<key>`, else a payload hash in a 5-minute bucket. A dedupe maps to the
+  existing `request_id` and short-circuits routing.
+- A heartbeat from a butler missing from `butler_registry` triggers roster-driven
+  self-registration; a name with no roster config still gets `404`.
+- The ingestion prompt (`_build_routing_prompt`) stays minimal and delegates to the
+  `/message-triage` skill, whose Execution Contract owns untrusted-input handling, `<user_message>`
+  wrapping, the `general` fallback and the mandatory `route_to_butler` call. Routed-content context
+  (`_build_route_runtime_context`) references the `/routed-message-safety` and
+  `/butler-notifications` skills instead of inlining preambles; the shared skills are symlinked into
+  every `roster/*/.agents/skills/`.
+- Route sessions carry `ingestion_event_id`: the switchboard writes one UUID7 as both `request_id`
+  and `public.ingestion_events.id`, so `_routing.py` handlers pass
+  `ingestion_event_id=route_request_id` into `Spawner.trigger`.
+- Rule-promotion verdict identity is the email sender for `email` and the exact endpoint
+  (`source_endpoint`, `{"endpoint_identity": ...}`) for opaque channels; legacy opaque
+  `sender_address` rows are read compatibly, never rewritten.
+- Skip-triaged events are stored with `status='ingested'` (`triage_decision='skip'`); only the
+  timeline SELECT derives the display status `'skipped'`. Never write or match `'skipped'` in
+  updates.
+- Rule-promotion sender classification is channel-authoritative: only `source_channel='email'`
+  parses an email address; opaque endpoint ids (even containing `@`) stay `source_endpoint`.
+  Confirmation, auto-apply and the production trigger share one identity advisory lock, and the
+  trigger reloads rules inside it.
+- Conversation-decomposition output is selection data, not dispatch authority: every concept
+  enters its target through `route.v1`/`route.execute` with the authoritative
+  `conceptual_message` under `input.context` (inferred calendar proposals are the one code-owned
+  direct-tool exception). Give each concept a `subrequest_id`/`segment_id` and scope session dedupe
+  by `(request_id, subrequest_id)`.
+- `public.ingestion_events.received_at` is not an immutable delivery-dedupe fence under the current
+  UPDATE grants. Accepted delivery key, target, digest and receipt identity live in an append-only,
+  non-prunable, content-blind ledger; pruning payloads cannot reopen acceptance.
+
 ## Related Pages
 
 - [Modules and Connectors](modules-and-connectors.md) --- how connectors feed messages into the system

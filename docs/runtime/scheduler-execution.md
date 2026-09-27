@@ -118,6 +118,15 @@ psql -h localhost -U butlers -d butlers -c \
 # Expected: tasks past their until_at show enabled=false, next_run_at=NULL
 ```
 
+## Implementation Notes
+
+- `job_args` JSONB can round-trip through asyncpg as a JSON string: serialize dicts explicitly on
+  write and normalize back to dicts before diffing, validation merges, list responses or dispatch.
+- Scheduler context must match across the background loop, the `tick` tool and
+  `schedule_trigger`: resolve it through `ButlerDaemon._build_scheduler_runtime_context()` and
+  prepare prompt-mode tasks with the same captured `run_at` and effective timezone passed to
+  completion. Otherwise Chronicler's early-morning day-close derives the prior UTC date.
+
 ## Related Pages
 
 - [Trigger Flow](../concepts/trigger-flow.md) --- the broader trigger model that the scheduler participates in

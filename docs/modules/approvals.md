@@ -116,6 +116,39 @@ The module owns tables in the hosting butler's schema (Alembic branch: `approval
 
 None. The approvals module is a leaf module. Other modules interact with it indirectly through the daemon's gate-wiring mechanism.
 
+## Implementation Notes
+
+- Owner-entity mutations park for approval unless `src` is in `_OWNER_AUTO_APPLY_SOURCES`
+  (`roster/relationship/tools/relationship_assert_fact.py`): owner self-registration plus
+  `_TRUSTED_INTERNAL_SOURCES` (structured derivation such as `interaction_sync`). Prose-extraction
+  jobs are deliberately untrusted (RFC 0017). The dashboard API rejects any auto-apply `src`
+  (`_reject_trusted_internal_src`), and the MCP wrapper hardcodes `src="relationship"`.
+- Butlers that cannot read `relationship.entity_facts` recognise the owner through
+  `public.resolve_owner_triple` (SECURITY DEFINER), called by
+  `identity.resolve_owner_channel_via_definer()` when normal resolution returns None.
+- Every channel gate delegates to `identity.resolve_channel_contact_with_owner_corroboration()`,
+  which tests ambiguity across all live matching entities before filtering to the owner. The bypass
+  goes only to exactly one active identifier on one live, non-merged, non-deleted owner entity;
+  every other case, including lookup errors, fails closed.
+- Decision paths (`_approve_action`, `_reject_action`, `_expire_stale_actions`) use compare-and-set
+  writes (`... WHERE status='pending'`). Expiry is a decision boundary: approve and defer paths
+  expire a still-pending action whose `expires_at` has passed instead of acting on it.
+- `execute_approved_action` is idempotent per `action_id`: a per-action lock serialises it, an
+  `executed` action replays its stored `execution_result`, and the terminal write happens only
+  from `approved`.
+- `_apply_approval_gates()` falls back to registered MCP tool handlers when an approved action's
+  `tool_name` is not a gated original, so module-queued actions for non-gated tools can execute.
+- A producer calling `park_pending_action()` outside the MCP gate persists a declared owner, a
+  registered tool name and exact kwargs, and the owning daemon validates that handler signature at
+  startup. If no safe command can be replayed (secret-bearing requests), reject before parking with
+  a redacted audit signal; never repair historic rows by guessing.
+- `approval_events` rows are insert-only: trigger `trg_approval_events_immutable` rejects `UPDATE`
+  and `DELETE`.
+- Standing-rule precedence is deterministic (`constraint_specificity_desc`, `bounded_scope_desc`,
+  `created_at_desc`, `rule_id_asc`). `high` and `critical` tiers require a constrained rule (at least
+  one arg constraint plus `expires_at` or `max_uses`); rules created from an action at those tiers
+  default to `max_uses=1`.
+
 ## Related Pages
 
 - [Module System](module-system.md)

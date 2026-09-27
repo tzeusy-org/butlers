@@ -200,6 +200,97 @@ curl -s http://localhost:41200/api/butlers/general/status | python3 -m json.tool
 # Expected: healing module present with status "active" if configured
 ```
 
+## Implementation Notes
+
+- `Spawner._run()` forwards the effective `session_timeout_s` into `runtime.invoke(timeout=...)`,
+  not only an outer `asyncio.wait_for(...)`; otherwise adapter inner timeouts drift from session
+  records.
+- `session_timeout_s` bounds one spawned session; healing/QA workflows own any broader deadline.
+- Empty-response failover: merge adapter-reported and daemon-captured tool calls before accepting a
+  normal return with no result text. No text and no confirmed non-command MCP action is an
+  empty-response failure even with token usage; same-tier retry is safe only when the merged
+  tool-call list is empty. Command-execution evidence suppresses retry (shell side effects); a
+  confirmed MCP tool-only completion stays successful. `OpenCodeAdapter` rejects exit 0 with no
+  text, tool calls, token usage or stderr with the same classifier-eligible posture.
+- Runtime args come only from `public.model_catalog.extra_args` (no `butler.toml` fallback);
+  `CodexAdapter` appends them to `codex exec` before the `--` prompt delimiter.
+- `RuntimeConfigAccessor.invalidate_cache()` sets `_cache_time` to `float("-inf")`, not `0.0`, which
+  only expires once process uptime exceeds the TTL.
+- The deterministic `memory_consolidation` handler takes the daemon's live `Spawner` but resolves
+  its pool and embedding engine through the active MemoryModule hook (private memory schemas such
+  as Chronicler's `chronicler_mem`); missing wiring fails closed.
+- Self-healing/QA: pre-launch gate rejects (cooldown, concurrency cap, circuit breaker, no model)
+  are dispatch decisions, never failed `healing_attempts` rows. The QA circuit breaker counts rows
+  with `healing_session_id IS NOT NULL` plus the `status = 'manual_reset'` sentinel, identically in
+  the dashboard summary, `/api/qa/circuit-breaker[/reset]`, and
+  `core/qa/dispatch.py::_is_circuit_breaker_tripped`.
+- Adding a QA discovery source is a persisted vocabulary change: align `QaConfig.enabled_sources`,
+  `_KNOWN_SOURCES`, `QaFinding.source_type`, and `ck_qa_findings_source_type` in one change, with a
+  migrated-DB test inserting the new value.
+- QA and self-healing dispatch add GitHub labels `self-healing` and `automated`
+  (`_DEFAULT_PR_LABELS`, `src/butlers/core/qa/dispatch.py`). If the repo lacks them, PR creation
+  fails with `gh_pr_create_failed: could not add label` and the attempt records `failed` despite a
+  valid commit.
+- QA investigation Codex runs launch from `<worktree>/.tmp/qa-agent/` with a local `AGENTS.md`
+  that disables `bd` and session-close instructions. The helper dir keeps symlinks to `src/`,
+  `tests/`, `roster/`, `frontend/`, `pyproject.toml` and `uv.lock` so repo-relative commands work.
+- `POST /api/qa/dev/synthetic-findings` is an operator-only dev hook gated by
+  `QA_ALLOW_SYNTHETIC_FINDINGS=true`: it queues a finding so the next scheduled patrol exercises
+  the normal rehydrate, triage and dispatch path.
+- Shared dashboard defaults live in `public.state` under `settings.general`
+  (`GENERAL_SETTINGS_STATE_KEY`), edited through `/api/settings/general`: `timezone`, `language`,
+  `date_format`, `time_format`, `week_starts_on`, `currency`. `measurement_system` is response-only
+  `metric`. `Spawner` injects the block into every butler's system prompt.
+- `notify` and `memory_store_fact` tool metadata document required and optional fields with a valid
+  JSON example and constrained enums (`channel`, `intent`, `permanence`); `tags` is a JSON array.
+  Scheduled prompts that do not reply to ingress use `intent="send"`.
+- `SentenceTransformer.encode(..., show_progress_bar=False)` on every embedding path keeps tqdm out
+  of daemon logs.
+- Trigger sources: the core `trigger` tool dispatches with `trigger_source="trigger"`, and
+  `route.execute` flows use `"route"`; both are in the `core.sessions` allowlist. A
+  `trigger`-sourced call fails fast while the butler's lock is held, preventing self-invocation
+  deadlocks.
+- `CodexAdapter.invoke` raises on a non-zero CLI exit so the session records `success=false`.
+- The spawned CLI's environment is host `PATH` plus declared credentials only, so shebangs such as
+  `/usr/bin/env node` resolve without hardcoded paths.
+- `_compose_system_prompt` is the one composition path: the raw system prompt, plus memory context
+  as a double-newline suffix when available.
+- `core.memory_hooks` dispatch is keyed by the invoking butler/schema, never a process-global
+  closure, and registration is identity-safe, so stopping one daemon cannot remove another's
+  memory runtime.
+- Codex runs non-interactively as `codex exec --json ... --ephemeral`, never top-level `codex`
+  (needs a TTY). The system prompt comes from the butler's `AGENTS.md`, is embedded in the prompt
+  payload (the CLI has no `--instructions`), and goes on stdin via the `-` sentinel; a non-empty
+  roster model pin is forwarded as `--model`. A non-zero exit that looks like a refresh-token reuse
+  failure writes `last_test_ok=false` on the `cli-auth/codex` credential row (the secrets banner
+  turns red); any successful spawn writes `true`, so the banner heals after re-auth.
+- Codex stages per-invocation `HOME` roots under `~/.codex/.tmp` (the CLI fails with `codex_home`
+  under `/tmp`).
+- QA dispatch needs `gh` in `Dockerfile.base` to open its PR, pushes over HTTPS with `GH_TOKEN` and
+  `gh auth setup-git` (no SSH agent in the sandbox), and branches from a freshly fetched
+  `origin/main` via the worktree `base_ref`. Review follow-up backoff uses
+  `healing_attempts.last_follow_up_at` / `follow_up_count`, separate from `last_review_check_at`.
+- Token accounting: adapters report `usage.input_tokens` as the uncached bucket only, with cache
+  reads and writes separate (Codex/OpenAI `prompt_tokens` include cache and must be reduced; see
+  `runtimes/base.py`). `core/pricing.py` bills a cache bucket at its rate, falling back to the full
+  input rate, never `$0`; a model with no `pricing.toml` entry is unpriced (`None`), not free.
+  Adding a `sessions` column breaks the mocked-pool fixtures one file at a time: grep
+  `total_input_tokens` in `tests/`.
+- Adapters receive a caller-owned restricted environment: install invocation-local variables (the
+  Codex temporary `HOME`) in a private copy, or same-tier failover inherits stale runtime state.
+- Codex auth sync may use a shared `CredentialStore` authority only when passed explicitly, never
+  inferred from a schema-local pool. Post-run rotations CAS against the launch snapshot, and one
+  bounded `session_timeout_overhead_s` covers reconciliation, prewarm and refresh-lock waits.
+- Spend prices GPT-5.6 models at OpenAI Standard API <=272K metered rates even when
+  subscription-covered; lookup is exact, so every live catalog id needs its own entry.
+- The dev daemon's Codex credential volume is separate from the host session. When a model ID is
+  rejected as unsupported, check the pinned image's Codex CLI version before blaming entitlement,
+  and test the exact configured reasoning effort.
+- OpenCode Go listings (`opencode models opencode-go`, `--refresh` for the local cache) establish
+  IDs, not workspace access; probe IDs through the daemon before enabling them. Add exact
+  `pricing.toml` coverage before routing a new ID, because unpriced candidates score as
+  cost-neutral.
+
 ## Related Pages
 
 - [Trigger Flow](../concepts/trigger-flow.md) --- the two trigger sources that invoke the spawner

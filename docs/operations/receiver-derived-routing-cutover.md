@@ -78,3 +78,17 @@ or a stale last-seen value as an owner release. Do not drop the new schema,
 restore an older process UUID, or re-enable the daemon heartbeat mutation as a
 shortcut. A rollback whose old projection cannot prove this restriction must
 keep routing unavailable and escalate rather than widen eligibility.
+
+## Implementation Notes
+
+- Board `stale` is observation state: `set_butler_registry_policy(..., 'active')` cannot refresh
+  it. The board projects `paused`, `quarantined` and `review_required` all as
+  `eligibility='quarantined'`, so never infer the policy subtype from eligibility.
+- Legacy TTL transitions carry two reason names: read-time reconciliation writes `ttl_expired`, the
+  sweep writes `liveness_ttl_expired` (or `liveness_ttl_2x_expired`). A provenance migration must
+  match transition ID, state, exact timestamp and the writer-specific reason, or automatic
+  staleness becomes a sticky `review_required` policy.
+- The route flag governs candidate filtering, scheduled dispatch, recovery-notification admission,
+  TTL sweeps and the board and heartbeat projections, which must agree. Base Compose also serves
+  production and defaults it off; dev hotreload defaults it on. Keep the legacy heartbeat reporter
+  while any rollback path needs `last_seen_at`.

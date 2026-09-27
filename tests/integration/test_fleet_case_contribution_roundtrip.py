@@ -77,9 +77,9 @@ def db_url(postgres_container, _db_name: str) -> str:
 @pytest.fixture(scope="module")
 def bootstrap_url(postgres_container, _db_name: str, db_url: str) -> str:
     # fleet_cases/fleet_case_links FORCE RLS with no DELETE policy at all --
-    # even butler_switchboard_rw cannot delete a row (only close it, see
-    # AGENTS.md's RLS note). Cleanup needs the real superuser, which bypasses
-    # RLS unconditionally.
+    # even butler_switchboard_rw cannot delete a row (only close it, see the
+    # forced-RLS notes in docs/data_and_storage/schema-topology.md). Cleanup
+    # needs the real superuser, which bypasses RLS unconditionally.
     return migration_bootstrap_db_url(postgres_container, _db_name).replace(
         "postgresql+psycopg2://", "postgresql://", 1
     )

@@ -16,3 +16,15 @@ Messenger has no delivery-tracking, retry, dead-letter, queue-depth, or health s
 verify delivery through the daemon health endpoint, the approval-gated adapter tools, and a scoped
 `notify()` route outcome, never through retired tracking tables. The retirement of those tables is
 specified in [`messenger-tracking-retirement`](../../openspec/specs/messenger-tracking-retirement/spec.md).
+
+## Implementation Notes
+
+- The delivery path is Switchboard `route.execute`, then approval or pending action, then the native
+  Telegram, email or WhatsApp adapter, then the outcome and attention ledger. `msg_003` retired the
+  unwired `delivery_requests` tracking stack; do not reintroduce a tracking health, queue, retry or
+  receipt surface without an admission path that owns those records.
+- Inline approvals materialise one registered native delivery command before gating and reuse it
+  for immediate execution and deferred replay (`tool_args` hold only handler kwargs). Email replies
+  need an authoritative `request_context.source_thread_identity`, never `request_id`, and channel
+  policies such as WhatsApp `send_enabled` apply on both paths. Retries expose only allowlisted
+  validation classes; raw provider errors stay in logs and audit.

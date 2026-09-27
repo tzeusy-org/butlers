@@ -419,3 +419,11 @@ docker compose build --build-arg EXTRAS=whatsapp connector-whatsapp-user
 - Check flush interval: messages accumulate for up to `WA_FLUSH_INTERVAL_S` seconds (default 10 min).
 - Check the connector logs for discretion `IGNORE` verdicts — the LLM may be filtering low-weight messages.
 - Ensure the Switchboard is healthy: `curl http://localhost:41100/health`.
+
+## Implementation Notes
+
+- Unknown-person names must be neutral and unique without deriving from phone, JID or LID material
+  (a random UUID suffix is the convention); isolate a reservation failure to that speaker after the
+  strict bulk lookup succeeds.
+- Lifecycle logs (endpoint resolution, startup, credential resolution, checkpoint load/save,
+  backfill) carry booleans, counts and failure class only, never values or raw exceptions.

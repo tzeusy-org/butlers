@@ -250,7 +250,7 @@ lint-decision-beads:
 
 # Non-vacuous variant (bu-hmdqz.6): also flags open, non-epic beads whose
 # titles match a legacy decision marker but haven't migrated to the
-# `decision` label yet -- see AGENTS.md "Decision-bead convention".
+# `decision` label yet -- see docs/operations/decision-beads.md.
 lint-decision-beads-strict:
 	python3 scripts/lint_decision_beads.py --check-unlabeled-markers
 

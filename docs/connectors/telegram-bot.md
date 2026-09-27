@@ -167,6 +167,20 @@ grep "endpoint_identity\|getMe" /var/log/butlers/telegram-bot-connector.log 2>/d
 # Expected: log shows getMe() call on startup; endpoint_identity set to telegram:bot:@<username>
 ```
 
+## Implementation Notes
+
+- `_get_updates` treats `HTTP 409 Conflict` (another poller or a webhook) as recoverable: it
+  records source status `conflict`, logs the parsed Telegram description at warning level, and
+  returns `[]`.
+- `source_thread_identity` may be `<chat_id>` or `<chat_id>:<message_id>`; the pipeline's
+  `_load_realtime_history` groups Telegram history by numeric chat id so reply-form identities do
+  not collapse history to one row.
+- The bot and user-client connectors start from DB credentials when credential env vars are
+  missing; only `SWITCHBOARD_MCP_URL` is a required non-credential env var, and endpoint identity is
+  resolved from the Telegram API at startup.
+- `_get_updates` treats `HTTP 429` as recoverable: it records `rate_limited` metrics, honours
+  `Retry-After` (header, then `result.parameters.retry_after`) and returns `[]` instead of raising.
+
 ## Related Pages
 
 - [Connector Architecture Overview](overview.md)

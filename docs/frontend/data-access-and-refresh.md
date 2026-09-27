@@ -65,6 +65,16 @@ page's spec under `openspec/specs/dashboard-*`.
   frontend obligation in
   [Response Conventions](../api_and_protocols/response-conventions.md#frontend-obligation).
 
+## Implementation Notes
+
+- The router is created with the sanitised `import.meta.env.BASE_URL` as its basename
+  (`frontend/src/router-config.tsx`), so subpath deployments work for direct loads and in-app links.
+- `SessionDetailDrawer` normalises tool-call records before rendering (name under
+  `name|tool|tool_name` or nested `call|tool_call|toolCall|function`; arguments under
+  `input|args|arguments|parameters`; results under `result|output|response`) and falls back to a
+  raw payload block, so `Tool Calls (N)` is never empty. The Codex adapter's `_extract_tool_call`
+  treats nested `tool` objects the same way.
+
 ## Related Pages
 
 - [Response Conventions](../api_and_protocols/response-conventions.md) -- Envelopes, pagination,

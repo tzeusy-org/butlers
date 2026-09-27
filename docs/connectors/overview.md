@@ -175,6 +175,44 @@ curl -s "http://localhost:9090/api/v1/query?query=connector_ingest_submissions_t
 # Expected: error count is near zero; rising errors indicate Switchboard backpressure
 ```
 
+## Implementation Notes
+
+- WhatsApp `pair_required` is a waiting state, not a failure. `BridgeSubprocessManager`
+  (`src/butlers/connectors/bridge_manager.py`) treats it as startup-ready unconditionally, and
+  `WhatsAppUserClientConnector._sse_event_loop` checks `is_awaiting_pairing` before its generic
+  degraded-stop branch, so a bridge mid-QR-scan is never torn down. Only terminal reasons
+  (pairing timeout, invalidated session, unreachable) break the loop.
+  `_maybe_resolve_pending_endpoint_identity()` is re-run on each healthy pass so the
+  `"whatsapp:pending"` placeholder resolves once the bridge reports `connected`.
+- Discretion's small-group bypass (`group_size_bypass_max`) must gate on an allow-list
+  `chat_type in {"group", "supergroup"}` as well as `participant_count`: DMs report
+  `participant_count=2` and broadcast channels resolve counts too, so a count-only or
+  `!= "private"` check bypasses discretion for them.
+- `whatsapp-bridge` dispatches whatsmeow events serially on one goroutine: never make a blocking
+  network call inside a handler (use the `internal/events.GroupInfoCache` pattern: serve the cached
+  value, refresh in the background). There is no Go CI job; run
+  `go build && go vet && go test -race && gofmt -l .` locally.
+- Spotify: prefer the resolved `context_name` in `normalized_text` and `payload.raw.context_name`;
+  raw URI suffixes are a fallback, or entity extraction stores Spotify IDs as names.
+- WhatsApp `Client outdated (405)` loops mean the pinned `go.mau.fi/whatsmeow` is stale: update
+  `whatsapp-bridge/go.mod` and confirm a live connect. It is not a re-pair condition.
+- An optional connector whose credentials arrive at runtime through the dashboard must park, not
+  crashloop: keep a sentinel endpoint identity plus a degraded heartbeat
+  (`google_health:degraded`, `steam:no_accounts`, `spotify:unconfigured`, the Google managers' idle
+  mode). Keep `_endpoint_identity` empty while parked; only metrics, policy and heartbeat labels use
+  the sentinel. Only "never connected" is non-fatal, via its own exception subclass
+  (`SpotifyCredentialsUnconfiguredError`); every post-configuration fault stays loud. Env-var
+  connectors (telegram, discord, whatsapp, activitywatch) that fail `Config.from_env()` are a
+  deployment misconfiguration and should crash.
+- `switchboard.connector_registry` has two producers on one `(connector_type, endpoint_identity)`
+  key: the `connector.heartbeat` tool (one row per process) and `cursor_store.save_cursor` (one row
+  per checkpoint). Since sw_031 the role is persisted in `operational_role` (`runtime_instance`,
+  `checkpoint`, `unknown`) with `parent_endpoint_identity`; the vocabulary is
+  `butlers.connectors.registry_roles`. Only `runtime_instance` rows carry liveness authority;
+  heartbeat promotion is one-way; `save_cursor` stamps `checkpoint` on INSERT only, never in its
+  `ON CONFLICT` branch. Never derive the role from the identity string, surface `unknown` as
+  `unclassified`, and make every new writer declare a role and every new consumer filter by it.
+
 ## Related Pages
 
 - [Connector Interface Contract](../api_and_protocols/ingestion-envelope.md) -- Full normative spec including `ingest.v1` envelope schema
