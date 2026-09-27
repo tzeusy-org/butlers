@@ -32,4 +32,5 @@ def test_messenger_roster_files_and_config() -> None:
 
     readme = (REPO_ROOT / "README.md").read_text().lower()
     assert "butlers up --only switchboard --only messenger" in readme
-    assert "| 41104" in readme
+    port_map = (REPO_ROOT / "about" / "lay-and-land" / "deployment.md").read_text().lower()
+    assert "| messenger | staffer | 41104 |" in port_map

@@ -10,37 +10,30 @@
 
 The Spawner (`src/butlers/core/spawner.py`) is the core component that invokes ephemeral AI runtime instances for a butler. Each butler has exactly one Spawner instance. When triggered, the Spawner acquires concurrency slots, resolves the model from the catalog, generates a locked-down MCP config, invokes the runtime via an adapter, captures tool calls, logs the session, and returns the result.
 
-## Class Structure
+## Construction and Entry Point
 
-The `Spawner` class is initialized with:
+`Spawner` and its entry point `Spawner.trigger()` live in `src/butlers/core/spawner.py`; the
+signature and docstring there are authoritative. The semantics that matter to callers:
 
-- **`config`** (`ButlerConfig`) --- the butler's parsed configuration
-- **`config_dir`** (`Path`) --- path to the butler's config directory (containing `CLAUDE.md`)
-- **`pool`** (`asyncpg.Pool`) --- database connection pool for session logging
-- **`module_credentials_env`** --- mapping of module names to required env var names
-- **`runtime`** (`RuntimeAdapter`) --- optional injected adapter (defaults to `ClaudeCodeAdapter`)
-- **`credential_store`** (`CredentialStore`) --- optional DB-first credential resolver. For Codex it must carry an explicitly selected system-global `cli-auth/codex` authority; a missing or unavailable selection refuses new Codex subprocesses instead of treating a local runtime file or fallback pool as authority.
+- **`trigger_source`** selects prompt layers, MCP wiring, and the derived dispatch intent. Every
+  source except `healing` and `qa` gets MCP tools, so it requires a tool-capable runtime.
+- **`complexity`** defaults to `Complexity.WORKHORSE` and is the tier resolution starts from (see
+  [Model Routing](model-routing.md#complexity-tiers)).
+- **`attachments`** with an `image/*` media type make the intent require vision, so a catalog with
+  no vision-proven model fails the dispatch instead of handing the image to a text-only model.
+- **`max_token_budget` / `max_tool_calls`** raise guardrail terminations that the failover
+  classifier always suppresses.
+- **`env_override`, `timeout_override`, `cwd`, `bypass_butler_semaphore`** exist for the
+  self-healing and QA dispatchers, which own their own sandbox, watchdog, and concurrency cap.
+- **`conversation_id`** lets a `route` turn resume the conversation's provider-native session when
+  the adapter supports it. **`dashboard_turn_id`** requires the durable Stop-protocol claim to
+  succeed before `runtime.invoke`.
+- **`credential_store`** (constructor): for Codex it must carry an explicitly selected system-global
+  `cli-auth/codex` authority. A missing or unavailable selection refuses new Codex subprocesses
+  rather than treating a local runtime file or fallback pool as authority.
 
-## Trigger Method
-
-The primary entry point is `trigger()`:
-
-```python
-async def trigger(
-    self,
-    prompt: str,
-    trigger_source: str,
-    context: str | None = None,
-    max_turns: int = 20,
-    parent_context: Context | None = None,
-    request_id: str | None = None,
-    complexity: Complexity = Complexity.MEDIUM,
-    cwd: str | None = None,
-    bypass_butler_semaphore: bool = False,
-) -> SpawnerResult:
-```
-
-The method returns a `SpawnerResult` dataclass containing `output`, `success`, `tool_calls`, `error`, `duration_ms`, `model`, `session_id`, `input_tokens`, and `output_tokens`.
+`trigger()` returns a `SpawnerResult`. On a pre-invocation resolution failure it carries the
+prompt-free `resolution_receipt` so callers keep the no-winner explanation.
 
 ## Execution Pipeline
 
@@ -48,7 +41,7 @@ The method returns a `SpawnerResult` dataclass containing `output`, `success`, `
 
 Two semaphores must be acquired in order:
 
-1. **Per-butler semaphore** --- `asyncio.Semaphore(max_concurrent_sessions)` from `butler.toml`. Default is 1 (serial dispatch). The Switchboard uses 3. Can be bypassed with `bypass_butler_semaphore=True` for internal dispatch.
+1. **Per-butler semaphore** --- sized from `runtime_config.max_concurrent` (seeded from `[butler.runtime_seed]`; a cold field, so changes need a restart). Default is 1 (serial dispatch). Can be bypassed with `bypass_butler_semaphore=True` for internal dispatch.
 2. **Global semaphore** --- Process-wide `asyncio.Semaphore` defaulting to 3, configurable via `BUTLERS_MAX_GLOBAL_SESSIONS`. Limits total concurrent sessions across all butlers in the process.
 
 Metrics track queue depth at both levels (`butlers.spawner.queued_triggers` and `butlers.spawner.global_queue_depth`).
@@ -94,7 +87,7 @@ The system prompt is composed in `spawner_context._compose_system_prompt()` from
 1. **Base system prompt** --- read from the butler's `CLAUDE.md`
 2. **General timezone instruction** --- from shared owner settings
 3. **Situational context preamble** --- from the context bus (`butlers.context_bus`)
-4. **Blind-spot preamble** --- declared expected-signal absence (bu-2jtfw.13). Absent whenever every signal the butler has declared a dependency on (`butlers.core.blind_spot_declarations.declared_signal_patterns`) is PRESENT, so this layer is a byte-identical no-op in the common case. Gated by the per-butler `runtime_config.blind_spot_preamble_enabled` kill switch (default on). Unlike every other layer here, its underlying fetch (`fetch_blind_spot_preamble` / `evaluate_declared_signals`) is deliberately **fail-closed**: a query error surfaces as a typed "source health could not be evaluated" block rather than silently omitting the layer.
+4. **Blind-spot preamble** --- declared expected-signal absence. Absent whenever every signal the butler has declared a dependency on (`butlers.core.blind_spot_declarations.declared_signal_patterns`) is PRESENT, so this layer is a byte-identical no-op in the common case. Gated by the per-butler `runtime_config.blind_spot_preamble_enabled` kill switch (default on). Unlike every other layer here, its underlying fetch (`fetch_blind_spot_preamble` / `evaluate_declared_signals`) is deliberately **fail-closed**: a query error surfaces as a typed "source health could not be evaluated" block rather than silently omitting the layer.
 5. **Owner routing instructions** --- fetched from the `routing_instructions` table, sorted by priority (switchboard only)
 6. **Memory context** --- retrieved from the memory module based on the prompt content
 
@@ -120,9 +113,9 @@ The appropriate `RuntimeAdapter` is selected based on the resolved `runtime_type
 
 5. **On success after failover:** Write a `success` row to `public.model_dispatch_attempts` for the winning candidate. Update the session row's `model` field to reflect the fallback model that actually ran.
 
-A hard cap of 10 attempts prevents unbounded looping regardless of catalog size.
+A hard cap (`_MAX_FAILOVER_ATTEMPTS`) prevents unbounded looping regardless of catalog size.
 
-#### Classifier Inputs (adapter signals from bu-ojiij.5)
+#### Classifier Inputs
 
 Every `RuntimeAdapter` populates `last_process_info` after each invocation attempt. Key fields:
 
@@ -145,19 +138,9 @@ The classifier is **default-closed**: unknown exception classes always suppress 
 
 #### Querying Provenance
 
-Attempt provenance is written to `public.model_dispatch_attempts`. Each row records:
-
-- `catalog_entry_id` — which model was attempted
-- `butler` — which butler triggered the session
-- `outcome` — `quota_skip`, `runtime_failure`, `suppressed`, `exhausted`, or `success`
-- `failure_reason` — classifier decision string or quota detail
-- `error_code` — exception class name
-- `error_message` — truncated error string (max 4096 chars)
-- `tool_call_count` — captured tool calls at time of decision
-- `attempt_index` — 0-based position in the attempt sequence
-- `logical_session_id` — shared across all rows for the same trigger
-- `resolution_receipt` — bounded prompt-free evidence for why this attempt's
-  candidate was selected; failover rows name the prior failure class
+Every attempt writes one row to `public.model_dispatch_attempts`, all sharing the trigger's
+`logical_session_id`; outcomes and the resolution receipt are described in
+[Model Routing](model-routing.md#attempt-provenance).
 
 Use the API endpoint `GET /api/dispatch/attempts?session_id=<uuid>` to retrieve attempt provenance for a completed session.
 

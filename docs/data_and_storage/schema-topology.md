@@ -8,7 +8,7 @@
 
 ![Schema Topology](./schema-topology.svg)
 
-Butlers uses a **single PostgreSQL database** with **per-butler schemas** plus a `public` schema for cross-butler identity data. This topology replaced an earlier design where each butler had its own database. The migration target is one database named `butlers` with schema-based isolation.
+Butlers uses a **single PostgreSQL database** with **per-butler schemas** plus a `public` schema for cross-butler identity data. The database is named `butlers`.
 
 ## Database Layout
 
@@ -29,9 +29,11 @@ The `public` schema contains tables that multiple butlers need to read. It is th
 - **`public.entities`** -- Entity graph nodes. Each entity has a `canonical_name`, `entity_type`, `roles` array, and `metadata` JSONB.
 - **`public.entity_info`** -- Key-value pairs attached to entities. Used for credential storage (e.g., `google_oauth_refresh` tokens). UNIQUE on `(entity_id, type)`.
 - **`public.google_accounts`** -- Connected Google account registry with companion entities.
-- **`public.memory_catalog`** -- Shared predicate/schema definitions for the memory module.
-
-> **Note:** `public.contacts` and `public.contact_info` were dropped in migrations `core_115` / `core_134` and replaced by the entity graph above.
+- **`public.memory_catalog`** -- Cross-butler discovery index over memory items: a searchable
+  summary plus provenance pointers back to the owning butler's schema. It is not a canonical store;
+  full recall routes back to the owning schema.
+- **`public.butler_secrets`** -- The shared credential pool (the fallback tier of the
+  [Credential Store](credential-store.md)), created at daemon boot by `ensure_secrets_schema`.
 
 ### Per-Butler Schemas
 
@@ -45,20 +47,11 @@ Each butler gets its own schema containing tables for:
 
 ## Schema Search Path
 
-When a butler connects to the database, the `Database` class in `src/butlers/db.py` sets the PostgreSQL `search_path` to provide transparent name resolution:
-
-```python
-def schema_search_path(schema: str | None) -> str:
-    # Returns: "<butler_schema>,shared,public"
-```
-
-For a butler named `general`, the search path is `general,public`. This means:
-
-1. Unqualified table references resolve first to the butler's own schema.
-2. If not found there, they resolve to `public` (identity tables).
-3. Finally, `public` is checked (where PostgreSQL extensions like `vector` and `uuid-ossp` are installed).
-
-This allows modules to reference `entities` without schema-qualifying it -- the search path resolves to `public.entities` automatically.
+When a butler connects, the `Database` class in `src/butlers/db.py` sets `search_path` from
+`schema_search_path()`: the butler's own schema, then `public`. For `general` that is
+`general,public`. Unqualified names resolve to the butler's own tables first, then to the
+cross-butler tables and extensions in `public`. That is how a module can reference `entities`
+without qualifying it.
 
 ## Database Provisioning
 
@@ -77,8 +70,8 @@ This script:
 
 1. Installs required PostgreSQL extensions (`pgcrypto`, `uuid-ossp`, `vector`,
    `pg_trgm`).
-2. Grants each butler runtime role (`butler_{schema}_rw` for all 10 schemas)
-   and `connector_writer` to the connecting user (`POSTGRES_USER`, typically
+2. Grants each butler runtime role (`butler_{schema}_rw`, one per butler schema as listed in
+   `init-db.sql`) and `connector_writer` to the connecting user (`POSTGRES_USER`, typically
    `butlers`).
 
 **Why role membership matters:** Butler runtime code calls `SET ROLE
@@ -99,7 +92,8 @@ The `Database` class handles provisioning at startup:
 2. Creates the target database if it does not exist (using `CREATE DATABASE ... TEMPLATE template0`).
 3. Creates an asyncpg connection pool with `server_settings` that set the `search_path`.
 
-The pool is configured with min/max size (default 2/10) and optional SSL mode support. SSL fallback logic handles environments where the server doesn't support STARTTLS gracefully.
+The pool size comes from `BUTLERS_DB_POOL_MIN_SIZE` / `BUTLERS_DB_POOL_MAX_SIZE` (default 1/10; see
+`pool_sizes_from_env` in `db.py`), with optional SSL mode support. SSL fallback logic handles environments where the server doesn't support STARTTLS gracefully.
 
 ## Connection Parameters
 
@@ -144,7 +138,6 @@ psql -h localhost -U butlers -d butlers -c \
    WHERE table_schema = 'public' ORDER BY table_name;"
 # Expected: entities, entity_info, google_accounts, model_catalog,
 #           token_usage_ledger, model_dispatch_attempts, etc.
-# Note: contacts and contact_info should NOT appear (dropped in core_115 / core_134)
 
 # 4. Search path resolves butler-schema tables first, then public
 # From a butler's connection context, unqualified references resolve correctly:

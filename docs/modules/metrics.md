@@ -17,15 +17,14 @@ The module has three internal layers:
 
 ## MCP Tools
 
-The module registers five tools on the butler's FastMCP server:
+Tools are registered in `MetricsModule.register_tools` (`src/butlers/modules/metrics/__init__.py`);
+read it for the current names and signatures. Two families:
 
-| Tool | Description |
-|---|---|
-| `metrics_define` | Create a named metric (counter, gauge, or histogram). Persists the definition and builds an OTEL instrument. Idempotent on re-definition. |
-| `metrics_emit` | Record a single observation to a previously defined metric. Validates value constraints (non-negative for counters/histograms) and label key sets. |
-| `metrics_list` | Return all metric definitions registered with this butler. |
-| `metrics_query` | Execute an instant PromQL query against the configured Prometheus endpoint. |
-| `metrics_query_range` | Execute a range PromQL query with start/end/step parameters. |
+- **Define and emit** (`metrics_define`, `metrics_emit`, `metrics_list`) -- create a named counter,
+  gauge or histogram (idempotent; persists the definition and builds the OTEL instrument), record
+  observations against it with value and label-set validation, and list definitions.
+- **Query** (`metrics_query`, `metrics_query_range`) -- instant and range PromQL against the
+  configured Prometheus endpoint.
 
 ## Naming Convention
 

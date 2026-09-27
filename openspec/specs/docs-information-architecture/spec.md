@@ -279,9 +279,7 @@ docs/
     index.md
     purpose-and-single-pane.md
     information-architecture.md
-    feature-inventory.md
     data-access-and-refresh.md
-    backend-api-contract.md
   data_and_storage/
     index.md
     schema-topology.md
@@ -292,7 +290,6 @@ docs/
   identity_and_secrets/
     index.md
     owner-identity.md
-    contact-system.md
     oauth-flows.md
     cli-runtime-auth.md
     environment-variables.md

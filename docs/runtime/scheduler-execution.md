@@ -50,9 +50,9 @@ Dispatch failures are logged but do not prevent subsequent tasks from running. T
 
 ## Task Continuity (opt-in)
 
-A prompt-mode task can set `continuity = true` (per-task, defaulting to `false` --- a task without it behaves exactly as before this existed) to have the scheduler inject what its previous run concluded into its next dispatched prompt. The task's own session calls the `carry_forward(task_name, content)` core tool to record that conclusion; the record lives in the shared `public.task_continuity` ledger, keyed by `(butler_name, task_name)` for the single "live" row and `(butler_name, task_name, session_id)` so calling it twice in one session updates the same row rather than duplicating it.
+A prompt-mode task can set `continuity = true` (per-task, default `false`) to have the scheduler inject what its previous run concluded into its next dispatched prompt. The task's own session calls the `carry_forward(task_name, content)` core tool to record that conclusion; the record lives in the shared `public.task_continuity` ledger, keyed by `(butler_name, task_name)` for the single "live" row and `(butler_name, task_name, session_id)` so calling it twice in one session updates the same row rather than duplicating it.
 
-At the next opted-in dispatch, `tick()` reads that live row and appends a `## Task Continuity — <task_name>` block naming the previous session, its age, and its content --- or, if the task has run under continuity but never called `carry_forward`, an honest "the last run recorded no carry-forward" block, never silence. This is a general primitive for the pattern the chronicler's day-close cache implements bespoke (`src/butlers/chronicler/day_close_writer.py`); migrating that hook onto this layer is a deliberate non-goal until a regression test proves equivalence (bu-2jtfw.13).
+At the next opted-in dispatch, `tick()` reads that live row and appends a `## Task Continuity — <task_name>` block naming the previous session, its age, and its content --- or, if the task has run under continuity but never called `carry_forward`, an honest "the last run recorded no carry-forward" block, never silence. This is a general primitive for the pattern the chronicler's day-close cache implements bespoke (`src/butlers/chronicler/day_close_writer.py`); migrating that hook onto this layer is a deliberate non-goal until a regression test proves equivalence.
 
 ## Staggering
 
@@ -66,26 +66,19 @@ The default `max_stagger_seconds` is 900 (15 minutes). The offset never exceeds 
 
 ## Complexity Tiers
 
-Each scheduled task can specify a `complexity` value that influences model selection during dispatch. Valid values: `trivial`, `medium` (default), `high`, `extra_high`, `discretion`, `self_healing`. Invalid values in the database are logged as warnings and fall back to `medium`.
+Each scheduled task can set a `complexity` tier (the `Complexity` enum in
+`src/butlers/core/model_routing.py`; see [Model Routing](model-routing.md#complexity-tiers)). A
+missing value defaults to `Complexity.WORKHORSE`. A stored retired tier (`medium`, `high`, ...) is
+remapped to its canonical successor rather than collapsed, and any other unrecognized value
+degrades to `WORKHORSE` with a warning (`_parse_complexity_from_db_row`).
 
-## Scheduled Task Fields
+## Scheduled Task Rows
 
-| Field | Type | Description |
-| --- | --- | --- |
-| `name` | text | Unique task identifier |
-| `cron` | text | Cron expression (validated by croniter) |
-| `dispatch_mode` | text | `"prompt"` or `"job"` |
-| `prompt` | text | Prompt text (prompt mode only) |
-| `job_name` | text | Registered job function name (job mode only) |
-| `job_args` | jsonb | Arguments dict for job dispatch (job mode only) |
-| `complexity` | text | Complexity tier for model selection |
-| `source` | text | `"toml"` (from config) or `"db"` (runtime-created) |
-| `enabled` | bool | Whether the task is active |
-| `next_run_at` | timestamptz | Next scheduled execution time |
-| `last_run_at` | timestamptz | Most recent execution time |
-| `last_result` | jsonb | Result or error from last dispatch |
-| `until_at` | timestamptz | Auto-disable after this time |
-| `continuity` | bool | Opt in to task-continuity injection (default `false`) |
+`scheduled_tasks` is created in `alembic/versions/core/core_001_foundation.py` and extended by
+later core migrations (deadlines, token budgets, calendar linkage, delegation wake, continuity).
+Invariants worth knowing: `name` is unique per butler schema, `source` is `toml` or `db` and decides
+whether `sync_schedules()` owns the row, and an expired task is left with `enabled=false` and
+`next_run_at=NULL`.
 
 ## Verification
 

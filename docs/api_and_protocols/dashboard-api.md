@@ -68,32 +68,11 @@ setup, mode transitions, expiry and recovery.
 
 ## Core Routers
 
-The app registers these static routers (all prefixed under `/api`):
-
-| Router | Domain |
-|--------|--------|
-| `approvals` | Approval decisions and pending actions |
-| `butlers` | Butler listing, status, detail |
-| `notifications` / `butler_notifications` | Notification history and butler-scoped notifications |
-| `issues` | Issue aggregation |
-| `costs` | Cost tracking and period selectors |
-| `sessions` / `butler_sessions` | Session lifecycle and butler-scoped sessions |
-| `schedules` | Cron schedule CRUD |
-| `modules` | Module status and configuration |
-| `secrets` | Credential management |
-| `state` | KV state store operations |
-| `ingestion_events` | Switchboard ingestion event log |
-| `timeline` | Unified timeline view |
-| `calendar_workspace` | Calendar events and scheduling |
-| `search` | Cross-butler search |
-| `audit` | Audit trail |
-| `memory` | Memory tier health and search |
-| `oauth` | Google OAuth flow with CSRF protection |
-| `cli_auth` | CLI runtime auth sessions and health probes |
-| `sse` | Server-Sent Events for live updates |
-| `catalog` / `butler_model` | Model catalog and per-butler model settings |
-| `healing` | Self-healing operations |
-| `provider_settings` | Provider configuration |
+Static routers live in `src/butlers/api/routers/` and are mounted, all under `/api`, by the
+`app.include_router(...)` sequence in `create_app()` (`src/butlers/api/app.py`). That sequence is
+the inventory; the generated OpenAPI schema lists every operation and its response model.
+Cross-cutting envelope, pagination, and degraded-source rules are in
+[Response Conventions](response-conventions.md).
 
 ## Auto-Discovered Butler Routers
 
@@ -122,40 +101,22 @@ async def custom_endpoint():
 
 Co-locate Pydantic models in `models.py` alongside `router.py`.
 
-### Lifestyle Taste Ledger
+### Example: Lifestyle Taste Ledger
 
-The auto-discovered Lifestyle router exposes three read-only endpoints under
-`/api/lifestyle/taste`:
-
-- `GET /summary` returns ledger-wide work, signal, verdict, and recent-signal counts.
-- `GET /works` returns a bounded, offset-paginated work list and accepts an optional `kind` filter.
-- `GET /verdicts` returns owner assertions, including migrated legacy lifestyle facts.
-
-The list endpoints obtain `meta.total` with a separate `COUNT(*)`; it is the ledger total for the
-same filter, not the length of the returned page. A missing pre-migration ledger returns HTTP 503
-on every taste endpoint rather than being presented as a genuine empty taste history.
-
-The summary payload also carries:
-
-- `availability`: `complete`, `partial`, or `unavailable`.
-- `query_availability`: one typed entry for each of `total_works`,
-  `total_signals`, `total_verdicts`, `recent_signals_7d`,
-  `works_by_kind`, and `signals_by_kind`. Each entry has `state`
-  (`available` or `unavailable`) and a nullable fixed
-  `reason` (`query_failed` when unavailable).
-- `ledger_available`: a compatibility boolean that is false only when all
-  summary queries are unavailable. A partial response keeps successful
-  sections and marks only failed sections; a complete response with all zeros
-  is a genuine empty ledger. Failure reasons are content-blind and never carry
-  SQL, exception text, credentials, or source payloads.
-
-The Lifestyle Taste tab renders a failed KPI section as unavailable rather than
-zero and shows the typed partial note. It renders an empty-state message only
-for a complete, available response with zero rows.
+`roster/lifestyle/api/router.py` exposes read-only `/api/lifestyle/taste/{summary,works,verdicts}`.
+Its list endpoints report `meta.total` from a separate `COUNT(*)` (the filtered ledger total, not
+the page length), and a missing pre-migration ledger returns HTTP 503 on every taste endpoint
+rather than a genuine-looking empty history. The summary uses the section-level partial
+aggregation shape described in
+[Response Conventions](response-conventions.md#section-level-partial-aggregation).
 
 ## SSE Streaming
 
-The `/api/events` endpoint streams Server-Sent Events for live dashboard updates. Events include butler status changes, session lifecycle events, and ingestion activity. Multiple concurrent subscribers are supported via `asyncio.Queue` instances.
+`GET /api/events` (`routers/sse.py`) streams Server-Sent Events for live dashboard updates;
+multiple concurrent subscribers are supported via `asyncio.Queue` instances. The multiplexed
+fleet event bus that drives frontend cache invalidation is the WebSocket
+`/api/events/stream` (`routers/events.py`); see
+[Data Access and Refresh](../frontend/data-access-and-refresh.md#freshness-model).
 
 ## OTel Instrumentation
 
@@ -179,7 +140,7 @@ curl -s http://localhost:41200/health | python3 -m json.tool
 # Expected after startup: status="ok"; before readiness: HTTP503.
 
 # 2. All core router groups are reachable
-for route in butlers sessions schedules costs modules secrets state; do
+for route in butlers sessions spend issues audit-log; do
   status=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:41200/api/$route")
   echo "$route: $status"
 done

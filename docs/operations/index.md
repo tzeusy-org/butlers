@@ -9,8 +9,11 @@
 - [Environment Config](environment-config.md) — configuration reference, secrets directory
 - [Runtime-Probe Control Keys](runtime-probe-control-keys.md) — signer/verifier documents, provisioning, restart-driven rotation
 - [Backup and Restore](backup-restore.md) — backup cadence, restore drill, integrity verification
+- [Data Retention](data-retention.md) — per-table retention decisions, opt-in pruners
 - [Grafana Monitoring](grafana-monitoring.md) — dashboards, tracing, logging
 - [Tailnet Health Monitoring](tailnet-health-monitoring.md) — canonical strict-TLS health probe handoff
 - [Connector Scaling](connector-scaling.md) — horizontal scaling for connectors
 - [Troubleshooting](troubleshooting.md) — common issues, debugging, health checks
-- [Tailscale Serve Repair Packet](tailscale-serve-repair-packet.md) — sanitized, diagnosis-first repair boundary
+- [Runtime Attention](runtime-attention.md) — runtime-attention paging path and its stored functions
+- [Image Bump Procedure](image-bump-procedure.md) — updating pinned service image tags
+- [Receiver-Derived Routing Cutover](receiver-derived-routing-cutover.md) — transitional: flag cutover and rollback boundary until production activation

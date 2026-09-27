@@ -93,21 +93,13 @@ Policy rules are DB-backed with TTL refresh. On DB error, evaluation fails open 
 
 ## Interactivity Surface
 
-The connector supports these interactive tools:
+The connector only ingests. Replies and reactions are MCP tools of the
+[Telegram module](../modules/telegram.md) (`TelegramModule.register_tools` in
+`src/butlers/modules/telegram.py`), which send, reply to, and react to messages.
 
-- `telegram_send_message` -- Send a message to a chat.
-- `telegram_reply_to_message` -- Reply to a specific message.
-- `telegram_get_updates` -- Read recent updates.
-
-Lifecycle reactions on inbound messages (best-effort):
-
-| Stage | Emoji |
-|---|---|
-| In-progress | Eyes |
-| Success | Checkmark |
-| Failure | Alien |
-
-If Telegram rejects a reaction with a 400 error, processing continues with a logged warning.
+Lifecycle reactions on inbound messages (in progress, success, failure) are set best-effort by the
+Switchboard through the module's `react_for_ingest()`; the emoji constants live in
+`src/butlers/core/channel_reactions.py`. A rejected reaction is logged and never blocks processing.
 
 ## Environment Variables
 

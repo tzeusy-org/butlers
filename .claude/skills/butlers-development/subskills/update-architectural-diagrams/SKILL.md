@@ -30,44 +30,28 @@ instructs its worker to use `/excalidraw-diagram` to create or update one
 
 ## Diagram Catalog
 
-Numbering convention, grouped by concern:
+A diagram exists only because a living doc embeds it. Each one is a pair:
 
-| Prefix | Concern | Typical contents | Directory |
-|--------|---------|-----------------|-----------|
-| `01-`  | System topology | All butlers, connectors, DB, LLM runtimes, dashboard | `architecture/` |
-| `02-`  | Butler specification | Core + modules anatomy, MCP, spawner, config | `butlers/` |
-| `03x-` | Fixed butler designs | Switchboard (a), General (b), and any future fixed butlers | `butlers/` |
-| `04x-` | Rostered butler user flows | One diagram per rostered specialist butler | `butlers/` |
-| `05-`  | Connector design | ingest.v1 envelope, dedup, heartbeat, implemented connectors | `connectors/` |
-| `06x-` | Core component deep-dives | Spawner (a), Scheduler (b), State Store (c), Startup (d), DB Schema (e) | `runtime/` (a-c), `architecture/` (d-e) |
-| `07x-` | Dashboard | API gateway (a), core data flows (b) | `frontend/` |
+- **Render:** `docs/<topic>/<name>.svg`, embedded by a page in the same topic dir
+  (e.g. `docs/runtime/spawner-flow.svg` in `docs/runtime/spawner.md`).
+- **Source:** `docs/diagrams/<category>/<source>.excalidraw`. Some sources keep
+  older numbered names (e.g. `runtime/06a-spawner-runtime.excalidraw` renders
+  `runtime/spawner-flow.svg`); name new sources after their render.
+
+Do not export `_dark.svg` variants or renders no page embeds; unreferenced renders
+are deleted in docs cleanups. Removing a diagram means deleting its render, its
+source, and the embedding line together. The concern groupings in
+[`references/diagram-categories.md`](references/diagram-categories.md) (system
+topology, butler anatomy, per-butler flows, connectors, core components,
+dashboard) describe what each kind of diagram must show.
 
 ## Directory Layout
 
-`docs/diagrams/` is organized into category subdirectories, not a flat file
-list. Numbered diagrams (above) live in the directory noted in the table;
-additional descriptively-named diagrams (no numeric prefix) also live under
-their category:
-
-- `architecture/` — system topology, database schema, startup/routing flows
-- `butlers/` — butler specification and per-butler user-flow diagrams
-- `concepts/` — cross-cutting concepts (butler lifecycle, modules and
-  connectors, switchboard routing)
-- `connectors/` — connector design and ingestion pipeline
-- `data/` — schema topology
-- `frontend/` — dashboard diagrams
-- `identity/` — OAuth flow, owner identity bootstrap
-- `modules/` — module system, approval flow, entity data model, predicate
-  lifecycle
-- `operations/` — deployment diagrams
-- `runtime/` — spawner, scheduler, state store, session lifecycle
-- `testing/` — test pyramid
-
-Each `.excalidraw` source may have a matching `<name>_dark.svg` export
-alongside it in the same directory. Place new or updated diagrams in the
-matching category subdirectory (e.g.
-`docs/diagrams/runtime/06a-spawner-runtime.excalidraw`) — never directly
-under `docs/diagrams/`.
+Sources live under `docs/diagrams/<category>/` — `architecture/`, `butlers/`,
+`concepts/`, `connectors/`, `data/`, `frontend/`, `identity/`, `modules/`,
+`runtime/`, `testing/` — never directly under `docs/diagrams/`. Run
+`find docs -name '*.svg' -not -path 'docs/archive/*'` plus
+`rg '\.svg' docs --glob '*.md'` to map renders to the pages that embed them.
 
 ## Workflow
 
@@ -93,18 +77,11 @@ Gather in parallel:
 
 | Situation | Action |
 |-----------|--------|
-| New butler added, no `04x-` diagram | Create a `04x-` child bead |
-| Existing butler's modules/schedule changed | Update child bead for its `04x-` diagram |
-| New core component (new file under `src/butlers/core/`) | Create/update a `06x-` child bead |
-| New dashboard router | Update `07a-` and possibly `07b-` |
-| New connector | Update `05-` |
-| Butler removed from roster | Child bead to remove its `04x-` diagram |
+| Embedded diagram contradicts current code or roster | Update child bead for that diagram |
+| New butler, module, connector, or router that an embedded diagram enumerates | Update that diagram |
+| A page needs a picture it lacks | Create child bead (new source + render + embedding line) |
+| Component removed | Update or remove the diagram and its embedding line |
 | Diagram exists, nothing changed | Skip — no child bead |
-| System topology changed (ports, new butler category) | Update `01-` |
-
-**Always regenerate `01-`** (system topology) — it must reflect the current
-roster. **Always regenerate `02-`** (butler spec) if core infra or the module
-interface changed.
 
 For updates (vs. from-scratch): note the existing file path in the bead and
 instruct the worker to read it first and evolve rather than restart.
@@ -138,8 +115,8 @@ Description:
 Acceptance criteria:
   1. Diagram renders in Excalidraw without errors
   2. <Content-specific checks — one per major element>
-  3. File saved as docs/diagrams/<category>/<name>.excalidraw (see
-     Directory Layout for the category)
+  3. Source saved as docs/diagrams/<category>/<name>.excalidraw, render
+     exported to docs/<topic>/<name>.svg and embedded by the owning page
 
 Estimate: 60  (minutes)
 ```
@@ -169,9 +146,8 @@ Follow `/beads-writer` conventions:
    step. (Optionally `bd export -o .beads/issues.export.jsonl` to refresh
    the git-tracked mirror.)
 
-> **Merge policy:** if a worker's changes are exclusively docs/diagram files
-> (`.excalidraw`, `docs/`), a direct commit + push to `main` is fine — no PR
-> needed. Only open a PR when implementation code also changed.
+> **Merge policy:** diagram changes follow the normal worktree + PR flow in
+> `CLAUDE.md`, like every tracked change.
 
 Present the created beads as a table:
 

@@ -12,16 +12,11 @@ DB-backed tests (`tests/api/*_db.py`, `tests/migrations/`, `tests/config/`) star
 addopts carry `-n 3 --dist loadfile`, so one `make test` is three worker processes, each with its
 own session-scoped container, and a few test modules open a second container of their own.
 
-A run that reaches teardown removes its containers. This is not an assumption: a full DB-backed
-suite run to completion during the bu-3zu5l investigation (`tests/api/`, 12 tests, exit 0) left the
-host container count unchanged at 12 before and after. **Teardown works.** A run that is SIGKILLed
-(agent timeout, ctrl-c, OOM) never gets there, and the container stays up indefinitely, holding RAM
-and a published port. That is where the 11 leaked containers found in the wild came from, the
-oldest three weeks old.
-
-So the problem is confined to exactly the case a process cannot handle on its own: a killed process
-cannot run its own teardown. That is precisely why testcontainers ships a sidecar, and it is why
-the fix below is not a teardown change.
+A run that reaches teardown removes its containers; a full DB-backed run leaves the host container
+count unchanged. A run that is SIGKILLed (agent timeout, ctrl-c, OOM) never gets there, and its
+container stays up indefinitely, holding RAM and a published port. A killed process cannot run its
+own teardown, which is exactly why testcontainers ships a sidecar, and why the fix below is not a
+teardown change.
 
 ## Ryuk is enabled, and is the primary defence
 
@@ -37,10 +32,9 @@ There is one place the variable *is* set, and it is worth knowing before you gre
 page is wrong: CI sets `TESTCONTAINERS_RYUK_DISABLED: "true"` in `.github/workflows/ci.yml` (the
 `check-preflight` job's smoke step and the `check-integration-1..5` shard jobs) and in
 `.github/workflows/nightly.yml`. That is harmless there and cannot leak onto a developer machine,
-because those jobs are `runs-on: ubuntu-latest`
-throwaway VMs that are destroyed wholesale. (The `gha-runner-*` containers on this host belong to a
-different project, not to butlers CI.) It matters here only because copying the CI environment into
-a local run turns Ryuk off and defeats the live-Ryuk predicate below.
+because those jobs are `runs-on: ubuntu-latest` throwaway VMs that are destroyed wholesale. It
+matters here only because copying the CI environment into a local run turns Ryuk off and defeats the
+live-Ryuk predicate below.
 
 **Do not write an age-based reaper to replace this, and do not "re-enable" Ryuk: it is already on.**
 
@@ -81,9 +75,7 @@ python3 scripts/reap_orphaned_testcontainers.py --reap     # remove the candidat
 
 The rule never fires during a healthy run. A container created by a live session is spared twice
 over: its Ryuk sidecar is running for the container's whole life, and it is nowhere near the age
-backstop. Both protections are pinned by tests
-(`test_live_session_is_spared_because_its_ryuk_is_running`,
-`test_recent_container_is_spared_by_the_age_backstop`).
+backstop. `tests/scripts/test_reap_orphaned_testcontainers.py` pins both protections.
 
 An agent may run this **without owner sign-off**, including `--reap`. The safety argument: the
 predicates above are conjunctive, each one alone is enough to spare a container someone wants, and
@@ -98,12 +90,12 @@ is the obvious way to reach it.
 To pin a container the sweep would otherwise take, give it a name of your own or label it:
 
 ```bash
-docker run --name my-repro --label dev.butlers.keep=bu-xxxxx ...
+docker run --name my-repro --label dev.butlers.keep=<reason> ...
 ```
 
 ## Noticing a leak as it happens
 
 The root `conftest.py` retries Docker teardown for the known transient Docker API races and, after
-the retries, gives up so the run can finish. Giving up leaks a live container. That path now names
+the retries, gives up so the run can finish. Giving up leaks a live container. That path names
 the container in its `RuntimeWarning`, so a leak is traceable to the run that caused it instead of
 being rediscovered weeks later by `docker ps`.

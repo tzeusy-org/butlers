@@ -10,16 +10,11 @@ Model routing (`src/butlers/core/model_routing.py`) selects the best AI model fo
 
 ## Complexity Tiers
 
-The `Complexity` enum defines six tiers that drive model selection:
-
-| Tier | Value | Typical Use |
-| --- | --- | --- |
-| `TRIVIAL` | `trivial` | Simple lookups, status checks, quick responses |
-| `MEDIUM` | `medium` | Standard tasks (default for most triggers) |
-| `HIGH` | `high` | Complex reasoning, multi-step analysis |
-| `EXTRA_HIGH` | `extra_high` | Very complex tasks requiring top-tier models |
-| `DISCRETION` | `discretion` | Model selection delegated to the catalog's priority ordering |
-| `SELF_HEALING` | `self_healing` | Reserved for self-healing dispatch |
+Tiers are the `Complexity` enum in `src/butlers/core/model_routing.py`. They are ordered from most
+to least capable, and `TIER_FALLTHROUGH_ORDER` is the order resolution falls through when a tier
+has no usable candidate. `WORKHORSE` is the default for triggers and scheduled tasks. A caller that
+still emits the retired vocabulary (`trivial`, `medium`, ...) is remapped with a loud warning by
+`_check_deprecated_tier()`, so fix the caller when you see that warning.
 
 ## The Model Catalog
 
@@ -41,15 +36,13 @@ The `public.model_catalog` table is the global registry of available models. Eac
 
 ### Field ownership: catalog vs. runtime config
 
-As of migration `core_073`, `model`, `runtime_type`, `args`, and `session_timeout_s` live **on
-`public.model_catalog`** (`session_timeout_s INT NOT NULL DEFAULT 1800`), not on
+`model`, `runtime_type`, `args`, and `session_timeout_s` live **on `public.model_catalog`** (`session_timeout_s INT NOT NULL DEFAULT 1800`), not on
 `{schema}.runtime_config`. They are resolved per complexity tier by `resolve_model()`, which returns
 the chosen catalog entry id and its `session_timeout_s`, and are edited via the dashboard's **Models
 tab** / `GET/PATCH /api/model-settings` (`src/butlers/api/routers/model_settings.py`).
 
-`{schema}.runtime_config` is no longer cold-only. It holds `core_groups`, `max_concurrent`, and
-`max_queued` (cold: require a daemon restart to take effect) alongside `catalog_read_sensitivity`
-and, as of migration `core_224`, `tool_exposure_policy` (hot: a PATCH takes effect for the next
+`{schema}.runtime_config` holds `core_groups`, `max_concurrent`, and `max_queued` (cold: require a
+daemon restart to take effect) alongside `catalog_read_sensitivity` and `tool_exposure_policy` (hot: a PATCH takes effect for the next
 planned session with no restart). All five fields are seeded from `[butler.runtime_seed]` in
 `butler.toml` on first boot and edited via `GET/PATCH /api/butlers/{name}/runtime-config`
 (`src/butlers/api/routers/runtime_config.py`), which reports each field's tier in the response's
@@ -120,7 +113,8 @@ The `public.butler_model_overrides` table allows per-butler customization withou
 4. Order by effective `priority DESC`, then `created_at ASC` (stable tie-break).
 5. Return the first matching row as `(runtime_type, model_id, extra_args, catalog_entry_id)`, or `None`.
 
-When `resolve_model()` returns `None`, the spawner falls back to the model configured in `[butler.runtime].model` in `butler.toml`.
+There is no `butler.toml` model fallback: when no candidate resolves, a live spawner fails with
+`ModelResolutionError` (see *Resolution Flow in the Spawner* below).
 
 ### Private-content purpose lane
 
@@ -140,7 +134,7 @@ New private discretion usage retains its existing spend purpose and carries the 
 dispatcher identity, never a raw chat or sender identifier. New ordinary sessions and their
 dispatch attempts persist the same purpose lane for session-list and dossier visibility.
 
-## Capability fit (bu-6jv4m.7)
+## Capability fit
 
 Everything above decides whether an entry is *allowed*. It does not decide whether the entry can do
 the job. `resolve_dispatch(pool, butler_name, intent)` adds that step, and the spawner reaches it by
@@ -200,15 +194,13 @@ adapter-wide assumption does not establish that contract. Until such a canary pa
 leaves vision undeclared and image-bearing external dispatch fails closed. The direct API adapter
 cannot satisfy this path because it does not accept the butler MCP server configuration.
 
-The canary shape used for `core_248` (2026-09-24): serve a streamable-HTTP MCP tool that returns a
-FastMCP `Image` of a random nonce word, drive the exact runtime/model against it, and require the
-nonce verbatim; a text-only control must answer "cannot see" (OpenCode strips images for models
-whose models.dev `modalities.input` lacks `image`; Codex does the same from its model catalog's
-`input_modalities`). `core_248` records the passing rows (codex `gpt-6-sol`, `gpt-6-luna`;
-opencode-go `minimax-m3`, `glm-5.3-flash`, `mimo-v2.6-pro`, `mimo-v2.6-flash`) and the failing
-control (`qwen3.7-max` → `vision: false`). Re-probe after a CLI upgrade or a new catalog model, then
-set the row with `PUT /api/settings/models/{id}` `{"capabilities": {...}}` (the body replaces the
-whole envelope; keys outside `ModelFeature` are a 422).
+The canary shape: serve a streamable-HTTP MCP tool that returns a FastMCP `Image` of a random nonce
+word, drive the exact runtime/model against it, and require the nonce verbatim; a text-only control
+must answer "cannot see" (OpenCode strips images for models whose models.dev `modalities.input`
+lacks `image`; Codex does the same from its model catalog's `input_modalities`). Re-probe after a
+CLI upgrade or a new catalog model, then set the row with `PUT /api/settings/models/{id}`
+`{"capabilities": {...}}` (the body replaces the whole envelope; keys outside `ModelFeature` are a
+422).
 
 **Never give `attachment_view` structured output.** Codex CLI and Claude Code forward only
 `structuredContent` when a tool result carries it, dropping `content[]` and the image with it
@@ -280,7 +272,7 @@ Before invoking any adapter, the spawner checks `check_token_quota()` for the cu
 
 All `quota_skip` rows share the same `logical_session_id` as subsequent attempt rows, enabling end-to-end provenance correlation even when the initial `request_id` is None (scheduler/tick triggers).
 
-### Adapter Signals (bu-ojiij.5)
+### Adapter Signals
 
 Each runtime adapter exposes adapter-level signals in `last_process_info` that inform the failover classifier:
 
@@ -334,108 +326,16 @@ the minimal projection retains both requested and effective intent. Historical a
 pool-free direct-runtime attempts honestly expose a null receipt rather than reconstructing a
 decision from current catalog state.
 
-Qualifying `runtime_failure` and `success` rows use one serialized recorder per
-catalog entry. The recorder takes the advisory transaction lock before assigning
-`clock_timestamp()` and the stable bigint ID, so `(ts, id)` reflects recorder
-order even when an older transaction reaches the lock late. A breaker opening
-and its runtime-attention episode commit in that same transaction. Fleet-halt
-denials use the same recorder and create at most one episode per UTC month, but
-they take no recorder-held lock of their own: that guarantee is the producer's,
-which serializes on its own month-scoped advisory lock behind the partial unique
-`fleet_halt` month key, so the deny path — which fires on every spawn while the
-fleet is halted — is not serialized fleet-wide (bu-86t7r). A month already
-breached before producer activation is not paged retrospectively.
+Qualifying `runtime_failure` and `success` rows use one serialized recorder per catalog entry. The
+recorder takes the advisory transaction lock before assigning `clock_timestamp()` and the stable
+bigint ID, so `(ts, id)` reflects recorder order even when an older transaction reaches the lock
+late. A breaker opening and its runtime-attention episode commit in that same transaction.
+Fleet-halt denials use the same recorder and create at most one episode per UTC month without a
+recorder-held lock of their own, so the deny path (which fires on every spawn while the fleet is
+halted) is not serialized fleet-wide.
 
-Migration `core_199` installs the version-2 producer control and a database
-trigger, `public.runtime_attention_plant_legacy_debounce_marker()`. New
-recorders set a transaction-local ABI marker. A canonical runtime without that
-marker is treated as an old direct-delivery binary, and the trigger plants one
-`public.audit_log` row for it.
-
-**That trigger blocks nothing.** It returns `NEW` unconditionally; every insert
-it sees proceeds. Suppression is cooperative: the retired
-`model_breaker_attention` and `fleet_halt_attention` helpers debounced on
-`(target, action)` in `audit_log` with no actor filter, so a row planted under a
-different actor still satisfied their lookup and they skipped before transport.
-The old binary suppresses itself. Nothing in the database compels it, and a
-producer that never performs that lookup, that hits a lookup error (both helpers
-failed open), or that is past the window — 15 minutes for the breaker, the
-current UTC month for the ceiling — is unaffected. Both helpers were retired in
-PR 3742, so nothing in this repository reads the markers today; they matter only
-against a deployed binary older than that. It was previously named
-`runtime_attention_legacy_producer_fence` and two reviewers read that name as an
-ingress gate, which is why it was renamed.
-
-The rows it plants carry actor `runtime_attention_legacy_debounce_marker`. The
-`runtime_failure` branch notes `legacy_debounce_planted`; the ceiling branch's
-note is the current UTC month as `YYYY-MM`, which is load-bearing — the retired
-fleet-halt helper compared it against the current window — and must not be
-reformatted.
-
-**Rows written before the audit vocabulary changed keep the old strings.** They
-carry actor `runtime_attention_cutover_fence`, and on the `runtime_failure`
-branch note `blocked_old_binary`. Nothing rewrites them: the convergence is a
-rewrite of the planter's stored body, not a backfill, so the two vocabularies
-coexist in `public.audit_log` forever. Any query that filters on actor must
-accept both. Neither retired helper filtered on actor, which is why changing it
-was safe.
-
-The body is defined once, in
-`runtime_attention_admin.install_legacy_debounce_marker()`. `upgrade_producers_v2`
-emits it on a fresh bootstrap and `finalize_interface` re-adopts it on every
-`scripts/init-db.sql` rerun, so a database that predates a change to the body
-converges the next time the bootstrap runs. `upgrade_producers_v2` alone could
-not do this: it never re-runs once a database is at version 2, and Alembic cannot
-do it either — the planter is owned by the NOLOGIN
-`runtime_attention_outbox_owner` and the migration role is deliberately not a
-member. That rerun is an operator action, not part of an Alembic deploy: until it
-happens, an existing database keeps planting the old actor and note. Nothing
-breaks in the meantime — no code in this repository reads either literal.
-
-**The gap between a committed body and a deployed one is reported, not silent**
-(bu-bi5an). `butlers.core.stored_function_drift` parses every
-`CREATE [OR REPLACE] FUNCTION` in the configured bootstrap source. The source
-defaults to `scripts/init-db.sql`; `STORED_FUNCTION_DRIFT_INIT_DB_SQL_PATH` may
-select a source mounted elsewhere. This includes the ones nested inside an
-installer and compares each committed body against the body in `pg_proc.prosrc`.
-It runs once at dashboard-api startup, and
-`GET /api/system/stored-functions` serves the same comparison live. A mismatch
-is *reported*, never fatal: one WARNING line naming the function, plus a
-`drifted` entry in the envelope. It never converges anything — re-running
-the configured bootstrap source remains the operator action — not part of an
-Alembic deploy — but the state is now visible instead of indefinite. The
-comparison ignores whitespace only, so a reindented or differently line-ended
-body does not cry wolf, and it carries short digests rather than bodies, because
-a stored body can hold operator-supplied literals. A function defined by the
-configured bootstrap source that the database does not have yet is reported as
-`not_deployed`, separately from drift: that is the ordinary state before the
-chain has invoked its bootstrap installer.
-
-Producer rollback disables new episodes while retaining attempts, the outbox,
-evidence, and this trigger.
-
-Applying `core_199` closes the `core_198` teardown permanently. The `core_199`
-downgrade clears `producers_enabled` but deliberately leaves
-`public.runtime_attention_producer_control` and
-`public.runtime_attention_plant_legacy_debounce_marker()` installed, and no
-migration, bootstrap, or script drops either one. The `core_198` downgrade precondition
-requires both to be absent, so on any database that has ever reached `core_199`
-it refuses:
-
-```
-core_198 downgrade requires trusted bootstrap rollback interface
-```
-
-Downgrading below `core_198` is not a supported operation on such a database,
-and no rollback restores the pre-outbox schema.
-
-To stop paging, downgrade `core_199` alone. Episode production stops; the
-outbox, the delivery lease, the attempt rows, and the marker planter stay in
-place, and every repair from there is forward remediation. Retaining the planter
-is the point of the design: removing it would stop planting the markers an old
-direct-delivery binary debounces itself on, so such a binary would reach
-transport again. It is worth being exact about that — retention keeps a
-cooperating old binary quiet, it does not make an uncooperative one impossible.
+Checking, repairing, and pausing runtime-attention paging is covered in the
+[Runtime Attention runbook](../operations/runtime-attention.md).
 
 ### Metrics
 
@@ -447,14 +347,8 @@ Three counters track failover at the process level:
 | `butlers.spawner.failover_suppressed_total` | `butler, reason` | Failover suppressed by classifier |
 | `butlers.spawner.failover_exhausted_total` | `butler, tier` | All same-tier candidates exhausted |
 
-`runtime_attention_recorder_total{outcome,edge}` separately reports bounded
-recorder results (`persisted`, `degraded`, or `rejected`) and edge outcomes; it
-does not label or log raw provider errors.  `outcome=persisted` with
-`edge=model_breaker_unauthorized` / `edge=fleet_halt_unauthorized` is the
-degraded-but-durable case: the attempt row committed, but the producer refused
-the call (SQLSTATE `42501`) because the pool holds no canonical `butler_*_rw`
-`SET ROLE` — expected on a non-hardened stack, and a misconfiguration anywhere
-role enforcement is meant to be active.
+`runtime_attention_recorder_total` is covered in the
+[Runtime Attention runbook](../operations/runtime-attention.md#check).
 
 ## Verification
 
