@@ -41,72 +41,24 @@ This is the implementation of `REQ-core-credentials-001` and
 
 ## The `butler_secrets` Table
 
-```sql
-CREATE TABLE butler_secrets (
-    secret_key   TEXT PRIMARY KEY,
-    secret_value TEXT NOT NULL,
-    category     TEXT NOT NULL DEFAULT 'general',
-    description  TEXT,
-    is_sensitive BOOLEAN NOT NULL DEFAULT true,
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    expires_at   TIMESTAMPTZ
-);
-```
+Created in `alembic/versions/core/core_001_foundation.py`; `core_106_secrets_be2.py` adds the
+probe test-state columns (`last_verified`, `last_test_ok`, `last_test_code`, `last_test_message`,
+all `NULL` until a probe runs). Design decisions:
 
-Key design decisions:
 - **`is_sensitive`** controls whether values are masked in dashboard UI and logs.
 - **`category`** groups secrets for dashboard display (e.g., `"telegram"`, `"google"`, `"cli-auth"`).
 - **`expires_at`** supports optional time-bounded secrets.
-- Raw secret values are **never** exposed by `list_secrets()` -- it returns `SecretMetadata` objects only.
 
 ## CredentialStore API
 
-### Writing
+`CredentialStore` lives in `src/butlers/credential_store.py`. The contracts worth knowing:
 
-```python
-await store.store("telegram_bot_token", "1234:ABCD...", category="telegram")
-await store.store_shared("GOOGLE_OAUTH_CLIENT_ID", "...", category="google")
-```
-
-`store()` writes to the local pool. `store_shared()` writes to the first fallback (shared) pool, falling back to local if no shared pool is configured.
-
-For Codex only, use the explicit APIs instead of either generic writer:
-
-```python
-# `system_global_pool` is selected by the daemon/dashboard/connector boundary.
-authority = CredentialStore(local_pool, system_global_pool=shared_pool)
-await authority.store_codex_cli_auth(auth_document)
-current = await authority.load_codex_cli_auth()
-```
-
-### Reading
-
-```python
-# DB-only lookup (local + fallback pools)
-value = await store.load("GOOGLE_OAUTH_CLIENT_ID")
-
-# DB-only by default; pass env_fallback=True to also check os.environ
-value = await store.resolve("TELEGRAM_BOT_TOKEN")
-
-# Check existence
-exists = await store.has("telegram_bot_token")
-```
-
-### Metadata
-
-```python
-# List secrets without revealing values
-secrets = await store.list_secrets(category="telegram")
-for meta in secrets:
-    print(meta.key, meta.is_set, meta.source, meta.category)
-```
-
-### Deletion
-
-```python
-deleted = await store.delete("old_secret_key")
-```
+- `store()` writes to the local pool. `store_shared()` writes to the first fallback (shared) pool,
+  or to local if none is configured.
+- `load()` is DB-only (local, then fallback pools). `resolve()` is also DB-only unless the caller
+  passes `env_fallback=True`.
+- `list_secrets()` returns `SecretMetadata` only and never raw values.
+- Codex never goes through the generic readers or writers; see the section above.
 
 ## Entity-Based Credentials
 
@@ -115,13 +67,7 @@ Some credentials are stored in `public.entity_info` rather than `butler_secrets`
 - **`google_oauth_refresh`** -- OAuth refresh tokens stored on Google account companion entities.
 - **`telegram_api_id`**, **`telegram_api_hash`**, **`telegram_user_session`** -- Telegram user-client credentials on the owner entity.
 
-The `resolve_owner_entity_info(pool, info_type)` function provides a dedicated lookup path:
-
-```python
-value = await resolve_owner_entity_info(pool, "telegram_api_id")
-```
-
-This queries `public.entities` for the owner entity (`'owner' = ANY(roles)`) and returns the matching `public.entity_info` value. Primary entries (`is_primary = true`) are preferred.
+`resolve_owner_entity_info(pool, info_type)` provides the lookup. It queries `public.entities` for the owner entity (`'owner' = ANY(roles)`) and returns the matching `public.entity_info` value. Primary entries (`is_primary = true`) are preferred.
 
 ## CLI Auth Token Persistence
 
@@ -196,7 +142,7 @@ psql -h localhost -U butlers -d butlers -c \
 
 # 3. DB-first resolution: DB value takes precedence over environment variable
 # In Python (with a running pool and CredentialStore instance), call:
-#   from butlers.core.credential_store import CredentialStore
+#   from butlers.credential_store import CredentialStore
 #   value = await store.resolve('BUTLER_TEST_KEY', env_fallback=False)
 #   # Returns the DB value (or None) — env var is NOT consulted unless env_fallback=True
 

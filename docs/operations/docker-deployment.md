@@ -91,106 +91,45 @@ Two images, both pinned by digest where practical:
 
 ## Services
 
-All application containers use the `butlers-app` image and read the shared
-database env (`x-postgres-env` anchor) from the sourced `.env.<mode>` file.
+`docker-compose.yml` is the reference for every service's image, command, ports, mounts, and
+dependencies. All application containers use the `butlers-app` image and read the shared database
+env (`x-postgres-env` anchor) from the sourced `.env.<mode>` file; every host port binds to
+`127.0.0.1` (Tailscale Serve is the external entry point). What the file does not explain:
 
-### Database (external)
-
-There is **no `postgres` service** in `docker-compose.yml`. The database is a
-remote PostgreSQL reached via `POSTGRES_HOST` / `POSTGRES_PORT` (defaults to
-`5432`), which `scripts/compose.sh` requires in `.env.dev` / `.env.prod`. One
-database holds every butler's schema plus the shared `public` schema; there is
-no local data volume to manage.
-
-### `butlers-up` (the butler daemon)
-
-| Setting | Value |
-|---------|-------|
-| Image | `butlers-app` |
-| Command | `uv run butlers up` (runs **all** roster butlers in one process) |
-| Health port | `41100` (prod) / `42100` (dev) -- Switchboard `/health` |
-| Config mount | `./roster` -> `/app/roster:ro` |
-| Runtime volumes | `runtime_claude`, `runtime_codex`, `runtime_opencode`, `runtime_gemini` (per-CLI state) |
-| Key mounts | verifier keyring only (`/run/secrets/runtime_probe_control_verifiers`); **never** the signing key |
-
-Depends on `migrations`, `oauth-gate`, and `log-init` completing successfully.
-Runs `apparmor:unconfined` so the Codex CLI's bubblewrap sandbox can create user
-namespaces. A `--hotreload` run substitutes `butlers-up-hotreload`, which
-volume-mounts `src/` for live edits.
-
-### `dashboard-api`
-
-| Setting | Value |
-|---------|-------|
-| Image | `butlers-app` |
-| Command | `dashboard --host 0.0.0.0 --port 41200` |
-| Port | `41200` (prod) / `42200` (dev) |
-| Config mount | `./roster` -> `/app/roster:ro` |
-| Key mounts | runtime-probe signing key (secret, mode `0400`) **and** the verifier keyring |
-
-Serves the dashboard API and `/health`. The `--hotreload` variant is
-`dashboard-api-hotreload`.
-
-Dashboard runtime CLI children use the base image's immutable
-`runtime-cli-sandbox-inputs.json` version-3 asset. The image generates it only
-after the final PID1 shim install and records the shim executable plus its exact
-regular-file interpreter/library closure separately from provider inputs. The
-application rejects an old, malformed, or mismatched asset before allocating a
-sandbox identity or staging authority; upgrades and rollbacks therefore use a
-matched application/base-image pair, never runtime dependency discovery or a
-provider-derived fallback.
-
-Dashboard is the only service that receives the runtime-probe *signing* key, because it is the only
-service that signs. Both key mounts default to tracked, unprovisioned placeholders, so the stack
-boots in one command on a machine that has provisioned neither --- with the control plane closed.
-See [Runtime-Probe Control Keys](runtime-probe-control-keys.md).
-
-### `frontend-dev`
-
-| Setting | Value |
-|---------|-------|
-| Profile | `dev` (activated by `scripts/compose.sh`) |
-| Image | `node:24-slim` (matches CI's Node 24) |
-| Startup | `npm ci && npm run dev` |
-| Port | `41173` (prod) / `42173` (dev) |
-
-Vite dev server serving the dashboard `frontend/` via a host bind-mount for
-hotreload. It uses `npm ci` (never `npm install`) so startup installs strictly
-from `frontend/package-lock.json` and never rewrites the tracked lockfile
-(bu-0zvsd); a static guard in `tests/scripts/test_compose_frontend_dev_lockfile_guard.py`
-holds that invariant.
-
-### `migrations`
-
-One-shot `butlers-app` container running `db migrate` (exits 0). Every other
-app service depends on it via `service_completed_successfully`. See
-[Production Deploys](#production-deploys-butlers-deploy) for why redeploys run it
-with `run --rm` rather than relying on `up -d`.
-
-### Connector services
-
-Each external ingress/egress connector runs in its own container (image
-`butlers-app`, connector env from the `x-connector-env` anchor):
-`connector-telegram-bot`, `connector-telegram-user`, `connector-whatsapp-user`,
-`connector-gmail`, `connector-google-calendar`, `connector-google-drive`,
-`connector-google-health`, `connector-spotify`, `connector-steam`,
-`connector-owntracks`, `connector-activitywatch`, `connector-home-assistant`,
-and `connector-live-listener` (behind the `audio` profile). The
-`connector-whatsapp-user` service owns the single authenticated WhatsApp bridge
-socket (`wa_bridge_socket`), shared with the Messenger butler.
-
-### Supporting services
-
-| Service | Role |
-|---------|------|
-| `minio` + `minio-setup` | S3-compatible object storage + bucket bootstrap |
-| `oauth-gate` | Preflight OAuth-credential check (blocks startup on missing tokens; `--skip-oauth-check` to bypass) |
-| `log-init` / `log-cleanup` | Log volume permissions + retention pruning |
-| `backup-cron` | Scheduled database backups to `butlers_backups` |
+- **No database service.** PostgreSQL is external, reached via `POSTGRES_HOST` / `POSTGRES_PORT`,
+  which `scripts/compose.sh` requires in `.env.dev` / `.env.prod`. One database holds every
+  butler's schema plus the shared `public` schema, so there is no local data volume to manage.
+- **`butlers-up` runs every roster butler in one process** (`butlers up`); its published port is
+  the Switchboard `/health`. It keeps per-CLI runtime state in named volumes and runs
+  `apparmor:unconfined` so the Codex CLI's bubblewrap sandbox can create user namespaces. It
+  mounts only the runtime-probe verifier keyring, never the signing key.
+- **`dashboard-api` is the only signer.** It alone receives the runtime-probe *signing* key
+  (secret, mode `0400`) plus the verifier keyring. Both mounts default to tracked, unprovisioned
+  placeholders, so the stack boots on a machine that has provisioned neither --- with the control
+  plane closed. See [Runtime-Probe Control Keys](runtime-probe-control-keys.md).
+- **Dashboard CLI sandbox inputs are image-bound.** Dashboard runtime CLI children use the base
+  image's immutable `runtime-cli-sandbox-inputs.json` version-3 asset, generated after the final
+  PID1 shim install and recording the shim plus its exact interpreter/library closure separately
+  from provider inputs. The application rejects an old, malformed, or mismatched asset before
+  allocating a sandbox identity, so upgrades and rollbacks use a matched application/base-image
+  pair, never runtime dependency discovery or a provider-derived fallback.
+- **`frontend-dev` installs with `npm ci`** (never `npm install`), so startup never rewrites the
+  tracked `frontend/package-lock.json`; `tests/scripts/test_compose_frontend_dev_lockfile_guard.py`
+  holds that invariant. It runs only under the `dev` profile that `scripts/compose.sh` activates.
+- **`migrations` is a one-shot** (`db migrate`) that every app service depends on via
+  `service_completed_successfully`. See [Production Deploys](#production-deploys-butlers-deploy)
+  for why redeploys run it with `run --rm`.
+- **One container per connector**, sharing the `x-connector-env` anchor.
+  `connector-whatsapp-user` owns the single authenticated WhatsApp bridge socket
+  (`wa_bridge_socket`), shared with the Messenger butler; `connector-live-listener` runs only under
+  the `audio` profile.
+- **`oauth-gate` blocks startup** on missing OAuth tokens (`--skip-oauth-check` bypasses it).
+- **`--hotreload`** swaps in `butlers-up-hotreload` and `dashboard-api-hotreload`, which
+  volume-mount `src/` for live edits.
 
 ## Production Deploys (`butlers deploy`)
 
-`butlers deploy` (bu-9r3hd.3, `src/butlers/core/deploy.py`) replaces the
+`butlers deploy` (`src/butlers/core/deploy.py`) replaces the
 manual build-then-`up -d` ceremony with one idempotent command:
 
 ```bash
@@ -205,8 +144,8 @@ It runs, in order:
    `migrations` service if its `service_completed_successfully` condition
    isn't already satisfied — once that container has exited 0 *once*, compose
    treats it as permanently satisfied even after the image is rebuilt with
-   new migrations baked in (bd bu-zhfd0: core_155..161 sat unrun in prod for
-   six days this way). `run --rm` sidesteps that entirely.
+   new migrations baked in, so new migrations silently never run. `run --rm`
+   sidesteps that entirely.
 3. **Prepare and recreate** — stops the restore relay/executor, obtains the
    root-owned generation-bound capability, creates the protected containers,
    performs root-side attestation and applies both default-deny firewall
@@ -258,20 +197,6 @@ Per-mode host ports and project names (both can run at once):
 > `dev` / `prod` mode labels track the env file, **not** which host is live, so
 > do not trust the word "dev" here. Confirm which host an `.env.<mode>` file
 > actually points at before running migrations or destructive operations.
-
-## Volumes
-
-| Volume | Type | Purpose |
-|--------|------|---------|
-| `minio_data` | Named | MinIO object storage |
-| `frontend_node_modules` | Named | Frontend dev `node_modules` |
-| `uv_cache` | Named | Shared `uv` package cache |
-| `runtime_claude` / `runtime_codex` / `runtime_opencode` / `runtime_gemini` | Named | Per-CLI runtime state for `butlers-up` |
-| `wa_bridge_socket` | Named | Shared WhatsApp bridge socket |
-| `butlers_backups` | Named | Database backup output |
-
-There is no PostgreSQL data volume: the database is external (see
-[Database](#database-external)).
 
 ## Related Pages
 

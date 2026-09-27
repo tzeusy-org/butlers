@@ -94,24 +94,18 @@ Store all credentials in a secret manager. Never commit to version control.
 
 ## Environment Variables
 
-| Variable | Required | Description |
-|---|---|---|
-| `SWITCHBOARD_MCP_URL` | Yes | SSE endpoint for Switchboard MCP server |
-| `CONNECTOR_PROVIDER` | Yes (default: `telegram`) | Provider name |
-| `CONNECTOR_CHANNEL` | Yes (default: `telegram_user_client`) | Channel name |
-| `CONNECTOR_MAX_INFLIGHT` | No (default: 8) | Max concurrent ingest submissions |
-| `CONNECTOR_HEALTH_PORT` | No (default: 40080) | Loopback-only health and metrics server port |
-| `CONNECTOR_BACKFILL_WINDOW_H` | No | Bounded startup replay window (hours) |
-| `CONNECTOR_BUTLER_DB_NAME` | No | Local butler DB for per-butler overrides |
-| `BUTLER_SHARED_DB_NAME` | No (default: `butlers`) | Shared credential DB |
-| `TELEGRAM_USER_FLUSH_INTERVAL_S` | No (default: 600) | Seconds between per-chat flushes |
-| `TELEGRAM_USER_HISTORY_MAX_MESSAGES` | No (default: 50) | History fetch limit per flush |
-| `TELEGRAM_USER_HISTORY_TIME_WINDOW_M` | No (default: 30) | History lookback window (minutes) |
-| `TELEGRAM_USER_BUFFER_MAX_MESSAGES` | No (default: 200) | Per-chat buffer cap before force-flush |
-| `TELEGRAM_USER_DISCRETION_WINDOW_SIZE` | No (default: 10) | Discretion context window size |
-| `TELEGRAM_USER_DISCRETION_WINDOW_SECONDS` | No (default: 300) | Discretion context window age cap |
-| `TELEGRAM_USER_DISCRETION_WEIGHT_BYPASS` | No (default: 1.0) | Weight threshold to skip LLM |
-| `TELEGRAM_USER_DISCRETION_WEIGHT_FAIL_OPEN` | No (default: 0.5) | Weight threshold for fail-open |
+Read by `TelegramUserClientConnectorConfig.from_env` (`src/butlers/connectors/telegram_user_client.py`);
+the names and defaults live there. Families: Switchboard and connector identity
+(`SWITCHBOARD_MCP_URL`, `CONNECTOR_*`, including the bounded startup replay window
+`CONNECTOR_BACKFILL_WINDOW_H` and the address keywords `CONNECTOR_ADDRESS_KEYWORDS`), per-chat
+buffering and history fetch (`TELEGRAM_USER_FLUSH_*`, `TELEGRAM_USER_HISTORY_*`,
+`TELEGRAM_USER_BUFFER_*`), and discretion tuning (`TELEGRAM_USER_DISCRETION_*`). Non-obvious
+points:
+
+- `SWITCHBOARD_MCP_URL` is the only hard-required variable.
+- `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` and `TELEGRAM_USER_SESSION` are **not** read from env;
+  they resolve only from the owner entity's `entity_info` (see credentials above).
+- The health and metrics server binds to loopback only.
 
 ## Deployment
 

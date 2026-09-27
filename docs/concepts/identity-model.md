@@ -10,7 +10,7 @@ Butlers maintains a shared identity registry anchored on `public.entities`. Chan
 
 ## Schema Structure
 
-Identity resolution reads two tables: the entity anchor in the `public` schema and the channel-handle triples in the `relationship` schema. (The earlier `public.contacts` and `public.contact_info` tables are retired --- `public.contact_info` was dropped in `core_115` and `public.contacts` in `core_134`; resolution no longer touches either.)
+Identity resolution reads two tables: the entity anchor in the `public` schema and the channel-handle triples in the `relationship` schema.
 
 ### public.entities
 
@@ -49,7 +49,7 @@ WHERE  ef.predicate   = $1
   AND  ef.validity    = 'active'
 ```
 
-The result is a `ResolvedContact` dataclass containing `name`, `roles` (sourced from the entity), `entity_id` (the authoritative key), and `contact_id` (always `None` since resolution no longer reads `public.contacts`).
+The result is a `ResolvedContact` dataclass carrying `entity_id` (the authoritative key), `name`, and `roles` (sourced from the entity).
 
 The function is safe to call before migrations have run --- it catches all database exceptions and returns `None` gracefully.
 
@@ -63,9 +63,9 @@ booking ingest repoints the trip-local traveller and deduplicates its leg partic
 survivor. `travel.leg_passengers` records which party members occupy each shared leg.
 Relational facts remain owned by the Relationship butler and are never copied into the travel schema.
 
-## Owner Contact
+## Owner Entity
 
-The owner contact is the system administrator. It is bootstrapped automatically on daemon startup. The owner entity carries the `"owner"` role, which is used for:
+The owner is the single person the system serves. Every daemon startup idempotently ensures the owner entity exists (`src/butlers/owner_bootstrap.py` `_ensure_owner_entity`). The owner entity carries the `"owner"` role, which is used for:
 
 - **Identity preamble** --- Routed messages from the owner are prepended with `[Source: Owner (entity_id: ...), via <channel>]`.
 - **Approval gates** --- Certain sensitive tool calls require owner authorization.
@@ -77,7 +77,7 @@ When identity resolution returns no match for a sender, the system creates a tem
 
 1. Re-checks the triple store to avoid double-creation; if the channel identifier already resolves, it returns that entity instead of minting a duplicate.
 2. Creates a `public.entities` row with `metadata.unidentified = true` and `entity_type = "person"`.
-3. Returns a `ResolvedContact` with empty roles and `contact_id = None`.
+3. Returns a `ResolvedContact` for the new entity with empty roles.
 
 The sender's channel triple is not written here. Asserting the `relationship.entity_facts` handle happens in a post-resolution hook in the routing pipeline (`relationship.tools.relationship_assert_fact.assert_sender_channel_fact()`); the Switchboard ingress path never writes `relationship.entity_facts`.
 
@@ -158,12 +158,7 @@ psql -h localhost -U butlers -d butlers -c \
 #   result = await resolve_contact_by_channel(pool, "telegram", "telegram:<your_chat_id>")
 #   assert "owner" in result.roles
 
-# 4. public.contact_info and public.contacts tables no longer exist
-psql -h localhost -U butlers -d butlers -c \
-  "SELECT to_regclass('public.contact_info'), to_regclass('public.contacts');"
-# Expected: both values NULL (dropped in core_115 and core_134)
-
-# 5. Unknown sender creates a temporary entity with unidentified metadata
+# 4. Unknown sender creates a temporary entity with unidentified metadata
 psql -h localhost -U butlers -d butlers -c \
   "SELECT COUNT(*) FROM public.entities WHERE metadata->>'unidentified' = 'true';"
 # Expected: count matches the number of unrecognized senders seen by the Switchboard

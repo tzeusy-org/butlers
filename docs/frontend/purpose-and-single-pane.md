@@ -49,11 +49,10 @@ This single-pane role reduces operational latency for three critical loops:
 
 - Mature read visibility across most domains.
 - Operational writes exist for butler trigger, schedules, and state store.
-- Approval workflows are currently MCP-tool driven and not yet represented as a dedicated frontend surface.
-- Some planned surfaces remain partial or placeholder (documented in `docs/frontend/feature-inventory.md`).
+- Approval decisions have a dedicated `/approvals` surface.
+- Per-page required behavior lives in the `openspec/specs/dashboard-*` specs.
 
 ## Related Pages
 
 - [Information Architecture](information-architecture.md) -- Navigation, routes, and tab structures
-- [Feature Inventory](feature-inventory.md) -- What is implemented today
 - [Frontend Index](index.md) -- Spec set overview

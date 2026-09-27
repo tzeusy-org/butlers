@@ -25,35 +25,23 @@ The module requires no configuration beyond being listed in the modules section.
 
 ## Tools Provided
 
-When `[modules.mailbox]` is configured, the module registers these five local MCP tools:
-
-| Tool | Description |
-|------|-------------|
-| `mailbox_post` | Insert a new message into the butler's mailbox. Returns the message UUID. |
-| `mailbox_list` | Query messages with optional status and sender filters, ordered by `created_at DESC`. |
-| `mailbox_read` | Fetch full message by ID. Automatically marks `unread` messages as `read`. |
-| `mailbox_update_status` | Change a message's status (sets relevant timestamp columns). |
-| `mailbox_stats` | Get aggregate message counts grouped by status. |
+Tools are registered in `MailboxModule.register_tools` (`src/butlers/modules/mailbox/__init__.py`);
+read it for the current names and signatures. They cover the whole message lifecycle: post a
+message, list with status/sender filters (newest first), read one message (which marks it `read`),
+change status, and aggregate counts by status.
 
 ## Message Model
 
-Each mailbox message has these fields:
+The columns are defined by `src/butlers/modules/mailbox/migrations/001_create_mailbox_table.py`.
+The notes the schema cannot express:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | UUID | Auto-generated message identifier |
-| `sender` | TEXT | Identity of the sender (butler name, user, system) |
-| `sender_channel` | TEXT | Channel the message arrived on |
-| `subject` | TEXT | Optional subject line |
-| `body` | TEXT | Message content in a fresh mailbox schema; JSONB bodies remain supported through schema-adaptive handling. |
-| `priority` | INT | Database default 0; `mailbox_post` supplies a tool default of 2. |
-| `status` | TEXT | Current status |
-| `metadata` | JSONB | Arbitrary metadata |
-| `created_at` | TIMESTAMPTZ | When the message was posted |
-| `read_at` | TIMESTAMPTZ | When first read |
-| `actioned_at` | TIMESTAMPTZ | When actioned |
-| `archived_at` | TIMESTAMPTZ | When archived |
-| `updated_at` | TIMESTAMPTZ | Last status change |
+- `sender` and `sender_channel` are caller-supplied labels, not authenticated identity.
+- `body` is TEXT on a fresh schema; JSONB bodies from older schemas remain supported (see
+  Database Tables).
+- `priority` has a database default of 0, but `mailbox_post` supplies a tool default of 2, so
+  messages posted through the tool never carry the database default.
+- The lifecycle timestamps (`read_at`, `actioned_at`, `archived_at`) record when a message first
+  reached that status; `updated_at` tracks the last status change.
 
 ### Known Channels
 

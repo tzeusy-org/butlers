@@ -49,27 +49,17 @@ The approval gate operates at two independent layers, both enforcing gating:
 
 ## Tools Provided
 
-The module registers 17 MCP tools (8 queue, 6 rule, and 3 autonomy-suggestion tools):
+Tools are registered in `ApprovalsModule.register_tools` (`src/butlers/modules/approvals/module.py`);
+read it for the current names and signatures. The families:
 
-| Tool | Category | Description |
-|------|----------|-------------|
-| `list_pending_actions` | Queue | List actions with optional status filter |
-| `show_pending_action` | Queue | Show full details for a single action |
-| `approve_action` | Queue | Approve a pending action; execute immediately only when an owning executor is available |
-| `dispatch_approved_action` | Queue | Dispatch an approved, un-run action through the owning daemon's original tool handler |
-| `reject_action` | Queue | Reject with optional reason |
-| `pending_action_count` | Queue | Count of pending actions |
-| `expire_stale_actions` | Queue | Mark expired actions past their `expires_at` |
-| `list_executed_actions` | Queue | Query executed actions for audit review |
-| `create_approval_rule` | Rules | Create a new standing approval rule |
-| `create_rule_from_action` | Rules | Create a rule from a pending action with smart constraint defaults |
-| `list_approval_rules` | Rules | List standing approval rules |
-| `show_approval_rule` | Rules | Show full rule details with use count |
-| `revoke_approval_rule` | Rules | Deactivate a standing approval rule |
-| `suggest_rule_constraints` | Rules | Preview suggested constraints for a pending action |
-| `list_promotion_suggestions` | Autonomy | List pending promotion or demotion suggestions |
-| `confirm_promotion_suggestion` | Autonomy | Apply a confirmed promotion or demotion suggestion |
-| `dismiss_promotion_suggestion` | Autonomy | Dismiss a promotion or demotion suggestion |
+- **Queue** -- list, show, count, approve, reject and expire pending actions, and query executed
+  actions for audit. Approval executes immediately only when an owning executor is available;
+  otherwise `dispatch_approved_action` later runs the approved action through the owning daemon's
+  original tool handler.
+- **Standing rules** -- create (directly or from a pending action with suggested constraints),
+  list, show and revoke the rules described below.
+- **Autonomy suggestions** -- list, confirm or dismiss suggested promotions and demotions of a
+  tool's approval posture.
 
 ## Standing Rules
 

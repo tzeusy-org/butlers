@@ -25,8 +25,7 @@ period option), the tier-breakdown donut, and the legacy connector-card
 delete button. Thread-affinity settings and Gmail label filters (previously
 in the legacy Filters tab) are also not yet present in the Filters Pipeline
 below; their source component is preserved unmounted pending a rehoming
-follow-up discovered from bu-4utdw.2. See
-`docs/frontend/feature-inventory.md` §"Ingestion" for the full accounting.
+follow-up discovered from bu-4utdw.2.
 
 ## Requirements
 

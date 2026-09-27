@@ -14,15 +14,13 @@ Butlers has two extension mechanisms that serve fundamentally different purposes
 
 ### What Modules Are
 
-A module is a pluggable capability unit that a butler loads at startup. It implements the `Module` abstract base class defined in `src/butlers/modules/base.py`. Every module provides:
-
-- **`name`** --- A unique identifier (e.g., `"email"`, `"telegram"`, `"memory"`, `"calendar"`).
-- **`config_schema`** --- A Pydantic model class that validates the module's section in `butler.toml`.
-- **`dependencies`** --- A list of module names this module depends on. The daemon resolves modules in topological order, so a module's dependencies are guaranteed to be initialized first.
-- **`register_tools(mcp, config, db)`** --- Registers MCP tools on the butler's FastMCP server. This is how a module adds capabilities that the LLM can call during sessions.
-- **`migration_revisions()`** --- Returns an Alembic branch label for the module's database migrations, or `None` if the module has no tables.
-- **`on_startup(config, db, credential_store)`** --- Called after dependency resolution and migrations. This is where modules open connections, start background tasks, or load cached data. The `credential_store` parameter enables DB-first credential resolution.
-- **`on_shutdown()`** --- Called during butler shutdown in reverse topological order. Used for cleanup: closing connections, stopping background tasks.
+A module is a pluggable capability unit that a butler loads at startup, implementing the
+`Module` ABC in `src/butlers/modules/base.py`. A module declares a unique name, a Pydantic
+`config_schema` for its `butler.toml` section, and the modules it depends on; it registers MCP
+tools, may own an Alembic migration branch for its tables, and opens and releases resources in
+`on_startup` / `on_shutdown`. Modules are not butlers: they have no process, port, or schema of
+their own. For that distinction, see
+[Module vs Butler](../../about/lay-and-land/module-vs-butler.md).
 
 Modules can also declare `tool_metadata()` to annotate which tool arguments are safety-critical (sensitive), enabling the approval gate system to enforce appropriate review policies.
 
@@ -88,19 +86,14 @@ The connector package's `__init__.py` states this clearly:
 
 ### Available Connectors
 
-| Connector | Source | Transport |
-| --- | --- | --- |
-| `telegram_bot` | Telegram Bot API | Polling or webhook |
-| `telegram_user_client` | Telegram MTProto (user account) | Persistent connection |
-| `gmail` | Gmail API | Polling with checkpoint |
-| `discord_user` | Discord user client | Event stream |
-| `live_listener` | Audio input (microphone) | VAD + transcription pipeline |
+The shipped connectors are the modules under `src/butlers/connectors/`; their profiles are
+indexed in [Connectors](../connectors/index.md).
 
 ### How Connectors Work
 
 Taking the Telegram Bot connector as an example:
 
-1. The connector starts as its own process (typically launched by `dev.sh` in a tmux pane).
+1. The connector starts as its own process (its own Docker Compose service).
 2. It resolves credentials: the Telegram bot token is resolved DB-first via `CredentialStore`, with environment variable fallback.
 3. It polls the Telegram Bot API for updates (in dev mode) or registers a webhook (in production mode).
 4. Each incoming update is normalized to the canonical `ingest.v1` envelope format, which includes fields like source channel, sender identity, message content, and timestamps.

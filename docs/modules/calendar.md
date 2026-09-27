@@ -53,24 +53,20 @@ When `calendar_id` is not explicitly configured, the module auto-discovers or cr
 
 ## Tools Provided
 
-The module registers 14 MCP tools:
+Tools are registered in `CalendarModule.register_tools` (`src/butlers/modules/calendar.py`); read
+it for the current names and signatures. The families:
 
-| Tool | Description |
-|------|-------------|
-| `calendar_list_events` | List events in a time range with optional filters |
-| `calendar_get_event` | Get full details for a single event |
-| `calendar_create_event` | Create a new event with conflict detection |
-| `calendar_update_event` | Update an existing event |
-| `calendar_delete_event` | Delete or cancel an event |
-| `calendar_create_butler_event` | Create a butler-managed event (schedule/reminder) |
-| `calendar_update_butler_event` | Update a butler-managed event |
-| `calendar_delete_butler_event` | Delete a butler-managed event |
-| `calendar_toggle_butler_event` | Enable/disable a butler-managed event |
-| `calendar_add_attendees` | Add attendees to an event |
-| `calendar_remove_attendees` | Remove attendees from an event |
-| `calendar_sync_status` | Check sync state and freshness |
-| `calendar_force_sync` | Trigger an immediate sync cycle |
-| `calendar_set_primary` | Set the primary calendar for the butler |
+- **Event CRUD** (`calendar_*_event`, `calendar_*_event_instance`, attendee add/remove) -- read and
+  write provider events; every create/update runs through the conflict engine below. Instance
+  tools edit or delete one occurrence of a recurring event.
+- **Butler-managed events** (`calendar_*_butler_event`) -- schedules and reminders the butler owns,
+  including enable/disable.
+- **Reminders** (`reminder_*`) -- reminders stored as native calendar events attributed to the
+  calling butler.
+- **Planning** -- `calendar_find_free_slots` (read-only availability finder) and
+  `calendar_propose_event` (stages a pending proposal for review without writing to the provider).
+- **Calendar and sync management** -- list calendars, set the primary calendar, check sync
+  status, and force a sync cycle.
 
 ## Conflict Detection
 

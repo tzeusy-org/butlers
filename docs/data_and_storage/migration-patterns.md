@@ -20,13 +20,12 @@ The core chain manages shared infrastructure tables used by all butlers:
 - `scheduled_tasks` -- Cron scheduler
 - `sessions` -- Session log
 - `butler_secrets` -- Credential store
-- `public.contacts`, `public.contact_info` -- Identity tables
 - `public.entities`, `public.entity_info` -- Entity graph
 - `public.google_accounts` -- Google OAuth registry
 - `ingestion_events` -- Switchboard ingestion log
 - `model_catalog` -- LLM model definitions
 
-Core migrations use the branch label `"core"` and revision IDs like `core_001`, `core_002`, etc. As of writing, the core chain has 38+ revisions.
+Core migrations use the branch label `"core"` and revision IDs like `core_001`, `core_002`, etc.
 
 ### Module Chains
 
@@ -159,20 +158,10 @@ at the old OID, which looks like convergence and is not. And rewrite the body, n
 the rows: a backfill corrects history and then drifts again on the next insert, so
 assert on a row written *after* the change, never on historical rows alone.
 
-A later revision may pin such a teardown shut. `core_199` installs
-`public.runtime_attention_producer_control` and
-`public.runtime_attention_plant_legacy_debounce_marker()`; its downgrade
-deliberately retains both, and nothing in this repository drops either one. Because the
-`core_198` downgrade precondition requires both to be absent, a database that
-has reached `core_199` can never run the `core_198` teardown again, and
-`runtime_attention_admin.rollback_interface()` is no longer reachable through
-Alembic. Its two forward-remediation refusals, the pre-lock fast path and the
-authoritative recheck under `ACCESS EXCLUSIVE`, are one guard in two positions
-and still fire for a privileged bootstrap owner who invokes the function
-directly, which is why they are retained rather than deleted. When a boundary
-becomes one-way like this, record it in the operator documentation for the
-subsystem; a rollback that a database can no longer perform is unavailable, not
-merely untested.
+A later revision can make a teardown one-way. When that happens, record it in the operator
+documentation for the subsystem: a rollback that a database can no longer perform is unavailable,
+not merely untested. The runtime-attention boundary is the worked example; see the
+[Runtime Attention runbook](../operations/runtime-attention.md#stop-paging).
 
 ## Verification
 

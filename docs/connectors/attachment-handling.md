@@ -34,11 +34,11 @@ When a butler needs the actual content, it triggers an on-demand fetch: download
 
 ## Calendar `.ics` Direct Routing
 
-`text/calendar` attachments bypass LLM routing via a deterministic triage rule (`mime_type: text/calendar -> route_to: calendar`). They are always eagerly fetched (subject to 1 MB limit), parsed for `VEVENT`/`VTODO` entities, and forwarded to the calendar module. Parse failures produce structured errors rather than silent drops.
+`text/calendar` attachments bypass LLM routing via a seeded global ingestion rule (`mime_type: text/calendar -> route_to:relationship`, in `switchboard.ingestion_rules`). They are always eagerly fetched (subject to 1 MB limit), parsed for `VEVENT`/`VTODO` entities, and forwarded to the calendar module. Parse failures produce structured errors rather than silent drops.
 
 ## Envelope Contract
 
-The ingest payload `attachments[]` array carries `media_type`, `filename`, `size_bytes`, `message_id`, `attachment_id`, `fetched` (boolean), and `storage_ref` (nullable). For an eager, in-cap `storage_ref`: an `image/*` attachment is retrieved with `attachment_view(storage_ref)`, which returns a real MCP image content block (the correct channel for vision input, never a JSON payload) and refuses (a typed `status: "refused"` result) anything over the vision size cap. A non-image attachment is retrieved with `get_attachment(storage_ref)`, which embeds the blob as base64 JSON only up to a 64KB inline cap — see `src/butlers/tools/attachments.py` (bu-2jtfw.7). Lazy paths expose enough identity to trigger a fetch once `attachment_materialize` (not yet implemented) lands.
+The ingest payload `attachments[]` array carries `media_type`, `filename`, `size_bytes`, `message_id`, `attachment_id`, `fetched` (boolean), and `storage_ref` (nullable). For an eager, in-cap `storage_ref`: an `image/*` attachment is retrieved with `attachment_view(storage_ref)`, which returns a real MCP image content block (the correct channel for vision input, never a JSON payload) and refuses (a typed `status: "refused"` result) anything over the vision size cap. A non-image attachment is retrieved with `get_attachment(storage_ref)`, which embeds the blob as base64 JSON only up to a 64KB inline cap — see `src/butlers/tools/attachments.py`. Lazy paths expose enough identity to trigger a fetch once `attachment_materialize` (not yet implemented) lands.
 
 ## Metrics
 
@@ -46,7 +46,7 @@ Four attachment-specific Prometheus counters are defined in `src/butlers/connect
 
 ## Migration Plan
 
-Implementation is phased: (A) schema -- add `attachment_refs` table and indexes; (B) policy constants; (C) lazy fetch behavior for non-calendar attachments; (D) `.ics` triage rule and attachment metrics. Eager fetch can be re-enabled behind a feature flag if lazy fetch regresses.
+Implementation is phased: (A) schema -- add `attachment_refs` table and indexes; (B) policy constants; (C) lazy fetch behavior for non-calendar attachments; (D) `.ics` ingestion rule and attachment metrics. Eager fetch can be re-enabled behind a feature flag if lazy fetch regresses.
 
 ## Structured HTML Extraction (Future)
 

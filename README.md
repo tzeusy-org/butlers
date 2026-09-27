@@ -79,16 +79,8 @@ For the full architecture including daemon internals, startup sequence, database
 
 ### Service Ports
 
-| Service       | Port | Description                                            |
-| ------------- | ---- | ------------------------------------------------------ |
-| Switchboard   | 41100 | Message router — routes MCP requests to domain butlers |
-| General       | 41101 | Catch-all assistant with collections/entities          |
-| Relationship  | 41102 | Contacts, interactions, gifts, activity feed           |
-| Health        | 41103 | Measurements, medications, conditions, symptoms        |
-| Messenger     | 41104 | Delivery relay — Telegram and email channel outputs    |
-| Dashboard API | 41200 | Web UI backend for monitoring and managing butlers     |
-| Frontend      | 41173 | Vite dev server (development only)                     |
-| PostgreSQL    | 5432 | Shared database server (one DB, per-butler schemas)    |
+Each butler, the dashboard API, and the frontend have fixed ports per compose mode; the single
+port map is [Deployment § Port Assignments](about/lay-and-land/deployment.md#port-assignments).
 
 ## Quick Start
 
@@ -98,11 +90,11 @@ For full prerequisites and setup details, see [Getting Started](docs/getting_sta
 # Install Python dependencies
 uv sync --dev
 
-# Start everything via tmux (PostgreSQL, butlers, connectors, dashboard)
-./scripts/dev.sh
+# Start the dev stack via Docker Compose (butlers, connectors, dashboard;
+# PostgreSQL is external, configured in .env.dev)
+./scripts/compose.sh
 
-# Or start manually
-docker compose up -d postgres
+# Or start the daemons manually
 butlers up
 ```
 
@@ -131,17 +123,9 @@ The messenger requires these credentials configured via the dashboard secrets pa
 
 ## Environment Variables
 
-Key variables — see [full environment reference](docs/identity_and_secrets/environment-variables.md) and [operations config](docs/operations/environment-config.md) for details.
-
-| Variable | Default | Description |
-| --- | --- | --- |
-| `POSTGRES_HOST` | `localhost` | PostgreSQL server hostname |
-| `POSTGRES_PORT` | `5432` | PostgreSQL server port |
-| `POSTGRES_USER` | `postgres` | PostgreSQL username |
-| `POSTGRES_PASSWORD` | `postgres` | PostgreSQL password |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | OTLP HTTP endpoint for traces |
-
-Module-specific credentials (Telegram tokens, email passwords, etc.) are managed through the dashboard secrets page. See [Identity and Secrets](docs/identity_and_secrets/index.md).
+See the [environment variable reference](docs/identity_and_secrets/environment-variables.md).
+Module credentials (Telegram tokens, email passwords, etc.) are managed through the dashboard
+secrets page; see [Identity and Secrets](docs/identity_and_secrets/index.md).
 
 ## Development
 
@@ -154,7 +138,8 @@ make lint            # Lint
 make format          # Format
 ```
 
-Tests use pytest markers (`unit`, `integration`, `e2e`, `nightly`, `benchmark`). See [Testing docs](docs/testing/index.md) for the full strategy, marker reference, and E2E benchmarking system.
+Markers are defined in `pyproject.toml`; see [Testing docs](docs/testing/index.md) for the strategy and
+marker semantics.
 
 ## E2E Testing
 
@@ -175,24 +160,6 @@ make test-e2e-validate
 # Benchmark mode — sweep across models, produce scorecards
 make test-e2e-benchmark BENCHMARK_MODELS=claude-sonnet-4-5,gpt-4o
 ```
-
-### Configuration
-
-| Option | Description |
-|--------|-------------|
-| `--benchmark` | Enable benchmark mode (multi-model sweep) |
-| `E2E_BENCHMARK_MODELS` | Comma-separated model IDs (env var fallback for `--benchmark-models`) |
-
-### Scorecard Output
-
-Benchmark runs write results to `.tmp/e2e-scorecards/<timestamp>/`.
-
-### Pytest Markers
-
-| Marker | Description |
-|--------|-------------|
-| `routing_accuracy` | Routing accuracy tests — verify triage target matches expected |
-| `tool_accuracy` | Tool-call accuracy tests — verify expected tool names are called |
 
 See [E2E Testing docs](docs/testing/e2e/README.md) for full details.
 

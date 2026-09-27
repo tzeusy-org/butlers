@@ -2,7 +2,7 @@
 
 > **Purpose:** Defines how email messages are classified into priority tiers at ingestion and dequeued with tier-aware ordering in the Switchboard.
 > **Audience:** Developers working on email connectors or Switchboard queue logic, operators tuning queue fairness.
-> **Prerequisites:** [Routing Architecture](routing.md), [System Topology](system-topology.md).
+> **Prerequisites:** [Switchboard Routing](../concepts/switchboard-routing.md), [System Topology](system-topology.md).
 
 ## Overview
 
@@ -111,6 +111,6 @@ curl -s http://localhost:41200/api/switchboard/email-priority-config | python3 -
 
 ## Related Pages
 
-- [Routing Architecture](routing.md) — how priority-queued messages flow through classification
+- [Switchboard Routing](../concepts/switchboard-routing.md) — how priority-queued messages flow through classification
 - [Pre-Classification Triage](pre-classification-triage.md) — deterministic routing that runs before LLM classification
 - [Observability](observability.md) — metrics infrastructure

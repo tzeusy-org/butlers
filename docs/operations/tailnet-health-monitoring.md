@@ -41,7 +41,7 @@ which trains the operator to ignore the alert and is worse than no monitor at al
 Confirm which stack is running before configuring, and substitute the matching
 prefix into the prompt below.
 
-Owner decision 2026-08-16: on the current host the dev stack is the running one,
+On the current host the dev stack is the running one (owner decision),
 so the configured monitor targets `/butlers-dev-api/api/health`.
 
 ## Health response contract
@@ -87,8 +87,9 @@ monitor; do not alter Tailscale Serve, certificates, host networking, deployment
 or runtime state.
 
 If TLS validation, hostname validation, or the route/path fails, stop. Capture
-only sanitized evidence and route the failure to bu-ln1v7; do not infer a
-mapping-level repair or attempt a full Serve reconstruction.
+only sanitized evidence and hand it to the host operator who owns Tailscale
+Serve; do not infer a mapping-level repair or attempt a full Serve
+reconstruction.
 ```
 
 ## Handoff boundary
@@ -96,8 +97,19 @@ mapping-level repair or attempt a full Serve reconstruction.
 The prompt above is intentionally operationally narrow. A failure establishes
 only that the required monitor contract was not observed. It does not authorize
 changing the route, TLS posture, Serve configuration, host, deployment, or
-notification route. Preserve the failure evidence and hand it to `bu-ln1v7` for
-the separately authorized diagnosis-first path.
+notification route. Preserve the failure evidence and hand it to the host
+operator who owns Tailscale Serve for a separately authorized, diagnosis-first
+investigation.
+
+### Probe from off-host
+
+Run the monitor, and any manual check, from a separate tailnet node. On the
+Butlers host itself, a request to the host's own tailnet name or IP never
+traverses the tailnet: it stays on the local netfilter path, where a
+Docker/Traefik DNAT can intercept `:443` and present a default certificate or a
+404. That is a false failure; peer traffic arrives over WireGuard on
+`tailscale0` and reaches `tailscaled` directly. Confirm any strict-TLS failure
+from another node before treating it as a Serve or certificate fault.
 
 ## Related sources
 
