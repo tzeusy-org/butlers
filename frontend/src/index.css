@@ -895,7 +895,7 @@ body {
   animation: calendar-entry-flash 2.2s cubic-bezier(0.22, 1, 0.36, 1) forwards;
   position: relative;
   z-index: 20;
-  border-radius: var(--radius-md, 0.5rem);
+  border-radius: var(--radius-md);
 }
 @media (prefers-reduced-motion: reduce) {
   .chat-message-highlight {
