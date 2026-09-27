@@ -115,6 +115,104 @@
       "excerpt": "Butler runtime roles SHALL have write access to a specific set of public tables. The authorization matrix is maintain..."
     }
   ],
+  "confine-qa-publication-authority/qa-investigation-dispatch/Anonymization-on-Egress Guarantee": [
+    {
+      "kind": "clause",
+      "scenario": "PR labels are sanitized fail-closed",
+      "digest": "9133b93da72e",
+      "excerpt": "- **AND** if any label still contains residual sensitive content, the flow blocks before `gh pr create`, deletes the ..."
+    }
+  ],
+  "confine-qa-publication-authority/qa-investigation-dispatch/Anonymized PR Pipeline": [
+    {
+      "kind": "clause",
+      "scenario": "PR creation with anonymization",
+      "digest": "8e7c7bc91771",
+      "excerpt": "- **THEN** the branch is pushed to origin"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Committed proposal cannot be published",
+      "digest": "7ccb1b1b632d",
+      "excerpt": "- **THEN** the dispatcher persists the bounded diff snapshot and investigation notes before worktree teardown"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Committed proposal cannot be published",
+      "digest": "37eccb0f5961",
+      "excerpt": "- **AND** the failed attempt records the actual sanitized publication failure rather than claiming that no fix was pr..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Anonymization validation failure",
+      "digest": "6e967146b522",
+      "excerpt": "- **THEN** the remote branch is deleted"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Anonymization validation failure",
+      "digest": "45e184ac6075",
+      "excerpt": "- **AND** the error is logged with the validation failure reasons (locally only, not pushed)"
+    }
+  ],
+  "confine-qa-publication-authority/qa-investigation-dispatch/Investigation Agent Sandbox": [
+    {
+      "kind": "clause",
+      "scenario": "Agent environment",
+      "digest": "931e4333b956",
+      "excerpt": "- **THEN** the QA staffer resolves `BUTLERS_QA_GH_TOKEN` from `CredentialStore` and injects it as `GH_TOKEN` in the a..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Agent environment",
+      "digest": "b6fdee7b578b",
+      "excerpt": "- **AND** the agent's environment contains only: `GH_TOKEN`, `PATH`, and build-tool variables (`UV_CACHE_DIR`, etc.)"
+    },
+    {
+      "kind": "clause",
+      "scenario": "GitHub credentials from secrets store",
+      "digest": "965cad490cbd",
+      "excerpt": "- **AND** the token is scoped to: branch push + PR creation + PR labeling on `tzeusy-org/butlers`"
+    },
+    {
+      "kind": "clause",
+      "scenario": "GitHub credentials from secrets store",
+      "digest": "cc6438a57f0f",
+      "excerpt": "- **AND** the token SHALL NOT have merge or approve permissions — humans remain in the merge seat"
+    }
+  ],
+  "confine-qa-publication-authority/staffer-qa/Permissions and Security Model": [
+    {
+      "kind": "prose",
+      "scenario": null,
+      "digest": "77a59d725943",
+      "excerpt": "The QA Staffer SHALL operate with a least-privilege security model: dedicated credentials with no merge access, sandb..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Dedicated GitHub credentials via Tier 1 system secrets",
+      "digest": "24bf2ceca930",
+      "excerpt": "- **THEN** it retrieves the GitHub token via `CredentialStore.resolve(\"BUTLERS_QA_GH_TOKEN\")` which checks: (1) `qa.b..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Dedicated GitHub credentials via Tier 1 system secrets",
+      "digest": "d3be0822c6e1",
+      "excerpt": "- **AND** the token is scoped to: branch push, PR creation, PR labeling on `tzeusy-org/butlers`"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Dedicated GitHub credentials via Tier 1 system secrets",
+      "digest": "83955b026bd8",
+      "excerpt": "- **AND** the token SHALL NOT have merge/approve permissions — humans remain in the merge seat"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Investigation agent sandbox",
+      "digest": "c3f97a681ab0",
+      "excerpt": "- **THEN** its environment contains only: `BUTLERS_QA_GH_TOKEN` (injected from secrets store as `GH_TOKEN` for `gh` C..."
+    }
+  ],
   "decision-loop-one-tap-approvals/autonomy-tracker/Pattern Fingerprint Computation": [
     {
       "kind": "prose",
