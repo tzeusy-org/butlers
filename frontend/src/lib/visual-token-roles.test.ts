@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
@@ -11,9 +11,10 @@ import {
   categoricalHueVar,
   ownerCustomColor,
   stateColorVar,
+  stateTextColorVar,
 } from "./visual-token-roles";
 import { chartSeriesColor } from "./chart-colors";
-import type { StateColorRole } from "./visual-token-roles";
+import type { StateColorRole, StateTextColorRole } from "./visual-token-roles";
 
 const SPEC_PATH = fileURLToPath(
   new URL(
@@ -22,6 +23,20 @@ const SPEC_PATH = fileURLToPath(
   ),
 );
 const SPEC = readFileSync(SPEC_PATH, "utf8");
+const ACTIVE_SPEC_PATH = fileURLToPath(
+  new URL(
+    "../../../openspec/changes/consolidate-dispatch-visual-primitives/specs/dashboard-design-language/spec.md",
+    import.meta.url,
+  ),
+);
+const ACTIVE_SPEC = existsSync(ACTIVE_SPEC_PATH)
+  ? readFileSync(ACTIVE_SPEC_PATH, "utf8")
+  : "";
+const EFFECTIVE_SPEC = ACTIVE_SPEC.includes(
+  "### Requirement: Semantic Visual Role Matrix",
+)
+  ? ACTIVE_SPEC
+  : SPEC;
 const FRONTEND_TOPOLOGY_PATH = fileURLToPath(
   new URL("../../../about/lay-and-land/frontend.md", import.meta.url),
 );
@@ -39,6 +54,13 @@ const STATE_ROLES: readonly StateColorRole[] = [
   "archived",
 ];
 
+const STATE_TEXT_ROLES: readonly StateTextColorRole[] = [
+  "ok",
+  "degraded",
+  "error",
+  "waiting",
+];
+
 function tokenName(cssVariable: string): string {
   const match = cssVariable.match(/^var\((--[a-z0-9-]+)\)$/);
   if (!match) throw new Error(`Unexpected CSS variable: ${cssVariable}`);
@@ -46,7 +68,7 @@ function tokenName(cssVariable: string): string {
 }
 
 function specStateTokens(): Set<string> {
-  const row = SPEC.split("\n").find((line) =>
+  const row = EFFECTIVE_SPEC.split("\n").find((line) =>
     line.startsWith("| Operational state |"),
   );
   if (!row) throw new Error("Could not find the operational-state role row");
@@ -72,7 +94,7 @@ function specRoleTokens(role: "Local category" | "Chart series"): Set<string> {
 
 function specVisualRoleRows(): Map<string, readonly [string, string, string]> {
   const rows = new Map<string, readonly [string, string, string]>();
-  const matrix = SPEC.split("### Requirement: Semantic Visual Role Matrix")[1]
+  const matrix = EFFECTIVE_SPEC.split("### Requirement: Semantic Visual Role Matrix")[1]
     ?.split("### Requirement:")[0];
   if (!matrix) throw new Error("Could not find the semantic visual role matrix");
   for (const line of matrix.split("\n")) {
@@ -126,10 +148,38 @@ describe("semantic visual role registry", () => {
     });
   });
 
-  it("covers every stateColorVar output in the executable registry", () => {
-    const resolverTokens = new Set(STATE_ROLES.map((role) => tokenName(stateColorVar(role))));
+  it("covers every state resolver output in the executable registry", () => {
+    const resolverTokens = new Set([
+      ...STATE_ROLES.map((role) => tokenName(stateColorVar(role))),
+      ...STATE_TEXT_ROLES.map((role) => tokenName(stateTextColorVar(role))),
+    ]);
 
     expect(new Set(VISUAL_TOKEN_ROLE_REGISTRY.state.tokens)).toEqual(resolverTokens);
+  });
+
+  it("keeps state text mappings registered and off unsafe light-theme fill tokens", () => {
+    for (const role of STATE_TEXT_ROLES) {
+      expect(stateTextColorVar(role)).toBe(
+        VISUAL_TOKEN_ROLE_REGISTRY.state.textValues[role],
+      );
+      expect(VISUAL_TOKEN_ROLE_REGISTRY.state.tokens).toContain(
+        tokenName(stateTextColorVar(role)),
+      );
+    }
+    expect(stateTextColorVar("degraded")).toBe("var(--amber-text)");
+    expect(stateTextColorVar("error")).toBe("var(--red-text)");
+    expect(stateTextColorVar("degraded")).not.toBe(stateColorVar("degraded"));
+    expect(stateTextColorVar("error")).not.toBe(stateColorVar("error"));
+
+    const textValues = VISUAL_TOKEN_ROLE_REGISTRY.state
+      .textValues as Record<StateTextColorRole, string>;
+    const originalErrorText = textValues.error;
+    textValues.error = "var(--dim)";
+    try {
+      expect(stateTextColorVar("error")).toBe("var(--dim)");
+    } finally {
+      textValues.error = originalErrorText;
+    }
   });
 
   it("keeps state resolver tokens aligned with the binding spec", () => {
@@ -259,7 +309,9 @@ describe("semantic visual role registry", () => {
     expect(FRONTEND_TOPOLOGY).toContain(
       "`chartSeriesColor` / `chartColor`",
     );
-    expect(FRONTEND_TOPOLOGY).toContain("`StateDot` / `stateColorVar`");
+    expect(FRONTEND_TOPOLOGY).toContain(
+      "`StateDot` / `stateColorVar` / `stateTextColorVar`",
+    );
     expect(FRONTEND_TOPOLOGY).not.toMatch(/\b(?:butlerHueVar|categoryHueVar)\b/);
   });
 });

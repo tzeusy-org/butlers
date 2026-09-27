@@ -170,7 +170,7 @@ export function GoogleAppCredentials() {
         <p
           className="mt-2"
           style={{
-            fontFamily: "var(--font-serif, 'Source Serif 4', serif)",
+            fontFamily: "var(--font-serif)",
             fontStyle: "italic",
             fontSize: 13,
             color: "var(--mfg)",

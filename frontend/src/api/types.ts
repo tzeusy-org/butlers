@@ -5564,8 +5564,17 @@ export interface OwnTracksStatusResponse {
 export interface OwnTracksConfigResponse {
   /** The full webhook URL the OwnTracks app should POST to. */
   webhook_url: string;
-  /** Host portion only (for display). */
-  host: string;
+  /** Masked bearer token preview, or null when no token is configured. */
+  token_masked: string | null;
+  /** App configuration guidance returned by the connector API. */
+  setup_instructions: {
+    mode: string;
+    url_field: string;
+    auth_type: string;
+    steps_ios: string[];
+    steps_android: string[];
+    troubleshooting_hint: string;
+  };
 }
 
 /** Response from POST /api/connectors/owntracks/token/generate */

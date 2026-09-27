@@ -11,6 +11,8 @@
 // No LLM narration. All text is stored-prose, templated, verbatim, or literal.
 // ---------------------------------------------------------------------------
 
+import { StateDot } from "@/components/ui/StateDot";
+import { googleHealthState } from "@/lib/google-health-state";
 import * as React from "react";
 import { Time } from "@/components/ui/time";
 
@@ -177,8 +179,8 @@ function HeadingBand({
               className="m-0"
               style={{
                 fontFamily: titleMono
-                  ? "var(--font-mono, monospace)"
-                  : "var(--font-sans, 'Inter Tight', sans-serif)",
+                  ? "var(--font-mono)"
+                  : "var(--font-sans)",
                 fontSize: titleMono ? 24 : 30,
                 fontWeight: 500,
                 letterSpacing: titleMono ? "0.005em" : "-0.025em",
@@ -868,8 +870,6 @@ function TestModeExpiryBanner({
   isExpiring: boolean;
   primaryAccountEmail: string | null;
 }) {
-  const tone = isExpiring ? "var(--red)" : "var(--amber)";
-  const textTone = isExpiring ? "var(--red)" : "var(--amber-text)";
   const label = isExpiring
     ? "test-mode consent about to expire, re-consent to keep Google Health connected"
     : "test mode: consent expires every 7 days until production verification completes";
@@ -887,29 +887,20 @@ function TestModeExpiryBanner({
   return (
     <div
       className="flex items-start gap-2 p-2.5 rounded-sm"
-      style={{
-        border: `1px solid ${tone}`,
-        background: isExpiring
-          ? "color-mix(in oklch, var(--red) 8%, transparent)"
-          : "color-mix(in oklch, var(--amber) 8%, transparent)",
-      }}
       data-testid="test-mode-expiry-banner"
       data-expired={isExpiring ? "true" : "false"}
       data-variant={isExpiring ? "red" : "orange"}
     >
-      <span
-        className="inline-block shrink-0 rounded-full mt-1"
-        style={{ width: 6, height: 6, backgroundColor: tone }}
-        aria-hidden="true"
-      />
+      <StateDot state={isExpiring ? "error" : "degraded"} className="mt-1"
+        aria-label={isExpiring ? "Google Health consent: about to expire" : "Google Health consent: test mode"} />
       <div className="flex flex-col gap-1 min-w-0">
-        <Mono size={10} color={textTone}>{label}</Mono>
+        <Mono size={10} color="var(--fg)">{label}</Mono>
         <a
           href={reconsentUrl}
           data-testid="test-mode-reconsent-link"
           className="underline underline-offset-2 w-fit"
         >
-          <Mono size={9} color={textTone}>re-consent (Google Health)</Mono>
+          <Mono size={9} color="var(--mfg)">re-consent (Google Health)</Mono>
         </a>
       </div>
     </div>
@@ -936,14 +927,6 @@ function TestModeExpiryBanner({
  * [bu-hh875][bu-zv881]
  */
 function GoogleHealthPassportStatusCard({ status }: { status: GoogleHealthStatusResponse }) {
-  const stateColor =
-    status.state === "healthy"
-      ? "var(--green)"
-      : status.state === "error"
-        ? "var(--red)"
-        : "var(--amber)";
-  const stateTextColor = stateColor === "var(--amber)" ? "var(--amber-text)" : stateColor;
-
   // Compute banner flags via a module-level helper so Date.now() is not called
   // directly during render (required by the react-hooks/purity ESLint rule).
   const { showBanner, isExpiring } = computeHealthBannerFlags(status);
@@ -967,12 +950,8 @@ function GoogleHealthPassportStatusCard({ status }: { status: GoogleHealthStatus
       <div className="flex flex-col gap-1.5">
         {/* State row */}
         <div className="flex items-center gap-2">
-          <span
-            className="inline-block shrink-0 rounded-full"
-            style={{ width: 6, height: 6, backgroundColor: stateColor }}
-            aria-hidden="true"
-          />
-          <Mono size={10} color={stateTextColor}>{status.state}</Mono>
+          <StateDot state={googleHealthState(status.state)} aria-label={`Google Health: ${status.state.replaceAll("_", " ")}`} />
+          <Mono size={10} color="var(--mfg)">{status.state}</Mono>
         </div>
 
         {/* KV rows */}
@@ -2455,7 +2434,7 @@ function CliDeviceAuthPanel({ auth }: { auth: CliDeviceAuthState }) {
             <span
               className="px-3 py-1.5 tabular-nums"
               style={{
-                fontFamily: "var(--font-mono, monospace)",
+                fontFamily: "var(--font-mono)",
                 fontSize: 22,
                 fontWeight: 600,
                 letterSpacing: "0.18em",
@@ -3112,7 +3091,7 @@ export function PassportEmptyState() {
     <div className="p-10">
       <span
         style={{
-          fontFamily: "var(--font-serif, 'Source Serif 4', serif)",
+          fontFamily: "var(--font-serif)",
           fontStyle: "italic",
           color: "var(--dim)",
           fontSize: 15,
@@ -3354,7 +3333,7 @@ export function PassportAddPanel({
           <h1
             className="m-0"
             style={{
-              fontFamily: "var(--font-sans, 'Inter Tight', sans-serif)",
+              fontFamily: "var(--font-sans)",
               fontSize: 28,
               fontWeight: 500,
               letterSpacing: "-0.025em",

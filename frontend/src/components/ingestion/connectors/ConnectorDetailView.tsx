@@ -34,6 +34,7 @@
 
 import { Link } from 'react-router'
 import { Time } from '@/components/ui/time'
+import { StateDot, type DispatchState } from '@/components/ui/StateDot'
 import type {
   ConnectorDetail,
   ConnectorEventsResponse,
@@ -48,6 +49,7 @@ import {
   deriveConnectorDispatchInfo,
   type ConnectorRecovery,
 } from './connector-auth'
+import { stateTextColorVar } from '@/lib/visual-token-roles'
 import { SourceDegradedNote } from '@/components/ui/query-boundary'
 
 // ---------------------------------------------------------------------------
@@ -218,7 +220,10 @@ export function ConnectorDetailView({
               <div className="mt-1.5 flex items-baseline gap-3.5 font-mono text-[11px] text-muted-foreground tracking-[0.04em]">
                 <span>{connector.endpoint_identity}</span>
                 <span>·</span>
-                <span className={livenessText(connector.liveness)}>{connector.liveness}</span>
+                <span className="inline-flex items-center gap-1.5 text-muted-foreground">
+                  <StateDot state={livenessDotState(connector.liveness)} size={6} />
+                  {connector.liveness}
+                </span>
                 {connector.last_heartbeat_at && (
                   <>
                     <span>·</span>
@@ -425,10 +430,9 @@ export function ConnectorDetailView({
             <KVRow
               label="state"
               value={
-                <span
-                  className={`font-mono text-[11px] ${connector.state === 'healthy' ? 'text-foreground' : 'text-[color:var(--amber,oklch(0.72_0.12_70))]'}`}
-                >
-                  {connector.state}
+                <span className="inline-flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
+                  <StateDot state={connectorStateDotState(connector.state)} size={6} />
+                  <span>{connector.state}</span>
                 </span>
               }
             />
@@ -506,14 +510,15 @@ export function ConnectorDetailView({
 function EventStatusPill({ status }: { status: string }) {
   const color =
     status === 'ingested'
-      ? 'text-[color:var(--green,oklch(0.72_0.17_150))]'
+      ? stateTextColorVar('ok')
       : status === 'failed' || status === 'error' || status === 'replay_failed'
-        ? 'text-[color:var(--red,oklch(0.62_0.20_25))]'
-        : status === 'filtered'
-          ? 'text-muted-foreground'
-          : 'text-foreground'
+        ? stateTextColorVar('error')
+        : undefined
+  const neutralClass = status === 'filtered' ? 'text-muted-foreground' : 'text-foreground'
   return (
-    <span className={`font-mono text-[10px] ${color}`}>{status}</span>
+    <span className={`font-mono text-[10px] ${color ? '' : neutralClass}`} style={{ color }}>
+      {status}
+    </span>
   )
 }
 
@@ -725,10 +730,18 @@ function RoutingRulesList({ rules, reader }: RoutingRulesListProps) {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function livenessText(liveness: string): string {
-  if (liveness === 'online') return 'text-[color:var(--green,oklch(0.72_0.17_150))]'
-  if (liveness === 'stale') return 'text-[color:var(--amber,oklch(0.72_0.12_70))]'
-  return 'text-[color:var(--red,oklch(0.62_0.20_25))]'
+function livenessDotState(liveness: string): DispatchState {
+  if (liveness === 'online') return 'ok'
+  if (liveness === 'stale') return 'degraded'
+  if (liveness === 'offline') return 'error'
+  return 'waiting'
+}
+
+function connectorStateDotState(state: string): DispatchState {
+  if (state === 'healthy') return 'ok'
+  if (state === 'degraded' || state === 'paused') return 'degraded'
+  if (state === 'error') return 'error'
+  return 'waiting'
 }
 
 function describeConnector(connector: ConnectorDetail): string {

@@ -20,9 +20,16 @@
  * bead: bu-91zdb.8
  */
 
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Section,
+  SectionAction,
+  SectionContent,
+  SectionHeader,
+  SectionTitle,
+} from "@/components/ui/Section";
 import { Badge } from "@/components/ui/badge";
 import { Time } from "@/components/ui/time";
+import { googleHealthState } from "@/lib/google-health-state";
 import { StateDot } from "@/components/ui/StateDot";
 import {
   GOOGLE_HEALTH_SCOPE_FAMILIES,
@@ -30,45 +37,8 @@ import {
 } from "@/api/client";
 import type {
   GoogleHealthAccountStatus,
-  GoogleHealthConnectorState,
   GoogleHealthStatusResponse,
 } from "@/api/types";
-
-// ---------------------------------------------------------------------------
-// State-colour helpers
-// ---------------------------------------------------------------------------
-
-/** CSS class for state text colour, matching Dispatch §4e tokens. */
-function stateTextClass(state: GoogleHealthConnectorState): string {
-  switch (state) {
-    case "healthy":
-      return "text-[color:var(--green)]";
-    case "degraded":
-      return "text-[color:var(--amber)]";
-    case "error":
-      return "text-[color:var(--red)]";
-    default:
-      return "text-muted-foreground";
-  }
-}
-
-/**
- * Maps GoogleHealthConnectorState to a StateDot-compatible state.
- * `not_configured` falls back to `archived` (muted) since StateDot does not
- * have a direct equivalent.
- */
-function toDotState(state: GoogleHealthConnectorState) {
-  switch (state) {
-    case "healthy":
-      return "healthy" as const;
-    case "degraded":
-      return "degraded" as const;
-    case "error":
-      return "error" as const;
-    default:
-      return "archived" as const;
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Connector-failure (degraded/error) message helper
@@ -110,7 +80,7 @@ function ConnectorErrorBanner({ code }: { code: string }) {
     <div
       role="alert"
       data-testid="connector-error-banner"
-      className="mb-3 rounded border border-[color:var(--red)]/40 bg-[color:var(--red)]/10 px-2.5 py-2 text-xs text-[color:var(--red)]"
+      className="mb-3 text-xs text-foreground"
     >
       {formatConnectorError(code)}
     </div>
@@ -144,32 +114,30 @@ interface AccountWidgetProps {
 
 function AccountWidget({ account, isPrimary }: AccountWidgetProps) {
   return (
-    <Card data-testid="google-health-account-widget">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2 min-w-0">
-            {/* State dot — uses StateDot primitive for consistent token-based colour */}
-            <StateDot state={toDotState(account.state)} size={8} />
-            <span className="font-mono text-xs truncate" data-testid="account-email">
-              {account.email}
-            </span>
-          </div>
-          <div className="flex items-center gap-1 shrink-0">
-            {isPrimary && (
-              <Badge variant="outline" className="text-[10px] py-0 px-1.5">
-                primary
-              </Badge>
-            )}
-            <span
-              className={`text-xs font-mono ${stateTextClass(account.state)}`}
-              data-testid="account-state"
-            >
-              {account.state}
-            </span>
-          </div>
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
+    <Section data-testid="google-health-account-widget">
+      <SectionHeader className="flex flex-row items-center justify-between gap-2 pb-2">
+        <SectionTitle className="flex min-w-0 items-center gap-2">
+          {/* State dot — uses StateDot primitive for consistent token-based colour */}
+          <StateDot state={googleHealthState(account.state)} aria-label={`Google Health: ${account.state.replaceAll("_", " ")}`} size={8} />
+          <span className="truncate" data-testid="account-email">
+            {account.email}
+          </span>
+        </SectionTitle>
+        <SectionAction className="flex items-center gap-1">
+          {isPrimary && (
+            <Badge variant="outline" className="text-[10px] py-0 px-1.5">
+              primary
+            </Badge>
+          )}
+          <span
+            className="text-xs font-mono text-muted-foreground"
+            data-testid="account-state"
+          >
+            {account.state}
+          </span>
+        </SectionAction>
+      </SectionHeader>
+      <SectionContent>
         {(account.state === "degraded" || account.state === "error") &&
         account.error_message ? (
           <ConnectorErrorBanner code={account.error_message} />
@@ -199,8 +167,8 @@ function AccountWidget({ account, isPrimary }: AccountWidgetProps) {
             {account.daily_summaries_7d}
           </dd>
         </dl>
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }
 
@@ -210,14 +178,14 @@ function AccountWidget({ account, isPrimary }: AccountWidgetProps) {
 
 function NotConfiguredCard() {
   return (
-    <Card data-testid="google-health-not-configured">
-      <CardContent className="pt-4">
+    <Section data-testid="google-health-not-configured">
+      <SectionContent className="pt-4">
         <p className="text-sm text-muted-foreground italic">
           Google Health is not configured. Grant the Google Health scopes in
           Settings to enable data ingestion.
         </p>
-      </CardContent>
-    </Card>
+      </SectionContent>
+    </Section>
   );
 }
 

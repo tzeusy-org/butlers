@@ -48,6 +48,7 @@
 //   POST /relationship/entities/{id}/info    - user credential create success
 
 import { test, expect, type Page } from "@playwright/test";
+import type { OwnTracksConfigResponse, OwnTracksStatusResponse } from "../../src/api/types";
 
 // ---------------------------------------------------------------------------
 // Mock inventory (raw API shape)
@@ -274,12 +275,30 @@ async function mockAllSecretRoutes(page: Page) {
     if (method === "DELETE") return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ disconnected: true }) });
     route.continue();
   });
-  // OwnTracks
+  // OwnTracks: use the connector API contract, not the inventory state shape.
+  const ownTracksStatus = {
+    state: "connected",
+    token_configured: true,
+    last_event_at: "2026-01-15T14:01:00Z",
+    events_today: 42,
+  } satisfies OwnTracksStatusResponse;
+  const ownTracksConfig = {
+    webhook_url: "https://butlers.example.com/owntracks/webhook",
+    token_masked: "abcd...wxyz",
+    setup_instructions: {
+      mode: "HTTP",
+      url_field: "URL",
+      auth_type: "Bearer token",
+      steps_ios: ["Set the webhook URL in OwnTracks for iOS."],
+      steps_android: ["Set the webhook URL in OwnTracks for Android."],
+      troubleshooting_hint: "Check app permissions and webhook reachability.",
+    },
+  } satisfies OwnTracksConfigResponse;
   await page.route("**/api/connectors/owntracks/status**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ connected: true, last_event_at: "14:01 today", event_count: 42 }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(ownTracksStatus) })
   );
   await page.route("**/api/connectors/owntracks/config**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ webhook_url: "https://butlers.example.com/api/connectors/owntracks/ingest", token_set: true }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(ownTracksConfig) })
   );
   await page.route("**/api/connectors/owntracks/token/generate**", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ token: "new-owntracks-token-abc123" }) })
@@ -1011,15 +1030,17 @@ test.describe("Provider drawers (C32-C36)", () => {
     await expect(otDrawer).toBeAttached({ timeout: 8_000 });
 
     // Webhook URL present
-    await expect(page.locator('[data-owntracks-webhook-url="true"]')).toBeAttached({ timeout: 3_000 });
+    await expect(page.locator('[data-owntracks-webhook-url="true"]')).toHaveText("https://butlers.example.com/owntracks/webhook");
+    await expect(otDrawer.getByRole("img", { name: "OwnTracks: connected" })).toBeVisible();
+    await expect(otDrawer.getByText("42 events today", { exact: true })).toBeVisible();
 
     // Generate token button present
     const generateBtn = page.locator('button', { hasText: /generate|regenerate/i });
     await expect(generateBtn.first()).toBeAttached({ timeout: 3_000 });
   });
 
-  test("C33: OwnTracks generate token -- fires generate mutation, shows token", async ({ page }) => {
-    // Covers C33 -- generate token
+  test("C33: OwnTracks regenerate token -- confirms, fires mutation, shows token", async ({ page }) => {
+    // Covers C33 -- replacing a configured token requires confirmation.
     await mockAllSecretRoutes(page);
     const inventoryWithOT = JSON.parse(JSON.stringify(MOCK_INVENTORY_RESPONSE));
     inventoryWithOT.data.user.push({
@@ -1042,17 +1063,28 @@ test.describe("Provider drawers (C32-C36)", () => {
     await expect(page.locator('[data-direction-passport="true"]')).toBeAttached({ timeout: 10_000 });
     await page.locator('[data-owntracks-drawer-content="true"]').waitFor({ timeout: 8_000 });
 
-    // Click generate / regenerate
-    const generateBtn = page.locator('[data-owntracks-drawer-content="true"] button', { hasText: /generate|regenerate/i }).first();
+    const tokenRequests: string[] = [];
+    page.on("request", (request) => {
+      if (new URL(request.url()).pathname === "/api/connectors/owntracks/token/generate") {
+        tokenRequests.push(request.method());
+      }
+    });
+    const generateBtn = page.locator('[data-owntracks-drawer-content="true"]').getByRole("button", { name: "regenerate token", exact: true });
     await generateBtn.click();
 
-    // If there is no existing token, the token should appear.
-    // With existing token, a confirm panel appears first.
-    // Either the token value appears or a regenerate confirm appears.
-    const tokenValue = page.locator('[data-owntracks-token-value="true"]');
     const tokenPanel = page.locator('[data-owntracks-token-panel="true"]');
+    const tokenValue = tokenPanel.getByText("new-owntracks-token-abc123", { exact: true });
     const regenerateConfirm = page.locator('[data-owntracks-regenerate-confirm="true"]');
-    await expect(tokenValue.or(tokenPanel).or(regenerateConfirm)).toBeAttached({ timeout: 5_000 });
+    await expect(regenerateConfirm).toBeVisible();
+    await expect(tokenValue).not.toBeAttached();
+    expect(tokenRequests).toEqual([]);
+
+    await regenerateConfirm.getByRole("button", { name: "yes, regenerate", exact: true }).click();
+    await expect(tokenValue).toHaveText("new-owntracks-token-abc123");
+    expect(tokenRequests).toEqual(["POST"]);
+    await expect(regenerateConfirm).not.toBeAttached();
+    await tokenPanel.getByRole("button", { name: "dismiss", exact: true }).click();
+    await expect(tokenPanel).not.toBeAttached();
   });
 
   test("C34: Steam drawer -- renders accounts list and connect panel (click to open)", async ({ page }) => {

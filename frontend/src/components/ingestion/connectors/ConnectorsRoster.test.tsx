@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter } from 'react-router'
+import { within } from '@testing-library/react'
 
 ;(
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -314,7 +315,8 @@ describe('AC2: auth issues appear consistently in attention strip and row', () =
     mockHooks([HEALTHY_CONNECTOR, REAUTH_CONNECTOR, STALE_CONNECTOR])
     renderRoster(container, root)
 
-    const badge = container.querySelector('[data-testid="attention-count"]')
+    const badge = container.querySelector<HTMLElement>('[data-testid="attention-count"]')
+    expect(badge?.style.color).toBe('var(--red-text)')
     expect(badge?.textContent?.trim()).toBe('2')
   })
 
@@ -351,11 +353,11 @@ describe('AC2: auth issues appear consistently in attention strip and row', () =
     expect(stripText).toContain('reauth')
     // The connector is unhealthy (state=error), but its genuine auth failure
     // must keep the actionable reauth label and its auth severity tone.
-    expect(rowAuthLabel?.className).toContain('var(--red-text)')
+    expect(rowAuthLabel?.getAttribute('style')).toContain('var(--red-text)')
     const stripAuthLabel = Array.from(stripItem?.querySelectorAll('span') ?? []).find((span) =>
       span.textContent?.toLowerCase().includes('reauth'),
     )
-    expect(stripAuthLabel?.className).toContain('var(--red-text)')
+    expect(stripAuthLabel?.getAttribute('style')).toContain('var(--red-text)')
   })
 
   it('uses the registered Google OAuth route for Gmail reauth', () => {
@@ -392,12 +394,16 @@ describe('AC2: auth issues appear consistently in attention strip and row', () =
     expect(
       container.querySelector('[data-testid="attention-item-owntracks"]')?.textContent,
     ).toContain('cadence sparse')
+    const cadenceLabel = container.querySelector<HTMLElement>(
+      '[data-testid="attention-item-owntracks"] span:last-child',
+    )
+    expect(cadenceLabel?.style.color).toBe('var(--amber-text)')
     expect(
       container.querySelector('[data-testid="connector-warning-owntracks"]')?.textContent,
     ).toContain('The operational baseline is 24')
     expect(
-      container.querySelector('[data-testid="connector-warning-owntracks"]')?.className,
-    ).toContain('text-[var(--amber-text)]')
+      container.querySelector<HTMLElement>('[data-testid="connector-warning-owntracks"]')?.style.color,
+    ).toBe('var(--amber-text)')
     expect(
       container.querySelector('[data-testid="health-verdict-owntracks"]')?.textContent?.trim(),
     ).toBe('online')
@@ -418,13 +424,13 @@ describe('AC2: auth issues appear consistently in attention strip and row', () =
 
     const pausedStatus = container.querySelector('[data-testid="auth-status-google_calendar"]')
     expect(pausedStatus?.textContent?.toLowerCase()).toContain('connector paused')
-    expect(pausedStatus?.className).toContain('var(--amber-text)')
+    expect(pausedStatus?.getAttribute('style')).toContain('var(--muted-foreground)')
 
     const pausedAttention = container.querySelector('[data-testid="attention-item-google_calendar"]')
     expect(pausedAttention?.textContent?.toLowerCase()).toContain('connector paused')
-    const attentionCount = container.querySelector('[data-testid="attention-count"]')
+    const attentionCount = container.querySelector<HTMLElement>('[data-testid="attention-count"]')
     expect(attentionCount?.textContent?.trim()).toBe('1')
-    expect(attentionCount?.className).toContain('var(--red-text)')
+    expect(attentionCount?.style.color).toBe('var(--red-text)')
 
     const kpiFooter = container.querySelector('[data-testid="connectors-kpi-footer"]')
     const kpiValue = (label: string) =>
@@ -543,19 +549,38 @@ describe('AC3: single health verdict per row (dot + word)', () => {
     const verdict = container.querySelector('[data-testid="health-verdict-gmail"]')
     expect(verdict).not.toBeNull()
     expect(verdict?.textContent?.trim()).toBe('online')
+    expect(verdict?.className).toContain('text-muted-foreground')
+    expect(verdict?.getAttribute('style')).toBeNull()
 
     // No leftover two-dot markup
     expect(container.querySelector('[data-testid="liveness-dot-gmail"]')).toBeNull()
     expect(container.querySelector('[data-testid="state-dot-gmail"]')).toBeNull()
   })
 
-  it('stale connector reports the "stale" verdict word', () => {
-    // STALE_CONNECTOR: liveness=stale, state=healthy
-    mockHooks([STALE_CONNECTOR])
+  it.each([
+    ['stale', 'healthy', 'Degraded', 'var(--amber)'],
+    ['offline', 'healthy', 'Error', 'var(--red)'],
+    ['online', 'degraded', 'Degraded', 'var(--amber)'],
+    ['online', 'paused', 'Degraded', 'var(--amber)'],
+    ['online', 'unknown', 'Degraded', 'var(--amber)'],
+  ])('%s healthy connector has one state mark and an accessible verdict', (liveness, state, label, color) => {
+    mockHooks([{ ...STALE_CONNECTOR, liveness, state }])
     renderRoster(container, root)
 
-    const verdict = container.querySelector('[data-testid="health-verdict-telegram"]')
-    expect(verdict?.textContent?.trim()).toBe('stale')
+    const row = within(container).getByTestId('connector-row-telegram')
+    const dot = within(row).getByRole('img', { name: label })
+    expect(dot.style.backgroundColor).toBe(color)
+    expect(within(row).getByTestId('health-verdict-telegram').closest('[aria-hidden="true"]')).toBeNull()
+
+    // Count rendered state-colored shapes, including decorative ones hidden
+    // from assistive technology. JSDOM does not expand Tailwind utilities, so
+    // inspect both inline fills and token-based background classes. The dot
+    // is a positive control: removing all status marks must also fail.
+    const stateMarks = Array.from(row.querySelectorAll<HTMLElement>('*')).filter((element) =>
+      /var\(--(?:red|amber|green)(?:-text)?\)/.test(element.getAttribute('style') ?? '') ||
+      /(?:bg|text|border)-\[(?:color:)?var\(--(?:red|amber|green)(?:-text)?\)\]/.test(element.getAttribute('class') ?? ''),
+    )
+    expect(stateMarks).toEqual([dot])
   })
 
   it('offline+error connector reports the "offline" verdict word', () => {
@@ -593,7 +618,7 @@ describe('bu-14gso: offline connector with frozen error state', () => {
     expect(status?.textContent?.toLowerCase()).not.toContain('reauth')
     expect(status?.textContent?.toLowerCase()).toContain('connector offline')
     expect(status?.textContent?.toLowerCase()).not.toContain('authorized')
-    expect(status?.className).toContain('var(--red-text)')
+    expect(status?.getAttribute('style')).toContain('var(--muted-foreground)')
     expect(status?.className).not.toContain('--green')
   })
 
@@ -608,7 +633,7 @@ describe('bu-14gso: offline connector with frozen error state', () => {
     const healthNote = Array.from(item?.querySelectorAll('span') ?? []).find((span) =>
       span.textContent?.toLowerCase().includes('connector offline'),
     )
-    expect(healthNote?.className).toContain('var(--red-text)')
+    expect(healthNote?.getAttribute('style')).toContain('var(--red-text)')
     expect(healthNote?.className).not.toContain('--green')
   })
 
@@ -701,7 +726,7 @@ describe('reauth pill is the reauth action', () => {
     const pill = container.querySelector('[data-testid="auth-status-gmail"]')
     expect(pill?.tagName).not.toBe('A')
     expect(pill?.textContent?.toLowerCase()).toBe('authorized')
-    expect(pill?.className).toContain('var(--green')
+    expect(pill?.getAttribute('style')).toContain('var(--muted-foreground)')
   })
 })
 
@@ -833,6 +858,18 @@ describe('per-device liveness (bu-e16to)', () => {
     )
     expect(fresh?.textContent).toMatch(/^last ·/)
     expect(stale?.textContent).toMatch(/^stale ·/)
+    for (const [identity, label, color] of [
+      ['owntracks:th', 'OK', 'var(--green)'],
+      ['owntracks:el', 'Error', 'var(--red)'],
+    ]) {
+      const device = within(container).getByTestId(`connector-device-${identity}`)
+      const dot = within(device).getByRole('img', { name: label })
+      expect(dot.style.backgroundColor).toBe(color)
+      for (const copy of [within(device).getByText(identity), within(device).getByTestId(`connector-device-lastseen-${identity}`)]) {
+        expect(copy.className).toMatch(/text-muted-foreground(?: |$)/)
+        expect(copy.className).not.toMatch(/text-muted-foreground\/|opacity-/)
+      }
+    }
   })
 
   it('does not render a devices section for a single-device connector', () => {

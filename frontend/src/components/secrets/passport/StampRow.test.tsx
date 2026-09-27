@@ -85,7 +85,7 @@ describe("StampRow: note", () => {
         event={{ ts: "2026-05-21 09:03", actor: "butler:health", action: "failed", note: "Token expired" }}
       />,
     )
-    expect(html).toContain("Source Serif 4")
+    expect(html).toContain("font-family:var(--font-serif)")
   })
 })
 

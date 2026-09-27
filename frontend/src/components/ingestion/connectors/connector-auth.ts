@@ -42,6 +42,7 @@
 
 import { getProviderOAuthStartUrl } from '@/api/client'
 import type { ConnectorSummary } from '@/api/types'
+import { stateTextColorVar } from '@/lib/visual-token-roles'
 
 /** Derived auth status — maps onto the Dispatch design language. */
 export type DerivedAuthStatus =
@@ -258,54 +259,43 @@ export function authStatusLabel(status: DerivedAuthStatus): string {
 export function authStatusColor(status: DerivedAuthStatus): string {
   switch (status) {
     case 'ok':
-      return 'text-[var(--green)]'
+      return stateTextColorVar('ok')
     case 'expiring':
-      return 'text-[var(--amber-text)]'
+      return stateTextColorVar('degraded')
     case 'needs_reauth':
-      return 'text-[var(--red-text)]'
+      return stateTextColorVar('error')
     case 'needs_primary_account':
-      return 'text-[var(--amber-text)]'
+      return stateTextColorVar('degraded')
     case 'unconfigured':
-      return 'text-muted-foreground'
+      return stateTextColorVar('waiting')
   }
 }
 
-/** Maps health to a Tailwind background color for the health dot. */
-export function healthDotColor(health: DerivedHealth): string {
+/** Maps derived connector health to the canonical StateDot state. */
+export function healthDotState(health: DerivedHealth): 'ok' | 'degraded' | 'error' | 'waiting' {
   switch (health) {
     case 'ok':
-      return 'bg-[color:var(--green,oklch(0.72_0.17_150))]'
+      return 'ok'
     case 'degraded':
-      return 'bg-[color:var(--amber,oklch(0.72_0.12_70))]'
+      return 'degraded'
     case 'error':
-      return 'bg-[color:var(--red,oklch(0.62_0.20_25))]'
+      return 'error'
     case 'off':
-      return 'bg-muted-foreground/40'
+      return 'waiting'
     case 'unclassified':
-      return 'bg-[color:var(--amber,oklch(0.72_0.12_70))]'
+      return 'waiting'
   }
 }
 
-/** Maps health to an AA-safe Tailwind foreground role. */
+/** Maps health to the same semantic token consumed by StateDot. */
 export function healthTextColor(health: DerivedHealth): string {
-  switch (health) {
-    case 'ok':
-      return 'text-[var(--green)]'
-    case 'degraded':
-      return 'text-[var(--amber-text)]'
-    case 'error':
-      return 'text-[var(--red-text)]'
-    case 'off':
-      return 'text-muted-foreground/40'
-    case 'unclassified':
-      return 'text-[var(--amber-text)]'
-  }
+  return stateTextColorVar(healthDotState(health))
 }
 
 /** The visible auth label and semantic foreground tone for roster surfaces. */
 export interface AuthStatusPresentation {
   label: string
-  colorClass: string
+  color: string
 }
 
 /**
@@ -320,13 +310,13 @@ export function authStatusPresentation(info: ConnectorDispatchInfo): AuthStatusP
   if (info.authStatus === 'ok' && info.health !== 'ok') {
     return {
       label: info.authNote,
-      colorClass: healthTextColor(info.health),
+      color: healthTextColor(info.health),
     }
   }
 
   return {
     label: authStatusLabel(info.authStatus),
-    colorClass: authStatusColor(info.authStatus),
+    color: authStatusColor(info.authStatus),
   }
 }
 

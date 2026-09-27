@@ -61,7 +61,7 @@ const EXPIRING_DOCS_LOOKAHEAD_DAYS = 180;
 function EmptyStateLine({ children }: { children: ReactNode }) {
   return (
     <p
-      className="text-sm text-muted-foreground italic font-[family-name:var(--font-serif,serif)]"
+      className="text-sm text-muted-foreground italic font-[family-name:var(--font-serif)]"
       data-testid="empty-state-line"
     >
       {children}

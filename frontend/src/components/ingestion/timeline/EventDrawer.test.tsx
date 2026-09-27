@@ -282,6 +282,19 @@ describe("EventDrawer — per-session cost column", () => {
     expect(container.querySelector("[data-testid='sessions-tab-loading']")).not.toBeNull();
   });
 
+  it.each([
+    ["error", { status: "error" as const, error_detail: "connector timeout" }, "connector timeout", "var(--red-text)"],
+    ["filtered", { status: "filtered" as const, filter_reason: "duplicate" }, "duplicate", "var(--amber-text)"],
+  ])("uses an AA-safe foreground for %s event detail", (_label, event, text, color) => {
+    mockSessions([]);
+    renderDrawer(makeEvent(event));
+    const detail = Array.from(container.querySelectorAll("span")).find(
+      (span) => span.childElementCount === 0 && span.textContent === text,
+    );
+    expect(detail).toBeDefined();
+    expect(detail?.style.color).toBe(color);
+  });
+
   it("renders honest empty states for error and filtered events", () => {
     mockSessions([]);
 
@@ -384,6 +397,22 @@ describe("EventDrawer — raw tab", () => {
       );
     });
   }
+
+  it("uses an AA-safe foreground for the truncated payload notice", () => {
+    vi.mocked(useIngestionEventPayload).mockReturnValue({
+      data: { data: { content: "{}", bytes: 2, channel: "email", truncated: true } },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useIngestionEventPayload>);
+    renderDrawer();
+    const tab = container.querySelector<HTMLButtonElement>("[data-testid='drawer-tab-raw']");
+    act(() => tab!.click());
+    const notice = Array.from(container.querySelectorAll("span")).find(
+      (span) => span.textContent === "truncated",
+    );
+    expect(notice).toBeDefined();
+    expect(notice?.style.color).toBe("var(--amber-text)");
+  });
 
   it("does not auto-fetch on a remembered raw tab, but offers an explicit audited-load affordance (no dead end)", () => {
     // Simulates landing on THIS event's drawer with 'raw' remembered from a

@@ -65,7 +65,7 @@ import { BriefingStatus } from "@/components/overview/BriefingStatus.tsx";
 import { DateEyebrow } from "@/components/overview/DateEyebrow.tsx";
 import { Elaboration } from "@/components/overview/Elaboration.tsx";
 import { KpiStrip } from "@/components/overview/KpiStrip.tsx";
-import { Section } from "@/components/overview/Section.tsx";
+import { Section } from "@/components/ui/Section.tsx";
 import { ButlerMark } from "@/components/ui/ButlerMark.tsx";
 import { Display } from "@/components/ui/Display.tsx";
 import { SourceDegradedNote } from "@/components/ui/query-boundary.tsx";
