@@ -532,3 +532,9 @@ it is no longer running, preserve the authoritative ledger, audit projection,
 and backup volume, and use the reviewed migration and managed bootstrap
 procedures for any privilege remediation. A rollback must never restore a dump
 into the live application database or manually erase recovery evidence.
+
+## Implementation Notes
+
+- Host BusyBox differs from Alpine's (Ubuntu `busybox find` has no `-delete`): parse-check
+  `deploy/backup/pg_dump.sh` with `busybox ash -n` locally and execute it only in the
+  `postgres:17-alpine` image (`tests/scripts/test_pg_dump_backup.py`).

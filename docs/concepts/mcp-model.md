@@ -93,6 +93,13 @@ curl -s http://localhost:41200/api/butlers/general/sessions | python3 -m json.to
 # (the ephemeral config has no other server entries).
 ```
 
+## Implementation Notes
+
+- RFC 0002 Amendment 1 and RFC 0027 separate the full registered MCP catalog from the initially
+  loaded working set: the 30-50 tool target constrains initial presentation, not registered
+  handlers. Reconcile older roster tool ceilings against that before deleting tools or raising
+  limits.
+
 ## Related Pages
 
 - [Trigger Flow](trigger-flow.md) --- how triggers create sessions that connect to the MCP server

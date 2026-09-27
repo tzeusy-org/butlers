@@ -98,6 +98,19 @@ Switchboard (routing plane) and Messenger (delivery plane) intentionally omit it
 
 None. The contacts module is a leaf module.
 
+## Implementation Notes
+
+- Contacts sync runs as an in-process poll loop inside `butlers up`, not a standalone connector: an
+  immediate incremental run on startup, then polling every 15 minutes
+  (`ContactsSyncRuntime`; `trigger_immediate_sync()` is the poller trigger).
+- Rollout: `[modules.contacts]` with `provider = "google"` on general, health and relationship;
+  deliberately absent from switchboard (routing plane) and messenger (delivery plane).
+- Backfill never auto-merges an ambiguous name match. A provider overwrites only the fields it owns
+  in the provenance map; locally edited fields are preserved.
+- Migration `contacts_001` adds the `contacts_source_links.local_contact_id` FK only when
+  `contacts` exists in the current schema (`to_regclass(format('%I.contacts', current_schema()))`),
+  because schemas such as `general` and `health` enable the module without owning CRM `contacts`.
+
 ## Related Pages
 
 - [Module System](module-system.md)

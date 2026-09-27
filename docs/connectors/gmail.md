@@ -233,6 +233,17 @@ curl -s "http://localhost:9090/api/v1/query?query=butlers_connector_gmail_priori
 # Expected: non-zero counts for at least one tier (high_priority, interactive, or default)
 ```
 
+## Implementation Notes
+
+- `run_gmail_connector` is DB-only for Google OAuth credentials: it reads `butler_secrets` and never
+  falls back to credential env vars; `GmailConnectorConfig.from_env(...)` takes the DB credentials
+  as arguments and reads only non-secret env. `_resolve_gmail_credentials_from_db` looks up the
+  local schema, then the shared schema (`BUTLER_SHARED_DB_SCHEMA`, default `public`), each pool with
+  a schema-scoped `search_path`; without it `butler_secrets` does not resolve in the one-DB topology.
+- `_format_google_error` is the one parser for Google API and OAuth error payloads. Log its compact
+  `code/status/reason/message` for `history.list` 404 cursor resets, other non-2xx `history.list`
+  responses and failed token refreshes, before raising; never dump full payloads.
+
 ## Related Pages
 
 - [Connector Architecture Overview](overview.md)

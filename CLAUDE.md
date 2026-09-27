@@ -110,12 +110,12 @@ commit to it directly — **there is no `bd sync` in this version.**
 
 ## Session Completion
 
-Work is **not** complete until `git push` succeeds — never stop before pushing, and never hand back
+Work is **not** complete until the branch push succeeds — never stop before pushing, and never hand back
 with "ready to push when you are". Before signalling done:
 
 1. File beads for remaining/follow-up work; close or update what you finished.
 2. Run the quality gates above if code changed.
-3. `git pull --rebase && git push`, then confirm `git status` shows up to date with origin. If push
-   fails, resolve and retry until it succeeds.
+3. From the worktree, push the branch and open the PR; after gates, queue it with
+   `gh pr merge <n> --squash --auto`. Confirm the branch is pushed; if push fails, resolve and retry.
 4. Clean up (stashes, merged worktrees, stale remote branches) and hand off context for the next
    session.

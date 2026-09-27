@@ -291,6 +291,48 @@ Entity identity tables live in the `public` schema: `public.entities`.
 
 None. The memory module is a leaf module with no dependencies on other modules.
 
+## Implementation Notes
+
+- Catalog read authority is server-held in each schema's
+  `runtime_config.catalog_read_sensitivity` (`normal|internal|confidential`). MCP search and fetch
+  expose no caller ceiling. Cross-butler canonical fetches route through Switchboard to the owning
+  butler's `memory_get`; never add cross-schema SELECT or a caller-parameterised SECURITY DEFINER
+  shortcut.
+- `/api/memory/*` fans out across the butler pools that carry memory tables and never requires
+  `db.pool("memory")`. Pools without memory tables are skipped, so a deployment with none returns
+  empty payloads (404 for ID lookups), not 503. `/api/memory/reembed/pending` skips non-memory
+  schemas such as `chronicler`, whose `episodes` table has no `embedding` column.
+- `store_fact` fills `source_butler` from runtime context and reuses the session's canonical
+  episode when `source_episode_id` is omitted. A writer that bypasses it (bulk SQL, scheduled jobs)
+  must pass `source_butler` or call `resolve_write_provenance(...)`, or the facts UI shows blank
+  provenance.
+- Tool metadata must describe list-only inputs with valid and invalid examples
+  (`tags=["x"]`, `types=["fact"]`, never `types="facts"`), and `memory_search.types` / `.mode` are
+  typed as `Literal` so the MCP schema exposes enums. The same applies to `notify.request_context`,
+  which must be an object, never a JSON string.
+- Entity merge tombstones the source (`metadata.merged_into`), hides it from list, search and
+  `entity_resolve`, re-links `public.contacts.entity_id`, and unions only the source's `aliases`
+  (not its `canonical_name`) onto the target. Dunbar enrichment keeps the highest `dunbar_score`
+  across contacts sharing an `entity_id`.
+- Entity-dedup curation treats any `pending`, `approved`, `rejected` or `abandoned` merge row for
+  the ordered pair as existing state; retention keeps rejected and abandoned decisions, and curation
+  never retries or mutates an approved or abandoned merge.
+- `memory_ann_observability` measures only the local HNSW tables through the module's own pool, so
+  private schemas stay isolated. Exact recall runs only below a 2,000-row estimate and a 1,024-page
+  cap with local timeouts; otherwise it reports degraded or no-data and never runs maintenance.
+- Entity-dedup curation keys `pending_actions.deduplication_key` as
+  `relationship:entity-dedup:<source>:<target>`; `approvals_013` makes it unique for live lifecycle
+  states while keeping NULL historic rows. The surviving target is the earliest `(created_at, id)`.
+- `store_fact` defaults `sensitivity` to `'normal'`, so the failure mode is a domain write path that
+  never passes one. There is no predicate-to-sensitivity map: each domain passes its own
+  classification (`roster/health/tools/_helpers.py::HEALTH_SENSITIVITY_CONFIDENTIAL`). Audit new
+  `store_fact`/`store_rule` call sites for an implicit `'normal'`.
+- `memory_search`, `memory_recall` and `memory_get` closures pass one server-held
+  `CatalogReadPolicy` from the owning daemon's `runtime_config.catalog_read_sensitivity`; a private
+  memory schema never substitutes its own row. `memory_get` applies the ceiling inside its
+  `UPDATE ... RETURNING`; `memory_context` reserves preamble and `withheld: N` text before fitting
+  Profile Facts; an explicit higher sensitivity filter raises `SensitivityAuthorizationError`.
+
 ## Related Pages
 
 - [Module System](module-system.md)

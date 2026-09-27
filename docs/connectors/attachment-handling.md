@@ -96,6 +96,18 @@ psql -h localhost -U butlers -d butlers -c \
 # Expected: false for non-calendar attachments; they are metadata-only until fetched on demand
 ```
 
+## Implementation Notes
+
+- `IngestPayloadV1.normalized_text` may be `""` (a captionless photo or document); never synthesize a
+  placeholder such as `"[Photo]"` for vision media (`telegram_bot.py::_extract_normalized_text`).
+- Per-media-id idempotency checks a process-local cache, then `switchboard.media_refs` keyed by
+  `(connector_type, endpoint_identity, external_message_id, media_id)`; Gmail's `attachment_refs`
+  has no connector namespace, so do not reuse it.
+- `ModelFeature.VISION` stays `UNKNOWN` (fails closed) until a `public.model_catalog` row declares
+  `capabilities: {"vision": true}`; `Spawner._run` requires it for any `image/*` attachment.
+- `tests/core/test_attachment_view.py::test_no_other_tool_source_embeds_a_data_base64_field`
+  guards the inline base64 cap repo-wide.
+
 ## Related Pages
 
 - [Gmail Connector](gmail.md) -- Gmail-specific ingestion details

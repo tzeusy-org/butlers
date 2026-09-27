@@ -168,6 +168,43 @@ uv run pytest \
   tests/connectors/test_discretion_dispatcher.py
 ```
 
+## Implementation Notes
+
+- Secrets API projections are content-blind (owner decision 2026-08-13). `GET
+  /api/secrets/user/{provider}`, `GET /api/secrets/inventory` and the system and CLI detail
+  endpoints publish capability categories from `CAPABILITY_VOCABULARY`, never raw OAuth scopes,
+  `entity_info.type` or `label`, audit notes, or probe messages. `_content_blind_detail`,
+  `_content_blind_summary` and `_content_blind_cli` (`src/butlers/api/routers/secrets_v2.py`) build
+  each DTO field by field, so adding a field to an internal record does not publish it and must
+  not without a fresh security review.
+- Two sanctioned exceptions predate that work: `POST .../reauthorize` returns the persisted `label`
+  as `account_hint` in `redirect_url`, and `POST .../probe` returns `failure_tail` as
+  `TestResult.message`. Audit them before assuming a value cannot escape.
+- `/api/butlers/shared/secrets` is a reserved target resolved through
+  `DatabaseManager.credential_shared_pool()` (not `db.pool("shared")`); it answers `503` when that
+  pool is unset. In the dashboard, a per-butler Secrets view merges its local rows with the shared
+  rows (local wins on key collision; shared-only rows carry `source="shared"`), and provider slugs
+  come from the backend provider catalog plus aliases, never from splitting `entity_info.type`.
+- `public.butler_secrets` has two shape definitions that must agree: the fresh-table bootstrap
+  (`_SECRETS_TABLE_DDL` in `src/butlers/credential_store.py`) and the core Alembic chain, whose
+  schema discovery can exclude `public`, so a new column also needs an explicit public migration.
+  Startup `ensure_secrets_schema` may create an absent table or index but never `ALTER` an existing
+  one (`pg_dump` holds a conflicting lock); convergence belongs to the migration
+  (`tests/migrations/test_shared_pool_startup_lock.py`).
+- Provider-managed rows (Spotify, OwnTracks) are excluded from proactive expiry notifications in
+  both stores; actionable auth failures come from connector status. Keep the backend exclusion and
+  the frontend filter aligned.
+- A CLI secret's `label` is the `description` column (`_fetch_single_cli_secret`), so publishing it
+  does not widen the content-blind surface. User rows are the opposite: the persisted
+  `entity_info.label` must not be published. Check which surface you are on.
+- `secrets_v2.py` names internal and public types inconsistently across lanes (`SystemSecretDetail`
+  is internal, `UserSecretDetail` is public). The projector's return type
+  (`def _content_blind_*(record) -> Public`) is the authority, never the name.
+- `public.audit_log` has three readers (`GET /api/audit-log`, `/api/audit-log/{id}` and
+  `/api/issues/{key}/occurrences`): enforce content-blindness on `AuditLogEntry`
+  (`src/butlers/api/models/audit.py`), not per route. The `target` column is never normalised on
+  write, so predicates must accept the long-scope spellings (`user:`, `system:`, `cli:`).
+
 ## Related Pages
 
 - [Schema Topology](schema-topology.md) -- Where `butler_secrets` lives

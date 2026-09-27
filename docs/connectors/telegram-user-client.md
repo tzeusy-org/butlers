@@ -292,6 +292,12 @@ grep -i "session.*expired\|FloodWait\|AuthKey" /var/log/butlers/telegram-user-cl
 # Expected: no session-expired errors in steady state; if present, remediation instructions are clear
 ```
 
+## Implementation Notes
+
+- Conversation-history batches preserve `sender.participants` / `owner_sender_id` through
+  `message_inbox.raw_payload`; durable-buffer routing derives the non-owner sender and passes
+  `source_id`, so memory facts anchor to the contact rather than the owner.
+
 ## Related Pages
 
 - [Connector Architecture Overview](overview.md)

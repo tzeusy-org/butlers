@@ -13,6 +13,7 @@
 - [Grafana Monitoring](grafana-monitoring.md) — dashboards, tracing, logging
 - [Tailnet Health Monitoring](tailnet-health-monitoring.md) — canonical strict-TLS health probe handoff
 - [Connector Scaling](connector-scaling.md) — horizontal scaling for connectors
+- [Decision Beads](decision-beads.md) — owner-decision bead convention and its linter
 - [Troubleshooting](troubleshooting.md) — common issues, debugging, health checks
 - [Runtime Attention](runtime-attention.md) — runtime-attention paging path and its stored functions
 - [Image Bump Procedure](image-bump-procedure.md) — updating pinned service image tags

@@ -50,6 +50,24 @@ cancellation, or all-clear. The producer mapping lives in
 [`butler-finance` spec](../../openspec/specs/butler-finance/spec.md); see also
 [Expected Signals](../concepts/expected-signals.md).
 
+## Implementation Notes
+
+- `roster/finance/tools/overview.py` subscription audit batches charge-date lookups with one
+  `LEFT JOIN ... GROUP BY` and `COALESCE(MAX(CASE WHEN ... END), fallback)`; reuse that shape rather
+  than per-parent queries.
+- `roster/finance/tools/transactions.py` runs composite same-day dedup only with extra provenance
+  (`account_id` or `source_message_id`); source-less manual rows stay distinct.
+- `roster/finance/tools/facts.py::_TRANSACTION_PREDICATES` must stay a `list`: it is interpolated
+  with `!r` into `ARRAY{...}::text[]`, and a tuple renders `ARRAY(...)`.
+- Transaction ingestion has two paths with different dedupe: `POST /api/finance/transactions/bulk`
+  writes facts directly (`tools/facts.py::bulk_record_transactions`, deduping `source_message_id`
+  per predicate and hashing signed amounts, so opposite-sign imports of one event can persist as
+  both debit and credit), while the MCP tool goes through `record_transaction` and mirrors to facts.
+  Retries can leave soft-deleted ledger rows whose mirrored facts stay `active`; reconciliation
+  retracts facts matching a deleted row on merchant, amount, currency, `posted_at` and direction.
+- `merchant_mappings` columns are `raw_pattern`, `normalized_merchant`, `learned_from_count` and
+  `source`; the legacy `merchant`, `merchant_pattern` and `sample_count` columns do not exist.
+
 ## Related Pages
 
 - [Switchboard Butler](switchboard.md) -- routes financial email and messages here

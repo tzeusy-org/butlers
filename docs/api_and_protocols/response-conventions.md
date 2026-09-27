@@ -141,6 +141,23 @@ remain numeric for wire compatibility, but when more than one currency contribut
 as if it had one denomination. A single-currency result carries that real currency; an empty result
 does not invent USD.
 
+## Implementation Notes
+
+- `GET /api/audit-log` treats `UndefinedTableError` on `dashboard_audit_log` as an empty page
+  (`data=[]`, `total=0`), not a 500, because the dashboard can start against an unmigrated or
+  offline switchboard schema.
+- The notifications endpoints treat a missing switchboard `notifications` table like an unavailable
+  pool: empty pages and zeroed stats, not a 500, before switchboard migrations run.
+- Currentness: audit groups and QA patrol failures count as current only inside the closed
+  `[now-window, now]` interval (future timestamps excluded), and a failed-notification query and its
+  drill-down link share one captured `since`/`until` pair.
+- TanStack Query can report `isError` while keeping data from an earlier success: show stale
+  freshness beside retained rows instead of replacing them with an error banner.
+- Timeline partial sources: keep the generic `meta.degraded_sources` signal and add
+  `meta.degraded_butlers` only for named failed session pools (the frontend defaults the additive
+  field). When unpinned, commit current rows and cursor before fetching older data, so a failed page
+  stays visible and retries the same cursor.
+
 ## Related Pages
 
 - [Dashboard API](dashboard-api.md) --- application factory, router discovery, SSE streaming

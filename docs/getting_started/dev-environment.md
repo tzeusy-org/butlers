@@ -202,6 +202,22 @@ kill %1  # Stop the background API
 
 If the dashboard responds with `{"status": "ok"}`, the database and API are functioning. If `butlers list` shows butlers with correct ports and statuses, the dev environment matches what this page describes.
 
+## Implementation Notes
+
+- Debug compose services with `docker logs` and build `psql` commands from `.env.dev`
+  (`POSTGRES_DB` may be unset; scripts default to `butlers`). Live run logs are inside the
+  containers under `/app/logs/...`; the worktree's `logs/` can lag or belong to another run.
+- On the tailnet, `/butlers-dev/` serves the Vite frontend and live JSON APIs are under
+  `/butlers-dev-api/api/...`. Probing `/butlers-dev/api/...` returns the frontend's HTML fallback.
+- `butlers-dev-dashboard-api-hotreload-1` does not reload Python despite its name: restart it after
+  backend changes land on `main`. The Vite container does hot-reload.
+- Prototyping beside butlers-dev: run a worktree Vite with `--base /butlers-<name>/` and
+  `VITE_API_URL=/butlers-dev-api/api` (the default `/api` escapes tailscale path mounts), expose it
+  with `tailscale serve --bg --set-path /butlers-<name> ...`, and verify through the tailnet URL.
+  For backend changes, run a second `butlers dashboard` from the worktree with the container's
+  `POSTGRES_*` env and mount it at `/butlers-<name>-api`. Kill helpers by listening port, never
+  with a `pkill -f` pattern that matches your own shell.
+
 ## Related Pages
 
 - [First Butler Launch](first-butler-launch.md) --- triggering a butler and viewing its session log

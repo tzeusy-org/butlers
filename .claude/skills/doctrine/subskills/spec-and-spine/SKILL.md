@@ -103,6 +103,9 @@ The validated procedure, its verified costs, and the exact error strings are in
 [references/renaming-a-baseline-scenario.md](references/renaming-a-baseline-scenario.md).
 Read it before attempting a rename; prevention is much cheaper.
 
+Validation blind spots, overwrite races between open changes, and archive traps are in
+[references/openspec-gotchas.md](references/openspec-gotchas.md).
+
 ## OpenSpec Workflow Hand-off
 
 Use the OpenSpec workflow commands (installed and kept current by the `openspec` CLI under
