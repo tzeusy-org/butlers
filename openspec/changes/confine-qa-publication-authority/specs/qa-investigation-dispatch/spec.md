@@ -1,5 +1,29 @@
 ## MODIFIED Requirements
 
+### Requirement: Worktree-Based Investigation
+Each investigation SHALL run in a dedicated disposable checkout branched off latest `main`, with QA-specific isolation and cleanup superseding shared worktree mechanisms. This applies to initial and follow-up investigations; general non-QA healing behavior is unchanged.
+
+#### Scenario: Worktree creation
+- **WHEN** an investigation is dispatched
+- **THEN** `git fetch origin main` is run first to ensure the latest `main` through trusted preparation outside the agent checkout
+- **AND** a disposable checkout is created under `.healing-worktrees/qa/<source_butler>/<fingerprint-prefix>-<epoch>/` (the fingerprint prefix is the first 12 hex characters)
+- **AND** the branch name follows the pattern `qa/<source_butler>/<fingerprint-prefix>-<epoch>`
+- **AND** the checkout has its own Git metadata and object database, no shared `.git` or object alternates; `create_healing_worktree(prefix="qa")` is not inherited as the required mechanism
+- **AND** the credential-free agent and any build/test descendants run inside the process/filesystem boundary required by RFC0015; helper-workspace behavior from Investigation Agent Sandbox is retained
+- **AND** publication remains unavailable if that boundary cannot be proven; a linked worktree or CWD restriction alone does not establish isolation
+
+#### Scenario: Worktree cleanup on completion
+- **WHEN** an investigation completes (any terminal status)
+- **THEN** the disposable checkout may be removed only after sealed artifacts, expected-head/branch/PR bindings, operation stages and unresolved lineage holds are retained outside it
+- **AND** the local branch is deleted if no PR was created, subject to that evidence-retention prerequisite
+- **AND** cleanup performs no implicit remote deletion, including on anonymization failure or rollback; remote cleanup requires separate operational authority outside the publisher action surface
+
+#### Scenario: Partial creation and stale recovery preserve publication holds
+- **WHEN** QA cleans partial creation state, tears down a checkout, or reaps stale or apparently orphaned work on startup
+- **THEN** cleanup SHALL retain the sealed artifact, expected-head/branch/PR binding, operation stage and unresolved lineage hold outside agent control
+- **AND** while an unresolved publication lineage hold exists, terminal status, missing attempt rows or elapsed time do not permit a fresh publication attempt, ref or PR without exact bound-resource read-only reconciliation and durable hold resolution
+- **AND** shared healing cleanup/reaper helpers and `delete_remote=True` confer no QA remote-deletion authority
+
 ### Requirement: Investigation Agent Sandbox
 Investigation agents SHALL operate in a sandboxed environment without GitHub publication credentials and with no access to publisher or butler runtime secrets.
 
