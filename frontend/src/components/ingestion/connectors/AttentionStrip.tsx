@@ -27,6 +27,7 @@
 
 import { Link } from 'react-router'
 import type { ConnectorSummary } from '@/api/types'
+import { stateTextColorVar } from '@/lib/visual-token-roles'
 import {
   deriveConnectorDispatchInfo,
   authStatusPresentation,
@@ -84,7 +85,7 @@ export function AttentionStrip({ connectors }: AttentionStripProps) {
             ? 'cadence sparse'
             : authPresentation.label
           const color = hasOperationalWarning
-            ? 'var(--amber)'
+            ? stateTextColorVar('degraded')
             : authPresentation.color
           const displayName = formatConnectorName(c)
 
