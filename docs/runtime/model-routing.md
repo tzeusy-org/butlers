@@ -185,22 +185,22 @@ encoder and bounded to 32 KiB across the entire projection, not only its candida
 and effective intent remain present in the bounded fallback. The row and receipt share one
 monotonically increasing `attempt_index` across quota skips and runtime attempts.
 
-**Vision is an exact-path claim.** `capabilities.vision = true` means more than a model family
-advertising image support. Evidence must cover the exact catalog `runtime_type` + `model_id`, the
-runtime/CLI version and account path, MCP transport of the `attachment_view` image content block,
-and inference against a visual sentinel absent from prompt text and attachment metadata. The
-ordinary text-only model verification endpoint, a direct `attachment_view()` unit test, or an
-adapter-wide assumption does not establish that contract. Until such a canary passes, the row
-leaves vision undeclared and image-bearing external dispatch fails closed. The direct API adapter
-cannot satisfy this path because it does not accept the butler MCP server configuration.
+**Vision is an exact-path claim.** The adopted target is
+[RFC0036](../../about/legends-and-lore/rfcs/0036-models-exact-path-vision-proof.md) and the
+active [Models vision-proof change](../../openspec/changes/models-exact-path-vision-proof/).
+It requires image delivery through the production attachment path, an exact runtime/model/config
+and account identity, and three same-tuple controls: a positive image, a text-only control, and a
+removed-image control. Ordinary text Verify, a direct `attachment_view()` unit test, and model or
+adapter-wide claims do not establish vision support. The direct API adapter cannot satisfy the
+MCP attachment path because it does not accept the butler MCP server configuration.
 
-The canary shape: serve a streamable-HTTP MCP tool that returns a FastMCP `Image` of a random nonce
-word, drive the exact runtime/model against it, and require the nonce verbatim; a text-only control
-must answer "cannot see" (OpenCode strips images for models whose models.dev `modalities.input`
-lacks `image`; Codex does the same from its model catalog's `input_modalities`). Re-probe after a
-CLI upgrade or a new catalog model, then set the row with `PUT /api/settings/models/{id}`
-`{"capabilities": {...}}` (the body replaces the whole envelope; keys outside `ModelFeature` are a
-422).
+The bounded diagnostic executor and proof application are not implemented yet. A passing check
+will produce evidence only; Enable vision, Apply proof, or Refresh applied proof must then use an
+explicit exact-row compare-and-swap action. A generic catalog `PUT` is not the adopted path for a
+new `vision=true` declaration or an identity-changing write to an existing true row. Existing
+unchanged historical declarations retain their current behavior until explicitly moved into the
+managed proof lifecycle. Do not use a text-only canary or manually set `vision=true` to claim
+proof under the new contract.
 
 **Never give `attachment_view` structured output.** Codex CLI and Claude Code forward only
 `structuredContent` when a tool result carries it, dropping `content[]` and the image with it
