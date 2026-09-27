@@ -3,6 +3,9 @@
 Primary data paths through the Butlers system, with trust boundaries and
 validation points marked.
 
+This page is a snapshot, not a contract. Each flow names its source module or
+its authoritative spec; when they disagree with this page, they win.
+
 ---
 
 ## 1. Ingestion Flow (External Event to Butler Session)
@@ -61,9 +64,9 @@ sequenceDiagram
    timestamp format. Invalid envelopes are rejected.
 
 2. **Switchboard identity resolution**: Before routing, the Switchboard
-   resolves the sender's channel identifier (e.g., telegram_chat_id) against
-   `public.contact_info` to inject identity context (contact_id, roles,
-   entity_id). Owner messages get elevated trust.
+   resolves the sender's channel identifier (e.g., telegram_chat_id) through
+   `relationship.entity_facts` to a `public.entities` row and injects identity
+   context (entity_id, roles). Owner messages get elevated trust.
 
 3. **Switchboard -> Target Butler**: The `route.v1` envelope is validated by
    Pydantic models. The target butler checks `trusted_route_callers` to ensure
@@ -169,88 +172,45 @@ sequenceDiagram
 | `reply` | Contextual response to an ingested message (requires request_context) |
 | `react` | Emoji reaction on the source message (Telegram only, requires request_context) |
 
-### Candidate in-room voice branch (not implemented)
-
-Voice is an explicit-only branch of `notify.v1`; omitted-channel and preference
-resolution never select it. The target flow is:
-
-```mermaid
-sequenceDiagram
-    participant Origin as Origin Butler
-    participant SW as Switchboard
-    participant MSG as Messenger
-    participant HOME as Home
-    participant Provider as Admissible Local Provider
-
-    Origin->>SW: notify.v1(channel=voice, reply or explicit endpoint)
-    SW->>MSG: Switchboard-signed voice_origin.v1 + notify.v1
-    MSG->>MSG: Verify service JWS + stable replay-fence lookup/claim
-    MSG->>MSG: Provider admissibility, initiation, binding, DND/quiet
-    MSG->>SW: Messenger-signed attest request (opaque room/version/nonce)
-    SW->>HOME: Switchboard-signed broker request
-    HOME-->>SW: Home-signed categorical fresh result
-    SW-->>MSG: Switchboard-signed relay containing Home JWS
-    MSG->>MSG: Verify both signatures + claim provider-handoff marker
-    MSG->>Provider: One in-memory handoff
-    Provider-->>MSG: no-start | started/confirmed | failed | unknown
-    opt eligible terminal voice outcome
-        MSG->>SW: One separately keyed text-only fallback intent
-        SW->>SW: Resolve at most one Telegram/email target
-    end
-```
-
-The generic deferred-notification queue never stores voice. Messenger's current
-DND/quiet decision is absolute, and fresh presence is required for every
-attempt and pre-handoff recovery. Endpoint binding versions are pinned receipt
-state, not stable logical-key inputs. A possible provider start becomes
-non-retryable ambiguity. Audio,
-provider bodies, raw presence, and physical identifiers do not persist. See
-RFC 0034 and `REQ-messenger-voice-egress-001` through
-`REQ-messenger-voice-egress-011`.
+In-room voice is a candidate explicit-only branch of `notify.v1`; it is not
+implemented. Its flow and trust hops are specified in
+[RFC 0034](../legends-and-lore/rfcs/0034-messenger-voice-egress.md).
 
 ---
 
 ## 4. Identity Resolution Flow
 
-Maps a raw channel identifier to a known contact with roles.
+Maps a raw channel identifier to a known entity with roles.
 
 ```mermaid
 graph LR
-    A["Channel ID<br/>(type=telegram_chat_id, value=-12345)"] -->|"UNIQUE lookup"| B["public.contact_info"]
-    B -->|"FK contact_id"| C["public.contacts"]
-    C -->|"FK entity_id"| D["public.entities"]
-    D -->|"roles array"| E["['owner'] / ['family'] / ..."]
+    A["Channel ID<br/>(type=telegram_chat_id, value=-12345)"] -->|"handle predicate lookup"| B["relationship.entity_facts"]
+    B -->|"entity_id"| C["public.entities"]
+    C -->|"roles array"| D["['owner'] / ['family'] / ..."]
 ```
 
-This flow is invoked:
-- **Switchboard ingestion**: Before routing, to inject sender identity preambles.
-- **notify()**: To resolve outbound recipients from contact_id.
-- **Approval gates**: To determine whether the caller has sufficient role for
-  auto-approval.
-
-Source: `src/butlers/identity.py::resolve_contact_by_channel()`
+Invoked by Switchboard ingestion (identity preamble), `notify()` recipient
+resolution, and approval gates. Source:
+`src/butlers/identity.py::resolve_contact_by_channel()`. Schema, predicates and
+unknown-sender handling: [Identity Model](../../docs/concepts/identity-model.md).
 
 ---
 
 ## 5. Memory Flow
 
-The tiered memory subsystem manages observations from sessions.
-
 ```mermaid
 graph TD
-    A["LLM Session Observation"] -->|"memory_store()"| B["Eden<br/>(short-term, raw)"]
-    B -->|"consolidation job<br/>(cron: 0 */6 * * *)"| C["Mid-Term<br/>(consolidated, embeddings)"]
-    C -->|"promotion (LRU/relevance)"| D["Long-Term<br/>(archival, compressed)"]
-    E["memory_search()"] -->|"vector similarity<br/>(pgvector)"| C
-    E -->|"vector similarity"| D
-    F["Episode cleanup job<br/>(cron: 0 4 * * *)"] -->|"prune stale episodes"| B
+    A["LLM Session"] -->|"memory_store_episode()"| B["Episodes<br/>(raw, TTL)"]
+    B -->|"memory_consolidation job"| C["Facts / Rules<br/>(embeddings)"]
+    D["memory_search / memory_recall"] -->|"pgvector + full text"| C
+    E["episode cleanup + decay jobs"] --> B
+    E --> C
 ```
 
-Memory is per-butler. Each butler that enables the memory module gets its own
-Eden, Mid-Term, and Long-Term stores within its database schema. Vector search
-uses pgvector extensions.
-
-Source: `src/butlers/modules/memory/`
+Memory is per-butler: each butler that enables the memory module keeps its own
+Episodes, Facts and Rules in its schema. Artifact types, retrieval,
+consolidation and decay: [Memory module](../../docs/modules/memory.md). Source:
+`src/butlers/modules/memory/`.
 
 ---
 
@@ -274,137 +234,34 @@ connectors as stale when their last heartbeat exceeds the TTL.
 
 ---
 
-## 7. Self-Healing Flow
+## 7. Crash Healing Flow
 
-When an LLM session crashes, the healing subsystem captures and diagnoses.
-
-```mermaid
-sequenceDiagram
-    participant Spawner as Spawner
-    participant FP as Fingerprinter
-    participant Tracker as Healing Tracker
-    participant Healer as Healing Session
-
-    Spawner->>Spawner: Session fails (non-zero exit / exception)
-    Spawner->>FP: fingerprint(error, stack_trace)
-    FP-->>Tracker: Store anonymized fingerprint
-    Tracker->>Tracker: Check recurrence threshold
-    alt Recurring crash pattern
-        Tracker->>Healer: Dispatch healing session (self_healing tier)
-        Healer->>Healer: Analyze pattern, attempt fix
-    end
-```
-
-Source: `src/butlers/core/healing/`
+When a spawned session hard-crashes, the Spawner fires `dispatch_healing()` on
+the wired `self_healing` module, which fingerprints the error
+(`src/butlers/core/healing/`) and dispatches a healing session for recurring
+patterns. Fleet-wide failure discovery and investigation is the QA staffer's
+job: [RFC 0015](../legends-and-lore/rfcs/0015-qa-staffer-discovery-investigation-pipeline.md).
 
 ---
 
-## 8. Relationship Interaction Flow (Dunbar Tier Computation)
+## 8. Relationship Interaction Flow (Dunbar Tiers)
 
-The relationship butler computes Dunbar social tiers (5/15/50/150/500/1500)
-dynamically from interaction facts using exponential decay scoring. Tiers are
-**not** manually assigned; they emerge from communication frequency.
+The Relationship butler derives Dunbar tiers (5/15/50/150/500/1500) from
+`interaction_*` facts scored with exponential decay (30-day half-life),
+weighted by direction, interaction type and group size; tiers are never
+assigned by hand. Interaction facts come from `interaction_log()`, called by the
+fact-extraction skill and by the daily `interaction_sync` job, which scans
+`switchboard.message_inbox` (group-aware, skipping chats over 20 participants)
+and confirmed `public.calendar_events`.
 
-### Scoring engine
-
-```
-score(contact) = Σ exp(-λ × days_since_interaction_i)
-                   × direction_weight
-                   × type_weight
-                   × (1 / group_size)
-λ = ln(2) / 30   (30-day half-life)
-
-direction_weight: outgoing=10.0, mutual=5.0, incoming/NULL=1.0  (RFC 0013 D1)
-type_weight:      calendar_event/interview/email=0.2, others=1.0
-group_size:       from fact metadata; defaults to 1.0 when absent (RFC 0013 D2)
-```
-
-Contacts are ranked by score. Top 5 → tier 5, ranks 6-15 → tier 15, etc.
-Contacts with score = 0.0 are hard-assigned to tier 1500. Downward hysteresis
-prevents thrashing near tier boundaries.
-
-Source: `roster/relationship/tools/dunbar.py`
-
-### Interaction facts
-
-The scoring engine queries only facts matching:
-- `entity_id = c.entity_id` (joined through `public.contacts`)
-- `predicate LIKE 'interaction_%'` (e.g., `interaction_telegram_user_client`,
-  `interaction_email`, `interaction_calendar_event`, `interaction_meeting`)
-- `scope = 'relationship'`
-- `validity = 'active'`
-
-These facts are created by `interaction_log()` in
-`roster/relationship/tools/interactions.py`. Facts use subject
-`entity:{entity_id}` (subject key changed from `contact:{contact_id}` to
-`entity:{entity_id}` in migration rel_018). The function deduplicates by
-(entity_id, predicate, valid_at::date, direction) when `occurred_at` is
-explicitly provided. Including `direction` allows an incoming and an outgoing
-fact for the same contact on the same day to coexist (RFC 0013 D4).
-
-### Passive interaction sync job
-
-```mermaid
-graph LR
-    A["User chats with<br/>Chloe on Telegram"] -->|"messages stored in"| B["switchboard.message_inbox"]
-    B -->|"interaction_sync job<br/>(daily 06:30 UTC)"| C["interaction_log()"]
-    C -->|"creates"| D["facts table<br/>(predicate=interaction_{type})"]
-    D -->|"feeds"| E["Dunbar score<br/>computation"]
-
-    F["User tells butler<br/>'I met Chloe today'"] -->|"fact-extraction skill"| C
-
-    G["Calendar event<br/>'Dinner with Chloe'"] -->|"interaction_sync job<br/>(calendar scan)"| C
-```
-
-The `interaction_sync` background job runs daily at 06:30 UTC
-(`cron = "30 6 * * *"`, `dispatch_mode = "job"` — no LLM spawned). It closes
-the loop between communication data already in the system and the relationship
-butler's tier computation.
-
-#### Message-based sync (group-aware)
-
-Queries `switchboard.message_inbox` grouped by
-`(source_thread_identity, source_channel, DATE(received_at))` — a chat-centric
-view per RFC 0013 D4. Monitored channels: `telegram_user_client`,
-`whatsapp_user_client`, `email`.
-
-Key behaviors:
-- Messages where `request_context->>'interaction_eligible'` is `'false'` are
-  skipped before grouping.
-- Groups with `participant_count > 20` are skipped entirely (D3 gate).
-  `participant_count` is read from `request_context` when available; otherwise
-  falls back to the count of distinct senders in the group.
-- Owner presence is detected via `public.entities.roles`. If the owner sent at
-  least one message in the chat on that day, each non-owner contact receives
-  both an **incoming** fact and an **outgoing** fact. Otherwise only incoming.
-- For DM chats (`participant_count ≤ 2`), `group_size = 1` (full weight).
-  Group chats use `group_size = participant_count`.
-- Identity resolution uses `relationship.entity_facts` (has-email / has-handle
-  predicates) to map sender identifiers to `entity_id` values.
-  (`public.contact_info` was dropped in migration core_115 / bead bu-e2ja9.)
-- Incoming and outgoing facts for the same contact on the same day use
-  distinct `occurred_at` hour offsets so that the fact store's timestamp-level
-  idempotency key is unique per (entity, channel, direction, day):
-  incoming (telegram=0, whatsapp=1, email=2) and outgoing (+12 each).
-
-#### Calendar-based sync
-
-Queries `public.calendar_events` for confirmed events (`status = 'confirmed'`)
-within the scan window. Declined events (owner's `responseStatus = 'declined'`)
-are skipped. Attendee emails are resolved to `entity_id` via
-`relationship.entity_facts` (has-email predicate). Each resolved attendee
-receives an interaction fact with `type='calendar_event'`, `direction='mutual'`.
-
-#### Scan window
-
-Checkpoint-based: start is read from state key `interaction_sync.last_scan_at`.
-First run defaults to `now() - 30 days`. Window is capped at 30 days to prevent
-unbounded backfill after long outages. On completion, the job writes the scan
-end time back to the state store.
+The scoring formula, weights, hysteresis and sync rules are specified in
+[RFC 0013](../legends-and-lore/rfcs/0013-dunbar-group-aware-interaction-scoring.md).
+Source: `roster/relationship/tools/dunbar.py`,
+`roster/relationship/tools/interactions.py`.
 
 ---
 
-## 6. Runtime Config Flow (Dashboard to Spawner)
+## 9. Runtime Config Flow (Dashboard to Spawner)
 
 Operational tuning (core_groups, concurrency, catalog read authority, tool
 exposure policy) follows a seed-and-manage pattern. The toml is the seed
@@ -450,6 +307,8 @@ accessor.get_tool_exposure_policy() -> always a fresh DB query (hot field).
 **Seed path:** Daemon start() -> accessor.seed_if_empty(toml_seed) ->
 INSERT ... ON CONFLICT DO NOTHING -> read back effective row.
 
+---
+
 ## Data Path Summary
 
 | Flow | Entry Point | Exit Point | Protocol | Durable? |
@@ -457,7 +316,6 @@ INSERT ... ON CONFLICT DO NOTHING -> read back effective row.
 | Ingestion | Connector poll/webhook | route_inbox INSERT | ingest.v1 -> route.v1 (MCP) | Yes (durable buffer + route_inbox) |
 | Scheduled | Scheduler tick | Session log INSERT | Internal (asyncio) | Yes (schedule DB) |
 | Response | LLM session notify() | External API call | MCP -> module-specific | Conditional: eligible routine owner-default holds are durable in the originating butler queue; other direct paths are fire-and-forget |
-| Voice response (candidate) | Explicit voice notify intent | Admissible local room provider | Ed25519 service JWS hops; Home attestation via Switchboard; provider adapter | Content-blind Messenger receipt, stable replay tombstone, and control nonce receipts only; audio, content, raw presence, signatures, and provider bodies are never durable |
-| Identity | Channel identifier | Resolved contact | SQL (public schema) | N/A (read-only) |
-| Memory | Session observation | Tiered storage | SQL + pgvector | Yes |
+| Identity | Channel identifier | Resolved entity | SQL (public schema) | N/A (read-only) |
+| Memory | Session episode | Facts / rules | SQL + pgvector | Yes |
 | Heartbeat | Connector loop | Registry update | MCP | No (ephemeral liveness) |

@@ -1,70 +1,53 @@
 # Deployment Topology
 
-How the Butlers system is deployed: processes, ports, infrastructure, and
-environment configuration.
+How the Butlers system is deployed: processes, ports, and where the
+authoritative configuration lives.
+
+This page is a snapshot, not a contract. Service definitions live in
+`docker-compose.yml` and `docs/operations/docker-deployment.md`; ports live in
+each `roster/{butler}/butler.toml`. When they disagree with this page, they win;
+fix this page. The port map below is the one other docs link to.
 
 ---
 
 ## Process Model
 
-The observer edges in this diagram show the approved target contract. The
-current deployment still uses daemon-authored heartbeat POSTs until cutover.
-
 ```mermaid
 graph TB
-    subgraph Host["Deployment Host"]
-        subgraph Daemons["Butler Daemons (one process each)"]
-            SW["switchboard :41100"]
-            GEN["general :41101"]
-            REL["relationship :41102"]
-            HLT["health :41103"]
-            MSG["messenger :41104"]
-            FIN["finance :41105"]
-            TRV["travel :41106"]
-            EDU["education :41107"]
-            HOM["home :41108"]
-            LIF["lifestyle :41109"]
-            QA["qa :41110"]
-            CHR["chronicler :41111"]
-            CON["concierge :41112"]
+    subgraph Host["Deployment Host (docker compose)"]
+        UP["butlers-up<br/>all roster daemons, one port each"]
+        subgraph ConnProcs["Connector containers"]
+            Conn["connector-* (one per external channel)"]
         end
-
-        subgraph ConnProcs["Connector Processes"]
-            TGBot["telegram-bot :40081"]
-            TGUser["telegram-user :40080"]
-            Gmail["gmail :40082"]
-            Discord["discord :40084"]
-            LiveL["live-listener :40091"]
+        subgraph Dashboard["dashboard-api :41200"]
+            API["FastAPI"]
+            OBS["fleet shadow observer"]
         end
-
-        subgraph Dashboard["Dashboard"]
-            API["FastAPI :41200"]
-            OBS["supervised fleet observer"]
-            Vite["Vite dev :41173"]
-        end
+        Vite["frontend-dev :41173 (dev profile)"]
+        MIG["migrations (one-shot)"]
+        MinIO["minio :9000 / :9001"]
     end
 
-    subgraph Infra["Infrastructure Services"]
-        PG["PostgreSQL :5432 (external)"]
-        MinIO["MinIO :9000 (API) :9001 (console)"]
-        OTel["Grafana Alloy (OTLP)"]
-    end
+    PG["PostgreSQL (external, POSTGRES_HOST)"]
+    OTel["OTel Collector -> Tempo / Prometheus"]
 
-    ConnProcs -- "MCP" --> SW
-    SW -- "MCP" --> Daemons
-    OBS -- "exact backend-network GET" --> Daemons
-    OBS -- "observations / conditions" --> PG
-    Dashboard -- "SQL" --> PG
-    Daemons -- "SQL" --> PG
-    Daemons -- "S3" --> MinIO
-    Daemons -- "OTLP" --> OTel
+    Conn -- "MCP" --> UP
+    OBS -- "GET /internal/control-plane/identity" --> UP
+    API -- "SQL" --> PG
+    UP -- "SQL" --> PG
+    MIG -- "db migrate" --> PG
+    UP -- "S3" --> MinIO
+    UP -- "OTLP" --> OTel
 ```
 
-Each butler daemon is an independent process serving a FastMCP SSE/HTTP server
-on its assigned port. Connectors are separate processes that run alongside the
-butler fleet. The observer edge in this diagram is the approved 2026-09-23
-target contract; the current runtime still uses daemon-authored heartbeat
-POSTs until the control-plane change cuts over.
+`butlers up` runs every roster butler in one container; each butler still
+serves its own FastMCP endpoint on its own port. Connectors run as separate
+containers and submit ingress to the Switchboard over MCP. There is no
+`postgres` service: the database is external and reached through
+`POSTGRES_HOST` / `POSTGRES_PORT`. The one-shot `migrations` service must
+complete before any application service starts. The full service list,
+profiles, volumes, and dev/prod port offsets are in
+[Docker Deployment](../../docs/operations/docker-deployment.md#services).
 
 ---
 
@@ -136,68 +119,13 @@ stacks can run side by side. Inside the containers the ports are always the prod
 
 ---
 
-## Docker Compose Topology
-
-The `docker-compose.yml` defines the containerized deployment:
-
-### Services
-
-| Service | Image | Depends On | Profile |
-|---|---|---|---|
-| `postgres` | pgvector/pgvector:pg17 | -- | default |
-| `minio` | minio/minio:latest | -- | default |
-| `minio-setup` | minio/mc:latest | minio (healthy) | default |
-| `switchboard` | Built from Dockerfile | postgres (healthy), minio-setup | default |
-| `general` | Built from Dockerfile | postgres (healthy), minio-setup | default |
-| `relationship` | Built from Dockerfile | postgres (healthy), minio-setup | default |
-| `health` | Built from Dockerfile | postgres (healthy), minio-setup | default |
-| `dashboard-api` | Built from Dockerfile | postgres (healthy) | default |
-| `frontend-dev` | node:22-slim | dashboard-api | `dev` profile |
-
-### Volumes
-
-| Volume | Purpose |
-|---|---|
-| `butlers_postgres_data` | PostgreSQL data (external, persists across compose down) |
-| `minio_data` | MinIO blob storage |
-| `frontend_node_modules` | Node modules cache for frontend dev |
-
-### Butler container pattern
-
-Each butler container:
-- Mounts its roster config directory as `/etc/butler:ro`
-- Runs `butlers run --config /etc/butler`
-- Receives database credentials and OTel endpoint via environment variables
-- Waits for postgres healthcheck and minio-setup completion
-
----
-
 ## Database Topology
 
-Single PostgreSQL instance (pgvector/pg17) with schema-based isolation.
-
-```
-butlers (database)
-├── public           -- Cross-butler identity, model catalog, secrets
-├── switchboard      -- Switchboard-specific tables
-├── general          -- General butler tables
-├── relationship     -- Relationship butler tables
-├── health           -- Health butler tables
-├── messenger        -- Messenger butler tables
-├── finance          -- Finance butler tables
-├── travel           -- Travel butler tables
-├── education        -- Education butler tables
-├── home             -- Home butler tables
-├── lifestyle        -- Lifestyle butler tables
-└── qa               -- QA staffer tables
-```
-
-Each butler's `search_path` is set to `{butler_schema}, public` so queries
-resolve butler-local tables first, then shared identity and coordination
-tables in `public`.
-
-Database provisioning (schema creation, Alembic migrations) happens automatically
-during butler daemon startup.
+One PostgreSQL database with one schema per butler plus the shared `public`
+schema for cross-butler identity, model catalog, and secrets. Each butler's
+role sees only its own schema and `public`, and its `search_path` is
+`{butler_schema}, public`. Schema creation and Alembic migrations run in the
+`migrations` service (`db migrate`) before daemons start.
 
 ---
 
@@ -211,66 +139,14 @@ is [`docs/identity_and_secrets/environment-variables.md`](../../docs/identity_an
 
 ---
 
-## Development Environment
+## Configuration
 
-### Prerequisites
-
-- Python 3.12+
-- `uv` package manager
-- Node.js 22+ (for frontend)
-- Docker and Docker Compose (for infrastructure services)
-
-### Setup
-
-```bash
-# Install Python dependencies
-uv sync --dev
-
-# Start infrastructure (DB + blob storage)
-docker compose up -d postgres minio minio-setup
-
-# Run butlers locally
-butlers up
-
-# Start dashboard
-butlers dashboard --host 0.0.0.0 --port 41200
-
-# Start frontend dev server
-cd frontend && npm install && npm run dev
-```
-
-### Quality gates
-
-```bash
-make lint       # Ruff linter
-make format     # Ruff formatter
-make test       # Full test suite
-make check      # Lint + test
-```
+- Local development setup and quality gates:
+  [Dev Environment](../../docs/getting_started/dev-environment.md).
+- Production deploys (`butlers deploy`):
+  [Docker Deployment](../../docs/operations/docker-deployment.md#production-deploys-butlers-deploy).
 
 ---
-
-## Deployment Modes
-
-### Development (hybrid)
-
-Infrastructure services (PostgreSQL, MinIO) run in Docker containers.
-Butler daemons, connectors, and dashboard run as local processes.
-
-```bash
-docker compose up -d postgres minio minio-setup
-butlers up
-```
-
-### Production (fully containerized)
-
-All services run in Docker containers.
-
-```bash
-cp .env.example .env
-# Edit .env with production secrets
-docker compose up -d
-```
 
 ## Dashboard owner-authentication placement
 
@@ -292,57 +168,16 @@ identify the dashboard owner. See the
 [operator runbook](../../docs/identity_and_secrets/dashboard-owner-auth.md) and
 [adopted design](../../openspec/changes/specify-host-authorized-dashboard-enrollment/design.md).
 
-## Approved control-plane readiness topology (2026-09-23)
+---
 
-`restore-butler-control-plane-liveness` adds a separately supervised observer
-inside the Dashboard/control-plane deployment. It reads the exact daemon
-host:port entries from Git roster configuration and calls
-`GET /internal/control-plane/identity` over the backend network on each
-existing daemon port. The bounded `butler.control.v1` response carries name,
-boot UUIDv7, route-contract range, and `accepting_routes`. The observer writes
-DB-server-timed observations and durable condition evidence; no daemon-authored
-timestamp, arbitrary caller URL, old boot generation, or owner credential can
-assert a healthy fleet. Connector heartbeats remain connector-owned MCP calls.
+## Control-plane liveness
 
-L2 stages the identity route and a separately supervised Dashboard shadow
-observer. The observer probes no more than four Git-roster endpoints at once,
-reserves a database sequence before I/O, compares the response UUID and epoch
-to the committed L1 registration, and conditionally records success or a
-bounded failure category. It logs only aggregate legacy-versus-shadow
-eligibility mismatches; compare those aggregates over multiple configured TTL
-windows before L3 changes route authority. A partial or DB-failed cycle is
-incomplete, never an all-clear. Probe cadence and shadow freshness use the
-current operator-tuned registry TTL, while only Git roster chooses identity
-and endpoint. This is not a live rollout instruction: this
-source change requires separately authorized deployment and observation.
-Rollback stops the observer and returns to legacy route reads while retaining
-`sw_035` policy, provenance, boot ledger, epoch, trigger, and RLS. An old binary
-without the identity interface cannot produce new positive receiver evidence.
-
-Docker's `/health` probe remains a process-liveness signal. The canonical
-public `GET /ready` retains the k3s change's boolean `ready` response shape.
-Its checks cover PostgreSQL, roster, observer freshness, expected fleet,
-QA-patrol age, supervised loops, and the cached result of L3's internal
-read-only Switchboard route preflight. Q4 alone implements this public route
-and its exact owner-auth exception; k3s and Compose consume it. It returns
-503 with content-blind boolean check results when any required proof is
-missing. The canary tests Switchboard selection and exact-target reachability without
-an identity-changing write, target MCP call, or inbox write; it cannot certify target transactional acceptance, which is
-represented by actual delivery receipts and conditions.
-
-The Compose launcher and production deploy completion must observe
-two distinct complete observer cycles and two distinct qualifying scheduled
-QA patrol completions after the deploy window starts, with true sampled
-readiness beyond the longest configured daemon TTL. The finite default
-deadline is at least two configured patrol cadences plus that TTL and ten
-minutes (35 minutes at current defaults); shorter overrides fail validation.
-One Docker `healthy` state is insufficient. The existing
-`scripts/compose.sh` currently waits for container process health; that is
-the implementation seam the approved change must replace.
-
-The separate-host pull monitor already authorized for minimal `/api/health`
-does not imply authority to expose semantic readiness externally. A new
-functional monitor and exact historic ingestion replay set require their own
-owner decision. The delivery-intent worker in
-`recover-ingestion-target-deliveries` runs in the Switchboard control plane,
-while each target retains its own `route_inbox` processing and crash recovery.
+Each daemon serves `GET /internal/control-plane/identity`
+(`src/butlers/core/control_plane_identity.py`), and the dashboard API runs a
+supervised shadow observer that probes the Git-roster endpoints and records
+observations. Route authority still comes from daemon-authored heartbeats; the
+observer runs in shadow until the remaining stages of
+`restore-butler-control-plane-liveness` land. The staged rollout, `/ready`
+semantics, and deploy gating are specified in its
+[design](../../openspec/changes/restore-butler-control-plane-liveness/design.md).
+Docker's `/health` probe remains a process-liveness signal only.

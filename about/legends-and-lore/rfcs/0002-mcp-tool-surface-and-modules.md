@@ -362,7 +362,7 @@ runtimes:
 
 ## Accepted Amendment 2 (2026-08-31) — Adapter-Owned Search Corpus and Complete MCP Listing
 
-**Status:** Owner-selected Option B in `bu-g5fha`; effective in the canonical
+**Status:** Owner-selected Option B (2026-08-31); effective in the canonical
 contract when the paired RFC/OpenSpec amendment merges.
 
 Amendment 2 supersedes Amendment 1 only on where the searchable LLM corpus is
