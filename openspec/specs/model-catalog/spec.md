@@ -386,3 +386,105 @@ effective priority, and before the tie-break.
 - **THEN** tier quota exhaustion is raised with the same representative contract as
   the pre-existing resolution path, so the caller's sequential quota and same-tier
   failover loop still applies
+
+### Requirement: Purpose lane preserves canonical model resolution
+
+A dispatch purpose lane SHALL be observational evidence and SHALL NOT by itself alter catalog
+eligibility, priority, effective tier, fit, verification, quota, breaker, provider/runtime
+selection, or same-tier failover. `private_content` SHALL NOT require a local runtime, an `ollama/`
+model, locality proof, or a special audited remote-model exception. Separately adopted operator
+routing rules remain subject to their ordinary authority and evaluation contracts.
+
+#### Scenario: Private-content source uses ordinary catalog selection
+- **WHEN** trusted WhatsApp or Telegram context labels a dispatch `private_content`
+- **THEN** candidate selection and failover apply the same canonical catalog contracts used for `standard`
+- **AND** no candidate is preferred or excluded solely because it is local or remote
+
+#### Scenario: Eligible remote candidate is not refused
+- **WHEN** a `private_content` dispatch has an ordinarily eligible remote candidate and no eligible local candidate
+- **THEN** routing may invoke that remote candidate under the normal catalog and operator-routing gates
+- **AND** it does not require a private-purpose audit exception or emit `private_content_remote_refused`
+
+#### Scenario: Purpose lane does not widen authority
+- **WHEN** a dispatch carries either purpose lane
+- **THEN** the lane neither bypasses nor replaces fit, verification, quota, breaker, permission, budget, or separately adopted operator-rule checks
+
+### Requirement: Content-blind purpose-lane evidence
+
+Dispatch attempts and token-usage evidence SHALL carry a separate closed `purpose_lane` without
+using a raw connector identity as a butler or purpose-lane label. Existing open-ended spend-purpose
+fields retain their established meaning.
+
+#### Scenario: Private discretion spend is attributed safely
+- **WHEN** a WhatsApp or Telegram discretion adapter reports usage
+- **THEN** the usage and dispatch evidence records `private_content`
+- **AND** its grouping identity contains no phone, chat, sender, recipient, or thread identifier
+
+### Requirement: Durable Model Resolution Receipt
+
+Each catalog-backed dispatch attempt SHALL persist the prompt-free model
+resolution receipt that produced its candidate in
+`public.model_dispatch_attempts.resolution_receipt`. The receipt SHALL name the
+policy version, requested and effective intent, winner, ordered candidates,
+candidate outcomes and exclusions, and tie-break reason. Persisting the receipt
+MUST NOT change routing eligibility, ordering, or selection.
+
+#### Scenario: Breaker exclusion is durable
+
+- **WHEN** an otherwise eligible candidate has an open dispatch-outcome breaker
+- **THEN** it remains excluded from selection exactly as before
+- **AND** the selected attempt's receipt records that candidate with
+  `exclusion="breaker_open"`
+
+#### Scenario: Failover attempt explains its predecessor
+
+- **WHEN** attempt zero fails with a classified failure and same-tier attempt one runs
+- **THEN** attempt one's receipt names attempt zero and its failure class
+- **AND** its winner names the candidate actually invoked for attempt one
+
+#### Scenario: Transparent cold retry is not a failover
+
+- **WHEN** a provider resume handle fails safely and the same catalog candidate is retried cold
+- **THEN** the retry receipt retains the predecessor failure class
+- **AND** labels the transition as a same-candidate cold retry, not a same-tier failover
+
+#### Scenario: Oversized candidate evidence remains explicit
+
+- **WHEN** a receipt exceeds the bounded storage projection
+- **THEN** the ordered candidate list is truncated to a fitting prefix
+- **AND** `truncated=true` and the original `candidate_count` are persisted
+- **AND** the receipt is not silently dropped
+- **AND** the complete persisted JSON projection remains at or below 32 KiB even
+  when winner or intent metadata contains oversized catalog-backed strings
+
+#### Scenario: Post-resolution policy override stays coherent
+
+- **WHEN** a spend rule or private-content lane replaces the resolver's winner
+- **THEN** the receipt names the final invoked candidate as its sole selected candidate
+- **AND** clears stale exclusions on that candidate
+- **AND** records the policy override as the winner reason rather than retaining the
+  resolver's earlier tie-break reason
+
+#### Scenario: Attempt identity is atomic
+
+- **WHEN** quota skips or runtime retries precede a persisted attempt
+- **THEN** the row's `attempt_index` equals its receipt's `attempt_index`
+- **AND** no earlier row for that logical dispatch has the same index
+
+#### Scenario: Discretion dispatches retain receipts
+
+- **WHEN** DiscretionDispatcher resolves a catalog model and records quota-skip,
+  success, runtime-failure, or suppression provenance
+- **THEN** each recorded attempt carries the same bounded receipt contract
+- **AND** receipt capture adds no tool-use requirement and preserves the catalog
+  eligibility, ordering, and winner used by its legacy `mcp_servers={}` path
+- **AND** malformed or forward-version capability envelopes remain eligible exactly
+  when the legacy resolver would have selected them
+
+#### Scenario: Read surfaces distinguish historical absence
+
+- **WHEN** session detail or a Models dispatch-attempt read returns a recorded receipt
+- **THEN** the API includes it without re-deriving a current routing decision
+- **AND** the session UI discloses why the model won
+- **WHEN** no receipt was recorded for a historical or static-fallback session
+- **THEN** the API returns null and the UI says `No receipt recorded.`

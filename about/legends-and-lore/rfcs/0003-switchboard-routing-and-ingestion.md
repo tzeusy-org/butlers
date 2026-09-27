@@ -334,8 +334,8 @@ its identity GET; stale cache cannot become a healthy answer.
 Missing/denied/unavailable evidence returns only a fixed content-blind false
 result. The Dashboard controller caches this result; the
 public `GET /ready` handler never invokes preflight on request. L3 owns the
-producer, Q4 owns the one public route and owner-auth exception, and k3s and
-Compose consume that route. This is internal control-plane observation, not a
+producer, Q4 owns the one public route and owner-auth exception, and
+Compose consumes that route. This is internal control-plane observation, not a
 transactional target acceptance receipt or a new public monitor.
 
 The L3 implementation keeps receiver-derived route admission behind the

@@ -128,7 +128,9 @@ before any implementation of `bu-8cdl1.15` or its decomposed children may begin.
   `core-skills` delta onto the requirement text the other one left in `openspec/specs/` before
   archiving (mechanical, since this draft's DB-fallback scenarios are copied verbatim from
   `k3s-deployment-helm-chart`'s own text — see `design.md` D13). No implementation may treat either
-  change as archived out of this order.
+  change as archived out of this order. **Update 2026-09-26:** `k3s-deployment-helm-chart` was
+  abandoned and removed (bu-60pwv6.3), so this sequencing no longer applies; the copied
+  DB-fallback scenarios are dropped under task 2.5 (bu-60pwv6.27).
 - **QA publisher primitives**: remain QA-owned. This draft names the exact primitives (managed
   clone, isolated worktree, path allowlist, minimal-credential environment,
   anonymize/validate_anonymized, GitHub publish-and-reconcile) as substrate a future PR adapter

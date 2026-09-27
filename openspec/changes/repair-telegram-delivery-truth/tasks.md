@@ -12,5 +12,5 @@
 ## 3. Verification
 
 - [x] 3.1 Add focused recovery-null, nested-error, malformed-receipt, Telegram response, timeout, and audit tests.
-- [ ] 3.2 Run strict OpenSpec validation, overwrite checks, targeted tests, planner-selected gates, independent review, and hosted CI.
+- [x] 3.2 Run strict OpenSpec validation, overwrite checks, targeted tests, planner-selected gates, independent review, and hosted CI.
 - [ ] 3.3 After landing and separate runtime authorization, restart affected services and run one traced Telegram canary.

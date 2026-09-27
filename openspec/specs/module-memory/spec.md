@@ -319,7 +319,7 @@ fact or evidence link. This consolidation-only guard SHALL NOT query or write
 SHALL NOT change generic `memory_store_fact()` admission behavior.
 
 ID: REQ-module-memory-012
-Source: [Observed] PR #3728; `openspec/changes/relational-edges-single-home/landed-b5-b6-transfer.md`
+Source: [Observed] PR #3728; `openspec/changes/archive/2026-09-27-relational-edges-single-home/landed-b5-b6-transfer.md`
 Scope: v1-mandatory
 
 #### Scenario: Approved consolidation narrative edge persists
@@ -422,6 +422,123 @@ This requirement composes with the cross-cutting "MCP Tools Raise on Invalid Inp
 - **WHEN** `memory_entity_resolve` is called with a non-empty `identifier` (or legacy `name`) that does not match any entity under any tier (role, exact, alias, prefix/substring, optional fuzzy)
 - **THEN** the tool SHALL return an empty list
 - **AND** SHALL NOT raise
+
+### Requirement: Injected Local Memory Preserves Actionable Stable References
+
+The memory module SHALL render every locally owned fact or rule admitted to
+injected memory context with one bounded opaque stable reference containing
+only its memory type and UUID. The existing confirm action SHALL resolve fact
+or rule references, and the existing helpful and harmful actions SHALL resolve
+rule references. References and their labels MUST count inside the existing
+section and total context budgets. Reference resolution MUST use the owning
+module's server-held sensitivity ceiling and live-memory rules; it MUST NOT
+accept caller-asserted authority or expose raw identity, tenant, sensitivity,
+source, or content fields beyond the context already authorized for rendering.
+
+#### Scenario: Injected local facts and rules remain actionable
+
+- **WHEN** a local fact or rule is admitted to Profile Facts, Task-Relevant
+  Facts, or Active Rules in injected memory context
+- **THEN** its rendered line MUST include a canonical `fact:<uuid>` or
+  `rule:<uuid>` reference for that exact row
+- **AND** `memory_confirm` MUST resolve either valid reference to that row
+- **AND** `memory_mark_helpful` and `memory_mark_harmful` MUST resolve only a
+  valid rule reference to that rule
+- **AND** a successful reference-based action MUST return only its bounded
+  boolean acknowledgement (`confirmed`, `helpful`, or `harmful`) and MUST NOT
+  serialize the targeted memory row
+
+#### Scenario: Reference overhead remains inside existing budgets
+
+- **WHEN** adding a reference would make a fact or rule line exceed its
+  section allocation
+- **THEN** the complete line MUST be omitted rather than truncated or rendered
+  beyond the allocation
+- **AND** all rendered references, headers, receipts, and content together
+  MUST remain within the requested context token budget
+
+#### Scenario: Unavailable references fail without mutation or disclosure
+
+- **WHEN** a confirm, helpful, or harmful action receives a missing, deleted,
+  retired, forgotten, malformed, wrong-type, or above-ceiling reference
+- **THEN** it MUST return that action's same content-free unavailable result
+  for every such case and perform no memory mutation
+- **AND** the result MUST NOT reveal whether the UUID exists, its memory type,
+  sensitivity, identity fields, source, tenant, or content
+
+#### Scenario: Reference authority remains server-held
+
+- **WHEN** a caller invokes a reference-bearing feedback action
+- **THEN** the action MUST obtain its sensitivity authority from the owning
+  module runtime configuration
+- **AND** no request argument or reference component MAY raise that authority
+- **AND** Fleet Knowledge and Recent Episodes MUST NOT receive actionable local
+  fact/rule references from this requirement
+
+### Requirement: Server-Held Ceiling for Every Local Memory Read
+
+The memory module SHALL apply one server-held sensitivity ceiling from the
+owning runtime configuration to every local memory retrieval surface, including
+recall, search, context assembly, and direct `memory_get` retrieval by UUID.
+No caller-supplied argument SHALL raise that ceiling. Unknown authority or an
+unknown stored sensitivity SHALL fail closed; a NULL stored sensitivity SHALL be
+treated as `normal`.
+
+#### Scenario: Local retrieval is filtered by held authority
+
+- **WHEN** a local memory retrieval runs under a ceiling below one or more
+  stored rows' sensitivity
+- **THEN** it MUST return only rows at or below that held ceiling
+- **AND** the decision MUST be enforced before a more-sensitive row is
+  returned to the caller
+
+#### Scenario: Direct UUID retrieval cannot bypass the ceiling
+
+- **WHEN** `memory_get` is called with the UUID of a row above the held
+  sensitivity ceiling
+- **THEN** it MUST return the same absent result as for an unknown UUID
+- **AND** it MUST NOT update that row's reference count or last-reference
+  timestamp
+
+#### Scenario: Withheld receipt remains within the context budget
+
+- **WHEN** Profile Facts excludes one or more rows because of the held ceiling
+  and the section has budget for a receipt
+- **THEN** the Profile Facts section MUST report the excluded count without
+  including excluded content
+- **AND** the section header, rendered facts, and receipt together MUST remain
+  within that section's allocation
+- **AND** the complete rendered context MUST remain within the requested
+  context budget
+
+#### Scenario: Insufficient budget omits the Profile Facts section safely
+
+- **WHEN** the Profile Facts allocation cannot fit both its header and a
+  withheld-count receipt
+- **THEN** the module MUST omit that section rather than exceed the requested
+  context budget or expose excluded content
+
+### Requirement: Registry-relational edges are out of scope for the memory facts store
+
+The memory module's `object_entity_id` edge-facts SHALL represent **non-registry, narrative**
+relationships only (episodic or coordination context that references two entities). A call to
+`memory_store_fact()` whose predicate is a registry-relational predicate from
+`relationship.entity_predicate_registry` — or a known underscore alias of one (e.g. `friend_of`,
+`works_at`, `child_of`) — SHALL be rejected, mirroring the existing identity-contact carve-out,
+and the caller SHALL be directed to `relationship_assert_fact()`. Narrative edge-facts remain
+legal and continue to back `memory_entity_neighbors`.
+
+#### Scenario: Registry-relational predicate is rejected by the memory writer
+- **WHEN** `memory_store_fact()` is called with `object_entity_id` set and a predicate that
+  resolves to a registry-relational predicate (e.g. `friend_of`, `works_at`, `child_of`)
+- **THEN** a `ValueError` MUST be raised directing the caller to `relationship_assert_fact()`
+- **AND** no row MUST be inserted into `{schema}.facts`
+
+#### Scenario: Narrative edge-fact is still accepted
+- **WHEN** `memory_store_fact()` is called with `object_entity_id` set and a non-registry
+  narrative predicate (e.g. `planned_dinner_with`)
+- **THEN** the edge-fact MUST be stored in `{schema}.facts`
+- **AND** it MUST remain discoverable via `memory_entity_neighbors`
 
 ## Source References
 - PLAN.md §6 Phase 8 — memory fold-in scope.

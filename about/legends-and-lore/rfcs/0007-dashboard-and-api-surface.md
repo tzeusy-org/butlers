@@ -400,9 +400,7 @@ text, never a link or fetched target.
 
 **Status:** Approved target contract in
 `openspec/changes/restore-butler-control-plane-liveness`; implementation
-remains separate from this amendment. The active
-`k3s-deployment-helm-chart` change already names public `GET /ready`; its
-DB-and-one-roster minimum is superseded by this stronger success condition.
+remains separate from this amendment.
 
 `GET /health` and `GET /api/health` remain lightweight process checks. A 200
 there means the dashboard process is serving, not that PostgreSQL, routing,
@@ -410,7 +408,7 @@ QA patrol, or the daemon fleet is ready. Docker liveness may continue to use
 `/health` without claiming deployment success.
 
 The canonical public `GET /ready` is a content-blind semantic readiness
-endpoint. It retains the k3s response shape: HTTP 200 `{"ready":true}` only
+endpoint. Its response shape is HTTP 200 `{"ready":true}` only
 when ready, or HTTP 503 `{"ready":false,"checks":{...}}` otherwise. The
 fixed boolean check keys are `postgres`, `roster`, `observer`, `fleet`,
 `qa_patrol`, `supervisors`, and `route_canary`. `roster` means the exact
@@ -421,7 +419,7 @@ production selection/policy/endpoint resolver and makes one bounded identity
 GET to a server-selected fixed domain target, without a target MCP call or
 durable evidence write. It proves that control-plane path, not a transactional
 `route.execute` receipt or downstream success. Q4 alone implements the public
-route and exact owner-auth exception; k3s and Compose only consume it. A
+route and exact owner-auth exception; Compose only consumes it. A
 bounded cached snapshot serves `/ready`; the public request cannot start probes or expensive
 database fanout. It reports no message content, credentials, internal
 endpoints, or unbounded diagnostic text. Partial or failed observations cannot

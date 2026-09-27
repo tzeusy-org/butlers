@@ -193,7 +193,7 @@ source for this table; the table and registry MUST be checked for parity.
 ### Requirement: Type System
 Pages SHALL use only the three type families — no page invents a fourth: **Inter Tight** (everything UI —
 display, body, labels, interface numbers), **Source Serif 4** (the system's *voice* — LLM-written
-elaborations, empty-state lines, "why this shape" prose), and **JetBrains Mono** (times, IDs,
+assistant answers and elaborations, empty-state lines, "why this shape" prose), and **JetBrains Mono** (times, IDs,
 deltas, KPI numbers, eyebrows, code, file paths). The serif/sans split is meaningful: sans is the
 system speaking in data, serif is the system speaking in sentences. Forbidden primary faces:
 Inter (non-Tight), Roboto, Arial, Helvetica, Fraunces, `system-ui`.
@@ -215,7 +215,12 @@ The type scale SHALL be:
 | Mono inline | mono     | 11px  | 400    | normal   | 1.4     |
 
 Display weight is 500, never 700 — bold display is loud; tight tracking does the work weight
-would do.
+would do. An assistant answer uses Voice for narrative prose, Body for interface labels and
+structural metadata, and Mono for code, identifiers, timestamps, and tabular numeric cells.
+
+ID: REQ-dashboard-design-language-001
+Source: dashboard-design-language § Type System and Voice Surface; dashboard-chat-ui § Message Thread Display; design.md Decision 5
+Scope: v1-mandatory
 
 #### Scenario: Display headlines are medium weight
 - **WHEN** a diff adds a display headline
@@ -229,6 +234,13 @@ would do.
 - **WHEN** the dashboard loads without public-internet access
 - **THEN** every declared Dispatch face resolves from a repository-vendored WOFF2 asset
 - **AND** the application shell requests no remote font stylesheet or font file
+
+#### Scenario: Assistant answer type roles remain semantic
+
+- **WHEN** an assistant answer renders narrative prose, headings or labels, code, timestamps, or numeric table cells
+- **THEN** narrative prose uses Voice while headings, labels, controls, and structural metadata use the applicable sans Body or Title role
+- **AND** code, identifiers, timestamps, and numeric table cells use Mono
+- **AND** numeric cells retain tabular numerals
 
 ### Requirement: Tabular Numerals
 Every numeric value — costs, counts, deltas, KPI mega-numbers, timestamps, badge digits — SHALL
@@ -342,15 +354,20 @@ background, hue initial, hairline border — default state).
 - **THEN** the letter-mark in the butler hue is used instead
 
 ### Requirement: Voice Surface
-The **Voice** — a headline plus serif paragraph — SHALL be a distinct surface type reserved for places
-the system is literally speaking in sentences: the Overview briefing, empty states ("Nothing
-waiting."), and "why this shape" glosses. Voice is serif italic for empty states, serif roman
-for briefings. It is never decorative: adding a serif paragraph because a page feels empty is a
-violation.
+The **Voice** — a headline plus serif paragraph, or assistant-answer narrative prose — SHALL be a distinct surface type reserved for places
+the system is literally speaking in sentences: assistant answers, the Overview briefing, empty states ("Nothing
+waiting."), and "why this shape" glosses. Voice is serif italic for empty states and serif roman
+for briefings and assistant-answer prose. It is never decorative: adding a serif paragraph because a page feels empty is a
+violation. Controls, citations, attribution, timestamps, status, and other interface metadata remain in their applicable Body or Mono role.
+
+ID: REQ-dashboard-design-language-002
+Source: dashboard-design-language § Voice Surface; dashboard-chat-ui § Message Thread Display; design.md Decision 5
+Scope: v1-mandatory
 
 #### Scenario: Voice reserved for sentences
 - **WHEN** a serif paragraph appears on a surface
-- **THEN** it is a briefing, an empty state, or an explanatory gloss — not filler for visual balance
+- **THEN** it is assistant-answer narrative, a briefing, an empty state, or an explanatory gloss — not filler for visual balance
+- **AND** interactive controls, citation labels, attribution, and operational metadata do not inherit Voice styling merely because they are adjacent to narrative prose
 
 ### Requirement: Process Status Pill
 The system SHALL report on its own process (briefing source, cache age, last sync, model
@@ -547,3 +564,37 @@ Every dashboard page SHALL render inside the shared `<Page>` primitive (`fronten
 #### Scenario: Page state priority
 - **WHEN** a page's primary read is loading, has failed, or is empty
 - **THEN** `<Page>` renders the archetype skeleton, the error state, or the empty state in that priority, and never the empty state for a failed read
+
+### Requirement: Viewport and Modality Contract
+Every dashboard surface SHALL be designed against exactly three device bands — **desktop**
+(≥1024px, fine pointer, hover available), **tablet** (768–1023px, mixed pointer), and **phone**
+(<768px, coarse pointer assumed) — aligned to the `lg`/`md` breakpoints already in use across the
+frontend. Pages and components branch viewport-dependent behavior on these bands rather than an
+ad hoc breakpoint.
+
+On any surface reachable under `(pointer: coarse)` or the phone band, every interactive target
+(button, pill, action-arrow list row, tap target) SHALL have a minimum hit area of 44×44px, even
+when its visual glyph is smaller — via padding or an invisible hit-area expansion, never by
+inflating the visual element itself.
+
+No fact essential to understanding a surface's current state SHALL be conveyed only via `:hover`
+(a tooltip-only label, a hover-reveal delta, hover-only truncation reveal), since hover does not
+exist on a coarse pointer. Any fact exposed on hover on desktop MUST also be reachable without
+hover — visible by default, tap-to-reveal, or included in the base layout — on tablet and phone.
+
+#### Scenario: Device band is one of the three canonical bands
+- **WHEN** a page or component branches behavior by viewport width or pointer type
+- **THEN** it resolves to desktop (≥1024px), tablet (768–1023px), or phone (<768px)
+- **AND** it does not introduce a fourth ad hoc breakpoint
+
+#### Scenario: Coarse-pointer touch-target floor
+- **WHEN** a surface renders under `(pointer: coarse)` or below the phone breakpoint
+- **THEN** every interactive target has a minimum 44×44px hit area
+- **AND** a smaller visual glyph is centered inside the expanded hit area rather than being
+  enlarged itself
+
+#### Scenario: No hover-only facts
+- **WHEN** a fact needed to understand a surface's current state is exposed via `:hover` on
+  desktop
+- **THEN** the same fact is also reachable without hover — visible, tap-revealed, or in the base
+  layout — on tablet and phone

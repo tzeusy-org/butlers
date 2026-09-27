@@ -1,7 +1,7 @@
 """Tests for GET /api/relationship/entities/{id}/activity (activity aggregator).
 
 Covers spec scenarios from
-``openspec/changes/amend-entity-activity-source-union/specs/dashboard-relationship/spec.md``
+``openspec/changes/archive/2026-09-27-amend-entity-activity-source-union/specs/dashboard-relationship/spec.md``
 § "Requirement: Entity activity aggregator (cross-butler read surface)".
 
 Acceptance criteria:
