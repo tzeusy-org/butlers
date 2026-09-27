@@ -14,7 +14,8 @@ path as provenance:
    promotion the brief remains as the cited *source of intent* behind that spec.
 2. **Pursuit / audit dossiers** — dated, point-in-time UI-maturity audits from
    the `butler-relentless-jarvis-pursuit` skill. Each `<date>-*-pursuit.md` has
-   a machine-queryable `-data.json` sibling. These are historical snapshots:
+   a machine-queryable `-data.json` sibling (in the tree for the two newest runs, in
+   git history for older ones). These are historical snapshots:
    each board describes only its audit cohort and timestamp; later runs may
    recheck different scopes;
    findings are tracked as beads, not by editing the dossier.
@@ -56,6 +57,11 @@ Point-in-time UI-maturity audits, listed by run. A newer date is not live
 verification or proof that an earlier finding is resolved. Query the
 `-data.json` sibling, e.g.
 `jq '.audits[] | select(.page=="<key>")' docs/redesigns/<date>-jarvis-pursuit-data.json`.
+
+Retention: only the two newest runs keep `-data.json` in the tree. An older run's dossier
+names the pinned commit to read it from (`git show <sha>:docs/redesigns/<file> | jq …`).
+Harvest and state working files are gitignored. The cap and pruning rule live in the
+`butler-relentless-jarvis-pursuit` skill (Phase 4).
 
 | Run | Dossier |
 |---|---|

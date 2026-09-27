@@ -14,7 +14,7 @@
  * on this page are label management.
  *
  * Audit: docs/redesigns/2026-07-03-jarvis-audit.md move 14; per-page dossier
- * docs/redesigns/2026-07-03-jarvis-audit-data.json (page: "groups").
+ * `git show b23d5b76afab:docs/redesigns/2026-07-03-jarvis-audit-data.json` (page: "groups").
  */
 
 import { useMemo, useState } from "react";
