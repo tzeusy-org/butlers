@@ -77,6 +77,17 @@ does not ship.
    cost for zero-reasoning work. Each exception requires explicit guardrails
    and reuse criteria (see RFC 0010).
 
+   One separately reviewed exception permits only the QA daemon's
+   deterministic local scheduler, under its matching runtime database role,
+   to read its own explicit administrative-policy state and provenance
+   through a fixed, no-argument Switchboard-owned read projection. The
+   exception exists solely to keep local patrol independent of Switchboard
+   process reachability without bypassing an owner stop. It conveys no
+   cross-butler data, endpoint, observation, policy-write, or general-purpose
+   SQL authority. Its exact grants, failure behavior, and rollback are
+   governed by RFC 0010's QA-specific amendment; expansion requires a new
+   owner-approved doctrine and RFC decision.
+
 4. **The daemon is deterministic infrastructure; intelligence is in ephemeral LLM
    sessions.** The daemon manages state, runs migrations, enforces schedules, and
    registers tools. It must be testable, debuggable, and predictable. The LLM
