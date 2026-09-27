@@ -83,6 +83,11 @@ contradictions: a broader restatement still reads as preserved.
   `openspec/specs/`, because many archives were hand `git mv`s.
   `scripts/check_archived_requirements_landed.py` checks this per requirement. A capability file
   existing proves nothing; an empty `git log -- openspec/specs/<capability>` means it never landed.
+  It lets a strictly later-dated archived MODIFIED block for the same requirement supersede an
+  earlier one; undated archives and RENAMED blocks never supersede.
+- A rebase conflict in archive-generated `openspec/specs/` files or the baseline JSONs is resolved
+  by resetting them to `origin/main` and re-running `openspec archive` plus the baseline
+  regenerators, never by hand-merging.
 - `openspec/changes/archive/**` is not a definition source for cited REQ ids; only
   `openspec/specs/**` and unarchived changes are (`scripts/check_cited_requirements_resolve.py`).
 

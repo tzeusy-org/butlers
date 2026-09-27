@@ -309,6 +309,11 @@ it before changing the subsystem.
 - Required checks are non-strict: rebase only for a real conflict or on reviewer request. Probe
   mergeability without moving HEAD with `git merge-tree --write-tree --name-only origin/main
   <branch>`; a clean probe proves textual, not semantic, compatibility.
+- A force-push clears a PR's auto-merge; re-run `gh pr merge <n> --squash --auto` (it prints
+  "merge strategy set by merge queue" but does enable it). Confirm queueing via GraphQL
+  `mergeQueueEntry { state position }`: `autoMergeRequest` reads null once the PR is in the queue.
+- When a stacked PR's base squash-merges, the stack turns CONFLICTING. Replay only its own commits
+  with `git rebase --onto origin/main <old-base-tip-sha>`.
 - Remove the worktree before `gh pr merge ... --delete-branch`. While a worktree holds the branch,
   the local delete fails and aborts cleanup, leaving the remote branch behind even though the error
   names only the local one. If it happens, `git push origin --delete <branch>`.
