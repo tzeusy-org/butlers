@@ -52,8 +52,9 @@ Pages do not own anything outside their `Outlet` rectangle.
 ## Routing Surface
 
 All routes are flat children of `RootLayout`, declared in `frontend/src/router-config.tsx`
-(authority) and assembled in `router.tsx`. There are no nested layouts. For the route map by
-domain, see [`docs/frontend/information-architecture.md` §Route Map](../../docs/frontend/information-architecture.md#route-map).
+(authority) and assembled in `router.tsx`. There are no nested layouts. Navigation groups,
+off-rail routes and compatibility redirects are described in
+[`docs/frontend/information-architecture.md`](../../docs/frontend/information-architecture.md).
 
 ---
 

@@ -218,8 +218,8 @@ cost, failures, spend) from typed read models, per
 
 Shared routers live in `src/butlers/api/routers/`; per-butler routes in
 `roster/{butler}/api/router.py` are auto-discovered by `src/butlers/api/router_discovery.py` and
-mounted under `/api/{butler}/`. The endpoint contract is
-[`docs/frontend/backend-api-contract.md`](../../docs/frontend/backend-api-contract.md); the
+mounted under `/api/{butler}/`. Response conventions are in
+[`docs/api_and_protocols/response-conventions.md`](../../docs/api_and_protocols/response-conventions.md); the
 frontend layout is [`frontend.md`](frontend.md).
 
 ---
