@@ -31,7 +31,7 @@ import type {
 import { ConnectorDetailView } from './ConnectorDetailView'
 import type { ConnectorRecovery } from './connector-auth'
 import { ReauthCallout } from './ReauthCallout'
-import { stateColorVar } from '@/lib/visual-token-roles'
+import { stateColorVar, stateTextColorVar } from '@/lib/visual-token-roles'
 import type { OAuthScope } from './ScopeList'
 
 // ---------------------------------------------------------------------------
@@ -533,6 +533,47 @@ describe('[bu-5ywn2] Recent events section', () => {
     expect(container.querySelector('[data-testid="recent-events-empty"]')).toBeNull()
   })
 
+  it.each(['failed', 'error', 'replay_failed'])(
+    'uses the semantic error foreground for %s event text',
+    (status) => {
+      renderDetail(root, BASE_CONNECTOR, {
+        recentEvents: {
+          ...MOCK_EVENTS,
+          events: [{ ...MOCK_EVENTS.events[1], status }],
+          total_returned: 1,
+        },
+      })
+      const row = container.querySelector('[data-testid="recent-events-row"]')
+      const label = Array.from(row?.querySelectorAll('span') ?? []).find(
+        (span) => span.textContent === status,
+      )
+      expect(label).toBeDefined()
+      expect(label?.style.color).toBe(stateTextColorVar('error'))
+      expect(label?.style.color).toBe('var(--red-text)')
+    },
+  )
+
+  it('preserves successful, filtered, and unknown event presentation', () => {
+    const statuses = ['ingested', 'filtered', 'future-status']
+    renderDetail(root, BASE_CONNECTOR, {
+      recentEvents: {
+        ...MOCK_EVENTS,
+        events: statuses.map((status) => ({ ...MOCK_EVENTS.events[0], id: status, status })),
+        total_returned: statuses.length,
+      },
+    })
+    const labels = Array.from(container.querySelectorAll('[data-testid="recent-events-row"]')).map(
+      (row, index) => Array.from(row.querySelectorAll('span')).find(
+        (span) => span.textContent === statuses[index],
+      ),
+    )
+    expect(labels[0]?.style.color).toBe(stateTextColorVar('ok'))
+    expect(labels[1]?.classList.contains('text-muted-foreground')).toBe(true)
+    expect(labels[2]?.classList.contains('text-foreground')).toBe(true)
+    expect(labels[1]?.style.color).toBe('')
+    expect(labels[2]?.style.color).toBe('')
+  })
+
   it('renders event count matching the data', () => {
     renderDetail(root, BASE_CONNECTOR, { recentEvents: MOCK_EVENTS })
     // MOCK_EVENTS has 2 events — each renders a row inside the list
@@ -603,6 +644,17 @@ describe('[bu-5ywn2] Incident list section', () => {
     const list = container.querySelector('[data-testid="incident-list"]')
     expect(list).not.toBeNull()
     expect(container.querySelector('[data-testid="incident-list-empty"]')).toBeNull()
+  })
+
+  it('uses the semantic error foreground for failed incident text', () => {
+    renderDetail(root, BASE_CONNECTOR, { incidents: MOCK_INCIDENTS })
+    const row = container.querySelector('[data-testid="incident-row"]')
+    const label = Array.from(row?.querySelectorAll('span') ?? []).find(
+      (span) => span.textContent === 'failed',
+    )
+    expect(label).toBeDefined()
+    expect(label?.style.color).toBe(stateTextColorVar('error'))
+    expect(label?.style.color).toBe('var(--red-text)')
   })
 
   it('shows error detail text for populated incidents', () => {

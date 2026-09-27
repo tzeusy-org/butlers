@@ -30,7 +30,7 @@ import { Check, Copy, Download, Loader2, RotateCw, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Time } from '@/components/ui/time'
-import { categoricalFillForeground, categoricalHueVar } from '@/lib/visual-token-roles'
+import { categoricalFillForeground, categoricalHueVar, stateTextColorVar } from '@/lib/visual-token-roles'
 import {
   useIngestionEventSessions,
   useIngestionEventReplays,
@@ -430,7 +430,7 @@ function DrawerRawTab({
       <div className="flex items-center gap-3 font-mono text-[11px] text-muted-foreground">
         {payload.channel && <span>{payload.channel}</span>}
         <span>{payload.bytes.toLocaleString()} bytes</span>
-        {payload.truncated && <span className="text-[var(--amber)]">truncated</span>}
+        {payload.truncated && <span style={{ color: stateTextColorVar('degraded') }}>truncated</span>}
         <button
           type="button"
           className="ml-auto hover:text-foreground transition-colors flex items-center gap-1"
@@ -785,10 +785,10 @@ export function EventDrawer({ event, onClose, onOptimisticUpdate }: EventDrawerP
             <KVRow label="tier" value={event.policy_tier ?? event.ingestion_tier ?? '—'} />
             <KVRow label="sender" value={event.source_sender_identity ?? '—'} />
             {event.filter_reason && (
-              <KVRow label="filtered" value={<span className="text-[var(--amber)]">{event.filter_reason}</span>} />
+              <KVRow label="filtered" value={<span style={{ color: stateTextColorVar('degraded') }}>{event.filter_reason}</span>} />
             )}
             {event.error_detail && (
-              <KVRow label="error" value={<span className="text-[var(--red)]">{event.error_detail}</span>} />
+              <KVRow label="error" value={<span style={{ color: stateTextColorVar('error') }}>{event.error_detail}</span>} />
             )}
             {detail?.lifecycle_state && (
               <KVRow label="lifecycle" value={detail.lifecycle_state} />

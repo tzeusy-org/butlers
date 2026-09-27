@@ -49,6 +49,7 @@ import {
   deriveConnectorDispatchInfo,
   type ConnectorRecovery,
 } from './connector-auth'
+import { stateTextColorVar } from '@/lib/visual-token-roles'
 import { SourceDegradedNote } from '@/components/ui/query-boundary'
 
 // ---------------------------------------------------------------------------
@@ -509,14 +510,15 @@ export function ConnectorDetailView({
 function EventStatusPill({ status }: { status: string }) {
   const color =
     status === 'ingested'
-      ? 'text-[color:var(--green)]'
+      ? stateTextColorVar('ok')
       : status === 'failed' || status === 'error' || status === 'replay_failed'
-        ? 'text-[color:var(--red)]'
-        : status === 'filtered'
-          ? 'text-muted-foreground'
-          : 'text-foreground'
+        ? stateTextColorVar('error')
+        : undefined
+  const neutralClass = status === 'filtered' ? 'text-muted-foreground' : 'text-foreground'
   return (
-    <span className={`font-mono text-[10px] ${color}`}>{status}</span>
+    <span className={`font-mono text-[10px] ${color ? '' : neutralClass}`} style={{ color }}>
+      {status}
+    </span>
   )
 }
 
