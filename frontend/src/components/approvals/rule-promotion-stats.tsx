@@ -69,7 +69,7 @@ export function RulePromotionStatsTile({
       <SectionHeader className="pb-2">
         <div className="flex items-center gap-2">
           <TrendingUp className={PROMOTION_STATS_ICON_CLASS} />
-          <SectionTitle className="text-sm font-semibold">Rule promotion</SectionTitle>
+          <SectionTitle>Rule promotion</SectionTitle>
         </div>
       </SectionHeader>
       <SectionContent className="space-y-4">

@@ -45,7 +45,7 @@ export function NotificationStatsBar({ stats, isLoading, onFilterClick }: Notifi
         {/* Total Notifications */}
         <Section>
           <SectionHeader className="flex flex-row items-center justify-between pb-2">
-            <SectionTitle className="text-sm font-medium text-muted-foreground">
+            <SectionTitle>
               Total Notifications
             </SectionTitle>
             <Bell className="h-4 w-4 text-muted-foreground" />
@@ -76,7 +76,7 @@ export function NotificationStatsBar({ stats, isLoading, onFilterClick }: Notifi
           data-testid="stat-tile-sent"
         >
           <SectionHeader className="flex flex-row items-center justify-between pb-2">
-            <SectionTitle className="text-sm font-medium text-muted-foreground">Sent</SectionTitle>
+            <SectionTitle>Sent</SectionTitle>
             <CheckCircle className="h-4 w-4 text-[var(--green)]" />
           </SectionHeader>
           <SectionContent>
@@ -108,7 +108,7 @@ export function NotificationStatsBar({ stats, isLoading, onFilterClick }: Notifi
           data-testid="stat-tile-failed"
         >
           <SectionHeader className="flex flex-row items-center justify-between pb-2">
-            <SectionTitle className="text-sm font-medium text-muted-foreground">Failed</SectionTitle>
+            <SectionTitle>Failed</SectionTitle>
             <XCircle className="h-4 w-4 text-[var(--red-text)]" />
           </SectionHeader>
           <SectionContent>
@@ -124,7 +124,7 @@ export function NotificationStatsBar({ stats, isLoading, onFilterClick }: Notifi
         {/* Failure Rate */}
         <Section>
           <SectionHeader className="flex flex-row items-center justify-between pb-2">
-            <SectionTitle className="text-sm font-medium text-muted-foreground">
+            <SectionTitle>
               Failure Rate
             </SectionTitle>
             <Percent className="h-4 w-4 text-muted-foreground" />

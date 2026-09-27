@@ -97,7 +97,7 @@ function CollectionsKpiStrip({
     return (
       <Section data-testid="kpi-strip">
         <SectionHeader>
-          <SectionTitle className="text-sm font-medium">Collections overview</SectionTitle>
+          <SectionTitle>Collections overview</SectionTitle>
         </SectionHeader>
         <SectionContent>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-6">
@@ -117,7 +117,7 @@ function CollectionsKpiStrip({
     return (
       <Section data-testid="kpi-strip">
         <SectionHeader>
-          <SectionTitle className="text-sm font-medium">Collections overview</SectionTitle>
+          <SectionTitle>Collections overview</SectionTitle>
         </SectionHeader>
         <SectionContent>
           <ErrorLine>Could not load collections overview.</ErrorLine>
@@ -129,7 +129,7 @@ function CollectionsKpiStrip({
   return (
     <Section data-testid="kpi-strip">
       <SectionHeader>
-        <SectionTitle className="text-sm font-medium">Collections overview</SectionTitle>
+        <SectionTitle>Collections overview</SectionTitle>
       </SectionHeader>
       <SectionContent>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-6" data-testid="kpi-row">
@@ -183,7 +183,7 @@ function CollectionsDirectory({
   return (
     <Section className="lg:col-span-3" data-testid="collections-directory-card">
       <SectionHeader>
-        <SectionTitle className="text-sm font-medium">Collections</SectionTitle>
+        <SectionTitle>Collections</SectionTitle>
       </SectionHeader>
       <SectionContent>
         {isLoading && collections.length === 0 ? (
@@ -277,7 +277,7 @@ function RecentItemsSidebar({ entities, isLoading, isError }: RecentItemsSidebar
   return (
     <Section className="lg:col-span-1" data-testid="recent-items-card">
       <SectionHeader>
-        <SectionTitle className="text-sm font-medium">Recent items</SectionTitle>
+        <SectionTitle>Recent items</SectionTitle>
       </SectionHeader>
       <SectionContent>
         {isLoading && entities.length === 0 ? (
@@ -351,7 +351,7 @@ function SizeHistogramPanel({ buckets, isLoading, isError }: SizeHistogramProps)
   return (
     <Section className="lg:col-span-2" data-testid="size-histogram-card">
       <SectionHeader>
-        <SectionTitle className="text-sm font-medium">Collection sizes</SectionTitle>
+        <SectionTitle>Collection sizes</SectionTitle>
       </SectionHeader>
       <SectionContent>
         {isLoading ? (
@@ -454,7 +454,7 @@ function QuickActionsCard({ onSearchChange, searchValue }: QuickActionsProps) {
     <>
       <Section className="lg:col-span-2" data-testid="quick-actions-card">
         <SectionHeader>
-          <SectionTitle className="text-sm font-medium">Quick actions</SectionTitle>
+          <SectionTitle>Quick actions</SectionTitle>
         </SectionHeader>
         <SectionContent className="space-y-4">
           <Button

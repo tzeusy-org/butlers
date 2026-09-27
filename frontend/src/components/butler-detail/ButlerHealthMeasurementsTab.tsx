@@ -378,7 +378,7 @@ function TrendPanel({
   return (
     <Section data-testid={`trend-panel-${type}`}>
       <SectionHeader className="pb-2">
-        <SectionTitle className="text-sm font-medium flex items-center justify-between">
+        <SectionTitle className="flex items-center justify-between">
           {title} · 14d
           {drilldownLink && (
             <Button variant="ghost" size="sm" asChild className="text-xs text-muted-foreground">
@@ -419,7 +419,7 @@ function SleepStagesPanel({ sleep, isLoading }: { sleep: SleepLatestResponse | u
   return (
     <Section data-testid="sleep-stages-panel">
       <SectionHeader className="pb-2">
-        <SectionTitle className="text-sm font-medium">
+        <SectionTitle>
           Sleep stages
           {sleep?.session_date ? (
             <span className="ml-2 text-xs font-normal text-muted-foreground">
@@ -499,7 +499,7 @@ function SourcesPanel({
   return (
     <Section data-testid="sources-panel">
       <SectionHeader className="pb-2">
-        <SectionTitle className="text-sm font-medium">Measurement sources</SectionTitle>
+        <SectionTitle>Measurement sources</SectionTitle>
       </SectionHeader>
       <SectionContent>
         {isLoading ? (
@@ -552,7 +552,7 @@ function ExpectedSignalsPanel({
   return (
     <Section data-testid="expected-signals-panel">
       <SectionHeader className="pb-2">
-        <SectionTitle className="text-sm font-medium">Expected measurements</SectionTitle>
+        <SectionTitle>Expected measurements</SectionTitle>
       </SectionHeader>
       <SectionContent>
         {isLoading ? (
@@ -626,7 +626,7 @@ function ActiveMedicationsPanel({
   return (
     <Section data-testid="active-medications-panel">
       <SectionHeader className="pb-2">
-        <SectionTitle className="text-sm font-medium flex items-center justify-between">
+        <SectionTitle className="flex items-center justify-between">
           Active medications
           <Button variant="ghost" size="sm" asChild className="text-xs text-muted-foreground">
             <Link to="/health/medications">View all</Link>
@@ -675,7 +675,7 @@ function RecentConditionsPanel({
   return (
     <Section data-testid="recent-conditions-panel">
       <SectionHeader className="pb-2">
-        <SectionTitle className="text-sm font-medium flex items-center justify-between">
+        <SectionTitle className="flex items-center justify-between">
           Recent conditions
           <Button variant="ghost" size="sm" asChild className="text-xs text-muted-foreground">
             <Link to="/health/conditions">View all</Link>

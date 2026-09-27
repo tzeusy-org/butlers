@@ -150,6 +150,10 @@ describe("GoogleHealthStatusCard — single account", () => {
     renderCard(SINGLE_ACCOUNT_STATUS);
     const heading = screen.getByRole("heading", { name: /user@example.com/i });
     expect(heading.querySelector("div")).toBeNull();
+    expect(heading.className).toContain("text-[10px]");
+    expect(heading.className).toContain("font-normal");
+    expect(heading.className).toContain("text-[var(--mfg)]");
+    expect(screen.getByTestId("account-email").className).not.toMatch(/text-(xs|sm|base)/);
     expect(heading.contains(screen.getByTestId("account-state"))).toBe(false);
   });
 

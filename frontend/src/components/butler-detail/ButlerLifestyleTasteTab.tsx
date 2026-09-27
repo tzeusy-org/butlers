@@ -345,7 +345,7 @@ export default function ButlerLifestyleTasteTab() {
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
         <Section className="lg:col-span-2" data-testid="taste-summary-card">
           <SectionHeader>
-            <SectionTitle className="text-sm font-medium">Taste verdicts</SectionTitle>
+            <SectionTitle>Taste verdicts</SectionTitle>
           </SectionHeader>
           <SectionContent>
             <TasteVerdictsPanel
@@ -358,7 +358,7 @@ export default function ButlerLifestyleTasteTab() {
 
         <Section className="lg:col-span-2" data-testid="recent-works-card">
           <SectionHeader>
-            <SectionTitle className="text-sm font-medium">Recently added</SectionTitle>
+            <SectionTitle>Recently added</SectionTitle>
           </SectionHeader>
           <SectionContent>
             <RecentWorksPanel works={works} isLoading={worksLoading} isError={worksUnavailable} />

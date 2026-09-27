@@ -188,7 +188,7 @@ export function ButlerHeartbeatTile() {
     return (
       <Tile loading>
         <TileHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-          <TileTitle className="text-sm font-medium">Butler Heartbeats</TileTitle>
+          <TileTitle>Butler Heartbeats</TileTitle>
         </TileHeader>
         <TileContent>
           <div className="h-16 rounded bg-muted" data-testid="butler-heartbeat-skeleton" />
@@ -201,7 +201,7 @@ export function ButlerHeartbeatTile() {
     return (
       <Tile degraded>
         <TileHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-          <TileTitle className="text-sm font-medium">Butler Heartbeats</TileTitle>
+          <TileTitle>Butler Heartbeats</TileTitle>
         </TileHeader>
         <TileContent>
           <p className="text-sm text-destructive">Failed to load heartbeat data.</p>
@@ -216,7 +216,7 @@ export function ButlerHeartbeatTile() {
   return (
     <Tile>
       <TileHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <TileTitle className="text-sm font-medium">Butler Heartbeats</TileTitle>
+        <TileTitle>Butler Heartbeats</TileTitle>
         <span className="text-xs text-muted-foreground">
           {sortedRows.length} butler{sortedRows.length !== 1 ? "s" : ""}
         </span>

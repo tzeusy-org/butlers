@@ -134,10 +134,10 @@ function AccountWidget({ account, isPrimary }: AccountWidgetProps) {
   return (
     <Section data-testid="google-health-account-widget">
       <SectionHeader className="flex flex-row items-center justify-between gap-2 pb-2">
-        <SectionTitle className="flex min-w-0 items-center gap-2 text-sm font-medium">
+        <SectionTitle className="flex min-w-0 items-center gap-2">
           {/* State dot — uses StateDot primitive for consistent token-based colour */}
           <StateDot state={toDotState(account.state)} size={8} />
-          <span className="font-mono text-xs truncate" data-testid="account-email">
+          <span className="truncate" data-testid="account-email">
             {account.email}
           </span>
         </SectionTitle>

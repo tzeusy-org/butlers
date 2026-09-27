@@ -48,7 +48,7 @@ function SystemTile({ title, action, children }: SystemTileProps) {
   return (
     <Section>
       <SectionHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <SectionTitle className="text-sm font-medium">{title}</SectionTitle>
+        <SectionTitle>{title}</SectionTitle>
         {action}
       </SectionHeader>
       <SectionContent>{children}</SectionContent>

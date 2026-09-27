@@ -8,8 +8,8 @@ operational signal. `frontend/src/index.css` remains the token-value authority a
 ## Decisions
 
 1. `Section` renders semantic `<section>` markup and an optional Eyebrow heading. Its default
-   surface is flat and rule-led. A quiet section renders no children and may show one serif-italic
-   sentence supplied by the caller.
+   surface is flat and rule-led. A quiet section with an empty sentence replaces its children with
+   that serif-italic sentence; without one, it retains its children on the same flat surface.
 2. `Tile` is a separate semantic `<section>` used only by dense status-grid modules whose own
    data can be loading or degraded independently. Its `loading` and `degraded` markers describe
    that boundary; consumers retain their existing state copy and retry behavior.

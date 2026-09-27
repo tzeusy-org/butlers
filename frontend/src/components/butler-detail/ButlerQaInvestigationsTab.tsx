@@ -214,7 +214,7 @@ function PatrolCadenceStripe({ patrols, isLoading }: PatrolStripeProps) {
     return (
       <Section data-testid="patrol-cadence-stripe">
         <SectionHeader>
-          <SectionTitle className="text-sm font-medium">Recent patrols</SectionTitle>
+          <SectionTitle>Recent patrols</SectionTitle>
         </SectionHeader>
         <SectionContent>
           <div className="space-y-2" data-testid="patrol-stripe-loading">
@@ -234,7 +234,7 @@ function PatrolCadenceStripe({ patrols, isLoading }: PatrolStripeProps) {
   return (
     <Section data-testid="patrol-cadence-stripe">
       <SectionHeader>
-        <SectionTitle className="text-sm font-medium">Recent patrols</SectionTitle>
+        <SectionTitle>Recent patrols</SectionTitle>
       </SectionHeader>
       <SectionContent>
         {patrols.length === 0 ? (
@@ -295,7 +295,7 @@ function RecentInvestigationsTable({
   return (
     <Section data-testid="recent-investigations-card">
       <SectionHeader>
-        <SectionTitle className="text-sm font-medium">Recent investigations</SectionTitle>
+        <SectionTitle>Recent investigations</SectionTitle>
       </SectionHeader>
       <SectionContent>
         {isLoading && investigations.length === 0 ? (
@@ -396,7 +396,7 @@ function InvestigationDetailPanel({
       <SectionHeader>
         <div className="flex items-start justify-between gap-2">
           <div className="space-y-1 min-w-0">
-            <SectionTitle className="text-sm font-medium">Investigation detail</SectionTitle>
+            <SectionTitle>Investigation detail</SectionTitle>
             <p className="font-mono text-xs text-muted-foreground tabular-nums">
               {inv.id}
             </p>

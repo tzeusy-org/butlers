@@ -95,7 +95,7 @@ export default function NodeDetailPanel({
       <Section>
         <SectionHeader className="flex flex-row items-start justify-between space-y-0">
           <div className="space-y-1">
-            <SectionTitle className="text-lg">{node.label}</SectionTitle>
+            <SectionTitle>{node.label}</SectionTitle>
             <div className="flex flex-wrap items-center gap-2">
               <Badge className={masteryStatusBadgeClassName(node.mastery_status)}>
                 {node.mastery_status}

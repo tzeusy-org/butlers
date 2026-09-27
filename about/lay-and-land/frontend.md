@@ -82,12 +82,16 @@ editors compose `Input`, `Label`, `Button`, `Dialog`, `Select`.
 ## Component Domains
 
 Components live by domain under `frontend/src/components/`: `ui/` holds shadcn primitives plus
-the Dispatch primitives (`Row`, `Pill`, `Eyebrow`, `Mono`, `Voice`, `StateDot`, `ButlerMark`,
+the Dispatch primitives (`Section`, `Tile`, `Row`, `Pill`, `Eyebrow`, `Mono`, `Voice`, `StateDot`, `ButlerMark`,
 `time`, `query-boundary`, `error-state`, `empty-state`, `confirm-dialog`, …); `layout/` holds
 the shell; every other folder is one domain or surface (`qa/`, `butler-detail/`, `memory/`,
 `health/`, `relationship/`, `chronicles/`, `approvals/`, `ingestion/`, `overview/`, `chat/`,
 `decisions/`, `spend/`, `system/`, `topology/`, …). `ls frontend/src/components/` is the current
 list.
+
+`ui/Section.tsx` is the default semantic surface, with Header/Title/Description/Action/Content/Footer
+anatomy. `ui/Tile.tsx` exposes the same anatomy only for dense-grid modules that load or degrade
+independently. Both use canonical Eyebrow titles; the retired `ui/card` path has no alias.
 
 Button forms follow spec `dashboard-design-language` §Button Forms.
 
@@ -148,14 +152,14 @@ the `<main>` outlet content only; it does not replace `Shell.tsx` or `PageHeader
 types cannot express:
 
 - `archetype` is a required discriminant that controls max width, padding, and skeleton shape.
-- Render priority: `loading` → skeleton; else `error` → heading block + error card (retry button
+- Render priority: `loading` → skeleton; else `error` → heading block + error section (retry button
   when `onRetry` is set); else `empty` → `EmptyState`; else `children`.
 - `title` renders the `<h1>` (`text-3xl font-bold tracking-tight`; the editorial archetype uses the
   44px Display tier, status-board renders none) and sets `document.title` to `${title} | Butlers`.
 - Supplying `breadcrumbs` renders a `<Breadcrumbs>` row above the `<h1>` and suppresses the
   `PageHeader` auto-builder.
 - `actions` sits at the right of the title row.
-- List pages pass `empty={null}` and render empty state inside their table card. Partial
+- List pages pass `empty={null}` and render empty state inside their table section. Partial
   (per-section) errors are the page's responsibility, not the page-level `error` prop.
 - `skeletonSectionCount` applies to `editor` only (default 2); `header` / `footer` apply to
   `status-board` only.
@@ -165,10 +169,10 @@ types cannot express:
 | Archetype | Max width | Heading block | Body rhythm |
 |---|---|---|---|
 | `overview` | unrestricted | title + description left, actions right (`items-start justify-between gap-4`) | `space-y-6`; authors own spacing inside `children` |
-| `list` | unrestricted | as overview | one `<Card>` with filter bar (`flex flex-wrap items-center gap-3` inside `<CardContent>`) + table; pagination outside the card |
-| `detail` | `max-w-5xl` | title + metadata strip, actions right, breadcrumbs above | `space-y-6`; `<Tabs>` for multi-section records; one level of `<Card>` per section |
+| `list` | unrestricted | as overview | one `<Section>` with filter bar (`flex flex-wrap items-center gap-3` inside `<SectionContent>`) + table; pagination outside the section |
+| `detail` | `max-w-5xl` | title + metadata strip, actions right, breadcrumbs above | `space-y-6`; `<Tabs>` for multi-section records; one level of `<Section>` per section |
 | `workspace` | unrestricted | as overview | controls, primary visualization, aggregations as direct children; `loading` renders one coarse `h-96` block |
-| `editor` | `max-w-2xl` | as overview | `space-y-6` between form sections; each section is a `<Card>` or a `<fieldset>`, not mixed |
+| `editor` | `max-w-2xl` | as overview | `space-y-6` between form sections; each section is a `<Section>` or a `<fieldset>`, not mixed |
 | `editorial` | 1280px frame | Display headline | see §Editorial archetype layout |
 | `status-board` | unrestricted | none; the `header` slot owns identity | slots supply their own padding (`px-7`); `loading` renders `StatusBoardSkeleton` between the slots |
 
@@ -177,7 +181,7 @@ types cannot express:
 | Archetype | Skeleton shape |
 |---|---|
 | `overview` | heading bars + `StatsSkeleton` + two `CardSkeleton` |
-| `list` | heading bars + one `Card` containing `TableSkeleton` |
+| `list` | heading bars + one `Section` containing `TableSkeleton` |
 | `detail` | heading bars + `CardSkeleton` + tab-strip bar + content region |
 | `workspace` | heading bars + one full-width `h-96` placeholder |
 | `editor` | heading bars + `skeletonSectionCount` × `CardSkeleton` |
@@ -203,7 +207,7 @@ Headline Display-tier rendering lives in `components/overview/Headline.tsx`.
 
 `<Page archetype="editorial">` is used by `DashboardPage` (Overview) and `ChroniclesPage`. The
 shared components live in `frontend/src/components/overview/` (`Headline`, `Elaboration`,
-`DateEyebrow`, `AttentionList`, `OperationsNowList`, `KpiStrip`, `BriefingStatus`, `Section`, …).
+`DateEyebrow`, `AttentionList`, `OperationsNowList`, `KpiStrip`, `BriefingStatus`, …). The shared Section lives in `components/ui/Section.tsx`.
 The frame:
 
 - `display: grid`, `grid-template-columns: 1.4fr 1fr`, `gap: 56px`, `max-width: 1280px`; the shell
@@ -220,7 +224,7 @@ briefing refresh, transform-only rotation on the status pill icon, nothing else.
 
 Hairline-separated `mark / title+detail / meta` grid rows with no card chrome: attention rows
 (`AttentionList.tsx`), butler index and operations rows (`OperationsNowList.tsx`), and section
-wrappers (`Section.tsx`). Anatomy and empty-state copy: spec §List Primitive.
+wrappers (`components/ui/Section.tsx`). Anatomy and empty-state copy: spec §List Primitive.
 
 ### KPI strip
 

@@ -296,7 +296,7 @@ function MindMapsProgressPanel({
   return (
     <Section data-testid="mind-maps-progress-panel">
       <SectionHeader className="pb-2">
-        <SectionTitle className="text-sm font-medium">Mind maps</SectionTitle>
+        <SectionTitle>Mind maps</SectionTitle>
       </SectionHeader>
       <SectionContent>
         {isLoading ? (
@@ -415,7 +415,7 @@ function ReviewTimelinePanel({
   return (
     <Section data-testid="reviews-timeline-section">
       <SectionHeader className="pb-2">
-        <SectionTitle className="text-sm font-medium">Pending reviews</SectionTitle>
+        <SectionTitle>Pending reviews</SectionTitle>
       </SectionHeader>
       <SectionContent className="max-h-72 overflow-y-auto">
         {isLoading ? (
@@ -486,7 +486,7 @@ function FrontierPanel({
   return (
     <Section data-testid="reviews-frontier-section">
       <SectionHeader className="pb-2">
-        <SectionTitle className="text-sm font-medium">Ready to learn</SectionTitle>
+        <SectionTitle>Ready to learn</SectionTitle>
       </SectionHeader>
       <SectionContent>
         {isLoading ? (
@@ -593,7 +593,7 @@ function RetentionTrendPanel({
   return (
     <Section data-testid="retention-trend-panel">
       <SectionHeader className="pb-2">
-        <SectionTitle className="text-sm font-medium">Retention · 7d</SectionTitle>
+        <SectionTitle>Retention · 7d</SectionTitle>
       </SectionHeader>
       <SectionContent>
         {isLoading ? (

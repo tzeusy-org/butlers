@@ -69,7 +69,7 @@ export default function CostWidget({
   return (
     <Section>
       <SectionHeader className="flex flex-row items-center justify-between pb-2">
-        <SectionTitle className="text-sm font-medium">Cost Today</SectionTitle>
+        <SectionTitle>Cost Today</SectionTitle>
         <Button variant="ghost" size="sm" asChild>
           <Link to="/spend">View all</Link>
         </Button>
