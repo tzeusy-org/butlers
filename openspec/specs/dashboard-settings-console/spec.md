@@ -2,20 +2,21 @@
 
 ## Purpose
 
-`dashboard-settings-console` is the new top-level Settings console page: a Dispatch-language settings shell at `/settings`. It replaces the prior single-scroll preferences stack with a panel grid of summary cards (one per Settings sub-route) prefixed by an `AttentionStrip` of items demanding human attention, framing `/settings` as the operator control plane rather than a SaaS preferences screen. The capability owns the `/settings` Console grid, the attention strip, the breadcrumb-less editorial shell, and the `GET /api/settings/console` aggregator; live updates are delivered over the unified fleet event bus (`WS /api/events/stream`), not a dedicated socket.
+`dashboard-settings-console` is the top-level Settings console page: a Dispatch-language settings shell at `/settings`. It is a panel grid of summary cards (one per system sub-surface) prefixed by a KPI strip and an `AttentionStrip` of items demanding human attention, framing `/settings` as the operator control plane rather than a SaaS preferences screen. The capability owns the `/settings` Console grid, the attention strip, the breadcrumb-less editorial shell, and the `GET /api/settings/console` aggregator; live updates are delivered over the unified fleet event bus (`WS /api/events/stream`), not a dedicated socket.
 
 ## Requirements
 
 ### Requirement: Settings Console Page
-The dashboard SHALL have a top-level page at `/settings` rendered in the Dispatch design language. The page is a panel grid of summary cards, one per Settings sub-route, prefixed by an `AttentionStrip` of items demanding human attention.
+The dashboard SHALL have a top-level page at `/settings` rendered in the Dispatch design language: the system-configuration root, a header KPI strip and an `AttentionStrip` of items demanding human attention, followed by a panel grid of summary cards, one per system sub-surface. The console is system-side only; per-user preferences and credentials are not surfaced here.
 
 #### Scenario: Console page layout
 - **WHEN** a user navigates to `/settings`
 - **THEN** the page renders, in vertical order:
   - **Page header**: title "Settings", mono eyebrow "system · console", clock (mono, `HH:MM` 24h, tabular nums).
-  - **AttentionStrip**: a rule-separated list of `{id, tone: red|amber, kind, text, action_route}` items. It initially renders the capped `attention[]` view from `GET /api/settings/console`; each row uses the attention-tint pattern: 4–7% alpha background in `tone` color, paired with a 2px left rail in the same color. Rows are clickable; click navigates to `action_route`.
-  - **Panel grid**: one summary panel per destination (`/settings/models`, `/spend`, `/settings/permissions`). Each panel fetches its own summary endpoint in parallel; a slow fetch in one MUST NOT block others.
-- **AND** the page uses Inter Tight (sans), JetBrains Mono (mono), Source Serif 4 (serif), and the OKLCH palette tokens already shipped in `frontend/src/index.css`; no new tokens are introduced.
+  - **KPI strip**: four cells from `GET /api/settings/console` `header_counts` — Active Butlers, Spend MTD (USD), Open Approvals, and Models OK (verified / total). Open Approvals renders in the red state color when above zero; a `null` count renders as an em-dash, never a `0`; each cell shows a skeleton while loading.
+  - **AttentionStrip**: a rule-separated list of `{id, tone: red|amber, kind, text, action_route}` items, initially the capped `attention[]` view from `GET /api/settings/console`. Each row carries the attention tint and rail in its `tone` color (see `dashboard-design-language`, Requirement: State Color Discipline), a tone indicator, the item text, and a `Review →` action that navigates to `action_route`.
+  - **Panel grid**: one summary panel per sub-surface — Models (`/settings/models`), Spend (`/spend`), Approvals (`/approvals`), Permissions (`/settings/permissions`), and Secrets (`/secrets`). Activating a panel navigates to its route. Each panel with a live summary fetches it independently; a slow or failing fetch in one MUST NOT block the others.
+- **AND** the page uses only the fonts and tokens defined by `dashboard-design-language`; it introduces no new tokens.
 - **AND** the page contains no card chrome, no drop shadows, no gradients.
 
 #### Scenario: Inline attention overflow
@@ -50,8 +51,8 @@ The dashboard SHALL expose `GET /api/settings/console` returning aggregated head
 
 #### Scenario: Spend MTD is priced from the ledger, not a rolling-30d fan-out
 - **WHEN** the aggregator computes `header_counts.spend_mtd_usd`
-- **THEN** it is priced from `public.token_usage_ledger` via the shared `butlers.core.model_routing.price_mtd_from_ledger` helper — the exact helper `check_monthly_ceiling` (the spawn-deny gate) and `GET /api/spend/forecast` price MTD from (bu-7o89u.1/.2) — so this figure can never diverge from the number that halts the fleet
-- **AND** it is NOT summed from a rolling-30d per-butler `sessions_summary` fan-out (the pre-bu-7o89u.2 behavior, which both mislabeled the window as "MTD" and could drive the near-ceiling attention item off a figure the gate was not actually enforcing)
+- **THEN** it is priced from `public.token_usage_ledger` via the shared `butlers.core.model_routing.price_mtd_from_ledger` helper — the exact helper `check_monthly_ceiling` (the spawn-deny gate) and `GET /api/spend/forecast` price MTD from — so this figure can never diverge from the number that halts the fleet
+- **AND** it is NOT summed from a rolling-30d per-butler `sessions_summary` fan-out, which would mislabel the window as "MTD" and could drive the near-ceiling attention item off a figure the gate is not enforcing
 - **AND** a ledger failure, or no `DatabaseManager` wired (there is no MCP fallback for ledger rows), sets `header_counts.spend_mtd_usd = null` plus an amber `subsystem_error` attention item — never a fabricated `$0`
 - **AND** the "spend near ceiling" attention item (below) compares this same ledger-priced figure against the same `public.spend_ceiling` singleton row `check_monthly_ceiling` reads, so the alarm can never fire independently of what the gate is actually enforcing
 - **AND** the Settings Console page's own "Spend" summary panel (which fetches its per-panel summary independently of the header aggregator) sources its "MTD" figure from `GET /api/spend/forecast`'s ledger-priced `mtd_usd`, and renders a degraded indicator (not a fabricated `$0.00`) when that response's `ceiling_source_error` is `true`
@@ -72,7 +73,7 @@ The dashboard SHALL expose `GET /api/settings/console` returning aggregated head
 - **AND** items are ordered with `tone="red"` first, then `tone="amber"`; `attention[]` is the five-item prefix of that order.
 
 ### Requirement: Settings Console Deltas On The Unified Fleet Event Bus
-The dashboard SHALL fan Settings Console `header_delta` / `attention_add` / `attention_remove` events onto the unified fleet event bus (`WS /api/events/stream`) so a client can receive live console updates via the single shared bus connection (bu-3quv8, completing the settings-console half of bu-qvnce.14's single-socket doctrine; the earlier dedicated `WS /api/settings/stream` route was retired in bu-01r64.2 once the bus fully covered this traffic).
+The dashboard SHALL fan Settings Console `header_delta` / `attention_add` / `attention_remove` events onto the unified fleet event bus (`WS /api/events/stream`) so a client receives live console updates over the single shared bus connection; there is no dedicated settings-console socket.
 
 #### Scenario: Deltas are emitted via the shared bus
 - **WHEN** the console payload changes (a header count or an attention item)
@@ -93,5 +94,5 @@ The dashboard SHALL fan Settings Console `header_delta` / `attention_add` / `att
 
 ## Source References
 - Non-Negotiable Rule 1 (Composure is the brand) and Rule 4 (every element earns its place against state) from `about/heart-and-soul/design-language.md`.
-- PLAN.md §4 routes contract and §5 Settings Console API surface.
-- Visual reference: the `SettingsConsole` redesign prototype (graduated; now shipped in `frontend/`).
+- Implementation: `frontend/src/pages/SettingsConsolePage.tsx` and the `GET /api/settings/console` aggregator.
+- Route registry and the system-side boundary of `/settings`: `dashboard-shell`, Requirement: Route Registry and Compatibility Redirects.

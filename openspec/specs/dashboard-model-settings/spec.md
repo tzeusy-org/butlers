@@ -65,7 +65,7 @@ The dashboard settings page SHALL include a model catalog management section wit
 #### Scenario: Catalog table display
 - **WHEN** the settings page loads the model catalog section
 - **THEN** a table displays all catalog entries grouped by complexity tier with columns: Alias, Runtime, Model ID, Extra Args (formatted), Tier (badge), Priority, Enabled (toggle), and Actions (Edit, Delete)
-- **AND** sections are rendered in the canonical six-tier order [reasoning, workhorse, cheap, specialty, local, legacy]; there is no separate `discretion` group (the discretion vocabulary was retired in migration core_093)
+- **AND** sections are rendered in the canonical six-tier order [reasoning, workhorse, cheap, specialty, local, legacy]; there is no separate `discretion` group
 
 #### Scenario: Create model alias dialog
 - **WHEN** the operator clicks "Add Model"

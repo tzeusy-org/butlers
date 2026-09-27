@@ -306,7 +306,7 @@ source category, which folds the occupation-block inference plus the owner's
 direct desk signals (`chronicler.focus_inferred`, `chronicler.reading_inferred`,
 `activitywatch.window`). The butlers' own LLM sessions (`core.sessions`,
 categories `conversations`/`tasks`) SHALL be a **separate** `butler_ops` lane,
-never counted toward `work` and never a sub-series inside it (bu-whhll.14): the
+never counted toward `work` and never a sub-series inside it: the
 owner's workday and the butlers' cron work are distinct signals and must be
 independently visible and toggleable.
 
@@ -616,7 +616,7 @@ Scope: v1-mandatory
 
 ### Requirement: Page Telemetry
 
-Backend handlers serving the page SHALL emit OTel spans for the new endpoints so that operational health is observable without log scraping. Client-side telemetry is out of scope for this change.
+Backend handlers serving the page SHALL emit OTel spans for its aggregate and source-state endpoints so that operational health is observable without log scraping. Client-side telemetry is not required.
 
 #### Scenario: Backend spans
 

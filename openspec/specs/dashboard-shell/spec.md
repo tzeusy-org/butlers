@@ -31,7 +31,7 @@ All data-bearing surfaces follow consistent state patterns:
 - **Empty:** Explicit empty-state message with contextual guidance toward the creation action.
 - **Error:** Explicit error text; in select cases (e.g., butler list), stale cached data remains visible with a warning banner.
 
-The application shell defines the outermost structural frame: the sidebar navigation, page header with breadcrumbs, command palette, keyboard shortcuts, theme system, loading/error/empty state patterns, auto-refresh architecture, and the full UI primitive library. All domain pages render inside this shell and inherit its design system, responsive behavior, and operational affordances.
+The application shell defines the outermost structural frame: the sidebar navigation, page header with breadcrumbs, command palette, keyboard shortcuts, theme system, loading/error/empty state patterns, the dashboard refresh rule, the route registry, and the chat dock slot. All domain pages render inside this shell and inherit its responsive behavior and operational affordances; tokens, primitives, and page archetypes belong to `dashboard-design-language`.
 
 The technology stack is: React 18 with TypeScript, React Router v7 (browser router), TanStack Query v5 for server state, Tailwind CSS v4 with shadcn/ui components (backed by Radix UI primitives), Lucide icons, Sonner toast notifications, class-variance-authority for variant-driven styling, and Vite as the build tool.
 
@@ -139,33 +139,25 @@ The shell SHALL implement a responsive sidebar + main content layout that fills 
 - **AND** the header contains the `PageHeader` component alongside the mobile hamburger button (on small screens)
 
 ### Requirement: Chat Dock Rail (>= xl breakpoint)
-
-The shell SHALL accept an optional `chatDock` slot, rendering the global "Talk to Butlers" chat surface as a docked rail — a sibling column of `<main>`, never an overlay — at or above the `xl` Tailwind breakpoint (1280px). Below that breakpoint, or when the dock has been collapsed, the floating popover widget (`FloatingChatWidget`) is the only chat posture (bu-0ynlk.11).
+The shell SHALL expose an optional `chatDock` slot that renders as a sibling column of `<main>`, never an overlay, at or above the `xl` breakpoint while the dock is open. The chat surface placed in the slot, its postures, and its turn behavior are owned by `dashboard-chat-ui` (Requirement: Global Chat Postures).
 
 #### Scenario: Docked rail at >= xl
-
-- **WHEN** the viewport width is at or above the `xl` breakpoint (1280px) and the dock has not been collapsed
-- **THEN** `Shell`'s `chatDock` prop renders inside an `<aside>` element (implicit `role="complementary"`, no explicit `role` attribute — redundant on `<aside>`) with a hairline `border-l border-border` and no shadow class
-- **AND** the `<aside>` is a flex sibling of `<main>`, not an absolutely-positioned overlay
-- **AND** the floating popover widget does not render at the same time
-- **AND** the docked chat renders `ChatDock`, sharing the Switchboard-routed conversation set with the popover
+- **WHEN** the viewport is at or above the `xl` breakpoint and the dock is open
+- **THEN** the shell renders the `chatDock` slot inside an `<aside>` landmark that is a flex sibling of `<main>`
+- **AND** the rail is separated from `<main>` by a hairline rule with no shadow
 
 #### Scenario: Popover fallback below xl or while collapsed
-
-- **WHEN** the viewport width is below the `xl` breakpoint, or the docked rail has been collapsed via its Collapse button
+- **WHEN** the viewport is below the `xl` breakpoint, or the dock is collapsed
 - **THEN** the shell renders no `chatDock` landmark
-- **AND** the floating popover widget (`FloatingChatWidget`, bottom-right button) is the only chat posture
-- **AND** if the dock was collapsed while the viewport is still >= xl, the popover's trigger button reopens the dock instead of opening the popover itself
+- **AND** the chat surface falls back to its popover posture
 
 #### Scenario: Dock open/collapsed state persists
-
-- **WHEN** the operator collapses or reopens the docked rail
-- **THEN** the choice is persisted to `localStorage` under `butlers.chat-dock-open` (boolean) and survives a reload at the same viewport width
+- **WHEN** the operator collapses or reopens the dock
+- **THEN** the choice is persisted per viewer and survives a reload
 
 #### Scenario: Dock width persists
-
-- **WHEN** the operator drags the dock's resize handle (a `role="separator"` splitter, keyboard-adjustable via arrow keys)
-- **THEN** the width is clamped between 360px and 560px and persisted to `localStorage` under `butlers.chat-dock-width`, restored on the next mount
+- **WHEN** the operator resizes the dock with its splitter (pointer drag or arrow keys)
+- **THEN** the dock is resizable within bounds and its width is persisted per viewer and restored on the next mount
 
 ### Requirement: Sidebar Navigation (56px Icon Rail)
 
@@ -386,194 +378,63 @@ The dashboard SHALL support three theme modes (light, dark, system) using a CSS 
 - **THEN** the theme cycles: if currently `system`, toggle to the opposite of the resolved theme; if explicit `light` or `dark`, toggle to the other
 - **AND** the button icon shows a sun (for switching to light) when in dark mode and a moon (for switching to dark) when in light mode
 
-### Requirement: CSS Design Token System
-
-The design system SHALL use CSS custom properties (design tokens) defined in `:root` and overridden in `.dark`, using the OKLCH color space for perceptual uniformity. All tokens are mapped into Tailwind's color system via a `@theme inline` block.
-
-#### Scenario: Light mode color tokens
-
-- **WHEN** the light theme is active
-- **THEN** the following semantic tokens are defined:
-  - `--background`: pure white (`oklch(1 0 0)`)
-  - `--foreground`: near-black (`oklch(0.145 0 0)`)
-  - `--primary` / `--primary-foreground`: dark neutral / near-white
-  - `--secondary` / `--secondary-foreground`: very light neutral / dark neutral
-  - `--muted` / `--muted-foreground`: light neutral background / mid-gray text
-  - `--accent` / `--accent-foreground`: light neutral / dark neutral (matches secondary)
-  - `--destructive`: red-orange (`oklch(0.577 0.245 27.325)`)
-  - `--border` / `--input`: light gray (`oklch(0.922 0 0)`)
-  - `--ring`: mid-gray for focus rings
-  - Five chart colors for data visualization
-  - Sidebar-specific tokens mirroring the main palette
-
-#### Scenario: Dark mode color tokens
-
-- **WHEN** the dark theme is active
-- **THEN** background inverts to near-black (`oklch(0.145 0 0)`)
-- **AND** foreground inverts to near-white (`oklch(0.985 0 0)`)
-- **AND** card and popover backgrounds use a slightly lighter dark (`oklch(0.205 0 0)`)
-- **AND** borders use semi-transparent white (`oklch(1 0 0 / 10%)`)
-- **AND** chart colors shift to higher-chroma variants optimized for dark backgrounds
-- **AND** sidebar tokens follow the dark card background
-
-#### Scenario: Border radius tokens
-
-- **WHEN** any component uses rounded corners
-- **THEN** the base `--radius` is `0.625rem` (10px)
-- **AND** derived radii (`sm`, `md`, `lg`, `xl`, `2xl`, `3xl`, `4xl`) are computed relative to the base
-
-#### Scenario: Typography defaults
-
-- **WHEN** the application renders text
-- **THEN** the root font stack is `system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif`
-- **AND** base line height is 1.5, font weight is 400
-- **AND** font smoothing is enabled (`-webkit-font-smoothing: antialiased`, `-moz-osx-font-smoothing: grayscale`)
-- **AND** font synthesis is disabled for consistent rendering
-
-### Requirement: UI Primitive Component Library
-
-The dashboard SHALL use shadcn/ui as its component library, which generates local component files backed by Radix UI headless primitives and styled with Tailwind CSS via class-variance-authority (CVA).
-
-#### Scenario: Button component variants
-
-- **WHEN** a `Button` is rendered
-- **THEN** the following variants are available:
-  - `default`: primary background with primary foreground
-  - `destructive`: red background with white text
-  - `outline`: bordered with background, subtle shadow
-  - `secondary`: secondary background colors
-  - `ghost`: transparent background with hover accent
-  - `link`: text-only with underline on hover
-- **AND** the following sizes are available: `default` (h-9), `xs` (h-6), `sm` (h-8), `lg` (h-10), `icon` (size-9), `icon-xs` (size-6), `icon-sm` (size-8), `icon-lg` (size-10)
-- **AND** all buttons include focus-visible ring styles and disabled opacity
-
-#### Scenario: Badge component variants
-
-- **WHEN** a `Badge` is rendered
-- **THEN** variants include: `default`, `secondary`, `destructive`, `outline`, `ghost`, `link`
-- **AND** badges render as rounded-full pill shapes with `px-2 py-0.5 text-xs font-medium`
-- **AND** the `asChild` prop enables Radix Slot composition
-
-#### Scenario: Card component structure
-
-- **WHEN** a `Card` is rendered
-- **THEN** it uses `bg-card text-card-foreground` with `rounded-xl border shadow-sm` and `py-6`
-- **AND** sub-components `CardHeader`, `CardTitle`, `CardDescription`, `CardAction`, `CardContent`, and `CardFooter` compose the internal layout
-- **AND** `CardHeader` uses a CSS grid layout with auto-rows and optional action slot
-
-#### Scenario: Dialog component (modals)
-
-- **WHEN** a `Dialog` is rendered
-- **THEN** it uses Radix Dialog primitives with a backdrop overlay (`bg-black/50`)
-- **AND** content centers at `top-50% left-50%` with translate transforms
-- **AND** open/close animations include fade-in/fade-out and zoom-in-95/zoom-out-95
-- **AND** an optional close button (X icon) renders in the top-right corner
-- **AND** the `showCloseButton` prop controls its visibility (defaults to true)
-
-#### Scenario: Sheet component (drawers)
-
-- **WHEN** a `Sheet` is rendered
-- **THEN** it uses Radix Dialog primitives configured as a slide-in panel
-- **AND** the `side` prop controls slide direction: `left`, `right`, `top`, or `bottom`
-- **AND** open animation duration is 500ms, close animation is 300ms
-- **AND** the mobile sidebar uses the `left` side variant at `w-64`
-
-#### Scenario: Table component
-
-- **WHEN** a `Table` is rendered
-- **THEN** it wraps in a container with `overflow-x-auto` for horizontal scrolling
-- **AND** rows have hover highlight (`hover:bg-muted/50`) and border-bottom
-- **AND** header cells use `font-medium` with `h-10` height
-
-#### Scenario: Form components (Input, Select, Textarea, Checkbox, Label)
-
-- **WHEN** form components are rendered
-- **THEN** `Input` renders at `h-9` with border, focus-visible ring, and placeholder styling
-- **AND** `Select` uses Radix Select primitives with animated dropdown content, check indicators, and scroll buttons
-- **AND** `Textarea` uses `field-sizing-content` for auto-height with a minimum of `min-h-16`
-- **AND** `Checkbox` renders as a 16x16 rounded-sm box with check indicator animation
-- **AND** `Label` renders as `text-sm font-medium` with peer-disabled opacity
-
-#### Scenario: Tabs component
-
-- **WHEN** `Tabs` are rendered
-- **THEN** two list variants are available: `default` (muted background pill) and `line` (underline indicator)
-- **AND** tabs support both horizontal and vertical orientations
-- **AND** active tab triggers show `bg-background` with shadow in default variant, or a bottom/side underline in line variant
-- **AND** the `line` variant uses a pseudo-element (`after:`) for the active indicator
-
-#### Scenario: Tooltip component
-
-- **WHEN** a `Tooltip` wraps an element
-- **THEN** it uses Radix Tooltip primitives with `bg-foreground text-background` (inverted colors)
-- **AND** the tooltip includes a directional arrow
-- **AND** the default `delayDuration` on the provider is 0ms (instant show)
-
-#### Scenario: Dropdown menu component
-
-- **WHEN** a `DropdownMenu` is rendered
-- **THEN** it uses Radix DropdownMenu primitives with animated content (fade + zoom + slide)
-- **AND** menu items support `default` and `destructive` variants
-- **AND** checkbox items, radio items, sub-menus, separators, labels, and shortcut hints are all available
-
 ### Requirement: Skeleton Loading Components
+The dashboard SHALL render loading states as skeleton placeholders that approximate the layout of their real-data counterparts, and loading and empty states SHALL be mutually exclusive: skeletons while a read is loading, the empty state only after it completes with zero results.
 
-The dashboard SHALL provide a library of reusable skeleton loaders that match the layout of their real-data counterparts, ensuring perceived performance during data fetching.
+Page-level loading is owned by the `<Page>` primitive, which renders an archetype-matched skeleton (see `dashboard-design-language`, Requirement: Page Primitive and Archetypes); block-level loading inside a rendered page uses the shared skeleton library below.
 
 #### Scenario: Base skeleton primitive
-
 - **WHEN** a `Skeleton` element renders
-- **THEN** it applies `bg-accent animate-pulse rounded-md` for a pulsing placeholder effect
+- **THEN** it is a neutral token-colored placeholder block with no decorative motion
 
 #### Scenario: Card skeleton
-
 - **WHEN** a `CardSkeleton` renders
-- **THEN** it shows a card with optional header placeholders (title line at `h-5 w-40`, description at `h-4 w-64`)
-- **AND** a configurable number of content lines (default 3) with the last line at 75% width
+- **THEN** it shows optional header placeholders and a configurable number of content lines, the last line shorter than the rest
 
 #### Scenario: Table skeleton
-
 - **WHEN** a `TableSkeleton` renders
-- **THEN** it shows a table with skeleton header cells and a configurable number of rows (default 5)
-- **AND** column widths and alignment are specified per-column to match the real table layout
+- **THEN** it shows header cells and a configurable number of rows whose columns match the real table's column count and alignment
 - **AND** a pre-configured `NotificationTableSkeleton` variant matches the notification feed layout
 
 #### Scenario: Stats skeleton
-
 - **WHEN** a `StatsSkeleton` renders
-- **THEN** it shows a responsive grid of stat cards (2 columns on mobile, 4 on desktop)
-- **AND** each card has a title placeholder, a circular icon placeholder, and a value placeholder
+- **THEN** it shows a responsive grid of stat-cell placeholders matching the real stats grid
 
 #### Scenario: Chart skeleton
-
 - **WHEN** a `ChartSkeleton` renders
-- **THEN** it shows a card with title and description placeholders and a large rectangular area (default `h-64`)
+- **THEN** it shows title and description placeholders and a chart-area placeholder of configurable height
+
+#### Scenario: Loading never shows the empty state
+- **WHEN** a read that will return zero results is still loading
+- **THEN** the surface renders skeletons and does not render its empty state
 
 ### Requirement: Error Boundary
+A React error boundary SHALL wrap all route content so a rendering error is contained to the page instead of crashing the application, and a failed read SHALL render as an explicit error state, never as an empty or zero result.
 
-A React class-based error boundary SHALL wrap all route content to catch and recover from rendering errors without crashing the entire application.
+A read failure inside a rendered page uses the shared `ErrorState` / `QueryBoundary` primitives (state priority: loading, then error, then empty, then content); a page-level failure uses the `<Page>` primitive's error state. An error state is announced to assistive technology (`role="alert"`), names what failed, includes the underlying message when available, and offers a retry when the read can be retried. Where cached data for the same read is still available, it may stay visible alongside a warning that it is stale.
 
 #### Scenario: Error is caught during render
-
 - **WHEN** a child component throws an error during rendering
-- **THEN** the error boundary catches it via `getDerivedStateFromError`
-- **AND** the error is logged to `console.error` with component stack info
-- **AND** a fallback UI renders: centered layout with min-height 400px, a "Something went wrong" heading in destructive color, the error message (or "An unexpected error occurred"), and a "Try again" outline button
-- **WHEN** the user clicks "Try again"
+- **THEN** the error boundary catches it and logs it with component stack information
+- **AND** a fallback renders a "Something went wrong" heading in the destructive state color, the error message (or "An unexpected error occurred"), and a "Try again" action
+- **WHEN** the user activates "Try again"
 - **THEN** the error state resets and the child content attempts to re-render
 
-### Requirement: Empty State Pattern
+#### Scenario: A failed read never renders as empty
+- **WHEN** a read fails for a list, table, panel, or page
+- **THEN** the surface renders its error state rather than its empty state
+- **AND** it does not render a zero, a `$0.00`, or an all-clear in place of the unknown value
 
-A reusable `EmptyState` component SHALL provide consistent empty-data messaging across all pages.
+### Requirement: Empty State Pattern
+A reusable `EmptyState` component SHALL provide consistent empty-data messaging across all pages, rendered only after a read completes successfully with zero results.
+
+The component has two tiers, defined by `dashboard-design-language` (Requirement: Interface Copy): a page-level tier (title plus at most one short sentence of context) and a Voice-surface-inline tier (one serif-italic sentence). Neither tier renders an illustration or icon.
 
 #### Scenario: Empty state renders
-
-- **WHEN** a page or section has no data to display
-- **THEN** the `EmptyState` component renders centered content with 64px vertical padding
-- **AND** an optional icon renders at `text-4xl` in `text-muted-foreground`
-- **AND** the title renders as `text-lg font-semibold`
-- **AND** the description renders as `text-sm text-muted-foreground` with a max width of `max-w-sm`
-- **AND** an optional action slot renders below the description with 16px top margin
+- **WHEN** a page or section has no data to display after a successful read
+- **THEN** the `EmptyState` component renders a centered title and, in the page tier, one short muted sentence that states the fact and, where applicable, names where the data comes from or the action that creates it
+- **AND** an optional action renders below the text
+- **AND** no icon or illustration renders, even when one is passed
 
 ### Requirement: Toast Notification System
 
@@ -587,48 +448,21 @@ The dashboard SHALL use Sonner for toast notifications, providing feedback for m
 - **AND** toast styling uses CSS variables mapped to the design token system (`--popover`, `--popover-foreground`, `--border`, `--radius`)
 
 ### Requirement: Bus-Aware Poll Architecture
+Dashboard reads SHALL refresh on fleet event-bus invalidation, with a bounded fallback poll, and SHALL pause polling while the browser tab is hidden. This requirement is the single home for the dashboard refresh rule; no user-facing refresh toggle exists.
 
-Pages whose data is invalidated by the fleet event bus (`event-cache-registry.ts`) SHALL poll automatically at a cadence that reacts to the bus's own connection health, with no user-facing manual toggle.
+A read whose cache key is bus-covered (`frontend/src/lib/event-cache-registry.ts`) is refreshed primarily by bus invalidation; its poll is a reconciliation safety net whose cadence follows the bus's connection health (`useBusAwarePollInterval`). A read with no matching bus event polls on its own named interval. Every poll interval is a named policy token (`frontend/src/lib/poll-policy.ts`), never a bare literal.
 
 #### Scenario: Bus-aware polling cadence
-
-- **WHEN** a query hook whose cache key is bus-covered (see `event-cache-manifest.ts`) calls `useBusAwarePollInterval`
-- **THEN** it polls at `POLL_BUS_RECONCILE_MS` (5 minutes) while the shared `EventBusProvider` freshness health is `"healthy"` — a reconciliation safety net behind live bus invalidation, not the primary update path
-- **AND** it polls at `POLL_BUS_DOWN_FALLBACK_MS` (30 seconds) while freshness health is `"late"` or `"down"` — a fast fallback so the surface degrades to honest polling instead of silently going stale for the full reconciliation window
+- **WHEN** a bus-covered query uses `useBusAwarePollInterval`
+- **THEN** it polls at the slow reconciliation cadence (`POLL_BUS_RECONCILE_MS`) while the shared `EventBusProvider` freshness health is `"healthy"`
+- **AND** it polls at the fast fallback cadence (`POLL_BUS_DOWN_FALLBACK_MS`) while freshness health is `"late"` or `"down"`, so a dropped socket degrades to honest polling rather than silent staleness
 - **AND** a parseable but malformed fleet frame never establishes or extends `"healthy"` freshness; only a valid event or snapshot envelope may do so
-- **AND** no user-facing toggle exists to pause or override this cadence; it is fully automatic (the prior `AutoRefreshToggle`/`useAutoRefresh` mechanism retired — bu-01r64.3)
+- **AND** no user-facing toggle pauses or overrides this cadence
 
-### Requirement: Settings Console Page
-
-The Settings Console page (`SettingsConsolePage`) SHALL serve as the system-configuration root, aggregating attention items and sub-page summaries for the dashboard operator. It is system-side only; per-user preferences are not surfaced here.
-
-#### Scenario: Settings Console renders header KPI strip
-
-- **WHEN** the user visits `/settings`
-- **THEN** a KPI strip shows four cells: Active Butlers, Spend MTD (USD), Open Approvals, and Models OK (verified count / total enabled count)
-- **AND** the Open Approvals cell renders in red when the count is greater than zero
-- **AND** each cell shows a skeleton placeholder while its data loads from `GET /api/settings/console`
-
-#### Scenario: Settings Console renders AttentionStrip
-
-- **WHEN** the user visits `/settings`
-- **THEN** an attention strip is populated from `GET /api/settings/console`
-- **AND** each attention item displays a tone-coloured indicator dot (red or amber), descriptive text, and a "Review" link that navigates to the item's `action_route`
-- **AND** when the attention list is empty the strip shows "Everything is in hand."
-- **AND** a truncated-count footer row appears when the server omits additional items for brevity, linking to `/audit-log`
-
-#### Scenario: Settings Console renders panel grid
-
-- **WHEN** the user visits `/settings`
-- **THEN** a panel grid renders one panel per sub-surface: Models, Spend, Approvals, Permissions, and Secrets
-- **AND** clicking a panel navigates to its corresponding route: `/settings/models`, `/spend`, `/approvals`, `/settings/permissions`, and `/secrets` respectively
-- **AND** panels with a live data summary fetch independently so a slow or failing panel does not block the others
-
-#### Scenario: Settings Console live stream
-
-- **WHEN** the user visits `/settings`
-- **THEN** the page subscribes to the settings WebSocket stream for live updates to header counts and attention items
-- **AND** when the WebSocket connection is closed the page falls back to polling `GET /api/settings/console` every five minutes
+#### Scenario: Hidden tab pauses polling
+- **WHEN** the browser tab is hidden
+- **THEN** interval refetches pause, per the shared query-client default
+- **AND** a query that must keep polling while hidden opts in explicitly through the named `POLL_IN_BACKGROUND` token with a documented reason
 
 ### Requirement: Utility Infrastructure
 
@@ -651,110 +485,6 @@ Shared utilities SHALL underpin component styling and settings persistence.
 - **WHEN** `localStorage` read or write operations fail (e.g., in private browsing or quota exceeded)
 - **THEN** all settings functions silently catch errors and return fallback values
 - **AND** the application continues to function with default settings
-
-### Requirement: Canonical Route Map
-
-The router SHALL define all application routes as children of the root layout. All routes SHALL share the shell, header, error boundary, and sidebar.
-
-The route map SHALL include the Settings Console sub-routes and the ingestion dispatch console sub-routes as first-class child routes (not page-level `?tab=` state).
-
-#### Scenario: Top-level routes
-
-- **WHEN** the router is initialized
-- **THEN** the following routes are registered:
-  - `/` -- Overview dashboard
-  - `/chat` -- Full-page chat, the global "Talk to Butlers" surface (bu-0ynlk.11)
-  - `/chat/:conversationId` -- Full-page chat deep-linked to one conversation, resolved cross-butler by id (parameterized)
-  - `/butlers` -- Butler list
-  - `/butlers/:name` -- Butler detail (parameterized)
-  - `/sessions` -- Session list
-  - `/sessions/:id` -- Session detail (parameterized)
-  - `/timeline` -- Unified timeline (operational cross-butler stream; sessions, notifications, errors)
-  - `/chronicles` -- Chronicles page (retrospective lived-time reconstruction over Chronicler episodes; distinct from `/timeline`)
-  - `/notifications` -- Notifications center
-  - `/issues` -- Issues center
-  - `/audit-log` -- Audit log
-  - `/approvals` -- Approvals queue (rendered by `ApprovalsPage`)
-  - `/approvals/rules` -- Approval standing rules
-  - `/calendar` -- Calendar workspace
-  - `/contacts` -- Redirect to `/entities/index?has=contact` (legacy bookmark compatibility; `public.contacts` was dropped in core_134)
-  - `/contacts/:contactId` -- Redirect to `/entities/index?has=contact` (legacy per-contact bookmark compatibility)
-  - `/groups` -- Groups list (not in sidebar; reachable via the relationship butler's CRM tab Quick Links)
-  - `/spend` -- Canonical Spend page (`SpendPage`)
-  - `/costs` -- Redirect to `/spend` (legacy bookmark compatibility)
-  - `/memory` -- Memory system
-  - `/memory/facts/:factId` -- Fact detail (parameterized)
-  - `/memory/rules/:ruleId` -- Rule detail (parameterized)
-  - `/memory/episodes/:episodeId` -- Episode detail (parameterized)
-  - `/entities` -- Entity plex, the owner ego-graph landing (`PlexPage`)
-  - `/entities/index` -- Entities index (`EntitiesIndexPage`)
-  - `/entities/concentration` -- Entity concentration view
-  - `/entities/hop`, `/entities/columns`, `/entities/social-map` -- retired views; redirect into the plex
-  - `/entities/:entityId` -- Entity detail (parameterized)
-  - `/health` -- Health overview (`HealthOverviewPage`)
-  - `/health/measurements` -- Health measurements
-  - `/health/medications` -- Health medications
-  - `/health/conditions` -- Health conditions
-  - `/health/symptoms` -- Health symptoms
-  - `/health/meals` -- Health meals
-  - `/health/research` -- Health research
-  - `/education` -- Education (`EducationPage`)
-  - `/ingestion` -- Ingestion Timeline ledger
-  - `/ingestion/connectors` -- Ingestion connector roster
-  - `/ingestion/connectors/:connectorType/:endpointIdentity` -- Ingestion connector detail (parameterized)
-  - `/ingestion/filters` -- Ingestion Filters pipeline
-  - `/qa` -- QA overview (`QaOverviewPage`)
-  - `/qa/patrols/:patrolId` -- QA patrol detail (parameterized)
-  - `/qa/investigations` -- QA investigations list
-  - `/qa/investigations/:attemptId` -- QA investigation detail (parameterized)
-  - `/system` -- System overview (`SystemPage`; version, uptime, DB state, backup state, egress catalog, butler heartbeats)
-  - `/settings` -- Settings Console (`SettingsConsolePage`; system-side only)
-  - `/settings/models` -- Settings model catalog (`SettingsModelsPage`)
-  - `/settings/spend` -- Redirect to `/spend` (legacy Settings Console compatibility)
-  - `/settings/permissions` -- Settings permissions (`SettingsPermissionsPage`)
-  - `/secrets` -- Secrets management (per-user OAuth provider setup lives here, not under `/settings`)
-
-#### Scenario: Settings Console routes
-
-- **WHEN** the frontend router is configured
-- **THEN** the following routes are registered, each rendering within the `RootLayout`:
-  - `/settings` → `SettingsConsolePage`
-  - `/settings/models` → `SettingsModelsPage`
-  - `/settings/spend` → redirect to `/spend`
-  - `/settings/permissions` → `SettingsPermissionsPage`
-- **AND** the legacy `/settings` → `SettingsPage` registration is REMOVED and `frontend/src/pages/SettingsPage.tsx` is DELETED in the same change
-- **AND** `/settings` is system-side only (catalog, spend, permissions, audit, webhooks)
-
-#### Scenario: Approvals route replacement
-
-- **WHEN** the frontend router is configured
-- **THEN** `/approvals` renders the new `ApprovalsPage` (rewritten in this change), not the legacy page
-
-#### Scenario: Per-user OAuth stays at /secrets
-
-- **WHEN** the frontend router is configured
-- **THEN** provider-setup cards (`GoogleOAuthSection`, `HomeAssistantSetupCard`, `OwnTracksSetupCard`, `SpotifySetupCard`, `SteamSetupCard`, `WhatsAppSetupCard`, `GoogleHealthStatusCard`) are consumed by `SecretsPage` and NOT by any `/settings/*` route
-- **AND** per-user OAuth (Google, Spotify, Telegram, Steam, etc.) lives on `/secrets` to keep `/settings` system-side only
-
-#### Scenario: Ingestion sub-routes share the dashboard shell
-
-- **WHEN** the owner opens `/ingestion/connectors`
-- **THEN** the route renders inside the root dashboard shell
-- **AND** the sidebar and page header remain present
-- **AND** the content is the ingestion connector roster, not a legacy tab panel
-- **AND** these ingestion routes are first-class child routes; the redesigned ingestion surface SHALL NOT rely on a single `/ingestion` component with page-level `?tab=` state as its primary route map
-
-#### Scenario: Ingestion connector detail is route-addressable
-
-- **WHEN** the owner opens `/ingestion/connectors/:connectorType/:endpointIdentity`
-- **THEN** the router loads the connector detail route directly
-- **AND** refresh or deep-link navigation preserves the selected connector
-
-#### Scenario: Legacy tab query state is compatibility only
-
-- **WHEN** a legacy `/ingestion?tab=filters` URL is visited
-- **THEN** the app normalizes it to `/ingestion/filters`
-- **AND** future route ownership remains in `dashboard-ingestion-dispatch-console` rather than the shell spec
 
 ### Requirement: Canonical Keyboard Shortcuts System
 
@@ -806,10 +536,53 @@ Page-scoped shortcuts (registered per-page via `useRegisterShortcut`, e.g. appro
 - **THEN** page-scoped shortcuts continue to fire — a non-modal overlay does not claim the app's keyboard
 - **AND** a binding may opt out of all of the above suspension contexts by setting `allowWhenSuspended`
 
+### Requirement: Route Registry and Compatibility Redirects
+Every page route SHALL be registered in the shell capability manifest (the route registry, `frontend/src/lib/shell-capability.ts`), and every other registered path SHALL be a compatibility redirect to a canonical route. All routes render as children of the root layout and share the shell, header, error boundary, and sidebar.
+
+The router derives each page's lazy boundary from the registry, so a page path absent from the registry fails at startup; navigation, the command finder, shortcut help, and prefetch are projections of the same registry. Compatibility redirects are replace-navigations that preserve bookmarks and carry no page of their own:
+
+| Legacy path | Canonical destination |
+|---|---|
+| `/contacts`, `/contacts/:contactId` | `/entities/index?has=contact` |
+| `/costs`, `/settings/spend` | `/spend` |
+| `/groups` | `/entities/circles` |
+| `/entities/hop`, `/entities/columns`, `/entities/social-map` | `/entities` (the plex), carrying any focus parameters |
+| `/qa/investigations` | `/qa` |
+| `/ingestion?tab=connectors`, `/ingestion?tab=filters` | `/ingestion/connectors`, `/ingestion/filters` |
+| `/ingestion?tab=history`, `/ingestion?tab=timeline`, `/ingestion/history` | `/ingestion` |
+| `/connectors`, `/connectors/:connectorType/:endpointIdentity` | the matching `/ingestion/connectors` route |
+| `/butlers/relationship/entities/:entityId` | `/entities/:entityId` |
+| `/butlers/relationship/contacts/:id` | the contacts compatibility redirect above |
+
+#### Scenario: Every page route is in the registry
+- **WHEN** the router is initialized
+- **THEN** every route that renders a page resolves its page loader from the route registry
+- **AND** any registered path that is not in the registry is a compatibility redirect listed above
+
+#### Scenario: Compatibility routes redirect
+- **WHEN** a legacy path from the compatibility table is visited
+- **THEN** the router replaces it with its canonical destination
+- **AND** no legacy path renders a page of its own
+
+#### Scenario: Settings stays system-side
+- **WHEN** the router is configured
+- **THEN** `/settings` and its sub-routes (`/settings/models`, `/settings/permissions`) carry only system-side configuration
+- **AND** `/secrets` renders the credential passport, which is where per-user OAuth and provider credentials are set up
+
+#### Scenario: Ingestion sub-routes are first-class
+- **WHEN** the owner opens `/ingestion/connectors` or `/ingestion/filters`
+- **THEN** the route renders inside the root dashboard shell with the sidebar and page header present
+- **AND** the ingestion surface does not rely on page-level `?tab=` state as its route map
+
+#### Scenario: Ingestion connector detail is route-addressable
+- **WHEN** the owner opens `/ingestion/connectors/:connectorType/:endpointIdentity`
+- **THEN** the router loads the connector detail route directly
+- **AND** refresh or deep-link navigation preserves the selected connector
+
 ## Source References
 
-- Routes contract (settings refactor PLAN.md §4; prototype graduated).
-- `about/heart-and-soul/design-language.md` — Sidebar/composition: 56px icon rail, one elevation, no nested nav.
+- Route registry: `frontend/src/lib/shell-capability.ts` (router, navigation, finder, and shortcut projections).
+- `about/heart-and-soul/design-language.md` — Sidebar/composition: icon rail, one elevation, no nested nav.
 - `about/heart-and-soul/v1.md` — Per-user OAuth (Google, Spotify, Telegram, Steam, etc.) is explicitly out of v1 system-settings scope; OAuth setup remains on `/secrets` to keep `/settings` system-side only.
 - `about/heart-and-soul/vision.md` Non-Negotiable Rule 1 (composure) and Rule 6 (governing-document-driven scope).
 - Ingestion dispatch console route ownership: `dashboard-ingestion-dispatch-console` capability spec (first-class ingestion child routes; legacy `?tab=` state is compatibility only).

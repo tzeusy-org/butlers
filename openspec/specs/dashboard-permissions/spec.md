@@ -113,13 +113,6 @@ The dashboard SHALL expose data export and wipe endpoints under strict guards.
 - **THEN** the endpoint refuses with `503 Service Unavailable` body `{error: "wipe_disabled"}` and performs no destruction, regardless of the phrase supplied
 - **AND** no schemas or tables are dropped.
 
-> **Deferred — re-enable requirements (do NOT build now; tracked as a non-ready backlog bead).**
-> When the wipe feature is re-enabled it MUST satisfy all of:
-> - **Atomicity**: drop every butler schema, model catalog, runtime config, permissions, spend ledger, webhooks, then audit log, wrapped in a **single SQL transaction**; any failed `DROP` rolls the whole thing back (`500 {error: "wipe_partial_failure", failed_at}`), never a partial wipe reported as success.
-> - **Phrase guard**: exact match of `WIPE EVERYTHING IRREVERSIBLY` (no trim, no case-fold) → else `422 {error: "phrase_mismatch"}`.
-> - **Fail-closed auth**: reject without a valid `X-API-Key` (`401`) before any phrase check; `503 {error: "auth_unconfigured"}` when `DASHBOARD_API_KEY` is unset. This is the single carve-out from the network-trust doctrine, justified by the irreversibility of the action.
-> - A non-transactional `audit.append("data.wipe")` attempt row is written BEFORE the transaction so the attempt survives a rollback.
-
 ### Requirement: Webhooks Registry API
 The dashboard SHALL expose CRUD and a test action for webhooks.
 

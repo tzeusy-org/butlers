@@ -279,7 +279,7 @@ export default function DashboardPage() {
     ],
   );
 
-  // Cost surface (spec: dashboard-domain-pages — CostWidget + TopSessionsTable).
+  // Cost surface (spec: dashboard-overview — CostWidget + TopSessionsTable).
   // Reuse the same useSpendSummary("today") query already fetched for the
   // ButlerIndex per-butler annotations (same query key — cached, no extra
   // fetch). CostWidget shows the aggregate "Cost Today" total + the single
@@ -563,7 +563,7 @@ export default function DashboardPage() {
       </div>
 
       {/*
-       * Cost surface (spec: dashboard-domain-pages — "Cost widget for dashboard
+       * Cost surface (spec: dashboard-overview — "Spend widget for dashboard
        * overview" + "Top sessions table"). Full-width band below the editorial
        * grid: the aggregate CostWidget (constrained to a half-width column) over
        * the most-expensive-sessions table.

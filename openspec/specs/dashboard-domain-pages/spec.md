@@ -2,24 +2,9 @@
 
 ## Purpose
 
-The Butlers dashboard exposes domain-specific pages that surface data managed by individual butlers through read-only (and occasionally mutating) views. These pages turn raw butler data into actionable surfaces: health measurements become trend charts, contacts become an identity-aware CRM, calendar entries merge into a unified workspace, memory tiers become inspectable knowledge graphs, and session costs become budget visibility.
+The Butlers dashboard exposes domain-specific pages that surface data managed by individual butlers through read-only (and occasionally mutating) views. These pages turn raw butler data into actionable surfaces: health measurements become trend charts, contacts become an identity-aware CRM, calendar entries merge into a unified workspace, and memory tiers become inspectable knowledge graphs.
 
-This spec codifies the requirements for six domain page groups: Health, Relationship/Contacts, General/Entities, Calendar, Memory, and Spend -- plus the cross-butler global search that ties them together.
-
-## Historical reconciliation disposition
-
-The five deferred findings from the bu-58rlw7 dashboard audit are resolved as documentation drift,
-not new implementation work:
-
-| Historic finding | Current evidence | Disposition |
-|---|---|---|
-| Health identity hue | [Observed] `frontend/src/components/ui/ButlerMark.tsx:56-68`; `dashboard-design-language` Requirement: Butler Category Hues | Health keeps its permanent `--category-5` identity slot. General keeps `--category-4`; no category token is globally replaced. |
-| Measurements route | [Observed] `frontend/src/router-config.tsx:121-127`; `frontend/src/lib/shell-capability.ts:148-165` | The shipped page is `/health/measurements`. The obsolete bare `/measurements` prose is superseded by Requirement: Health measurements page at the canonical route. |
-| Contacts routes | [Observed] `frontend/src/router-config.tsx:111-120`; `dashboard-relationship` Requirement: Entity index page (`/entities/index`) | `/contacts` and `/contacts/:contactId` remain compatibility aliases that replace-navigate to `/entities/index?has=contact`. The entity index and `/entities/:entityId` own the canonical workflows. Contact hook/component imports remain in embedded consumers, but `getContacts`, `getContact`, and `getContactInteractions` target backend-dead paths and are not adopted as supported APIs by this reconciliation. |
-| Costs route | [Observed] `frontend/src/router-config.tsx:128-132`; `frontend/src/lib/shell-capability.ts:156`; `dashboard-spend-dashboard` Requirement: Canonical Spend Dashboard Page | `/costs` remains a compatibility alias that replace-navigates to the canonical `/spend` page. Overview cost components and shared spend hooks remain live consumers. |
-| Memory maturity filter | [Observed] `frontend/src/components/memory/RulesRegister.tsx:284-317`; `frontend/src/components/memory/AttentionRail.tsx:252-264`; `frontend/src/hooks/use-memory-url-state.ts:141-186` | The URL-backed `maturity` query remains part of the rules register. The anti-pattern attention row remains live and opens the filtered rules register; it is not retired by the house-ledger redesign. |
-
----
+This spec codifies the requirements for the Health, Relationship, General/Entities, Calendar, and Memory domain pages, plus the cross-butler global search that ties them together. Spend is owned by `dashboard-spend-dashboard` and the Overview cost band by `dashboard-overview`.
 
 ## Requirements
 
@@ -213,133 +198,62 @@ The page MUST contain:
 
 ### Requirement: Health data hooks with auto-refresh
 
-Deterministic health domain hooks MUST use TanStack Query hooks that auto-refresh every 30 seconds
-(`refetchInterval: 30_000`), including observed measurement vocabulary, CRUD lists, KPI/latest reads,
-and trend reads. The following deterministic hooks MUST be provided and MUST auto-refresh:
+Deterministic health reads MUST auto-refresh on a 30-second cadence: observed measurement
+vocabulary, measurement, medication, dose, adherence, condition, symptom, meal, research, and
+nutrition-summary lists, plus KPI/latest and trend reads. Slower-changing sleep, measurement-source,
+and expected-signal reads MAY refresh on a 60-second cadence. Dose and adherence reads MUST fetch
+only once a medication is selected.
 
-| Hook | Query Key Prefix | API Function |
-|---|---|---|
-| `useMeasurementTypes()` | `health-measurement-types` | `getMeasurementTypes` |
-| `useMeasurements(params)` | `health-measurements` | `getMeasurements` |
-| `useMedications(params)` | `health-medications` | `getMedications` |
-| `useMedicationDoses(id, params)` | `health-medication-doses` | `getMedicationDoses` |
-| `useMedicationAdherence(id, params)` | `health-medication-adherence` | `getMedicationAdherence` |
-| `useConditions(params)` | `health-conditions` | `getConditions` |
-| `useSymptoms(params)` | `health-symptoms` | `getSymptoms` |
-| `useMeals(params)` | `health-meals` | `getMeals` |
-| `useResearch(params)` | `health-research` | `getResearch` |
-| `useNutritionSummary(params)` | `health-nutrition-summary` | `getNutritionSummary` |
-
-The `useMedicationDoses` and `useMedicationAdherence` hooks MUST be conditionally enabled
-(`enabled: !!medicationId`).
-
-**Auto-refresh carve-out (binds the universal 30s rule):** the LLM Voice briefing hook
-(`use-health-briefing`, sourced from `GET /api/health/briefing`) and the insight feed hook (sourced
-from `GET /api/switchboard/insights?butler=health`) MUST be **EXCLUDED** from the 30s auto-refresh. They MUST NOT
-set a `refetchInterval`; instead they rely on the briefing's per-owner 5-minute TTL cache and a
-**manual** refresh triggered via the BriefingStatus pill. This is a permanent cost guard: an
-auto-refreshing LLM endpoint would multiply spawn cost.
+**Auto-refresh carve-out:** the LLM Voice briefing (`GET /api/health/briefing`) and the insight
+feed (`GET /api/switchboard/insights?butler=health`) MUST be excluded from auto-refresh. They rely
+on the briefing's per-owner 5-minute TTL cache and a manual refresh from the BriefingStatus pill.
+This is a permanent cost guard: an auto-refreshing LLM endpoint would multiply spawn cost.
 
 #### Scenario: Deterministic hooks auto-refresh every 30s
 
-- **WHEN** a deterministic health hook (e.g. `useMeasurements`) is mounted
-- **THEN** it MUST set `refetchInterval: 30_000`
+- **WHEN** a deterministic health list, KPI, or trend read is mounted
+- **THEN** it MUST refresh every 30 seconds without owner action
 
 #### Scenario: LLM briefing and insight feed are excluded from auto-refresh
 
-- **WHEN** the `use-health-briefing` hook or the insight feed hook is mounted
-- **THEN** it MUST NOT set any `refetchInterval`
+- **WHEN** the Health Overview Voice briefing or insight feed is mounted
+- **THEN** it MUST NOT poll on any interval
 - **AND** a fresh briefing MUST be obtained only on manual refresh or after the 5-minute TTL elapses
-
----
-
-### Requirement: Groups page
-
-The dashboard SHALL render a Groups page at `/groups` displaying contact groups in a paginated table.
-
-The table MUST display columns: Name (bold), Description (truncated), Members (count), Labels (colored badges with deterministic hashing), Created (date).
-
-The Groups page is a read-and-label surface: groups and their membership are created and maintained through the relationship butler's tools (`group_create`, `group_add_member`), not from this page. The page additionally supports creating labels and assigning/removing labels on a group.
-
-The Groups page MUST NOT be surfaced in the primary sidebar navigation; it remains routable at `/groups` and is reachable via the relationship butler's CRM tab Quick Links.
-
-#### Scenario: Group with no labels
-
-- **WHEN** a group has zero associated labels
-- **THEN** the Labels column MUST display an em-dash
-
-#### Scenario: Not in sidebar navigation
-
-- **WHEN** the sidebar renders
-- **THEN** no Groups nav link (`/groups`) and no Relationships nav group appear
-- **AND** navigating directly to `/groups` still renders the Groups page
-
----
-
-### Requirement: Contact hooks with conditional fetching
-
-The contact hook inventory MUST distinguish exported/imported hooks from backend-supported paths:
-
-The `use-contacts.ts` module remains imported by embedded relationship, ingestion-filter, and
-entity-detail consumers. Import presence MUST NOT be treated as proof of backend support. This
-documentation reconciliation neither removes nor repairs the imported dead-path readers:
-
-| Hook | Backend path | Current contract status |
-|---|---|---|
-| `useContacts(params)` | `GET /api/relationship/contacts` | Imported, but backend-dead; tracked by the client/OpenAPI contract allowlist |
-| `useContact(id)` | `GET /api/relationship/contacts/:id` | Imported, but backend-dead; no single-contact route exists |
-| `useContactInteractions(id)` | `GET /api/relationship/contacts/:id/interactions` | Imported, but backend-dead; tracked by the client/OpenAPI contract allowlist |
-| `useOverdueContacts(days)` | `GET /api/relationship/contacts/overdue` | Backend-supported |
-| `useGroups(params)` | `GET /api/relationship/groups` | Backend-supported |
-| `useGroupMembers(id)` | `GET /api/relationship/groups/:id/members` | Backend-supported |
-| `useLabels()` | `GET /api/relationship/labels` | Backend-supported |
-| `useUpcomingDates(days)` | `GET /api/relationship/upcoming-dates` | Backend-supported |
-
-#### Scenario: Contact detail hook waits for an ID
-
-- **GIVEN** no contact ID is available
-- **WHEN** `useContact` renders
-- **THEN** its query MUST remain disabled
-- **AND** that conditional-fetch behavior MUST NOT be described as backend route support
 
 ### Requirement: Entity browser for general butler data
 
-The dashboard SHALL render an Entity Browser component that displays structured JSONB entities from the General butler in a searchable, filterable table with expandable JSON viewer.
+The dashboard SHALL render an Entity Browser that displays structured JSONB entities from the
+General butler in a searchable, filterable table with an expandable JSON viewer.
 
-The component MUST accept props for: entities array, loading state, search query, collection filter, tag filter, and available collections/tags.
-
-The table MUST display columns: Collection (badge), Tags (secondary badges), Data (truncated JSON preview or expanded JsonViewer), Created (date).
-
-- The JSON preview MUST truncate at 80 characters with an ellipsis.
-- Clicking a row SHALL toggle expansion, replacing the truncated preview with a full `JsonViewer` component in a muted background panel.
-- Filters MUST include: text search input, collection dropdown (Select component with "All collections" sentinel value `__all__`), tag dropdown (Select component with "All tags" sentinel), and a "Clear filters" button.
+The table MUST display Collection, Tags, Data, and Created columns. The Data cell MUST show a
+truncated one-line JSON preview; activating a row MUST toggle it between that preview and the full
+recursive JSON viewer. Filters MUST include text search, a collection selector with an "All
+collections" option, a tag selector with an "All tags" option, and a "Clear filters" action.
 
 #### Scenario: Entity row expansion shows full JSON
 
 - **WHEN** the user clicks an entity row with data `{"blood_type": "A+", "height_cm": 175, "notes": "..."}`
-- **THEN** the Data cell MUST expand to show a full recursive `JsonViewer` with syntax highlighting
+- **THEN** the Data cell MUST expand to show the full recursive JSON viewer with type-distinguished
+  values
 - **AND** clicking the same row again MUST collapse back to the truncated preview
-
----
 
 ### Requirement: Recursive JSON viewer component
 
-The dashboard SHALL provide a reusable `JsonViewer` component that renders any JSON value as a collapsible tree with syntax highlighting and copy-to-clipboard.
+The dashboard SHALL provide a reusable JSON viewer that renders any JSON value as a collapsible tree
+and supports copy-to-clipboard.
 
-The component MUST support:
-- Recursive rendering of objects and arrays with collapsible nodes (triangle toggle).
-- Syntax coloring: keys in violet, strings in emerald, numbers in sky, booleans in amber, null in rose italic.
-- A "Copy JSON" button at root level that copies the pretty-printed JSON (2-space indent) to the clipboard.
-- A `defaultCollapsed` prop that controls whether child nodes start collapsed (depth > 0).
-- Indentation at 16px per depth level.
+The viewer MUST:
+- Render objects and arrays recursively with collapsible nodes and depth indentation.
+- Visually distinguish keys, strings, numbers, booleans, and null, using colors from
+  `dashboard-design-language`.
+- Offer a root-level "Copy JSON" action that copies the pretty-printed JSON (2-space indent).
+- Support starting nested nodes collapsed.
 
 #### Scenario: Copy to clipboard
 
 - **WHEN** the user clicks "Copy JSON" on a viewer displaying `{"name": "Alice"}`
 - **THEN** the clipboard MUST contain `{\n  "name": "Alice"\n}`
-- **AND** the button text MUST change to "Copied!" for 2 seconds
-
----
+- **AND** the action MUST briefly confirm the copy before returning to its resting label
 
 ### Requirement: Calendar workspace page with dual-view architecture
 
@@ -1164,18 +1078,10 @@ detail-page archetype defined in the `detail-page-archetype` spec.
 
 ### Requirement: Memory hooks
 
-The memory domain MUST use the following TanStack Query hooks:
-
-| Hook | Query Key | Auto-Refresh | Conditional |
-|---|---|---|---|
-| `useMemoryStats()` | `memory-stats` | 30s | No |
-| `useEpisodes(params)` | `memory-episodes` | 30s | No |
-| `useFacts(params)` | `memory-facts` | 30s | No |
-| `useFact(id)` | `memory-fact` | None | `enabled: !!factId` |
-| `useRules(params)` | `memory-rules` | 30s | No |
-| `useRule(id)` | `memory-rule` | None | `enabled: !!ruleId` |
-| `useEpisode(id)` | `memory-episode` | None | `enabled: !!episodeId` |
-| `useMemoryActivity(limit)` | `memory-activity` | 15s | No |
+Memory reads MUST refresh without owner action: stats, episode, fact, and rule lists every 30
+seconds, and the recent-activity and recent-writes rails every 15 seconds. Slower-changing
+aggregate reads MAY refresh less often. Single-record reads (fact, rule, episode, entity) MUST NOT
+fetch until their identifier is known and MUST NOT poll.
 
 #### Scenario: Fact detail hook waits for an ID
 
@@ -1183,41 +1089,12 @@ The memory domain MUST use the following TanStack Query hooks:
 - **WHEN** `useFact` renders
 - **THEN** its query MUST remain disabled
 
----
-
-### Requirement: Top sessions table
-
-The dashboard MUST provide a `TopSessionsTable` component displaying the most expensive LLM sessions. The table MUST display columns: rank number (#), Butler (secondary badge), Model (muted text), Tokens (input/output formatted as abbreviated counts separated by "/"), Cost (right-aligned, bold, tabular-nums), Time (right-aligned, formatted as "MMM d, HH:mm").
-
-#### Scenario: Session token display
-
-- **WHEN** a session has 50,000 input tokens and 12,000 output tokens
-- **THEN** the Tokens column MUST display "50.0K / 12.0K"
-
-#### Scenario: Direct top-sessions reader failure is unavailable
-
-- **WHEN** the Overview's direct `useTopSessions()` query reports an error
-- **THEN** `DashboardPage` MUST pass an explicit unavailable state to `TopSessionsTable`
-- **AND** the table MUST render a named top-sessions-unavailable state before its empty-state branch
-- **AND** it MUST NOT render "No session data available"
-
-#### Scenario: Successful empty top sessions remain calm
-
-- **WHEN** the direct top-sessions query succeeds with an empty list
-- **THEN** the table MUST render "No session data available"
-- **AND** it MUST NOT render the top-sessions-unavailable state
-
 ### Requirement: Cross-butler global search
 
-The dashboard MUST provide a debounced global search hook (`useSearch`) that queries across all butlers.
-
-The hook MUST:
-- Accept a query string and optional `limit` (default 20).
-- Debounce input by 300ms before firing the API call.
-- Only enable the query when the debounced input is >= 2 characters.
-- Return results grouped by category (sessions, state, and dynamic butler-specific categories).
-
-The search results MUST conform to the `SearchResults` interface: an object keyed by category name, where each value is an array of `SearchResult` objects containing `id`, `butler`, `type`, `title`, and `snippet`.
+The dashboard MUST provide a debounced global search that queries across all butlers, following
+the debounce and minimum-length rules in `dashboard-api` Requirement: Dashboard Query Defaults and
+Refresh. Results MUST be grouped by category (sessions, state, and dynamic butler-specific
+categories); each result carries `id`, `butler`, `type`, `title`, and `snippet`.
 
 #### Scenario: Short query suppressed
 
@@ -1232,68 +1109,19 @@ The search results MUST conform to the `SearchResults` interface: an object keye
 - **THEN** the results MAY include: health butler symptom records, relationship butler interaction notes mentioning headache, and memory facts containing "headache"
 - **AND** each result MUST include the originating `butler` name
 
----
-
-### Requirement: Consistent pagination pattern
-
-All paginated domain pages MUST follow a consistent pagination pattern:
-- Page size constant (typically 50 for list pages, 20 for memory browser).
-- `offset`/`limit` query parameters passed to the API.
-- Previous/Next buttons with disabled states (Previous disabled at page 0, Next disabled when `has_more` is false or calculated from total).
-- A "Showing X-Y of Z" text indicator.
-- Changing any filter parameter MUST reset the page to 0.
-
-#### Scenario: Filter change resets pagination
-
-- **GIVEN** a paginated domain page is displaying a page after page 0
-- **WHEN** the user changes a filter parameter
-- **THEN** the page MUST reset to page 0
-
----
-
 ### Requirement: Consistent loading and empty states
 
-All domain pages MUST implement:
-- **Loading state**: Skeleton rows matching the table column count, or skeleton cards matching the card grid layout. Skeletons MUST use the `Skeleton` component with appropriate widths.
-- **Empty state**: An `EmptyState` component with a title and description explaining where the data comes from (e.g., "No conditions found" / "Health conditions will appear here as they are tracked by the Health butler."). Empty states MUST only render when `isLoading` is false and the data array is empty.
-- Loading and empty states MUST be mutually exclusive: skeletons during loading, empty state after loading completes with zero results.
+All domain pages MUST use the shared shell patterns in `dashboard-shell` (Requirement: Skeleton
+Loading Components; Requirement: Empty State Pattern; Requirement: Error Boundary). Empty-state copy
+MUST explain where the data comes from (e.g., "Health conditions will appear here as they are
+tracked by the Health butler."). Loading and empty states MUST be mutually exclusive: skeletons
+while loading, and the empty state only after loading completes with zero results.
 
 #### Scenario: Loading does not show the empty state
 
 - **GIVEN** a domain page is loading an empty result set
 - **WHEN** it renders its loading state
 - **THEN** it MUST render skeletons and MUST NOT render `EmptyState`
-
----
-
-### Requirement: Auto-refresh intervals by domain
-
-Data freshness MUST follow domain-appropriate refresh intervals:
-
-| Domain | Interval | Rationale |
-|---|---|---|
-| Health data — deterministic (measurements, medications, conditions, symptoms, meals, research, latest, trend, adherence, nutrition summary) | 30s | Moderate update frequency from butler sessions |
-| Health Overview — LLM Voice briefing (`/api/health/briefing`) | None (5-min TTL cache + manual refresh) | LLM endpoint; auto-refresh would multiply spawn cost |
-| Health Overview — insight feed (`/api/switchboard/insights?butler=health`) | None (manual refresh) | Reads candidates produced by the scheduled insight-scan job; no per-pageview cost |
-| Contact data (contacts, groups, labels) | None (on-demand) | Data changes infrequently; triggered by explicit sync |
-| Calendar workspace entries | 30s | Events may change from external calendar providers |
-| Calendar workspace metadata | 60s | Source/lane definitions change rarely |
-| Memory stats, episodes, facts, rules | 30s | Memory consolidation runs periodically |
-| Memory recent activity (rail) | 15s | Fastest-updating view for real-time monitoring |
-| Cost summary and daily costs | 60s | Cost data accrues session-by-session |
-
-#### Scenario: LLM Overview endpoints are not on the 30s interval
-
-- **WHEN** the Health Overview renders its Voice briefing and insight feed
-- **THEN** neither MUST be polled on the 30s health-data interval
-- **AND** the briefing MUST be served from its 5-minute TTL cache between manual refreshes
-
-#### Scenario: Deterministic health data stays on 30s
-
-- **WHEN** any deterministic health list/KPI/trend hook renders
-- **THEN** it MUST refresh on the 30s interval
-
----
 
 ### Requirement: Memory Overture renders graph-health coverage honestly
 
@@ -1507,108 +1335,6 @@ The page MUST contain:
 - **THEN** the page MUST display a single serif-italic empty line rather than decorated empty-state
   chrome
 
-### Requirement: Contacts index compatibility route
-
-The legacy `/contacts` route SHALL remain registered for bookmark compatibility and MUST
-replace-navigate to `/entities/index?has=contact`. The entity index defined by
-`dashboard-relationship` is the canonical list, search, filtering, and curation surface. The
-compatibility route MUST NOT revive the retired standalone contacts page or its page-specific
-table and Google-sync composition.
-
-This route disposition does not itself remove the contact hook module or reusable contact
-components imported by embedded consumers. It also does not make their backend-dead readers live:
-`getContacts`, `getContact`, and `getContactInteractions` still target absent relationship routes,
-as recorded by Requirement: Contact hooks with conditional fetching.
-
-#### Scenario: Contacts bookmark opens the canonical filtered index
-
-- **WHEN** the owner navigates to `/contacts`
-- **THEN** the router MUST replace-navigate to `/entities/index?has=contact`
-- **AND** the entity index MUST own the resulting contact-filtered workflow
-
-### Requirement: Contact detail compatibility route
-
-The legacy `/contacts/:contactId` route SHALL remain registered for bookmark compatibility and
-MUST replace-navigate to `/entities/index?has=contact`. The retired `public.contacts` identity
-cannot be resolved to a canonical entity at this route boundary, so the compatibility route MUST
-NOT fabricate an entity-detail destination or render the retired tabbed contact page. Canonical
-single-record navigation starts from the entity index and opens `/entities/:entityId`.
-
-#### Scenario: Legacy contact detail bookmark falls back to the entity index
-
-- **WHEN** the owner navigates to `/contacts/nonexistent-id` or any other legacy contact ID
-- **THEN** the router MUST replace-navigate to `/entities/index?has=contact`
-- **AND** it MUST NOT claim that the legacy ID resolved to an entity
-
-### Requirement: Costs compatibility route
-
-The legacy `/costs` route SHALL remain registered for bookmark compatibility and MUST
-replace-navigate to `/spend`. The canonical Spend page, its layout, and its API behavior are owned
-by `dashboard-spend-dashboard`; this spec MUST NOT duplicate the retired Costs page's Recharts
-area chart, summary-grid, or per-butler table composition.
-
-#### Scenario: Costs bookmark opens Spend
-
-- **WHEN** the owner navigates to `/costs`
-- **THEN** the router MUST replace-navigate to `/spend`
-- **AND** the canonical Spend page MUST render there
-
-### Requirement: Spend hooks with bus-aware refresh
-
-Shared Spend consumers MUST use the following TanStack Query hooks:
-
-| Hook | Query Key | Refresh behavior |
-|---|---|---|
-| `useSpendSummary(period)` | `cost-summary` | Fleet-event invalidation plus bus-aware polling |
-| `useDailySpend()` | `daily-costs` | Fleet-event invalidation plus bus-aware polling |
-| `useTopSessions(limit)` | `top-sessions` | Fleet-event invalidation plus bus-aware polling |
-| `useCostsBySchedule(from, to)` | `costs-by-schedule` | Fleet-event invalidation plus bus-aware polling |
-
-#### Scenario: Spend summary follows event-bus health
-
-- **GIVEN** `useSpendSummary` has fetched a period
-- **WHEN** a Spend event invalidates `cost-summary`
-- **THEN** it MUST refresh that period's cost summary
-- **AND** its polling interval MUST follow the shared bus-aware poll policy rather than a fixed
-  60-second timer
-
-#### Scenario: Schedule costs follow event-bus health
-
-- **GIVEN** `useCostsBySchedule` has fetched a date range
-- **WHEN** a Spend event invalidates `costs-by-schedule`
-- **THEN** it MUST refresh that range's per-schedule costs
-- **AND** its polling interval MUST follow the shared bus-aware poll policy
-
-### Requirement: Spend widget for dashboard overview
-
-The dashboard MUST provide a `CostWidget` component for embedding on the overview page. The widget MUST display:
-- Title "Cost Today" with a "View all" link to `/spend`.
-- Total cost for the day formatted as currency when its direct summary query succeeds with priced data.
-- Top butler name and cost (e.g., "Top: health ($3.50)") when its direct summary query succeeds with a top butler.
-- A sparkline showing the real trailing 7-day daily spend series.
-
-The widget MUST distinguish a direct Overview summary-query failure from a successful
-compatibility envelope with `source_error` and from a successful zero-cost summary.
-
-#### Scenario: Widget with no data
-
-- **WHEN** `totalCostUsd` is 0 and `topButler` is null
-- **AND** the direct summary query succeeded without `source_error`
-- **THEN** the widget MUST display "$0.00" and no top-butler line
-
-#### Scenario: Direct summary reader failure is unavailable
-
-- **WHEN** the Overview's direct `useSpendSummary("today")` query reports an error
-- **THEN** `DashboardPage` MUST pass an explicit unavailable state to `CostWidget`
-- **AND** the widget MUST render a named cost-summary-unavailable state
-- **AND** it MUST NOT render a formatted cost total or a top-butler claim from fallback or retained data
-
-#### Scenario: Successful compatibility summary remains degraded
-
-- **WHEN** the direct summary request succeeds with `source_error: true`
-- **THEN** the widget MUST render its existing source-degraded state
-- **AND** it MUST NOT render the direct-summary-unavailable state or a calm "$0.00" total
-
 ### Requirement: Health Overview landing page
 
 The dashboard SHALL render a Health Overview page at `/health` as the health surface's shipped
@@ -1768,9 +1494,7 @@ no-provenance presentation.
 
 - `frontend/src/index.css` — `--severity-low`, `--severity-medium`,
   `--severity-high` token definitions; `--categorical-1` through `--categorical-12`
-  definitions (extended from 8 slots by bu-86c4c.6). Both sets are also
-  aliased into Tailwind via `--color-severity-*` and `--color-categorical-*`.
-- Epic bu-v1tt2 (Vertical C) — token system migration that introduced the named
-  CSS tokens; this spec change closes the remaining spec-code drift.
+  definitions. Both sets are also aliased into Tailwind via `--color-severity-*`
+  and `--color-categorical-*`.
 - `about/heart-and-soul/design-language.md` — token exemption for `--chart-*`
   palette (chart axis/line tokens are a separate axis; not replaced here).
