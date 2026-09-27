@@ -7,8 +7,7 @@ Provides infrastructure for loading butler system prompts from `CLAUDE.md`, mana
 
 ### Requirement: System Prompt Loading from CLAUDE.md
 
-The implementation SHALL provide the behavior described by this requirement.
-The `read_system_prompt(config_dir, butler_name)` function reads the system prompt from `<config_dir>/CLAUDE.md`. If the file is missing or empty, a default prompt `"You are the {butler_name} butler."` is returned.
+The `read_system_prompt(config_dir, butler_name)` function SHALL read the system prompt from `<config_dir>/CLAUDE.md`. If the file is missing or empty, a default prompt `"You are the {butler_name} butler."` is returned.
 
 #### Scenario: CLAUDE.md present and non-empty
 - **WHEN** `read_system_prompt(config_dir, butler_name)` is called and `CLAUDE.md` exists with content
@@ -24,8 +23,7 @@ The `read_system_prompt(config_dir, butler_name)` function reads the system prom
 
 ### Requirement: Include Directive Resolution
 
-The implementation SHALL provide the behavior described by this requirement.
-Lines matching `<!-- @include path/to/file.md -->` in system prompts are replaced with the contents of the referenced file. Paths are resolved relative to the roster directory (`config_dir.parent`). Path traversal (`..` segments) is rejected. Includes are not recursive.
+Lines matching `<!-- @include path/to/file.md -->` in system prompts SHALL be replaced with the contents of the referenced file. Paths are resolved relative to the roster directory (`config_dir.parent`). Path traversal (`..` segments) is rejected. Includes are not recursive.
 
 #### Scenario: Valid include directive
 - **WHEN** a CLAUDE.md line is `<!-- @include shared/NOTIFY.md -->`
@@ -41,8 +39,7 @@ Lines matching `<!-- @include path/to/file.md -->` in system prompts are replace
 
 ### Requirement: Shared Snippet Appending
 
-The implementation SHALL provide the behavior described by this requirement.
-After include resolution, the system prompt has shared snippets appended in a stable order: first `roster/shared/BUTLER_SKILLS.md`, then `roster/shared/MCP_LOGGING.md`. Each is appended with a blank line separator if the file exists and is non-empty.
+After include resolution, the system prompt SHALL have shared snippets appended in a stable order: first `roster/shared/BUTLER_SKILLS.md`, then `roster/shared/MCP_LOGGING.md`. Each is appended with a blank line separator if the file exists and is non-empty.
 
 #### Scenario: Shared files appended
 - **WHEN** `roster/shared/BUTLER_SKILLS.md` and `roster/shared/MCP_LOGGING.md` exist
@@ -54,8 +51,7 @@ After include resolution, the system prompt has shared snippets appended in a st
 
 ### Requirement: SKILL.md Format
 
-The implementation SHALL provide the behavior described by this requirement.
-Skills live in `<config_dir>/skills/<name>/` directories. Each skill directory must have a valid kebab-case name matching `^[a-z][a-z0-9]*(-[a-z0-9]+)*$`. The `SKILL.md` file within each skill directory provides the skill description.
+Skills SHALL live in `<config_dir>/skills/<name>/` directories. Each skill directory must have a valid kebab-case name matching `^[a-z][a-z0-9]*(-[a-z0-9]+)*$`. The `SKILL.md` file within each skill directory provides the skill description.
 
 #### Scenario: Valid skill directory name
 - **WHEN** a directory named `executing-plans` exists under `skills/`
@@ -79,8 +75,7 @@ Skills live in `<config_dir>/skills/<name>/` directories. Each skill directory m
 
 ### Requirement: Skill Directory Discovery
 
-The implementation SHALL provide the behavior described by this requirement.
-`list_valid_skills(skills_dir)` returns all valid skill subdirectories sorted by name, skipping files and invalid directory names.
+`list_valid_skills(skills_dir)` SHALL return all valid skill subdirectories sorted by name, skipping files and invalid directory names.
 
 #### Scenario: Multiple skills discovered
 - **WHEN** `skills/` contains directories `a-skill/`, `b-skill/`, and a file `readme.txt`

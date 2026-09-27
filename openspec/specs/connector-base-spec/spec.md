@@ -222,7 +222,7 @@ An envelope's `control.pinned_target`, when present, SHALL take precedence over 
 
 #### Scenario: Absent pinned target preserves existing behavior
 - **WHEN** an envelope is ingested without `control.pinned_target` (or with it unset)
-- **THEN** routing proceeds exactly as before this change: thread-affinity lookup (email only), then global ingestion-rule evaluation, then LLM classification fallback
+- **THEN** routing proceeds through the unpinned pipeline: thread-affinity lookup (email only), then global ingestion-rule evaluation, then LLM classification fallback
 
 #### Scenario: Thread affinity lookup (email only)
 - **WHEN** an email message is ingested with a thread_id and no `pinned_target`
@@ -698,8 +698,8 @@ which kind it is.
   persisting a cursor is not evidence that a process is running
 
 A row created by `save_cursor` therefore SHALL NOT be a `checkpoint` with a NULL
-`parent_endpoint_identity`. A NULL parent on a `checkpoint` row means the row was
-orphaned before this rule existed, and never that its writer omitted a value.
+`parent_endpoint_identity`. A NULL parent on a `checkpoint` row means the row is a
+legacy orphan, and never that its writer omitted a value.
 
 #### Scenario: A checkpoint save never demotes a runtime instance
 

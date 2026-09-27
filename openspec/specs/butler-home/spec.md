@@ -8,8 +8,7 @@ The Home butler (port 41108) is a home automation orchestrator that uses Home As
 
 ### Requirement: Home Butler Identity and Runtime
 
-The implementation SHALL provide the behavior described by this requirement.
-The home butler operates as a dedicated domain butler for smart-home orchestration.
+The home butler SHALL operate as a dedicated domain butler for smart-home orchestration.
 
 #### Scenario: Identity and port
 
@@ -32,8 +31,7 @@ The home butler operates as a dedicated domain butler for smart-home orchestrati
 
 ### Requirement: Home Butler HA Event Response Patterns
 
-The implementation SHALL provide the behavior described by this requirement.
-The home butler responds to real-time HA events routed through the Switchboard with context-appropriate actions.
+The home butler SHALL respond to real-time HA events routed through the Switchboard with context-appropriate actions.
 
 #### Scenario: Safety-critical event response
 - **WHEN** the home butler receives an HA event for a `lock` or `cover` entity changing to an unexpected state (e.g., door unlocked at night, garage door opened while away)
@@ -57,8 +55,7 @@ The home butler responds to real-time HA events routed through the Switchboard w
 
 ### Requirement: Home Butler Tool Surface
 
-The implementation SHALL provide the behavior described by this requirement.
-The home butler provides smart-home control and monitoring tools via the home_assistant module.
+The home butler SHALL provide smart-home control and monitoring tools via the home_assistant module.
 
 #### Scenario: Tool inventory
 
@@ -67,8 +64,7 @@ The home butler provides smart-home control and monitoring tools via the home_as
 
 ### Requirement: Home Butler Maintenance Tools
 
-The implementation SHALL provide the behavior described by this requirement.
-The home butler provides MCP tools for managing recurring maintenance items.
+The home butler SHALL provide MCP tools for managing recurring maintenance items.
 
 #### Scenario: Maintenance tool inventory
 
@@ -77,8 +73,7 @@ The home butler provides MCP tools for managing recurring maintenance items.
 
 ### Requirement: Home Butler Schedules
 
-The implementation SHALL provide the behavior described by this requirement.
-The home butler runs periodic monitoring and reporting jobs. Monitoring tasks use deterministic job-based dispatch to avoid LLM costs for formulaic work.
+The home butler SHALL run periodic monitoring and reporting jobs. Monitoring tasks use deterministic job-based dispatch to avoid LLM costs for formulaic work.
 
 #### Scenario: Scheduled task inventory
 
@@ -94,8 +89,7 @@ The home butler runs periodic monitoring and reporting jobs. Monitoring tasks us
 
 ### Requirement: Home Butler Skills
 
-The implementation SHALL provide the behavior described by this requirement.
-The home butler has workflow skills for common smart-home operations.
+The home butler SHALL have workflow skills for common smart-home operations.
 
 #### Scenario: Skill inventory
 
@@ -109,8 +103,7 @@ The home butler has workflow skills for common smart-home operations.
 
 ### Requirement: Home Memory Taxonomy
 
-The implementation SHALL provide the behavior described by this requirement.
-The home butler uses a home-automation memory taxonomy for learning owner preferences and patterns.
+The home butler SHALL use a home-automation memory taxonomy for learning owner preferences and patterns.
 
 #### Scenario: Memory classification
 
@@ -119,8 +112,7 @@ The home butler uses a home-automation memory taxonomy for learning owner prefer
 
 ### Requirement: HA entity live-state cache (ha_entity_snapshot)
 
-The implementation SHALL provide the behavior described by this requirement.
-The home butler keeps the current state of every Home Assistant entity in the `ha_entity_snapshot` table. The `home_assistant` module is the sole writer: a periodic snapshot task persists its in-memory entity cache to the table, and the dashboard API plus the home scheduled jobs read live entity state from it. An earlier attempt to migrate this state to temporal `ha_state` SPO facts was reverted because it produced unbounded superseded-fact growth; any residual `ha_state` facts are purged by memory maintenance.
+The home butler SHALL keep the current state of every Home Assistant entity in the `ha_entity_snapshot` table. The `home_assistant` module is the sole writer: a periodic snapshot task persists its in-memory entity cache to the table, and the dashboard API plus the home scheduled jobs read live entity state from it. An earlier attempt to migrate this state to temporal `ha_state` SPO facts was reverted because it produced unbounded superseded-fact growth; any residual `ha_state` facts are purged by memory maintenance.
 
 #### Scenario: Module persists the entity cache to ha_entity_snapshot
 - **WHEN** the home `home_assistant` module has a populated in-memory entity cache (seeded over REST and updated by WebSocket `state_changed` events)
@@ -135,8 +127,7 @@ The home butler keeps the current state of every Home Assistant entity in the `h
 
 ### Requirement: Switchboard Registration
 
-The implementation SHALL provide the behavior described by this requirement.
-The home butler registers with the Switchboard for cross-butler accessibility.
+The home butler SHALL register with the Switchboard for cross-butler accessibility.
 
 #### Scenario: Switchboard advertisement
 
@@ -153,8 +144,7 @@ The home butler registers with the Switchboard for cross-butler accessibility.
 
 ### Requirement: Home Butler Personality
 
-The implementation SHALL provide the behavior described by this requirement.
-The home butler's system prompt establishes its domain expertise and interaction patterns.
+The home butler's system prompt SHALL establish its domain expertise and interaction patterns.
 
 #### Scenario: Interactive Response Mode
 

@@ -75,7 +75,7 @@ full-text vector and `usage_count` feed predicate search and ranking.
 proposed -> active -> deprecated (superseded_by -> replacement)
 ```
 
-Auto-registered predicates start as `proposed` with inferred flags. Migration-seeded predicates are `active` with rich descriptions. Deprecated predicates still accept writes but return warnings.
+Auto-registered predicates start as `proposed` with inferred flags. Migration-seeded predicates are `active` with rich descriptions. The seeded domain vocabulary (names, scopes, temporal/edge flags and `example_json` payloads) is defined in `src/butlers/modules/memory/migrations/002_seed_predicates.py`; query the live set with `memory_predicate_list`. Deprecated predicates still accept writes but return warnings.
 
 ### Write-Time Enforcement
 

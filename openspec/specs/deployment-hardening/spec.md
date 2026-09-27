@@ -223,8 +223,8 @@ artifact that is undersized or does not decompress SHALL NOT be published.
   sovereignty) — protecting the owner's always-on personal-data deployment from
   trivial credential-stuffing access to object storage and the metrics surface.
 - `about/heart-and-soul/security.md` "Deployment Security" (principle 4: "No
-  secrets in compose files. Infrastructure bootstrap vars only.") — this change
-  reinforces that principle for MinIO/Grafana defaults without contradicting the
+  secrets in compose files. Infrastructure bootstrap vars only."); these requirements
+  reinforce that principle for MinIO/Grafana defaults without contradicting the
   established network-isolation, localhost-binding, egress-firewall, and
   no-privileged/cap_add/docker-socket posture, and without touching the
   documented root-by-design runtime containers or the spawner's required

@@ -1,7 +1,7 @@
 # connector-state-aggregates Specification
 
 ## Purpose
-TBD - created by archiving change query-backed-cross-summary-availability. Update Purpose after archive.
+Keeps the ingestion console honest about whether its cross-connector aggregate panels are backed by live Prometheus answers.
 
 ## Requirements
 

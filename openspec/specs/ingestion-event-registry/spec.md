@@ -26,8 +26,7 @@ The `public.ingestion_events` table is the canonical first-class record of every
 
 ### Requirement: Ingestion Event Query by ID
 
-The implementation SHALL provide the behavior described by this requirement.
-Fetch a single ingestion event record by its UUID7 primary key.
+`ingestion_event_get()` SHALL fetch a single ingestion event record by its UUID7 primary key.
 
 #### Scenario: Successful lookup
 - **WHEN** `ingestion_event_get(pool, event_id)` is called with a valid UUID7
@@ -39,8 +38,7 @@ Fetch a single ingestion event record by its UUID7 primary key.
 
 ### Requirement: Ingestion Event List (Paginated)
 
-The implementation SHALL provide the behavior described by this requirement.
-Return a unified stream of all ingestion events (ingested, filtered, errored) ordered by `received_at DESC, id DESC` using keyset (cursor) pagination, with optional filtering. The function returns a dict with `items`, `next_cursor` (opaque, or null on the last page), and `has_more`. There is no `offset` or `total`. A `sort="cost"` mode orders by `cost_usd DESC NULLS LAST` and pages via an opaque offset-encoding cursor.
+The function SHALL return a unified stream of all ingestion events (ingested, filtered, errored) ordered by `received_at DESC, id DESC` using keyset (cursor) pagination, with optional filtering. The function returns a dict with `items`, `next_cursor` (opaque, or null on the last page), and `has_more`. There is no `offset` or `total`. A `sort="cost"` mode orders by `cost_usd DESC NULLS LAST` and pages via an opaque offset-encoding cursor.
 
 #### Scenario: Paginated list
 - **WHEN** `ingestion_events_list(pool, limit=20, cursor=None)` is called
@@ -67,8 +65,7 @@ Return a unified stream of all ingestion events (ingested, filtered, errored) or
 
 ### Requirement: Session Lineage Query
 
-The implementation SHALL provide the behavior described by this requirement.
-Return all sessions spawned from a given `request_id`, joined across all butler schemas. Works for both connector-sourced events (via `ingestion_event_id` FK) and internally-minted request IDs (via direct `request_id` match).
+The function SHALL return all sessions spawned from a given `request_id`, joined across all butler schemas. Works for both connector-sourced events (via `ingestion_event_id` FK) and internally-minted request IDs (via direct `request_id` match).
 
 #### Scenario: Lineage for a connector-sourced event
 - **WHEN** `ingestion_event_sessions(db, request_id, pricing=None)` is called (where `db` is a DatabaseManager that fans out across all butler schemas) with a UUID7 that has a corresponding `public.ingestion_events` row
@@ -81,8 +78,7 @@ Return all sessions spawned from a given `request_id`, joined across all butler 
 
 ### Requirement: Dashboard Channel as Valid Ingestion Source
 
-The implementation SHALL provide the behavior described by this requirement.
-The `public.ingestion_events` table accepts events with `source_channel = "dashboard"`. Dashboard-originated events follow the same deduplication, request-context, and lineage semantics as connector-originated events without becoming connector provenance or acquiring connector-specific filtered-event/status semantics.
+The `public.ingestion_events` table SHALL accept events with `source_channel = "dashboard"`. Dashboard-originated events follow the same deduplication, request-context, and lineage semantics as connector-originated events without becoming connector provenance or acquiring connector-specific filtered-event/status semantics.
 
 #### Scenario: Dashboard ingestion event recorded
 - **WHEN** a dashboard conversation message is ingested by the Switchboard

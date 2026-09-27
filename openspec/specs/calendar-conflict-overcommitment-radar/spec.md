@@ -14,7 +14,7 @@ until a proposal producer runs.
 
 ## Requirements
 
-### Requirement: [TARGET-STATE] Forward-Window Conflict Scan Endpoint
+### Requirement: Forward-Window Conflict Scan Endpoint
 
 The capability SHALL expose `GET /api/calendar/workspace/conflicts` that
 accepts `start`, `end`, optional `timezone`, and optional `butler_name`
@@ -139,7 +139,7 @@ default strategy with no overrides (fail-open) rather than failing the scan.
 - **AND** a genuine overlap between two DIFFERENT butler-authored events
   (neither shadows a same-titled non-butler row) is still detected normally
 
-### Requirement: [TARGET-STATE] ConflictScanResponse Model
+### Requirement: ConflictScanResponse Model
 
 The response envelope MUST conform to the following schema, with all fields
 present. `issues_available` SHALL be `false` in degraded mode — which includes
@@ -186,7 +186,7 @@ accepted or dismissed proposals MUST NOT appear in this list.
 - **THEN** the matching `ConflictIssue` includes that proposal's UUID in `proposal_ids`
 - **AND** the proposal UUID is NOT included if its status is `accepted` or `dismissed`
 
-### Requirement: [TARGET-STATE] FE Radar Banner
+### Requirement: FE Radar Banner
 
 The week/day view SHALL fetch `GET /api/calendar/workspace/conflicts` for the
 visible window and MUST render a radar banner above the calendar grid when
@@ -228,7 +228,7 @@ The banner MUST:
 - **WHEN** the conflicts endpoint returns `issues_available: false`
 - **THEN** no radar banner is rendered (silent degraded mode)
 
-### Requirement: [TARGET-STATE] Amber Edge on Overlapping Grid Entries
+### Requirement: Amber Edge on Overlapping Grid Entries
 
 The FE MUST render each grid event block whose `entry_id` appears in any
 `overlap` issue's `events` list with a thin amber left border. The implementation

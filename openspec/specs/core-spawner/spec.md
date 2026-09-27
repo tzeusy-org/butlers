@@ -397,19 +397,18 @@ The layer SHALL be gated by a per-butler kill switch: `runtime_config.blind_spot
 The spawner SHALL resolve the model dynamically at spawn time using the model catalog instead of reading a static model from `butler.toml`. The `trigger()` method gains a `complexity` parameter that drives model selection. The spawner MAY use same-tier failover only after the initial catalog candidate has been selected.
 
 #### Scenario: Trigger with complexity parameter
-- **WHEN** `trigger(prompt, trigger_source, complexity="high")` is called
-- **THEN** the spawner calls `resolve_model(butler_name, "high")` to determine the runtime type, model ID, and extra args
+- **WHEN** `trigger(prompt, trigger_source, complexity="reasoning")` is called
+- **THEN** the spawner calls `resolve_model(butler_name, "reasoning")` to determine the runtime type, model ID, and extra args
 
 #### Scenario: Trigger without complexity parameter
 - **WHEN** `trigger(prompt, trigger_source)` is called without a complexity parameter
-- **THEN** the complexity defaults to `medium`
+- **THEN** the complexity defaults to `workhorse`
 
-#### Scenario: Catalog resolution overrides static fallback model
+#### Scenario: Catalog resolution selects the invocation model
 - **WHEN** `resolve_model()` returns a result
 - **THEN** the returned `runtime_type`, `model_id`, and `extra_args` are used for the invocation
 
-#### Scenario: Catalog empty fallback to static defaults
-- **NOTE** The scenario name is retained for archived-change compatibility; live pooled dispatch no longer has a static model fallback.
+#### Scenario: Catalog empty fails closed
 - **WHEN** `resolve_model()` returns `None` (no matching entries) or fails
 - **THEN** a live Spawner with a database pool returns `ModelResolutionError: catalog_unavailable` or `ModelResolutionError: no_eligible_catalog_entries` before invocation because catalog-keyed permission, quota, ceiling, breaker, and provenance gates cannot run
 - **AND** an explicit pool-free direct-adapter harness may invoke `DEFAULT_RUNTIME_TYPE` with no explicit model only after its adapter baseline satisfies the dispatch intent
@@ -449,8 +448,7 @@ The spawner SHALL resolve the model dynamically at spawn time using the model ca
   failover tier for the logical session
 - **AND** subsequent automatic failover attempts SHALL use only that exact tier
 
-#### Scenario: Catalog resolution failure uses static fallback
-- **NOTE** The scenario name is retained for archived-change compatibility. The retired, non-normative clause was: "- **THEN** the spawner SHALL use the existing static fallback behavior". The required live behavior is fail-closed refusal.
+#### Scenario: Catalog resolution failure fails closed
 - **WHEN** initial catalog resolution returns `None` for every eligible tier or raises
   before a catalog candidate is selected
 - **THEN** a live pooled spawner SHALL refuse invocation with a `ModelResolutionError`
@@ -573,15 +571,11 @@ The spawner SHALL support healing-related configuration that the self-healing mo
 - **AND** if the module is not loaded, the fallback is also disabled (no separate `[healing]` section needed)
 
 ### Requirement: Spawner resolves hot config fields per-spawn from the model catalog
-The Spawner SHALL resolve the hot fields (model, runtime_type, args, session_timeout_s) on every `trigger()` call rather than reading them from the static `ButlerConfig`. As of migration `core_073` these fields live on `public.model_catalog` (resolved per complexity tier), not on the `runtime_config` table. The Spawner calls `resolve_model_with_effective_tier()` (`src/butlers/core/model_routing.py`) to obtain the catalog entry id, runtime_type, args, and session_timeout_s for the chosen tier. The `RuntimeConfigAccessor` is still consulted, but only for cold fields (core_groups, max_concurrent, max_queued).
-
-Note: an earlier design sourced these hot fields from `RuntimeConfigAccessor.get()`. That path was superseded by the catalog (core_073). The scenarios below reflect the catalog-based reality.
+The Spawner SHALL resolve the hot fields (model, runtime_type, args, session_timeout_s) on every `trigger()` call rather than reading them from the static `ButlerConfig`. These fields live on `public.model_catalog` (resolved per complexity tier), not on the `runtime_config` table. The Spawner calls `resolve_model_with_effective_tier()` (`src/butlers/core/model_routing.py`) to obtain the catalog entry id, runtime_type, args, and session_timeout_s for the chosen tier. The `RuntimeConfigAccessor` is still consulted, but only for cold fields (core_groups, max_concurrent, max_queued).
 
 Source: RFC 0001 §Trigger Pipeline, RFC 0002 §Core Tools, migration core_073
-Scope: v1-mandatory
 
-#### Scenario: Model resolved from the catalog with a constant fallback
-- **NOTE** The scenario name is retained for archived-change compatibility; only pool-free harnesses may use direct-adapter mode.
+#### Scenario: Model resolved from the catalog
 - **WHEN** `trigger()` is called
 - **THEN** the Spawner SHALL resolve the model from `public.model_catalog` via `resolve_model_with_effective_tier()`
 - **AND** if catalog resolution fails or returns no result, a live Spawner with a database pool SHALL return a pre-invocation `ModelResolutionError`
@@ -620,7 +614,6 @@ Scope: v1-mandatory
 The Spawner SHALL read `max_concurrent` and `max_queued` from the accessor once at construction time. These values are used to size the asyncio.Semaphore and queue limit.
 
 Source: RFC 0001 §Concurrency Control
-Scope: v1-mandatory
 
 #### Scenario: Concurrency limit from DB
 - **WHEN** the Spawner is constructed

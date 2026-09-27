@@ -2,18 +2,17 @@
 
 ## Purpose
 
-The deployment-and-drift capability is the "Deploy spine" (epic bu-9r3hd): it
-keeps a running production deployment's database schema honest against the
-codebase, and gives operators one idempotent verb to ship a deploy safely. It
-covers the three-way migration-drift sentinel (codebase Alembic head vs. each
-butler schema's applied revisions, hourly-checked, escalating to QA after 24h
-of sustained drift, surfaced as a red clause on the `/system` page) and the
-`butlers deploy` command (build/migrate/recreate/health-check/record, safe to
-re-run at any point in the pipeline). Both close the same incident class: PR
-#3082's `public.deployments` ledger recorded what a boot claimed to run, but
-had no way to tell whether a merged migration ever actually landed in prod
-(bu-zhfd0: seven `core` revisions sat dark for six days) or to prevent the
-next occurrence.
+The deployment-and-drift capability is the deploy spine: it keeps a running
+production deployment's database schema honest against the codebase, and gives
+operators one idempotent verb to ship a deploy safely. It covers the three-way
+migration-drift sentinel (codebase Alembic head vs. each butler schema's
+applied revisions, hourly-checked, escalating to QA after 24h of sustained
+drift, surfaced as a red clause on the `/system` page) and the `butlers deploy`
+command (build/migrate/recreate/health-check/record, safe to re-run at any
+point in the pipeline). The `public.deployments` ledger records what a boot
+claimed to run; this capability additionally detects whether each merged
+migration actually landed in production and prevents shipping code that
+bypasses that check.
 
 ## Requirements
 
@@ -249,7 +248,7 @@ re-run at any point in the pipeline.
 - **AND WHEN** the tracking schemas disagree on the core head (an anomalous
   half-applied state), the newest head is recorded and the divergence is logged
   at `warning`; authoritative per-schema drift detection remains the separate
-  hourly sentinel's responsibility (bu-9r3hd.1)
+  hourly sentinel's responsibility
 
 #### Scenario: The pipeline is idempotent across repeated or resumed runs
 
@@ -265,9 +264,8 @@ re-run at any point in the pipeline.
 
 The system SHALL, before any build/migrate/recreate/health-check/record step,
 reject a deploy whose `--dir` root is a linked git worktree or whose `HEAD` is
-not an ancestor of `origin/main` — the two shapes of the bu-hmdqz.1 incident
-where the live stack served stale code baked from a frozen `.worktrees/`
-checkout. An operator MAY override the guard for an intentional branch deploy,
+not an ancestor of `origin/main`, either of which would let the live stack
+serve stale code baked from a frozen worktree checkout. An operator MAY override the guard for an intentional branch deploy,
 in which case both rejections are downgraded to loud warnings.
 
 #### Scenario: A linked-worktree deploy root is rejected
@@ -295,7 +293,7 @@ in which case both rejections are downgraded to loud warnings.
 
 - **WHEN** the deploy is invoked with the `--allow-dirty-root` override (CLI)
   / `allow_dirty_root=True` (programmatic)
-- **THEN** a linked-worktree root and/or a non-ancestor `HEAD` no longer raise;
+- **THEN** a linked-worktree root and/or a non-ancestor `HEAD` does not raise;
   each violation is logged as a loud warning and surfaced on the command
   output, and the deploy proceeds and records its real (possibly divergent)
   `git_sha` to the ledger — that divergent SHA is itself the durable record

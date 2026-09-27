@@ -8,8 +8,7 @@ The Home Assistant module provides MCP tools for bidirectional smart-home contro
 
 ### Requirement: HomeAssistantConfig Schema
 
-The implementation SHALL provide the behavior described by this requirement.
-Configuration controls the HA connection URL, SSL verification, WebSocket keepalive, polling fallback interval, and snapshot persistence frequency.
+Configuration SHALL control the HA connection URL, SSL verification, WebSocket keepalive, polling fallback interval, and snapshot persistence frequency.
 
 #### Scenario: Config structure
 
@@ -33,8 +32,7 @@ Configuration controls the HA connection URL, SSL verification, WebSocket keepal
 
 ### Requirement: Credential Resolution via Owner Contact Info
 
-The implementation SHALL provide the behavior described by this requirement.
-The HA long-lived access token is resolved from the owner contact's `contact_info` entry at startup.
+The HA long-lived access token SHALL be resolved from the owner contact's `contact_info` entry at startup.
 
 #### Scenario: Token resolved from contact_info
 
@@ -55,8 +53,7 @@ The HA long-lived access token is resolved from the owner contact's `contact_inf
 
 ### Requirement: HTTP Client Lifecycle
 
-The implementation SHALL provide the behavior described by this requirement.
-The module uses `httpx.AsyncClient` for REST API calls, created at startup and closed at shutdown.
+The module SHALL use `httpx.AsyncClient` for REST API calls, created at startup and closed at shutdown.
 
 #### Scenario: Client initialization
 
@@ -74,8 +71,7 @@ The module uses `httpx.AsyncClient` for REST API calls, created at startup and c
 
 ### Requirement: WebSocket Connection Lifecycle
 
-The implementation SHALL provide the behavior described by this requirement.
-The module maintains a persistent WebSocket connection for real-time state updates and registry queries.
+The module SHALL maintain a persistent WebSocket connection for real-time state updates and registry queries.
 
 #### Scenario: WebSocket connection and authentication
 
@@ -113,8 +109,7 @@ The module maintains a persistent WebSocket connection for real-time state updat
 
 ### Requirement: In-Memory Entity State Cache
 
-The implementation SHALL provide the behavior described by this requirement.
-The module maintains a `dict[str, CachedEntity]` populated at startup and updated via WebSocket events.
+The module SHALL maintain a `dict[str, CachedEntity]` populated at startup and updated via WebSocket events.
 
 #### Scenario: Initial cache population
 
@@ -142,8 +137,7 @@ The module maintains a `dict[str, CachedEntity]` populated at startup and update
 
 ### Requirement: Area and Entity Registry Cache
 
-The implementation SHALL provide the behavior described by this requirement.
-The module caches HA registry data for area and entity metadata resolution.
+The module SHALL cache HA registry data for area and entity metadata resolution.
 
 #### Scenario: Registry population at startup
 
@@ -158,8 +152,7 @@ The module caches HA registry data for area and entity metadata resolution.
 
 ### Requirement: Query Tool — ha_get_entity_state
 
-The implementation SHALL provide the behavior described by this requirement.
-Returns the full state object for a single entity by ID.
+The tool SHALL return the full state object for a single entity by ID.
 
 #### Scenario: Entity found in cache
 
@@ -174,8 +167,7 @@ Returns the full state object for a single entity by ID.
 
 ### Requirement: Query Tool — ha_list_entities
 
-The implementation SHALL provide the behavior described by this requirement.
-Returns compact summaries of entities, filtered by domain and/or area.
+The tool SHALL return compact summaries of entities, filtered by domain and/or area.
 
 #### Scenario: List all entities
 
@@ -200,8 +192,7 @@ Returns compact summaries of entities, filtered by domain and/or area.
 
 ### Requirement: Query Tool — ha_list_areas
 
-The implementation SHALL provide the behavior described by this requirement.
-Returns all defined areas/rooms from the HA area registry.
+The tool SHALL return all defined areas/rooms from the HA area registry.
 
 #### Scenario: List areas
 
@@ -211,8 +202,7 @@ Returns all defined areas/rooms from the HA area registry.
 
 ### Requirement: Query Tool — ha_list_services
 
-The implementation SHALL provide the behavior described by this requirement.
-Returns available HA services, optionally filtered by domain.
+The tool SHALL return available HA services, optionally filtered by domain.
 
 #### Scenario: List all services
 
@@ -227,8 +217,7 @@ Returns available HA services, optionally filtered by domain.
 
 ### Requirement: Query Tool — ha_get_history
 
-The implementation SHALL provide the behavior described by this requirement.
-Returns state history for entities over a time window from HA's recorder.
+The tool SHALL return state history for entities over a time window from HA's recorder.
 
 #### Scenario: Fetch history with entity filter
 
@@ -243,8 +232,7 @@ Returns state history for entities over a time window from HA's recorder.
 
 ### Requirement: Query Tool — ha_get_statistics
 
-The implementation SHALL provide the behavior described by this requirement.
-Returns aggregated hourly/daily statistics for sensor entities from HA's recorder.
+The tool SHALL return aggregated hourly/daily statistics for sensor entities from HA's recorder.
 
 #### Scenario: Fetch statistics
 
@@ -259,8 +247,7 @@ Returns aggregated hourly/daily statistics for sensor entities from HA's recorde
 
 ### Requirement: Query Tool — ha_render_template
 
-The implementation SHALL provide the behavior described by this requirement.
-Evaluates a Jinja2 template server-side on the HA instance.
+The tool SHALL evaluate a Jinja2 template server-side on the HA instance.
 
 #### Scenario: Render template
 
@@ -270,8 +257,7 @@ Evaluates a Jinja2 template server-side on the HA instance.
 
 ### Requirement: Control Tool — ha_call_service
 
-The implementation SHALL provide the behavior described by this requirement.
-Generic service call supporting any HA domain, service, target, and data.
+The tool SHALL provide a generic service call supporting any HA domain, service, target, and data.
 
 #### Scenario: Successful service call
 
@@ -361,8 +347,7 @@ receipt or turn a failed/unverified physical outcome into success.
 
 ### Requirement: Control Tool — ha_activate_scene
 
-The implementation SHALL provide the behavior described by this requirement.
-Convenience wrapper for activating a scene by entity_id.
+The tool SHALL provide a convenience wrapper for activating a scene by entity_id.
 
 #### Scenario: Activate scene
 
@@ -376,8 +361,7 @@ Convenience wrapper for activating a scene by entity_id.
 
 ### Requirement: Command Audit Logging
 
-The implementation SHALL provide the behavior described by this requirement.
-Every service call issued through the module is persisted to the `ha_command_log` table.
+Every service call issued through the module SHALL be persisted to the `ha_command_log` table.
 
 #### Scenario: Successful command logged
 
@@ -412,8 +396,7 @@ upserts one row per entity key instead of accumulating temporal fact history.
 
 ### Requirement: Home Assistant Database Schema
 
-The implementation SHALL provide the behavior described by this requirement.
-The module provides Alembic migrations for its home-domain tables.
+The module SHALL provide Alembic migrations for its home-domain tables.
 
 #### Scenario: Migration creates tables
 
@@ -433,8 +416,7 @@ The module provides Alembic migrations for its home-domain tables.
 
 ### Requirement: Tool Metadata for Approval Sensitivity
 
-The implementation SHALL provide the behavior described by this requirement.
-The module declares approval sensitivity for control tools via `tool_metadata()`.
+The module SHALL declare approval sensitivity for control tools via `tool_metadata()`.
 
 #### Scenario: Sensitive args declared
 
@@ -448,8 +430,7 @@ The module declares approval sensitivity for control tools via `tool_metadata()`
 
 ### Requirement: Module Identity and Dependencies
 
-The implementation SHALL provide the behavior described by this requirement.
-The module registers under the name `home_assistant` with a dependency on `contacts` (for owner resolution) and `approvals` (for gating).
+The module SHALL register under the name `home_assistant` with a dependency on `contacts` (for owner resolution) and `approvals` (for gating).
 
 #### Scenario: Module identity
 
@@ -460,8 +441,7 @@ The module registers under the name `home_assistant` with a dependency on `conta
 
 ### Requirement: Tool Registration
 
-The implementation SHALL provide the behavior described by this requirement.
-The module registers up to 13 MCP tools during `register_tools()`: 9 Home Assistant control/query tools plus 4 maintenance tools. Mutation tools are skipped when `read_only = true`.
+The module SHALL register up to 13 MCP tools during `register_tools()`: 9 Home Assistant control/query tools plus 4 maintenance tools. Mutation tools are skipped when `read_only = true`.
 
 #### Scenario: Tool inventory
 
@@ -476,8 +456,7 @@ The module registers up to 13 MCP tools during `register_tools()`: 9 Home Assist
 
 ### Requirement: Maintenance Tool Suite
 
-The implementation SHALL provide the behavior described by this requirement.
-The module provides recurring home-maintenance tracking backed by the `maintenance_items` table.
+The module SHALL provide recurring home-maintenance tracking backed by the `maintenance_items` table.
 
 #### Scenario: Create a maintenance item
 
@@ -502,10 +481,7 @@ The module provides recurring home-maintenance tracking backed by the `maintenan
 
 ### Requirement: HA Source Health Recording
 
-The implementation SHALL provide the behavior described by this requirement.
-`ha_entity_snapshot`'s `captured_at` is re-stamped every snapshot cycle
-regardless of whether HA was actually contacted, so it cannot by itself tell
-a reader whether the connection is currently healthy. The module SHALL
+`ha_entity_snapshot`'s `captured_at` SHALL be re-stamped every snapshot cycle regardless of whether HA was actually contacted, so it cannot by itself tell a reader whether the connection is currently healthy. The module SHALL
 maintain a single keyed row per source in `ha_source_health` (`source` TEXT
 PRIMARY KEY, `status` TEXT CHECK IN `'healthy'`/`'error'`,
 `last_success_at`, `last_error_at`, `last_error`, `updated_at`), upserted on

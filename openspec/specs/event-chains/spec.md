@@ -7,8 +7,7 @@ Provides post-event trigger sequences that fire workflows after calendar events 
 
 ### Requirement: Event Chain Definition
 
-The implementation SHALL provide the behavior described by this requirement.
-An event chain is a named sequence of actions triggered by a temporal event. Chains are stored in an `event_chains` table with fields: `id` (UUID), `name` (unique per butler), `trigger_type` (enum: `calendar_event_end`, `deadline_passed`, `deadline_threshold`), `trigger_reference` (string -- calendar event_id or deadline task UUID), `actions` (JSONB array), `status` (enum: `active`, `paused`, `fired`, `failed`), `butler_name`, `created_at`, `updated_at`.
+An event chain SHALL be a named sequence of actions triggered by a temporal event. Chains are stored in an `event_chains` table with fields: `id` (UUID), `name` (unique per butler), `trigger_type` (enum: `calendar_event_end`, `deadline_passed`, `deadline_threshold`), `trigger_reference` (string -- calendar event_id or deadline task UUID), `actions` (JSONB array), `status` (enum: `active`, `paused`, `fired`, `failed`), `butler_name`, `created_at`, `updated_at`.
 
 #### Scenario: Create event chain triggered by calendar event end
 - **WHEN** `event_chain_create(name="post-dentist", trigger_type="calendar_event_end", trigger_reference="google-event-123", actions=[{action_type: "prompt", delay_minutes: 0, prompt: "Log the dentist visit and update next appointment"}, {action_type: "prompt", delay_minutes: 1440, prompt: "Send follow-up care reminder"}])` is called
@@ -101,8 +100,7 @@ The module SHALL register MCP tools: `event_chain_create`, `event_chain_update`,
 
 ### Requirement: Event Chain Action Materialization
 
-The implementation SHALL provide the behavior described by this requirement.
-When a chain fires, each action is materialized as a one-shot `scheduled_task` with `source='chain'`, a unique name derived from the chain name and action index, `until_at` set to auto-disable after firing, and `trigger_source` set to `chain:<chain-name>`.
+When a chain fires, each action SHALL be materialized as a one-shot `scheduled_task` with `source='chain'`, a unique name derived from the chain name and action index, `until_at` set to auto-disable after firing, and `trigger_source` set to `chain:<chain-name>`.
 
 #### Scenario: Materialized tasks have chain lineage
 - **WHEN** chain "post-dentist" with 2 actions fires

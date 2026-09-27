@@ -1,7 +1,7 @@
 # finance-simplefin-bridge Specification
 
 ## Purpose
-TBD - created by archiving change add-simplefin-finance-bridge. Update Purpose after archive.
+Defines how the Finance butler pulls account balances and transactions from a SimpleFIN Bridge safely: credential handling, account binding, idempotent settled recording, and truthful freshness reporting.
 
 ## Requirements
 
