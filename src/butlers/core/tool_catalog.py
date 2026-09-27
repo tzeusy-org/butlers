@@ -160,6 +160,44 @@ def validate_presentation_inventory(
         raise ToolCatalogError("invalid presentation inventory: " + "; ".join(problems))
 
 
+def validate_tool_metadata(name: str, owner: str, metadata: ToolMeta | None) -> bool:
+    """Validate one optional exposure declaration and report whether it is complete."""
+    if metadata is None:
+        return False
+    values = (
+        metadata.canonical_name,
+        metadata.module_name,
+        metadata.group_name,
+        metadata.namespace,
+        metadata.llm_presentable,
+        metadata.load_posture,
+    )
+    if all(value is None for value in values):
+        return False
+    if any(value is None for value in values):
+        raise ToolCatalogError(f"incomplete tool presentation metadata: {name}")
+    if metadata.canonical_name != name:
+        raise ToolCatalogError(
+            f"tool metadata canonical name mismatch: {name!r} != {metadata.canonical_name!r}"
+        )
+    if metadata.module_name != owner:
+        raise ToolCatalogError(
+            f"tool metadata owner mismatch: {name!r} registered to {owner!r}, "
+            f"declared by {metadata.module_name!r}"
+        )
+    if not isinstance(metadata.group_name, str) or not metadata.group_name:
+        raise ToolCatalogError(f"invalid tool metadata group: {name}")
+    if not isinstance(metadata.namespace, str) or not metadata.namespace:
+        raise ToolCatalogError(f"invalid tool metadata namespace: {name}")
+    if not isinstance(metadata.llm_presentable, bool):
+        raise ToolCatalogError(f"invalid tool metadata llm_presentable: {name}")
+    try:
+        _validate_posture(metadata.load_posture)  # type: ignore[arg-type]
+    except ValueError as exc:
+        raise ToolCatalogError(f"invalid tool metadata load posture: {name}") from exc
+    return True
+
+
 async def build_tool_catalog(
     mcp: Any,
     *,
@@ -178,27 +216,10 @@ async def build_tool_catalog(
     for tool in sorted(listed_tools, key=lambda item: item.name):
         name = tool.name
         declared = metadata.get(name)
-        classified = bool(
-            declared is not None
-            and declared.canonical_name == name
-            and declared.module_name == tool_owners.get(name)
-            and declared.group_name
-            and declared.namespace
-            and declared.llm_presentable is not None
-            and declared.load_posture is not None
-        )
-        if declared is not None and declared.canonical_name not in {None, name}:
-            raise ToolCatalogError(
-                f"tool metadata canonical name mismatch: {name!r} != {declared.canonical_name!r}"
-            )
         owner = tool_owners.get(name)
         if owner is None:
             raise ToolCatalogError(f"registered tool has no owner: {name}")
-        if declared is not None and declared.module_name not in {None, owner}:
-            raise ToolCatalogError(
-                f"tool metadata owner mismatch: {name!r} registered to {owner!r}, "
-                f"declared by {declared.module_name!r}"
-            )
+        classified = validate_tool_metadata(name, owner, declared)
         schema = _freeze(tool.parameters or {})
         if not isinstance(schema, Mapping):
             raise ToolCatalogError(f"tool input schema is not an object: {name}")
@@ -232,6 +253,7 @@ async def build_tool_catalog(
                 "namespace": descriptor.namespace,
                 "llm_presentable": descriptor.llm_presentable,
                 "load_posture": descriptor.load_posture,
+                "classification_complete": descriptor.classification_complete,
                 "input_schema_digest": descriptor.input_schema_digest,
                 "description_digest": descriptor.description_digest,
                 "arg_sensitivities": descriptor.arg_sensitivities,

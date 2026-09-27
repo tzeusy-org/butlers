@@ -59,6 +59,22 @@ class _UnexpectedMetadataModule:
         raise AssertionError("ToolMeta must not be collected without an approvals module")
 
 
+class _ConflictingMetadataModule:
+    name = "email"
+
+    def tool_metadata(self) -> dict[str, ToolMeta]:
+        return {
+            "email_send_message": ToolMeta(
+                canonical_name="WRONG",
+                module_name="OTHER",
+                group_name="legacy",
+                namespace="custom.legacy",
+                llm_presentable=False,
+                load_posture="eager",
+            )
+        }
+
+
 def _register_stub_tools(mcp: RuntimeFastMCP, names: list[str]) -> None:
     """Register no-op tools so validate_approval_config sees them as known.
 
@@ -156,6 +172,45 @@ async def test_daemon_finalizes_complete_catalog_after_approval_phase() -> None:
     with pytest.raises(ToolCatalogError, match="no owner"):
         await daemon._finalize_tool_catalog()
     assert daemon._tool_catalog is None
+
+    legacy = _approval_wiring_daemon("home", [])
+    legacy.config = SimpleNamespace(name="home", modules={})
+
+    @legacy.mcp.tool()
+    async def legacy_catalog_tool() -> None:
+        pass
+
+    legacy._registered_tool_names = {"legacy_catalog_tool"}
+    legacy._tool_module_map = {"legacy_catalog_tool": "legacy"}
+    legacy._resolved_tool_metadata = {
+        "legacy_catalog_tool": ToolMeta(
+            canonical_name="legacy_catalog_tool",
+            module_name="legacy",
+            group_name="legacy",
+            namespace="legacy.legacy",
+            llm_presentable=True,
+            load_posture="eager",
+        )
+    }
+    complete = await legacy._finalize_tool_catalog()
+    legacy._resolved_tool_metadata = {"legacy_catalog_tool": ToolMeta()}
+    incomplete = await legacy._finalize_tool_catalog()
+
+    assert complete.classification_complete is True
+    assert incomplete.classification_complete is False
+    assert complete.generation_digest != incomplete.generation_digest
+    assert incomplete is legacy.tool_catalog
+
+
+async def test_conflicting_module_exposure_metadata_fails_before_central_merge() -> None:
+    daemon = _approval_wiring_daemon("home", [_ConflictingMetadataModule()])
+    daemon.config = SimpleNamespace(name="home", modules={})
+    _register_stub_tools(daemon.mcp, ["email_send_message"])
+    daemon._registered_tool_names = {"email_send_message"}
+    daemon._tool_module_map = {"email_send_message": "email"}
+
+    with pytest.raises(ToolCatalogError, match="canonical name mismatch"):
+        await daemon._apply_approval_gates()
 
 
 async def test_enabled_gates_receive_the_deterministic_approval_push_runtime(

@@ -13,6 +13,7 @@ from butlers.core.tool_catalog import (
     ToolPresentation,
     build_tool_catalog,
     validate_presentation_inventory,
+    validate_tool_metadata,
 )
 from butlers.modules.approvals.gate import apply_approval_gates
 from butlers.modules.base import ToolMeta
@@ -92,9 +93,24 @@ def test_inventory_validation_rejects_duplicates_missing_stale_and_owner_drift()
         validate_presentation_inventory({"one": "beta"}, complete)
 
 
-def test_invalid_posture_is_rejected() -> None:
+def test_invalid_or_partial_metadata_is_rejected() -> None:
     with pytest.raises(ValueError):
         ToolPresentation("one", "alpha", "read", "alpha.read", True, "sometimes")  # type: ignore[arg-type]
+    with pytest.raises(ToolCatalogError, match="load posture"):
+        validate_tool_metadata(
+            "one",
+            "alpha",
+            ToolMeta(
+                canonical_name="one",
+                module_name="alpha",
+                group_name="read",
+                namespace="alpha.read",
+                llm_presentable=True,
+                load_posture="sometimes",  # type: ignore[arg-type]
+            ),
+        )
+    with pytest.raises(ToolCatalogError, match="incomplete"):
+        validate_tool_metadata("one", "alpha", ToolMeta(group_name="read"))
 
 
 async def test_catalog_reads_post_approval_definition_without_retaining_handler() -> None:
