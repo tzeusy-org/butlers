@@ -224,7 +224,7 @@ check-guards: check-em-dashes check-spec-overwrites check-countable-tasks check-
 	python3 scripts/check_archived_requirements_landed.py
 	python3 scripts/check_cited_requirements_resolve.py
 	python3 scripts/extract-frontend-copy.py
-	git diff --exit-code -- about/lay-and-land/frontend-copy-inventory.md
+	git diff --exit-code -- frontend/COPY_INVENTORY.md
 	@if command -v openspec >/dev/null 2>&1; then \
 		$(MAKE) check-openspec-strict; \
 	else \

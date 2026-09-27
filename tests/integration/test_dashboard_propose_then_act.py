@@ -12,7 +12,7 @@ role of a routed session correctly following that block's contract:
   ``pending_actions`` row, and replies with a proposal, never a completion
   claim.
 
-This is the seam ``about/heart-and-soul/security.md:103-105`` describes:
+This is the seam ``about/heart-and-soul/security.md`` § Approval Gates describes:
 the approval gate is enforced independently of the LLM session (here,
 independently of the fake target's own choices) — the *prompt* contract
 under test is that the injected block tells a compliant routed session to

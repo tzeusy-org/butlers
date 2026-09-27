@@ -2,8 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-04-16
-**Amended:** 2026-07-05 — D7 (Reciprocal Engagement Gating) added; see
-[Amendments](#amendments) and D6/Deployment Impact corrections below.
+**Amended:** 2026-07-05 (D7 Reciprocal Engagement Gating); see [Amendments](#amendments).
 
 ## Summary
 
@@ -286,16 +285,10 @@ MUST continue to score correctly for the `raw_score` computation:
 No migration of existing facts is required for these defaults. The scoring
 SQL uses `COALESCE` for both fields.
 
-> **Amended 2026-07-05:** This section describes only the `raw_score`
-> multiplier/divisor defaults, which are unchanged. It does NOT describe
-> whether a directionless fact is sufficient to sustain a contact's Dunbar
-> tier — that question is answered by the reciprocal engagement gate added
-> in D7 below, which post-dates this RFC as originally written. A
-> directionless fact still gets `direction_weight = 1.0` in `raw_score`
-> exactly as this section promises, but it no longer, by itself, keeps a
-> contact out of tier 1500. See D7 and [Amendments](#amendments).
+These defaults govern `raw_score` only; whether a directionless fact sustains a
+contact's tier is decided by the reciprocal engagement gate in D7.
 
-### D7: Reciprocal Engagement Gating (Added 2026-07-05, amends this RFC — PR #2897 / bu-557bb)
+### D7: Reciprocal Engagement Gating
 
 D1-D6 as originally written computed a single `raw_score` per contact and
 used it directly as the Dunbar decay score. Production use surfaced three
@@ -335,7 +328,7 @@ the `raw_score` term — a directionless fact still gets `direction_weight =
 a contact whose active facts are all directionless or `incoming` now scores
 `0.0` and sits at tier 1500, because one-way inbound contact is not evidence
 the owner reciprocated. This is intentional — it is the entire point of the
-reciprocity gate (bu-557bb) — and it applies equally to genuinely new
+reciprocity gate, and it applies equally to genuinely new
 `incoming` facts and to legacy directionless facts, since both fall on the
 "not outgoing/mutual" side of the gate.
 
@@ -395,14 +388,10 @@ term). New facts from the updated interaction_sync will carry the enriched
 metadata. Over time (30-day half-life), old facts decay away and new weighted
 facts dominate the score.
 
-> **Amended 2026-07-05:** The reciprocity gate added in D7 (PR #2897 /
-> bu-557bb) means "identical to current behavior" no longer holds for the
-> *final*, gated score of contacts whose entire active interaction history is
-> directionless or `incoming`-only — those contacts now score `0.0` and fall
-> to tier 1500 regardless of `raw_score`. This is a deliberate, deployed
-> behavior change validated against the live dataset (see D7), not a
-> residual migration gap. No backfill is needed because `engagement_days` is
-> computed at query time, not stored.
+The D7 reciprocity gate is a deliberate exception: contacts whose entire active
+interaction history is directionless or `incoming`-only score `0.0` and fall to
+tier 1500 regardless of `raw_score`. No backfill is needed because
+`engagement_days` is computed at query time.
 
 ## Constants
 
@@ -442,26 +431,4 @@ context about how many people were involved.
 
 ## Amendments
 
-### 2026-07-05 — Reciprocal engagement gating (D7)
-
-Added D7 (Reciprocal Engagement Gating) to document the reciprocity gate
-merged in PR #2897 (bu-557bb), which multiplies `raw_score` by
-`min(1.0, engagement_days / 3)`.
-
-This RFC originally shipped before the reciprocity gate existed, so D6's
-"Backward Compatibility" section and the "Deployment Impact" section's "no
-data migration required" paragraph read as though directionless facts score
-identically to explicitly-`incoming` facts in every respect. That is still
-true for the `raw_score` multiplier/divisor terms, but it is no longer true
-for final tier placement: directionless (and `incoming`-only) facts do not
-count toward `engagement_days`, so a contact with no reciprocal engagement
-now scores `0.0` and sits at tier 1500 regardless of how much raw signal
-they accumulate.
-
-This amendment corrects D6 and Deployment Impact inline (see above) and adds
-D7 to describe the gate's design and rationale. No code or spec changes
-accompany this amendment — `roster/relationship/tools/dunbar.py` and
-`openspec/specs/dunbar-tier-scoring/spec.md` already implement and specify
-the gated behavior as of PR #2897; this RFC was the artifact that had
-drifted out of sync with the deliberate, reviewed change. Filed as bu-p6b0c,
-discovered during bu-557bb's second-stage validation.
+- **2026-07-05:** added D7 (reciprocal engagement gating, `raw_score × min(1.0, engagement_days / 3)`) and aligned D6 and Deployment Impact with it.

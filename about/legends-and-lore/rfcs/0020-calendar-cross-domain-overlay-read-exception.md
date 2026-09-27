@@ -10,8 +10,7 @@
 The calendar workspace wants to become the surface where every butler's
 time-bound output converges: read-only domain overlays (finance bills/renewals,
 travel trip ribbons, relationship important-dates, health appointments), a
-meeting-prep rail, and a cross-signal "tomorrow at a glance" day-briefing card
-(bead `bu-1ajgg9`). Every one of these features reads another butler's per-schema
+meeting-prep rail, and a cross-signal "tomorrow at a glance" day-briefing card. Every one of these features reads another butler's per-schema
 domain state — `finance.*`, `travel.*`, `health.*`, `relationship.*` — which
 Non-Negotiable Rule 3 (MCP-only inter-butler communication) forbids except under
 the sanctioned exception already defined in **RFC 0010 (Cross-Butler Briefing
@@ -24,18 +23,16 @@ required criteria** (#2 Deterministic / no LLM session, and #3 Batch / not
 real-time or on-demand). Under current doctrine the answer to that design is
 therefore **NO**.
 
-The recommendation is to adopt the RFC-0010-compliant pattern instead: a
-**scheduled deterministic job precomputes per-day overlay and briefing
-contributions into a read-only cached view** that the calendar reads directly
-(zero LLM at render, batch-refreshed) — the exact mechanism RFC 0010 already
-sanctions for the EOD briefing. The rejected alternatives are documented below.
-Acceptance is left to the owner; this RFC is **Proposed**.
+The adopted contract is the RFC-0010-compliant pattern: **scheduled deterministic
+jobs precompute per-day structured overlay contributions into a read-only cached
+view** that the calendar reads directly, with zero LLM at render and no generated
+prose. This is the mechanism RFC 0010 already sanctions for the EOD briefing. The
+rejected alternatives are documented below.
 
 ## Motivation
 
 The calendar Dispatch redesign (commit `b02eb9227`) turned the workspace into a
-clean read-mostly grid. The next roadmap tier (`bu-1ajgg9`, under epic
-`bu-l3k0zg`) wants to layer cross-domain context onto it:
+clean read-mostly grid. The next roadmap tier layers cross-domain context onto it:
 
 - **Domain overlays** — finance bills/renewals, travel trip ribbons,
   relationship important-dates, and health appointments rendered as ribbons or
@@ -58,13 +55,12 @@ against the existing one and records the disposition.
 
 ## Design
 
-### How the naive design is described in the bead
+### The naive design
 
-The originating epic (`bu-1ajgg9`) sketches the overlays/prep-rail/briefing as
-**per-open LLM synthesis plus on-demand overlay render**: when the user opens the
-calendar (or selects a day/event), the calendar resolves the cross-domain data
-live and an LLM session synthesizes the briefing/prep text at that moment. This
-is the design under evaluation.
+The naive design is **per-open LLM synthesis plus on-demand overlay render**: when
+the user opens the calendar (or selects a day/event), the calendar resolves the
+cross-domain data live and an LLM session synthesizes the briefing/prep text at
+that moment. This is the design under evaluation.
 
 ### Evaluating the naive design against RFC 0010's reuse criteria
 
@@ -101,15 +97,14 @@ is **out of scope of the exception**. Under current doctrine, a calendar API tha
 reads sibling schemas on-demand with per-open LLM synthesis is **not permitted**
 — RFC 0010 already answers it NO as designed.
 
-### Recommendation: the RFC-0010-compliant overlay path
+### Adopted contract: the RFC-0010-compliant overlay path
 
-Adopt the same mechanism RFC 0010 already sanctions for the EOD briefing, applied
-to the calendar:
+The calendar uses the same mechanism RFC 0010 sanctions for the EOD briefing:
 
 1. **Scheduled deterministic contribution jobs.** Each contributing butler
    (finance, travel, health, relationship) runs a `dispatch_mode="job"`
    deterministic Python/SQL job on a fixed cron that writes its per-day overlay
-   contributions into its own `state` store under a filtered key prefix (mirroring
+   structured contributions into its own `state` store under a filtered key prefix (mirroring
    RFC 0010's `briefing/daily/%`; e.g. `calendar/overlay/<date>`). These jobs
    carry **zero LLM cost** and run on the daemon, not in a session.
 
@@ -121,41 +116,31 @@ to the calendar:
    (Guardrail #1); SELECT grants are created by Alembic migration and reversible
    on downgrade (Guardrail #5).
 
-3. **Calendar reads the cached view at render — zero LLM.** The overlay/prep-rail/
-   briefing UI reads the already-computed, cached contributions through the view.
-   Render is a pure read of precomputed data; no LLM session and no cross-schema
-   fan-out happen at open time.
-
-4. **If any LLM synthesis is genuinely wanted, it is batch and pre-rendered.**
-   Any natural-language briefing/prep text is produced by **one scheduled
-   session** that writes pre-rendered `summary`-style text into the contribution
-   (exactly as RFC 0010's contribution envelope pre-renders `summary` so the LLM
-   need not analyze raw domain data at delivery). The calendar then displays that
-   text verbatim — no per-open session.
+3. **Calendar reads the cached view at render with zero LLM.** The overlay,
+   prep-rail, and briefing UI render the cached structured contributions directly
+   as ribbons, pills, and lists, with no generated prose. No LLM session and no
+   cross-schema fan-out happen at open time.
 
 Under this pattern every RFC 0010 criterion holds: read-only (DB-enforced view),
-deterministic (no LLM in the cross-schema read), batch (fixed-schedule
-contribution + refresh), auditable (migration-tracked view + grants with explicit
-source attribution), and cost-justified (a bounded number of scheduled jobs/
-sessions per day rather than one synthesis per calendar open).
+deterministic (no LLM anywhere in the path), batch (fixed-schedule contribution
+and refresh), auditable (migration-tracked view and grants with explicit source
+attribution), and cost-justified (a bounded number of scheduled jobs per day).
 
-### Alternative compliant variant: drop the LLM/real-time aspects entirely
+### Deferred: batched pre-rendered prose
 
-If precomputed LLM summaries are not worth the batch session, the simplest
-compliant variant is to **drop synthesis altogether**: deterministic jobs write
-structured (non-narrative) overlay rows, and the calendar renders them directly
-as ribbons/pills/lists with no generated prose. This trivially satisfies
-criteria #2 and #3 because no LLM is involved anywhere. It is the
-lowest-risk path and is recommended if the briefing prose is not essential to v1.
+If structured overlays prove insufficient, natural-language briefing or prep text
+MAY be added only as **one scheduled session** that writes pre-rendered
+`summary`-style text into the contribution (as RFC 0010's envelope does), which
+the calendar then displays verbatim. A per-open session remains prohibited.
 
 ## Reuse Criteria
 
 This RFC does not create a new exception class; it **reuses** RFC 0010's
-exception under RFC 0010's own reuse criteria. The recommended path is in scope
+exception under RFC 0010's own reuse criteria. The adopted path is in scope
 because it holds all five MAY-criteria; the naive path is out of scope because it
 trips MUST-NOT criteria #1 (LLM sessions involved) and #3 (real-time queries).
 Any future calendar overlay feature MUST be re-evaluated against RFC 0010's
-criteria independently — adopting this RFC does not pre-authorize on-demand or
+criteria independently; this RFC does not pre-authorize on-demand or
 LLM-in-the-read variants.
 
 ## Alternatives Considered
@@ -211,36 +196,20 @@ schema.
   this one view via explicit grants only, exactly as RFC 0010 does for
   `general.v_briefing_contributions`).
 - **RFC 0010:** This RFC is a scoped reuse of the Cross-Butler Briefing Exception.
-  The recommended path mirrors RFC 0010's view + five guardrails + contribution
+  The adopted path mirrors RFC 0010's view + five guardrails + contribution
   envelope; the prohibition on LLM-in-the-read and on-demand access is inherited
   verbatim from RFC 0010's MUST-NOT criteria.
 - **Calendar spec (`openspec/specs/module-calendar`):** The calendar module today
   registers "16 MCP tools total" and is "series-scoped in v1"; its read-model
   fans out only across `butlers_with_module('calendar')`. Any overlay-read
   implementation is additive to that surface and MUST land its own OpenSpec delta
-  against the relevant capability (per the `bu-l3k0zg` planning contract);
+  against the relevant capability;
   widening the documented contract is spec drift, not just code.
-- **`bu-1ajgg9`:** If this RFC is accepted, that epic's overlay/prep-rail/briefing
-  children must be rebuilt on the precompute-and-cache path (or the
-  drop-synthesis variant); the per-open LLM render described in the bead is not
-  buildable under current doctrine. The prep rail additionally depends on
-  contact-link coverage (`bu-mcz0o9`) and co-attended edges (`bu-xgz7g.1`) or it
-  renders empty for ~93% of events.
+- **Meeting-prep rail:** depends on contact-link coverage and co-attended edges;
+  without them it renders empty for most events.
 
 ## Decision
 
-**Accepted (2026-06-21).** The owner adopted the **no-LLM structured variant**
-(the "drop synthesis entirely" path in §Design): scheduled deterministic
-contribution jobs → migration-tracked read-only cached view → zero-LLM
-structured render (ribbons/pills/lists, no generated prose). The naive per-open /
-on-demand / LLM-synthesis design is rejected under RFC 0010's reuse criteria #2
-and #3, as documented above.
-
-The optional batched pre-rendered LLM summary layer (§Design step 4 / the
-"variant B" enhancement) is **deferred** — tracked as `bu-jdrkbj` at P4, to be
-revisited only if structured overlays prove insufficient for v1. The fusion epic
-`bu-1ajgg9` is decomposed on this path (`bu-xcd1cp` is the contribution-jobs +
-cached-view foundation; overlay render, prep rail, and briefing card build on
-it). Any future calendar overlay feature MUST be re-evaluated against RFC 0010's
-criteria independently — this acceptance does not pre-authorize on-demand or
-LLM-in-the-read variants.
+**Accepted (2026-06-21)** with the no-LLM structured variant described in
+§Adopted contract. The naive per-open / on-demand / LLM-synthesis design is
+rejected under RFC 0010's reuse criteria #2 and #3.

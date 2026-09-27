@@ -212,40 +212,20 @@ control as Owner Attention Policy.
 
 ### Frontend Route Map
 
-| Route | Surface |
-|-------|---------|
-| `/` | Overview dashboard (topology, health, failed notifications, active issues) |
-| `/butlers` | Butler status cards |
-| `/butlers/:name` | Butler detail with tabbed interface |
-| `/butlers/calendar` | Calendar workspace (dual-view) |
-| `/sessions` | Cross-butler session list with filters |
-| `/sessions/:id` | Session detail |
-| `/traces` | Distributed trace index |
-| `/traces/:traceId` | Trace detail with span waterfall |
-| `/timeline` | Unified event stream |
-| `/notifications` | Notification center |
-| `/issues` | Active issues |
-| `/audit-log` | Operation history |
-| `/approvals` | Approval queue with decision workflows |
-| `/approvals/rules` | Standing approval rules |
-| `/contacts` | Compatibility redirect to `/entities/index?has=contact` |
-| `/contacts/:contactId` | Compatibility redirect to `/entities/index?has=contact` |
-| `/groups` | Relationship groups |
-| `/health/*` | Health domain (measurements, medications, conditions, symptoms, meals, research) |
-| `/collections` | General collections |
-| `/entities` | Entity plex |
-| `/entities/index` | Canonical searchable entity and contact index |
-| `/entities/:entityId` | Entity detail |
-| `/connectors` | Connector overview with volume chart and fanout matrix |
-| `/connectors/:type/:identity` | Connector detail with timeseries |
-| `/spend` | Canonical cost and usage analysis |
-| `/costs`, `/settings/spend` | Compatibility redirects to `/spend` |
-| `/memory` | Memory system (tier cards, browser, activity timeline) |
-| `/qa` | QA overview (status, patrols, known issues, investigations, circuit breaker) |
-| `/qa/patrols/:patrolId` | QA patrol detail |
-| `/qa/investigations/:attemptId` | QA investigation detail |
-| `/settings` | Local UI preferences |
-| `/system` | System ownership page (see Amendment 1) |
+`frontend/src/router-config.tsx` is the authoritative route table; the
+canonical route list is specified in `openspec/specs/dashboard-shell/spec.md`
+(§Canonical Route Map). This RFC fixes only the route-family contract:
+
+- Every route is a child of the root layout and shares the shell, header, error
+  boundary, and sidebar.
+- Each domain owns one route family (`/sessions/*`, `/entities/*`, `/health/*`,
+  `/qa/*`, `/settings/*`, `/ingestion/*`, ...), with list pages at the family
+  root and detail pages at `/<family>/:id`.
+- Sub-views are first-class child routes, not page-level `?tab=` state.
+- **Redirect policy.** A retired or renamed route is kept as a `<Navigate replace>`
+  compatibility redirect to its canonical successor (for example `/contacts` →
+  `/entities/index?has=contact`, `/costs` → `/spend`), never a 404, so bookmarks
+  and deep links keep working.
 
 ### Butler Detail Tabs
 
@@ -313,19 +293,15 @@ All routes render inside a common shell with:
 
 **Date:** 2026-05-03
 **Status:** Accepted
-**Implementing change:** `openspec/changes/archive/2026-06-13-system-page-capability/` (bu-ngfzz.*)
+**Implementing change:** `openspec/changes/archive/2026-06-13-system-page-capability/`
 
 Vertical E shipped the `/system` dashboard route and the `/api/system/*` API namespace. This amendment registers both in RFC 0007.
 
 ### Frontend Route
 
-Add to the Frontend Route Map under the Telemetry section:
+`/system` is the System ownership page (instance version, uptime, database size, backup recency, data-egress catalog, per-butler heartbeats).
 
-| Route | Surface |
-|-------|---------|
-| `/system` | System ownership page (instance version, uptime, database size, backup recency, data-egress catalog, per-butler heartbeats) |
-
-This route is registered in `frontend/src/router.tsx` alongside the Telemetry routes (`/traces`, `/timeline`) and appears in `frontend/src/components/layout/nav-config.ts` under the Telemetry nav section with no butler-presence filter (it is always visible). The page uses the `<Page archetype="overview">` shell.
+This route is registered in `frontend/src/router-config.tsx` alongside the Telemetry routes (`/traces`, `/timeline`) and appears in `frontend/src/components/layout/nav-config.ts` under the Telemetry nav section with no butler-presence filter (it is always visible). The page uses the `<Page archetype="overview">` shell.
 
 ### API Surface
 

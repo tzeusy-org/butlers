@@ -1,6 +1,9 @@
 # Component Inventory
 
-Every runtime piece in Butlers, what it owns, and its current stability.
+Every runtime piece in Butlers, what it owns, and its current stability. This is a snapshot:
+a PR that adds or removes a butler, module, connector, port, or compose service updates this file
+and [`deployment.md`](deployment.md) in the same change. Where an inventory would drift, this file
+points at the authoritative listing instead of copying it.
 
 ---
 
@@ -9,39 +12,23 @@ Every runtime piece in Butlers, what it owns, and its current stability.
 ```mermaid
 graph TB
     subgraph External["External World"]
-        Gmail["Gmail API"]
-        TG["Telegram API"]
-        Discord["Discord API"]
-        Mic["Microphone"]
+        Ext["Messaging, mail, calendar, health, media, home, location, audio"]
     end
 
-    subgraph Connectors["Connectors (standalone processes)"]
-        GmailC["Gmail Connector"]
-        TGBot["Telegram Bot Connector"]
-        TGUser["Telegram Userbot Connector"]
-        DiscordC["Discord Connector"]
-        LiveL["Live Listener"]
+    subgraph Connectors["Connectors (standalone processes, src/butlers/connectors/)"]
+        Conn["One process per source"]
     end
 
-    subgraph Core["Butler Daemons (FastMCP servers)"]
-        SW["Switchboard"]
-        GEN["General"]
-        REL["Relationship"]
-        HLT["Health"]
-        EDU["Education"]
-        FIN["Finance"]
-        TRV["Travel"]
-        HOM["Home"]
-        LIF["Lifestyle"]
-        MSG["Messenger"]
-        QA["QA Staffer"]
-        CHR["Chronicler"]
+    subgraph Core["Butler Daemons (FastMCP servers, one per roster/ entry)"]
+        SW["Switchboard (staffer)"]
+        Staff["Messenger, QA, Concierge (staffers)"]
+        Domain["Domain butlers (General, Relationship, Health, Chronicler, ...)"]
     end
 
     subgraph Infra["Infrastructure"]
         PG["PostgreSQL (pgvector)"]
         S3["MinIO / S3"]
-        OTel["OTel -> Alloy -> Tempo/Prometheus"]
+        OTel["OTel SDK -> OTel Collector -> Tempo/Prometheus"]
     end
 
     subgraph UI["Dashboard"]
@@ -49,28 +36,10 @@ graph TB
         Vite["Vite Frontend"]
     end
 
-    Gmail --> GmailC
-    TG --> TGBot
-    TG --> TGUser
-    Discord --> DiscordC
-    Mic --> LiveL
-
-    GmailC -- "ingest.v1 / MCP" --> SW
-    TGBot -- "ingest.v1 / MCP" --> SW
-    TGUser -- "ingest.v1 / MCP" --> SW
-    DiscordC -- "ingest.v1 / MCP" --> SW
-    LiveL -- "ingest.v1 / MCP" --> SW
-
-    SW -- "route.v1 / MCP" --> GEN
-    SW -- "route.v1 / MCP" --> REL
-    SW -- "route.v1 / MCP" --> HLT
-    SW -- "route.v1 / MCP" --> EDU
-    SW -- "route.v1 / MCP" --> FIN
-    SW -- "route.v1 / MCP" --> TRV
-    SW -- "route.v1 / MCP" --> HOM
-    SW -- "route.v1 / MCP" --> LIF
-    SW -- "route.v1 / MCP" --> MSG
-    SW -- "route.v1 / MCP" --> CHR
+    Ext --> Conn
+    Conn -- "ingest.v1 / MCP" --> SW
+    SW -- "route.v1 / MCP" --> Staff
+    SW -- "route.v1 / MCP" --> Domain
 
     Core --> PG
     Core --> S3
@@ -78,6 +47,9 @@ graph TB
     API --> PG
     Vite --> API
 ```
+
+The roster is `ls roster/` (each directory with a `butler.toml`); staffers are the entries with
+`type = "staffer"`.
 
 ---
 
@@ -96,7 +68,7 @@ butler in the roster runs one daemon instance.
 | **Route Inbox** | `core/route_inbox.py` | Durable work queue for async route dispatch. Persists `route.execute` payloads before returning `accepted`; fenced claims guard processing and ordinary recovery. Reclaimed dashboard processing work becomes ambiguous rather than automatically replaying an unprovable predecessor. | Stable |
 | **Model Routing** | `core/model_routing.py` | Catalog-based dynamic model selection with per-butler overrides. Complexity tiers (trivial through discretion) map to model/runtime pairs. Token quota enforcement. | Maturing |
 | **Runtime Adapters** | `core/runtimes/` | Pluggable adapters for Claude Code, Codex, Gemini, and OpenCode. Each adapter knows how to build CLI arguments, parse output, and extract cost data. | Maturing |
-| **Self-Healing** | `core/healing/` | Crash fingerprinting, anonymized error tracking, automated dispatch of healing sessions using a dedicated complexity tier. | Evolving |
+| **Healing substrate** | `core/healing/` | Error fingerprinting, severity scoring, `public.healing_attempts` CRUD and gates, worktree lifecycle, anonymizer, and the 10-gate dispatch engine used by QA (§4b). | Evolving |
 | **Buffer** | `core/buffer.py` | In-memory queue with durable cold-path scanner for backpressure management. Switchboard ingestion hot path. | Stable |
 | **Telemetry** | `core/telemetry.py` | OpenTelemetry tracing initialization. Single TracerProvider shared across all butlers in-process. TRACEPARENT propagation to spawned LLM sessions. | Stable |
 | **Metrics** | `core/metrics.py` | OTel metric instruments for spawner concurrency, buffer health, route accept/process latency, scheduler dispatch, ingest outcomes, and durable domain-event delivery failures. | Maturing |
@@ -120,19 +92,11 @@ Modules are opt-in capability units. Each implements the `Module` ABC from
 infrastructure. Dependencies between modules are resolved via topological sort
 at startup.
 
-| Module | Source | Responsibility | Stability |
-|---|---|---|---|
-| **Email** | `modules/email.py` | IMAP/SMTP tools: send, search, read mail. | Stable |
-| **Telegram** | `modules/telegram.py` | Telegram messaging tools: send messages, reply, react. | Stable |
-| **Calendar** | `modules/calendar.py` | Google Calendar CRUD: list, create, update, delete events. Conflict detection. | Stable |
-| **Memory** | `modules/memory/` | Tiered memory subsystem (Eden -> Mid-Term -> Long-Term). Vector search via pgvector. Consolidation jobs. Episode lifecycle management. | Maturing |
-| **Contacts** | `modules/contacts/` | Contact management with Google Contacts sync. Links to shared identity tables. | Maturing |
-| **Pipeline** | `modules/pipeline.py` | Message classification and routing pipeline. Connects input modules to Switchboard classify/route. Ingress deduplication. Conversation history loading. | Stable |
-| **Approvals** | `modules/approvals/` | Human approval gates for sensitive tool calls. Risk tiering, expiry, rule-based policy. | Maturing |
-| **Mailbox** | `modules/mailbox/` | Internal mailbox for inter-butler structured messages. | Evolving |
-| **Metrics** | `modules/metrics/` | Per-butler metrics timeseries storage and query. | Evolving |
-| **Self-Healing** | `modules/self_healing/` | Module-level crash recovery and session retry. | Evolving |
-| **Registry** | `modules/registry.py` | Module discovery and registration. Scans both `src/butlers/modules/` and `roster/*/modules/` for concrete Module subclasses. Topological sort for dependency order. | Stable |
+The shared module set is `ls src/butlers/modules/`; which butler loads which module is the
+`[modules.*]` tables in each `roster/{butler}/butler.toml`. For what each module provides, see
+[`docs/modules/`](../../docs/modules/) (memory: [`docs/modules/memory.md`](../../docs/modules/memory.md),
+which defines episodes, facts, and rules). `modules/registry.py` scans both
+`src/butlers/modules/` and `roster/*/modules/` and orders startup by dependency.
 
 ### Roster-specific modules
 
@@ -148,17 +112,9 @@ Connectors are standalone processes that bridge external event sources to the
 Switchboard. They are transport-only adapters: they normalize events to the
 `ingest.v1` envelope format and submit via MCP. They do not classify or route.
 
-| Connector | Source | External Source | Health Port | Stability |
-|---|---|---|---|---|
-| **Gmail** | `connectors/gmail.py` | Gmail API (watch/history delta + optional Pub/Sub push) | 40082 | Stable |
-| **Telegram Bot** | `connectors/telegram_bot.py` | Telegram Bot API (polling or webhook) | 40081 | Stable |
-| **Telegram Userbot** | `connectors/telegram_user_client.py` | Telegram user account (Telethon) | 40080 | Evolving |
-| **Discord** | `connectors/discord_user.py` | Discord Gateway WebSocket | 40084 | Draft |
-| **Live Listener** | `connectors/live_listener/` | Microphone audio -> VAD -> transcription -> ingest | 40091 | Evolving |
-| **Spotify** | `connectors/spotify.py` | Spotify Web API playback state polling | 40083 | Stable |
-| **OwnTracks** | `connectors/owntracks.py` | OwnTracks HTTP webhook for location and waypoint events | 40086 | Stable |
-| **Steam** | `connectors/steam.py` | Steam Web API game-session poller | 40089 | Stable |
-| **Google Health** | `connectors/google_health.py` | Google Health API wellness polling (sleep, HR, HRV, SpO2, activity) | 40090 | Stable |
+The connector set is `ls src/butlers/connectors/` (one entry-point module or package per
+source) and the connector services in `docker-compose.yml`. Health ports are in
+[`deployment.md` §Port Assignments](deployment.md#port-assignments).
 
 ### Shared connector infrastructure
 
@@ -199,23 +155,8 @@ It runs as a standard ButlerDaemon with additional Switchboard-specific tools.
 
 ---
 
-### Candidate voice-egress ownership (not implemented)
-
-RFC 0034 adds no connector and does not widen Live Listener. Its target
-component boundaries are:
-
-| Component | Candidate responsibility | Boundary |
-|---|---|---|
-| **Switchboard** | Verify/sign dedicated Ed25519 `voice-control.v1` hops, authenticate `voice_origin.v1`, broker Messenger-to-Home presence requests, resolve one linked text-only non-voice fallback | Does not trust caller-asserted identity or own endpoints, presence facts, or provider outcomes |
-| **Messenger** | Opaque versioned endpoint registry, voice policy orchestration, provider profile selection, physical-side-effect receipt/replay fence | Does not infer devices from `entity_info`, read Home schema, or call Home directly |
-| **Home** | Return a signed categorical `voice_presence_attest.v1` from Home-owned room facts | Receives no message content and cannot execute voice under current RFC 0028; an accepted amendment is required first |
-| **Voice control signers** | Hold one private Ed25519 service key each and sign only through the matching fixed-purpose, close-on-exec daemon handle | No MCP/HTTP surface; no private key in all-butlers or any spawned runtime child |
-| **Live Listener** | Existing microphone/VAD/ASR ingress to Switchboard | Remains ingress-only; no TTS, speaker, presence, or provider authority |
-| **Voice provider adapter** | One exact start/confirm/no-start/unknown interface for an admitted local-first profile | No policy, retry, targeting, or fallback authority |
-
-Until the exact RFC/OpenSpec artifact is independently reviewed, owner-approved,
-implemented, and separately activated, every candidate provider is unavailable
-and the topology above performs no live action.
+Voice egress: Draft, see [RFC 0034](../legends-and-lore/rfcs/0034-messenger-voice-egress.md);
+no topology yet.
 
 ---
 
@@ -230,7 +171,7 @@ schedule, dispatch, or notify. Per RFC 0014.
 
 | Sub-component | Source | Responsibility | Stability |
 |---|---|---|---|
-| **Source Adapters** | `roster/chronicler/modules/` | Per-source projection adapters (sessions, Google Calendar, Spotify, Google Health). Reads from approved migration-tracked source surfaces via scheduled jobs. No LLM per-event invocation. | Maturing |
+| **Source Adapters** | `src/butlers/chronicler/adapters/` | Per-source projection adapters (one module per source). Reads from approved migration-tracked source surfaces via scheduled jobs. No LLM per-event invocation. | Maturing |
 | **Point Events Store** | `chronicler` schema | Stores instantaneous evidence with source provenance, precision, privacy, retention, and tombstone support. Idempotent replay via `(source_name, source_ref)` key. | Maturing |
 | **Episodes Store** | `chronicler` schema | Stores span-shaped evidence. Overlapping episodes from different sources are preserved without merging. | Maturing |
 | **Correction Overlay** | `chronicler.overrides` | User corrections layer on top of canonical projections without mutating canonical rows. Later override wins. | Maturing |
@@ -255,73 +196,44 @@ briefing contributions per the staffer archetype contract.
 | **Triage** | `src/butlers/core/qa/triage.py` | Source-agnostic deduplication. Cross-references each finding's fingerprint against active `healing_attempts`, `qa_dismissals`, and a local cooldown cache. Determines which findings are novel and warrant investigation dispatch. | Maturing |
 | **Dispatch** | `src/butlers/core/qa/dispatch.py` | Unified investigation lifecycle. Applies the 10-gate sequence (no-recursion, opt-in, fingerprint, severity, novelty, cooldown, concurrency cap, circuit breaker, model resolution). Creates worktrees, spawns sandboxed investigation agents via the spawner, monitors deadlines, creates anonymized PRs via `BUTLERS_QA_GH_TOKEN`, records outcomes in `public.healing_attempts`. Subsumes and replaces per-butler self-healing dispatch. | Maturing |
 | **Anonymizer** | `src/butlers/core/healing/anonymizer.py` | Strips user-identifiable content from error summaries and session messages before storage in `qa_findings` and before passing to investigation agents. | Evolving |
-| **Dashboard** | `roster/qa/api/` | Auto-discovered QA dashboard routes under `/api/qa/*`: patrol list, patrol detail, investigation list, investigation detail, known issues, summary statistics. Frontend at `/qa` showing patrol history, investigation pipeline (Kanban), known issues tracker, and discovery source breakdown. | Maturing |
+| **Dashboard** | `src/butlers/api/routers/qa.py` | QA dashboard routes under `/api/qa/*`: patrol list, patrol detail, investigation list, investigation detail, known issues, summary statistics. Frontend at `/qa` showing patrol history, investigation pipeline (Kanban), known issues tracker, and discovery source breakdown. | Maturing |
+
+---
+
+## 4c. Concierge Staffer (`roster/concierge/`)
+
+Read-only staffer that answers system-plane questions about the fleet (what is running, session
+cost, failures, spend) from typed read models, per
+[RFC 0030](../legends-and-lore/rfcs/0030-system-plane-read-exception.md) and
+`roster/concierge/MANIFESTO.md`. It owns no write tools and no domain data.
 
 ---
 
 ## 5. Dashboard
-
-The Dashboard provides a web UI for monitoring and managing the butler fleet.
 
 | Component | Source | Port | Stability |
 |---|---|---|---|
 | **FastAPI Backend** | `src/butlers/api/` | 41200 | Maturing |
 | **Vite Frontend** | `frontend/` | 41173 (dev) | Maturing |
 
-### Backend routers (`src/butlers/api/routers/`)
-
-The backend exposes REST endpoints organized by domain: butlers, sessions,
-schedules, memory, approvals, costs, healing, ingestion events, model settings,
-modules, notifications, OAuth, provider settings, search, secrets, SSE (live
-updates), state, and timeline.
-
-| Router | Endpoint | Responsibility | Stability |
-|---|---|---|---|
-| **Dashboard Briefing** | `GET /api/dashboard/briefing` | Owner-only editorial opening card: templated greeting, deterministic five-class state headline, and LLM-elaborated paragraph. Served from `BriefingCache` (5-minute per-owner TTL). Falls back to templated paragraph on LLM timeout, error, or voice-lint rejection. | Maturing |
-
-#### Supporting modules
-
-| Module | Source | Responsibility | Stability |
-|---|---|---|---|
-| **BriefingCache** | `src/butlers/api/briefing/cache.py` | In-process LRU+TTL cache (max 64 entries, 5-minute TTL). Keyed on owner contact id. Cache hit preserves the original `generated_at`; eviction triggers a fresh composition. Reset on dashboard restart. | Maturing |
-| **audit_grouping** | `src/butlers/api/audit_grouping.py` | Shared CTE and row-to-domain helpers for normalizing `dashboard_audit_log` error rows into grouped attention items. Used by both the Briefing router and the Issues router. Collapses ephemeral temp-path prefixes before grouping; severity is `critical` for schedule-triggered errors, `warning` otherwise. | Maturing |
-
-### Auto-discovered butler routes
-
-Each butler can define custom API routes in `roster/{butler}/api/router.py`.
-These are auto-discovered at startup by `router_discovery.py` and mounted under
-`/api/{butler}/`. Each must export a module-level `router` (APIRouter instance).
-Current auto-discovered route namespaces include `/api/chronicler/*` (retrospective
-time reads and corrections, see §4a) and the QA dashboard routes under `/api/qa/*`
-(patrol and investigation data, see §4b).
-
-### Frontend routes
-
-| Route | Component | Capability |
-|---|---|---|
-| **`/chronicles`** | `ChroniclesPage` | Retrospective time-reconstruction dashboard: Gantt swimlane, aggregate pie/stacked-bar charts, source-state badge strip, day-close prose, map widget, streak callouts. Backed by Chronicler API. |
-| **`/qa`** | QA dashboard | Patrol history, investigation pipeline (Kanban), known issues tracker, discovery source breakdown. Backed by `/api/qa/*`. |
+Shared routers live in `src/butlers/api/routers/`; per-butler routes in
+`roster/{butler}/api/router.py` are auto-discovered by `src/butlers/api/router_discovery.py` and
+mounted under `/api/{butler}/`. Response conventions are in
+[`docs/api_and_protocols/response-conventions.md`](../../docs/api_and_protocols/response-conventions.md); the
+frontend layout is [`frontend.md`](frontend.md).
 
 ---
 
 ## 6. Identity Subsystem
 
-Cross-butler identity resolution lives in the `public` PostgreSQL schema.
+Cross-butler identity lives in `public.entities` (canonical person/actor registry with a `roles`
+array). Channel identifiers (email, handles, chat ids) are triples in
+`relationship.entity_facts`. `src/butlers/identity.py` provides the reverse lookup
+(`resolve_contact_by_channel()`) used by Switchboard ingestion, `notify()`, and approval gates.
+Authoritative description: [`docs/concepts/identity-model.md`](../../docs/concepts/identity-model.md).
 
-| Table | Responsibility |
-|---|---|
-| **`public.entities`** | Canonical entity registry. Each row represents a known person/actor with a `roles` array. |
-| **`public.contacts`** | Contact records linked to entities. |
-| **`public.contact_info`** | Per-channel identifiers (telegram_chat_id, email address, etc.). UNIQUE on `(type, value)`. |
-| **`public.model_catalog`** | Global model catalog for dynamic model routing. |
-| **`public.butler_model_overrides`** | Per-butler model selection overrides. |
-
-Resolution flow: channel identifier -> `contact_info` -> `contacts` -> `entities` -> roles.
-
-Source: `src/butlers/identity.py` (reverse-lookup utility used by Switchboard
-ingestion, notify, and approval gates).
-
-Stability: **Stable**.
+Model routing tables (`public.model_catalog`, `public.butler_model_overrides`) are described in
+[`docs/runtime/model-routing.md`](../../docs/runtime/model-routing.md).
 
 ---
 
@@ -341,7 +253,7 @@ Stability: **Stable**.
 | Component | Role | Stability |
 |---|---|---|
 | **OpenTelemetry SDK** | In-process tracing and metrics instrumentation. | Stable |
-| **Grafana Alloy** | OTLP receiver and pipeline (replaces standalone collector). | Stable (external) |
+| **OpenTelemetry Collector** | OTLP receiver and pipeline (`otel-collector` in `docker-compose.observability.yml`). | Stable (external) |
 | **Tempo** | Distributed trace storage and query backend. | Stable (external) |
 | **Prometheus** | Metrics scrape target for connector-level and butler-level metrics. | Stable (external) |
 

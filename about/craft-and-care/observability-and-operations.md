@@ -26,17 +26,13 @@ Add or update logs, metrics, traces, or status surfaces when a change touches:
 
 ## Logging and Telemetry Discipline
 
-- Prefer structured, actionable logs over vague summaries.
 - Include stable identifiers when available: request id, session id, butler
   name, action id, schedule id, or sync cursor.
 - Do not log secrets, raw tokens, or sensitive message bodies unless a contract
   explicitly requires a redacted form.
-- If a new failure mode is likely to recur, instrument it so operators can tell
-  which branch failed and why.
 
 ## Operability Rules
 
-- Runtime changes should not silently make the system harder to inspect.
 - If a workflow depends on a health endpoint, status API, or dashboard surface,
   keep that contract coherent with the implementation.
 - If a fallback or no-op behavior exists for backward safety, it must be

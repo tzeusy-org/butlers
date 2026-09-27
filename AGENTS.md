@@ -319,7 +319,7 @@ it before changing the subsystem.
 - During `git merge --no-commit`, check generated-artefact drift with `git diff`, not
   `git status --porcelain`: merged files are already staged.
 - A change to a generator invalidates every queued PR carrying its output (e.g.
-  `about/lay-and-land/frontend-copy-inventory.md`). Resolve such a conflict by re-running the
+  `frontend/COPY_INVENTORY.md`). Resolve such a conflict by re-running the
   current generator, not by taking a side.
 - A pre-merge union gate must prove the merge applied: hard-fail on fetch failure or on a merge
   that changes nothing, and print the SHAs merged.

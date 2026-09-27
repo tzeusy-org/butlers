@@ -2,7 +2,7 @@
 
 [bu-0ynlk.1] The dashboard confirm-loop block must never instruct a routed
 butler to apply an ACTION REQUEST's write before the approval gate parks it
-(``about/heart-and-soul/security.md:103-105`` — consent precedes effect).
+(``about/heart-and-soul/security.md`` § Approval Gates — consent precedes effect).
 Covers:
 - Distinct STATEMENT and ACTION-REQUEST instruction sets are both rendered.
 - The ACTION-REQUEST set forbids applying/writing before the gate parks the

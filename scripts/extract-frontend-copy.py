@@ -404,7 +404,7 @@ def main() -> None:
 
     report, total = generate_report(files)
 
-    out_path = REPO_ROOT / "about" / "lay-and-land" / "frontend-copy-inventory.md"
+    out_path = REPO_ROOT / "frontend" / "COPY_INVENTORY.md"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(report, encoding="utf-8")
 

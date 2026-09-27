@@ -1,7 +1,7 @@
 # Architecture Philosophy
 
 This document explains WHY the system is shaped the way it is. For implementation
-details, database schemas, and API contracts, see the [architecture docs](../architecture/index.md).
+details, database schemas, and API contracts, see the [architecture docs](../../docs/architecture/index.md).
 
 ## The Butler-as-Daemon Model
 
@@ -115,9 +115,9 @@ SLAs, failure modes, dependency graph, and escalation procedures. The same scope
 governance applies: a new capability proposed for a staffer must be evaluated
 against the contract and may require a formal amendment.
 
-The current staffers are the Switchboard (message routing and ingestion),
-Messenger (outbound channel delivery), and QA (system-wide error patrol,
-triage, and automated investigation). Future infrastructure agents --- log
+The staffers are the entries in `roster/` whose `butler.toml` declares
+`type = "staffer"` (for example Switchboard for routing and ingestion, and
+Messenger for outbound delivery). Future infrastructure agents --- log
 aggregation, billing --- follow the same pattern without requiring engine
 changes.
 
@@ -159,16 +159,15 @@ Some modules serve coordination roles on the Switchboard rather than domain
 roles on specialist butlers. The insight broker module (RFC 0011), for example,
 runs within the Switchboard daemon and provides candidate submission, delivery
 brokering, and anti-spam enforcement as MCP tools. It follows the same Module
-ABC contract --- `register_tools()`, `migrations()`, lifecycle hooks --- but
+ABC contract --- `register_tools()`, `migration_revisions()`, lifecycle hooks --- but
 its scope is cross-butler coordination, not domain specialization.
 
 ## Why Tool Surface Discipline Matters
 
 Under RFC 0027, initial-context cost comes from tool definitions loaded into
 model context at session start, not from every handler registered on the
-canonical MCP server. Under eager discovery those sets coincide: at
-90-157 registered tools, the same 90-157 definitions enter initial context,
-consuming context window, increasing latency, and degrading tool selection,
+canonical MCP server. Under eager discovery those sets coincide: every
+registered definition enters initial context, consuming context window, increasing latency, and degrading tool selection,
 especially on smaller or cheaper models. Under verified native deferred
 discovery, the registered and searchable sets may be larger while full typed
 definitions load only on demand.
@@ -183,57 +182,29 @@ ownership even when a definition is not initially loaded.
 **How to stay within budget:**
 
 - **Core tools are not unconditional.** The daemon registers core tools based on
-  butler type and name. Session analytics tools belong on the dashboard butler,
-  not on every butler. Ingest tools belong on the Switchboard, not on domain
+  butler type and name. Session analytics tools should be opt-in, not on every
+  butler. Ingest tools belong on the Switchboard, not on domain
   butlers. The pattern already exists for `ingest` and messenger tools; it should
   be the default, not the exception.
 - **Modules expose tool groups, not monoliths.** A module with 15 tools should
   define logical groups (e.g., "core", "entity", "admin") so butlers can import
-  the subset they need. When no groups are specified, all tools register for
-  backwards compatibility.
+  the subset they need. When no groups are specified, all tools register.
 - **Manifesto alignment is a filter.** If a tool does not serve the butler's
   manifesto, it should not be registered --- even if the module that provides it
   is enabled. Tool groups make this granular.
 
-**The two-layer gating model:**
+**The two-layer gating model:** tool registration is gated at two independent
+layers, and both must pass for a tool to appear on a butler's MCP surface.
 
-Tool registration is gated at two independent layers, each with its own
-mechanism. Both must pass for a tool to appear on a butler's MCP surface.
+1. **Core daemon tools** are gated by butler type and name (for example,
+   temporal tools register only for domain butlers, ingest tools only for the
+   Switchboard, notify delivery only for the Messenger), plus an optional
+   declarative `core_groups` list in runtime config.
+2. **Module tools** are gated by the `groups` list in each module's
+   `butler.toml` config.
 
-1. **Core daemon tools** are gated by `butler_type` (STAFFER vs BUTLER) and
-   `butler_name` (switchboard, messenger). Deadline, event-chain, and
-   seasonal-period tools register only for domain butlers, not staffers. Ingest
-   pipeline tools register only for the Switchboard. Notify delivery tools
-   register only for the Messenger. Mechanically, `_register_core_tools()` is a
-   thin dispatcher: it builds a `ToolContext` (carrying `butler_type`,
-   `is_switchboard`, `is_messenger`) plus a group-aware `_core_tool(group)`
-   factory, then delegates to `register_all_core_tools()` in
-   `butlers.core_tools`. Each domain register function applies the type/name
-   guards (e.g. `if butler_type != ButlerType.STAFFER: return` for the temporal
-   group, `if not ctx.is_switchboard: return` for ingest). These guards are
-   evaluated once at startup. Core tools additionally support a declarative
-   `core_groups` layer: when `core_groups` is set on the DB-backed runtime
-   config, only tools in the listed groups register, mirroring the module
-   `groups` mechanism in layer 2 below. When `core_groups` is unset, all core
-   groups register (backward compatible).
-
-2. **Module tools** are filtered declaratively via `groups` config in
-   `butler.toml`. Each module defines named tool groups (e.g., "measurements",
-   "conditions", "reports" in the health module; "core", "climate", "scenes" in
-   home assistant). A butler enables only the groups it needs. The gating is
-   resolved at tool registration time through a `_tool(group)` helper inside each
-   module's `register_tools()` function: when the group is enabled, `_tool()`
-   returns `@mcp.tool()`; when disabled, it returns a no-op passthrough that
-   defines the function but never registers it. This means zero re-indentation of
-   existing tool functions --- the decorator swap is the only change.
-   `ToolGroupMixin` adds an optional `groups` field to module configs, and
-   `group_enabled()` resolves whether a group should register.
-
-**The backwards-compatibility contract:** Omitting `groups` from a module's
-config in `butler.toml` registers ALL of that module's tools. This preserves
-existing behavior for every butler that has not yet opted into group filtering.
-Group support can be adopted incrementally, one module at a time, without
-touching butlers that do not need it.
+For both layers, omitting the group list registers every tool. The guards are
+evaluated once at startup. RFC 0002 and RFC 0027 own the contract.
 
 **The ownership principle:** Domain modules used by their own specialist butler
 --- health tools on the health butler, finance tools on the finance butler ---
@@ -326,7 +297,7 @@ pipeline.
 ## Why Single PostgreSQL with Schema Isolation
 
 All butlers share a single PostgreSQL database. Each butler gets its own schema.
-The `public` schema holds cross-butler identity tables (contacts, contact info)
+The `public` schema holds the cross-butler entity registry (`public.entities`)
 and shared coordination tables (situational context signals, insight candidates,
 insight delivery settings).
 
@@ -347,7 +318,7 @@ insight delivery settings).
   the health butler does not touch the finance butler's schema.
 - The `public` schema is the explicit, controlled surface for cross-butler
   data. If it is not in `public`, it is private. Shared tables include
-  identity data (contacts, contact info), situational context signals
+  the entity registry, situational context signals
   (RFC 0009), and insight delivery infrastructure (RFC 0011).
 
 ## The Core Loop

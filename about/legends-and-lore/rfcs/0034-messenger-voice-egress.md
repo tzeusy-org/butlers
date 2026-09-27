@@ -7,7 +7,7 @@
 ## Summary
 
 This RFC defines a fail-closed, local-first in-room voice-egress path owned by
-Messenger. It implements the six policy choices recorded on `bu-7exe4.13`:
+Messenger. It implements six owner policy choices:
 Messenger owns outbound semantics; provider profiles are evidence-gated and
 local-first; every attempt requires fresh room-specific owner-positive
 presence; only replies and explicitly targeted sends may initiate voice;
@@ -387,5 +387,4 @@ Normative behavior is in
 `openspec/changes/specify-messenger-voice-egress-contract/specs/messenger-voice-egress/spec.md`,
 IDs `REQ-messenger-voice-egress-001` through
 `REQ-messenger-voice-egress-011`. Implementation and verification ownership is
-mapped in that change's `tasks.md` to `bu-7exe4.13.2` through
-`bu-7exe4.13.5`.
+mapped in that change's `tasks.md`.
