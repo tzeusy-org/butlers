@@ -392,6 +392,10 @@ describe('AC2: auth issues appear consistently in attention strip and row', () =
     expect(
       container.querySelector('[data-testid="attention-item-owntracks"]')?.textContent,
     ).toContain('cadence sparse')
+    const cadenceLabel = container.querySelector<HTMLElement>(
+      '[data-testid="attention-item-owntracks"] span:last-child',
+    )
+    expect(cadenceLabel?.style.color).toBe('var(--amber-text)')
     expect(
       container.querySelector('[data-testid="connector-warning-owntracks"]')?.textContent,
     ).toContain('The operational baseline is 24')
