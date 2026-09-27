@@ -264,6 +264,154 @@ def test_modified_block_content_absent_from_the_baseline_is_reported(tmp_path: P
     assert "cursor token" in result.stdout
 
 
+def _write_archived(root: Path, change: str, text: str) -> None:
+    delta = root / "openspec" / "changes" / "archive" / change / "specs" / "widgets" / "spec.md"
+    delta.parent.mkdir(parents=True, exist_ok=True)
+    delta.write_text(text, encoding="utf-8")
+
+
+def _write_modified(root: Path, change: str, cursor_clause: str) -> None:
+    """Archive a MODIFIED ``Widget API`` block; a non-empty clause is absent from the baseline."""
+    _write_archived(
+        root,
+        change,
+        "## MODIFIED Requirements\n\n"
+        "### Requirement: Widget API\n"
+        "The system SHALL expose widget api on every request.\n\n"
+        "#### Scenario: Widget API is served\n"
+        "- **WHEN** a caller reads widget api\n"
+        "- **THEN** the response carries widget api\n"
+        f"{cursor_clause}",
+    )
+
+
+CURSOR_CLAUSE = "- **AND** the response carries the widget cursor token\n"
+
+
+def test_later_archived_modified_block_supersedes_an_earlier_one(tmp_path: Path) -> None:
+    """(a) The earlier block's clause was rewritten away by the later one; it is not checked."""
+    root = _tree(tmp_path, baseline={"widgets": ["Widget API"]}, archived={})
+    _write_modified(root, "2026-01-02-extend-widgets", CURSOR_CLAUSE)
+    _write_modified(root, "2026-02-03-trim-widgets", "")
+
+    result = _run("--root", str(root), "--baseline", str(_empty_frozen(root)))
+
+    assert result.returncode == 0, f"superseded MODIFIED clause reported:\n{result.stdout}"
+
+
+def test_latest_modified_block_is_still_checked(tmp_path: Path) -> None:
+    """(b) The invariant: supersession never exempts the newest block from the baseline."""
+    root = _tree(tmp_path, baseline={"widgets": ["Widget API"]}, archived={})
+    _write_modified(root, "2026-01-02-trim-widgets", "")
+    _write_modified(root, "2026-02-03-extend-widgets", CURSOR_CLAUSE)
+
+    result = _run("--root", str(root), "--baseline", str(_empty_frozen(root)))
+
+    assert result.returncode == 1, f"newest MODIFIED clause not reported:\n{result.stdout}"
+    assert "2026-02-03-extend-widgets" in result.stdout
+    assert "cursor token" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        ("2026-01-02-a-extend-widgets", "2026-01-02-b-trim-widgets"),
+        ("2026-01-02-b-extend-widgets", "2026-01-02-a-trim-widgets"),
+    ],
+)
+def test_same_date_modified_blocks_never_supersede_each_other(
+    tmp_path: Path, first: str, second: str
+) -> None:
+    """(c) Rule: supersession needs a strictly later date; same-date blocks are all checked.
+
+    The directory suffix is not an ordering, so neither block may mute the
+    other, whichever sorts first.
+    """
+    root = _tree(tmp_path, baseline={"widgets": ["Widget API"]}, archived={})
+    _write_modified(root, first, CURSOR_CLAUSE)
+    _write_modified(root, second, "")
+
+    result = _run("--root", str(root), "--baseline", str(_empty_frozen(root)))
+
+    assert result.returncode == 1, f"same-date block muted a real gap:\n{result.stdout}"
+    assert first in result.stdout
+
+
+def test_undated_archive_does_not_supersede_a_modified_block(tmp_path: Path) -> None:
+    """(d) An undated archive cannot be ordered, so it never supersedes."""
+    root = _tree(tmp_path, baseline={"widgets": ["Widget API"]}, archived={})
+    _write_modified(root, "2026-01-02-extend-widgets", CURSOR_CLAUSE)
+    _write_modified(root, "trim-widgets", "")
+
+    result = _run("--root", str(root), "--baseline", str(_empty_frozen(root)))
+
+    assert result.returncode == 1, f"undated archive muted a real gap:\n{result.stdout}"
+    assert "cursor token" in result.stdout
+
+
+def test_undated_modified_block_is_never_superseded(tmp_path: Path) -> None:
+    """(d) Nor is an undated block muted by a dated one."""
+    root = _tree(tmp_path, baseline={"widgets": ["Widget API"]}, archived={})
+    _write_modified(root, "extend-widgets", CURSOR_CLAUSE)
+    _write_modified(root, "2026-02-03-trim-widgets", "")
+
+    result = _run("--root", str(root), "--baseline", str(_empty_frozen(root)))
+
+    assert result.returncode == 1, f"undated block was superseded:\n{result.stdout}"
+    assert "cursor token" in result.stdout
+
+
+def test_later_removed_block_retires_an_earlier_modified_one(tmp_path: Path) -> None:
+    """(e) A later archived REMOVED block excuses the requirement's absence, MODIFIED included."""
+    root = _tree(tmp_path, baseline={"widgets": []}, archived={})
+    _write_modified(root, "2026-01-02-extend-widgets", CURSOR_CLAUSE)
+    _write_archived(
+        root,
+        "2026-02-03-retire-widgets",
+        "## REMOVED Requirements\n\n### Requirement: Widget API\n\nRetired.\n",
+    )
+
+    result = _run("--root", str(root), "--baseline", str(_empty_frozen(root)))
+
+    assert result.returncode == 0, result.stdout
+
+
+def test_later_modified_block_under_a_new_name_supersedes_the_old_name(tmp_path: Path) -> None:
+    """(e) Supersession follows RENAMED: the newest block under the new name wins."""
+    root = _tree(tmp_path, baseline={"widgets": ["Widget ledger"]}, archived={})
+    _write_modified(root, "2026-01-02-extend-widgets", CURSOR_CLAUSE)
+    _write_archived(
+        root,
+        "2026-02-03-rename-widgets",
+        "## RENAMED Requirements\n\n"
+        "- FROM: `### Requirement: Widget API`\n"
+        "- TO: `### Requirement: Widget ledger`\n\n"
+        "## MODIFIED Requirements\n\n" + _requirement("Widget ledger", "widget_ledger"),
+    )
+
+    result = _run("--root", str(root), "--baseline", str(_empty_frozen(root)))
+
+    assert result.returncode == 0, f"renamed rewrite did not supersede:\n{result.stdout}"
+
+
+def test_later_rename_alone_does_not_supersede_a_modified_block(tmp_path: Path) -> None:
+    """(e) A RENAMED block moves the header but rewrites nothing, so content still must land."""
+    root = _tree(tmp_path, baseline={"widgets": ["Widget ledger"]}, archived={})
+    _write_modified(root, "2026-01-02-extend-widgets", CURSOR_CLAUSE)
+    _write_archived(
+        root,
+        "2026-02-03-rename-widgets",
+        "## RENAMED Requirements\n\n"
+        "- FROM: `### Requirement: Widget API`\n"
+        "- TO: `### Requirement: Widget ledger`\n",
+    )
+
+    result = _run("--root", str(root), "--baseline", str(_empty_frozen(root)))
+
+    assert result.returncode == 1, f"rename alone muted a real gap:\n{result.stdout}"
+    assert "2026-01-02-extend-widgets" in result.stdout
+
+
 def test_requirement_renamed_by_another_change_counts_as_landed(tmp_path: Path) -> None:
     root = _tree(
         tmp_path,

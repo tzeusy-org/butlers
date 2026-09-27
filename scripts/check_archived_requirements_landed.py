@@ -69,6 +69,15 @@ a JSON diff. That is the same shape as the defect this guard exists to catch: a
 check credited with an answer it was never positioned to give. A removal earns
 its authority by having actually archived.
 
+A **later rewrite** also retires an older block's content. A ``## MODIFIED``
+block replaces the whole requirement, so when a later dated archive carries its
+own MODIFIED block for the same requirement, only the newest block is checked
+against the baseline. Supersession needs a strictly later date: blocks archived
+on the same day are all checked, whatever their directory suffixes sort as.
+Undated archive directories cannot be ordered and never supersede, or get
+superseded by, anything. Only a MODIFIED block supersedes; a later RENAMED block
+moves the header but rewrites nothing, so the older content must still land.
+
 Baseline ratchet
 ----------------
 The pre-existing gaps mean this cannot be introduced as a hard gate, so
@@ -102,6 +111,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -118,6 +128,9 @@ from check_spec_overwrites import (  # noqa: E402
     parse_document,
     rename_map,
 )
+
+# Archive directories named ``YYYY-MM-DD-<change>`` carry their archive date.
+ARCHIVE_DATE = re.compile(r"^(\d{4}-\d{2}-\d{2})-")
 
 # Kind for "the requirement header itself never appeared in the baseline", as
 # opposed to the prose/scenario/clause kinds find_losses produces for a block
@@ -172,6 +185,34 @@ def build_rename_and_removal_index(
     return renames, removals
 
 
+def archive_date(change_dir: Path) -> str | None:
+    match = ARCHIVE_DATE.match(change_dir.name)
+    return match.group(1) if match else None
+
+
+def latest_modified_dates(
+    archive_dir: Path, renames: dict[str, dict[str, str]]
+) -> dict[tuple[str, str], str]:
+    """``{(spec, requirement): newest archive date}`` over dated ``## MODIFIED`` blocks.
+
+    A MODIFIED block replaces the whole requirement, so a later archived block
+    legitimately overwrites an earlier one's content. Only dated archives take
+    part: an undated directory cannot be ordered, so it neither supersedes nor
+    is superseded.
+    """
+    newest: dict[tuple[str, str], str] = {}
+    for delta_file in sorted(archive_dir.glob("*/specs/*/spec.md")):
+        date = archive_date(delta_file.parents[2])
+        if date is None:
+            continue
+        spec = delta_file.parent.name
+        for requirement in requirements_under(delta_file.read_text("utf-8"), "MODIFIED"):
+            key = (spec, resolve_name(requirement, renames.get(spec, {})))
+            if date > newest.get(key, ""):
+                newest[key] = date
+    return newest
+
+
 def collect(root: Path) -> dict[str, list[Finding]]:
     """Scan every archived change; return ``{change/spec/requirement: findings}``."""
     specs_dir = root / "openspec" / "specs"
@@ -191,7 +232,10 @@ def collect(root: Path) -> dict[str, list[Finding]]:
     if not archive_dir.is_dir():
         return found
 
+    newest_modified = latest_modified_dates(archive_dir, renames)
+
     for change_dir in sorted(p for p in archive_dir.iterdir() if p.is_dir()):
+        date = archive_date(change_dir)
         for delta_file in sorted(change_dir.glob("specs/*/spec.md")):
             spec = delta_file.parent.name
             text = delta_file.read_text("utf-8")
@@ -212,6 +256,11 @@ def collect(root: Path) -> dict[str, list[Finding]]:
 
             for requirement, block_body in requirements_under(text, "MODIFIED").items():
                 if requirement in spec_removals:
+                    continue
+                newest = newest_modified.get((spec, resolve_name(requirement, spec_renames)))
+                if date is not None and newest is not None and newest > date:
+                    # A later archived MODIFIED block rewrote this requirement;
+                    # that block, not this one, is what the baseline must carry.
                     continue
                 baseline_body = landed(requirement)
                 key = f"{change_dir.name}/{spec}/{requirement}"
