@@ -27,11 +27,11 @@ control-plane selection and reachability, not transactional target acceptance
 or session success. Delivery receipts and conditions are separate evidence.
 An intentional QA pause remains separately visible but does not satisfy
 readiness. A database connection and nonempty roster alone SHALL NOT make
-`/ready` successful. K3s and Compose consume Q4's route; they SHALL NOT
+`/ready` successful. Deployment launchers consume Q4's route; they SHALL NOT
 register a second readiness handler or public auth exception.
 
 ID: REQ-dashboard-api-063
-Source: RFC 0007 §API Surface; openspec/changes/k3s-deployment-helm-chart/specs/dashboard-api/spec.md §Readiness probe endpoint; docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md §5.4
+Source: RFC 0007 §API Surface; docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md §5.4
 Scope: v1-mandatory
 
 #### Scenario: Control plane is ready
@@ -68,7 +68,7 @@ Scope: v1-mandatory
 - **WHEN** an unauthenticated deployment probe requests exact `GET /ready`
 - **THEN** it may read only the content-blind readiness verdict and bounded check categories
 - **AND** no other protected dashboard API is opened by this exception
-- **AND** Q4 owns the one handler and exact method/path exception; k3s and Compose only consume it
+- **AND** Q4 owns the one handler and exact method/path exception; Compose only consumes it
 
 ### Requirement: [TARGET-STATE] Deployment waits for sustained semantic readiness
 The canonical deployment launcher SHALL refuse to declare completion until

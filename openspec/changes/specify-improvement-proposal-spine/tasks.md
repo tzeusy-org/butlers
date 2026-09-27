@@ -53,8 +53,10 @@
 - [ ] 2.1 Obtain independent exact-head semantic/security/state-machine review of this draft.
 - [ ] 2.2 After review passes, obtain separate owner approval naming the exact reviewed artifact.
   Any semantic edit invalidates that review and requires a fresh pass.
-- [ ] 2.3 Resolve the `core-skills`/`k3s-deployment-helm-chart` sequencing (`design.md` D13) before
-  either change archives.
+- [x] 2.3 Resolve the `core-skills`/`k3s-deployment-helm-chart` sequencing (`design.md` D13) before
+  either change archives. Resolved 2026-09-26: k3s change abandoned and removed (bu-60pwv6.3).
+- [ ] 2.5 Rebuild the `core-skills` delta without the DB-fallback scenarios copied from the
+  abandoned k3s change (tracked in bu-60pwv6.27).
 - [ ] 2.4 Keep any implementation, migration, credential, runtime, or live GitHub/PR call blocked
   until this contract is accepted and its own separate authorities (Open Questions) are satisfied.
 
@@ -109,6 +111,5 @@
 
 - [ ] 5.1 After the separately approved implementation is merged, sync the
   `improvement-proposal-spine` capability and the `core-skills` delta to their `openspec/specs/`
-  baselines and archive this change, resolving the `k3s-deployment-helm-chart` sequencing (task
-  2.3) as part of that archival. Archival does not authorize deployment, runtime activation, or any
+  baselines and archive this change. Archival does not authorize deployment, runtime activation, or any
   live GitHub/PR call beyond what the separately approved implementation itself performs.

@@ -6,7 +6,7 @@ requirement matches the shipped code, and that archiving lands the baseline.
 
 ### 1. connector-lifecycle-ceremony
 
-- [ ] 1.1 Verified against `src/butlers/api/routers/ingestion_connectors.py` (pause, run-now,
+- [x] 1.1 Verified against `src/butlers/api/routers/ingestion_connectors.py` (pause, run-now,
       archive/unarchive, disconnect, rotate-token, reauth handlers),
       `src/butlers/modules/approvals/{park,command_contracts,executor,gate}.py`,
       `roster/switchboard/tools/connector/lifecycle.py`, and
@@ -23,7 +23,7 @@ Acceptance:
 
 ### 2. connector-replay-idempotency-policy
 
-- [ ] 2.1 Verified against `src/butlers/core/ingestion_events.py` (`ingestion_events_replay_policy`, the
+- [x] 2.1 Verified against `src/butlers/core/ingestion_events.py` (`ingestion_events_replay_policy`, the
       replay-policy CTEs, the transition SQL), `src/butlers/api/routers/ingestion_events.py` (bulk
       retry handler), `src/butlers/connectors/filtered_event_buffer.py` (drain loop), and
       `roster/switchboard/migrations/{012,013}_*.py`.
@@ -61,7 +61,7 @@ Acceptance:
 
 ### 5. connector-gmail (MODIFIED)
 
-- [ ] 5.1 Verified against `src/butlers/connectors/gmail_policy.py` (`GmailPolicyEvaluator`,
+- [x] 5.1 Verified against `src/butlers/connectors/gmail_policy.py` (`GmailPolicyEvaluator`,
       `_PRIORITY_CONTACTS_TTL = 900`).
 
 Acceptance:
@@ -99,9 +99,9 @@ Acceptance:
 
 ### 8. Gates
 
-- [ ] 8.1 `uv run openspec validate --strict`
-- [ ] 8.2 `python3 scripts/check_spec_overwrites.py`
-- [ ] 8.3 `python3 scripts/check_archived_requirements_landed.py`
+- [x] 8.1 `uv run openspec validate --strict`
+- [x] 8.2 `python3 scripts/check_spec_overwrites.py`
+- [x] 8.3 `python3 scripts/check_archived_requirements_landed.py`
 - [ ] 8.4 Archive-rehearsal in a throwaway copy of `openspec/` proves the four new
   capability specs and the modified blocks land in the baseline, and that the
   matching `check_archived_requirements_landed.py` findings for
@@ -117,6 +117,6 @@ Acceptance:
   with the `connector-gmail` delta held back and applied in a follow-up. A
   rehearsal with that one delta removed archives cleanly and applies 23
   requirements across the other five capabilities.
-- [ ] 8.5 On archive, remove the healed entries from
+- [x] 8.5 On archive, remove the healed entries from
   `scripts/archived-requirements-baseline.json` by hand (never
   `--update-baseline`; the script has no such flag by design).

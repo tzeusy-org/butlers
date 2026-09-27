@@ -48,8 +48,14 @@ The dashboard SHALL expose paginated read access to the audit log.
 - **AND** `key` filters by normalised credential key
 - **AND** `kind=privileged` returns only consequence-bearing actions
   (`approval.*`, the legacy `approvals.policy` mutation, `model.*`,
-  `permission.*`, `data.*`, `webhook.*`, and the defined credential lifecycle
-  actions) or rows with `result = 'error'`
+  `permission.*`, `data.*`, `webhook.*`, the
+  `runtime_config_patch` runtime-config PATCH action, the
+  `PUT /api/butlers/{name}/model-overrides` model-override PUT action, and the
+  defined credential lifecycle actions) or rows with `result = 'error'`
+- **AND** ordinary successful reads and unrelated non-consequential successful
+  mutation noise, including other `GET` rows and cadence rows, remain
+  excluded from the privileged action-family allowlist; rows with
+  `result = 'error'` remain included by the preceding error rule
 - **AND** omitting `kind` returns the complete audit history, including routine
   cadence rows, preserving the `?noise=all` dashboard opt-out
 - **AND** each returned `AuditLogEntry` projects `metadata`/`result`/`error`

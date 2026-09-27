@@ -311,6 +311,11 @@ Either order is safe from silent content loss; neither is a no-op that this draf
 itself. `proposal.md`'s Impact section names this as the exact prerequisite acceptance criterion 2
 requires, rather than presenting the sequencing as already resolved.
 
+**Update 2026-09-26 (bu-60pwv6.3):** the owner abandoned `k3s-deployment-helm-chart` (staying on
+Docker) and the change was removed without archiving, so the sequencing above no longer applies.
+The DB-fallback scenarios this delta copied from it now have no sponsor; task 2.5 (bu-60pwv6.27)
+drops them before review.
+
 ## Rejected alternatives
 
 - **Extend `autonomy_suggestions`'s schema to cover every target kind** — rejected (Context, D6):
@@ -395,9 +400,8 @@ activation, or deployment is required or authorized by this draft.
    returns GO or corrections are applied and re-reviewed.
 2. Obtain separate owner approval naming the exact reviewed commit before any implementation of
    `bu-8cdl1.15` or its decomposed children claims this contract as authority.
-3. Resolve the `core-skills`/`k3s-deployment-helm-chart` sequencing (proposal.md "Impact") before
-   either change archives — whichever archives second rebases its `AGENTS.md Read/Write Access`
-   delta onto the requirement text the other left in `openspec/specs/`.
+3. Resolved 2026-09-26: `k3s-deployment-helm-chart` was abandoned and removed, so no
+   `core-skills` sequencing remains; drop its copied DB-fallback scenarios (task 2.5).
 4. Implementation proceeds only under `bu-8cdl1.15`'s already-existing decomposition sequence
    (representation/backfill → transactional producers/adapters while legacy readers remain
    authoritative → dashboard read/review cutover → owner-authenticated DB effect adapters and

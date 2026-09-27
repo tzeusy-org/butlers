@@ -11,7 +11,7 @@ Owner authentication now rejects the daemon's unauthenticated heartbeat POST. Th
 - Create one durable content-blind owner-attention episode per fleet-control or overdue-QA condition through the existing fenced Switchboard outbox, independently of QA patrol. Preserve bounded condition escalation and truthful pending, sent, failed, and uncertain delivery status.
 - Preserve lightweight process `/health`. Give L3 one read-only Switchboard
   route-preflight producer and Q4 the sole public `/ready` plus owner-auth
-  exception; k3s consumes that route. Make deployment completion depend on
+  exception; Compose consumes that route. Make deployment completion depend on
   distinct qualifying observer/patrol cycles and an effect-free canary beyond
   a full liveness TTL.
 - **BREAKING:** Retire `POST /api/switchboard/heartbeat` as liveness authority and the daemon heartbeat reporter after observer cutover. Do not create an anonymous auth exemption or a new process-bound signing key.
@@ -38,7 +38,7 @@ This capability makes the control plane the authority for the expected fleet's o
 
 ## Impact
 
-Daemon health and scheduler, boot registration, dashboard lifespan supervisor and readiness API, Switchboard registry/routing/migrations and runtime-attention worker, QA condition producer and dashboard projections, Compose launcher and deployment canary, tests, topology and runbooks. The runtime-attention outbox currently accepts only `model_breaker` and `fleet_halt`; its source/edge-key and safe-payload constraints, fixed producer grant, and worker formatter require an additive migration before fleet/QA attention can deliver. RFCs 0001, 0003, 0006, 0007, 0008, and 0015 require alignment when this contract is adopted. The active `k3s-deployment-helm-chart` change defines the same public `/ready` and is reconciled to the stronger semantic check contract. The active `define-infrastructure-reliability-lifecycle` change excludes generic heartbeat and scheduler work; this change is a companion contract and preserves its complete-snapshot and bounded-escalation rules.
+Daemon health and scheduler, boot registration, dashboard lifespan supervisor and readiness API, Switchboard registry/routing/migrations and runtime-attention worker, QA condition producer and dashboard projections, Compose launcher and deployment canary, tests, topology and runbooks. The runtime-attention outbox currently accepts only `model_breaker` and `fleet_halt`; its source/edge-key and safe-payload constraints, fixed producer grant, and worker formatter require an additive migration before fleet/QA attention can deliver. RFCs 0001, 0003, 0006, 0007, 0008, and 0015 require alignment when this contract is adopted. The active `define-infrastructure-reliability-lifecycle` change excludes generic heartbeat and scheduler work; this change is a companion contract and preserves its complete-snapshot and bounded-escalation rules.
 
 The QA manifesto and canonical QA investigation retention requirement are
 corrected against their existing nested cleanup implementation. The exact

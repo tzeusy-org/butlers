@@ -48,7 +48,7 @@
   and supervised-loop checks; the public request causes no network fanout or
   write. Test mounted owner auth, fixed Boolean projection, stale/missing
   preflight, no private content, process-only `/health`, and no transactional
-  target-acceptance claim. K3s/Compose only consume this route.
+  target-acceptance claim. Compose only consumes this route.
   (REQ-dashboard-api-063; REQ-butler-switchboard-004)
 - [ ] 5.2 Q5 gates deployment completion on two distinct complete observer
   cycles and two distinct current-config all-source-success scheduled QA
@@ -60,12 +60,11 @@
   and the five-minute post-restart false-green window. Record only fixed
   content-blind failure categories and rollback classification.
   (REQ-dashboard-api-064)
-- [ ] 5.3 Reconcile the active k3s `Readiness probe endpoint` delta with the
-  stronger `/ready` semantics before either change archives. The k3s worker
-  wires its chart probes to Q4's route and does not author a second endpoint,
-  auth exception, or duplicate behavior gate. Preserve the existing external
-  minimal health monitor and require separate owner adoption for any external
-  functional target. (REQ-dashboard-api-063/065)
+- [x] 5.3 Reconcile the k3s `Readiness probe endpoint` delta with the stronger
+  `/ready` semantics. Resolved 2026-09-27: k3s change abandoned and removed
+  (bu-60pwv6.3); Compose is the only consumer of Q4's route. The existing
+  external minimal health monitor and the owner-adoption gate for any external
+  functional target are unchanged. (REQ-dashboard-api-063/065)
 
 ## 6. Contract and terminal verification
 

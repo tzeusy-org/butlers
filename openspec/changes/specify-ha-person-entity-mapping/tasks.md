@@ -14,16 +14,16 @@
 
 ## 2. Approval gates
 
-- [ ] 2.1 Obtain independent privacy/security review of the exact draft head.
-- [ ] 2.2 After review passes, obtain separate owner approval naming the exact
+- [x] 2.1 Obtain independent privacy/security review of the exact draft head.
+- [x] 2.2 After review passes, obtain separate owner approval naming the exact
   artifact. Any semantic change requires fresh review and approval.
-- [ ] 2.3 Keep `bu-q364q`, `bu-pvapy`, deployment, mapping submission, and
+- [x] 2.3 Keep `bu-q364q`, `bu-pvapy`, deployment, mapping submission, and
   natural-transition verification blocked until their own prerequisites and
   authorities are satisfied.
 
 ## 3. Future implementation after approval (`bu-q364q`)
 
-- [ ] 3.1 Add the fail-closed dashboard route and browser client only behind
+- [x] 3.1 Add the fail-closed dashboard route and browser client only behind
   the landed central owner-auth boundary for configured-key or host-authorized
   passkey sessions over canonical Tailscale Serve HTTPS. Prove authentication
   finishes before body buffering, receipt creation, pool acquisition, or
@@ -32,18 +32,18 @@
   without trusting `Content-Length`; oversize returns only fixed
   `413 REQUEST_BODY_TOO_LARGE` and touches no receipt, actor, pool, protected
   state, or audit path.
-- [ ] 3.2 Add the content-blind durable idempotency/receipt representation and
+- [x] 3.2 Add the content-blind durable idempotency/receipt representation and
   transaction implementation without adding a mapping read/list API, MCP tool,
   direct-SQL operator path, entity creation, remap, update, or delete.
-- [ ] 3.3 Exempt the exact route from generic audit body capture and implement
+- [x] 3.3 Exempt the exact route from generic audit body capture and implement
   field-by-field response, error, audit, log, metric, and trace allowlists.
-- [ ] 3.4 Add the dashboard form with ephemeral-only private fields and no URL,
+- [x] 3.4 Add the dashboard form with ephemeral-only private fields and no URL,
   navigation-state, browser-storage, query-key, retained mutation-cache,
   analytics, console, or rendered-error copy of submitted values.
 
 ## 4. Future verification after approval (`bu-q364q`)
 
-- [ ] 4.1 Real PostgreSQL tests run the real migrations and prove a new batch,
+- [x] 4.1 Real PostgreSQL tests run the real migrations and prove a new batch,
   a mixed new/identical batch, a fresh-key identical no-op, same-key exact
   replay, and same-key/different-body conflict against the actual mapping and
   receipt tables.
@@ -52,7 +52,7 @@
   target, conflicts in both mapping directions, and a database failure after an
   attempted insert; every refusal and injected failure leaves zero partial
   mapping writes and no false success receipt.
-- [ ] 4.3 Real PostgreSQL concurrency tests force two competing batches through
+- [x] 4.3 Real PostgreSQL concurrency tests force two competing batches through
   the fixed advisory lock and prove that at most one complete non-conflicting
   mapping set commits, the loser is a content-blind `409`, and no partial or
   crossed mapping survives.
@@ -63,7 +63,7 @@
   until mapping/receipt/audit commit. Assert the actual
   `metadata->>'merged_into'` / `metadata->>'deleted_at'` predicates, deterministic
   UUID lock order, zero partial writes, and no false success receipt.
-- [ ] 4.5 Real PostgreSQL idempotency races force overlap before lookup/insert.
+- [x] 4.5 Real PostgreSQL idempotency races force overlap before lookup/insert.
   Same key plus the same canonical request must create one durable terminal
   record and return identical receipt/counts to both callers. Same key plus
   different requests must create exactly one winning terminal record; the loser
@@ -88,13 +88,13 @@
   stores, browser persistence/query state, and mounted MCP/runtime tool
   registries. Assert the explicit audit field set positively so an empty-audit
   bug cannot make the absence test pass.
-- [ ] 4.8 Run targeted API/real-PostgreSQL/frontend tests, repo guards, strict
+- [x] 4.8 Run targeted API/real-PostgreSQL/frontend tests, repo guards, strict
   OpenSpec and overwrite checks, fresh independent exact-head privacy/security
   review, and terminal hosted CI. Report the implementation PR's actual test
   delta separately.
 
 ## 5. Archive only after implementation
 
-- [ ] 5.1 After the separately approved implementation is merged, sync the new
+- [x] 5.1 After the separately approved implementation is merged, sync the new
   capability to `openspec/specs/home-assistant-person-mapping/spec.md` and
   archive this change. Archival does not authorize deployment or mapping use.

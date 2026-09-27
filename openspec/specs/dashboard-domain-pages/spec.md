@@ -269,6 +269,7 @@ The page MUST contain:
 - A header with title "Calendar Workspace", timezone badge, entry count badge, "Sync now" button, and context-appropriate create buttons ("Create event" in user view, "Create butler event" in butler view).
 - A toolbar card with: View toggle (User/Butler), Range selector (Month/Week/Day/List), navigation controls (Prev/Today/Next), and calendar/source filter dropdowns (user view only).
 - A main content area rendering the appropriate view mode.
+- A read-only "Find time" panel that consumes `POST /api/calendar/workspace/find-time` and distinguishes unavailable free/busy from a successful empty slot result.
 
 #### Scenario: View/range state survives page reload
 
@@ -282,7 +283,18 @@ The page MUST contain:
 - **THEN** the calendar and source filter dropdowns MUST be hidden
 - **AND** the `source` and `calendar` URL parameters MUST be removed
 
----
+#### Scenario: Find-time provider failure is visibly unavailable
+
+- **WHEN** the find-time response has `available=false`, an empty `slots` list, and a safe `reason`
+- **THEN** the panel MUST render a named free/busy-unavailable state using that reason
+- **AND** it MUST NOT render the successful "No open slots match those constraints in the selected window" empty state
+- **AND** it MUST NOT offer a slot-selection or event-creation affordance for that result
+
+#### Scenario: Find-time successful zero-slot result remains empty, not degraded
+
+- **WHEN** the find-time response has `available=true` and an empty `slots` list
+- **THEN** the panel MUST render the existing "No open slots match those constraints in the selected window" empty state
+- **AND** it MUST NOT render the free/busy-unavailable state
 
 ### Requirement: Calendar user view with grid and list layouts
 
@@ -1185,8 +1197,21 @@ result in which stale-contact evaluation is unavailable. Unmeasurable contacts M
 overdue, count toward overdue totals, or populate attention rails, and their suppression MUST NOT
 be rendered as a complete cadence all-clear.
 
+An entity PulseStrip cadence tile MUST bind its label, rolling query window, count, pagination
+completeness, and error state as one evidence unit. Its cadence reader MUST echo the exact window
+used for the observation and explicitly distinguish complete evidence from a bounded or paginated
+subset. The count MUST include only active, stable interaction event rows with a literal
+`interaction_` predicate prefix and MUST exclude the `interaction_note` annotation. While the
+page remains open, the client MUST requery the selected window at least every 30 seconds and on
+focus. The tile MUST compare the echoed start/end bounds to the requested duration and reject a
+response whose `window_ended_at` is more than 90 seconds old or implausibly future-dated. It MUST
+render "Quiet" only for a successful, complete, fresh matching-window observation with zero
+interactions. Incomplete, mismatched-window, stale, or unavailable evidence MUST render a typed
+attention state and MUST NOT render "Quiet" or an exact interaction count.
+
 ID: REQ-dashboard-domain-pages-049
-Source: relationship-stale-contact-producer-mapping design §6; heart-and-soul/vision.md
+Source: relationship-stale-contact-producer-mapping design §6; heart-and-soul/vision.md;
+`keep-relationship-cadence-evidence-honest` design
 Scope: v1-mandatory
 
 #### Scenario: Relationship Contacts tab does not turn suppression into calm
@@ -1208,6 +1233,48 @@ Scope: v1-mandatory
   elapsed
 - **THEN** the existing overdue KPI, list, and attention-rail behavior MAY render that contact
 - **AND** this source mapping MUST NOT change cadence, priority, ordering, or outreach copy
+
+#### Scenario: Complete cadence evidence may render Quiet
+
+- **WHEN** the cadence reader completes the requested rolling window with zero interactions and no
+  additional page
+- **THEN** the PulseStrip cadence label MUST name that same window
+- **AND** the tile MAY render "Quiet"
+
+#### Scenario: Annotations and predicate lookalikes do not count as interactions
+
+- **WHEN** the same cadence window contains one active stable interaction event, an
+  `interaction_note` annotation, and a predicate whose name only matches an unescaped
+  `interaction_%` SQL pattern
+- **THEN** the cadence count MUST be one
+- **AND** removing that event MUST leave a complete zero despite the annotation and lookalike
+
+#### Scenario: Paginated cadence evidence is attention, not calm
+
+- **WHEN** the bounded cadence read reports incomplete evidence or an additional page
+- **THEN** the PulseStrip MUST render a typed incomplete-attention state
+- **AND** it MUST NOT render "Quiet" or present the observed subset as an exact count
+
+#### Scenario: Cadence read failure is attention, not calm
+
+- **WHEN** the cadence read fails
+- **THEN** the PulseStrip MUST render a typed unavailable-attention state
+- **AND** it MUST NOT render "Quiet"
+
+#### Scenario: Window refresh recomputes label and value together
+
+- **WHEN** the active cadence window changes
+- **THEN** the cadence query MUST be re-keyed for that window
+- **AND** the label and value MUST be derived only from evidence echoing the same window
+- **AND** stale or mismatched-window evidence MUST NOT render "Quiet" or an exact count
+
+#### Scenario: Cached calm ages into attention on an open page
+
+- **WHEN** a complete zero-interaction response remains cached on an open page past the
+  90-second freshness bound, or a response echoes the same duration with old start/end bounds
+- **THEN** the tile MUST render a typed stale-attention state rather than "Quiet"
+- **AND** an active page MUST requery the selected window at least every 30 seconds and on focus
+- **AND** a failed refresh with cached complete-zero data MUST render unavailable attention
 
 ### Requirement: Health and General retain distinct Butler identity slots
 
@@ -1489,6 +1556,62 @@ no-provenance presentation.
 - **THEN** it MUST display the matching source state without a live-episode
   navigation affordance
 - **AND** it MUST retain the durable fact, rule, or link evidence in view
+
+### Requirement: Medications page exposes honest supply quantity
+
+The dashboard Medications page SHALL provide one optional supply-quantity field
+in the existing create/edit form. The field SHALL accept only a positive whole
+number when present, SHALL send the value through the typed Health medication
+API on create or edit, and SHALL use the existing edit quantity update as the
+refill/current-supply path. A missing server quantity SHALL render explicitly
+as `Supply: unknown`; the page SHALL never render zero or fabricate a supply
+from dosage, frequency, or adherence data.
+
+#### Scenario: The owner records an initial supply while creating a medication
+
+- **WHEN** the owner enters a positive whole-number supply quantity and submits
+  the create form
+- **THEN** the dashboard SHALL send that exact `quantity` in
+  `POST /api/health/medications` and render the returned medication's count
+
+#### Scenario: The owner records a refill from the edit form
+
+- **WHEN** the owner enters a new positive whole-number supply quantity for an
+  existing medication and saves the edit form
+- **THEN** the dashboard SHALL send that exact `quantity` in
+  `PUT /api/health/medications/{id}`
+- **AND** it SHALL continue to rely on the server-returned quantity and
+  `quantity_updated_at`, not client-side depletion math
+
+#### Scenario: An omitted supply is visibly unknown
+
+- **WHEN** the medication response has `quantity: null` or omits a legacy
+  quantity value
+- **THEN** the medication row SHALL render `Supply: unknown`
+- **AND** it SHALL NOT render `Supply: 0`, a standard pack size, or an
+  adherence-derived estimate
+
+#### Scenario: A blank edit does not erase known supply
+
+- **WHEN** an existing medication has a recorded quantity and the owner saves
+  an edit without entering a replacement quantity
+- **THEN** the dashboard SHALL preserve the existing quantity by omitting the
+  quantity field from the update payload
+
+#### Scenario: Re-entering the same count records a refill
+
+- **WHEN** an existing medication has a recorded quantity and the owner
+  explicitly edits or re-enters that same positive whole-number count
+- **THEN** the dashboard SHALL send `quantity` in the update payload
+- **AND** an unrelated edit that leaves the prefilled supply field untouched
+  SHALL omit `quantity` and SHALL NOT advance the refill timestamp
+
+#### Scenario: Invalid form values are refused before submission
+
+- **WHEN** the owner enters zero, a negative number, a decimal, or malformed
+  text in the supply field
+- **THEN** the form SHALL show a typed positive-whole-number validation message
+- **AND** it SHALL NOT call the create or update mutation
 
 ## Source References
 

@@ -54,7 +54,10 @@ The dashboard SHALL expose the spend endpoints.
 - **WHEN** a spend response covers a date and butler for which session token totals and ledger token totals differ by more than five percent
 - **THEN** the response includes a divergence record with the date, butler, both token totals, and relative difference; the frontend renders a `SourceDegradedNote` rather than presenting the aggregates as reconciled.
 - **AND** session reads used for this detector are diagnostic only and MUST NOT supply a dollar amount or model price.
-- **AND** if the detector cannot obtain enough session evidence to compare a source, the response identifies that degraded comparison rather than reporting an empty divergence list as a successful reconciliation.
+- **AND** a ledger group explicitly proven to contain no task session (`BOOL_OR(token_usage_ledger.session_id IS NOT NULL) = false`) is a non-roster spend source and is excluded from roster-session coverage checks; this includes connector attribution identities such as WhatsApp `wa:*@lid` and declared synthetic runtime identities.
+- **AND** an unconfigured ledger identity with a task session, or without explicit sessionless proof, remains an unknown roster source and sets the comparison's `source_error` instead of being silently exempted.
+- **AND** if the detector cannot obtain enough session evidence to compare a roster source, the response identifies that degraded comparison rather than reporting an empty divergence list as a successful reconciliation.
+- **AND** the degraded response exposes only the generic comparison state and MUST NOT expose an excluded connector or synthetic identity in browser-facing error detail.
 
 #### Scenario: Historical requested-model attribution is labeled
 - **WHEN** a requested response window begins before `2026-07-10`

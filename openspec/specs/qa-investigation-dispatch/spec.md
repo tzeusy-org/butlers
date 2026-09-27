@@ -23,22 +23,63 @@ The QA dispatcher SHALL create investigations for novel findings, using the exis
 - **AND** a log INFO message indicates skipped findings count
 
 ### Requirement: Gate Sequence Preservation
-The QA dispatcher SHALL preserve the existing 10-gate dispatch sequence from self-healing, applied to each novel finding before investigation. Note: triage performs a fast dedup check (non-atomic) to filter obvious duplicates early; the dispatch gates perform the authoritative atomic claim. Cooldown appears in both layers intentionally — triage's check is a fast-path optimization, dispatch's is the atomic guarantee.
+
+The QA dispatcher SHALL preserve the existing admission protections for each
+novel finding before investigation. Triage performs a fast non-atomic dedup
+check to filter obvious duplicates early; dispatch performs the authoritative
+atomic claim only after normal eligibility and active-infrastructure-condition
+suppression have both been evaluated.
 
 #### Scenario: Gates applied per-finding after triage
-- **WHEN** a novel finding passes triage (fast dedup check)
-- **THEN** the dispatcher applies the authoritative gate sequence: no-recursion guard (trigger_source), opt-in gate, fingerprint (already computed), severity gate, novelty gate (authoritative atomic claim — this is the authoritative check, not a duplicate of triage's fast check), cooldown gate, concurrency cap, circuit breaker, model resolution
-- **AND** findings rejected by any gate are recorded with the rejection reason in `qa_findings.dedup_reason`
-- **AND** any rejection before the first investigation session launches is tracked as a dispatch decision, not an execution failure
+- **WHEN** a novel finding passes triage's fast dedup check
+- **THEN** the dispatcher applies normal eligibility checks for recursion,
+  opt-in, fingerprint, severity, cooldown, concurrency cap, circuit breaker,
+  and model resolution
+- **AND** after those checks pass but before `create_or_join_attempt`, an
+  `infra_state` finding is matched against an active infrastructure condition
+  by explicit canonical source and fingerprint
+- **AND** only a finding without a matching active condition proceeds to the
+  authoritative atomic novelty claim and then to worktree/session launch
+- **AND** findings rejected by a normal eligibility gate or active-condition
+  suppression are recorded with their explicit rejection reason in
+  `qa_findings.dedup_reason`
+- **AND** any rejection before the first investigation session launches is tracked as a
+  dispatch decision, not an execution failure
+
+#### Scenario: Active infrastructure condition is checked before attempt claim
+- **WHEN** an otherwise eligible `infra_state` finding matches an `open` or
+  `aging` infrastructure-condition episode
+- **THEN** the dispatcher writes the decision-only `infra_condition_open`
+  dispatch event before calling `create_or_join_attempt`
+- **AND** it returns without creating, joining, deleting, or changing a
+  `healing_attempt`
+- **AND** it invokes no LLM, creates no runtime session, and creates no
+  worktree
 
 ### Requirement: Gate Rejections Do Not Count as Execution Failures
-QA admission-control outcomes SHALL remain distinct from launched investigation outcomes.
+
+QA admission-control outcomes SHALL remain distinct from launched
+investigation outcomes.
 
 #### Scenario: Circuit breaker or cooldown rejection before launch
-- **WHEN** a finding is rejected by cooldown, concurrency cap, circuit breaker, or no-model before any QA investigation session launches
-- **THEN** no investigation attempt is marked `failed` solely because of that rejection
-- **AND** the rejection does NOT contribute to the QA circuit-breaker failure streak
-- **AND** the dashboard exposes it as a dispatch decision rather than a failed execution
+- **WHEN** a finding is rejected by cooldown, concurrency cap, circuit
+  breaker, or no-model before any QA investigation session launches
+- **THEN** no investigation attempt is marked `failed` solely because of that
+  rejection
+- **AND** the rejection does NOT contribute to the QA circuit-breaker failure
+  streak
+- **AND** the dashboard exposes it as a dispatch decision rather than a
+  failed execution
+
+#### Scenario: Active infrastructure condition rejection before claim
+- **WHEN** an otherwise eligible `infra_state` finding is suppressed because
+  its canonical condition remains active
+- **THEN** `healing_dispatch_events` records `decision = infra_condition_open`
+  with null attempt linkage
+- **AND** no `healing_attempts` row, worktree, runtime session, or LLM
+  invocation exists as a consequence of that suppression
+- **AND** the event does NOT contribute to QA circuit-breaker execution
+  history
 
 #### Scenario: Infra-condition suppression links back to the suppressing condition (bu-ep4ks.3)
 - **WHEN** an `infra_state` finding is rejected because an active standing

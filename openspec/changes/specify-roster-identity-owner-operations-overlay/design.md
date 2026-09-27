@@ -282,12 +282,11 @@ digest, outcome, and server-derived actor; they never contain overlay or roster 
 
 ### D8: Active core-skills ownership is preserved, not merged here
 
-Two active changes contain full `MODIFIED` blocks for the exact requirement
-`core-skills / AGENTS.md Read/Write Access`:
+One active change contains a full `MODIFIED` block for the exact requirement
+`core-skills / AGENTS.md Read/Write Access` (the former second owner,
+`k3s-deployment-helm-chart`, was abandoned and removed on 2026-09-26):
 
-- `k3s-deployment-helm-chart` adds a DB fallback for runtime notes on read-only mounts;
-- `specify-improvement-proposal-spine` carries that whole block and adds a target prohibition on
-  runtime-facing direct writers.
+- `specify-improvement-proposal-spine` adds a target prohibition on runtime-facing direct writers.
 
 This change adds the differently named `Recursive Bare File-Reference Resolution` requirement and
 does not restate, modify, remove, or resolve `AGENTS.md Read/Write Access`. The two owners must still

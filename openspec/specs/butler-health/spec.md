@@ -545,3 +545,88 @@ preparation consumers. Health SHALL remain the authoritative owner of the underl
 - **WHEN** this provider is deployed
 - **THEN** it SHALL use the existing Health medication facts and SHALL NOT require a new table,
   column, cross-schema grant, or shared medication store
+
+### Requirement: Medication supply quantity API remains owner-recorded truth
+
+The Health dashboard medication API SHALL accept an optional `quantity` on
+medication create and update requests only when it is a strictly positive whole
+number. The value SHALL remain the owner-recorded count in the current supply;
+the API and Health fact tools SHALL NOT derive, round, default, or infer a
+quantity from dosage, frequency, dose logs, or a conventional pack size.
+
+#### Scenario: Creating a medication with a known supply round-trips the count
+
+- **WHEN** the owner calls `POST /api/health/medications` with a valid positive
+  integer `quantity`
+- **THEN** the route SHALL pass that exact quantity to the existing
+  `medication_add` fact path and return it in the created `Medication` response
+- **AND** the persisted medication fact SHALL carry the quantity and a
+  `quantity_updated_at` timestamp from the existing server-side write path
+
+#### Scenario: Creating a medication without a supply keeps it unknown
+
+- **WHEN** the owner omits `quantity` from `POST /api/health/medications`
+- **THEN** the route SHALL return `quantity: null` and
+  `quantity_updated_at: null` in the created response
+- **AND** it SHALL NOT insert a default, zero, or inferred quantity
+
+#### Scenario: Updating quantity records the current fill or refill
+
+- **WHEN** the owner calls `PUT /api/health/medications/{id}` with a valid
+  positive integer `quantity`
+- **THEN** the route SHALL pass only the supplied quantity through the existing
+  `medication_update` path
+- **AND** the resulting medication SHALL expose the exact quantity and a new
+  `quantity_updated_at` timestamp anchored to that server write
+
+#### Scenario: Omitting quantity during an edit preserves existing truth
+
+- **WHEN** the owner updates other medication fields without supplying
+  `quantity`
+- **THEN** the existing quantity and `quantity_updated_at` SHALL remain
+  unchanged, including when the prior quantity is unknown
+
+#### Scenario: Invalid supply values are refused before any write
+
+- **WHEN** a create or update request supplies zero, a negative number, a
+  decimal, a boolean, a numeric string, or other malformed quantity
+- **THEN** the API SHALL return HTTP 422 with typed validation detail
+- **AND** it SHALL NOT invoke `medication_add` or `medication_update`
+
+#### Scenario: Health reads preserve absence as unknown
+
+- **WHEN** a medication fact has no owner-recorded quantity
+- **THEN** `GET /api/health/medications` SHALL return `quantity: null` and
+  `quantity_updated_at: null`
+- **AND** no Health API response in this contract SHALL substitute zero or a
+  forecast for the absent value
+
+### Requirement: Confidential Classification of Clinical Fact Writes
+
+The Health butler SHALL classify condition, symptom, medication, and dose fact
+writes as `confidential` explicitly. A guarded, idempotent core migration SHALL
+reclassify historical Health facts with those predicates and remove their
+already-published catalog entries. Measurement facts remain outside this
+clinical classification rule.
+
+#### Scenario: Clinical Health tools write confidential facts
+
+- **WHEN** the Health butler records or updates a condition, symptom,
+  medication, or medication dose
+- **THEN** the resulting Health fact MUST have `sensitivity='confidential'`
+- **AND** the tool MUST pass that classification explicitly rather than rely
+  on a memory-store default
+
+#### Scenario: Historical under-classified clinical facts are repaired
+
+- **WHEN** the core migration runs against a schema containing an affected
+  Health fact with a lower sensitivity
+- **THEN** it MUST reclassify that fact as `confidential`
+- **AND** it MUST remove catalog entries sourced from that affected fact
+- **AND** a repeated migration execution MUST make no additional change
+
+#### Scenario: Non-clinical measurement facts remain discoverable
+
+- **WHEN** the migration encounters a Health measurement fact outside the
+  condition, symptom, medication, and dose predicate set
+- **THEN** it MUST leave that fact and any catalog entry unchanged

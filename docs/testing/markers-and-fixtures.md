@@ -115,7 +115,7 @@ The patches are idempotent -- they check for sentinel attributes to avoid double
 
 | Setting | Value | Rationale |
 |---------|-------|-----------|
-| `-n 3` | 3 xdist workers | Avoids OOM when polecats run alongside k3s |
+| `-n 3` | 3 xdist workers | Avoids OOM when polecats run alongside the Compose stack |
 | `--dist loadfile` | File-level distribution | Preserves module-scoped fixtures |
 | `--import-mode=importlib` | Importlib mode | Avoids name collisions across `roster/*/tests/` |
 

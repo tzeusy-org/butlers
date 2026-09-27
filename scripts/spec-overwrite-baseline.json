@@ -167,60 +167,6 @@
       "excerpt": "- **THEN** it is silently skipped — no ingest submission — UNLESS it is a `callback_query` whose `callback_data` carr..."
     }
   ],
-  "define-infrastructure-reliability-lifecycle/connector-base-spec/Connector Liveness and Eligibility": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "7b95ef500e20",
-      "excerpt": "The Switchboard SHALL derive connector liveness from heartbeat recency and manage eligibility state transitions"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Liveness thresholds",
-      "digest": "e9dd45ce6e11",
-      "excerpt": "- **THEN** `online` when last heartbeat age < 5 minutes, `stale` when 5-15 minutes, `offline` when > 15 minutes or no..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Eligibility states",
-      "digest": "57076c5fb40c",
-      "excerpt": "- **AND** quarantine takes precedence over any heartbeat recency"
-    }
-  ],
-  "define-infrastructure-reliability-lifecycle/deployment-and-drift/GET /api/system/drift": [
-    {
-      "kind": "clause",
-      "scenario": "Endpoint returns the comparison result",
-      "digest": "7d6d4f680692",
-      "excerpt": "- `escalated: boolean` -- whether a QA case has already been opened for the current drift composition"
-    }
-  ],
-  "define-infrastructure-reliability-lifecycle/qa-investigation-dispatch/Gate Sequence Preservation": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "5d8be89660d6",
-      "excerpt": "The QA dispatcher SHALL preserve the existing 10-gate dispatch sequence from self-healing, applied to each novel find..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Gates applied per-finding after triage",
-      "digest": "fd3a19bbc4f0",
-      "excerpt": "- **THEN** the dispatcher applies the authoritative gate sequence: no-recursion guard (trigger_source), opt-in gate, ..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Gates applied per-finding after triage",
-      "digest": "5775f1cf04f0",
-      "excerpt": "- **AND** findings rejected by any gate are recorded with the rejection reason in `qa_findings.dedup_reason`"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Gates applied per-finding after triage",
-      "digest": "185452072894",
-      "excerpt": "- **AND** any rejection before the first investigation session launches is tracked as a dispatch decision, not an exe..."
-    }
-  ],
   "durable-approval-delivery-intent-recovery/module-approvals/Pending Actions Queue": [
     {
       "kind": "prose",
@@ -469,56 +415,6 @@
       "excerpt": "- **THEN** it includes a scheduled task (job or prompt dispatch) that checks for teaching flows with `last_session_at..."
     }
   ],
-  "education-mind-map-lifecycle-integrity/dashboard-education-api/Curriculum request submission endpoint": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "b5ac09c939c4",
-      "excerpt": "Before any detached work begins, the endpoint SHALL insert an immutable receipt row into `education.curriculum_reques..."
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "ad78a0b57540",
-      "excerpt": "The endpoint SHALL NOT persist a `pending_curriculum_request` KV key. The one-pending-at-a-time guard SHALL be the pa..."
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "7478f8aae715",
-      "excerpt": "When the receipt store cannot be read or written because the education migration chain is absent, the endpoint SHALL ..."
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "0a320603e415",
-      "excerpt": "On success, the endpoint SHALL return 202 Accepted with body `{\"status\": \"accepted\", \"topic\": \"<topic>\", \"request_id\"..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Submit a new curriculum request",
-      "digest": "0cc85e0b646a",
-      "excerpt": "- **AND** no non-terminal receipt exists"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Submit a new curriculum request",
-      "digest": "6ae1a05757d2",
-      "excerpt": "- **AND** the response body SHALL contain `{\"status\": \"accepted\", \"topic\": \"Python\"}` and a `request_id`"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Submit a new curriculum request",
-      "digest": "ecb16346e2de",
-      "excerpt": "- **AND** a receipt row SHALL exist in `education.curriculum_requests` with status `accepted`, the topic and goal, an..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Submit request without goal",
-      "digest": "0cc85e0b646a",
-      "excerpt": "- **AND** no non-terminal receipt exists"
-    }
-  ],
   "education-mind-map-lifecycle-integrity/dashboard-education-ui/Education page layout with tab panels": [
     {
       "kind": "prose",
@@ -549,6 +445,14 @@
       "scenario": "List all mind maps with no filter",
       "digest": "f1bc4acca6ec",
       "excerpt": "- **WHEN** `mind_map_list(pool)` is called and there are three mind maps with statuses `active`, `completed`, and `ab..."
+    }
+  ],
+  "entity-chronicles-and-commitment-doors/dashboard-relationship/Entity activity aggregator (cross-butler read surface)": [
+    {
+      "kind": "clause",
+      "scenario": "Successful empty sources remain healthy",
+      "digest": "6762d34fac14",
+      "excerpt": "- **WHEN** both Relationship stores contain no matching active rows and a successful Chronicler read returns zero epi..."
     }
   ],
   "generation-fenced-codex-auth-rotation-provenance/core-spawner/Pre-Launch and Prewarm Codex Auth Synchronization": [
@@ -849,112 +753,6 @@
       "excerpt": "\"Unparseable scalar reads as zero without lowering the flag\" is not in the block"
     }
   ],
-  "insight-broker-v2-clustering-presence/proactive-insight-engine/Context-Bus Gating of the Delivery Cycle": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "b543d24ee76a",
-      "excerpt": "The delivery cycle SHALL consult the situational context bus (`public.user_context`) for an active `dnd` or `sleeping..."
-    }
-  ],
-  "insight-feedback-expiry/proactive-insight-engine/Adaptive Delivery with Graceful Degradation": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "4223643892e2",
-      "excerpt": "The system SHALL track user engagement with delivered insights and automatically reduce delivery frequency when the u..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Engagement detection",
-      "digest": "7110d491b33e",
-      "excerpt": "- **AND** ingress from a connector, an automated source, or any non-owner (including unresolved/unknown) sender SHALL..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Engagement rate computation",
-      "digest": "ba94fa044154",
-      "excerpt": "- **WHEN** the delivery cycle computes the engagement rate"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Engagement rate computation",
-      "digest": "cfbf0c27f848",
-      "excerpt": "- **THEN** it SHALL use a rolling 14-day window: `engagement_rate = count(engaged=TRUE) / count(delivered)` over the ..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Engagement rate computation",
-      "digest": "387c77bf17ef",
-      "excerpt": "- **AND** if no insights were delivered in the last 14 days, the engagement rate SHALL be treated as 1.0 (no penalty)"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Budget reduction on low engagement",
-      "digest": "9f2b1d612e4c",
-      "excerpt": "- **WHEN** `engagement_rate >= 0.5`"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Budget reduction on low engagement",
-      "digest": "a4fd99a1df28",
-      "excerpt": "- **THEN** the effective budget SHALL equal the user's configured budget (no reduction)"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Moderate disengagement",
-      "digest": "bae84db86a67",
-      "excerpt": "- **WHEN** `0.25 <= engagement_rate < 0.5`"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Moderate disengagement",
-      "digest": "9c0d07d51209",
-      "excerpt": "- **THEN** the effective budget SHALL be `max(1, configured_budget - 1)`"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Severe disengagement",
-      "digest": "3d1fb6f991d9",
-      "excerpt": "- **WHEN** `engagement_rate < 0.25`"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Severe disengagement",
-      "digest": "4593a5afbdc7",
-      "excerpt": "- **THEN** the effective budget SHALL be 1 regardless of the configured preset"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Total disengagement auto-off",
-      "digest": "1297f9807d07",
-      "excerpt": "- **WHEN** `engagement_rate == 0.0` for 14 consecutive days (at least 1 insight delivered per day during that period)"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Total disengagement auto-off",
-      "digest": "891326f262f5",
-      "excerpt": "- **AND** for any day in the 14-day window no longer present in `public.insight_engagement` (purged), the day's deliv..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "No automatic increase",
-      "digest": "7a9a38b4669d",
-      "excerpt": "- **WHEN** the user's engagement rate improves after a budget reduction"
-    },
-    {
-      "kind": "clause",
-      "scenario": "No automatic increase",
-      "digest": "beb75083e92e",
-      "excerpt": "- **THEN** the effective budget SHALL NOT automatically increase"
-    },
-    {
-      "kind": "clause",
-      "scenario": "No automatic increase",
-      "digest": "ca6e59f70702",
-      "excerpt": "- **AND** the user MUST explicitly change their verbosity setting to restore the original budget"
-    }
-  ],
   "memory-honesty-last-mile/module-memory/LLM-driven memory consolidation pipeline": [
     {
       "kind": "prose",
@@ -1029,14 +827,6 @@
       "scenario": "Sequential fan-out routing",
       "digest": "e7dd1119548f",
       "excerpt": "- **THEN** `route()` is called sequentially for each conceptual message"
-    }
-  ],
-  "relational-edges-single-home/relationship-facts/Predicate catalog": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "94d666561c87",
-      "excerpt": "No predicate ID MAY be hardcoded outside `entity-model.ts` (frontend) and `relationship.entity_predicate_registry` (b..."
     }
   ],
   "repair-whatsapp-identity-reconciliation/conversation-decomposition/Cherry-Picked Message Excerpts": [
@@ -1201,44 +991,6 @@
       "scenario": null,
       "digest": "8b2b5eecf200",
       "excerpt": "Once a week, the system SHALL attempt to actually restore the most recent backup artifact into a scratch database, ve..."
-    }
-  ],
-  "specify-chat-answer-rendering-provenance/dashboard-chat-ui/Message Thread Display": [
-    {
-      "kind": "clause",
-      "scenario": "Assistant message rendering",
-      "digest": "0f55065b5082",
-      "excerpt": "- **AND** the content is rendered as markdown (via the `SimpleMarkdown` renderer supporting fenced code blocks and ne..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Assistant message rendering",
-      "digest": "4665eb77a670",
-      "excerpt": "- **AND** below the content: model name badge, token count (`{input}+{output} tokens`), and duration (`{N}ms`) render..."
-    }
-  ],
-  "specify-chat-answer-rendering-provenance/dashboard-conversations/Message Data Model": [
-    {
-      "kind": "clause",
-      "scenario": "Message table schema",
-      "digest": "335e0699dfad",
-      "excerpt": "- `sources` (JSONB, nullable) — array of source strings named by an answer-lane `conversation_reply` call (see the Co..."
-    }
-  ],
-  "specify-chat-answer-rendering-provenance/dashboard-conversations/SSE Response Streaming": [
-    {
-      "kind": "clause",
-      "scenario": "SSE stream for new conversation",
-      "digest": "7551af9adad8",
-      "excerpt": "- **AND** a final `event: message_complete` with `data: {\"message_id\": \"...\", \"model_name\": null, \"input_tokens\": nul..."
-    }
-  ],
-  "specify-chat-answer-rendering-provenance/dashboard-design-language/Voice Surface": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "18a1f8a78704",
-      "excerpt": "The **Voice** — a headline plus serif paragraph — SHALL be a distinct surface type reserved for places the system is ..."
     }
   ],
   "specify-roster-identity-owner-operations-overlay/butler-base-spec/CLAUDE.md as System Prompt Entry Point": [
