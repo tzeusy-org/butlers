@@ -74,7 +74,12 @@ from butlers.core.state import state_set as _state_set
 from butlers.core.tool_call_capture import (
     get_current_runtime_session_id,
 )
-from butlers.core.tool_catalog import ToolCatalog, ToolCatalogError, build_tool_catalog
+from butlers.core.tool_catalog import (
+    ToolCatalog,
+    ToolCatalogError,
+    build_tool_catalog,
+    validate_tool_metadata,
+)
 from butlers.core.utils import generate_uuid7_string
 from butlers.credential_store import (
     CredentialStore,
@@ -1460,16 +1465,41 @@ class ButlerDaemon:
         resolved: dict[str, ToolMeta] = dict(sensitivities)
         for tool_name in getattr(self, "_registered_tool_names", set()):
             sensitivity = sensitivities.get(tool_name, ToolMeta())
+            actual_owner = self._tool_module_map.get(tool_name)
+            if actual_owner is None:
+                raise ToolCatalogError(f"registered tool has no owner: {tool_name}")
+            module_classified = validate_tool_metadata(tool_name, actual_owner, sensitivity)
             presentation = TOOL_PRESENTATION_BY_NAME.get(tool_name)
             if presentation is None:
                 resolved[tool_name] = sensitivity
                 continue
-            actual_owner = self._tool_module_map.get(tool_name)
             if actual_owner != presentation.module_name:
                 raise ToolCatalogError(
                     f"tool presentation owner mismatch for {tool_name!r}: "
                     f"registered={actual_owner!r}, declared={presentation.module_name!r}"
                 )
+            if module_classified:
+                conflicts = {
+                    "canonical_name": (sensitivity.canonical_name, presentation.canonical_name),
+                    "module_name": (sensitivity.module_name, presentation.module_name),
+                    "group_name": (sensitivity.group_name, presentation.group_name),
+                    "namespace": (sensitivity.namespace, presentation.namespace),
+                    "llm_presentable": (
+                        sensitivity.llm_presentable,
+                        presentation.llm_presentable,
+                    ),
+                    "load_posture": (sensitivity.load_posture, presentation.load_posture),
+                }
+                mismatches = [
+                    field_name
+                    for field_name, (supplied, canonical) in conflicts.items()
+                    if supplied != canonical
+                ]
+                if mismatches:
+                    raise ToolCatalogError(
+                        f"tool presentation metadata conflicts with central inventory for "
+                        f"{tool_name!r}: {', '.join(mismatches)}"
+                    )
             resolved[tool_name] = ToolMeta(
                 arg_sensitivities=dict(sensitivity.arg_sensitivities),
                 canonical_name=presentation.canonical_name,
