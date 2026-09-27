@@ -1,6 +1,9 @@
 # Actual source and trust-boundary map
 
-Inspected root/main4e3e0bd; refresh against origin/main before publication. No runtime inspected.
+Inspected root/main 4e3e0bd; refreshed the listed vision implementation seam paths against
+origin/main 8607220 for publication, with no changes to those paths. Adjacent daemon and tool
+catalog changes landed in that interval; recheck live ownership before implementation dispatch.
+No runtime inspected.
 
 | Boundary | Actual sources | Owning verification seams | Required change / retained authority |
 |---|---|---|---|
