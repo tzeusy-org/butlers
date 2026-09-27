@@ -55,7 +55,7 @@ butler-local relevance index SHALL be introduced for this resolution.
 ### Requirement: Routing Goes Through The Switchboard
 Dispatch of a resolved delegated question to its target butler SHALL go
 through the Switchboard's existing `route()` primitive (the same routing
-function used by `post_mail`, `correct_route`, and `route_to_butler`) --
+function used by `correct_route` and `route_to_butler`) --
 never a bespoke point-to-point dispatch path.
 
 #### Scenario: Non-Switchboard asker dispatches via the Switchboard MCP client

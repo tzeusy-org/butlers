@@ -35,7 +35,6 @@ ALL_CHAINS = [
     "approvals",
     "contacts",
     "google_drive",
-    "mailbox",
     "memory",
     "whatsapp",
     "chronicler",

@@ -1142,12 +1142,9 @@ class ButlerDaemon:
 
             # Wire the memory write-back loop (bu-93y4rt, tasks.md §8) when the
             # memory module is enabled and started. store_fact_fn writes ONLY to
-            # the chronicler's own schema; the enrichment proposer routes to
-            # relationship over MCP (best-effort — a missing switchboard client
-            # is a silent no-op). Both are optional: without them the hook keeps
-            # doing exactly the tier2-cache write it always has.
+            # the chronicler's own schema. It is optional: without it the hook
+            # keeps doing exactly the tier2-cache write it always has.
             store_fact_fn = None
-            propose_enrichment_fn = None
             memory_module = self._resolve_memory_module()
             if memory_module is not None:
                 try:
@@ -1168,22 +1165,15 @@ class ButlerDaemon:
                     memory_pool = None
 
                 if memory_engine is not None and memory_pool is not None:
-                    from butlers.chronicler.writeback import (
-                        build_chronicler_fact_writer,
-                        build_relationship_enrichment_proposer,
-                    )
+                    from butlers.chronicler.writeback import build_chronicler_fact_writer
 
                     store_fact_fn = build_chronicler_fact_writer(memory_pool, memory_engine)
-                    propose_enrichment_fn = build_relationship_enrichment_proposer(
-                        lambda: self.switchboard_client
-                    )
 
             prompt_hooks = build_day_close_prompt_hooks(timezone=default_timezone)
             completion_hooks = build_day_close_completion_hooks(
                 self.db.pool,
                 timezone=default_timezone,
                 store_fact_fn=store_fact_fn,
-                propose_enrichment_fn=propose_enrichment_fn,
             )
 
         return _SchedulerRuntimeContext(

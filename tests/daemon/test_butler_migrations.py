@@ -67,7 +67,9 @@ def test_build_alembic_config_and_run_migrations() -> None:
     # chain='all' upgrades each discovered chain in deterministic order
     mock_cfg = MagicMock()
     with (
-        patch("butlers.migrations.get_all_chains", return_value=["core", "mailbox", "switchboard"]),
+        patch(
+            "butlers.migrations.get_all_chains", return_value=["core", "approvals", "switchboard"]
+        ),
         patch("butlers.migrations._build_alembic_config", return_value=mock_cfg),
         patch("butlers.migrations.command.upgrade") as mock_upgrade,
         patch("butlers.migrations._bootstrap_extensions"),
@@ -76,7 +78,7 @@ def test_build_alembic_config_and_run_migrations() -> None:
 
     assert mock_upgrade.call_args_list == [
         ((mock_cfg, "core@head"),),
-        ((mock_cfg, "mailbox@head"),),
+        ((mock_cfg, "approvals@head"),),
         ((mock_cfg, "switchboard@head"),),
     ]
 
@@ -119,7 +121,7 @@ def test_discover_chains(tmp_path) -> None:
     # Real roster includes known chains
     for expected in ["general", "health", "relationship", "switchboard"]:
         assert expected in _discover_butler_chains()
-    for expected in ["approvals", "mailbox", "memory"]:
+    for expected in ["approvals", "contacts", "memory"]:
         assert expected in _discover_module_chains()
 
 
@@ -135,7 +137,7 @@ def test_resolve_chain_dir(tmp_path) -> None:
     roster_dir = tmp_path / "roster"
 
     (alembic_dir / "versions" / "core").mkdir(parents=True)
-    (modules_dir / "mailbox" / "migrations").mkdir(parents=True)
+    (modules_dir / "approvals" / "migrations").mkdir(parents=True)
     (roster_dir / "relationship" / "migrations").mkdir(parents=True)
 
     with (
@@ -144,7 +146,7 @@ def test_resolve_chain_dir(tmp_path) -> None:
         patch("butlers.migrations.ROSTER_DIR", roster_dir),
     ):
         assert _resolve_chain_dir("core") == alembic_dir / "versions" / "core"
-        assert _resolve_chain_dir("mailbox") == modules_dir / "mailbox" / "migrations"
+        assert _resolve_chain_dir("approvals") == modules_dir / "approvals" / "migrations"
         assert _resolve_chain_dir("relationship") == roster_dir / "relationship" / "migrations"
         assert _resolve_chain_dir("does-not-exist") is None
 
@@ -161,8 +163,8 @@ def test_get_all_chains(tmp_path) -> None:
     butlers_dir = tmp_path / "butlers"
 
     (alembic_dir / "versions" / "core").mkdir(parents=True)
-    (modules_dir / "mailbox" / "migrations").mkdir(parents=True)
-    (modules_dir / "mailbox" / "migrations" / "001.py").write_text("# migration")
+    (modules_dir / "approvals" / "migrations").mkdir(parents=True)
+    (modules_dir / "approvals" / "migrations" / "001.py").write_text("# migration")
     (butlers_dir / "my-butler" / "migrations").mkdir(parents=True)
     (butlers_dir / "my-butler" / "migrations" / "001.py").write_text("# migration")
 
@@ -172,11 +174,11 @@ def test_get_all_chains(tmp_path) -> None:
         patch("butlers.migrations.ROSTER_DIR", butlers_dir),
     ):
         chains = get_all_chains()
-    assert chains == ["core", "mailbox", "my-butler"]
+    assert chains == ["core", "approvals", "my-butler"]
 
     # Real chain list
     real_chains = get_all_chains()
-    for expected in ["core", "mailbox", "approvals", "memory"]:
+    for expected in ["core", "approvals", "memory"]:
         assert expected in real_chains
 
 
