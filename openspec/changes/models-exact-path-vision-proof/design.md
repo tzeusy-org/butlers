@@ -1,6 +1,6 @@
 ## Adopted design
 
-RFC0036 at `about/legends-and-lore/rfcs/0036-models-exact-path-vision-proof.md` and storage-api-design.md, restricted-ingress-and-storage.md, diagnostic-executor-matrix.md jointly define the adopted design. adopted-contract.md is preserved byte-for-byte as provenance. source-map.md and allocation.json map actual seams and separate source delivery from real evidence.
+RFC0036 at `about/legends-and-lore/rfcs/0036-models-exact-path-vision-proof.md` is the single normative design home, including its storage/API, restricted ingress/retention, and diagnostic executor sections. adopted-contract.md is preserved byte-for-byte as provenance. source-map.md and allocation.json map actual seams and separate source delivery from real evidence.
 
 ## Publication versus implementation
 
