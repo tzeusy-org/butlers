@@ -4,17 +4,16 @@
  * Appears in the header band of the connector detail page when auth status
  * requires operator action:
  *
- * - 'needs_reauth'          → red border + recovery action when supported
- * - 'expiring'              → amber border + static status
- * - 'needs_primary_account' → amber border + static guidance
+ * - 'needs_reauth'          → error dot + recovery action when supported
+ * - 'expiring'              → degraded dot + static status
+ * - 'needs_primary_account' → degraded dot + static guidance
  *
  * Renders null when authStatus is 'ok' or 'unconfigured'.
  *
- * Design: no card chrome — just a hairline border in the relevant state color.
- * State color used as border and foreground only, never as background fill.
+ * Design: a neutral hairline border and copy support one registry-resolved StateDot.
  *
- * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
- *       dashboard-ingestion-dispatch-console/spec.md §"Reauth callout follows connector auth state"
+ * Spec: openspec/specs/dashboard-ingestion-dispatch-console/spec.md
+ *       §"Reauth callout follows connector auth state"
  * Reference: docs/redesigns/ingestion-connector-detail.jsx §"reauth call-to-action"
  */
 
@@ -53,15 +52,6 @@ export function ReauthCallout({
   const isError = authStatus === 'needs_reauth'
   const isUnsupportedRecovery = isError && recovery?.kind === 'unsupported'
 
-  // Color: red for hard errors, amber for warnings (expiring / no primary account)
-  const isRed = isError
-  const borderClass = isRed
-    ? 'border-[color:var(--red)]'
-    : 'border-[color:var(--amber)]'
-  const textColorClass = isRed
-    ? 'text-[var(--red-text)]'
-    : 'text-[var(--amber-text)]'
-
   const statusLabel = isUnsupportedRecovery
     ? 'recovery unavailable'
     : isError
@@ -81,13 +71,13 @@ export function ReauthCallout({
   return (
     <div
       data-testid="reauth-callout"
-      className={`border ${borderClass} px-5 py-4 min-w-[280px] max-w-sm`}
+      className="border border-border px-5 py-4 min-w-[280px] max-w-sm"
     >
       {/* Status label */}
       <div className="flex items-center gap-2">
-        <StateDot state={isRed ? 'error' : 'degraded'} size={6} />
+        <StateDot state={isError ? 'error' : 'degraded'} size={6} />
         <span
-          className={`font-mono text-[10px] tracking-[0.10em] uppercase ${textColorClass}`}
+          className="font-mono text-[10px] tracking-[0.10em] uppercase text-muted-foreground"
         >
           {statusLabel}
         </span>
