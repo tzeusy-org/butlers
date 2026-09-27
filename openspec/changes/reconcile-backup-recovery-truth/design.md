@@ -250,8 +250,9 @@ the cross-process guard in `REQ-deployment-hardening-007`.
 
 `application_data` is legal only for a non-proven attempt that reached generic
 restore verification. `application_data_with_filtered_events` is legal only
-when exact filtered-event verification completed but ownership/ACL or credential
-coverage did not complete. `full_recovery` requires same-attempt artifact
+when exact filtered-event verification completed but ownership/ACL, credential
+coverage, or cleanup did not pass. This includes cleanup-only failure after all
+verification passed. `full_recovery` requires same-attempt artifact
 identity, FK closure, credential coverage, filtered-event scope, ownership/ACL,
 and cleanup passes. The newest authoritative row wins: a new failure outranks an
 older pass, and no field comes from another row or a newer filesystem artifact.

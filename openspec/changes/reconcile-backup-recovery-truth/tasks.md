@@ -103,7 +103,10 @@
   failure after older pass, expired pass, and current exact pass. Assert every
   status/code/scope/nullability combination, precedence, semantic text, and
   accessible detail, including cleanup failure both before and after verified
-  artifact binding.
+  artifact binding. Include cleanup-only failure after all verification passes:
+  `failed` / `cleanup_failed`, non-null same-attempt time and bound artifact
+  facts, and `application_data_with_filtered_events`, never `full_recovery`
+  or a green recovery state.
 - [ ] 5.6 Plant distinct synthetic sentinels and prove absence from every
   prohibited recovery surface while positively asserting each allowed field
   set. Never inspect real credential or production values.

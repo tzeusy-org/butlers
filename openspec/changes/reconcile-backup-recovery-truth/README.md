@@ -12,6 +12,9 @@ remains recorded for those exact bytes; it did not adopt the separate
 This revision corrects terminal persistence ordering and cleanup-failure
 projection semantics, removes an incorrect promise that foreign-key additions
 wait on `ACCESS SHARE` locks, and clarifies the existing private aggregate-count
-allowance. It is a review candidate awaiting renewed exact-artifact owner
-adoption after independent review. Earlier adoption, green CI, or merge
+allowance. It also corrects the design's scope restriction so cleanup-only
+failure after all verification passes retains
+`application_data_with_filtered_events`, with explicit planned shared API/UI
+matrix coverage. The revised exact PR head remains a review candidate awaiting
+renewed owner adoption after independent review. Earlier adoption, green CI, or merge
 authorization does not adopt this revised candidate or its sibling.
