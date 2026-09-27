@@ -8,11 +8,21 @@ import json
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Literal
-
-from butlers.modules.base import ToolMeta
+from typing import Any, Literal, Protocol
 
 LoadPosture = Literal["eager", "deferred"]
+
+
+class ToolMetadata(Protocol):
+    """Structural metadata contract supplied by module and core registration."""
+
+    arg_sensitivities: dict[str, bool]
+    canonical_name: str | None
+    module_name: str | None
+    group_name: str | None
+    namespace: str | None
+    llm_presentable: bool | None
+    load_posture: LoadPosture | None
 
 
 class ToolCatalogError(ValueError):
@@ -160,7 +170,7 @@ def validate_presentation_inventory(
         raise ToolCatalogError("invalid presentation inventory: " + "; ".join(problems))
 
 
-def validate_tool_metadata(name: str, owner: str, metadata: ToolMeta | None) -> bool:
+def validate_tool_metadata(name: str, owner: str, metadata: ToolMetadata | None) -> bool:
     """Validate one optional exposure declaration and report whether it is complete."""
     if metadata is None:
         return False
@@ -202,7 +212,7 @@ async def build_tool_catalog(
     mcp: Any,
     *,
     tool_owners: Mapping[str, str],
-    tool_metadata: Mapping[str, ToolMeta] | None = None,
+    tool_metadata: Mapping[str, ToolMetadata] | None = None,
 ) -> ToolCatalog:
     """Snapshot final definitions through FastMCP's public list interface."""
     metadata = tool_metadata or {}
