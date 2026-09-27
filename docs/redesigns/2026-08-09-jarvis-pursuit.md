@@ -19,12 +19,12 @@ Live identifiers and machine-local paths in the structured evidence are replaced
 placeholders; counts, roles, health states, and empty-state semantics are preserved.
 
 **Data:** the full structured output from all 29 lanes is in
-[`2026-08-09-jarvis-pursuit-data.json`](2026-08-09-jarvis-pursuit-data.json). Query one
+`git show b23d5b76afab:docs/redesigns/2026-08-09-jarvis-pursuit-data.json`. Query one
 lane with:
 
 ```bash
-jq '.audits[] | select(.page == "<label>")' \
-  docs/redesigns/2026-08-09-jarvis-pursuit-data.json
+git show b23d5b76afab:docs/redesigns/2026-08-09-jarvis-pursuit-data.json \
+  | jq '.audits[] | select(.page == "<label>")'
 ```
 
 Labels use `qc: ...`, `page: ...`, `cross: ...`, and `eco: ...`; root synthesis is under
@@ -37,14 +37,14 @@ non-QC `moves`. It then deduplicated and prioritized those candidates into the 1
 below. Recheck the machine-readable denominator with:
 
 ```bash
-jq -e '
+git show b23d5b76afab:docs/redesigns/2026-08-09-jarvis-pursuit-data.json | jq -e '
   .synthesis.candidate_move_totals as $totals
   | ([.audits[].candidate_moves[]?.title, .audits[].moves[]?.title] | unique) as $titles
   | ($titles | length) == $totals.distinct_raw_titles
   and $totals.distinct_raw_titles == 59
   and $totals.qc_candidate_moves == 5
   and $totals.non_qc_moves == 54
-' docs/redesigns/2026-08-09-jarvis-pursuit-data.json
+'
 ```
 
 ## North star

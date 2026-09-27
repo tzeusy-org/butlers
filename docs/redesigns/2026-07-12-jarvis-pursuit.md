@@ -11,7 +11,7 @@ scope fenced), and the 115 fresh merges. Backward compatibility waived.
 
 **Full per-agent dossiers** (verdicts, JARVIS gaps, ideal designs, findings with file:line evidence and
 live/source/inferred confidence, QC landing grades, ecosystem proposals) live in
-[`2026-07-12-jarvis-pursuit-data.json`](2026-07-12-jarvis-pursuit-data.json) — query one agent with
+`git show b23d5b76afab:docs/redesigns/2026-07-12-jarvis-pursuit-data.json` — query one agent with
 `jq '.audits[] | select(.page=="<key>")' <file>` (QC agents use keys `qc:*` and carry a `landings` array;
 ecosystem lenses `eco:*`, sweeps `cross:*`; the synthesis object carries the tier board, themes, ranked
 moves, and the full dropped ledger).
