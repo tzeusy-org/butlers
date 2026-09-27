@@ -471,6 +471,9 @@ async def run_startup(daemon: Any) -> None:
     # 14b. Apply approval gates to configured gated tools
     daemon._gated_tool_originals = await daemon._apply_approval_gates()
 
+    # 14b.1. Snapshot only the final post-approval FastMCP definitions.
+    await daemon._finalize_tool_catalog()
+
     # 14c. Wire calendar overlap-approval enqueuer when both modules are loaded
     daemon._wire_calendar_approval_enqueuer()
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import abc
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -53,9 +53,25 @@ class ToolMeta:
         arg_sensitivities: Mapping of argument name to whether it is
             safety-critical (sensitive). Arguments not listed are resolved
             via the heuristic fallback in the approvals sensitivity module.
+        canonical_name: Exact name of the already-registered FastMCP handler.
+        module_name: Core or the owning module's canonical name.
+        group_name: Registration group that admitted the handler.
+        namespace: Logical discovery namespace; it never renames the handler.
+        llm_presentable: Whether a future adapter may include this definition.
+        load_posture: Whether a presentable definition is eager or deferrable.
+
+    Presentation fields are optional so an unclassified legacy module keeps
+    its eager, presentable compatibility behavior while native classification
+    remains incomplete.
     """
 
     arg_sensitivities: dict[str, bool] = field(default_factory=dict)
+    canonical_name: str | None = None
+    module_name: str | None = None
+    group_name: str | None = None
+    namespace: str | None = None
+    llm_presentable: bool | None = None
+    load_posture: Literal["eager", "deferred"] | None = None
 
 
 class Module(abc.ABC):
@@ -163,7 +179,7 @@ class Module(abc.ABC):
         """
 
     def tool_metadata(self) -> dict[str, ToolMeta]:
-        """Return sensitivity metadata for tools registered by this module.
+        """Return sensitivity and optional presentation metadata for tools.
 
         Keys are tool names, values are ``ToolMeta`` instances describing
         which arguments are safety-critical.  Modules that do not override

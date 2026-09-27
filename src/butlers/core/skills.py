@@ -18,6 +18,7 @@ Butler config directory layout::
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from dataclasses import dataclass
@@ -57,6 +58,20 @@ class ResolvedSystemPrompt:
 
     prompt: str
     sources: tuple[SystemPromptSource, ...]
+
+
+class SkillIdentityError(ValueError):
+    """A canonical skill identity cannot be resolved safely."""
+
+
+@dataclass(frozen=True, slots=True)
+class SkillIdentity:
+    """Content-blind identity for one canonical runtime skill."""
+
+    name: str
+    canonical_source: str
+    content_digest: str
+    compatibility_aliases: tuple[str, ...]
 
 
 def _roster_source(path: Path, roster_root: Path) -> str:
@@ -532,6 +547,51 @@ def list_valid_skills(skills_dir: Path) -> list[Path]:
             )
 
     return sorted(valid_skills, key=lambda p: p.name)
+
+
+def resolve_skill_identity(config_dir: Path, skill_name: str) -> SkillIdentity:
+    """Resolve one skill to its canonical ``.agents/skills`` physical source."""
+    if not is_valid_skill_name(skill_name):
+        raise SkillIdentityError(f"invalid skill name: {skill_name!r}")
+    canonical = config_dir / ".agents" / "skills" / skill_name / "SKILL.md"
+    if not canonical.is_file():
+        raise SkillIdentityError(f"canonical skill source is missing: {skill_name}")
+    try:
+        content_digest = hashlib.sha256(canonical.read_bytes()).hexdigest()
+        canonical_resolved = canonical.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise SkillIdentityError(f"canonical skill source is unreadable: {skill_name}") from exc
+
+    aliases: list[str] = []
+    claude_alias = config_dir / ".claude" / "skills" / skill_name / "SKILL.md"
+    if claude_alias.exists() or claude_alias.is_symlink():
+        try:
+            alias_resolved = claude_alias.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise SkillIdentityError(
+                f"compatibility skill alias is unreadable: {skill_name}"
+            ) from exc
+        if alias_resolved != canonical_resolved:
+            raise SkillIdentityError(
+                f"compatibility skill alias forks canonical identity: {skill_name}"
+            )
+        aliases.append(f".claude/skills/{skill_name}/SKILL.md")
+    return SkillIdentity(
+        name=skill_name,
+        canonical_source=f".agents/skills/{skill_name}/SKILL.md",
+        content_digest=content_digest,
+        compatibility_aliases=tuple(aliases),
+    )
+
+
+def list_skill_identities(config_dir: Path) -> tuple[SkillIdentity, ...]:
+    """List canonical skill identities without returning guidance content."""
+    skills_dir = get_skills_dir(config_dir)
+    if skills_dir is None:
+        return ()
+    return tuple(
+        resolve_skill_identity(config_dir, path.name) for path in list_valid_skills(skills_dir)
+    )
 
 
 # ---------------------------------------------------------------------------
