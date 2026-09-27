@@ -158,6 +158,8 @@ def test_prompt_requires_structured_investigation_notes_json():
     assert '"headline": "Spotify ingestion failing - scope renamed upstream"' in prompt
     assert '"hypothesis": "Token expiry"' in prompt
     assert "Emit valid JSON only" in prompt
+    assert "diagnosis fields must describe only observed behavior" in prompt
+    assert "proposal language" in prompt
     assert "structured-output mode" not in prompt
 
 

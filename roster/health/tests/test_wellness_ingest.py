@@ -894,16 +894,16 @@ class TestOwnerIdentityValidation:
     ) -> None:
         """Envelope from a secondary health-scoped account is accepted.
 
-        Both uniquosity@ (primary) and tzeuse@ (secondary) are active and
-        health-scoped.  An envelope with sender.identity=tzeuse@ must be
+        Both owner@ (primary) and owner.secondary@ (secondary) are active and
+        health-scoped.  An envelope with sender.identity=owner.secondary@ must be
         accepted and the result must carry the owner entity_id.
         """
-        envelope = _make_sleep_envelope(sender_identity="tzeuse@gmail.com")
+        envelope = _make_sleep_envelope(sender_identity="owner.secondary@example.com")
 
         # Both accounts are active and health-scoped — recognised set contains both.
         result, mock_store, _ = await _call_translate(
             envelope,
-            recognised_emails=["uniquosity@gmail.com", "tzeuse@gmail.com"],
+            recognised_emails=["owner@example.com", "owner.secondary@example.com"],
         )
 
         assert result["status"] == "ok"
@@ -919,15 +919,15 @@ class TestOwnerIdentityValidation:
     ) -> None:
         """Envelope from an account missing health scopes is rejected.
 
-        tzeuse@ exists in google_accounts but its granted_scopes does not
+        owner.secondary@ exists in google_accounts but its granted_scopes does not
         contain all three required Google Health scopes, so list_health_scoped_accounts
         will not include it.  The ingest must be rejected.
         """
-        envelope = _make_sleep_envelope(sender_identity="tzeuse@gmail.com")
+        envelope = _make_sleep_envelope(sender_identity="owner.secondary@example.com")
 
-        # Recognised set only contains uniquosity@; tzeuse@ has insufficient scopes.
+        # Recognised set only contains owner@; owner.secondary@ has insufficient scopes.
         result, _, mock_counter = await _call_translate(
-            envelope, recognised_emails=["uniquosity@gmail.com"]
+            envelope, recognised_emails=["owner@example.com"]
         )
 
         assert result["status"] == "rejected_non_owner_sender"
@@ -937,11 +937,11 @@ class TestOwnerIdentityValidation:
     async def test_owner_identity_validation_rejects_revoked_account(self) -> None:
         """Envelope from a revoked account is rejected.
 
-        tzeuse@ row exists in google_accounts but has status='revoked'.
+        owner.secondary@ row exists in google_accounts but has status='revoked'.
         list_health_scoped_accounts excludes non-active rows, so the ingest
         must be rejected.
         """
-        envelope = _make_sleep_envelope(sender_identity="tzeuse@gmail.com")
+        envelope = _make_sleep_envelope(sender_identity="owner.secondary@example.com")
 
         # Recognised set is empty (revoked accounts are excluded by the registry helper).
         result, _, _ = await _call_translate(envelope, recognised_emails=[])
@@ -1046,22 +1046,22 @@ class TestFourSegmentExternalEventId:
     ) -> None:
         """4-segment sleep_session event ID is parsed correctly.
 
-        envelope external_event_id = 'google_health:uniquosity@gmail.com:sleep_session:sess-4seg'
+        envelope external_event_id = 'google_health:owner@example.com:sleep_session:sess-4seg'
         Must yield status=ok with predicate='sleep_session', NOT skipped_unknown_predicate.
         """
         envelope = _make_sleep_envelope(
             session_id="sess-4seg",
-            sender_identity="uniquosity@gmail.com",
+            sender_identity="owner@example.com",
         )
         # Confirm the fixture actually uses the 4-segment format.
         eid = envelope["event"]["external_event_id"]
-        assert eid == "google_health:uniquosity@gmail.com:sleep_session:sess-4seg", (
+        assert eid == "google_health:owner@example.com:sleep_session:sess-4seg", (
             f"Fixture did not produce the expected 4-segment id; got: {eid!r}"
         )
 
         result, mock_store, _ = await _call_translate(
             envelope,
-            recognised_emails=["uniquosity@gmail.com"],
+            recognised_emails=["owner@example.com"],
         )
 
         assert result["status"] == "ok", (
@@ -1077,23 +1077,23 @@ class TestFourSegmentExternalEventId:
     ) -> None:
         """4-segment daily-summary event ID (activity) is parsed correctly.
 
-        envelope external_event_id = 'google_health:uniquosity@gmail.com:activity:2026-04-24'
+        envelope external_event_id = 'google_health:owner@example.com:activity:2026-04-24'
         Must yield status=ok with facts for measurement_steps and measurement_active_minutes,
         NOT skipped_unknown_predicate.
         """
         envelope = _make_activity_envelope(
             record_date="2026-04-24",
-            sender_identity="uniquosity@gmail.com",
+            sender_identity="owner@example.com",
         )
         # Confirm the fixture actually uses the 4-segment format.
         eid = envelope["event"]["external_event_id"]
-        assert eid == "google_health:uniquosity@gmail.com:activity:2026-04-24", (
+        assert eid == "google_health:owner@example.com:activity:2026-04-24", (
             f"Fixture did not produce the expected 4-segment id; got: {eid!r}"
         )
 
         result, mock_store, _ = await _call_translate(
             envelope,
-            recognised_emails=["uniquosity@gmail.com"],
+            recognised_emails=["owner@example.com"],
         )
 
         assert result["status"] == "ok", (

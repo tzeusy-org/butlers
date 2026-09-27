@@ -22,8 +22,16 @@ import asyncpg
 import httpx
 import pytest
 
+from butlers.api.app import create_app as create_production_app
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.model_settings import _get_db_manager
+from tests.api.auth_helpers import _DomainOwnerState, create_authenticated_domain_app
+
+
+@pytest.fixture(scope="module")
+def app():
+    return create_authenticated_domain_app(api_key="owner-key")
+
 
 pytestmark = pytest.mark.unit
 
@@ -451,19 +459,59 @@ async def test_priority_stepper_404_on_missing(app, audit_append_spy):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "configured,header,expected", [(False, None, 503), (True, None, 401), (True, "wrong", 401)]
+)
+async def test_verify_all_owner_gate_precedes_run(
+    app, monkeypatch: pytest.MonkeyPatch, configured: bool, header: str | None, expected: int
+) -> None:
+    """REQ-dashboard-model-settings-001: no verification run starts before owner auth."""
+    import butlers.api.routers.model_settings as _ms
+
+    monkeypatch.setattr(_ms, "_verify_all_last_run", 0.0)
+    if configured:
+        monkeypatch.setenv("DASHBOARD_API_KEY", "owner-key")
+    else:
+        monkeypatch.delenv("DASHBOARD_API_KEY", raising=False)
+    _, mock_pool = _app_with_pool(app)
+    mock_pool.fetch = AsyncMock(return_value=[])
+    monkeypatch.setenv("DASHBOARD_AUTH_ORIGIN", "https://butlers.example.test")
+    monkeypatch.setenv("DASHBOARD_AUTH_RP_ID", "butlers.example.test")
+    guarded = create_production_app(api_key="owner-key" if configured else "")
+    guarded.dependency_overrides.update(app.dependency_overrides)
+    if configured:
+        guarded.state.owner_auth_service = _DomainOwnerState("owner-key")
+    headers = {"Origin": "https://butlers.example.test"}
+    if header is not None:
+        headers["X-API-Key"] = header
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=guarded),
+        base_url="https://butlers.example.test",
+        headers=headers,
+    ) as client:
+        response = await client.post("/api/settings/models/verify-all")
+
+    assert response.status_code == expected
+    mock_pool.fetch.assert_not_awaited()
+
+
 async def test_verify_all_rate_limit(app, audit_append_spy, monkeypatch):
     """POST /api/settings/models/verify-all returns 429 on second call within 60s."""
     import butlers.api.routers.model_settings as _ms
 
     # Reset the sentinel to allow the first call
     monkeypatch.setattr(_ms, "_verify_all_last_run", 0.0)
+    monkeypatch.setenv("DASHBOARD_API_KEY", "owner-key")
 
     _, mock_pool = _app_with_pool(app)
     # Return an empty enabled-models list so no actual verification is attempted
     mock_pool.fetch = AsyncMock(return_value=[])
 
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+        headers={"X-API-Key": "owner-key"},
     ) as client:
         r1 = await client.post("/api/settings/models/verify-all")
         r429 = await client.post("/api/settings/models/verify-all")
@@ -494,6 +542,7 @@ async def test_verify_all_pool_failure_does_not_consume_rate_limit(
     import butlers.api.routers.model_settings as _ms
 
     monkeypatch.setattr(_ms, "_verify_all_last_run", 0.0)
+    monkeypatch.setenv("DASHBOARD_API_KEY", "owner-key")
 
     app, mock_pool = _app_with_pool(app)
     mock_pool.fetch = AsyncMock(return_value=[])
@@ -501,7 +550,9 @@ async def test_verify_all_pool_failure_does_not_consume_rate_limit(
     mock_db.credential_shared_pool.side_effect = [KeyError("No shared pool"), mock_pool]
 
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+        headers={"X-API-Key": "owner-key"},
     ) as client:
         rejected = await client.post("/api/settings/models/verify-all")
         accepted = await client.post("/api/settings/models/verify-all")
@@ -523,6 +574,7 @@ async def test_verify_all_rejects_concurrent_arrival_while_run_is_in_flight(app,
 
     monkeypatch.setattr(_ms, "_verify_all_last_run", 0.0)
     monkeypatch.setattr(_ms, "_verify_all_in_flight", False)
+    monkeypatch.setenv("DASHBOARD_API_KEY", "owner-key")
     _, mock_pool = _app_with_pool(app)
     started = asyncio.Event()
     release = asyncio.Event()
@@ -543,7 +595,9 @@ async def test_verify_all_rejects_concurrent_arrival_while_run_is_in_flight(app,
     monkeypatch.setattr(_ms, "run_verify_all_models", blocked_verify_all)
 
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+        headers={"X-API-Key": "owner-key"},
     ) as client:
         first_task = asyncio.create_task(client.post("/api/settings/models/verify-all"))
         try:
@@ -565,12 +619,15 @@ async def test_verify_all_accepted_after_interval_returns_current_result_shape(
 
     # Simulate last run well in the past
     monkeypatch.setattr(_ms, "_verify_all_last_run", time.monotonic() - 120.0)
+    monkeypatch.setenv("DASHBOARD_API_KEY", "owner-key")
 
     _, mock_pool = _app_with_pool(app)
     mock_pool.fetch = AsyncMock(return_value=[])
 
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+        headers={"X-API-Key": "owner-key"},
     ) as client:
         resp = await client.post("/api/settings/models/verify-all")
 
@@ -674,6 +731,44 @@ async def test_update_catalog_entry_422_no_fields(app, audit_append_spy):
     ) as client:
         resp = await client.put(f"/api/settings/models/{entry_id}", json={})
     assert resp.status_code == 422
+    audit_append_spy.assert_not_awaited()
+
+
+async def test_update_catalog_entry_writes_and_returns_capabilities(app, audit_append_spy):
+    """PUT capabilities replaces the envelope; the entry echoes it back."""
+    entry_id = uuid.uuid4()
+    updated_row = {**_make_catalog_row(entry_id=entry_id), "capabilities": {"vision": True}}
+    _, mock_pool = _app_with_pool(app, fetchrow_result=updated_row)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.put(
+            f"/api/settings/models/{entry_id}", json={"capabilities": {"vision": True}}
+        )
+    assert resp.status_code == 200
+    assert resp.json()["data"]["capabilities"] == {"vision": True}
+    sql, *params = mock_pool.fetchrow.await_args.args
+    assert "capabilities = $1::jsonb" in sql
+    assert params[0] == {"vision": True}
+
+
+@pytest.mark.parametrize("method", ["post", "put"])
+async def test_catalog_capabilities_outside_vocabulary_422(app, audit_append_spy, method):
+    """A typo'd feature key is rejected before any write, never stored as 'no opinion'."""
+    _, mock_pool = _app_with_pool(app)
+    body: dict[str, Any] = {"capabilities": {"visoin": True}}
+    if method == "post":
+        body.update(alias="m", runtime_type="codex", model_id="gpt-6-sol")
+        url = "/api/settings/models"
+    else:
+        url = f"/api/settings/models/{uuid.uuid4()}"
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await getattr(client, method)(url, json=body)
+    assert resp.status_code == 422
+    assert "visoin" in resp.json()["detail"]
+    mock_pool.fetchrow.assert_not_awaited()
     audit_append_spy.assert_not_awaited()
 
 
@@ -805,23 +900,86 @@ async def test_model_attempts_422_on_bad_since(app):
 
 
 async def test_model_attempts_returns_real_rows(app):
-    """GET /api/settings/models/{id}/attempts returns provenance rows."""
+    """Private runtime failures stay content-blind through dispatch evidence and its API."""
     from datetime import UTC, datetime
+
+    from butlers.connectors.discretion_dispatcher import (
+        PURPOSE_LANE_PRIVATE_CONTENT,
+        DiscretionDispatcher,
+    )
+    from butlers.core.model_routing import QuotaStatus, SpendRoutingResult
 
     entry_id = uuid.uuid4()
     attempt_ts = datetime(2026, 5, 24, 10, 0, 0, tzinfo=UTC)
 
+    local_candidate = ("opencode", "ollama/qwen3.5:9b", [], entry_id, 30)
+    resolved = (*local_candidate, "specialty")
+    sentinel = (
+        "Connection error: SENSITIVE_PROVIDER response_body=private prompt_fragment=do-not-publish"
+    )
+    adapter = MagicMock()
+    adapter.invoke = AsyncMock(side_effect=RuntimeError(sentinel))
+    adapter.last_process_info = None
+    dispatcher = DiscretionDispatcher(
+        pool=MagicMock(),
+        purpose_lane=PURPOSE_LANE_PRIVATE_CONTENT,
+    )
+
+    with (
+        patch(
+            "butlers.connectors.discretion_dispatcher.resolve_model_with_effective_tier",
+            AsyncMock(return_value=resolved),
+        ),
+        patch(
+            "butlers.connectors.discretion_dispatcher.apply_spend_routing_rules",
+            AsyncMock(return_value=SpendRoutingResult(resolved=local_candidate)),
+        ),
+        patch(
+            "butlers.connectors.discretion_dispatcher.check_token_quota",
+            AsyncMock(
+                return_value=QuotaStatus(
+                    allowed=True,
+                    usage_24h=0,
+                    limit_24h=None,
+                    usage_30d=0,
+                    limit_30d=None,
+                )
+            ),
+        ),
+        patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
+        patch(
+            "butlers.connectors.discretion_dispatcher.next_same_tier_candidate",
+            AsyncMock(return_value=None),
+        ),
+        patch(
+            "butlers.connectors.discretion_dispatcher.record_dispatch_attempt",
+            AsyncMock(),
+        ) as record_attempt,
+    ):
+        with pytest.raises(RuntimeError, match="same_tier_failover_exhausted"):
+            await dispatcher.call("synthetic private input")
+
+    evidence = record_attempt.await_args.kwargs
+    assert evidence["outcome"] == "runtime_failure"
+    assert evidence["purpose_lane"] == PURPOSE_LANE_PRIVATE_CONTENT
+    assert evidence["failure_reason"] == "private_content_runtime_failure"
+    assert evidence["error_code"] is None
+    assert evidence["error_message"] is None
+    assert sentinel not in repr(evidence)
+
     attempt_row = {
         "ts": attempt_ts,
-        "butler": "general",
-        "outcome": "quota_skip",
-        "attempt_index": 0,
-        "failure_reason": "Token quota exhausted for catalog entry 'claude-sonnet': 24h",
-        "error_code": None,
-        "error_message": None,
+        "butler": evidence["butler"],
+        "outcome": evidence["outcome"],
+        "attempt_index": evidence["attempt_index"],
+        "failure_reason": evidence["failure_reason"],
+        "error_code": evidence["error_code"],
+        "error_message": evidence["error_message"],
         "tool_call_count": 0,
         "session_id": None,
         "logical_session_id": "req-abc-123",
+        "duration_ms": evidence["duration_ms"],
+        "purpose_lane": evidence["purpose_lane"],
     }
 
     _, mock_pool = _app_with_pool(app)
@@ -838,12 +996,17 @@ async def test_model_attempts_returns_real_rows(app):
     assert body["meta"]["total"] == 1
     rows = body["data"]
     assert len(rows) == 1
-    assert rows[0]["outcome"] == "quota_skip"
+    assert rows[0]["outcome"] == "runtime_failure"
     assert rows[0]["attempt_index"] == 0
-    assert rows[0]["butler"] == "general"
+    assert rows[0]["butler"] == "__discretion__"
     assert rows[0]["logical_session_id"] == "req-abc-123"
     assert rows[0]["tool_call_count"] == 0
     assert rows[0]["session_id"] is None
+    assert rows[0]["purpose_lane"] == "private_content"
+    assert rows[0]["failure_reason"] == "private_content_runtime_failure"
+    assert rows[0]["error_code"] is None
+    assert rows[0]["error_message"] is None
+    assert sentinel not in resp.text
     assert "ORDER BY ts DESC, id DESC" in mock_pool.fetch.call_args.args[0]
 
 

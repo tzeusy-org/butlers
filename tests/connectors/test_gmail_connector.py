@@ -498,7 +498,7 @@ async def test_refresh_sent_message_ids_auth_failure_retains_cache_and_marks_err
 # Health-state honesty (bu-dej20)
 #
 # Diagnosis: connector_heartbeat_log on the live dev DB shows exactly one
-# ``error`` heartbeat in 1734 over 10 days for gmail:user:uniquosity@gmail.com
+# ``error`` heartbeat in 1734 over 10 days for gmail:user:owner@example.com
 # (2026-07-05 01:12:51), immediately followed by ``healthy`` two minutes
 # later while public.ingestion_events kept landing rows through the same
 # window. The clearing behavior already worked (state is never sticky past

@@ -340,20 +340,14 @@ The connector SHALL evaluate active ingestion policy rules before submitting eve
 
 ### Requirement: Heartbeat Protocol
 
-The connector SHALL send periodic heartbeat envelopes to the Switchboard for liveness tracking.
+The connector SHALL send `connector.heartbeat.v1` envelopes to the Switchboard as defined by connector-base-spec "Heartbeat Protocol", using the shared connector heartbeat; this requirement states only the Steam-specific values.
 
 #### Scenario: Heartbeat envelope
 
-- **WHEN** the heartbeat interval elapses (default 60 seconds, configurable via dashboard settings under Steam connector configuration)
-- **THEN** the connector SHALL submit a `connector.heartbeat.v1` envelope containing:
-  - `identity.connector_type = "steam"`
-  - `identity.endpoint_identity` = comma-separated list of active endpoint identities
-  - `health.status` = aggregated health (`healthy`, `degraded`, `error`)
-  - `health.active_accounts` = count of active polling loops
-  - `counters.events_submitted` = total events submitted since startup
-  - `counters.events_filtered` = total events filtered since startup
-  - `counters.errors` = total errors since startup
-  - `checkpoint.last_poll_at` = most recent poll timestamp across all accounts
+- **WHEN** the heartbeat interval elapses (default 60 seconds, overridable via `STEAM_HEARTBEAT_INTERVAL_S`)
+- **THEN** the connector SHALL submit a `connector.heartbeat.v1` envelope whose `connector.connector_type` is `"steam"`
+- **AND** `connector.endpoint_identity` SHALL be the comma-separated list of active account endpoint identities (`steam:user:<steam_id>`), or `steam:no_accounts` when no account is active
+- **AND** `status.state` SHALL be the connector's aggregated health (`healthy`, `degraded`, or `error`)
 
 #### Scenario: Heartbeat failure does not crash
 

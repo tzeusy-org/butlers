@@ -9,15 +9,14 @@ instead of evaporating into closed dossiers that nobody re-reads.
 
 ## Provenance
 
-Every entry below is sourced from the **JARVIS relentless pursuit** dossiers
+This ledger covers dossiers through 2026-07-10; later pursuit runs' Dropped
+sections have not been folded in.
+
+Except for the RFC 0019 egress entries, every entry is sourced from the **JARVIS relentless pursuit** dossiers
 under `docs/redesigns/` (skill: `.claude/skills/butlers-development/subskills/butler-relentless-jarvis-pursuit/`),
 a recurring generative audit of the Butlers ecosystem against
 `about/heart-and-soul/vision.md`:
 
-- **2026-07-03** (`2026-07-03-jarvis-audit.md`) — the first run. It predates
-  the dropped-ledger convention: it has no explicit "Dropped" section because
-  its 14 ranked moves were nearly all pursued via epic `bu-86c4c`
-  (17/19 children landed). Nothing from this run needed parking.
 - **2026-07-04** (`2026-07-04-jarvis-pursuit.md`) — second run, first to carry
   an explicit "Dropped (dedup ledger)" section (27 items).
 - **2026-07-10** (`2026-07-10-jarvis-pursuit.md`) — third run, broadened to a
@@ -43,32 +42,8 @@ Each entry has:
 
 ## Ecosystem: cross-butler collaboration
 
-### Cross-butler delegation ask/answer ledger
-**Idea:** Let one butler ask another a structured question and get a
-tracked answer back, instead of only the one-way hub-and-spoke fan-out that
-exists today.
-**Why parked:** 07-04 deferred it behind the `memory_catalog` flip (so
-butlers could at least *read* each other's facts before they could *ask*
-each other questions). By 07-10 the catalog flip had shipped, but the
-delegation ledger itself (`bu-gxmfx`) turned out to be zero-row machinery
-with no producers or readers — built, but nothing calls it.
-**Unpark condition:** the Owner Decision Desk (07-10 move 8) resolves
-adopt-or-descope for `bu-gxmfx`. If adopted, treat "first producer wired"
-(some real cross-butler question flow) as the actual unpark signal, not
-the ledger's mere existence.
-**Source:** 07-04 Dropped #1; 07-10 Dropped #24 (Decision Desk seed queue), QC verdict on `bu-gxmfx`.
-
-### Domain-event subscriptions + cross-domain case files
-**Idea:** Let butlers subscribe to each other's domain events and build
-shared "case files" spanning multiple butlers' data (e.g. a finance event
-that a chronicler episode should know about).
-**Why parked:** premature — both the knowledge catalog and the delegation
-ledger above need to land and prove out first; this is L-cost with a
-dependency chain on both.
-**Unpark condition:** delegation ask/answer (above) has a live producer/consumer
-pair in production; only then does a subscription layer have anything to
-subscribe to.
-**Source:** 07-04 Dropped #2.
+(The delegation ask/answer ledger and domain-event subscriptions / fleet case
+files from 07-04 have since been built; see RFC 0032.)
 
 ---
 
@@ -117,16 +92,16 @@ measure against.
 
 ## Ecosystem: proactivity
 
-### Speculative reply drafting, wake-anchored delivery, per-category insight feedback
-**Idea:** Three refinements to how insights reach the owner: pre-drafting
-likely replies, timing delivery to when the owner is actually awake, and
-letting the owner give per-category feedback that tunes future insight
-volume.
-**Why parked:** all three assume the attention ledger and decision-loop
+### Speculative reply drafting, wake-anchored delivery
+**Idea:** Two refinements to how insights reach the owner: pre-drafting
+likely replies, and timing delivery to when the owner is actually awake.
+(Per-category insight feedback, the third 07-04 idea, shipped as RFC 0011
+Amendment 7.)
+**Why parked:** both assume the attention ledger and decision-loop
 primitives exist first.
-**Unpark condition:** RFC 0021's decision loop ships (tracked via
-`bu-24lu6`) and the attention ledger (07-10 move 1) is live with a real
-reader — then these become the natural next slice of proactivity polish.
+**Unpark condition:** RFC 0021's decision loop and the attention ledger
+reader have both shipped, so these are the natural next slice of
+proactivity polish; open a bead when prioritized.
 **Source:** 07-04 Dropped #6.
 
 ### Telegram reaction/reply capture, per-origin scoring modulation, weekly relevance digest, LLM insight-quality audit
@@ -311,17 +286,6 @@ keyboard-triage adoption batch (below) rather than as a standalone QA
 fix — same primitive, same rollout mechanism.
 **Source:** 07-04 Dropped #19.
 
-### Approvals: decision record (`decided_by`/`decided_at`/deny reason/execution result) + real expiry sweep
-**Idea:** Make a decided approval's dossier show who decided it, when, why
-(if denied), and what the execution actually returned — today the decided
-dossier omits the whole decision record. Add a scheduled sweep that expires
-approvals per their stated expiry instead of leaving it advisory.
-**Why parked:** cut at the 15-move ranking cap in 07-10 — explicitly called
-out as "the strongest next-cycle UX candidate."
-**Unpark condition:** promote to the top of the next cycle's ranked moves;
-no further gating condition — this is queued, not blocked.
-**Source:** 07-10 Dropped #1.
-
 ### Entities-Plex: server-side attention verdict, optimistic retier undo, find fall-through, canvas keyboard parity
 **Idea:** Move the plex's cluster verdict computation server-side (it is
 currently a frontend heuristic), make retiering an entity's tier an
@@ -495,17 +459,12 @@ unmeasurable marker (SC-6/SC-8 per `proj:direction`).
 
 ## Owner Decision Desk seed queue
 
-These are not "ideas" so much as **decisions the owner has not yet made** —
-routed here rather than ranked because no amount of engineering work can
-unpark them; only an owner choice can. 07-10 move 8 proposes a first-class
-"Decisions" lane for exactly this reason.
-**Unpark condition (all four):** the Owner Decision Desk (07-10 move 8)
-ships and the owner clears its seed queue — until then these sit as genuine
-open questions, not backlog.
+These are **decisions the owner has not yet made**; only an owner choice can
+unpark them. The Owner Decision Desk (`/decisions`) has shipped, so each
+belongs there. (Delegation-ledger adopt-or-descope and `PRODUCT.md`
+adopt-or-delete are resolved: the ledger is built and wired, and `PRODUCT.md`
+no longer exists.)
 
-- **Delegation-ledger adopt-or-descope** (`bu-gxmfx`) — see the
-  cross-butler collaboration entry above; duplicate cross-reference kept
-  here because it is simultaneously a parked idea and a pending decision.
 - **Dashboard memory-catalog search wiring** — the fleet-knowledge search
   consumer for `public.memory_catalog` (07-04 move 15's third slice) never
   landed; needs an owner call on priority against other dashboard search
@@ -513,11 +472,51 @@ open questions, not backlog.
 - **`api`-runtime-adapter (API-direct inference lane) re-enable** — sits
   disabled in the live model catalog with no recorded provenance for why;
   needs an owner decision on whether to re-enable, keep disabled, or remove.
-- **`PRODUCT.md` adopt-or-delete** — an artifact whose relationship to the
-  live `openspec/` and `about/` doctrine tree was never resolved.
 
-**Source:** 07-10 Dropped #24; 07-10 move 8 (seed queue list); QC verdicts on
-`bu-gxmfx` and the API-direct lane.
+**Source:** 07-10 Dropped #24; 07-10 move 8 (seed queue list).
+
+---
+
+## Egress: owner-delegated actions (RFC 0019)
+
+Each of these needs its owning butler's manifesto amended to permit the action,
+plus the doctrine decision on the parked automation rule engine in
+[RFC 0019](rfcs/0019-proactive-egress-and-automation-parked.md).
+
+### Payment / transfer initiation (Finance)
+
+- **Idea:** Initiate bank or payment-API transfers.
+- **Why parked:** `critical` risk; irreversible, money leaves the account.
+- **Unpark condition:** Finance manifesto amended to permit transfers, with mandatory per-transaction confirmation and no standing rules.
+- **Source:** RFC 0019 (2026-06-14).
+
+### Booking confirmations / modifications (Travel)
+
+- **Idea:** Change or cancel flights, hotels, and reservations via provider APIs or email workflows.
+- **Why parked:** `high` risk; fees and irreversible cancellations.
+- **Unpark condition:** Travel manifesto amended to permit provider-side changes, and the per-event approval path covers them.
+- **Source:** RFC 0019 (2026-06-14).
+
+### Grocery / delivery ordering (General + `shopping` module)
+
+- **Idea:** Submit orders to delivery services.
+- **Why parked:** `high` risk; a financial transaction plus logistics, with no owning butler today.
+- **Unpark condition:** An owning butler's manifesto claims ordering, and a delivery-service integration exists.
+- **Source:** RFC 0019 (2026-06-14).
+
+### External contact enrichment (Relationship)
+
+- **Idea:** Look up contacts against external social-profile APIs (LinkedIn, etc.).
+- **Why parked:** Privacy- and rate-limit-sensitive; `high` risk for any external lookup.
+- **Unpark condition:** Relationship manifesto amended to permit external lookups, with a privacy review of what leaves the system.
+- **Source:** RFC 0019 (2026-06-14).
+
+### Photo / media organization with face recognition (General + `media` module)
+
+- **Idea:** Tag media by the people in it via face recognition.
+- **Why parked:** Significant new infrastructure; privacy-sensitive even though filing is reversible.
+- **Unpark condition:** A media store exists and the owner accepts on-device face recognition.
+- **Source:** RFC 0019 (2026-06-14).
 
 ---
 

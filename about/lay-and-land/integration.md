@@ -3,6 +3,13 @@
 How subsystems connect at their boundaries: wire protocols, envelope schemas,
 and transport details.
 
+This page is a snapshot, not a contract. Envelope schemas live in their
+Pydantic models and openspec specs; when they disagree with this page, they
+win. The observer and per-target intent edges in the overview are target
+contracts of the open `restore-butler-control-plane-liveness` and
+`recover-ingestion-target-deliveries` changes; the identity route and a shadow
+observer have landed, route authority has not moved.
+
 ---
 
 ## Overview
@@ -16,11 +23,14 @@ graph TB
     subgraph Switchboard
         Ingest["ingest() tool"]
         Classify["classify()"]
+        Intent["per-target delivery intents"]
         Route["route.execute()"]
+        Preflight["internal read-only route preflight"]
     end
 
     subgraph DomainButler["Domain Butler"]
         RouteInbox["route_inbox"]
+        Identity["internal identity/readiness facts"]
         Spawner["Spawner"]
         MCP["FastMCP Server"]
     end
@@ -31,6 +41,7 @@ graph TB
 
     subgraph Dashboard
         FastAPI["FastAPI Backend"]
+        Observer["supervised fleet observer"]
     end
 
     subgraph DB["PostgreSQL"]
@@ -40,8 +51,13 @@ graph TB
 
     C -- "ingest.v1 / MCP SSE" --> Ingest
     Ingest --> Classify
-    Classify -- "route.v1 / MCP SSE" --> Route
+    Classify -- "durable classified targets" --> Intent
+    Intent -- "fenced route.v1 attempt" --> Route
     Route -- "route.v1 / MCP SSE" --> RouteInbox
+    Observer -- "exact roster endpoint / bounded GET" --> Identity
+    Observer -- "bounded internal GET" --> Preflight
+    Preflight -- "identity GET only" --> Identity
+    Observer -- "DB-server observation" --> Shared
     RouteInbox --> Spawner
     Spawner -- "ephemeral MCP config / subprocess" --> CLI
     CLI -- "MCP tool calls / SSE or HTTP" --> MCP
@@ -121,6 +137,23 @@ an already-processing dashboard turn first reconciles its durable predecessor.
 If that predecessor is not provably terminal, recovery marks the route row for
 operator attention and does not automatically replay a second runtime.
 
+**Approved ingestion recovery target (2026-09-23):** Ordinary non-dashboard
+ingestion-to-domain routing has a Switchboard-owned durable per-target intent
+before the first `route.execute` call. Its stable acceptance identity is
+`(ingestion_event_id, target_butler, segment_id)`; the target atomically
+upserts this identity with the canonical immutable payload digest and returns
+the same receipt on exact duplicates. Receipt lookup compares both receiving
+target and digest; changed work conflicts rather than appearing accepted. The
+Switchboard retries only proven pre-acceptance no-effect attempts and settles
+at `accepted` when the target owns its inbox row. Ambiguous attempts reconcile
+by the same key and never create a second target row. Its per-segment intent
+state is authoritative; the legacy per-butler dispatch outcome cannot collapse
+two segments to one success. Source `ingested` status does not imply universal
+target acceptance. Connector ingress replay,
+dashboard turn recovery, Messenger delivery, and domain-event subscriptions
+keep their distinct ownership and stores. Historic failed rows need a
+content-blind dry run and exact owner-reviewed recovery policy.
+
 ---
 
 ## 3. Spawner to LLM CLI: Ephemeral MCP Config
@@ -195,6 +228,22 @@ correct DatabaseManager instance.
 
 ---
 
+### Owner authentication before dashboard domain access
+
+The browser first completes the dedicated WebAuthn/session contract over the
+canonical HTTPS origin. Authentication-store access is bounded and separate
+from domain-pool acquisition: the central boundary must establish the owner
+before reading request bodies, domain records, caches or owner/contact rows.
+Unsafe cookie-backed requests additionally pass synchronizer CSRF and exact
+Origin validation. The resulting principal does not skip domain-specific
+approval, privacy, idempotency or owner-integrity checks.
+
+Host CLI operations use trusted administrative access for initial authorization,
+recovery and mode reconciliation. The API can complete only an already-authorized
+browser-bound ceremony through restricted persistence operations. No MCP tool,
+connector or runtime child receives host authorization authority. See
+[owner authentication](../../docs/identity_and_secrets/dashboard-owner-auth.md).
+
 ## 6. Butler to Butler: MCP via Switchboard
 
 **Rule**: Butlers never communicate directly. All inter-butler communication
@@ -207,20 +256,30 @@ between domain butlers.
 **Exception**: The Switchboard itself holds MCP client connections to all
 registered domain butlers for route dispatch.
 
+The candidate in-room voice envelopes (`voice_origin.v1`,
+`voice_presence_attest.v1`) keep this rule and are specified in
+[RFC 0034](../legends-and-lore/rfcs/0034-messenger-voice-egress.md); they are
+not implemented.
+
 ---
 
 ## 7. Non-Switchboard Butler to Switchboard: Registration
 
-**Transport**: MCP client connection + HTTP POST
+**Transport**: MCP client connection for dispatch; backend-network HTTP GET
+from the control-plane observer for liveness.
 
-On startup, each non-switchboard butler:
-1. Opens an MCP client to `{switchboard_url}/mcp` during daemon startup phase 12.
-2. Launches a liveness reporter that POSTs to
-   `{switchboard_url}/api/switchboard/heartbeat` every
-   `heartbeat_interval_seconds` (default 120s).
+On startup, each non-switchboard butler opens an MCP client to
+`{switchboard_url}/mcp` and advertises its configured endpoint; Switchboard
+records it in `switchboard.butler_registry`, which daemon heartbeats keep
+fresh and which routing reads today. Every daemon also serves
+`GET /internal/control-plane/identity` (`butler.control.v1`: name, boot
+UUIDv7, boot epoch, route-contract range, `accepting_routes`), probed by the
+Dashboard's shadow observer. Migration `sw_035` adds
+`switchboard.butler_registry_control_plane`, which keeps administrative
+policy, observed health, and route compatibility apart.
 
-The Switchboard uses this to maintain a butler registry with liveness state,
-capability declarations, and last-seen timestamps.
+The staged cutover (L1-L4), rollback rules, and the `/ready` contract are in
+the [control-plane design](../../openspec/changes/restore-butler-control-plane-liveness/design.md).
 
 ---
 
@@ -272,5 +331,6 @@ classification, routing, and session execution.
 | Dashboard -> Database | SQL | asyncpg queries | TCP |
 | Butler -> Database | SQL | asyncpg queries | TCP |
 | Connector -> Switchboard (heartbeat) | MCP | `connector.heartbeat` | SSE |
-| Butler -> Switchboard (liveness) | HTTP POST | JSON heartbeat | HTTP |
+| Control plane -> daemon (liveness) | backend-network HTTP GET | `butler.control.v1` bounded facts | HTTP |
+| Switchboard -> target (ingestion delivery) | MCP | stable per-target acceptance identity and receipt | Streamable HTTP or SSE |
 | All -> OTel | OTLP | Traces + metrics | gRPC |

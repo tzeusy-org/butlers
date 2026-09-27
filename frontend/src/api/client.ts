@@ -1,3 +1,4 @@
+import { ownerFetch } from "./owner-session";
 /**
  * Typed fetch wrapper for the Butlers dashboard API.
  *
@@ -22,6 +23,8 @@ import type {
   ApprovalsFlatListResponse,
   ApprovalsListResponse,
   ApprovalsPolicy,
+  UnroutableAttentionItem,
+  UnroutableRetryResult,
   AutonomySuggestion,
   AutonomySuggestionDismissRequest,
   AutonomySuggestionParams,
@@ -102,10 +105,13 @@ import type {
   PaginatedResponse,
   Schedule,
   ScheduleCreate,
+  ScheduleToggleRequest,
+  ScheduleToggleResult,
   ScheduleUpdate,
   SearchResults,
   SessionAggregate,
   SessionDetail,
+  SessionPromptReceipt,
   SessionParams,
   SessionSummary,
   KeysetResponse,
@@ -113,6 +119,10 @@ import type {
   StateSetRequest,
   TimelineParams,
   TimelineResponse,
+  TimelineHistogramParams,
+  TimelineHistogramResponse,
+  TimelineAttentionParams,
+  TimelineAttentionResponse,
   ScheduleCostsResponse,
   TriggerResponse,
   TickResponse,
@@ -180,7 +190,6 @@ import type {
   OwnerSetupStatus,
   IngestionEventSummary,
   IngestionEventSession,
-  IngestionEventRollup,
   IngestionEventReplayResponse,
   IngestionEventReplayHistoryEntry,
   BulkRetryEventsResponse,
@@ -242,6 +251,8 @@ import type {
   HomeAssistantConfigResponse,
   HomeAssistantDeleteResponse,
   HomeAssistantStatusResponse,
+  HomePersonMappingInput,
+  HomePersonMappingReceipt,
   DunbarRankingResponse,
   ConversationSummary,
   ConversationListParams,
@@ -322,16 +333,16 @@ import type {
   EntityLoan,
   EntityNote,
   EntityInteraction,
-  EntityReachOutDraft,
   CreateEntityNoteRequest,
   CreateEntityInteractionRequest,
   CreateEntityGiftRequest,
-  CreateEntityReachOutDraftRequest,
+  EntityActivityResponse,
   ActivityBinsResponse,
   DeltaFactsResponse,
   ViewMarkResponse,
   CoreDatesResponse,
   EntityTimelineItem,
+  EntityCadenceResponse,
   DunbarTierOverrideResponse,
   EntityFinderSearchResponse,
   NeighboursResponse,
@@ -360,12 +371,14 @@ import type {
   HeartbeatFacts,
   InsightDeliveryState,
   DriftFacts,
+  StoredFunctionFacts,
   ConditionsFacts,
   HealingDispatchEvent,
   DelegationLedgerEntry,
   SubscriptionEntry,
   DeliveryEntry,
   ReactionEntry,
+  ContractEntry,
   DeploymentFacts,
   ModuleStatus,
   Briefing,
@@ -385,8 +398,8 @@ import type {
   FinanceUpcomingBillsParams,
   FinanceBulkUpdateRequest,
   FinanceBulkUpdateResponse,
-  TravelTrip,
   TravelTripSummary,
+  TravelTripsResponse,
   TravelUpcomingModel,
   TravelTripsParams,
   TravelExpiringDocumentsResponse,
@@ -418,6 +431,7 @@ import type {
   ActivityFeed,
   ActivityFeedParams,
   ButlerMemoryStats,
+  ButlerEffectivePrompt,
   PromptVersion,
   PromptUpdateRequest,
   ButlerTool,
@@ -545,7 +559,7 @@ export async function apiFetch<T>(
 
   let response: Response;
   try {
-    response = await fetch(url, {
+    response = await ownerFetch(url, {
       ...fetchOptions,
       signal: controller.signal,
       headers: {
@@ -726,6 +740,13 @@ export function getSessionAggregate(
 /** Fetch a single session by ID (cross-butler). */
 export function getSession(id: string): Promise<ApiResponse<SessionDetail>> {
   return apiFetch<ApiResponse<SessionDetail>>(`/sessions/${encodeURIComponent(id)}`);
+}
+
+/** Fetch the separately protected effective-system-prompt receipt on demand. */
+export function getSessionPrompt(id: string): Promise<ApiResponse<SessionPromptReceipt>> {
+  return apiFetch<ApiResponse<SessionPromptReceipt>>(
+    `/sessions/${encodeURIComponent(id)}/prompt`,
+  );
 }
 
 /** Fetch sessions for a specific butler. */
@@ -1202,12 +1223,11 @@ export function triggerButlerSchedule(
 export function toggleButlerSchedule(
   name: string,
   scheduleId: string,
-): Promise<ApiResponse<Record<string, unknown>>> {
-  return apiFetch<ApiResponse<Record<string, unknown>>>(
+  body: ScheduleToggleRequest,
+): Promise<ApiResponse<ScheduleToggleResult>> {
+  return apiFetch<ApiResponse<ScheduleToggleResult>>(
     `/butlers/${encodeURIComponent(name)}/schedules/${encodeURIComponent(scheduleId)}/toggle`,
-    {
-      method: "PATCH",
-    },
+    { method: "PATCH", body: JSON.stringify(body) },
   );
 }
 
@@ -1433,8 +1453,11 @@ export function searchAll(query: string, limit?: number): Promise<ApiResponse<Se
 export async function getTimeline(params?: TimelineParams): Promise<TimelineResponse> {
   const sp = new URLSearchParams();
   if (params?.limit) sp.set("limit", String(params.limit));
+  if (params?.event) sp.set("event", params.event);
   if (params?.before) sp.set("before", params.before);
   if (params?.trace) sp.set("trace", params.trace);
+  if (params?.since) sp.set("since", params.since);
+  if (params?.until) sp.set("until", params.until);
   params?.butler?.forEach((b) => sp.append("butler", b));
   params?.event_type?.forEach((t) => sp.append("event_type", t));
   const qs = sp.toString();
@@ -1449,6 +1472,28 @@ export async function getTimeline(params?: TimelineParams): Promise<TimelineResp
       degraded_butlers: response.meta.degraded_butlers ?? [],
     },
   };
+}
+
+/** Fetch server-counted minute density for one bounded Timeline interval. */
+export function getTimelineHistogram(
+  params: TimelineHistogramParams,
+): Promise<TimelineHistogramResponse> {
+  const sp = new URLSearchParams({ since: params.since, until: params.until });
+  if (params.trace) sp.set("trace", params.trace);
+  params.butler?.forEach((butler) => sp.append("butler", butler));
+  params.event_type?.forEach((type) => sp.append("event_type", type));
+  return apiFetch<TimelineHistogramResponse>(`/timeline/histogram?${sp.toString()}`);
+}
+
+/** Fetch recent records created in the last 24 hours that are currently failed. */
+export function getTimelineAttention(
+  params?: TimelineAttentionParams,
+): Promise<TimelineAttentionResponse> {
+  const sp = new URLSearchParams();
+  if (params?.trace) sp.set("trace", params.trace);
+  params?.butler?.forEach((butler) => sp.append("butler", butler));
+  const qs = sp.toString();
+  return apiFetch<TimelineAttentionResponse>(qs ? `/timeline/attention?${qs}` : "/timeline/attention");
 }
 
 // ---------------------------------------------------------------------------
@@ -1619,7 +1664,15 @@ export function searchCalendarWorkspace(
   );
 }
 
-/** Find ranked open time slots for the "Find time" panel. */
+/**
+ * Find ranked open time slots for the "Find time" panel.
+ *
+ * `available: false` means the free/busy lookup was unavailable because of a
+ * transport failure or structured provider authentication/request failure, not
+ * that the window had no open slots. Its `reason` is the fixed, content-blind
+ * message `Free/busy lookup unavailable; try again shortly.`; callers should
+ * render the unavailable state rather than the empty success state.
+ */
 export function findCalendarWorkspaceTime(
   body: CalendarWorkspaceFindTimeRequest,
 ): Promise<ApiResponse<CalendarWorkspaceFindTimeResponse>> {
@@ -1722,7 +1775,7 @@ export async function importCalendarIcs(args: {
   form.append("butler_name", args.butlerName);
   if (args.calendarId) form.append("calendar_id", args.calendarId);
 
-  const response = await fetch(`${API_BASE_URL}/calendar/import/ics`, {
+  const response = await ownerFetch(`${API_BASE_URL}/calendar/import/ics`, {
     method: "POST",
     headers: { Accept: "application/json" },
     body: form,
@@ -2427,6 +2480,31 @@ export function getInsightCandidates(
   ).then((r) => r.data);
 }
 
+/** Record one of the broker's bounded, reversible owner-feedback verbs. */
+type InsightFeedbackResult = {
+  status: "recorded";
+  verdict: import("./types").InsightFeedbackVerdict;
+  insight_id: string;
+  snooze_until: string | null;
+};
+
+export function submitInsightFeedback(
+  insightId: string,
+  verdict: import("./types").InsightFeedbackVerdict,
+  snoozeUntil?: string,
+): Promise<InsightFeedbackResult> {
+  const action = verdict === "not_now" ? "snooze" : verdict === "never" ? "mute" : "useful";
+  return apiFetch<ApiResponse<InsightFeedbackResult>>(
+    `/switchboard/insights/${encodeURIComponent(insightId)}/${action}`,
+    {
+      method: "POST",
+      ...(verdict === "not_now"
+        ? { body: JSON.stringify({ snooze_until: snoozeUntil }) }
+        : {}),
+    },
+  ).then((response) => response.data);
+}
+
 /**
  * Fetch the open decision-bead digest for the dashboard Decisions lane
  * (bu-ckkpz.2).
@@ -2653,6 +2731,23 @@ export function getEpisode(episodeId: string): Promise<ApiResponse<Episode>> {
   );
 }
 
+/**
+ * Retry consolidation for a dead-lettered episode: resets consolidation_status
+ * to 'pending' (clearing attempts/lease/dead_letter_reason) so the next
+ * scheduled consolidation sweep reconsolidates it. POST
+ * /api/butlers/{butler}/memory/episodes/{id}/retry-consolidation (bu-6t8ix.2).
+ * Returns the refreshed episode. 409 if the episode is not dead_letter.
+ */
+export function retryEpisodeConsolidation(
+  butler: string,
+  episodeId: string,
+): Promise<ApiResponse<Episode>> {
+  return apiFetch<ApiResponse<Episode>>(
+    `/butlers/${encodeURIComponent(butler)}/memory/episodes/${encodeURIComponent(episodeId)}/retry-consolidation`,
+    { method: "POST" },
+  );
+}
+
 /** Fetch a paginated list of facts. */
 export function getFacts(
   params?: FactParams,
@@ -2693,6 +2788,54 @@ export function retractFact(factId: string): Promise<ApiResponse<Fact>> {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Lifestyle taste ledger (bu-2jtfw.10)
+// ---------------------------------------------------------------------------
+
+import type {
+  TasteSummary,
+  TasteVerdict,
+  TasteVerdictsParams,
+  TasteWork,
+  TasteWorksParams,
+} from "./types.ts";
+
+function tasteWorksSearchParams(params?: TasteWorksParams): URLSearchParams {
+  const sp = new URLSearchParams();
+  if (params?.kind) sp.set("kind", params.kind);
+  if (params?.offset != null) sp.set("offset", String(params.offset));
+  if (params?.limit != null) sp.set("limit", String(params.limit));
+  return sp;
+}
+
+/** Fetch ledger-wide taste counts. GET /api/lifestyle/taste/summary. */
+export function getLifestyleTasteSummary(): Promise<ApiResponse<TasteSummary>> {
+  return apiFetch<ApiResponse<TasteSummary>>("/lifestyle/taste/summary");
+}
+
+/** Fetch a paginated list of taste-ledger works. */
+export function getLifestyleTasteWorks(
+  params?: TasteWorksParams,
+): Promise<PaginatedResponse<TasteWork>> {
+  const qs = tasteWorksSearchParams(params).toString();
+  return apiFetch<PaginatedResponse<TasteWork>>(
+    qs ? `/lifestyle/taste/works?${qs}` : "/lifestyle/taste/works",
+  );
+}
+
+/** Fetch a paginated list of owner-asserted taste verdicts. */
+export function getLifestyleTasteVerdicts(
+  params?: TasteVerdictsParams,
+): Promise<PaginatedResponse<TasteVerdict>> {
+  const sp = new URLSearchParams();
+  if (params?.offset != null) sp.set("offset", String(params.offset));
+  if (params?.limit != null) sp.set("limit", String(params.limit));
+  const qs = sp.toString();
+  return apiFetch<PaginatedResponse<TasteVerdict>>(
+    qs ? `/lifestyle/taste/verdicts?${qs}` : "/lifestyle/taste/verdicts",
+  );
+}
+
 /** Fetch a paginated list of rules. */
 export function getRules(
   params?: RuleParams,
@@ -2707,6 +2850,17 @@ export function getRules(
 export function getRule(ruleId: string): Promise<ApiResponse<MemoryRule>> {
   return apiFetch<ApiResponse<MemoryRule>>(
     `/memory/rules/${encodeURIComponent(ruleId)}`,
+  );
+}
+
+/**
+ * Retire a rule: it stops firing but stays on the books (retired_at set).
+ * PATCH /api/memory/rules/{id}/retire (bu-6t8ix.3). Returns the refreshed rule.
+ */
+export function retireRule(ruleId: string): Promise<ApiResponse<MemoryRule>> {
+  return apiFetch<ApiResponse<MemoryRule>>(
+    `/memory/rules/${encodeURIComponent(ruleId)}/retire`,
+    { method: "PATCH" },
   );
 }
 
@@ -3013,27 +3167,16 @@ export function getEntityGifts(
   return apiFetch<EntityGift[]>(path);
 }
 
-/** Fetch reach-out drafts for a relationship entity (drafts only; nothing sent). */
-export function getEntityReachOutDrafts(
-  entityId: string,
-  params?: { limit?: number; offset?: number },
-): Promise<EntityReachOutDraft[]> {
-  const qs = new URLSearchParams();
-  if (params?.limit != null) qs.set("limit", String(params.limit));
-  if (params?.offset != null) qs.set("offset", String(params.offset));
-  const path = qs.size
-    ? `/relationship/entities/${encodeURIComponent(entityId)}/reach-out-drafts?${qs}`
-    : `/relationship/entities/${encodeURIComponent(entityId)}/reach-out-drafts`;
-  return apiFetch<EntityReachOutDraft[]>(path);
-}
-
 // ---------------------------------------------------------------------------
-// Relationship butler: entity-level tab writes — the log-interaction,
-// gift-idea, and draft-reach-out operator verbs (bu-6t8ix.4).
+// Relationship butler: entity-level tab writes — the log-interaction and
+// gift-idea operator verbs (bu-6t8ix.4). A third verb, draft-reach-out
+// (getEntityReachOutDrafts/createEntityReachOutDraft), shipped alongside
+// these and was retired in bu-2jtfw.11, replaced by the prepared-action
+// mechanism surfaced on the insight digest.
 //
 // Each POST persists through the relationship butler's own fact-store tool, so
 // a dashboard-authored record is indistinguishable from a butler-authored one.
-// All four are owner-gated (403 `owner_required`) and answer 409 with an
+// Both are owner-gated (403 `owner_required`) and answer 409 with an
 // `existing_id` rather than writing a duplicate.
 // ---------------------------------------------------------------------------
 
@@ -3070,22 +3213,6 @@ export function createEntityGift(
   );
 }
 
-/**
- * Draft a reach-out message for a relationship entity.
- *
- * Drafts only. There is no send endpoint behind this call, and the backend
- * contacts no channel: `channel` records intent, not delivery.
- */
-export function createEntityReachOutDraft(
-  entityId: string,
-  request: CreateEntityReachOutDraftRequest,
-): Promise<EntityReachOutDraft> {
-  return apiFetch<EntityReachOutDraft>(
-    `/relationship/entities/${encodeURIComponent(entityId)}/reach-out-drafts`,
-    { method: "POST", body: JSON.stringify(request) },
-  );
-}
-
 /** Fetch loans tab data for a relationship entity. */
 export function getEntityLoans(
   entityId: string,
@@ -3112,6 +3239,31 @@ export function getEntityTimeline(
     ? `/relationship/entities/${encodeURIComponent(entityId)}/timeline?${qs}`
     : `/relationship/entities/${encodeURIComponent(entityId)}/timeline`;
   return apiFetch<EntityTimelineItem[]>(path);
+}
+
+/** Fetch the canonical merged entity activity stream with cancellable pagination. */
+export function getEntityActivity(
+  entityId: string,
+  params?: { limit?: number; offset?: number; signal?: AbortSignal },
+): Promise<EntityActivityResponse> {
+  const qs = new URLSearchParams();
+  if (params?.limit != null) qs.set("limit", String(params.limit));
+  if (params?.offset != null) qs.set("offset", String(params.offset));
+  const path = qs.size
+    ? `/relationship/entities/${encodeURIComponent(entityId)}/activity?${qs}`
+    : `/relationship/entities/${encodeURIComponent(entityId)}/activity`;
+  return apiFetch<EntityActivityResponse>(path, { signal: params?.signal });
+}
+
+/** Fetch completeness-tagged interaction evidence for a rolling window. */
+export function getEntityCadence(
+  entityId: string,
+  windowDays: number,
+): Promise<EntityCadenceResponse> {
+  const qs = new URLSearchParams({ window_days: String(windowDays) });
+  return apiFetch<EntityCadenceResponse>(
+    `/relationship/entities/${encodeURIComponent(entityId)}/cadence?${qs.toString()}`,
+  );
 }
 
 /** Fetch message thread summaries for a relationship entity. */
@@ -3601,6 +3753,19 @@ export function getApprovalsFlat(
   return apiFetch<ApprovalsFlatListResponse>(s ? `/approvals?${s}` : "/approvals");
 }
 
+export function getUnroutableAttention(): Promise<ApiResponse<UnroutableAttentionItem[]>> {
+  return apiFetch<ApiResponse<UnroutableAttentionItem[]>>("/approvals/unroutable");
+}
+
+export function retryUnroutableAttention(
+  deadLetterId: string,
+): Promise<ApiResponse<UnroutableRetryResult>> {
+  return apiFetch<ApiResponse<UnroutableRetryResult>>(
+    `/approvals/unroutable/${encodeURIComponent(deadLetterId)}/retry`,
+    { method: "POST" },
+  );
+}
+
 export function getApprovalDetail(actionId: string): Promise<ApiResponse<ApprovalDetail>> {
   return apiFetch<ApiResponse<ApprovalDetail>>(
     `/approvals/${encodeURIComponent(actionId)}`,
@@ -3927,20 +4092,6 @@ import type {
 } from "./types.ts";
 
 /**
- * Google Health scope URLs. Full URLs (not short names) are stored on
- * ``public.google_accounts.granted_scopes`` exactly as Google returns
- * them in the token response, so scope-presence checks compare against
- * these exact strings. Kept in sync with:
- *   src/butlers/api/routers/oauth.py ::GOOGLE_SCOPE_SETS["health"]
- *   src/butlers/api/routers/google_health.py ::GOOGLE_HEALTH_SCOPE_URLS
- */
-export const GOOGLE_HEALTH_SCOPES = [
-  "https://www.googleapis.com/auth/googlehealth.sleep.readonly",
-  "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly",
-  "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly",
-] as const;
-
-/**
  * Google may report the broader non-`.readonly` variant of a googlehealth
  * scope when the account already holds it, so granted-scope checks must match
  * by FAMILY rather than exact URL (mirrors
@@ -4130,14 +4281,21 @@ export function getEducationMindMap(mindMapId: string): Promise<MindMap> {
 }
 
 /**
- * List every registered source.
+ * Resolve specific registered sources by ID.
  *
- * The node detail panel resolves each `metadata.source_refs` entry against
- * this list: a hit yields the source's title, a miss means the source was
- * removed and the reference must be shown as unregistered rather than cited.
+ * The node detail panel calls this with the `source_id`s named by one node's
+ * `metadata.source_refs`, never the whole registry: a hit yields the source's
+ * title, a miss means the source was removed and the reference must be shown
+ * as unregistered rather than cited. An empty `sourceIds` array resolves to
+ * `[]` without a request — there is nothing to look up.
  */
-export function getEducationSources(): Promise<EducationSourceMaterial[]> {
-  return apiFetch<EducationSourceMaterial[]>("/education/sources");
+export function getEducationSources(
+  sourceIds: string[],
+): Promise<EducationSourceMaterial[]> {
+  if (sourceIds.length === 0) return Promise.resolve([]);
+  const sp = new URLSearchParams();
+  sp.set("source_ids", sourceIds.join(","));
+  return apiFetch<EducationSourceMaterial[]>(`/education/sources?${sp.toString()}`);
 }
 
 /** Get frontier nodes for a mind map. */
@@ -4264,7 +4422,7 @@ export function getEducationMindMapAnalyticsTrend(
 }
 
 // ---------------------------------------------------------------------------
-// Connector statistics API (docs/connectors/statistics.md §6)
+// Ingestion connectors API (docs/connectors/statistics.md §6)
 // ---------------------------------------------------------------------------
 
 import type {
@@ -4275,14 +4433,14 @@ import type {
   ConnectorDaySummary,
   ConnectorDetail,
   ConnectorEventsResponse,
+  ConnectorFanoutResponse,
+  ConnectorFanoutRow,
   ConnectorIncidentsResponse,
   ConnectorRoutingRulesResponse,
   ConnectorScopeEntry,
   ConnectorStats,
   ConnectorStatsBucket,
   ConnectorStatsSummary,
-  ConnectorSummariesListResponse,
-  ConnectorSummariesMeta,
   ConnectorSummariesResponse,
   ConnectorSummary,
   IngestionPeriod,
@@ -4299,13 +4457,13 @@ export type {
   ConnectorDetail,
   ConnectorScopeEntry,
   ConnectorEventsResponse,
+  ConnectorFanoutResponse,
+  ConnectorFanoutRow,
   ConnectorIncidentsResponse,
   ConnectorRoutingRulesResponse,
   ConnectorStats,
   ConnectorStatsBucket,
   ConnectorStatsSummary,
-  ConnectorSummariesListResponse,
-  ConnectorSummariesMeta,
   ConnectorSummariesResponse,
   ConnectorSummary,
   IngestionPeriod,
@@ -4316,8 +4474,8 @@ export type {
 // Internal helpers — backend response shapes
 // ---------------------------------------------------------------------------
 
-/** Raw connector entry from GET /api/switchboard/connectors. */
-interface _BackendConnectorEntry {
+/** Flat connector detail payload returned by the canonical detail routes. */
+interface _ConnectorDetailPayload {
   connector_type: string;
   endpoint_identity: string;
   instance_id: string | null;
@@ -4346,7 +4504,7 @@ interface _BackendConnectorEntry {
   hourly_events?: number[];
 }
 
-/** Raw timeseries row from GET /api/switchboard/connectors/:type/:id/stats. */
+/** Raw timeseries row returned by the canonical connector stats route. */
 interface _BackendStatsRow {
   connector_type: string;
   endpoint_identity: string;
@@ -4369,8 +4527,8 @@ interface _BackendStatsRow {
  * Derive liveness string from last heartbeat timestamp.
  *
  * Mirrors butlers.core.liveness.derive_liveness (Python) exactly so
- * the same connector never disagrees between this switchboard-routed card
- * and any other reader (bu-27dxl.6.6) -- this was previously a 30-minute
+ * the same connector never disagrees between its detail card and any other
+ * reader (bu-27dxl.6.6) -- this was previously a 30-minute
  * stale cutoff, a full 15 minutes later than the backend's, which could
  * show "stale" here for a connector every other surface already reports
  * "offline":
@@ -4389,8 +4547,8 @@ function _deriveLiveness(lastHeartbeatAt: string | null): string {
   return "offline";
 }
 
-/** Map a backend ConnectorEntry to the frontend ConnectorSummary shape. */
-function _toConnectorSummary(entry: _BackendConnectorEntry): ConnectorSummary {
+/** Map a canonical flat detail payload to the frontend ConnectorSummary shape. */
+function _toConnectorSummary(entry: _ConnectorDetailPayload): ConnectorSummary {
   return {
     connector_type: entry.connector_type,
     endpoint_identity: entry.endpoint_identity,
@@ -4410,8 +4568,8 @@ function _toConnectorSummary(entry: _BackendConnectorEntry): ConnectorSummary {
   };
 }
 
-/** Map a backend ConnectorEntry to the frontend ConnectorDetail shape. */
-function _toConnectorDetail(entry: _BackendConnectorEntry): ConnectorDetail {
+/** Map a canonical flat detail payload to the frontend ConnectorDetail shape. */
+function _toConnectorDetail(entry: _ConnectorDetailPayload): ConnectorDetail {
   return {
     ..._toConnectorSummary(entry),
     instance_id: entry.instance_id,
@@ -4488,25 +4646,13 @@ function _toConnectorStats(
 // Public API functions
 // ---------------------------------------------------------------------------
 
-/** List all connectors with liveness and today's stats. */
-export async function listConnectorSummaries(): Promise<ConnectorSummariesListResponse> {
-  const resp = await apiFetch<{
-    data: _BackendConnectorEntry[];
-    meta: ConnectorSummariesMeta;
-  }>("/switchboard/connectors");
-  return {
-    ...resp,
-    data: (resp.data ?? []).map(_toConnectorSummary),
-  };
-}
-
 /** Get full detail for a single connector. */
 export async function getConnectorDetail(
   connectorType: string,
   endpointIdentity: string,
 ): Promise<ApiResponse<ConnectorDetail>> {
-  const resp = await apiFetch<ApiResponse<_BackendConnectorEntry>>(
-    `/switchboard/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}`,
+  const resp = await apiFetch<ApiResponse<_ConnectorDetailPayload>>(
+    `/ingestion/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}`,
   );
   return {
     ...resp,
@@ -4521,7 +4667,7 @@ export async function getConnectorStats(
   period: IngestionPeriod = "24h",
 ): Promise<ApiResponse<ConnectorStats>> {
   const resp = await apiFetch<ApiResponse<_BackendStatsRow[]>>(
-    `/switchboard/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/stats?period=${period}`,
+    `/ingestion/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/stats?period=${period}`,
   );
   // meta.hourly_events_available is false only on a genuine backend DB-query
   // failure (bu-c48im). Absent (older cached response) must NOT read as false.
@@ -4543,7 +4689,7 @@ export async function getConnectorStats(
  * Returns the connector list. Every field is DB-sourced — no Prometheus
  * dependency, so no `aggregates_available` flag on this response.
  */
-export async function getConnectorSummariesWithAggregates(): Promise<
+export async function getConnectorSummaries(): Promise<
   ApiResponse<ConnectorSummariesResponse>
 > {
   const resp = await apiFetch<ApiResponse<ConnectorSummariesResponse>>(
@@ -4561,6 +4707,21 @@ export async function getPipelineStats(
   window: "1h" | "24h" | "7d" = "24h",
 ): Promise<PipelineStats> {
   return apiFetch<PipelineStats>(`/ingestion/pipeline?window=${window}`);
+}
+
+/**
+ * GET /api/switchboard/ingestion/fanout?period=7d
+ *
+ * The route stays under Switchboard because it aggregates cross-butler
+ * delivery. Its explicit availability flag distinguishes a measured empty
+ * route set from an unreadable Prometheus source.
+ */
+export async function getConnectorFanout(
+  period: IngestionPeriod = "7d",
+): Promise<ConnectorFanoutResponse> {
+  return apiFetch<ConnectorFanoutResponse>(
+    `/switchboard/ingestion/fanout?period=${period}`,
+  );
 }
 
 /**
@@ -4628,8 +4789,8 @@ export async function updateConnectorSettings(
   endpointIdentity: string,
   settings: Record<string, unknown>,
 ): Promise<ApiResponse<ConnectorDetail>> {
-  const resp = await apiFetch<ApiResponse<_BackendConnectorEntry>>(
-    `/switchboard/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/settings`,
+  const resp = await apiFetch<ApiResponse<_ConnectorDetailPayload>>(
+    `/ingestion/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/settings`,
     {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -4836,6 +4997,7 @@ export function searchContacts(
 /** List ingestion events with cursor pagination (GET /api/ingestion/events). */
 export async function listIngestionEvents(
   params?: IngestionEventsParams,
+  signal?: AbortSignal,
 ): Promise<CursorPaginatedResponse<IngestionEventSummary>> {
   const sp = new URLSearchParams();
   if (params?.limit !== undefined) sp.set("limit", String(params.limit));
@@ -4851,6 +5013,7 @@ export async function listIngestionEvents(
   const qs = sp.toString() ? `?${sp.toString()}` : "";
   return apiFetch<CursorPaginatedResponse<IngestionEventSummary>>(
     `/ingestion/events${qs}`,
+    { signal },
   );
 }
 
@@ -4864,6 +5027,7 @@ export async function listIngestionEvents(
  */
 export async function getIngestionWindowRollup(
   params?: IngestionWindowRollupParams,
+  signal?: AbortSignal,
 ): Promise<IngestionWindowRollup> {
   const sp = new URLSearchParams();
   if (params?.from) sp.set("from", params.from);
@@ -4873,7 +5037,7 @@ export async function getIngestionWindowRollup(
   if (params?.q) sp.set("q", params.q);
   if (params?.trace_id) sp.set("trace_id", params.trace_id);
   const qs = sp.toString() ? `?${sp.toString()}` : "";
-  return apiFetch<IngestionWindowRollup>(`/ingestion/rollup${qs}`);
+  return apiFetch<IngestionWindowRollup>(`/ingestion/rollup${qs}`, { signal });
 }
 
 /**
@@ -4894,6 +5058,7 @@ export async function getIngestionWindowRollup(
  */
 export async function getIngestionEventsHistogram(
   params: IngestionHistogramParams,
+  signal?: AbortSignal,
 ): Promise<IngestionHistogramResponse> {
   const sp = new URLSearchParams();
   if (params.from) sp.set("from", params.from);
@@ -4905,33 +5070,29 @@ export async function getIngestionEventsHistogram(
   if (params.trace_id) sp.set("trace_id", params.trace_id);
   return apiFetch<IngestionHistogramResponse>(
     `/ingestion/events/histogram?${sp.toString()}`,
+    { signal },
   );
 }
 
 /** Get a single ingestion event by request_id (GET /api/ingestion/events/{id}). */
 export async function getIngestionEvent(
   requestId: string,
+  signal?: AbortSignal,
 ): Promise<ApiResponse<IngestionEventDetail>> {
   return apiFetch<ApiResponse<IngestionEventDetail>>(
     `/ingestion/events/${encodeURIComponent(requestId)}`,
+    { signal },
   );
 }
 
 /** Get sessions for an ingestion event (GET /api/ingestion/events/{id}/sessions). */
 export async function getIngestionEventSessions(
   requestId: string,
+  signal?: AbortSignal,
 ): Promise<ApiResponse<IngestionEventSession[]>> {
   return apiFetch<ApiResponse<IngestionEventSession[]>>(
     `/ingestion/events/${encodeURIComponent(requestId)}/sessions`,
-  );
-}
-
-/** Get cost/token rollup for an ingestion event (GET /api/ingestion/events/{id}/rollup). */
-export async function getIngestionEventRollup(
-  requestId: string,
-): Promise<ApiResponse<IngestionEventRollup>> {
-  return apiFetch<ApiResponse<IngestionEventRollup>>(
-    `/ingestion/events/${encodeURIComponent(requestId)}/rollup`,
+    { signal },
   );
 }
 
@@ -4957,9 +5118,11 @@ export async function replayIngestionEvent(
  */
 export async function getIngestionEventReplays(
   requestId: string,
+  signal?: AbortSignal,
 ): Promise<ApiResponse<IngestionEventReplayHistoryEntry[]>> {
   return apiFetch<ApiResponse<IngestionEventReplayHistoryEntry[]>>(
     `/ingestion/events/${encodeURIComponent(requestId)}/replays`,
+    { signal },
   );
 }
 
@@ -4969,9 +5132,11 @@ export async function getIngestionEventReplays(
  */
 export async function getIngestionEventSenderContact(
   requestId: string,
+  signal?: AbortSignal,
 ): Promise<ApiResponse<IngestionEventSenderContact>> {
   return apiFetch<ApiResponse<IngestionEventSenderContact>>(
     `/ingestion/events/${encodeURIComponent(requestId)}/sender-contact`,
+    { signal },
   );
 }
 
@@ -4985,9 +5150,11 @@ export async function getIngestionEventSenderContact(
  */
 export async function getIngestionEventPayload(
   requestId: string,
+  signal?: AbortSignal,
 ): Promise<ApiResponse<IngestionEventPayload>> {
   return apiFetch<ApiResponse<IngestionEventPayload>>(
     `/ingestion/events/${encodeURIComponent(requestId)}/payload`,
+    { signal },
   );
 }
 
@@ -5294,6 +5461,18 @@ export function deleteHomeAssistantConfig(): Promise<HomeAssistantDeleteResponse
   });
 }
 
+/** Submit exact private HA-person mappings as one atomic batch. */
+export function submitHomePersonMappings(
+  mappings: HomePersonMappingInput[],
+  idempotencyKey: string,
+): Promise<ApiResponse<HomePersonMappingReceipt>> {
+  return apiFetch<ApiResponse<HomePersonMappingReceipt>>("/home/person-mappings", {
+    method: "POST",
+    headers: { "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify({ mappings }),
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Dashboard conversation API
 // ---------------------------------------------------------------------------
@@ -5307,6 +5486,17 @@ export function listConversations(
   return apiFetch<ApiResponse<ConversationSummary[]>>(
     `/butlers/${encodeURIComponent(butlerName)}/conversations${qs}`,
   );
+}
+
+/**
+ * GET /api/conversations/{id} — cross-butler conversation identity lookup by
+ * id alone, regardless of owning butler_name (bu-0ynlk.11). Backs the
+ * /chat/:conversationId deep-link route and cmdk recent-thread recall.
+ * Raw (unwrapped) body — the response model carries no `data` envelope.
+ * Throws `ApiError` with `status === 404` when the id is unknown.
+ */
+export function getConversationById(conversationId: string): Promise<ConversationSummary> {
+  return apiFetch<ConversationSummary>(`/conversations/${encodeURIComponent(conversationId)}`);
 }
 
 /** GET /api/butlers/{name}/conversations/{id}/messages — message list for a conversation. */
@@ -5361,7 +5551,7 @@ export function createConversation(
   body: CreateConversationRequest,
   signal?: AbortSignal,
 ): Promise<Response> {
-  return fetch(`${API_BASE_URL}/butlers/${encodeURIComponent(butlerName)}/conversations`, {
+  return ownerFetch(`${API_BASE_URL}/butlers/${encodeURIComponent(butlerName)}/conversations`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
     body: JSON.stringify(body),
@@ -5379,7 +5569,7 @@ export function sendMessage(
   body: SendMessageRequest,
   signal?: AbortSignal,
 ): Promise<Response> {
-  return fetch(
+  return ownerFetch(
     `${API_BASE_URL}/butlers/${encodeURIComponent(butlerName)}/conversations/${encodeURIComponent(conversationId)}/messages`,
     {
       method: "POST",
@@ -6056,6 +6246,16 @@ export function getDriftFacts(): Promise<ApiResponse<DriftFacts>> {
   return apiFetch<ApiResponse<DriftFacts>>("/system/drift");
 }
 
+/**
+ * Fetch the stored-function drift comparison (bu-bi5an).
+ *
+ * Always returns HTTP 200. `stored_function_check_available: false` means the
+ * comparison itself failed -- treat that as "unknown", not "clean".
+ */
+export function getStoredFunctionFacts(): Promise<ApiResponse<StoredFunctionFacts>> {
+  return apiFetch<ApiResponse<StoredFunctionFacts>>("/system/stored-functions");
+}
+
 /** Params for getSystemConditions(). */
 export interface SystemConditionsParams {
   /** "infra" (default) | "owner" -- bu-ep4ks.6 */
@@ -6177,6 +6377,16 @@ export function listDomainEventDeliveries(
   );
 }
 
+/** Atomically requeue one failed_permanent domain-event delivery. */
+export function replayDomainEventDelivery(
+  deliveryId: string,
+): Promise<ApiResponse<{ delivery_id: string; status: string }>> {
+  return apiFetch<ApiResponse<{ delivery_id: string; status: string }>>(
+    `/domain-events/deliveries/${encodeURIComponent(deliveryId)}/replay`,
+    { method: "POST" },
+  );
+}
+
 /**
  * Fetch the full reaction trace for one domain event from
  * GET /api/domain-events/events/{event_id}/reactions (bu-6jv4m.8), oldest
@@ -6187,6 +6397,26 @@ export function listDomainEventReactions(
 ): Promise<ApiResponse<ReactionEntry[]>> {
   return apiFetch<ApiResponse<ReactionEntry[]>>(
     `/domain-events/events/${encodeURIComponent(eventId)}/reactions`,
+  );
+}
+
+/** Params for listDomainEventContracts(). */
+export interface DomainEventContractsParams {
+  publisher?: string;
+}
+
+/**
+ * List materialized publisher-owned event contracts from
+ * GET /api/domain-events/contracts (bu-6jv4m.8).
+ */
+export function listDomainEventContracts(
+  params: DomainEventContractsParams = {},
+): Promise<ApiResponse<ContractEntry[]>> {
+  const query = new URLSearchParams();
+  if (params.publisher) query.set("publisher", params.publisher);
+  const qs = query.toString();
+  return apiFetch<ApiResponse<ContractEntry[]>>(
+    `/domain-events/contracts${qs ? `?${qs}` : ""}`,
   );
 }
 
@@ -6391,7 +6621,7 @@ export function patchFinanceBulkMetadata(
 /** List trips with optional status and date range filters, paginated. */
 export function getTravelTrips(
   params?: TravelTripsParams,
-): Promise<PaginatedResponse<TravelTrip>> {
+): Promise<TravelTripsResponse> {
   const sp = new URLSearchParams();
   if (params?.status) sp.set("status", params.status);
   if (params?.from_date) sp.set("from_date", params.from_date);
@@ -6399,7 +6629,7 @@ export function getTravelTrips(
   if (params?.offset != null) sp.set("offset", String(params.offset));
   if (params?.limit != null) sp.set("limit", String(params.limit));
   const qs = sp.toString();
-  return apiFetch<PaginatedResponse<TravelTrip>>(qs ? `/travel/trips?${qs}` : "/travel/trips");
+  return apiFetch<TravelTripsResponse>(qs ? `/travel/trips?${qs}` : "/travel/trips");
 }
 
 /** Fetch full trip summary (legs, accommodations, reservations, docs, timeline, alerts). */
@@ -6516,6 +6746,15 @@ export function getHomeCommandLog(params?: {
 /** GET /api/butlers/{name}/prompt — current versioned system prompt. */
 export function getButlerPrompt(name: string): Promise<ApiResponse<PromptVersion>> {
   return apiFetch<ApiResponse<PromptVersion>>(`/butlers/${name}/prompt`);
+}
+
+/** GET /api/butlers/{name}/prompt/effective — protected composed prompt + drift truth. */
+export function getButlerEffectivePrompt(
+  name: string,
+): Promise<ApiResponse<ButlerEffectivePrompt>> {
+  return apiFetch<ApiResponse<ButlerEffectivePrompt>>(
+    `/butlers/${encodeURIComponent(name)}/prompt/effective`,
+  );
 }
 
 /** PUT /api/butlers/{name}/prompt — update prompt, snapshots prior version. */

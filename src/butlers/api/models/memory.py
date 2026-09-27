@@ -138,6 +138,7 @@ class Rule(BaseModel):
     last_confirmed_at: str | None = None
     tags: list[str] = []
     metadata: dict = {}
+    retired_at: str | None = None
 
 
 class MemoryStats(BaseModel):
@@ -153,6 +154,10 @@ class MemoryStats(BaseModel):
     established_rules: int = 0
     proven_rules: int = 0
     anti_pattern_rules: int = 0
+    # Retired rules (bu-6t8ix.3) are excluded from the maturity buckets above
+    # (a retired rule is not a live standing order) and counted separately
+    # here instead of being silently dropped from any total.
+    retired_rules: int = 0
     # Consolidation lifecycle (memory redesign, additive — null/0 when unknown).
     last_consolidation_at: str | None = None
     last_consolidation_facts_produced: int | None = None
@@ -229,6 +234,17 @@ class EntityInfoEntry(BaseModel):
     secured: bool = False
 
 
+class EntityRebindReceipt(BaseModel):
+    """One schema's durable outcome for an entity-merge rebind cohort."""
+
+    rebind_id: str
+    target_schema: str
+    references_rebound: int
+    status: str
+    error_class: str | None = None
+    completed_at: str | None = None
+
+
 class EntityDetail(EntitySummary):
     """Full entity detail including recent facts and linked contact info."""
 
@@ -240,6 +256,7 @@ class EntityDetail(EntitySummary):
     recent_facts_has_more: bool = False
     linked_contact_name: str | None = None
     entity_info: list[EntityInfoEntry] = []
+    rebind_receipts: list[EntityRebindReceipt] = []
 
 
 class UpdateEntityRequest(BaseModel):

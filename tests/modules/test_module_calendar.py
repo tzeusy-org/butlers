@@ -117,11 +117,13 @@ class _ProviderDouble(CalendarProvider):
         event: CalendarEvent | None = None,
         conflicts: list[CalendarEvent] | None = None,
         busy: list[BusyWindow] | None = None,
+        free_busy_error: Exception | None = None,
     ) -> None:
         self._events = events or []
         self._event = event
         self._conflicts = conflicts or []
         self._busy = busy
+        self._free_busy_error = free_busy_error
         self.free_busy_calls: list[dict] = []
         self.list_calls: list[dict] = []
         self.get_calls: list[dict] = []
@@ -175,6 +177,8 @@ class _ProviderDouble(CalendarProvider):
                 "timezone": timezone,
             }
         )
+        if self._free_busy_error is not None:
+            raise self._free_busy_error
         if self._busy is not None:
             return list(self._busy)
         return [BusyWindow(start_at=c.start_at, end_at=c.end_at) for c in self._conflicts]
@@ -2484,6 +2488,24 @@ class TestFindFreeSlotsTool:
         )
         assert result["slots"] == []
 
+    async def test_tool_returns_structured_error_on_provider_failure(self):
+        provider = _ProviderDouble(
+            free_busy_error=CalendarAuthError("access_token=provider-secret expired")
+        )
+        _, mcp = await self._module(provider)
+
+        result = await mcp.tools["calendar_find_free_slots"](
+            duration_minutes=60,
+            search_start=_dt(9),
+            search_end=_dt(12),
+        )
+
+        assert result["status"] == "error"
+        assert result["slots"] == []
+        assert result["duration_minutes"] == 60
+        assert result["calendar_ids"] == ["primary"]
+        assert "provider-secret" not in result["error"]
+
     async def test_tool_rejects_bad_duration(self):
         provider = _ProviderDouble(busy=[])
         _, mcp = await self._module(provider)
@@ -3318,21 +3340,6 @@ class TestCalendarModuleTick:
         assert len(execute_calls) == 1
         assert "calendar_event_instances" in execute_calls[0][0][0]
         assert "notified_at" in execute_calls[0][0][1]
-
-    async def test_dismissed_recurring_instance_is_skipped(self):
-        """Cancelled instances are excluded by the SQL status='confirmed' filter.
-
-        We test the behaviour indirectly: if the pool returns no rows (because
-        the SQL WHERE clause filtered the cancelled instance), tick returns 0.
-        """
-        pool = _make_pool_for_tick(recurring_rows=[], onetime_rows=[])
-        mod = _make_module_with_pool(pool)
-        notify_fn = AsyncMock()
-
-        result = await mod.tick("general", notify_fn=notify_fn)
-
-        assert result == 0
-        notify_fn.assert_not_called()
 
     async def test_onetime_reminder_fires_and_marks_event(self):
         """A one-time reminder fires and records last_notified_at on the event."""

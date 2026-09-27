@@ -19,8 +19,8 @@ Behavior under test:
   - a row whose ``operational_role`` is ``unknown`` reports the named
     ``unclassified`` liveness — never active, never healthy, never inferred
     ``offline`` — and is counted apart from the fleet rollups
-  - fleet liveness (``cross-summary`` and the switchboard
-    ``/connectors/summary``) counts executable runtime instances only
+  - fleet liveness (the ``/api/ingestion/connectors/cross-summary`` endpoint)
+    counts executable runtime instances only
   - a checkpoint whose parent cannot be resolved stays visible instead of
     silently disappearing
   - genuine source failures still degrade explicitly rather than fabricating a

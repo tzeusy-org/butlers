@@ -2,6 +2,70 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
+@font-face {
+  font-family: "Inter Tight";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/inter-tight-latin-400-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Inter Tight";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/inter-tight-latin-500-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Source Serif 4";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/source-serif-4-latin-400-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Source Serif 4";
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/source-serif-4-latin-400-italic.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Source Serif 4";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/source-serif-4-latin-500-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Source Serif 4";
+  font-style: italic;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/source-serif-4-latin-500-italic.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/jetbrains-mono-latin-400-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/jetbrains-mono-latin-500-normal.woff2") format("woff2");
+}
+
 @custom-variant dark (&:is(.dark *));
 
 :root {
@@ -14,8 +78,8 @@
   font-family: var(--font-sans);
   line-height: 1.5;
   font-weight: 400;
-  color: #213547;
-  background-color: #ffffff;
+  color: var(--fg);
+  background-color: var(--bg);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -53,6 +117,9 @@
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
+  /* Keyboard-focus boundary. Kept literal so contrast tests grade the value
+   * that the browser paints in each theme rather than following an alias. */
+  --focus: oklch(0.58 0 0);
   --chart-1: oklch(0.620 0.130 41.1);   /* warm orange — chroma 0.222 → 0.130 */
   --chart-2: oklch(0.600 0.100 184.7);  /* teal        — chroma 0.118 → 0.100 */
   --chart-3: oklch(0.440 0.080 227.4);  /* slate-blue  — L lifted 0.398 → 0.440, chroma 0.07 → 0.080 */
@@ -84,7 +151,7 @@
 
   /* Severity */
   --severity-low:    oklch(0.723 0.198 148.2);  /* green  — #22c55e */
-  --severity-medium: oklch(0.769 0.189 84.0);   /* amber  — #f59e0b */
+  --severity-medium: var(--amber);              /* canonical amber boundary */
   --severity-high:   oklch(0.627 0.257 29.2);   /* red    — #ef4444 */
 
   /* Attention-tint rail tokens
@@ -95,7 +162,7 @@
    * See about/heart-and-soul/design-language.md § Attention-tint exception.
    */
   --red:   oklch(0.627 0.257 29.2);   /* matches --severity-high  — #ef4444 */
-  --amber: oklch(0.769 0.189 84.0);   /* matches --severity-medium — #f59e0b */
+  --amber: oklch(0.660 0.189 84.0);   /* canonical light amber boundary */
 
   /* ---------------------------------------------------------------------------
    * Dispatch semantic surface tokens
@@ -134,8 +201,8 @@
   --dim:      oklch(0.55 0 0);         /* tertiary text, deltas */
   /* bu-86c4c.16: text-safe amber, split from the --amber fill/border token
    * below (fills/borders/badges intentionally stay bright — only TEXT needs
-   * the 4.5:1 AA floor). Base --amber at 2.01:1 against --bg cannot carry
-   * text; this token can. Use for any `text-[var(--amber)]` site. */
+   * the 4.5:1 AA floor). Base --amber clears the 3:1 non-text floor but not
+   * the text floor; this token clears 4.5:1. Use for amber text sites. */
   --amber-text: oklch(0.55 0.10 84.0);
   /* bu-f310e: text-safe red, split from the --red fill/border token the same
    * way --amber-text was split from --amber (bu-86c4c.16). Base --red at
@@ -312,15 +379,14 @@
    * --font-mono   JetBrains Mono Numerals: timestamps, IDs, deltas, KPI
    *                              mega-numbers, eyebrows, code, file paths.
    *
-   * Loaded via Google Fonts in frontend/index.html. The :root font-family
+   * Loaded from the locally vendored WOFF2 files above. The :root font-family
    * rule above remains the body default; opt-in consumers reference these
    * variables directly. See about/lay-and-land/frontend.md § Type tokens.
    *
-   * Font verification (Q10 — 2026-05-26):
-   *   Inter Tight:ital,wght@0,400..700  ✓ loaded (index.html line 9)
-   *   Source Serif 4:ital,wght@0,400;0,500;1,400  ✓ loaded (index.html line 9)
-   *   JetBrains Mono:wght@400;500  ✓ loaded (index.html line 9)
-   *   No @import additions required — all three families already present.
+   * Font verification (bu-7exe4.10):
+   *   Inter Tight: 400/500 roman
+   *   Source Serif 4: 400/500 roman and italic
+   *   JetBrains Mono: 400/500 roman
    * ---------------------------------------------------------------------------*/
   --font-sans:  'Inter Tight', ui-sans-serif, system-ui, sans-serif;
   --font-serif: 'Source Serif 4', ui-serif, Georgia, serif;
@@ -348,7 +414,7 @@
   /* ---------------------------------------------------------------------------
    * Spacing scale
    *
-   * Base unit: 0.25rem (4px). Linear steps 1–12.
+   * Base unit: 0.25rem (4px). Linear steps 1–14.
    * --space-N = N × 0.25rem
    * ---------------------------------------------------------------------------*/
   --space-1:   0.25rem;
@@ -363,12 +429,50 @@
   --space-10:  2.5rem;
   --space-11:  2.75rem;
   --space-12:  3rem;
+  --space-13:  3.25rem;
+  --space-14:  3.5rem;
+
+  /* ---------------------------------------------------------------------------
+   * Page gutter ramp (bu-8cdl1.13, Viewport and Modality Contract)
+   *
+   * Single source of truth for the Shell main region's edge padding, ramped
+   * across the three canonical device bands from
+   * openspec/specs/dashboard-design-language/spec.md: phone <768px (default,
+   * below this block's media queries), tablet 768-1023px (Tailwind `md`),
+   * desktop >=1024px (Tailwind `lg`). Paired with the safe-area tokens below
+   * so notch/home-indicator insets stack with the gutter rather than being
+   * clipped under it.
+   * ---------------------------------------------------------------------------*/
+  --page-gutter-x: var(--space-4);
+  --page-gutter-y: var(--space-4);
+  --safe-area-top:    env(safe-area-inset-top, 0px);
+  --safe-area-right:  env(safe-area-inset-right, 0px);
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-area-left:   env(safe-area-inset-left, 0px);
+}
+
+@media (min-width: 768px) {
+  :root {
+    --page-gutter-x: var(--space-6);
+    --page-gutter-y: var(--space-6);
+  }
+}
+
+@media (min-width: 1024px) {
+  :root {
+    --page-gutter-x: var(--space-14);
+    --page-gutter-y: var(--space-12);
+  }
 }
 
 body {
   margin: 0;
   min-width: 320px;
-  min-height: 100vh;
+  /* dvh (bu-8cdl1.13): 100vh on mobile browsers is the viewport height with
+   * chrome collapsed, so the page can be taller than the visible area on
+   * load and get clipped by address-bar/toolbar chrome. dvh tracks the
+   * actual visible viewport as that chrome shows and hides. */
+  min-height: 100dvh;
 }
 
 @theme inline {
@@ -397,6 +501,7 @@ body {
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --color-focus: var(--focus);
   --color-chart-1: var(--chart-1);
   --color-chart-2: var(--chart-2);
   --color-chart-3: var(--chart-3);
@@ -509,6 +614,7 @@ body {
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);
+  --focus: oklch(0.58 0 0);
   --chart-1: oklch(0.560 0.140 264.4);  /* muted blue   — L 0.488 → 0.560, chroma 0.243 → 0.140 */
   --chart-2: oklch(0.720 0.130 162.5);  /* muted teal   — chroma 0.170 → 0.130 */
   --chart-3: oklch(0.760 0.130 70.1);   /* soft amber   — chroma 0.188 → 0.130 */
@@ -525,12 +631,12 @@ body {
 
   /* Severity — lifted slightly for dark-background legibility */
   --severity-low:    oklch(0.790 0.195 148.2);
-  --severity-medium: oklch(0.810 0.185 84.0);
+  --severity-medium: var(--amber);
   --severity-high:   oklch(0.685 0.250 29.2);
 
   /* Attention-tint rail tokens — lifted to match dark-mode severity */
   --red:   oklch(0.685 0.250 29.2);   /* matches dark --severity-high  */
-  --amber: oklch(0.810 0.185 84.0);   /* matches dark --severity-medium */
+  --amber: oklch(0.810 0.185 84.0);   /* canonical dark amber boundary */
 
   /* Dispatch semantic surface tokens — dark mode (canonical per DESIGN_LANGUAGE.md §1a–b) */
   --bg:       oklch(0.145 0 0);         /* page */
@@ -616,9 +722,15 @@ body {
   * {
     @apply border-border;
   }
-  :where(a, button, [role='button'], [tabindex]):focus-visible {
-    outline: 2px solid var(--fg);
-    outline-offset: 2px;
+  /* This high-specificity important floor is deliberately stronger than
+   * Tailwind's outline and outline-offset utilities, including focus-visible
+   * variants. Components may add affordances, but they cannot erase or move
+   * the measured keyboard boundary. The repeated pseudo-class raises the
+   * selector above a focus-visible utility without changing which state it
+   * matches. */
+  :is(a, button, input, select, textarea, summary, [role='button'], [tabindex]):focus-visible:focus-visible {
+    outline: 2px solid var(--focus) !important;
+    outline-offset: 2px !important;
   }
   /* Tell the browser which palette to render native UI (scrollbars, form
      controls) in, so the default white scrollbar follows the theme. */
@@ -785,6 +897,25 @@ body {
 }
 @media (prefers-reduced-motion: reduce) {
   .chat-message-highlight {
+    animation: none;
+    box-shadow: 0 0 0 2px var(--fg);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Spend routing-rule jump-to flash (bu-lygbct)
+ *
+ * Same jump-to-flash treatment as .calendar-entry-flash above, applied to a
+ * routing-rule row when an audit-log "rule:<id>" target is followed to
+ * /spend?rule=<id>.
+ * ---------------------------------------------------------------------------*/
+.spend-rule-highlight {
+  animation: calendar-entry-flash 2.2s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  position: relative;
+  z-index: 20;
+}
+@media (prefers-reduced-motion: reduce) {
+  .spend-rule-highlight {
     animation: none;
     box-shadow: 0 0 0 2px var(--fg);
   }

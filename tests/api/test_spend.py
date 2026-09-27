@@ -10,7 +10,8 @@ by-schedule contract + zero-div guard.
 from __future__ import annotations
 
 import json
-from datetime import UTC, date, datetime
+import uuid
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -259,6 +260,7 @@ async def test_cost_summary_aggregates_multiple_butlers(app):
             butler_name="sw",
             model_id="claude-sonnet-4-20250514",
             calls=5,
+            unmeasurable_attempts=2,
             input_tokens=10_000,
             output_tokens=5_000,
         ),
@@ -281,6 +283,8 @@ async def test_cost_summary_aggregates_multiple_butlers(app):
     data = resp.json()["data"]
     assert data["total_sessions"] == 8
     assert data["total_cost_usd"] == pytest.approx(0.1274, abs=1e-4)
+    assert data["measured_usd"] == data["total_cost_usd"]
+    assert data["unmeasurable_attempts"] == 2
     assert data["by_butler"] == {"gen": pytest.approx(0.0224), "sw": pytest.approx(0.105)}
     mgr.get_client.assert_not_called()
 
@@ -382,10 +386,12 @@ def _ledger_row(
     purpose: str = "route",
     model_id: str = "claude-sonnet-4-20250514",
     calls: int = 1,
+    unmeasurable_attempts: int = 0,
     input_tokens: int = 0,
     output_tokens: int = 0,
     cached_input_tokens: int = 0,
     cache_creation_tokens: int = 0,
+    has_session: bool = True,
 ) -> dict:
     """Return one grouped executed-model ledger fixture row."""
     return {
@@ -394,10 +400,12 @@ def _ledger_row(
         "purpose": purpose,
         "model_id": model_id,
         "calls": calls,
+        "unmeasurable_attempts": unmeasurable_attempts,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "cached_input_tokens": cached_input_tokens,
         "cache_creation_tokens": cache_creation_tokens,
+        "has_session": has_session,
     }
 
 
@@ -636,8 +644,26 @@ async def test_ledger_session_divergence_deadman_reports_material_day_butler_dri
     }
 
 
-async def test_ledger_session_divergence_deadman_marks_missing_butler_evidence_degraded():
-    """A ledger butler absent from the session pool map is not a clean comparison."""
+@pytest.mark.parametrize(
+    ("ledger_identity", "has_session", "expected_source_error"),
+    [
+        pytest.param("retired-butler", True, True, id="unknown-roster-butler"),
+        pytest.param("wa:122204922638508@lid", False, False, id="whatsapp-lid"),
+        pytest.param("tg:987654321", False, False, id="connector-identity"),
+        pytest.param(
+            "__dashboard_briefing__",
+            False,
+            False,
+            id="declared-sessionless-runtime",
+        ),
+    ],
+)
+async def test_ledger_session_divergence_deadman_classifies_non_roster_sources(
+    ledger_identity: str,
+    has_session: bool,
+    expected_source_error: bool,
+):
+    """Only real or ambiguous unknown butlers require a roster session pool."""
     day = date(2026, 7, 11)
     divergences, source_error = await _ledger_session_divergences(
         MagicMock(),
@@ -647,15 +673,16 @@ async def test_ledger_session_divergence_deadman_marks_missing_butler_evidence_d
         [
             _ledger_row(
                 day=day,
-                butler_name="retired-butler",
+                butler_name=ledger_identity,
                 model_id="executed-model",
                 input_tokens=100,
+                has_session=has_session,
             )
         ],
     )
 
     assert divergences == []
-    assert source_error is True
+    assert source_error is expected_source_error
 
 
 async def test_cost_breakdown_by_purpose_prices_ledger_rows(app):
@@ -2225,6 +2252,108 @@ async def test_forecast_divergence_source_error_is_independent_of_ceiling_source
 # ---------------------------------------------------------------------------
 # §5.2 Spend rules — position reshuffle on insert/delete [bu-dvb7i]
 # ---------------------------------------------------------------------------
+
+
+def _mock_spend_rule_mutation_db(
+    *,
+    fetchrow_results: list[dict],
+    max_position: int = -1,
+) -> tuple[MagicMock, MagicMock]:
+    """Return a dashboard DB mock with a transaction-capable shared connection."""
+    connection = AsyncMock()
+    connection.fetchval = AsyncMock(return_value=max_position)
+    connection.fetchrow = AsyncMock(side_effect=fetchrow_results)
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock(return_value=None)
+    transaction.__aexit__ = AsyncMock(return_value=None)
+    connection.transaction = MagicMock(return_value=transaction)
+
+    pool = MagicMock()
+    acquired = MagicMock()
+    acquired.__aenter__ = AsyncMock(return_value=connection)
+    acquired.__aexit__ = AsyncMock(return_value=None)
+    pool.acquire = MagicMock(return_value=acquired)
+    return _mock_db({"switchboard": pool}), pool
+
+
+async def test_spend_rule_create_emits_successful_server_owner_audit(app, monkeypatch):
+    """The dashboard create path emits the evidence remote authorization consumes."""
+    rule_id = uuid.uuid4()
+    now = datetime.now(tz=UTC)
+    row = {
+        "id": rule_id,
+        "position": 0,
+        "condition": {"purpose": "private_content"},
+        "action": {"model": "remote-model"},
+        "saved_7d": None,
+        "created_at": now,
+        "updated_at": now,
+    }
+    db, pool = _mock_spend_rule_mutation_db(fetchrow_results=[row])
+    _wire_db(app, db)
+    audit = AsyncMock()
+    monkeypatch.setattr("butlers.api.routers.spend.audit_append", audit)
+    monkeypatch.setattr("butlers.api.routers.spend.authenticated_principal", lambda: "server-owner")
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/spend/rules",
+            json={
+                "condition": {"purpose": "private_content"},
+                "action": {"model": "remote-model"},
+            },
+        )
+
+    assert response.status_code == 201
+    audit.assert_awaited_once()
+    assert audit.await_args.args == (pool,)
+    assert audit.await_args.kwargs["actor"] == "server-owner"
+    assert audit.await_args.kwargs["action"] == "spend.rule.create"
+    assert audit.await_args.kwargs["target"] == f"rule:{rule_id}"
+    assert audit.await_args.kwargs["result"] == "success"
+
+
+async def test_spend_rule_update_emits_successful_server_owner_audit(app, monkeypatch):
+    """The dashboard update path emits fresh successful owner evidence for its revision."""
+    rule_id = uuid.uuid4()
+    created_at = datetime.now(tz=UTC)
+    existing = {
+        "id": rule_id,
+        "position": 0,
+        "condition": {"purpose": "private_content"},
+        "action": {"model": "remote-model"},
+        "saved_7d": None,
+        "created_at": created_at,
+        "updated_at": created_at,
+    }
+    updated = {
+        **existing,
+        "action": {"model": "remote-model-v2"},
+        "updated_at": created_at + timedelta(seconds=1),
+    }
+    db, pool = _mock_spend_rule_mutation_db(fetchrow_results=[existing, updated])
+    _wire_db(app, db)
+    audit = AsyncMock()
+    monkeypatch.setattr("butlers.api.routers.spend.audit_append", audit)
+    monkeypatch.setattr("butlers.api.routers.spend.authenticated_principal", lambda: "server-owner")
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.put(
+            f"/api/spend/rules/{rule_id}",
+            json={"action": {"model": "remote-model-v2"}},
+        )
+
+    assert response.status_code == 200
+    audit.assert_awaited_once()
+    assert audit.await_args.args == (pool,)
+    assert audit.await_args.kwargs["actor"] == "server-owner"
+    assert audit.await_args.kwargs["action"] == "spend.rule.update"
+    assert audit.await_args.kwargs["target"] == f"rule:{rule_id}"
+    assert audit.await_args.kwargs["result"] == "success"
 
 
 async def test_spend_rules_list_returns_empty_when_no_db(app):

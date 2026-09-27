@@ -71,7 +71,7 @@ def test_standalone_bridge_owner_defaults_remain_self_contained(
 
 def test_compose_operator_commands_use_shared_socket() -> None:
     """Compose troubleshooting commands must address the socket mounted in the container."""
-    setup_guide = (_REPO_ROOT / "docs/whatsapp-setup.md").read_text(encoding="utf-8")
+    setup_guide = (_REPO_ROOT / "docs/connectors/whatsapp.md").read_text(encoding="utf-8")
 
     assert "--unix-socket /tmp/wa-bridge.sock" not in setup_guide
     assert "--unix-socket /tmp/wa-bridge/bridge.sock" in setup_guide
@@ -79,7 +79,7 @@ def test_compose_operator_commands_use_shared_socket() -> None:
 
 def test_setup_guide_uses_dashboard_invalidated_session_recovery() -> None:
     """The setup guide must not send operators back to manual session-store edits."""
-    setup_guide = (_REPO_ROOT / "docs/whatsapp-setup.md").read_text(encoding="utf-8")
+    setup_guide = (_REPO_ROOT / "docs/connectors/whatsapp.md").read_text(encoding="utf-8")
 
     assert "POST /api/connectors/whatsapp/pair/start" in setup_guide
     assert "Do **not** manually delete `public.whatsmeow_device`" in setup_guide

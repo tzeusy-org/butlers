@@ -27,7 +27,14 @@ sits in a 320 px left rail; selecting a case opens the full dossier body.
 - **Patrol loop:** Execute a scheduler-driven scan at a configurable interval
   (default: 10 minutes). Each cycle is a discrete DB-recorded unit of work.
 - **Discovery:** Poll all registered discovery sources: log scanner,
-  session records SQL view, and reactive butler-reported findings.
+  session records, reactive butler reports, tool-call failures, and
+  infrastructure state.
+- **Patrol independence:** Continue local patrols when only remote registry
+  observation of QA is stale. A separately supervised control-plane observer
+  records overdue patrols and fleet-wide expiry even when QA cannot run.
+  Genuine completed `suppressed` patrols with all enabled discovery sources
+  successful count as healthy discovery; dashboard-created synthetic
+  `suppressed` placeholders and legacy rows without source provenance do not.
 - **Triage:** Deduplicate findings against active investigations, dismissals,
   and cooldown windows before dispatching.
 - **Investigation dispatch:** Create worktrees with a `qa/` prefix, spawn
@@ -55,22 +62,25 @@ sits in a 320 px left rail; selecting a case opens the full dossier body.
 - QA Staffer does **not** register daily briefing contributions.
 - QA Staffer does **not** perform outbound user-channel delivery.
 - QA Staffer does **not** merge PRs; humans review and merge.
-- QA Staffer does **not** access butler schemas directly. It uses only
-  `public.v_qa_recent_failures` (sanctioned read-only SQL view) and writes to
-  `public.qa_patrols`, `public.qa_findings`, `public.healing_attempts`.
+- QA Staffer does **not** access butler schemas directly. Its cross-butler
+  session and tool-call reads use sanctioned public read-only views; patrol,
+  finding, and investigation records use their designated public tables.
 - QA Staffer does **not** surface raw log lines beyond the private operator
   dashboard. Any content bound for GitHub (PR titles, PR bodies, commit
   messages) passes through `anonymize()` + `validate_anonymized()`.
 
 ## Retention Policy
 
-Raw evidence stored on `qa_findings.structured_evidence.evidence_lines[]` is
-purged after **30 days** (or 14 days after a case closes, whichever comes
-first). The daily cleanup job runs at 04:00 UTC. It strips only the
-`evidence_lines[]` field; all narrative payload (`headline`, `hypothesis`,
+Raw evidence is stored only at
+`qa_findings.structured_evidence.investigation_notes.evidence_lines[]`.
+The daily cleanup job runs at 04:00 UTC. It strips those lines 14 days after
+a linked investigation closes, or 30 days after creation for a finding with
+no linked investigation. A linked non-terminal case retains its raw evidence
+regardless of creation age until it closes and its 14-day period elapses.
+Cleanup preserves all other narrative fields (`headline`, `hypothesis`,
 `why_this_fix`, `diff_snapshot`, `counter_evidence`, `blurb_segments`,
-`claims`) is preserved **indefinitely**. Cases still in a non-terminal state
-are exempt from the 14-day clock until the attempt closes.
+`claims`). This retention rule is not permission to put raw lines in any
+other field or send them to GitHub.
 
 ---
 
@@ -93,8 +103,13 @@ are exempt from the 14-day clock until the attempt closes.
 | `log_scanner` | Parse JSON log files from `logs/butlers/`, `logs/connectors/`, `logs/uvicorn/` | Configurable (default: 15 min) |
 | `session_records` | Query `public.v_qa_recent_failures` SQL view | Configurable lookback |
 | `butler_reports` | Drain in-memory buffer of reactive relay findings | N/A (time-bounded by patrol interval) |
+| `tool_call_failures` | Query the sanctioned public tool-call failure view | Configurable lookback |
+| `infra_state` | Compare connector/butler state and bounded infrastructure facts | Point-in-time snapshot |
 
-All source filtering is tool-based (zero LLM invocations during discovery).
+All five source filters are deterministic (zero LLM invocations during
+discovery). A failed or partial source read is recorded as unavailable and
+cannot prove that a condition recovered. The independent patrol-age observer
+is control-plane infrastructure, not a sixth QA discovery source.
 
 ---
 
@@ -121,8 +136,7 @@ Each novel finding above the severity threshold triggers:
 3. Investigation agent spawn with sandboxed environment.
 4. Timeout watchdog (default: 30 minutes).
 
-Investigation agents run with only: `GH_TOKEN`, `PATH`, and build-tool
-variables. No butler DB credentials, API keys, or OAuth tokens leak in.
+Investigation agents receive `PATH` and build-tool variables, never GitHub publication credentials. A trusted deterministic publisher owns the dedicated QA credential and accepts only attempt-bound validated publication operations. Process/filesystem separation must be proven before activation; no butler DB credentials, API keys, or OAuth tokens enter investigations.
 
 ---
 
@@ -130,7 +144,7 @@ variables. No butler DB credentials, API keys, or OAuth tokens leak in.
 
 - Labels: `["self-healing", "automated"]`
 - GitHub token: retrieved via `CredentialStore.resolve("BUTLERS_QA_GH_TOKEN")`
-- Token scope: branch push, PR create/label only (**no merge/approve**)
+- Effective publication surface: validated attempt-bound branch and PR publication plus fixed sanitized labels; **no merge, review, approval or queue**. Coarse provider permissions may be broader; publisher compromise is a residual risk, not an absent GitHub permission.
 - Anonymization: all event summaries and agent context passed through
   `anonymize()` before inclusion in PRs
 
@@ -139,9 +153,12 @@ variables. No butler DB credentials, API keys, or OAuth tokens leak in.
 ## Anonymization Requirements
 
 All error event summaries extracted from session records must be anonymized
-before storage and PR submission. Raw log lines are never stored in
-`qa_findings`. Only computed fingerprints, exception types, call sites, and
-sanitized summaries are persisted.
+before storage and PR submission. Bounded raw evidence lines may be retained
+only in private
+`qa_findings.structured_evidence.investigation_notes.evidence_lines[]` under the
+retention rule above; they never enter PRs, commit messages, or other egress.
+Fingerprints, exception types, call sites, and sanitized summaries remain the
+normal durable finding projection.
 
 ---
 
@@ -182,7 +199,7 @@ access.
 
 - **PostgreSQL (`butlers.qa` schema):** State store, session log
 - **PostgreSQL (`public` schema):** `qa_patrols`, `qa_findings`, `qa_dismissals`, `healing_attempts`, `v_qa_recent_failures`
-- **Switchboard:** Registration, liveness, and routing of `report_finding` calls from butlers
+- **Switchboard:** Registration and routing of `report_finding` calls from butlers; receiver-derived liveness is observed by the control plane
 - **GitHub API (`BUTLERS_QA_GH_TOKEN`):** PR creation for investigation outcomes
 
 ### Depends On QA Staffer
@@ -228,7 +245,10 @@ Repeated anonymization failures:
 - PR pipeline halted
 - Log ERROR for each failed attempt
 
-If QA Staffer is unreachable:
-- Butlers fall back to direct self-healing dispatch (legacy path)
-- `qa_fallback_activations_total` counter increments
-- Escalate if fallback activations persist over extended periods
+If QA Staffer is unreachable, the independently supervised control plane
+records a durable unavailable or overdue-patrol condition. Butler reports may
+fail to reach QA and must remain visible through their own source evidence;
+they do not invoke a direct per-butler self-healing fallback. Recovery of QA
+reachability or patrol cadence resolves the condition only after a complete
+successful observation. This supersedes the legacy direct-dispatch fallback
+claim, which RFC 0015 deprecated.

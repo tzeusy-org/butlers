@@ -13,7 +13,7 @@ import asyncio
 import errno
 import sys
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncpg
 import pytest
@@ -148,6 +148,143 @@ class TestTransportVocabulary:
 
 
 class TestRouteTransportClassification:
+    async def test_default_route_retains_legacy_authority_without_cutover(
+        self, monkeypatch
+    ) -> None:
+        monkeypatch.delenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", raising=False)
+        pool = _mock_pool()
+        call_fn = AsyncMock(return_value={"status": "accepted"})
+        with (
+            _resolves_target(),
+            patch(
+                "butlers.tools.switchboard.routing.route.resolve_control_plane_target",
+                new_callable=AsyncMock,
+            ) as receiver_resolver,
+        ):
+            result = await route(pool, "finance", "route.execute", {}, call_fn=call_fn)
+
+        assert result["transport"]["outcome"] == "confirmed"
+        call_fn.assert_awaited_once()
+        receiver_resolver.assert_not_awaited()
+
+    async def test_flagged_stale_route_rechecks_once_without_policy_bypass(
+        self, monkeypatch
+    ) -> None:
+        from butlers.core.control_plane_identity import ExpectedDaemon, ProbeOutcome
+        from butlers.tools.switchboard.registry.registry import ControlPlaneTargetDecision
+
+        monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", "1")
+        expected = ExpectedDaemon("finance", 41107, "localhost")
+        stale = ControlPlaneTargetDecision(
+            "stale", "stale_observation", expected, endpoint_url="http://localhost:41107/mcp"
+        )
+        ready = ControlPlaneTargetDecision(
+            "ready", "ready", expected, endpoint_url="http://localhost:41107/mcp"
+        )
+        pool = _mock_pool()
+        call_fn = AsyncMock(return_value={"status": "accepted"})
+        with (
+            patch(
+                "butlers.tools.switchboard.routing.route.expected_route_target",
+                return_value=expected,
+            ),
+            patch(
+                "butlers.tools.switchboard.routing.route.resolve_control_plane_target",
+                new=AsyncMock(side_effect=[stale, ready]),
+            ) as receiver_resolver,
+            patch(
+                "butlers.tools.switchboard.routing.route.probe_once",
+                new=AsyncMock(return_value=ProbeOutcome("healthy", True)),
+            ) as probe,
+            patch("butlers.tools.switchboard.routing.route.httpx.AsyncClient"),
+        ):
+            result = await route(pool, "finance", "route.execute", {}, call_fn=call_fn)
+
+        assert result["transport"]["outcome"] == "confirmed"
+        assert receiver_resolver.await_count == 2
+        probe.assert_awaited_once()
+        call_fn.assert_awaited_once()
+        assert call_fn.await_args.args[0] == "http://localhost:41107/mcp"
+
+        denied = ControlPlaneTargetDecision("denied", "policy_denied", expected)
+        with (
+            patch(
+                "butlers.tools.switchboard.routing.route.expected_route_target",
+                return_value=expected,
+            ),
+            patch(
+                "butlers.tools.switchboard.routing.route.resolve_control_plane_target",
+                new=AsyncMock(return_value=denied),
+            ),
+            patch(
+                "butlers.tools.switchboard.routing.route.probe_once",
+                new_callable=AsyncMock,
+            ) as probe,
+        ):
+            refused = await route(
+                pool,
+                "finance",
+                "route.execute",
+                {},
+                allow_stale=True,
+                allow_quarantined=True,
+                call_fn=call_fn,
+            )
+        assert refused["transport"]["outcome"] == "not_attempted"
+        assert refused["retryable"] is False
+        probe.assert_not_awaited()
+        call_fn.assert_awaited_once()
+
+        with (
+            patch(
+                "butlers.tools.switchboard.routing.route.expected_route_target",
+                return_value=expected,
+            ),
+            patch(
+                "butlers.tools.switchboard.routing.route.resolve_control_plane_target",
+                new=AsyncMock(return_value=stale),
+            ),
+            patch(
+                "butlers.tools.switchboard.routing.route.probe_once",
+                new=AsyncMock(return_value=ProbeOutcome("timeout", False)),
+            ) as failed_probe,
+            patch("butlers.tools.switchboard.routing.route.httpx.AsyncClient"),
+        ):
+            unavailable = await route(pool, "finance", "route.execute", {}, call_fn=call_fn)
+        assert unavailable["transport"]["outcome"] == "not_attempted"
+        assert unavailable["error"] == "target_unavailable"
+        failed_probe.assert_awaited_once()
+        call_fn.assert_awaited_once()
+
+        with (
+            patch(
+                "butlers.tools.switchboard.routing.route.expected_route_target",
+                return_value=expected,
+            ),
+            patch(
+                "butlers.tools.switchboard.routing.route.resolve_control_plane_target",
+                new=AsyncMock(side_effect=[stale, denied]),
+            ),
+            patch(
+                "butlers.tools.switchboard.routing.route.probe_once",
+                new=AsyncMock(return_value=ProbeOutcome("healthy", True)),
+            ),
+            patch("butlers.tools.switchboard.routing.route.httpx.AsyncClient"),
+        ):
+            newly_held = await route(pool, "finance", "route.execute", {}, call_fn=call_fn)
+        assert newly_held["transport"]["outcome"] == "not_attempted"
+        assert newly_held["retryable"] is False
+        call_fn.assert_awaited_once()
+
+        with patch(
+            "butlers.tools.switchboard.routing.route.expected_route_target",
+            side_effect=ValueError("bad private roster path"),
+        ):
+            unknown = await route(pool, "finance", "route.execute", {}, call_fn=call_fn)
+        assert unknown["transport"]["outcome"] == "not_attempted"
+        assert "private roster path" not in unknown["error"]
+        call_fn.assert_awaited_once()
+
     async def test_internal_context_folds_into_route_envelope_without_target_keyword(self) -> None:
         pool = _mock_pool()
         routed_calls: list[dict[str, Any]] = []
@@ -438,16 +575,422 @@ def _notify_envelope() -> dict[str, Any]:
     }
 
 
+def _confirmed_notify_route_result(*, delivery_id: str = "tg-42") -> dict[str, Any]:
+    return {
+        "result": {
+            "schema_version": "route_response.v1",
+            "status": "ok",
+            "result": {
+                "notify_response": {
+                    "schema_version": "notify_response.v1",
+                    "status": "ok",
+                    "delivery": {
+                        "channel": "telegram",
+                        "delivery_id": delivery_id,
+                    },
+                }
+            },
+        },
+        "transport": {"outcome": "confirmed", "retryable": False},
+    }
+
+
+def _recovery_envelope() -> dict[str, Any]:
+    subject = "approval:relationship:00000000-0000-0000-0000-000000000000"
+    return {
+        "schema_version": "notify.v1",
+        "origin_butler": "relationship",
+        "delivery": {
+            "intent": "approval_request",
+            "channel": "telegram",
+            "recipient": "owner-synthetic",
+            "message": "Synthetic approval.",
+        },
+        "actions": [{"verb": "open_dashboard", "dashboard_url": "https://dashboard.example.test"}],
+        "recovery": {
+            "operation": "handoff",
+            "subject_kind": "action",
+            "subject_key": subject,
+            "presentation_key": f"{subject}:p:1",
+            "presentation_generation": 1,
+            "presentation_mode": "single",
+        },
+    }
+
+
 class TestDeliverPostSendBookkeeping:
-    async def test_confirmed_delivery_survives_notification_log_failure(self) -> None:
+    async def test_null_recovery_uses_generic_delivery(self) -> None:
+        pool = _mock_pool()
+        envelope = {**_notify_envelope(), "recovery": None}
+
+        with (
+            patch(
+                "butlers.tools.switchboard.notification.deliver.route",
+                new=AsyncMock(return_value=_confirmed_notify_route_result()),
+            ) as routed,
+            patch(
+                "butlers.tools.switchboard.notification.deliver.log_notification",
+                new=AsyncMock(return_value="notif-1"),
+            ) as logged,
+            patch(
+                "butlers.tools.switchboard.notification.deliver._write_outbound_message_inbox",
+                new=AsyncMock(),
+            ) as inbox,
+        ):
+            result = await deliver(pool, notify_request=envelope, source_butler="health")
+
+        assert result["status"] == "sent"
+        assert result["delivery_id"] == "tg-42"
+        routed.assert_awaited_once()
+        assert logged.await_args.kwargs["status"] == "sent"
+        assert logged.await_args.kwargs["metadata"]["delivery_id"] == "tg-42"
+        assert "recovery" not in logged.await_args.kwargs["metadata"]["notify_request"]
+        inbox.assert_awaited_once()
+
+    async def test_nested_route_application_error_is_never_reported_sent(self) -> None:
         pool = _mock_pool()
         route_result = {
-            "result": {"notify_response": {"status": "ok"}},
-            "transport": {
-                "outcome": "confirmed",
-                "retryable": False,
+            "result": {
+                "schema_version": "route_response.v1",
+                "status": "error",
+                "error": {
+                    "class": "validation_error",
+                    "message": "Approval recovery authority rejected.",
+                    "retryable": False,
+                },
             },
+            "transport": {"outcome": "confirmed", "retryable": False},
         }
+
+        with (
+            patch(
+                "butlers.tools.switchboard.notification.deliver.route",
+                new=AsyncMock(return_value=route_result),
+            ),
+            patch(
+                "butlers.tools.switchboard.notification.deliver.log_notification",
+                new=AsyncMock(return_value="notif-1"),
+            ) as logged,
+            patch(
+                "butlers.tools.switchboard.notification.deliver._write_outbound_message_inbox",
+                new=AsyncMock(),
+            ) as inbox,
+        ):
+            result = await deliver(pool, notify_request=_notify_envelope(), source_butler="health")
+
+        assert result["status"] == "failed"
+        assert result["error_class"] == "validation_error"
+        assert result["error"] == "Approval recovery authority rejected."
+        assert logged.await_args.kwargs["status"] == "failed"
+        inbox.assert_not_awaited()
+
+    async def test_nested_timeout_without_transport_remains_uncertain(self) -> None:
+        pool = _mock_pool()
+        route_result = {
+            "result": {
+                "schema_version": "route_response.v1",
+                "status": "error",
+                "error": {
+                    "class": "timeout",
+                    "message": "Telegram delivery failed.",
+                    "retryable": False,
+                },
+            },
+            "transport": {"outcome": "confirmed", "retryable": False},
+        }
+
+        with (
+            patch(
+                "butlers.tools.switchboard.notification.deliver.route",
+                new=AsyncMock(return_value=route_result),
+            ),
+            patch(
+                "butlers.tools.switchboard.notification.deliver.log_notification",
+                new=AsyncMock(return_value="notif-1"),
+            ),
+        ):
+            result = await deliver(pool, notify_request=_notify_envelope(), source_butler="health")
+
+        assert result["status"] == "failed"
+        assert result["transport"]["outcome"] == "uncertain"
+        assert result["transport"]["error_detail"] == "transport_connection_lost"
+        assert result["transport"]["retryable"] is False
+
+    @pytest.mark.parametrize(
+        "route_response",
+        [
+            {"schema_version": "route_response.v1", "status": "accepted"},
+            {"schema_version": "route_response.v1", "status": "ok", "result": {}},
+            {
+                "schema_version": "route_response.v1",
+                "status": "ok",
+                "result": {
+                    "notify_response": {
+                        "schema_version": "notify_response.v1",
+                        "status": "ok",
+                        "delivery": {"channel": "telegram", "delivery_id": ""},
+                    }
+                },
+            },
+            {
+                "schema_version": "route_response.v1",
+                "status": "ok",
+                "result": {
+                    "notify_response": {
+                        "schema_version": "notify_response.v1",
+                        "status": "ok",
+                        "delivery": {"channel": "email", "delivery_id": "mail-1"},
+                    }
+                },
+            },
+        ],
+    )
+    async def test_sent_requires_complete_matching_messenger_receipt(
+        self, route_response: dict[str, Any]
+    ) -> None:
+        pool = _mock_pool()
+        with (
+            patch(
+                "butlers.tools.switchboard.notification.deliver.route",
+                new=AsyncMock(
+                    return_value={
+                        "result": route_response,
+                        "transport": {"outcome": "confirmed", "retryable": False},
+                    }
+                ),
+            ),
+            patch(
+                "butlers.tools.switchboard.notification.deliver.log_notification",
+                new=AsyncMock(return_value="notif-1"),
+            ) as logged,
+            patch(
+                "butlers.tools.switchboard.notification.deliver._write_outbound_message_inbox",
+                new=AsyncMock(),
+            ) as inbox,
+        ):
+            result = await deliver(pool, notify_request=_notify_envelope(), source_butler="health")
+
+        assert result["status"] == "failed"
+        assert logged.await_args.kwargs["status"] == "failed"
+        inbox.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("decision_state", "reason", "admitted"),
+        [
+            ("ready", "ready", True),
+            ("stale", "stale_observation", False),
+            ("denied", "policy_denied", False),
+            ("denied", "missing_target", False),
+            (None, None, False),  # No roster authority for this sender.
+        ],
+    )
+    async def test_flagged_recovery_admits_only_ready_sender_without_generic_effects(
+        self, monkeypatch, decision_state: str | None, reason: str | None, admitted: bool
+    ) -> None:
+        from butlers.core.control_plane_identity import ExpectedDaemon
+        from butlers.tools.switchboard.registry.registry import ControlPlaneTargetDecision
+
+        monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", "1")
+        expected = ExpectedDaemon("relationship", 41107, "localhost")
+        decision = (
+            ControlPlaneTargetDecision(decision_state, reason, expected)
+            if decision_state is not None and reason is not None
+            else None
+        )
+        pool = _mock_pool()
+        route_result = {"result": {"notify_response": {"handoff": {"classification": "confirmed"}}}}
+        with (
+            patch(
+                "butlers.tools.switchboard.notification.deliver.expected_route_target",
+                return_value=None if decision_state is None else expected,
+            ) as expected_target,
+            patch(
+                "butlers.tools.switchboard.notification.deliver.resolve_control_plane_target",
+                new=AsyncMock(return_value=decision),
+            ) as resolve_target,
+            patch(
+                "butlers.tools.switchboard.notification.deliver.route",
+                new=AsyncMock(return_value=route_result),
+            ) as routed,
+            patch(
+                "butlers.tools.switchboard.notification.deliver.log_notification",
+                new=AsyncMock(),
+            ) as logged,
+            patch(
+                "butlers.tools.switchboard.notification.deliver._write_outbound_message_inbox",
+                new=AsyncMock(),
+            ) as inbox,
+        ):
+            result = await deliver(
+                pool,
+                notify_request=_recovery_envelope(),
+                source_butler="relationship",
+                trusted_source="relationship",
+            )
+
+        expected_target.assert_called_once_with("relationship")
+        if admitted:
+            assert result == {"status": "recovery", "handoff": {"classification": "confirmed"}}
+            resolve_target.assert_awaited_once_with(pool, expected)
+            routed.assert_awaited_once()
+        else:
+            assert result == {
+                "status": "failed",
+                "error": "Approval recovery authority rejected.",
+                "retryable": False,
+            }
+            if decision_state is None:
+                resolve_target.assert_not_awaited()
+            else:
+                resolve_target.assert_awaited_once_with(pool, expected)
+            routed.assert_not_awaited()
+        logged.assert_not_awaited()
+        inbox.assert_not_awaited()
+        assert pool.method_calls == []
+
+    async def test_flagged_recovery_fails_closed_when_receiver_lookup_fails(self, monkeypatch):
+        from butlers.core.control_plane_identity import ExpectedDaemon
+
+        monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", "1")
+        pool = _mock_pool()
+        expected = ExpectedDaemon("relationship", 41107, "localhost")
+        with (
+            patch(
+                "butlers.tools.switchboard.notification.deliver.expected_route_target",
+                return_value=expected,
+            ),
+            patch(
+                "butlers.tools.switchboard.notification.deliver.resolve_control_plane_target",
+                new=AsyncMock(side_effect=RuntimeError("private receiver failure")),
+            ),
+            patch(
+                "butlers.tools.switchboard.notification.deliver.route", new=AsyncMock()
+            ) as routed,
+            patch(
+                "butlers.tools.switchboard.notification.deliver.log_notification",
+                new=AsyncMock(),
+            ) as logged,
+            patch(
+                "butlers.tools.switchboard.notification.deliver._write_outbound_message_inbox",
+                new=AsyncMock(),
+            ) as inbox,
+        ):
+            result = await deliver(
+                pool,
+                notify_request=_recovery_envelope(),
+                source_butler="relationship",
+                trusted_source="relationship",
+            )
+
+        assert result == {
+            "status": "failed",
+            "error": "Approval recovery authority rejected.",
+            "retryable": False,
+        }
+        assert "private receiver failure" not in repr(result)
+        routed.assert_not_awaited()
+        logged.assert_not_awaited()
+        inbox.assert_not_awaited()
+        assert pool.method_calls == []
+
+    async def test_recovery_uses_trusted_internal_context_and_bypasses_generic_records(
+        self,
+    ) -> None:
+        pool = _mock_pool(fetchval=AsyncMock(return_value="relationship"))
+        route_result = {
+            "result": {
+                "notify_response": {
+                    "status": "ok",
+                    "handoff": {"classification": "confirmed"},
+                }
+            },
+            "transport": {"outcome": "confirmed", "retryable": False},
+        }
+        with (
+            patch(
+                "butlers.tools.switchboard.notification.deliver.route",
+                new=AsyncMock(return_value=route_result),
+            ) as mock_route,
+            patch(
+                "butlers.tools.switchboard.notification.deliver.log_notification",
+                new=AsyncMock(),
+            ) as mock_log,
+            patch(
+                "butlers.tools.switchboard.notification.deliver._write_outbound_message_inbox",
+                new=AsyncMock(),
+            ) as mock_inbox,
+        ):
+            result = await deliver(
+                pool,
+                notify_request=_recovery_envelope(),
+                source_butler="relationship",
+                trusted_source="relationship",
+            )
+
+        assert result == {"status": "recovery", "handoff": {"classification": "confirmed"}}
+        mock_log.assert_not_awaited()
+        mock_inbox.assert_not_awaited()
+        trusted = mock_route.await_args.kwargs["internal_context"]["_trusted_approval_recovery"]
+        assert trusted["issuer"] == trusted["owning_schema"] == "relationship"
+        assert "claim_token" not in trusted and "claim_fence" not in trusted
+
+    async def test_recovery_rejects_untrusted_or_malformed_source_before_observability(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        pool = _mock_pool(fetchval=AsyncMock(return_value="relationship"))
+        tracer = MagicMock()
+        malformed = _recovery_envelope()
+        malformed["recovery"]["presentation_key"] += ":private_payload_sentinel"
+        mismatched_origin = _recovery_envelope()
+        mismatched_origin["origin_butler"] = "caller_secret_sentinel"
+        cases = (
+            (_recovery_envelope(), "relationship", None),
+            (_recovery_envelope(), "relationship", "general"),
+            (_recovery_envelope(), "caller_source_sentinel", "relationship"),
+            (mismatched_origin, "relationship", "relationship"),
+            (malformed, "relationship", "relationship"),
+        )
+
+        with (
+            patch(
+                "butlers.tools.switchboard.notification.deliver.route", new=AsyncMock()
+            ) as mock_route,
+            patch(
+                "butlers.tools.switchboard.notification.deliver.trace.get_tracer",
+                return_value=tracer,
+            ),
+            caplog.at_level("DEBUG"),
+        ):
+            results = [
+                await deliver(
+                    pool,
+                    notify_request=envelope,
+                    source_butler=source,
+                    trusted_source=trusted,
+                )
+                for envelope, source, trusted in cases
+            ]
+
+        assert results == [
+            {
+                "status": "failed",
+                "error": "Approval recovery authority rejected.",
+                "retryable": False,
+            }
+        ] * len(cases)
+        assert "private_payload_sentinel" not in caplog.text
+        assert "caller_secret_sentinel" not in caplog.text
+        assert "caller_source_sentinel" not in caplog.text
+        assert all("private_payload_sentinel" not in repr(result) for result in results)
+        assert all("caller_secret_sentinel" not in repr(result) for result in results)
+        assert all("caller_source_sentinel" not in repr(result) for result in results)
+        tracer.start_as_current_span.assert_not_called()
+        assert pool.method_calls == []
+        mock_route.assert_not_awaited()
+
+    async def test_confirmed_delivery_survives_notification_log_failure(self) -> None:
+        pool = _mock_pool()
+        route_result = _confirmed_notify_route_result()
 
         with (
             patch(
@@ -468,13 +1011,7 @@ class TestDeliverPostSendBookkeeping:
 
     async def test_confirmed_delivery_survives_message_inbox_failure(self) -> None:
         pool = _mock_pool(execute=AsyncMock(side_effect=RuntimeError("inbox down")))
-        route_result = {
-            "result": {"notify_response": {"status": "ok"}},
-            "transport": {
-                "outcome": "confirmed",
-                "retryable": False,
-            },
-        }
+        route_result = _confirmed_notify_route_result()
 
         with (
             patch(
@@ -547,10 +1084,19 @@ class TestDeliverPostSendBookkeeping:
         pool = _mock_pool()
         route_result = {
             "result": {
-                "notify_response": {
-                    "status": "error",
-                    "error": {"class": "delivery_error", "message": "chat not found"},
-                }
+                "schema_version": "route_response.v1",
+                "status": "error",
+                "error": {
+                    "class": "delivery_error",
+                    "message": "chat not found",
+                    "retryable": False,
+                },
+                "result": {
+                    "notify_response": {
+                        "status": "error",
+                        "error": {"class": "delivery_error", "message": "chat not found"},
+                    }
+                },
             },
             "transport": {"outcome": "confirmed", "retryable": False},
         }

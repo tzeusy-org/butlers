@@ -464,6 +464,9 @@ class EntityLoan(BaseModel):
     direction: str | None = None
     settled: str | None = None
     settled_at: str | None = None
+    claim_id: UUID | None = None
+    resolution_state: str | None = None
+    unverifiable_reason: str | None = None
     created_at: datetime | None = None
     # Provenance contract fields (spec §"Provenance contract").
     src: str = "memory_module_legacy"
@@ -504,43 +507,32 @@ class EntityTimelineItem(BaseModel):
     primary: bool = False
 
 
-class EntityReachOutDraft(BaseModel):
-    """A drafted reach-out message for an entity (predicate='reach_out_draft').
+class EntityCadenceResponse(BaseModel):
+    """Bounded interaction evidence for one explicit rolling window.
 
-    A draft is exactly that: text the owner has composed but NOT sent.  Nothing
-    in the create path contacts a channel or queues delivery, so ``status`` is
-    always ``'draft'`` today (see ``tools/reach_out.py``).
-
-    ``message`` maps to ``fact.content``; ``channel`` is sparse metadata
-    recording the channel the owner had in mind, not a delivery attempt.
-
-    Provenance fields are always present per the Provenance contract.
-    The legacy ``facts`` table does not carry these columns; they are explicit
-    nulls / defaults.  ``src`` is ``'memory_module_legacy'``.
+    ``interaction_count`` is exact only when ``completeness`` is ``complete``.
+    An incomplete response means the bounded read reached its cap; callers must
+    not turn the observed subset into a calm zero or exact count.
     """
 
-    id: UUID
-    message: str | None = None
-    channel: str | None = None
-    status: str = "draft"
-    created_at: datetime | None = None
-    # Provenance contract fields (spec §"Provenance contract").
-    src: str = "memory_module_legacy"
-    conf: float | None = None
-    last_seen: datetime | None = None
-    weight: float | None = None
-    verified: bool = False
-    primary: bool = False
+    window_days: int
+    window_started_at: datetime
+    window_ended_at: datetime
+    interaction_count: int
+    completeness: Literal["complete", "incomplete"]
+    has_more: bool
 
 
 # ---------------------------------------------------------------------------
 # Entity-level tab WRITE models (bu-6t8ix.4)
 #
-# The tab GETs above were read-only, which left the log-interaction,
-# gift-idea, and draft-reach-out operator verbs with nowhere to write.  These
-# request bodies feed the POST siblings, which persist through the butler's own
-# fact-store tools so a dashboard-authored record is indistinguishable from a
-# butler-authored one.
+# The tab GETs above were read-only, which left the log-interaction and
+# gift-idea operator verbs with nowhere to write. These request bodies feed
+# the POST siblings, which persist through the butler's own fact-store tools
+# so a dashboard-authored record is indistinguishable from a butler-authored
+# one. (A third verb, draft-reach-out, shipped alongside these and its model
+# EntityReachOutDraft/CreateEntityReachOutDraftRequest were later retired in
+# bu-2jtfw.11, replaced by the prepared-action mechanism.)
 # ---------------------------------------------------------------------------
 
 
@@ -590,19 +582,6 @@ class CreateEntityGiftRequest(BaseModel):
     occasion: str | None = None
 
     _strip_description = field_validator("description")(_require_non_blank)
-
-
-class CreateEntityReachOutDraftRequest(BaseModel):
-    """Request body for POST /entities/{id}/reach-out-drafts — the draft-reach-out verb.
-
-    ``channel`` records the channel the owner has in mind.  It is intent only:
-    the endpoint never sends, and there is no send path behind it.
-    """
-
-    message: str
-    channel: str | None = None
-
-    _strip_message = field_validator("message")(_require_non_blank)
 
 
 class LinkedContactSummary(BaseModel):
@@ -1384,6 +1363,9 @@ class MergeEntitiesResponse(BaseModel):
     tombstoned_entity_id: UUID
     subject_facts_rewired: int
     object_facts_rewired: int
+    rebind_id: UUID | None = None
+    receipts: list[dict[str, Any]] = []
+    failed_schemas: list[str] = []
 
 
 # ---------------------------------------------------------------------------
@@ -1449,11 +1431,10 @@ class ActivityEntry(BaseModel):
     - ``'chronicler'`` — sourced via the chronicler MCP tool
       ``chronicler_list_episodes``.
 
-    Fields present for ``src='relationship'`` rows:
-    - ``id`` — fact UUID from ``relationship.facts``
-    - ``ts`` — ``last_seen`` of the fact (falls back to ``created_at``)
-    - ``kind`` — predicate family (e.g. ``'note'``, ``'interaction'``, ``'gift'``)
-    - ``predicate`` — the raw predicate string
+    Relationship rows carry ``store='narrative'`` for memory-module facts or
+    ``store='identity'`` for entity triples. ``summary`` is the exact stored
+    content or object respectively. Consumers identify rows by
+    ``(src, store, id)`` because UUIDs are not globally unique across stores.
 
     Fields present for ``src='chronicler'`` rows:
     - ``id`` — episode UUID from the chronicler
@@ -1461,6 +1442,7 @@ class ActivityEntry(BaseModel):
     - ``kind`` — always ``'episode'``
     - ``episode_id`` — same as ``id`` (kept for explicit episode-typed access)
     - ``summary`` — ``canonical_title`` from the corrected episode
+    - ``store`` — always ``None``
 
     Fields absent in a given row are ``None``.
     """
@@ -1469,6 +1451,7 @@ class ActivityEntry(BaseModel):
     ts: datetime | None = None
     kind: str
     src: Literal["relationship", "chronicler"]
+    store: Literal["narrative", "identity"] | None = None
     # relationship-only
     predicate: str | None = None
     # chronicler-only
@@ -1479,12 +1462,11 @@ class ActivityEntry(BaseModel):
 class ActivityResponse(BaseModel):
     """Response for ``GET /entities/{id}/activity``.
 
-    ``items`` is a merged, timestamp-descending stream of relationship facts
-    and chronicler episodes for the given entity.  Each entry carries a
-    ``src`` field so clients can distinguish the origin.
+    ``items`` merges relationship narrative facts, identity triples, and
+    chronicler episodes for the given entity.
 
-    ``total`` is the total number of items across both sources before
-    pagination (relationship_count + chronicler_count).
+    ``total`` is the materialized candidate count across all three sources
+    before pagination.
     ``limit`` and ``offset`` echo the request parameters.
 
     ``degraded`` is true when the Chronicler contribution could not be read.

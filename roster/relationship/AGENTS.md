@@ -106,7 +106,7 @@ AND f.scope IN ('global', 'relationship')
 
 ### Reference
 
-- Predicate taxonomy and scope table: `openspec/specs/predicate-taxonomy.md` §2 and §3.2
+- Scope table and predicate vocabulary: `docs/modules/knowledge-base.md` (Fact Scoping, Predicate Vocabulary); seeded predicates live in `src/butlers/modules/memory/migrations/002_seed_predicates.py`
 - Guardrail test: `tests/contracts/test_relationship_facts_scope.py`
 
 # Notes to self

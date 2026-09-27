@@ -12,10 +12,17 @@ from uuid import UUID
 import httpx
 import pytest
 
+from butlers.api.app import create_app as create_guarded_app
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.spend import _get_db_manager
+from tests.api.auth_helpers import _DomainOwnerState, create_authenticated_domain_app
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(scope="module")
+def app():
+    return create_authenticated_domain_app(api_key="owner-key")
 
 
 async def test_spend_attention_preserves_empty_vs_unavailable(app, monkeypatch, caplog) -> None:
@@ -41,8 +48,11 @@ async def test_spend_attention_preserves_empty_vs_unavailable(app, monkeypatch, 
     assert "protected raw detail" not in caplog.text
 
 
-async def test_spend_attention_is_sanitized_and_owner_gated(app, monkeypatch) -> None:
-    monkeypatch.setenv("DASHBOARD_API_KEY", "owner-key")
+async def test_spend_attention_is_sanitized_and_owner_gated(monkeypatch) -> None:
+    monkeypatch.setenv("DASHBOARD_AUTH_ORIGIN", "https://owner.test.invalid")
+    monkeypatch.setenv("DASHBOARD_AUTH_RP_ID", "owner.test.invalid")
+    app = create_guarded_app(api_key="owner-key")
+    app.state.owner_auth_service = _DomainOwnerState("owner-key")
     now = datetime(2026, 8, 26, tzinfo=UTC)
     pool = AsyncMock()
     pool.fetchrow = AsyncMock(
@@ -61,7 +71,7 @@ async def test_spend_attention_is_sanitized_and_owner_gated(app, monkeypatch) ->
     app.dependency_overrides[_get_db_manager] = lambda: db
 
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+        transport=httpx.ASGITransport(app=app), base_url="https://owner.test.invalid"
     ) as client:
         denied = await client.get("/api/spend/runtime-attention")
         allowed = await client.get(

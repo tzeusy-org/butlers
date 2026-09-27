@@ -5,9 +5,11 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval";
 
 import {
   getButlerMemoryAccess,
+  getButlerEffectivePrompt,
   getButlerPrompt,
   getButlerPromptHistory,
   getButlerTools,
@@ -26,6 +28,17 @@ export function useButlerPrompt(name: string) {
     queryKey: ["butlers", name, "prompt"],
     queryFn: () => getButlerPrompt(name),
     enabled: !!name,
+  });
+}
+
+/** Fetch the protected prompt bytes and roster-drift receipt that actually ran. */
+export function useButlerEffectivePrompt(name: string) {
+  const refetchInterval = useBusAwarePollInterval();
+  return useQuery({
+    queryKey: ["butlers", name, "prompt-effective"],
+    queryFn: () => getButlerEffectivePrompt(name),
+    enabled: !!name,
+    refetchInterval,
   });
 }
 

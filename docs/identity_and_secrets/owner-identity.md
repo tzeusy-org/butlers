@@ -1,29 +1,31 @@
 # Owner Identity
 
-> **Purpose:** Explain how the owner contact is bootstrapped, how identity fields are configured, and how secured credentials are managed.
+> **Purpose:** Explain how the owner entity is bootstrapped, how identity fields are configured, and how secured credentials are managed.
 > **Audience:** Users setting up Butlers for the first time, developers extending identity resolution.
-> **Prerequisites:** [Schema Topology](../data_and_storage/schema-topology.md), [Contact System](contact-system.md).
+> **Prerequisites:** [Schema Topology](../data_and_storage/schema-topology.md), [Identity Model](../concepts/identity-model.md).
 
 ## Overview
 
 ![Owner Identity Bootstrap](./owner-identity-bootstrap.svg)
 
-When Butlers starts for the first time, it seeds an **Owner contact** in the `public.contacts` table with the `owner` role on its linked entity. This contact has no channel identifiers initially -- the user must configure their identity through the dashboard so butlers can recognize them across channels (Telegram, email) and prevent duplicate contacts during sync.
+Every daemon startup idempotently ensures exactly one **owner entity** exists in `public.entities`
+with `roles = ['owner']` (`src/butlers/owner_bootstrap.py` `_ensure_owner_entity`). It starts with
+no channel identifiers: the owner configures their identity through the dashboard so butlers can
+recognize them across channels and so contact sync does not create a duplicate of them.
 
 ## Bootstrap Flow
 
-On first startup, the daemon:
+1. If no entity carries the `owner` role, insert one (`canonical_name = 'Owner'`,
+   `entity_type = 'person'`); otherwise reuse it.
+2. On the Relationship daemon only, mirror the owner's `telegram_chat_id` `entity_info` row into a
+   canonical `telegram:<chat_id>` `has-handle` fact in `relationship.entity_facts`, because
+   identity resolution and the approval gate read facts, not `entity_info`.
 
-1. Checks `public.entities` for an entity with `'owner' = ANY(roles)`.
-2. If none exists, creates an owner entity in `public.entities` with `roles = ['owner']`.
-3. Creates a corresponding `public.contacts` row linked via `entity_id`.
-4. The owner contact starts with no `contact_info` entries.
-
-This ensures exactly one owner entity exists across the system. Subsequent butler startups detect the existing owner and skip creation.
+Both steps are non-fatal no-ops when the tables do not exist yet.
 
 ## Configuring Identity
 
-Navigate to the owner contact's detail page in the dashboard (linked from the setup banner on the contacts page). Use the "Add contact info" form to add:
+Open the owner entity's detail page in the dashboard and use the setup banner's dialog to add:
 
 ### Standard Identity Fields
 
@@ -44,19 +46,17 @@ Secured entries are stored in PostgreSQL with `secured=true` and masked in the d
 
 ## Setup Banner
 
-A one-time setup banner appears on the contacts page when identity fields are missing. It links to the owner contact detail page where all fields can be managed. The banner checks for the presence of key `contact_info` entries and disappears once the essential fields are configured.
+The owner entity's detail page shows a setup banner while the owner lacks a real name, email, or
+Telegram handle (`GET /api/relationship/owner/setup-status`). Non-secret channel handles are written
+as `relationship.entity_facts` triples so the owner becomes resolvable; only secured credentials go
+to `public.entity_info`.
 
 ## Identity Resolution
 
-The owner identity is used in several critical paths:
-
-### Switchboard Routing
-
-When a message arrives (e.g., from Telegram), the Switchboard calls `resolve_contact_by_channel(pool, "telegram", chat_id)` to identify the sender. If the sender matches the owner's contact_info, the identity preamble includes `[Source: Owner (contact_id: ..., entity_id: ...), via telegram]`. This allows butler prompts to understand they are interacting with the owner.
-
-### Contact Sync Deduplication
-
-When the contacts module syncs from Google or Telegram, it matches incoming contacts against existing `contact_info` entries. The owner's email and Telegram handle prevent the sync engine from creating a duplicate contact for the owner.
+Owner recognition uses the shared resolution path in
+[Identity Model](../concepts/identity-model.md): a message whose channel handle resolves to the owner
+entity gets the `[Source: Owner (entity_id: ...), via <channel>]` preamble, and contact sync matches
+the owner's email and handle instead of creating a duplicate person.
 
 ### Credential Resolution
 
@@ -112,27 +112,17 @@ psql -h localhost -U butlers -d butlers -c \
    WHERE 'owner' = ANY(roles);"
 # Expected: exactly one row with roles including 'owner' and entity_type = 'person'
 
-# 2. Confirm the owner contact is linked to the owner entity
+# 2. Verify the owner's channel handles are resolvable facts
 psql -h localhost -U butlers -d butlers -c \
-  "SELECT c.id, c.name, c.entity_id
-   FROM public.contacts c
-   JOIN public.entities e ON e.id = c.entity_id
-   WHERE 'owner' = ANY(e.roles);"
-# Expected: one row -- the owner contact linked to the owner entity
+  "SELECT ef.predicate, ef.object
+   FROM relationship.entity_facts ef
+   JOIN public.entities e ON e.id = ef.subject
+   WHERE 'owner' = ANY(e.roles) AND ef.validity = 'active'
+     AND ef.predicate IN ('has-email', 'has-handle')
+   ORDER BY ef.predicate;"
+# Expected: at least a has-email row and a has-handle row of the form telegram:<chat_id>
 
-# 3. Verify identity fields are configured (email and Telegram chat ID are critical)
-psql -h localhost -U butlers -d butlers -c \
-  "SELECT ci.type, ci.is_primary, ci.secured,
-          CASE WHEN ci.secured THEN '[REDACTED]' ELSE ci.value END AS display_value
-   FROM public.contact_info ci
-   JOIN public.contacts c ON c.id = ci.contact_id
-   JOIN public.entities e ON e.id = c.entity_id
-   WHERE 'owner' = ANY(e.roles)
-   ORDER BY ci.type;"
-# Expected: at minimum 'email' and 'telegram_chat_id' entries;
-# secured entries (api_id, api_hash, telegram_user_session) show [REDACTED]
-
-# 4. Confirm secured credentials are stored in entity_info with secured=true
+# 3. Confirm secured credentials are stored in entity_info with secured=true
 psql -h localhost -U butlers -d butlers -c \
   "SELECT ei.type, ei.secured
    FROM public.entity_info ei
@@ -141,29 +131,13 @@ psql -h localhost -U butlers -d butlers -c \
    ORDER BY ei.type;"
 # Expected: telegram_api_id, telegram_api_hash, telegram_user_session all have secured = true
 
-# 5. Verify credential resolution works for the owner's entity_info entries
-python3 -c "
-import asyncio
-# This illustrates the resolve_owner_entity_info call structure
-# Run in an async context with a live DB connection
-print('resolve_owner_entity_info(pool, \"telegram_api_id\") should return the API ID')
-print('Returns None gracefully if not yet configured')
-"
-
-# 6. Confirm setup banner disappears once essential identity fields are present
-# Check for the minimum required fields (email + telegram_chat_id)
-psql -h localhost -U butlers -d butlers -c \
-  "SELECT COUNT(*) AS required_fields_present
-   FROM public.contact_info ci
-   JOIN public.contacts c ON c.id = ci.contact_id
-   JOIN public.entities e ON e.id = c.entity_id
-   WHERE 'owner' = ANY(e.roles)
-   AND ci.type IN ('email', 'telegram_chat_id');"
-# Expected: 2 -- both required fields configured (banner should not show in dashboard)
+# 4. Confirm the setup banner is satisfied
+curl -s http://localhost:41200/api/relationship/owner/setup-status
+# Expected: has_name, has_email and has_telegram all true
 ```
 
 ## Related Pages
 
-- [Contact System](contact-system.md) -- Full contact model
+- [Identity Model](../concepts/identity-model.md) -- Entity anchor, channel facts, resolution
 - [Credential Store](../data_and_storage/credential-store.md) -- DB-first secret resolution
 - [OAuth Flows](oauth-flows.md) -- Google OAuth credential storage

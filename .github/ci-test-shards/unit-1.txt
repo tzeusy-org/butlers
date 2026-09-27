@@ -5,6 +5,7 @@ roster/finance/tests/test_budgets.py
 roster/finance/tests/test_data_import.py
 roster/finance/tests/test_expected_signals.py
 roster/finance/tests/test_import_transactions_blobstore.py
+roster/lifestyle/tests/test_lifestyle_module.py
 roster/lifestyle/tests/test_lifestyle_spotify_integration.py
 roster/relationship/tests/test_dunbar_ranking_api.py
 roster/relationship/tests/test_entity_facts_repoint_on_merge.py
@@ -32,6 +33,7 @@ tests/api/test_decision_memory_writeback.py
 tests/api/test_general_stats.py
 tests/api/test_google_health_router.py
 tests/api/test_health_measurement_types.py
+tests/api/test_ingestion_connector_detail.py
 tests/api/test_ingestion_connectors_available.py
 tests/api/test_insecure_defaults_indicator.py
 tests/api/test_last_session_started_at.py
@@ -96,6 +98,7 @@ tests/connectors/test_cursor_store_fakes.py
 tests/connectors/test_discord_user_connector.py
 tests/connectors/test_gmail_charset_parsing.py
 tests/connectors/test_google_health_connector.py
+tests/connectors/test_heartbeat_counters.py
 tests/connectors/test_home_assistant_connector.py
 tests/connectors/test_home_assistant_global_skip.py
 tests/connectors/test_home_assistant_wellness.py
@@ -119,6 +122,7 @@ tests/core/healing/test_anonymizer.py
 tests/core/healing/test_label_sanitization_gate.py
 tests/core/qa/test_butler_reports.py
 tests/core/qa/test_journal.py
+tests/core/qa/test_repo_clone.py
 tests/core/qa/test_repo_whitelist.py
 tests/core/qa/test_retention.py
 tests/core/qa/test_session_records.py
@@ -126,6 +130,7 @@ tests/core/qa/test_tool_call_failures.py
 tests/core/qa/test_triage.py
 tests/core/test_active_session_detection.py
 tests/core/test_aes_gcm.py
+tests/core/test_approval_delivery_worker.py
 tests/core/test_approvals_hooks.py
 tests/core/test_attention_ledger.py
 tests/core/test_dashboard_channel_extensions.py
@@ -147,6 +152,7 @@ tests/core/test_spawner_situational_context.py
 tests/core/test_spawner_speculative_prewarm.py
 tests/core/test_temporal_intelligence.py
 tests/core/test_tool_call_capture.py
+tests/core/test_tool_catalog.py
 tests/core_tools/test_domain_event_admission.py
 tests/core_tools/test_domain_events.py
 tests/core_tools/test_switchboard_ingest_policy_tier.py
@@ -197,7 +203,6 @@ tests/modules/test_decision_memory_writeback.py
 tests/modules/test_email_guard.py
 tests/modules/test_gate_safety_critical.py
 tests/modules/test_home_maintenance_tools.py
-tests/modules/test_mailbox_migrations.py
 tests/modules/test_module_base.py
 tests/modules/test_module_calendar.py
 tests/modules/test_module_email.py

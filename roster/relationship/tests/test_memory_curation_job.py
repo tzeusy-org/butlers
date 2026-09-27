@@ -1415,11 +1415,31 @@ class TestPendingActionsCurationDedup:
 # ---------------------------------------------------------------------------
 
 
+_CREATE_MEMORY_CATALOG_SQL = """
+CREATE TABLE IF NOT EXISTS public.memory_catalog (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    source_schema TEXT NOT NULL,
+    source_table  TEXT NOT NULL,
+    source_id     UUID NOT NULL,
+    tenant_id     TEXT NOT NULL DEFAULT 'owner',
+    entity_id     UUID,
+    summary       TEXT NOT NULL DEFAULT '',
+    memory_type   TEXT NOT NULL DEFAULT 'fact',
+    confidence    DOUBLE PRECISION,
+    invalid_at    TIMESTAMPTZ,
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (source_schema, source_table, source_id)
+)
+"""
+
+
 async def _setup_fact_retraction_schema(pool: asyncpg.Pool) -> None:
     """Create the minimal schema needed by run_fact_retraction_curation tests.
 
-    Includes: entities (public), facts, pending_actions, state, and the insight
-    candidates tables (used by propose_insight_candidate).
+    Includes: entities (public), facts, pending_actions, state, the insight
+    candidates tables (used by propose_insight_candidate), and the
+    memory_catalog/entity_graph_edges cascade targets (bu-9ltqm) exercised by
+    owner-fact auto-retraction.
     """
     from butlers.tools.switchboard.insight.broker import create_insight_tables
 
@@ -1427,7 +1447,52 @@ async def _setup_fact_retraction_schema(pool: asyncpg.Pool) -> None:
     await pool.execute(_CREATE_FACTS_SQL)
     await pool.execute(_CREATE_PENDING_ACTIONS_SQL)
     await pool.execute(_CREATE_STATE_SQL)
+    await pool.execute(_CREATE_MEMORY_CATALOG_SQL)
+    await pool.execute(ENTITY_GRAPH_EDGES.ddl())
     await create_insight_tables(pool)
+
+
+async def _catalog_fact(pool: asyncpg.Pool, fact_id: uuid.UUID) -> None:
+    """Insert a live public.memory_catalog row cataloging *fact_id*."""
+    await pool.execute(
+        """
+        INSERT INTO public.memory_catalog (source_schema, source_table, source_id, memory_type)
+        VALUES ('public', 'facts', $1, 'fact')
+        """,
+        fact_id,
+    )
+
+
+async def _project_fact_edge(pool: asyncpg.Pool, fact_id: uuid.UUID, entity_id: uuid.UUID) -> None:
+    """Insert a live public.entity_graph_edges row projecting *fact_id*."""
+    await pool.execute(
+        """
+        INSERT INTO public.entity_graph_edges
+            (source_schema, source_table, source_id, subject_entity_id, predicate, object_entity_id)
+        VALUES ('public', 'facts', $1, $2, 'test-predicate', $2)
+        """,
+        fact_id,
+        entity_id,
+    )
+
+
+async def _catalog_is_stale(pool: asyncpg.Pool, fact_id: uuid.UUID) -> bool:
+    row = await pool.fetchrow(
+        "SELECT confidence, invalid_at FROM public.memory_catalog"
+        " WHERE source_schema = 'public' AND source_table = 'facts' AND source_id = $1",
+        fact_id,
+    )
+    assert row is not None, f"expected a catalog row for fact {fact_id}"
+    return row["confidence"] == 0 and row["invalid_at"] is not None
+
+
+async def _graph_edge_exists(pool: asyncpg.Pool, fact_id: uuid.UUID) -> bool:
+    row = await pool.fetchrow(
+        "SELECT 1 FROM public.entity_graph_edges"
+        " WHERE source_schema = 'public' AND source_table = 'facts' AND source_id = $1",
+        fact_id,
+    )
+    return row is not None
 
 
 async def _insert_fact(
@@ -1719,6 +1784,12 @@ class TestFactRetractionCurationOwnerFacts:
         winner = await _insert_fact(
             frc_pool, entity_id=owner, predicate="workplace", content="Company B", confidence=0.9
         )
+        # Catalog + project a graph edge for both facts (bu-9ltqm): only the
+        # retracted loser's rows should be cascaded, not the kept winner's.
+        await _catalog_fact(frc_pool, loser)
+        await _catalog_fact(frc_pool, winner)
+        await _project_fact_edge(frc_pool, loser, owner)
+        await _project_fact_edge(frc_pool, winner, owner)
 
         result = await run_fact_retraction_curation(frc_pool)
 
@@ -1730,6 +1801,12 @@ class TestFactRetractionCurationOwnerFacts:
         # Loser retracted, winner still active.
         assert await _fact_validity(frc_pool, loser) == "retracted"
         assert await _fact_validity(frc_pool, winner) == "active"
+        # Loser's catalog row is disowned and its graph edge removed;
+        # the kept winner's rows are untouched.
+        assert await _catalog_is_stale(frc_pool, loser) is True
+        assert await _graph_edge_exists(frc_pool, loser) is False
+        assert await _catalog_is_stale(frc_pool, winner) is False
+        assert await _graph_edge_exists(frc_pool, winner) is True
 
     async def test_owner_low_conf_fact_auto_retracted(self, frc_pool: asyncpg.Pool):
         """Owner-entity low-confidence facts are auto-retracted, not parked."""
@@ -1741,6 +1818,8 @@ class TestFactRetractionCurationOwnerFacts:
             content="Possibly has a son named Oliver",
             confidence=0.2,
         )
+        await _catalog_fact(frc_pool, low_conf)
+        await _project_fact_edge(frc_pool, low_conf, owner)
 
         result = await run_fact_retraction_curation(frc_pool)
 
@@ -1749,6 +1828,10 @@ class TestFactRetractionCurationOwnerFacts:
         assert result["flagged_new"] == 0
         assert await _count_pending_for_fact(frc_pool, low_conf) == 0
         assert await _fact_validity(frc_pool, low_conf) == "retracted"
+        # bu-9ltqm: auto-retraction cascades memory_catalog disownment and
+        # entity_graph_edges deletion, same as forget_memory().
+        assert await _catalog_is_stale(frc_pool, low_conf) is True
+        assert await _graph_edge_exists(frc_pool, low_conf) is False
 
 
 class TestFactRetractionCurationMultiValuedPredicates:

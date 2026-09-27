@@ -117,6 +117,16 @@ export function ShortcutRegistryProvider({ children }: { children: ReactNode }) 
   const bindings = useMemo(() => Array.from(scopes.values()).flat(), [scopes]);
   const registryValue = useMemo(() => ({ register, unregister }), [register, unregister]);
 
+  // Mirrored into a module-scope snapshot (same "small store, no context"
+  // tradeoff as `window.__pendingGNav` and `lib/shell-announcer.ts`) so the
+  // app-wide `use-keyboard-shortcuts.ts` listener — which mounts once at the
+  // shell root, outside this provider's subtree — can check whether the
+  // currently-routed page has already claimed a bare key (e.g. Calendar's
+  // "c" for Create event) before treating it as a global shortcut.
+  useEffect(() => {
+    activeBindingsSnapshot = bindings;
+  }, [bindings]);
+
   return (
     <ShortcutRegistryContext.Provider value={registryValue}>
       <ShortcutHintEntriesContext.Provider value={bindings}>
@@ -179,6 +189,19 @@ function matchesBinding(binding: ShortcutBinding, e: KeyboardEvent): boolean {
   );
 }
 
+let activeBindingsSnapshot: ShortcutBinding[] = [];
+
+/**
+ * Whether the currently-mounted page has registered a bare (no-modifier) key
+ * binding for `key` — e.g. Calendar's "c" for Create event. A global
+ * shortcut that would otherwise claim the same bare key should defer to it.
+ */
+export function isBareKeyClaimedByPage(key: string): boolean {
+  return activeBindingsSnapshot.some(
+    (b) => b.key === key && !b.ctrlKey && !b.metaKey && !b.shiftKey && !b.altKey,
+  );
+}
+
 let scopeCounter = 0;
 
 /**
@@ -216,7 +239,7 @@ export function useRegisterShortcut(bindings: ShortcutBinding[]): void {
       // DisclosureRow's Enter/Space contract or RowLink's activation). The
       // native event reaches this window listener after React's target/root
       // handlers, so honoring defaultPrevented prevents a second page action.
-      if (e.defaultPrevented || window.__pendingGNav) return;
+      if (e.defaultPrevented || e.isComposing || e.keyCode === 229 || window.__pendingGNav) return;
       // Native controls own activation, but not the rest of a page's hot loop:
       // after roving focus moves to a button or link, j/k/arrows must still
       // reach their declared page shortcut. Only Enter/Space stay native.

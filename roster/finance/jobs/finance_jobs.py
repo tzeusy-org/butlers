@@ -30,6 +30,7 @@ from butlers.credential_store import CredentialStore
 from butlers.tools.finance.alerts import detect_price_changes, register_obligations
 from butlers.tools.finance.anomaly_detection import anomaly_scan
 from butlers.tools.finance.budgets import _period_anchor, budget_status, resolve_budget_zone
+from butlers.tools.finance.claim_reconciliation import reconcile_cost_claims
 from butlers.tools.finance.overview import subscription_audit
 from butlers.tools.finance.pattern_recognition import predict_bills
 from butlers.tools.finance.reconciliation import reconcile_bills
@@ -42,6 +43,23 @@ from butlers.tools.switchboard.insight.broker import propose_insight_candidate
 UTC_ZONE = ZoneInfo("UTC")
 
 logger = logging.getLogger(__name__)
+
+
+async def run_cost_claim_reconciliation_sweep(db_pool: asyncpg.Pool) -> dict[str, Any]:
+    """Run the deterministic cost-claim sweep without an LLM session."""
+    async with _finance_scoped_connection(db_pool) as conn:
+        return await reconcile_cost_claims(_SingleConnectionPool(conn))
+
+
+class _SingleConnectionPool:
+    """Pool-shaped adapter preserving the finance search path for a whole sweep."""
+
+    def __init__(self, conn: asyncpg.Connection) -> None:
+        self._conn = conn
+
+    @asynccontextmanager
+    async def acquire(self):
+        yield self._conn
 
 
 @asynccontextmanager
@@ -1465,7 +1483,7 @@ async def run_bill_reconciliation_sweep(db_pool: asyncpg.Pool) -> dict[str, Any]
     """
     logger.info("Running finance bill reconciliation sweep job")
 
-    today = date.today()
+    today = datetime.now(UTC).date()
     counts: dict[str, int] = {"submitted": 0, "accepted": 0, "filtered": 0, "errors": 0}
 
     async def _submit(**kwargs: Any) -> bool:
@@ -1616,7 +1634,7 @@ async def run_anomaly_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
             "status": status,
         }
 
-    today = date.today()
+    today = datetime.now(UTC).date()
     anomalies = result.get("anomalies", [])
 
     severity_order = {"high": 0, "medium": 1, "low": 2}
@@ -1809,7 +1827,7 @@ async def run_monthly_finance_digest(db_pool: asyncpg.Pool) -> dict[str, Any]:
     """
     logger.info("Running finance monthly digest job")
 
-    today = date.today()
+    today = datetime.now(UTC).date()
     first_of_this_month = today.replace(day=1)
     last_month_end = first_of_this_month
     last_month_start = (first_of_this_month - timedelta(days=1)).replace(day=1)

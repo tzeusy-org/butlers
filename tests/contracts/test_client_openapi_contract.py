@@ -583,16 +583,37 @@ def fe_contracts(client_ts_text: str) -> dict[str, FunctionContract]:
 
 @pytest.fixture(scope="module")
 def openapi_paths() -> dict[str, dict]:
-    with warnings.catch_warnings():
-        # FastAPI warns about pre-existing duplicate operation IDs in the
-        # ingestion connectors router (unrelated to this contract) — not
-        # this test's concern.
-        warnings.simplefilter("ignore")
+    from butlers.api.app import create_app
+
+    app = create_app()
+    schema = app.openapi()
+    return schema["paths"]
+
+
+def test_openapi_schema_has_no_duplicate_operation_ids():
+    """Every router is mounted once so generated client contracts stay unambiguous."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
         from butlers.api.app import create_app
 
-        app = create_app()
-        schema = app.openapi()
-    return schema["paths"]
+        create_app().openapi()
+
+    duplicate_operation_ids = [
+        str(warning.message)
+        for warning in caught
+        if "Duplicate Operation ID" in str(warning.message)
+    ]
+    assert duplicate_operation_ids == []
+
+
+def test_legacy_switchboard_connector_namespace_is_absent(
+    openapi_paths: dict[str, dict],
+):
+    """No compatibility route may preserve the retired connector namespace."""
+    legacy_paths = sorted(
+        path for path in openapi_paths if path.startswith("/api/switchboard/connectors")
+    )
+    assert legacy_paths == []
 
 
 # ---------------------------------------------------------------------------

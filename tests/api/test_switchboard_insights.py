@@ -22,7 +22,7 @@ import datetime
 import importlib.util
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -95,6 +95,7 @@ def _sample_row(**overrides):
         "status": "pending",
         "delivered_at": None,
         "delivery_attempt_count": 0,
+        "prepared_action_id": None,
     }
     base.update(overrides)
     return base
@@ -127,9 +128,25 @@ async def test_insights_happy_path_maps_all_fields(app):
     assert item["metadata"] == {"amount": "42.00"}
     assert item["status"] == "pending"
     assert item["delivered_at"] is None
+    assert item["prepared_action_id"] is None
     assert item["delivery_attempt_count"] == 0
     assert item["expires_at"] is not None
     assert item["created_at"] is not None
+
+
+async def test_insights_surfaces_prepared_action_id(app):
+    prepared_id = "22222222-2222-2222-2222-222222222222"
+    app, _ = _app_with_mock(
+        app, fetch_rows=[_make_row(_sample_row(prepared_action_id=prepared_id))]
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/switchboard/insights")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data[0]["prepared_action_id"] == prepared_id
 
 
 # ---------------------------------------------------------------------------
@@ -217,3 +234,47 @@ async def test_insights_graceful_degrade_when_table_missing(app):
         resp = await client.get("/api/switchboard/insights")
     assert resp.status_code == 200
     assert resp.json()["data"] == []
+
+
+@pytest.mark.parametrize(
+    ("action", "verdict", "body"),
+    [
+        ("useful", "useful", None),
+        ("snooze", "not_now", {"snooze_until": "2026-09-20T00:00:00Z"}),
+        ("mute", "never", None),
+    ],
+)
+async def test_insight_feedback_rest_verbs_share_server_attributed_behavior(
+    app, action, verdict, body
+):
+    app, mock_pool = _app_with_mock(app, fetch_rows=[])
+    result = {
+        "status": "recorded",
+        "verdict": verdict,
+        "insight_id": "11111111-1111-1111-1111-111111111111",
+        "category": "Health",
+        "dedup_family": "health:signal",
+        "snooze_until": body["snooze_until"] if body else None,
+    }
+    with patch(
+        "butlers.tools.switchboard.insight.broker.record_insight_feedback",
+        new=AsyncMock(return_value=result),
+    ) as feedback:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                f"/api/switchboard/insights/11111111-1111-1111-1111-111111111111/{action}",
+                json=body,
+            )
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {
+        "status": "recorded",
+        "verdict": verdict,
+        "insight_id": "11111111-1111-1111-1111-111111111111",
+        "snooze_until": body["snooze_until"] if body else None,
+    }
+    assert feedback.await_args.args[0] is mock_pool
+    assert feedback.await_args.kwargs["actor"] == "owner"
+    assert "actor" not in (body or {})

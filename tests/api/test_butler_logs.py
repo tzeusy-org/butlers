@@ -18,9 +18,9 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.butler_logs import _get_db_manager as _logs_get_db
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 

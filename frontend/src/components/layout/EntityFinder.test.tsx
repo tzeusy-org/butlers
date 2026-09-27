@@ -18,6 +18,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, useLocation } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { waitFor } from "@testing-library/react";
 
 import EntityFinder from "@/components/layout/EntityFinder";
 import {
@@ -32,7 +33,7 @@ import {
 } from "@/hooks/use-entities";
 import { useSearch } from "@/hooks/use-search";
 import { useButlers } from "@/hooks/use-butlers";
-import type { NeighbourEntry } from "@/api/index.ts";
+import { getOwnerSetupStatus, type NeighbourEntry } from "@/api/index.ts";
 
 /** Renders the current location path+search for navigation assertions. */
 function LocationProbe() {
@@ -360,14 +361,47 @@ describe("EntityFinder", () => {
     });
 
     // Entity group must appear before any Pages group
-    const entityIdx = groupHeadings.indexOf("Entities");
-    const pagesIdx = groupHeadings.indexOf("Pages");
+    const entityIdx = groupHeadings.findIndex((heading) => heading.startsWith("Entities"));
+    const pagesIdx = groupHeadings.findIndex((heading) => heading.startsWith("Pages"));
 
     expect(entityIdx).toBeGreaterThanOrEqual(0);
     // If Pages group is present, entities must come first
     if (pagesIdx >= 0) {
       expect(entityIdx).toBeLessThan(pagesIdx);
     }
+  });
+
+  it("shows page chords and an explicit overflow row at empty query", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={qc}>
+          <MemoryRouter>
+            <EntityFinder />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+
+    await act(async () => {
+      dispatchOpenEntityFinder();
+      await flush();
+    });
+
+    const pagesGroup = document.body.querySelector(
+      "[data-testid='entity-finder-pages-group']",
+    );
+    const heading = pagesGroup?.querySelector("[cmdk-group-heading]")?.textContent;
+    expect(heading).toMatch(/^Pages \(8 of \d+\)$/);
+    expect(pagesGroup?.querySelector("[data-testid='entity-finder-page-chord']")?.textContent).toContain("go");
+
+    const overflow = pagesGroup?.querySelector(
+      "[data-testid='entity-finder-overflow-row']",
+    );
+    expect(overflow?.textContent).toMatch(/more, keep typing/);
+    expect(overflow?.getAttribute("aria-disabled")).toBe("true");
   });
 
   // -------------------------------------------------------------------------
@@ -952,30 +986,43 @@ describe("EntityFinder", () => {
   });
 
   it("renders the owner-pinned set when the query is empty", async () => {
-    // Empty query → search hook disabled → undefined data.
+    // Empty query → search hook disabled → undefined data. The ranked API
+    // shape caps each predicate at six rows, so the resolved owner fixture
+    // below provides the complete unranked response the finder must request.
     mockSearchEmpty();
-    vi.mocked(useEntityNeighbours).mockReturnValue({
-      data: {
-        neighbours: {
-          knows: [
-            {
-              entity_id: "n1",
-              canonical_name: "Pinned One",
-              direction: "forward",
-              src: "x",
-              conf: 1,
-              last_seen: null,
-              weight: 9,
-              verified: true,
-              primary: null,
-            },
-          ],
-        },
-        remainders: {},
-      },
+    const ownerId = "owner-entity-id";
+    vi.mocked(getOwnerSetupStatus).mockResolvedValue({
+      entity_id: ownerId,
+      has_name: true,
+      has_telegram: false,
+      has_telegram_chat_id: false,
+      has_email: false,
+    });
+    const ownerNeighbours: NeighbourEntry[] = Array.from({ length: 9 }, (_, index) => ({
+      entity_id: `n${index + 1}`,
+      canonical_name: `Pinned ${index + 1}`,
+      entity_type: "person",
+      direction: "forward",
+      src: "x",
+      conf: 1,
+      last_seen: null,
+      weight: 9 - index,
+      verified: true,
+      primary: null,
+    }));
+    vi.mocked(useEntityNeighbours).mockImplementation((entityId, params) => ({
+      // Only an unranked fetch for the resolved owner receives the complete
+      // predicate set. A disabled call or a ranked owner request must not
+      // make the pinned-set assertions pass accidentally.
+      data: entityId === ownerId && params === undefined
+        ? {
+            neighbours: { knows: ownerNeighbours },
+            remainders: {},
+          }
+        : undefined,
       isLoading: false,
       isError: false,
-    } as unknown as UseEntityNeighboursResult);
+    }) as unknown as UseEntityNeighboursResult);
 
     const qc = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -997,11 +1044,23 @@ describe("EntityFinder", () => {
       await flush();
     });
 
+    await waitFor(() => {
+      expect(vi.mocked(useEntityNeighbours)).toHaveBeenCalledWith(ownerId, undefined);
+    });
+
     const pinned = document.body.querySelectorAll(
       "[data-testid='entity-finder-pinned-item']",
     );
-    expect(pinned.length).toBe(1);
-    expect(pinned[0].textContent).toContain("Pinned One");
+    expect(pinned).toHaveLength(8);
+    expect(pinned[0].textContent).toContain("Pinned 1");
+    expect(
+      document.body.querySelector("[data-testid='entity-finder-pinned-group'] [cmdk-group-heading]")
+        ?.textContent,
+    ).toBe("Pinned (8 of 9)");
+    expect(
+      document.body.querySelector("[data-testid='entity-finder-pinned-group'] [data-testid='entity-finder-overflow-row']")
+        ?.textContent,
+    ).toContain("1 more");
   });
 
   // -------------------------------------------------------------------------
@@ -1015,6 +1074,49 @@ describe("EntityFinder", () => {
     ]);
     return null;
   }
+
+  function ManyActionRegistrar() {
+    const commands = Array.from({ length: 10 }, (_, index) => ({
+      id: `action-${index}`,
+      label: `Action ${index}`,
+      perform: () => {},
+    }));
+    useRegisterCommands(commands);
+    return null;
+  }
+
+  it("reports the Actions total and remaining rows instead of silently truncating", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={qc}>
+          <MemoryRouter>
+            <CommandRegistryProvider>
+              <ManyActionRegistrar />
+              <EntityFinder />
+            </CommandRegistryProvider>
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+
+    await act(async () => {
+      dispatchOpenEntityFinder();
+      await flush();
+    });
+
+    const actionsGroup = document.body.querySelector(
+      "[data-testid='entity-finder-actions-group']",
+    );
+    expect(actionsGroup?.querySelector("[cmdk-group-heading]")?.textContent).toBe(
+      "Actions (8 of 10)",
+    );
+    expect(actionsGroup?.querySelector("[data-testid='entity-finder-overflow-row']")?.textContent).toBe(
+      "2 more, keep typing",
+    );
+  });
 
   it("shows registered Actions at empty query, not just after the first keystroke", async () => {
     const perform = vi.fn();

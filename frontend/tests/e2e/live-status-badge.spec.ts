@@ -79,6 +79,7 @@ async function mockIngestion(page: Page, events: unknown[] | 500) {
   // Catch-all FIRST (lowest LIFO precedence) — absorbs sidebar/histogram/rollup
   // requests (/api/butlers, /api/ingestion/events/histogram, etc.).
   await page.route("**/api/**", (route) => {
+    if (new URL(route.request().url()).pathname.startsWith("/api/auth/owner/")) return route.fallback();
     route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -185,14 +186,30 @@ const TIMELINE_META = {
   degraded_sources: [],
 };
 
+const TIMELINE_HISTOGRAM = {
+  data: [],
+  meta: {
+    since: "2026-07-04T13:00:00Z",
+    until: "2026-07-04T14:00:00Z",
+    bucket_seconds: 60,
+    availability: "complete",
+    expected_sources: 0,
+    healthy_sources: 0,
+    degraded_sources: [],
+    degraded_butlers: [],
+  },
+};
+
 /**
- * Mock GET /api/timeline (the head poll behind useTimelineLedger). `events` is
+ * Mock GET /api/timeline (the head poll behind useTimelineLedger) and its
+ * sibling histogram request. `events` is
  * a fixture array (200) or the number 500 (server error → isLiveFeedDown →
- * "Down"). The timeline-route glob does not cross a slash, so it never
- * intercepts /api/timeline/saved-views — that falls to the catch-all.
+ * "Down"). Route predicates are pathname-specific so the three response
+ * envelopes cannot be confused with each other.
  */
 async function mockTimeline(page: Page, events: unknown[] | 500) {
   await page.route("**/api/**", (route) => {
+    if (new URL(route.request().url()).pathname.startsWith("/api/auth/owner/")) return route.fallback();
     route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -202,7 +219,15 @@ async function mockTimeline(page: Page, events: unknown[] | 500) {
 
   await mockHealthyApprovalMetrics(page);
 
-  await page.route("**/api/timeline*", (route) => {
+  await page.route(/\/api\/timeline\/histogram(?:\?.*)?$/, (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(TIMELINE_HISTOGRAM),
+    });
+  });
+
+  await page.route(/\/api\/timeline(?:\?.*)?$/, (route) => {
     if (events === 500) {
       route.fulfill({
         status: 500,

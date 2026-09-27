@@ -37,6 +37,8 @@ from butlers.tools.switchboard.registry.registry import (
     AGENT_TYPE_BUTLER,
     AGENT_TYPE_STAFFER,
     list_butlers,
+    list_control_plane_candidates,
+    receiver_route_cutover_enabled,
 )
 from butlers.tools.switchboard.routing.route import route as _route_tool
 
@@ -271,9 +273,11 @@ async def correct_route(
         # Unregistered target: reject with the list of available butlers so the
         # caller/LLM can pick a valid routing target (per butler-switchboard spec,
         # "Re-dispatch to unregistered butler rejected").
-        available_butlers = [
-            b["name"] for b in await list_butlers(pool, routable_only=True, butler_only=True)
-        ]
+        if receiver_route_cutover_enabled():
+            available = await list_control_plane_candidates(pool, butler_only=True)
+        else:
+            available = await list_butlers(pool, routable_only=True, butler_only=True)
+        available_butlers = [b["name"] for b in available]
         logger.warning(
             "correct_route: rejected re-dispatch to unregistered butler: "
             "request_id=%s, correct_butler=%s, available=%s",

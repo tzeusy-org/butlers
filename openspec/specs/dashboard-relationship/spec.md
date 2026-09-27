@@ -2,8 +2,10 @@
 
 ## Purpose
 
-Defines the dashboard surfaces for the Relationship butler: the contact detail API, contact detail page, secured credential reveal, owner identity setup, pending identity disambiguation queue, roles management, and the bidirectional bridge between the memory entity pages and the relationship-scoped entity activity page. Together these form the complete operator-facing contract for viewing, managing, and navigating relationship data through the Butlers dashboard.
+Defines the dashboard surfaces for the Relationship butler: the entity-keyed contact API and detail composition, contact compatibility aliases, secured credential reveal, owner identity setup, pending identity disambiguation queue, roles management, and the bidirectional bridge between memory entity pages and relationship-scoped entity activity. Together these form the complete operator-facing contract for viewing, managing, and navigating relationship data through the Butlers dashboard.
+
 ## Requirements
+
 ### Requirement: Contact detail API
 
 The retired `public.contacts` / `public.contact_info` tables were dropped (core_134 / core_115) and there is no `GET /api/relationship/contacts/:id` endpoint. The canonical single-record read MUST be `GET /api/relationship/entities/:id` (roster/relationship/api/router.py), which joins `public.entities` with contact-fact triples from `relationship.entity_facts` and generic Relationship-managed rows from `public.entity_info`. Connector-managed types excluded by a canonical provider authority contract MUST be omitted at the SQL boundary; see Requirement: Connector-managed Spotify Tier 2 exclusion from generic entity-info authority.
@@ -110,112 +112,6 @@ continues to live in the entity detail activity stream.
 - **THEN** notes, interactions, gifts, loans, and life events MUST remain in the
   entity ActivityTimeline and structured entity panels
 - **AND** the card MUST NOT render separate activity tabs
-
----
-
-### Requirement: Contact detail page canonical route is /contacts/:contactId
-
-The route `/contacts/:contactId` SHALL be a compatibility route, not a canonical
-page. It MUST resolve the contact by `contactId`, read the linked `entity_id`, and
-redirect to `/entities/:entityId`.
-
-If the contact does not exist, the route MUST render a not-found state. If the
-contact exists but has no linked entity, the route MUST render a recovery state
-that links back to `/entities?has=contact` and does not claim activity history is
-available.
-
-The route `/contacts` without a `contactId` continues to redirect to
-`/entities?has=contact`.
-
-#### Scenario: Contact detail URL redirects to entity detail
-
-- **WHEN** a user navigates to `/contacts/abc-123-uuid`
-- **AND** contact `abc-123-uuid` has `entity_id = ent-456-uuid`
-- **THEN** the client MUST redirect to `/entities/ent-456-uuid`
-- **AND** the entity detail page MUST render the contact-channel card
-
-#### Scenario: Contact detail URL handles missing entity link
-
-- **WHEN** a user navigates to `/contacts/abc-123-uuid`
-- **AND** the contact exists but has `entity_id IS NULL`
-- **THEN** the route MUST not redirect to a broken entity URL
-- **AND** it MUST render a compact recovery state linking to `/entities?has=contact`
-
-#### Scenario: Contact index still redirects to entity index filter
-
-- **WHEN** a user navigates to `/contacts`
-- **THEN** the client MUST redirect to `/entities?has=contact`
-
----
-
-### Requirement: Contact detail page conforms to the detail-page archetype
-
-The contact detail page at `/contacts/:contactId` SHALL conform to the detail-page archetype
-defined in the `detail-page-archetype` spec.
-
-**Changes from the existing requirement (§Requirement: Contact detail page):**
-
-1. **Shell adoption.** The page MUST use `<Page archetype="detail">` as its outer
-   shell. The existing breadcrumbs block MUST be passed via the `breadcrumbs` prop.
-   The inline three-skeleton loading block and the inline destructive-text error block
-   MUST be removed from the page body and delegated to the `loading` and `error` props
-   on `<Page>`.
-
-2. **Title.** The `title` prop on `<Page>` MUST be the contact's full name
-   (`first_name + " " + last_name`), consistent with the H1 already rendered inside
-   `ContactDetailView`. If the contact has a `nickname`, it MUST be appended in
-   parentheses: `"Alice Johnson (Allie)"`.
-
-3. **Actions.** The edit and delete buttons currently inside `ContactDetailView`'s
-   header (`ContactDetailView.tsx` lines 864–898) MUST be migrated to the `actions`
-   prop on `<Page>` so they appear in the page header row. The `ContactDetailView`
-   component body retains all other content.
-
-4. **Body layout.** The `<ContactDetailView>` component output (minus the header
-   card's edit/delete buttons) becomes the `primary` body slot inside the shell.
-
-5. **Token cleanup status.** The hex-literal color palettes previously at
-   `ContactDetailView.tsx` lines 53–62 and 69–77 have already been replaced with
-   CSS custom properties (`var(--categorical-*)` and `var(--role-*)`) as of the migration
-   in ce185209 (role badge hex → CSS tokens). No token-cleanup prerequisite remains
-   for this migration step. Implementers should verify no new hex literals were
-   introduced during the archetype migration.
-
-#### Scenario: Contact detail uses shell loading state
-
-- **WHEN** `GET /api/relationship/contacts/:id` is in flight
-- **THEN** the `<Page>` shell MUST show `DetailSkeleton`
-- **AND** no inline `<Skeleton>` blocks MUST be rendered by the page at the page layer
-
-#### Scenario: Contact detail uses shell error state
-
-- **WHEN** the contact fetch fails
-- **THEN** the `<Page>` shell MUST render the destructive error card
-- **AND** no inline destructive-text block MUST be rendered at the page layer
-
-#### Scenario: Contact detail title shows full name with nickname
-
-- **WHEN** a contact has `first_name = "Alice"`, `last_name = "Johnson"`, and
-  `nickname = "Allie"`
-- **THEN** the `<h1>` rendered by the shell MUST read "Alice Johnson (Allie)"
-
-#### Scenario: Contact detail title shows full name without nickname
-
-- **WHEN** a contact has `first_name = "Bob"`, `last_name = "Smith"`, and no nickname
-- **THEN** the `<h1>` rendered by the shell MUST read "Bob Smith"
-
-#### Scenario: Contact edit and delete actions in page header
-
-- **WHEN** a contact detail page renders a resolved contact
-- **THEN** the edit button and the delete button MUST appear in the page header row
-  (via the `actions` prop), visible without scrolling
-- **AND** they MUST NOT appear only inside the `<ContactDetailView>` card body
-
-#### Scenario: No hex literals for role badge colors
-
-- **WHEN** a contact has a role badge (e.g., "owner") rendered on the detail page
-- **THEN** the badge color MUST use a CSS custom property or Tailwind semantic token
-- **AND** the badge MUST NOT be styled with an inline `style={{ backgroundColor: "#..." }}`
 
 ---
 
@@ -343,15 +239,6 @@ the owner entity (`email_password`, `telegram_api_id`, `telegram_api_hash`,
 guided Telegram session setup; the generic raw-credential mutation MUST NOT
 receive it.
 
-> **Design rationale (deliberate product decision):** Secured credentials are
-> intentionally managed on the dedicated Secrets page, not through the "Add
-> contact info" form on the entity detail contact-channel card. Separating
-> credential entry from contact-channel entry is an explicit security/UX
-> boundary: the Secrets page is purpose-built for masked entry, reveal
-> affordances, and per-entity identity projection. This is the shipped
-> implementation as of the entity detail redesign (bu-m8gb6 reconciliation,
-> 2026-05-25, bu-x1zql spec alignment).
-
 #### Scenario: Add a non-secured channel entry from the entity detail contact-channel card
 
 - **WHEN** a user opens the owner entity's detail page at `/entities/:entityId`
@@ -372,8 +259,6 @@ receive it.
 - **AND** the entity detail contact-channel card MUST NOT offer secured
   credential types in its add form
 
----
-
 ### Requirement: Owner identity setup banner
 
 The dashboard SHALL display a persistent banner on the entity detail page
@@ -383,17 +268,6 @@ inside the practical drawer, which is forced open when the owner has not
 completed identity setup. The entity detail contact-channel card at
 `/entities/:entityId` is the canonical location for ongoing identity and
 credential management.
-
-> **Placement rationale (deliberate product decision):** An earlier revision of
-> this spec placed the banner on the entity index page (`/entities?has=contact`)
-> as a "convenience" onboarding shortcut. The shipped implementation places it on
-> the entity detail page inside the practical drawer (forced open when setup is
-> incomplete), co-located with the canonical identity management surface. This is
-> the correct placement because: (1) the detail page is the spec's own canonical
-> location for identity management, (2) `forceOpen` ensures the banner is
-> prominently surfaced without requiring a separate index-level data fetch, and
-> (3) the reconciliation of bu-m8gb6 explicitly recommended updating the spec
-> rather than changing the UI code.
 
 #### Scenario: Banner shown when owner has missing identity fields
 
@@ -421,52 +295,6 @@ credential management.
   it is entered only through the guided Telegram session setup
 - **AND** credential fields (API ID and Home Assistant token) MUST
   create secured `entity_info` entries
-
----
-
-### Requirement: Pending identities queue on contacts page
-
-The entity index page (`/entities?has=contact`) SHALL display a "Pending
-Identities" section listing all contacts with
-`metadata.needs_disambiguation = true`. This section MUST appear above the
-main entity table when pending contacts exist.
-
-#### Scenario: Pending identities displayed
-
-- **WHEN** a user navigates to `/entities?has=contact` and 2 temporary
-  contacts exist with `metadata.needs_disambiguation = true`
-- **THEN** a "Pending Identities" section MUST appear above the entity table
-- **AND** each pending contact MUST display the contact's name, source
-  channel, source value, and creation date
-
-#### Scenario: Merge action on pending identity
-
-- **WHEN** the user clicks "Merge" on a pending identity
-- **THEN** a dialog MUST open with a contact search/select input
-- **AND** the user MUST be able to search existing contacts by name
-- **AND** selecting a contact and confirming MUST call the merge API
-- **AND** the pending identity MUST disappear from the queue after successful
-  merge
-
-#### Scenario: Confirm as new action on pending identity
-
-- **WHEN** the user clicks "Confirm as new" on a pending identity
-- **THEN** the `needs_disambiguation` flag MUST be removed from the contact's
-  metadata
-- **AND** the contact MUST move to the main entity table
-
-#### Scenario: Archive action on pending identity
-
-- **WHEN** the user clicks "Archive" on a pending identity
-- **THEN** the contact's `listed` MUST be set to `false`
-- **AND** the pending identity MUST disappear from the queue
-
-#### Scenario: No pending identities
-
-- **WHEN** no contacts have `metadata.needs_disambiguation = true`
-- **THEN** the "Pending Identities" section MUST NOT be displayed
-
----
 
 ### Requirement: Dashboard roles management API
 
@@ -619,9 +447,9 @@ The endpoints are:
 | `GET /api/relationship/entities/{id}/loans` | `predicate = 'loan'` | `created_at DESC` |
 | `GET /api/relationship/entities/{id}/timeline` | `predicate IN ('contact_note','life_event','gift','loan','dunbar_tier_override') OR predicate LIKE 'interaction_%'` | `valid_at DESC NULLS LAST, created_at DESC` |
 
-The Timeline endpoint excludes the legacy `activity` predicate. The `_log_activity()` write path is removed in this change; historical `activity` facts (if any survive) are not surfaced on Timeline (they are duplicates of primary facts already included via their own predicates) but remain queryable via the `feed_get` MCP tool.
+The Timeline endpoint excludes the legacy `activity` predicate. The relationship butler no longer writes `activity` facts; historical `activity` facts (if any survive) are not surfaced on Timeline (they are duplicates of primary facts already included via their own predicates) but remain queryable via the `feed_get` MCP tool.
 
-Response field shapes MUST follow the wrapper mappings in `predicate-taxonomy.md` §5.2 with the following per-tab shapes:
+Response field shapes MUST be the following per-tab shapes:
 
 - **notes** entries: `{ id: fact.id, content: fact.content, emotion: fact.metadata->>'emotion', created_at: fact.valid_at }`
 - **interactions** entries: `{ id: fact.id, type: <predicate suffix>, summary: fact.content, occurred_at: fact.valid_at, direction: fact.metadata->>'direction', group_size: fact.metadata->>'group_size' }`. The `type` field is extracted from the predicate suffix: `predicate='interaction_meeting'` yields `type='meeting'`. The `direction` and `group_size` fields are populated by the passive interaction sync job (`passive-interaction-sync` spec) and may be null for facts written via direct `interaction_log()` calls without those metadata keys.
@@ -630,6 +458,8 @@ Response field shapes MUST follow the wrapper mappings in `predicate-taxonomy.md
 - **timeline** entries: `{ kind: <predicate-family>, id: fact.id, content: fact.content, valid_at: fact.valid_at, predicate: fact.predicate, metadata: fact.metadata }` where `kind` is one of `note`, `interaction`, `gift`, `loan`, `life_event`, `dunbar_tier_override`.
 
 When a metadata field referenced above is absent from a fact's JSONB, the response value MUST be `null` (not omitted; not a default). Clients MUST be able to render rows with missing metadata fields without errors.
+
+These five endpoints read the shared `facts` table under `scope='relationship'`. The entity-redesign endpoints read `relationship.entity_facts` (see `relationship-facts`) directly.
 
 #### Scenario: Notes endpoint returns facts for entity
 
@@ -703,16 +533,6 @@ When a metadata field referenced above is absent from a fact's JSONB, the respon
 - **THEN** the response entry MUST include the field with value `null`
 - **AND** the endpoint MUST NOT raise an error
 
----
-
-**Phase 2 Extension: Entity Redesign**
-
-> Added 2026-05-17 via `/project-direction` Phase 2 for the entity-redesign feature.
-> Drives the brief at `docs/redesigns/2026-05-17-entity-brief.md` (binding §0 design intent,
-> binding §6b Phase 1 amendments). Layered on top of the contact-tabs scope above.
-
-> **Phase 1 / Phase 2 table reconciliation:** Phase 1's tab endpoints (§Notes/§Interactions/§Gifts/§Loans/§Timeline above) currently read the legacy shared `facts` table where the relationship butler stores relational and contact facts under `scope='relationship'`. Phase 2 introduces `relationship.entity_facts` as the canonical RDF triple store (per `specs/relationship-facts/spec.md`). During the 10-step migration (Brief §6b Amendment 1.1.C), Phase 1 endpoints MUST be re-pointed to `relationship.entity_facts` no later than Migration bead 7 (read-path cut-over). Until cut-over, Phase 1 endpoints read the legacy table; from cut-over, they read `relationship.entity_facts`. Both reads return identical data during the dual-write window. Phase 2 endpoints (§§added below) read `relationship.entity_facts` from day one — they ship after Migration bead 5 (backfill) completes.
-
 ### Requirement: Owner-only authorization for entity endpoints
 
 The entity endpoints under `/api/relationship/entities/*` MUST enforce owner-only authorization.
@@ -735,6 +555,10 @@ per the `'owner' = ANY(e.roles)` pattern and return HTTP 403 with the envelope
 - `POST /api/relationship/entities/queue/dismiss`
 - `POST /api/relationship/entities/{id}/contacts`
 - `DELETE /api/relationship/entities/{id}/contacts/{pred}/{valueHash}`
+- `POST /api/relationship/entities/{id}/notes`
+- `POST /api/relationship/entities/{id}/interactions`
+- `POST /api/relationship/entities/{id}/gifts`
+- `POST /api/relationship/entities/{id}/reach-out-drafts`
 
 **Clause 12b — Reads (PII-bearing).** The same owner-only gate MUST apply to the following
 GET endpoints because they return raw contact-fact `object` values (emails / phones /
@@ -780,8 +604,6 @@ A guardrail test (tasks.md §12.8) MUST exercise this invariant.
 - **THEN** startup MUST fail with a fatal error referencing the missing key
 - **AND** no entity endpoint MUST become reachable
 
----
-
 ### Requirement: Entity index page (`/entities/index`)
 
 The frontend SHALL render an entity index at `/entities/index` (NOT
@@ -793,8 +615,8 @@ consist of:
 1. **Tabular list (left/main column)** — one row per entity, neutral hairline-on-neutral.
    Columns: entity-mark glyph (type indicator: `P / O / L / X / @ / E / G`), canonical_name +
    nicknames, tier badge (Dunbar), `last_seen`, contact-fact count pill, aliases. Rows MUST NOT
-   carry state colour; the EntityMark glyph carries type, not hue (Brief §0 "No hue from entity type").
-   Row vertical padding is 10px (not 24px — no card thinking).
+   carry state colour; the EntityMark glyph carries type, not hue.
+   Rows use the index-row padding from `dashboard-design-language` "Density and Spacing", never card padding.
 2. **Filter chips** — type pills (`person/organization/location/product/...`), `has=contact`
    chip (replaces legacy `/contacts` page), state chips (`unidentified`, `duplicate-candidate`,
    `stale`), tier chips. The `has=contact` chip MUST surface all entities with at least one
@@ -804,8 +626,7 @@ consist of:
    Active tab is `/entities/index`.
 5. **Cmd-K affordance** — visible mono kbd capsule (`⌘K`) in the header.
 
-The Index page MUST render inside `<Page archetype="overview">` (per the in-flight
-`page-primitive-spec-sync` change) with breadcrumb `Entities`.
+The Index page MUST render inside `<Page archetype="overview">` with breadcrumb `Entities`.
 
 #### Scenario: Index renders with neutral rows and queue rail
 - **WHEN** a user navigates to `/entities/index` with at least one entity in `public.entities`
@@ -821,11 +642,13 @@ The Index page MUST render inside `<Page archetype="overview">` (per the in-flig
 
 #### Scenario: `/contacts` index redirects to `/entities/index?has=contact`
 - **WHEN** a request reaches the contacts INDEX path `/contacts` (no `:contactId` param)
-- **THEN** the response MUST be a 301 redirect to `/entities/index?has=contact`
+- **THEN** the client MUST replace-navigate to `/entities/index?has=contact`
 - **AND** no functional regression MUST occur for any prior `/contacts` index workflow
-- **AND** the contact-detail path `/contacts/:contactId` MUST NOT be redirected; it
-  continues to serve the canonical contact detail page per Requirement: Contact detail
-  page canonical route in the shipped `dashboard-relationship` spec.
+- **AND** the contact-detail compatibility path `/contacts/:contactId` MUST also
+  replace-navigate to `/entities/index?has=contact`, as defined by Requirement: Contact
+  routes are compatibility aliases
+- **AND** canonical single-record navigation MUST start from the entity index and target
+  `/entities/:entityId`
 
 ### Requirement: Entity Plex view (`/entities`)
 
@@ -976,42 +799,26 @@ Data source: `GET /api/relationship/entities/concentration?pred=<predicate>`.
 
 The entity detail page at `/entities/:entityId` SHALL render in one of two modes: **Editorial** (default) or **Workbench**.
 The unified ActivityTimeline is present in Editorial mode. In Workbench mode
-it is replaced by the ProvenanceGrid (see `bu-r6vft`), which surfaces every
-provenance column in a dense, sortable grid. The toggle also changes how the
-header and contact facts are rendered.
+it is replaced by the ProvenanceGrid, which surfaces every provenance column in
+a dense, sortable grid. The toggle also changes how the header and contact
+facts are rendered.
 
 **Editorial mode** is the default and MUST:
-- Use `<Page archetype="detail">` (per the in-flight `detail-page-archetype`
-  change) with Display 44px headline for the entity canonical_name (editorial
-  archetype, per `about/heart-and-soul/design-language.md:218-246`
-  Non-Negotiable 2 + Gate A A2). The 44px Display tier is permitted per the
-  editorial-archetype carve-out at
-  `about/heart-and-soul/design-language.md:225-232`; the 1.2 type-ratio
-  doctrine at `:243-246` is a floor (values ≥1.2 satisfy it), not a target —
-  Display-tier headlines are exempt by archetype.
+- Use `<Page archetype="editorial">`, rendering the entity canonical_name in
+  the Display tier of the `dashboard-design-language` Type System.
 - Hide provenance metadata (`conf`, `src`, `weight`, `verified`, `primary`)
   from row chrome. Provenance is still loaded into the response; only the
   visual rendering hides it.
 - Render contacts grouped by predicate (`has-email`, `has-phone`, ...). A
   person with three emails MUST render three rows, primary first; never
   collapsed to "the email."
-- Render the voice gloss in `Source Serif 4` italic 16px (one line under the
-  canonical name). **The gloss text MUST be a canned string** selected by
-  `(tier, state, category)` from `frontend/src/lib/entity-glosses.ts` — see
-  Requirement: Detail-page voice gloss source.
+- Render the voice gloss in `Source Serif 4` italic, one line under the
+  canonical name. **The gloss text MUST be a canned string** selected by
+  `(tier, state, category)` — see Requirement: Detail-page voice gloss source.
 
 **Workbench mode** MUST:
-- Use `<Page archetype="overview">` with `text-2xl` H1 (per
-  `about/heart-and-soul/design-language.md` Non-Negotiable 2 + Gate A A2).
-  44px Display is forbidden in this mode. Editorial mode uses
-  `<Page archetype="detail">` (per the in-flight `detail-page-archetype`
-  change); Workbench reuses the already-defined `archetype="overview"` for
-  its dense workspace layout. **Workspace-archetype gap note (R3):** the
-  brief originally proposed `<Page archetype="workspace">` but no `workspace`
-  archetype is normatively defined in any shipped or in-flight Page spec.
-  Rather than block on authoring a sister spec, Workbench reuses
-  `archetype="overview"` (which IS defined) for v1; a dedicated `workspace`
-  archetype MAY be introduced in a separate change later if needed.
+- Use `<Page archetype="overview">` with the standard page heading; the
+  Display tier is forbidden in this mode.
 - Surface every provenance column (`conf`, `src`, `lastSeen`, `weight`,
   `verified`, `primary`) on every row. The same data record drives both
   modes.
@@ -1019,29 +826,24 @@ header and contact facts are rendered.
   any column.
 
 **Mode persistence and toggle UI:**
-- The mode toggle lives in the Page shell's actions slot (icon button), per
-  Phase 1 Amendment 8.
-- The mode persists in `localStorage` under the key `entities.detail.mode`
-  (distinct from the `butlers.detail.mode` key used by
-  `redesign-detail-page-tab-vocabulary`'s Resident/Operator toggle — Phase 1
-  Amendment 10 mandates the distinct key and distinct vocabulary).
+- The mode toggle is an icon button in the Page shell's actions slot.
+- The mode persists in `localStorage` under the key `entities.detail.mode`.
 - Missing, invalid, or unsupported values in `localStorage` MUST default to
   `editorial`.
 - `?mode=workbench` URL parameter overrides `localStorage` for the current
   page load only; toggling via the UI updates both URL and `localStorage`.
-  _(Design history: param name reconciled from `?view=` → `?mode=` to match
-  shipped code, bu-monvg.)_
 
 **Forget affordance (binding):**
-- Both modes MUST surface a "Forget this entity" action in the Page header
-  (NOT a kebab menu). Clicking opens a confirm dialog with a one-sentence
-  serif gloss (canned text: "Forgetting also tombstones the source. Aliases
-  stay.") before the destructive POST.
+- Both modes MUST surface a "Forget" action (accessible name "Forget this
+  entity") in the Page header actions (NOT a kebab menu). Clicking opens a
+  "Forget this entity?" confirm dialog stating that forgetting retracts all
+  associated facts, permanently removes the entity, and cannot be undone,
+  before the destructive request.
 
 #### Scenario: Editorial is default, mode persists
 
 - **WHEN** a user lands on `/entities/<uuid>` with no `localStorage` value
-- **THEN** Editorial MUST render with Display 44px headline
+- **THEN** Editorial MUST render with the Display-tier headline
 - **WHEN** the user toggles to Workbench
 - **THEN** `localStorage["entities.detail.mode"]` MUST be set to `workbench`
 - **AND** subsequent loads MUST render Workbench until toggled back
@@ -1054,8 +856,6 @@ header and contact facts are rendered.
 - **AND** Workbench MUST render three rows in the contacts grid, sorted by
   `primary DESC`
 - **AND** neither mode MUST collapse to a single "Email" row
-
----
 
 ### Requirement: Entity curation queue (Index right rail)
 
@@ -1138,36 +938,7 @@ that fans out to this endpoint, but that is out of scope here.
 
 ### Requirement: Dispatch design language token discipline
 
-All six entity routes (`/entities`, `/entities/hop`, `/entities/columns`, `/entities/concentration`, `/entities/social-map`, `/entities/:entityId`) SHALL conform to the Dispatch design language with the following token rules (per Phase 1 Amendment 9 + Brief §1 binding tokens).
-
-Note: the sixth route in this list replaces the legacy `/butlers/relationship/entities/:id` route name that appeared in the original version of this requirement. The route `/entities/:entityId` is the canonical entity detail route per the "Entity detail page" requirement.
-
-1. **No new tokens** outside `frontend/src/index.css`. The redesign reuses
-   `--bg`, `--bg-elev`, `--bg-deep`, `--fg`, `--mfg`, `--dim`, `--border`,
-   `--border-soft`, `--border-strong`, `--red`, `--amber`, `--green`,
-   `--categorical-1..12` (local entity categories, with labels or legends), `--tier-1..6`
-   (Dunbar ramp, six layers: 5/15/50/150/500/1500), and `--severity-*` (per
-   in-flight `token-system-spec-sync`).
-
-   **Token namespace bridging (R3 gap note):** the Dispatch tokens (`--bg`,
-   `--fg`, `--mfg`, `--dim`, `--border-soft`, `--border-strong`) are NOT
-   present in shipped `frontend/src/index.css` (which today defines the
-   shadcn ramp: `--foreground`, `--background`, `--border`,
-   `--muted-foreground`, …) and they are NOT part of any in-flight token
-   change. Phase 3 task 8.x (frontend foundation) MUST resolve this by
-   EITHER (a) adding the Dispatch tokens to `frontend/src/index.css` mapped
-   1:1 to the shadcn tokens they replace, OR (b) rewriting component classes
-   to use the existing shadcn token names. The choice is deferred to
-   implementation; this spec is shape-only. `--tier-1..6` already ships in
-   `frontend/src/index.css` and is not part of this gap.
-2. **No hex literals** anywhere in
-   `frontend/src/components/relationship/*`,
-   `frontend/src/pages/entities/*`, or
-   `frontend/src/pages/butlers/relationship/*` EXCEPT in
-   `frontend/src/lib/entity-model.ts` and the predicate-catalog UI.
-3. **Fonts:** `Inter Tight` (UI), `Source Serif 4` (voice/gloss),
-   `JetBrains Mono` (numerals, IDs, eyebrows, kbd). Font loading MUST be
-   verified in `frontend/index.html` or equivalent before merge.
+All six entity routes (`/entities`, `/entities/hop`, `/entities/columns`, `/entities/concentration`, `/entities/social-map`, `/entities/:entityId`) SHALL follow the token, colour and font rules of `dashboard-design-language`. In particular they MUST NOT define CSS custom properties outside `frontend/src/index.css`, and MUST NOT use hex colour literals in relationship or entity-page components, except in `frontend/src/lib/entity-model.ts` and the predicate-catalog UI.
 
 #### Scenario: Token discipline applies to canonical entity detail route
 
@@ -1219,50 +990,96 @@ clients regardless of which endpoint raised the error.
 
 ### Requirement: Entity activity aggregator (cross-butler read surface)
 
-The dashboard API SHALL expose `GET /api/relationship/entities/{id}/activity` as
-a relationship-owned aggregator that returns a unified activity stream merging:
+The dashboard API SHALL expose `GET /api/relationship/entities/{id}/activity` as a relationship-owned aggregator over three existing sources: narrative relationship memory, identity and relational triples, and Chronicler episodes. It MUST preserve the records already returned by the endpoint while making records written through the existing relationship activity actions visible with their stored text.
+- **Historical source clause, superseded by the effective contract below:** 1. Relationship-domain rows from `relationship.entity_facts` (notes, interactions, life events, gifts, loans, dunbar_tier_override) — tagged `src: 'relationship'`. 2. Chronicler-domain rows tagged with `src: 'chronicler'` (kind: `episode`). This exact prior authority is retained for review and archive safety; it is not an operative instruction to move or dual-write narrative records into the identity store.
+- **Narrative Relationship rows:** The response MUST include active rows from the relationship schema's memory-module `facts` store where `entity_id` is the requested entity, `scope = 'relationship'`, and the predicate is `contact_note`, `life_event`, `gift`, `loan`, `dunbar_tier_override`, or matches `interaction_%`. Each row MUST carry `src: 'relationship'`, `store: 'narrative'`, its source UUID as `id`, its exact stored `content` as `summary`, and `ts = COALESCE(valid_at, created_at)`. The `dunbar_tier_override` row is read from this store because the existing tier-override writers persist it there; this amendment does not change that writer or move existing rows.
+- **Identity Relationship rows:** The response MUST retain every active row it already exposes from `relationship.entity_facts` where the requested entity is the subject or is the entity-typed object. Each row MUST carry `src: 'relationship'`, `store: 'identity'`, its source UUID as `id`, its exact stored `object` as `summary`, and `ts = COALESCE(observed_at, last_seen, created_at)`. Adding narrative rows MUST NOT drop an existing identity or relational row.
+- **Separate local reads:** The two Relationship stores MUST be queried independently and merged after the reads. They MUST NOT be joined or cross-joined to each other. Rows MUST NOT be copied, rewritten, restored, or heuristically deduplicated across stores. The source UUID remains the `id`; consumers MUST treat `(src, store, id)` as the stable source-qualified row identity and MUST NOT assume that `id` alone is globally unique.
+- The chronicler rows MUST be fetched **via chronicler's MCP tools** — `chronicler_list_episodes` per RFC 0014:255-258 (the brief named `chronicler_list_events` but RFC 0014 lists only `list_episodes` / `get_episode` / `submit_correction`; Phase 2 chooses to use only currently-listed MCP tools rather than propose a new tool).
+- **Chronicler row mapping:** The MCP call MUST use the requested entity as the participant filter. Each episode MUST carry `src: 'chronicler'`, `store: null`, its episode UUID as both `id` and `episode_id`, `kind: 'episode'`, `summary = COALESCE(canonical_title, title)`, and `ts = COALESCE(canonical_start_at, start_at)`. The Relationship butler MUST NOT substitute a catalog read for the Chronicler MCP call.
+- **Hard invariant (mirror `rfcs/0014:178` "Tests MUST exercise the no-LLM invariant for every adapter"):** the relationship butler MUST NOT issue direct SQL into `chronicler.*` schemas. A guardrail test in `roster/relationship/tests/test_chronicler_boundary.py` MUST assert that the `activity` aggregator implementation does not import any `chronicler.*` ORM model and does not contain the substring `FROM chronicler.` or `JOIN chronicler.` in any SQL string.
+- **Success projection and authority:** Every returned row MUST carry `id`, `ts`, `kind`, `src`, `store`, `predicate`, `episode_id`, and `summary`, using explicit nulls for fields that do not apply. `summary` is the only new display projection: the response MUST NOT include raw memory metadata, assertion evidence notes, stored sensitivity labels, upstream payloads, or failure text. Existing owner-only authorization for this PII-bearing read MUST remain in force. This read MUST NOT add a database grant, a caller-selected sensitivity ceiling, or wider memory-catalog authority.
+- **Merge and pagination:** The merged candidate set MUST include only active Relationship rows plus successfully read Chronicler episodes. It MUST sort by `ts` descending, place null timestamps after timestamped rows, and use `(src, COALESCE(store, ''), id)` ascending as the deterministic tie-break. Offset and limit MUST be applied only after that merge and sort. `total` MUST equal the number of entries in the candidate set before offset and limit; it MUST NOT claim entries an upstream bounded read did not return.
+- **Daily bins:** When `bins=daily` is requested with a valid existing `window=<N>d`, the response MUST derive exactly `N` ascending UTC date bins from the same merged candidate set before stream pagination. Each entry with a timestamp inside the inclusive UTC window contributes exactly once to its date; out-of-window and null-timestamp entries contribute zero. Quiet dates MUST remain present with `count=0`. With `bins_only=true`, the response MUST omit stream items and totals but MUST retain the same bins and degradation fields. Binning MUST NOT perform another source read or use a different source set from the stream.
+- The Timeline tab (defined above) and the activity aggregator coexist; the Timeline tab renders the aggregator output as the merged stream.
 
-1. Relationship-domain rows from `relationship.entity_facts` (notes, interactions, life events,
-   gifts, loans, dunbar_tier_override) — tagged `src: 'relationship'`.
-2. Chronicler-domain rows tagged with `src: 'chronicler'` (kind: `episode`).
+ID: REQ-dashboard-relationship-002
+Source: Relationship Butler Role "CRUD-to-SPO migration"; Relationship Facts "Relationship entity facts triple store"; RFC 0006 schema isolation
+Scope: v1-mandatory
 
-The chronicler rows MUST be fetched **via chronicler's MCP tools** —
-`chronicler_list_episodes` per RFC 0014:255-258 (the brief named `chronicler_list_events`
-but RFC 0014 lists only `list_episodes` / `get_episode` / `submit_correction`; Phase 2
-chooses to use only currently-listed MCP tools rather than propose a new tool).
+#### Scenario: Direct activity writes become visible with their stored text
 
-**Hard invariant (mirror `rfcs/0014:178` "Tests MUST exercise the no-LLM invariant for
-every adapter"):** the relationship butler MUST NOT issue direct SQL into `chronicler.*`
-schemas. A guardrail test in `roster/relationship/tests/test_chronicler_boundary.py` MUST
-assert that the `activity` aggregator implementation does not import any
-`chronicler.*` ORM model and does not contain the substring `FROM chronicler.` or
-`JOIN chronicler.` in any SQL string.
+- **WHEN** an owner creates a note, interaction, or gift through the existing entity endpoint and then reads that entity's activity
+- **THEN** the activity response MUST contain the persisted row with the same source UUID, the correct predicate family and timestamp, `store: 'narrative'`, and the exact stored content in `summary`
+- **AND** the row MUST appear without a dual write or a copied identity-store row
 
-The Timeline tab (defined above) and the activity aggregator coexist; the Timeline tab
-renders the aggregator output as the merged stream.
+#### Scenario: Narrative update lifecycle returns only the active successor
+
+- **WHEN** an existing gift or loan row is superseded by its current update operation
+- **THEN** activity MUST contain the active successor exactly once with its current stored content
+- **AND** the superseded row MUST NOT be returned or restored
+
+#### Scenario: Existing identity rows remain visible with their values
+
+- **WHEN** an active `relationship.entity_facts` row names the requested entity as subject or entity-typed object
+- **THEN** activity MUST retain that row with `store: 'identity'` and the exact stored object in `summary`
+- **AND** adding narrative rows MUST NOT remove, rewrite, or heuristically merge the identity row
+
+#### Scenario: Retracted and superseded rows stay absent
+
+- **WHEN** a relationship row in either local store has validity `retracted` or `superseded`
+- **THEN** activity and daily bins MUST exclude that row
+- **AND** entity merge and forget operations MUST retain their existing repoint and retraction behavior
+
+#### Scenario: Source-qualified identities prevent cross-store collisions
+
+- **WHEN** two returned rows from different stores have the same UUID value
+- **THEN** both rows MUST remain in the response
+- **AND** consumers MUST distinguish them by `(src, store, id)` rather than dropping either row
 
 #### Scenario: Activity aggregator merges via MCP only
-- **WHEN** `GET /api/relationship/entities/<id>/activity` is called and chronicler
-  episodes mention the entity
+
+- **WHEN** `GET /api/relationship/entities/<id>/activity` is called and chronicler episodes mention the entity
 - **THEN** the aggregator MUST call `chronicler_list_episodes` via MCP with an entity filter
 - **AND** chronicler rows MUST appear in the response with `src: 'chronicler'`
 - **AND** the response MUST NOT include any row sourced via direct SQL from `chronicler.*`
+- **AND** the entity filter MUST be the participant entity filter and each Chronicler row MUST carry `store: null` and its canonical title in `summary`
 
 #### Scenario: Boundary guardrail test passes
+
 - **WHEN** the test suite runs `tests/test_chronicler_boundary.py::test_no_direct_chronicler_sql`
 - **THEN** the test MUST scan the relationship router for `FROM chronicler.` / `JOIN chronicler.`
 - **AND** the test MUST fail if any such string is found
+- **AND** the effective repository path MUST be `roster/relationship/tests/test_chronicler_boundary.py`; the historical path above is retained only as prior-contract provenance
+- **AND** it MUST also fail if the two Relationship stores are joined or cross-joined instead of read independently
 
 #### Scenario: Chronicler activity failure is not rendered as inactivity
 
-- **WHEN** the Chronicler MCP activity contribution is unavailable, times out, errors, or returns
-  an unreadable response envelope
-- **THEN** every entity-activity response shape MUST set `degraded=true` with the fixed
-  content-blind reason `chronicler_activity_unavailable`
-- **AND** the response MAY retain available Relationship activity but clients MUST NOT render its
-  zero counts as a complete inactivity claim
-- **AND** a successful Chronicler read with zero episodes MUST set `degraded=false` and
-  `degraded_reason=null`
+- **WHEN** the Chronicler MCP activity contribution is unavailable, times out, errors, or returns an unreadable response envelope
+- **THEN** every entity-activity response shape MUST set `degraded=true` with the fixed content-blind reason `chronicler_activity_unavailable`
+- **AND** the response MAY retain available Relationship activity but clients MUST NOT render its zero counts as a complete inactivity claim
+- **AND** a successful Chronicler read with zero episodes MUST set `degraded=false` and `degraded_reason=null`
+- **AND** every available Relationship row MUST remain in the response
+- **AND** no upstream exception, response payload, failure tail, or source record content beyond the normal success projection MUST appear in the failure fields
+
+#### Scenario: Successful empty sources remain healthy
+
+- **WHEN** both Relationship stores contain no matching active rows and a successful Chronicler read returns zero episodes
+- **THEN** activity MUST return a successful empty candidate set with `degraded=false` and `degraded_reason=null`
+- **AND** daily-bin responses MUST contain the requested quiet bins rather than report source failure
+
+#### Scenario: Pagination and daily bins use one merged set
+
+- **WHEN** a merged candidate set contains rows from all three sources and the request applies offset, limit, and daily bins
+- **THEN** `total` MUST equal the candidate-set size before stream pagination and the page MUST follow the required deterministic order
+- **AND** each in-window candidate row MUST contribute exactly once to the bins regardless of whether it appears on the requested stream page
+- **AND** `bins_only=true` MUST return those same bins and degradation fields without stream items or totals
+
+#### Scenario: Non-owner activity read returns no content
+
+- **WHEN** a caller who does not resolve to an owner-role entity requests activity
+- **THEN** the response MUST be 403 with `owner_required`
+- **AND** it MUST return no narrative summary, identity object, Chronicler title, metadata, or failure detail
 
 ### Requirement: Detail-page voice gloss source — canned strings only
 
@@ -1286,7 +1103,6 @@ MUST fail if any combination is missing.
 
 `GET /api/relationship/entities/search` MUST use rule-based ranking only (no embedding service,
 no reranker LLM in v1). The rule set is defined in
-`pr/overview/entity-redesign/prompts/07-finder.md §7.5` and also reproduced in
 Requirement: App-wide Cmd-K Finder above. No model call MAY appear in the request handler path
 of `/api/relationship/entities/search`.
 
@@ -1295,3 +1111,142 @@ of `/api/relationship/entities/search`.
 - **THEN** the handler MUST NOT call any LLM provider
 - **AND** the handler MUST NOT call any embedding service
 - **AND** ranking MUST be computed purely from string-matching and `last_seen / tier` tie-breaks
+
+### Requirement: Contact routes are compatibility aliases
+
+The routes `/contacts` and `/contacts/:contactId` SHALL remain compatibility aliases, not
+canonical pages. Both MUST replace-navigate to `/entities/index?has=contact`. Because the retired
+`public.contacts` identity and its per-contact resolver no longer exist, the detail alias MUST NOT
+invent an entity ID, render a not-found claim about the legacy ID, or revive the retired contact
+detail page. Owners reach canonical `/entities/:entityId` details from the entity index.
+
+#### Scenario: Contact index URL redirects to the filtered entity index
+
+- **WHEN** a user navigates to `/contacts`
+- **THEN** the client MUST replace-navigate to `/entities/index?has=contact`
+
+#### Scenario: Legacy contact detail URL falls back to the filtered entity index
+
+- **WHEN** a user navigates to `/contacts/abc-123-uuid`
+- **THEN** the client MUST replace-navigate to `/entities/index?has=contact`
+- **AND** it MUST NOT claim that `abc-123-uuid` resolved to an entity
+
+### Requirement: Pending identities queue on the entity index
+
+The entity index page (`/entities/index?has=contact`) SHALL display a "Pending
+Identities" section listing all contacts with
+`metadata.needs_disambiguation = true`. This section MUST appear above the
+main entity table when pending contacts exist.
+
+#### Scenario: Pending identities displayed
+
+- **WHEN** a user navigates to `/entities/index?has=contact` and 2 temporary
+  contacts exist with `metadata.needs_disambiguation = true`
+- **THEN** a "Pending Identities" section MUST appear above the entity table
+- **AND** each pending contact MUST display the contact's name, source
+  channel, source value, and creation date
+
+#### Scenario: Merge action on pending identity
+
+- **WHEN** the user clicks "Merge" on a pending identity
+- **THEN** a dialog MUST open with a contact search/select input
+- **AND** the user MUST be able to search existing contacts by name
+- **AND** selecting a contact and confirming MUST call the merge API
+- **AND** the pending identity MUST disappear from the queue after successful
+  merge
+
+#### Scenario: Confirm as new action on pending identity
+
+- **WHEN** the user clicks "Confirm as new" on a pending identity
+- **THEN** the `needs_disambiguation` flag MUST be removed from the contact's
+  metadata
+- **AND** the contact MUST move to the main entity table
+
+#### Scenario: Archive action on pending identity
+
+- **WHEN** the user clicks "Archive" on a pending identity
+- **THEN** the contact's `listed` MUST be set to `false`
+- **AND** the pending identity MUST disappear from the queue
+
+#### Scenario: No pending identities
+
+- **WHEN** no contacts have `metadata.needs_disambiguation = true`
+- **THEN** the "Pending Identities" section MUST NOT be displayed
+
+### Requirement: Entity-level tab write endpoints
+
+The dashboard API SHALL expose entity-keyed `POST` endpoints for notes,
+interactions, and gifts, writing to the same `facts` rows the matching tab GET
+endpoints read. Each write MUST set `scope = 'relationship'` and the target
+`entity_id`, and MUST NOT create a parallel store, a shadow table, or a
+contact-keyed row the entity tab GETs cannot see.
+
+The endpoints are:
+
+| Endpoint | Predicate written | Success |
+|---|---|---|
+| `POST /api/relationship/entities/{id}/notes` | `contact_note` | 201 with the note shape from the notes tab mapping |
+| `POST /api/relationship/entities/{id}/interactions` | `interaction_<type>` | 201 with the interaction shape from the interactions tab mapping |
+| `POST /api/relationship/entities/{id}/gifts` | `gift` | 201 with the gift shape from the gifts tab mapping |
+
+All three MUST enforce the Clause 12a owner gate, MUST return 404 when the
+entity UUID does not exist in `public.entities`, MUST return 422 when the
+required text field is absent or blank after trimming, and MUST return 409 with
+`existing_id` when an identical record already exists for that entity inside the
+writer's duplicate window. A rejected write MUST NOT create a fact.
+
+Because the readers already tolerate contact-keyed subjects, `note_list` and
+`gift_list` MUST match both the `contact:` and `entity:` subject forms so a
+record written through the dashboard remains visible to the MCP tools.
+
+#### Scenario: Note write is readable from the notes tab
+
+- **WHEN** an owner calls `POST /api/relationship/entities/{id}/notes` with a non-blank `content`
+- **THEN** the response status MUST be 201 with the note shape
+- **AND** a `contact_note` fact MUST exist with that entity's `entity_id` and `scope = 'relationship'`
+- **AND** `GET /api/relationship/entities/{id}/notes` MUST return it
+
+#### Scenario: Interaction write records the requested type
+
+- **WHEN** an owner calls `POST /api/relationship/entities/{id}/interactions` with `type = "call"`
+- **THEN** the stored predicate MUST be `interaction_call`
+- **AND** the response `type` MUST be `"call"`
+
+#### Scenario: Non-owner write is refused before any fact is created
+
+- **WHEN** a caller who does not resolve to an owner-role entity calls any of the three endpoints
+- **THEN** the response status MUST be 403 with `{ code: 'owner_required' }`
+- **AND** no fact MUST be written
+
+#### Scenario: Blank input is rejected, duplicates are reported
+
+- **WHEN** the required text field is blank or whitespace only
+- **THEN** the response status MUST be 422 and no fact MUST be written
+- **WHEN** the identical record already exists for that entity inside the duplicate window
+- **THEN** the response status MUST be 409 and the body MUST carry `existing_id`
+
+### Requirement: Entity operator verb rail
+
+Entity detail and the Plex dossier SHALL each render one operator verb rail
+offering `log-interaction`, `gift-idea`, and `note`, writing through the
+endpoints above.
+
+The rail MUST report the real state of a write and nothing more: a pending write
+MUST read as pending rather than as success, a completed write MUST appear only
+after the server confirms it, and a refusal MUST surface one plain sentence
+naming the actual cause -- duplicate, owner-only, missing entity, or invalid
+input -- rather than a raw error payload or a silent no-op.
+
+The rail MUST offer no send affordance for any verb.
+
+#### Scenario: Verb writes appear only once confirmed
+
+- **WHEN** the owner submits any verb form
+- **THEN** the rail MUST show a pending state while the request is in flight
+- **AND** MUST NOT show the record as saved until the server confirms it
+
+#### Scenario: Refusals are legible
+
+- **WHEN** a write is refused as a duplicate, for owner-only authorization, for a missing entity, or as invalid input
+- **THEN** the rail MUST show one sentence naming that cause
+- **AND** MUST NOT render a raw error object or leave the form silently unchanged

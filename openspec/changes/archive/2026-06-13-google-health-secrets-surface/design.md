@@ -58,7 +58,7 @@ This change is a **spec-only amendment** — no implementation code changes land
 
 **Decision:** The leak-prevention scenario uses the word "SHALL" (normative) and identifies non-primary accounts by the runtime characteristic `is_primary = false` (not by email or hard-coded identity). This makes the constraint portable across account configurations.
 
-**Rationale:** Hard-coding `tzeuse@` into the spec would make the scenario instance-specific and non-generalizable. The constraint is a security invariant that must hold for any multi-account setup.
+**Rationale:** Hard-coding `owner.secondary@` into the spec would make the scenario instance-specific and non-generalizable. The constraint is a security invariant that must hold for any multi-account setup.
 
 ## Risks / Trade-offs
 

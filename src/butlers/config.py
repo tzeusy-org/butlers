@@ -81,6 +81,7 @@ class ScheduleConfig:
     job_args: dict[str, Any] | None = None
     max_token_budget: int | None = None
     complexity: str | None = None
+    continuity: bool = False
 
 
 @dataclass
@@ -88,18 +89,21 @@ class RuntimeSeedConfig:
     """Sole butler-scoped runtime configuration from ``[butler.runtime_seed]``.
 
     Used on first boot to seed the per-schema ``runtime_config`` DB table and,
-    thereafter, as the in-memory fallback when the ``RuntimeConfigAccessor``
-    is unavailable or its cache is empty. This is the only butler-scoped
-    runtime config source in git.
+    thereafter, as the Git authority for ``core_groups`` plus the in-memory
+    fallback when the ``RuntimeConfigAccessor`` is unavailable or its cache is
+    empty. This is the only butler-scoped runtime config source in git.
 
     Fields:
 
     - ``core_groups`` / ``catalog_read_sensitivity`` /
-      ``max_concurrent_sessions`` / ``max_queued_sessions`` are the operational
+      ``max_concurrent_sessions`` / ``max_queued_sessions`` /
+      ``tool_exposure_policy`` are the operational
       tuning knobs that map to the DB-backed
-      ``runtime_config`` row. The Spawner prefers the DB row via
+      ``runtime_config`` row. Operational fields prefer the DB row via
       :class:`RuntimeConfigAccessor` and falls back to the values here when
-      no accessor is wired.
+      no accessor is wired. ``tool_exposure_policy`` is hot: the DB-backed
+      row is authoritative per invocation, and this seed value only applies
+      before the row is first seeded.
     - ``liveness_ttl_seconds`` / ``route_contract_min`` / ``route_contract_max``
       are registration-only and are not stored in ``runtime_config``.
 
@@ -117,6 +121,7 @@ class RuntimeSeedConfig:
     liveness_ttl_seconds: int = 300
     route_contract_min: int = 1
     route_contract_max: int = 1
+    tool_exposure_policy: Literal["eager_filtered", "auto"] = "eager_filtered"
 
 
 @dataclass
@@ -275,8 +280,8 @@ class ButlerConfig:
     #       "https://www.googleapis.com/auth/gmail.modify",
     #   ]
     #
-    #   [oauth.spotify]
-    #   scopes = ["user-read-recently-played", "user-top-read"]
+    #   [oauth.example_provider]
+    #   scopes = ["profile.read", "activity.read"]
     #
     # These declarations are read by the dashboard OAuth router to resolve the
     # scope-set for each provider as the union of all butler declarations.
@@ -414,6 +419,13 @@ def _parse_runtime_seed(butler_section: dict) -> RuntimeSeedConfig:
     route_contract_min = int(seed_section.get("route_contract_min", 1))
     route_contract_max = int(seed_section.get("route_contract_max", 1))
 
+    tool_exposure_policy = seed_section.get("tool_exposure_policy", "eager_filtered")
+    if tool_exposure_policy not in {"eager_filtered", "auto"}:
+        raise ConfigError(
+            "Invalid butler.runtime_seed.tool_exposure_policy: "
+            f"{tool_exposure_policy!r}. Expected eager_filtered or auto."
+        )
+
     return RuntimeSeedConfig(
         core_groups=core_groups,
         catalog_read_sensitivity=catalog_read_sensitivity,
@@ -422,6 +434,7 @@ def _parse_runtime_seed(butler_section: dict) -> RuntimeSeedConfig:
         liveness_ttl_seconds=liveness_ttl_seconds,
         route_contract_min=route_contract_min,
         route_contract_max=route_contract_max,
+        tool_exposure_policy=tool_exposure_policy,
     )
 
 
@@ -486,6 +499,10 @@ def _parse_schedule_entry(entry: Any, index: int) -> ScheduleConfig:
             )
         complexity = normalized_complexity
 
+    raw_continuity = entry.get("continuity", False)
+    if not isinstance(raw_continuity, bool):
+        raise ConfigError(f"{entry_path}.continuity must be a boolean when set")
+
     if dispatch_mode == ScheduleDispatchMode.PROMPT:
         if prompt is None or not prompt.strip():
             raise ConfigError(f"{entry_path} with dispatch_mode='prompt' requires non-empty prompt")
@@ -500,12 +517,15 @@ def _parse_schedule_entry(entry: Any, index: int) -> ScheduleConfig:
             dispatch_mode=dispatch_mode,
             max_token_budget=max_token_budget,
             complexity=complexity,
+            continuity=raw_continuity,
         )
 
     if prompt is not None:
         raise ConfigError(f"{entry_path}.prompt is not allowed when dispatch_mode='job'")
     if job_name is None or not job_name.strip():
         raise ConfigError(f"{entry_path} with dispatch_mode='job' requires non-empty job_name")
+    if raw_continuity:
+        raise ConfigError(f"{entry_path}.continuity is only valid when dispatch_mode='prompt'")
 
     return ScheduleConfig(
         name=name,

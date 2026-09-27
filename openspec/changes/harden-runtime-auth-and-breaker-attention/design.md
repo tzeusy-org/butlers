@@ -202,6 +202,98 @@ UID range makes CLI-auth launch and signer activation unavailable while the
 ordinary Dashboard remains healthy. No legacy direct subprocess fallback is
 allowed.
 
+#### Owner-adopted Option B: image-owned PID1 shim closure
+
+On 2026-09-11 the owner selected Option B: compute the namespace-PID1 shim's
+runtime closure during the image build and consume it from the validated
+image-owned manifest. On 2026-09-12 the owner adopted the exact reviewed
+contract and authorized its bounded source implementation. This grants no
+image build or deployment, provider/credential operation, reassignment, or
+disposition of the prior runtime-`ldd` Option A prototype; that prototype is
+neither an implementation input nor a deletion target for this change.
+
+Manifest schema version 3 adds one top-level `shim` object beside the existing
+`providers` object:
+
+```json
+{
+  "version": 3,
+  "shim": {
+    "name": "runtime-cli-sandbox-init",
+    "executable": "/usr/local/libexec/butlers/runtime-cli-sandbox-init",
+    "readonly_inputs": [
+      {
+        "source": "/usr/local/libexec/butlers/runtime-cli-sandbox-init",
+        "destination": "/usr/local/libexec/butlers/runtime-cli-sandbox-init"
+      },
+      {
+        "source": "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+        "destination": "/lib64/ld-linux-x86-64.so.2"
+      }
+    ]
+  },
+  "providers": {
+    "<registered-provider>": {
+      "binary": "<declared-binary>",
+      "executable": "<absolute-image-path>",
+      "readonly_inputs": [
+        {"source": "<terminal-source>", "destination": "<logical-path>"}
+      ]
+    }
+  }
+}
+```
+
+The illustrative loader binding above is not an architecture-specific fixed
+library inventory; the generator records the closure present in the exact
+image. The field sets and shim identity are fixed. Each shim binding preserves a
+terminal root-owned immutable regular-file source and the logical destination
+named by the ELF interpreter or loader. Directory sources are invalid for the
+shim closure even when root-owned and non-writable; in particular the generator
+and reader cannot replace the exact file list with a broad bind such as
+`/usr/lib`. Provider package-root bindings retain their existing directory
+allowance. The shim list includes its executable, is non-empty, and is
+independent of every provider list. The generator reuses the current
+recursive shebang/ELF dependency walk in a strict shim mode: an explicit static
+executable may have no library bindings beyond itself, but an unexplained
+`ldd` failure, unresolved `not found` entry, or destination collision fails the
+build. `Dockerfile.base` runs the generator after the final shim copy/chmod and
+after provider installation; no later layer replaces the shim before the
+manifest is consumed.
+
+`RuntimeCLIInputManifest` remains the sole runtime I/O boundary. It retains the
+current `O_NOFOLLOW`, same-descriptor bounded read, owner/mode/link/size checks,
+and root-owned non-writable source validation, then validates the exact version-3
+shim record and configured shim path. Its shim-specific validation tightens the
+shared source helper by requiring every shim binding to be a regular file and
+the executable binding to be executable; it rejects a directory before the
+launcher allocates an identity, creates or writes a staged HOME, or enters
+`_launch_invocation`. It returns explicit validated shim bindings.
+`build_bubblewrap_launch_plan` receives those bindings as a mandatory argument;
+it does not read the manifest or run a subprocess. It combines
+payload/provider inputs with shim inputs by logical destination, collapses only
+identical source/destination pairs, rejects differing sources for one
+destination, and sorts the unique result by destination before deriving parent
+directories and `--ro-bind` arguments. This makes planner behavior independent
+of caller order and removes the provider-glibc coincidence without creating a
+second spawn path. Every exact-image harness uses the same validated shim
+resolver: implementation removes the descendant-survival and signer-isolation
+hard-coded glibc/loader tuples and the peer-isolation caller-side `ldd` helper
+and synchronous `subprocess` import. Planner deduplication is not evidence that
+one of those forbidden parallel closure mechanisms may remain.
+
+Version 3 is an intentional image/application compatibility boundary, not a
+dual-reader migration. A new reader rejects version 2; an old reader already
+rejects version 3. The implementation therefore updates generator, loader,
+planner callers, base-image wiring, tests, and documentation in one change and
+ships only as a matched image. A mixed image/app combination fails before spawn
+with ordinary Dashboard health intact. Roll forward rebuilds the matched base
+and application image. Rollback restores a matched prior application/base pair
+or retains the matched version-3 sandbox; while a signer mount exists it also
+continues to obey the existing rule that the sandbox remains present or the
+mount is removed before old code starts. No schema, persistent state, retry,
+provider, credential, or live deployment migration is involved.
+
 Parsers, receipt storage, the private endpoint, and the dedicated client MAY
 land dark without production key mounts. The canonical launcher may then
 perform its normal full-stack stop/start with both key files provisioned. A

@@ -40,4 +40,4 @@
 
 - [x] 6.1 Unit + integration suites per design.md Test Strategy (integration on real Postgres, not mocked pool)
 - [ ] 6.2 E2E: park → push → tap Approve → executed → message edited → dashboard provenance shows telegram actor
-- [ ] 6.3 `openspec validate decision-loop-one-tap-approvals --strict` green; specs synced on archive
+- [x] 6.3 `openspec validate decision-loop-one-tap-approvals --strict` green; specs synced on archive

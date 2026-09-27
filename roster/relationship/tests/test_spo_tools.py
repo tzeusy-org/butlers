@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from butlers.testing.schema_standins import CONTACT_ENTITY_MAP
+from butlers.testing.schema_standins import CONTACT_ENTITY_MAP, ENTITY_GRAPH_EDGES
 
 pytestmark = [
     pytest.mark.integration,
@@ -215,6 +215,25 @@ async def pool(provisioned_postgres_pool):
                 )
             )
         """)
+        # public.memory_catalog + public.entity_graph_edges (bu-9ltqm) — the
+        # cascade targets task_delete's retraction must disown/delete.
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS public.memory_catalog (
+                id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                source_schema TEXT NOT NULL,
+                source_table  TEXT NOT NULL,
+                source_id     UUID NOT NULL,
+                tenant_id     TEXT NOT NULL DEFAULT 'owner',
+                entity_id     UUID,
+                summary       TEXT NOT NULL DEFAULT '',
+                memory_type   TEXT NOT NULL DEFAULT 'fact',
+                confidence    DOUBLE PRECISION,
+                invalid_at    TIMESTAMPTZ,
+                updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+                UNIQUE (source_schema, source_table, source_id)
+            )
+        """)
+        await p.execute(ENTITY_GRAPH_EDGES.ddl())
 
         yield p
 
@@ -509,20 +528,55 @@ async def test_task_complete_supersedes_old_fact(pool):
 
 
 async def test_task_delete_retracts_fact(pool):
-    """task_delete retracts the task fact."""
+    """task_delete retracts the task fact and cascades the memory_catalog
+    disownment + entity_graph_edges deletion forget_memory() performs (bu-9ltqm)."""
     from butlers.tools.relationship.tasks import task_create, task_delete, task_list
 
     contact = await _make_contact(pool, "Mike")
     cid = contact["id"]
+    entity_id = await pool.fetchval(
+        "SELECT entity_id FROM contact_entity_map WHERE contact_id = $1", cid
+    )
 
     task = await task_create(pool, cid, "Buy groceries")
     task_id = task["id"]
+
+    await pool.execute(
+        """
+        INSERT INTO public.memory_catalog (source_schema, source_table, source_id, memory_type)
+        VALUES ('public', 'facts', $1, 'fact')
+        """,
+        task_id,
+    )
+    await pool.execute(
+        """
+        INSERT INTO public.entity_graph_edges
+            (source_schema, source_table, source_id, subject_entity_id, predicate, object_entity_id)
+        VALUES ('public', 'facts', $1, $2, 'test-predicate', $2)
+        """,
+        task_id,
+        entity_id,
+    )
 
     await task_delete(pool, task_id)
 
     tasks = await task_list(pool, cid)
     task_ids = {t["id"] for t in tasks}
     assert task_id not in task_ids
+
+    catalog_row = await pool.fetchrow(
+        "SELECT confidence, invalid_at FROM public.memory_catalog"
+        " WHERE source_schema = 'public' AND source_table = 'facts' AND source_id = $1",
+        task_id,
+    )
+    assert catalog_row["confidence"] == 0
+    assert catalog_row["invalid_at"] is not None
+    edge_row = await pool.fetchrow(
+        "SELECT 1 FROM public.entity_graph_edges"
+        " WHERE source_schema = 'public' AND source_table = 'facts' AND source_id = $1",
+        task_id,
+    )
+    assert edge_row is None
 
 
 async def test_task_list_exclude_completed_by_default(pool):
@@ -583,7 +637,12 @@ async def test_loan_settle_updates_fact(pool):
     cid = contact["id"]
 
     loan = await loan_create(
-        pool, contact_id=cid, amount=Decimal("100.00"), direction="borrowed", description="Taxi"
+        pool,
+        contact_id=cid,
+        amount=Decimal("100.00"),
+        direction="borrowed",
+        description="Taxi",
+        currency="USD",
     )
     loan_id = loan["id"]
 
@@ -616,6 +675,7 @@ async def test_loan_list_returns_loans(pool):
         amount=Decimal("20.00"),
         direction="lent",
         description="Lunch",
+        currency="USD",
     )
     await loan_create(
         pool,
@@ -623,10 +683,53 @@ async def test_loan_list_returns_loans(pool):
         amount=Decimal("30.00"),
         direction="lent",
         description="Dinner",
+        currency="USD",
     )
 
     loans = await loan_list(pool, cid)
     assert len(loans) == 2
+
+
+async def test_loan_settle_rolls_back_if_replacement_fact_fails(pool, monkeypatch):
+    """The original obligation remains active after a mid-flight storage failure."""
+    from butlers.modules.memory import storage
+    from butlers.tools.relationship.loans import loan_create, loan_list, loan_settle
+
+    contact = await _make_contact(pool, "Atomic Loan")
+    loan = await loan_create(
+        pool,
+        contact_id=contact["id"],
+        amount=Decimal("12.00"),
+        direction="lent",
+        description="Atomicity",
+        currency="SGD",
+    )
+
+    async def fail_store(*args, **kwargs):
+        raise RuntimeError("injected storage failure")
+
+    monkeypatch.setattr(storage, "store_fact", fail_store)
+    with pytest.raises(RuntimeError, match="injected storage failure"):
+        await loan_settle(pool, loan["id"])
+
+    remaining = await loan_list(pool, contact["id"])
+    assert [item["id"] for item in remaining] == [loan["id"]]
+
+
+async def test_loan_backfill_counts_currency_less_rows_without_inventing_currency(pool):
+    from butlers.tools.relationship.loans import backfill_loan_cost_claims
+
+    await pool.execute(
+        """
+        INSERT INTO facts
+            (subject, predicate, content, metadata, scope, validity, valid_at)
+        VALUES ('loan:legacy-no-currency', 'loan', 'Legacy',
+                '{"amount_cents": 1200, "direction": "lent"}'::jsonb,
+                'relationship', 'active', now())
+        """
+    )
+    result = await backfill_loan_cost_claims(pool)
+    assert result["skipped_missing_currency"] == 1
 
 
 # ===========================================================================

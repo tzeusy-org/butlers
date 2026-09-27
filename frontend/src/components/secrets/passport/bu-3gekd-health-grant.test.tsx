@@ -117,13 +117,17 @@ vi.mock("@/hooks/use-whatsapp.ts", () => ({
 }))
 
 // Top-level imports (ESM — no require())
-import { getGoogleOAuthStartUrl, GOOGLE_HEALTH_SCOPES } from "@/api/client.ts";
+import { getGoogleOAuthStartUrl, GOOGLE_HEALTH_SCOPE_FAMILIES } from "@/api/client.ts";
 import * as useSecretsModule from "@/hooks/use-secrets.ts";
 import { buildSpineEntries } from "./spine-builder.ts";
 import { DirectionPassport } from "./DirectionPassport.tsx";
 import { PageGoogleAccounts } from "./pages.tsx";
 import type { InventoryResponse, UserCredential, Identity } from "./types.ts";
 import { MOCK_PROVIDERS } from "./mock-data.ts";
+
+const GOOGLE_HEALTH_SCOPES = GOOGLE_HEALTH_SCOPE_FAMILIES.map(
+  (family) => `https://www.googleapis.com/auth/googlehealth.${family}.readonly`,
+);
 
 const EMPTY_INVENTORY_COUNTS = {
   failingCount: 0,

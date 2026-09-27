@@ -3,38 +3,20 @@
 Internal and external dependencies, startup ordering constraints, and failure
 blast radius analysis.
 
+This page is a snapshot, not a contract. Butler and module lists here are
+examples; `ls roster/` and `ls src/butlers/modules/` are authoritative.
+
 ---
 
 ## Internal Dependency Graph
 
 ### Module Dependencies (topological sort at startup)
 
-```mermaid
-graph TD
-    Pipeline["pipeline"]
-    Memory["memory"]
-    Email["email"]
-    Telegram["telegram"]
-    Calendar["calendar"]
-    Contacts["contacts"]
-    Approvals["approvals"]
-    Mailbox["mailbox"]
-    Metrics["metrics (module)"]
-    SelfHealing["self_healing"]
-
-    Pipeline --> Memory
-    Pipeline --> Email
-    Pipeline --> Telegram
-    Approvals --> Pipeline
-```
-
 Module dependencies are declared via the `dependencies` property on each Module
 subclass. The `ModuleRegistry` resolves them via topological sort before
-calling `on_startup()`. Shutdown happens in reverse topological order.
-
-Modules that declare no dependencies (memory, email, telegram, calendar,
-contacts, mailbox, metrics, self_healing) can start in any order relative to
-each other.
+calling `on_startup()`; shutdown runs in reverse order. No module currently
+declares a dependency (`grep -rn -A2 "def dependencies" src/butlers/modules`),
+so startup order among enabled modules is unconstrained.
 
 ### Butler-to-Switchboard Dependency
 
@@ -42,22 +24,21 @@ each other.
 graph LR
     GEN["general :41101"] -- "MCP client" --> SW["switchboard :41100"]
     REL["relationship :41102"] -- "MCP client" --> SW
-    HLT["health :41103"] -- "MCP client" --> SW
-    MSG["messenger :41104"] -- "MCP client" --> SW
-    FIN["finance :41105"] -- "MCP client" --> SW
-
-    GEN -- "liveness POST /api/switchboard/heartbeat" --> SW
-    REL -- "liveness POST /api/switchboard/heartbeat" --> SW
-    HLT -- "liveness POST /api/switchboard/heartbeat" --> SW
+    OTHER["... every non-switchboard butler (e.g.)"] -- "MCP client" --> SW
+    OBS["dashboard shadow observer"] -- "GET /internal/control-plane/identity" --> GEN
+    OBS -- "GET /internal/control-plane/identity" --> SW
 ```
 
-Every non-switchboard butler:
-1. Opens an MCP client connection to the Switchboard during startup phase 12.
-2. Launches a liveness reporter that periodically POSTs to the Switchboard
-   heartbeat endpoint (step 17).
+Every non-switchboard butler opens an MCP client to the Switchboard during
+startup and registers its endpoint. Routing reads the Switchboard registry,
+kept fresh by daemon heartbeats; the Dashboard shadow observer probes each
+daemon's identity route but does not yet hold route authority. The staged
+cutover is in the
+[control-plane design](../../openspec/changes/restore-butler-control-plane-liveness/design.md).
 
 **Failure mode**: If the Switchboard is down, domain butlers cannot receive
-routed messages. Their schedulers and direct MCP triggers still work.
+routed messages. Their local deterministic schedules and direct MCP triggers
+continue unless a separate administrative policy disables them.
 
 ### Connector-to-Switchboard Dependency
 
@@ -129,11 +110,14 @@ attempt ingestion, enforced by the readiness probe.
 | Dependency | Used By | Purpose | Failure Impact |
 |---|---|---|---|
 | **MinIO / S3** | Blob storage (attachments) | Attachment storage and retrieval | Attachment operations fail; non-blob daemon startup and core text messaging continue |
-| **Grafana Alloy** | Telemetry | OTLP trace/metric collection | No observability; no-op tracer/meter used instead |
+| **OpenTelemetry Collector** | Telemetry | OTLP trace/metric collection | No observability; no-op tracer/meter used instead |
 | **Tempo** | Trace queries | Trace storage backend | Cannot query traces; collection unaffected |
 | **Prometheus** | Metric queries | Metric storage backend | Cannot query metrics; emission unaffected |
 
 ### External APIs (per-connector/module)
+
+Representative examples; each connector service in `docker-compose.yml` and
+each module under `src/butlers/modules/` depends on its own provider API.
 
 | Dependency | Used By | Purpose | Failure Impact |
 |---|---|---|---|
@@ -150,7 +134,7 @@ attempt ingestion, enforced by the readiness probe.
 |---|---|
 | **Python 3.12+** | Runtime language |
 | **uv** | Package management and virtual environments |
-| **Node.js 22+** | Frontend build toolchain |
+| **Node.js 24** | Frontend build toolchain (matches CI) |
 | **Docker** | Container runtime for infrastructure services |
 | **Ruff** | Linting and formatting |
 | **pytest** | Test execution with pytest-asyncio |
@@ -168,16 +152,15 @@ errors. Connectors cannot resolve credentials.
 
 ### Switchboard down
 
-- Domain butlers continue running (schedulers work, direct MCP calls work).
+- Domain butlers continue running (local schedulers work, direct MCP calls work).
 - No new external messages are routed to domain butlers.
 - Connectors block or fail at ingestion.
-- Butler liveness reporting fails (butlers may be marked stale in registry).
 
 ### Single domain butler down
 
-- Switchboard routes to that butler fail; messages enter dead letter.
+- Routes to that butler fail; the Switchboard registry marks it stale once its
+  heartbeat TTL lapses.
 - Other butlers are unaffected.
-- Dashboard shows the butler as offline.
 
 ### Connector down
 

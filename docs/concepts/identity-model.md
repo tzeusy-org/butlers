@@ -10,7 +10,7 @@ Butlers maintains a shared identity registry anchored on `public.entities`. Chan
 
 ## Schema Structure
 
-Identity resolution reads two tables: the entity anchor in the `public` schema and the channel-handle triples in the `relationship` schema. (The earlier `public.contacts` and `public.contact_info` tables are retired --- `public.contact_info` was dropped in `core_115` and `public.contacts` in `core_134`; resolution no longer touches either.)
+Identity resolution reads two tables: the entity anchor in the `public` schema and the channel-handle triples in the `relationship` schema.
 
 ### public.entities
 
@@ -49,13 +49,23 @@ WHERE  ef.predicate   = $1
   AND  ef.validity    = 'active'
 ```
 
-The result is a `ResolvedContact` dataclass containing `name`, `roles` (sourced from the entity), `entity_id` (the authoritative key), and `contact_id` (always `None` since resolution no longer reads `public.contacts`).
+The result is a `ResolvedContact` dataclass carrying `entity_id` (the authoritative key), `name`, and `roles` (sourced from the entity).
 
 The function is safe to call before migrations have run --- it catches all database exceptions and returns `None` gracefully.
 
-## Owner Contact
+Travel parties also reference this shared identity anchor. `travel.travellers.entity_id` points to
+`public.entities.id` when an exact canonical person is already known; an unresolved booking name
+remains a local party member with a stable traveller key and a null `entity_id` rather than minting
+shared identity. If that exact name later resolves, Travel promotes the existing local party member
+instead of creating a duplicate; caller-supplied IDs are accepted only for live, unmerged person
+entities. When a linked source person has since been merged into a canonical survivor, the next
+booking ingest repoints the trip-local traveller and deduplicates its leg participation against the
+survivor. `travel.leg_passengers` records which party members occupy each shared leg.
+Relational facts remain owned by the Relationship butler and are never copied into the travel schema.
 
-The owner contact is the system administrator. It is bootstrapped automatically on daemon startup. The owner entity carries the `"owner"` role, which is used for:
+## Owner Entity
+
+The owner is the single person the system serves. Every daemon startup idempotently ensures the owner entity exists (`src/butlers/owner_bootstrap.py` `_ensure_owner_entity`). The owner entity carries the `"owner"` role, which is used for:
 
 - **Identity preamble** --- Routed messages from the owner are prepended with `[Source: Owner (entity_id: ...), via <channel>]`.
 - **Approval gates** --- Certain sensitive tool calls require owner authorization.
@@ -67,7 +77,7 @@ When identity resolution returns no match for a sender, the system creates a tem
 
 1. Re-checks the triple store to avoid double-creation; if the channel identifier already resolves, it returns that entity instead of minting a duplicate.
 2. Creates a `public.entities` row with `metadata.unidentified = true` and `entity_type = "person"`.
-3. Returns a `ResolvedContact` with empty roles and `contact_id = None`.
+3. Returns a `ResolvedContact` for the new entity with empty roles.
 
 The sender's channel triple is not written here. Asserting the `relationship.entity_facts` handle happens in a post-resolution hook in the routing pipeline (`relationship.tools.relationship_assert_fact.assert_sender_channel_fact()`); the Switchboard ingress path never writes `relationship.entity_facts`.
 
@@ -107,6 +117,25 @@ Identity resolution is called at several points in the system:
 - **Approval gate** --- to replace name-heuristic target resolution with role-based checks
 - **Memory module** --- to anchor facts and episodes to the correct entity
 
+## Merge Rebind Receipts
+
+Entity merges are coordinated only by Relationship. The merge transaction
+rewires canonical relationship facts and the shared `public.memory_catalog`,
+tombstones the source, and opens a cohort in `public.entity_rebind_log` with
+one receipt per memory-bearing schema. Each daemon later updates only its own
+facts and association tables and settles its receipt. `pending` therefore
+means "not yet reported", while `failed` names the exception class; neither is
+presented as a zero-count success.
+
+The post-commit `entity.rebound.v1` fleet event makes running daemons process
+their local pending receipt immediately and refreshes dashboard caches. Event
+delivery is deliberately not the recovery authority: a daemon that missed it
+establishes its listener before draining pending receipts during startup. A
+listener connection failure triggers re-establishment plus another pending
+drain. PostgreSQL row security permits only Relationship to create a cohort
+and permits each runtime role to settle only the receipt bound to its own
+schema.
+
 ## Verification
 
 To confirm the identity model described here matches the running system:
@@ -129,16 +158,19 @@ psql -h localhost -U butlers -d butlers -c \
 #   result = await resolve_contact_by_channel(pool, "telegram", "telegram:<your_chat_id>")
 #   assert "owner" in result.roles
 
-# 4. public.contact_info and public.contacts tables no longer exist
-psql -h localhost -U butlers -d butlers -c \
-  "SELECT to_regclass('public.contact_info'), to_regclass('public.contacts');"
-# Expected: both values NULL (dropped in core_115 and core_134)
-
-# 5. Unknown sender creates a temporary entity with unidentified metadata
+# 4. Unknown sender creates a temporary entity with unidentified metadata
 psql -h localhost -U butlers -d butlers -c \
   "SELECT COUNT(*) FROM public.entities WHERE metadata->>'unidentified' = 'true';"
 # Expected: count matches the number of unrecognized senders seen by the Switchboard
 ```
+
+## Implementation Notes
+
+- `_ensure_owner_entity` (`src/butlers/owner_bootstrap.py`) resolves an existing owner via
+  `'owner' = ANY(roles)` before inserting, and inserts with a target-less `ON CONFLICT DO NOTHING`
+  so `ix_entities_owner_singleton` cannot raise during startup.
+- Owner Telegram handle seeding is relationship-only: `_seed_owner_telegram_handle` checks
+  `current_schema() = 'relationship'` before probing `relationship.entity_facts`.
 
 ## Related Pages
 

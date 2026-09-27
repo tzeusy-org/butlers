@@ -222,9 +222,10 @@ check-duplicate-names:
 # does, so run it on a clean worktree or expect the diff to be yours.
 check-guards: check-em-dashes check-spec-overwrites check-countable-tasks check-duplicate-names check-session-links
 	python3 scripts/check_archived_requirements_landed.py
+	python3 scripts/check_owner_emails.py
 	python3 scripts/check_cited_requirements_resolve.py
 	python3 scripts/extract-frontend-copy.py
-	git diff --exit-code -- about/lay-and-land/frontend-copy-inventory.md
+	git diff --exit-code -- frontend/COPY_INVENTORY.md
 	@if command -v openspec >/dev/null 2>&1; then \
 		$(MAKE) check-openspec-strict; \
 	else \
@@ -250,7 +251,7 @@ lint-decision-beads:
 
 # Non-vacuous variant (bu-hmdqz.6): also flags open, non-epic beads whose
 # titles match a legacy decision marker but haven't migrated to the
-# `decision` label yet -- see AGENTS.md "Decision-bead convention".
+# `decision` label yet -- see docs/operations/decision-beads.md.
 lint-decision-beads-strict:
 	python3 scripts/lint_decision_beads.py --check-unlabeled-markers
 

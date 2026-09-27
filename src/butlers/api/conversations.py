@@ -20,6 +20,8 @@ from uuid import UUID
 
 import asyncpg
 
+from butlers.api.chat_stream import publish_chat_stream_event
+
 logger = logging.getLogger(__name__)
 
 # ts_headline start/stop markers — control characters unlikely to appear in
@@ -541,6 +543,12 @@ async def conversation_search(
 ) -> tuple[list[dict[str, Any]], int]:
     """Substring search across conversation messages for a butler.
 
+    Matching is deliberately case-insensitive substring (``ILIKE '%q%'``, served by
+    ``idx_dashboard_messages_content_trgm``), not the full-text ``search_vector`` used by
+    :func:`message_search`. FTS differs on partial words, inflection, word order, stop
+    words, and wildcard characters, and lacks this endpoint's per-conversation grouping
+    and offset/total contract, so swapping predicates is a behavior change (bu-u22ss).
+
     Returns (results, total_count).  Each result includes the conversation
     metadata plus a ``snippet`` field from the matching message.  Results are
     ordered by most recent matching message first (``msg_created_at DESC``).
@@ -890,6 +898,8 @@ async def message_create(
     error: str | None = None,
     request_id: UUID | None = None,
     sources: list[str] | None = None,
+    citations: list[dict[str, Any]] | None = None,
+    routed_butler: str | None = None,
     page_context: dict[str, Any] | None = None,
     captured_at: datetime | None = None,
 ) -> dict[str, Any]:
@@ -908,9 +918,9 @@ async def message_create(
         INSERT INTO public.dashboard_messages
             (id, conversation_id, role, content, created_at,
              session_id, model_name, input_tokens, output_tokens,
-             duration_ms, tool_calls, error, request_id, sources,
-             page_context, captured_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+             duration_ms, tool_calls, error, request_id, sources, citations,
+             routed_butler, page_context, captured_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
         """,
         msg_id,
         conversation_id,
@@ -926,6 +936,8 @@ async def message_create(
         error,
         request_id,
         sources,
+        citations,
+        routed_butler,
         page_context,
         captured_at,
     )
@@ -945,6 +957,8 @@ async def message_create(
         "error": error,
         "request_id": request_id,
         "sources": sources,
+        "citations": citations,
+        "routed_butler": routed_butler,
         "page_context": page_context,
         "captured_at": captured_at,
     }
@@ -978,13 +992,15 @@ async def message_create_idempotent(
         INSERT INTO public.dashboard_messages
             (id, conversation_id, role, content, created_at,
              session_id, model_name, input_tokens, output_tokens,
-             duration_ms, tool_calls, error, request_id, sources,
-             page_context, captured_at)
-        VALUES ($1, $2, $3, $4, $5, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, $6, $7)
+             duration_ms, tool_calls, error, request_id, sources, citations,
+             routed_butler, page_context, captured_at)
+        VALUES ($1, $2, $3, $4, $5, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+                NULL, NULL, NULL, NULL, $6, $7)
         ON CONFLICT (id) DO NOTHING
         RETURNING id, conversation_id, role, content, created_at,
                   session_id, model_name, input_tokens, output_tokens,
-                  duration_ms, tool_calls, error, request_id, sources,
+                  duration_ms, tool_calls, error, request_id, sources, citations,
+                  routed_butler,
                   page_context, captured_at
         """,
         message_id,
@@ -1002,7 +1018,8 @@ async def message_create_idempotent(
         """
         SELECT id, conversation_id, role, content, created_at,
                session_id, model_name, input_tokens, output_tokens,
-               duration_ms, tool_calls, error, request_id, sources,
+               duration_ms, tool_calls, error, request_id, sources, citations,
+               routed_butler,
                page_context, captured_at
         FROM public.dashboard_messages
         WHERE id = $1
@@ -1031,7 +1048,8 @@ async def message_get_by_id(
         """
         SELECT id, conversation_id, role, content, created_at,
                session_id, model_name, input_tokens, output_tokens,
-               duration_ms, tool_calls, error, request_id, sources,
+               duration_ms, tool_calls, error, request_id, sources, citations,
+               routed_butler,
                page_context, captured_at
         FROM public.dashboard_messages
         WHERE id = $1
@@ -1073,6 +1091,8 @@ async def conversation_reply_create(
     message: str,
     request_id: UUID | None = None,
     sources: list[str] | None = None,
+    citations: list[dict[str, Any]] | None = None,
+    routed_butler: str | None = None,
     session_id: UUID | None = None,
     tool_calls: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
@@ -1090,6 +1110,12 @@ async def conversation_reply_create(
     ``session_id``/``tool_calls`` are the ambient runtime session id and the
     executed tool calls captured for this turn (best-effort — ``None`` when
     the runtime context is unavailable, e.g. a session that never bound one).
+
+    Publishes a best-effort ``reply_ready`` NOTIFY on the request's
+    chat-stream channel (see ``butlers.api.chat_stream``) so an SSE generator
+    watching this turn wakes immediately instead of waiting for its next
+    safety-net poll (bu-0ynlk.7). A dropped/failed NOTIFY never affects this
+    write — the poll remains the source of truth either way.
     """
     exists = await pool.fetchval(
         "SELECT 1 FROM public.dashboard_conversations WHERE id = $1", conversation_id
@@ -1104,6 +1130,8 @@ async def conversation_reply_create(
         content=message,
         request_id=request_id,
         sources=sources,
+        citations=citations,
+        routed_butler=routed_butler,
         session_id=session_id,
         tool_calls=tool_calls,
     )
@@ -1115,6 +1143,8 @@ async def conversation_reply_create(
         """,
         conversation_id,
     )
+    if request_id is not None:
+        await publish_chat_stream_event(pool, request_id, "reply_ready")
     return msg
 
 
@@ -1141,7 +1171,8 @@ async def message_list(
         """
         SELECT id, conversation_id, role, content, created_at,
                session_id, model_name, input_tokens, output_tokens,
-               duration_ms, tool_calls, error, request_id, sources,
+               duration_ms, tool_calls, error, request_id, sources, citations,
+               routed_butler,
                page_context, captured_at
         FROM public.dashboard_messages
         WHERE conversation_id = $1
@@ -1156,14 +1187,17 @@ async def message_list(
     messages = []
     for row in rows:
         d = dict(row)
-        # Deserialize tool_calls/page_context JSONB (defensive: the shared
+        # Deserialize JSONB values defensively: the shared
         # pool registers a dict<->jsonb codec, but a pool that does not
         # would otherwise hand back a raw JSON string here).
-        if isinstance(d.get("tool_calls"), str):
-            try:
-                d["tool_calls"] = json.loads(d["tool_calls"])
-            except (json.JSONDecodeError, TypeError):
-                d["tool_calls"] = None
+        for field, fallback in (("tool_calls", None), ("sources", []), ("citations", [])):
+            if isinstance(d.get(field), str):
+                try:
+                    d[field] = json.loads(d[field])
+                except (json.JSONDecodeError, TypeError):
+                    d[field] = fallback
+        d["sources"] = d.get("sources") or []
+        d["citations"] = d.get("citations") or []
         if isinstance(d.get("page_context"), str):
             try:
                 d["page_context"] = json.loads(d["page_context"])
@@ -1190,7 +1224,8 @@ async def message_find_reply_since(
     row = await pool.fetchrow(
         """
         SELECT id, content, created_at, session_id, model_name,
-               input_tokens, output_tokens, duration_ms, tool_calls, error, request_id, sources
+               input_tokens, output_tokens, duration_ms, tool_calls, error, request_id,
+               sources, citations, routed_butler
         FROM public.dashboard_messages
         WHERE conversation_id = $1 AND role = 'assistant' AND created_at > $2
         ORDER BY created_at ASC
@@ -1208,6 +1243,12 @@ async def message_find_reply_since(
             d["tool_calls"] = json.loads(d["tool_calls"])
         except (json.JSONDecodeError, TypeError):
             d["tool_calls"] = None
+    for field in ("sources", "citations"):
+        if isinstance(d.get(field), str):
+            try:
+                d[field] = json.loads(d[field])
+            except (json.JSONDecodeError, TypeError):
+                d[field] = None
     return d
 
 

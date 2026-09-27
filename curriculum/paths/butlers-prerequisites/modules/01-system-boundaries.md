@@ -70,7 +70,6 @@ The Switchboard is the routing boundary. It accepts ingress, preserves request c
 
 - `docs/concepts/modules-and-connectors.md`
 - `docs/concepts/switchboard-routing.md`
-- `docs/architecture/routing.md`
 - `src/butlers/modules/`
 - `src/butlers/connectors/`
 - `src/butlers/core_tools/_routing.py`

@@ -7,7 +7,7 @@ pagination metadata, and common summary models used across all endpoints.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, computed_field
@@ -192,6 +192,16 @@ class ProcessFacts(BaseModel):
     config_path: str
 
 
+class BlindSpotSignal(BaseModel):
+    """One declared expected signal not confirmed PRESENT as of evaluation time."""
+
+    signal_key: str
+    producer: str
+    last_observed_at: datetime | None = None
+    state: str
+    unmeasurable_reason: str | None = None
+
+
 class ButlerDetail(ButlerSummary):
     """Full butler detail with config, modules, skills, and schedule."""
 
@@ -202,6 +212,13 @@ class ButlerDetail(ButlerSummary):
     schedules: list[ScheduleEntry] = Field(default_factory=list)
     skills: list[str] = Field(default_factory=list)
     process_facts: ProcessFacts | None = None
+    # Blind-spot projection — derived from the same
+    # butlers.core.expected_signals.evaluate_declared_signals() call the
+    # spawner's preamble injection uses, so this endpoint and the injected
+    # prompt can never disagree (bu-2jtfw.13).
+    blind_spots: list[BlindSpotSignal] = Field(default_factory=list)
+    blind_spots_evaluated_at: datetime | None = None
+    blind_spots_query_failed: bool = False
 
 
 class SessionSummary(BaseModel):
@@ -218,6 +235,7 @@ class SessionSummary(BaseModel):
     duration_ms: int | None = None
     model: str | None = None
     complexity: str | None = None
+    purpose_lane: Literal["standard", "private_content"] | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
     # Additive list-only outcome discriminator. It is true only for the
@@ -484,6 +502,10 @@ class SpendSummary(BaseModel):
 
     period: str = "today"
     total_cost_usd: float
+    # Explicit measured subtotal; ``total_cost_usd`` remains as a compatibility
+    # alias for existing clients and is byte-identical to this value.
+    measured_usd: float = 0.0
+    unmeasurable_attempts: int = 0
     total_sessions: int
     total_input_tokens: int
     total_output_tokens: int
@@ -539,6 +561,7 @@ class TopSession(BaseModel):
     output_tokens: int
     model: str
     started_at: str
+    purpose_lane: Literal["standard", "private_content"] | None = None
 
 
 class ScheduleCost(BaseModel):
@@ -596,17 +619,6 @@ from butlers.api.models.approval import (  # noqa: E402
 )
 from butlers.api.models.audit import AuditEntry, AuditLogEntry  # noqa: E402
 from butlers.api.models.butler import ModuleStatus  # noqa: E402
-from butlers.api.models.connector import (  # noqa: E402
-    ConnectorCheckpoint,
-    ConnectorCounters,
-    ConnectorDaySummary,
-    ConnectorDetail,
-    ConnectorFanoutEntry,
-    ConnectorStats,
-    ConnectorStatsBucket,
-    ConnectorStatsSummary,
-    ConnectorSummary,
-)
 from butlers.api.models.conversation import (  # noqa: E402
     ConversationCreateRequest,
     ConversationMessage,
@@ -649,7 +661,13 @@ from butlers.api.models.session import (  # noqa: E402
     SessionKindItem,
 )
 from butlers.api.models.state import StateEntry, StateSetRequest  # noqa: E402
-from butlers.api.models.timeline import TimelineEvent, TimelineResponse  # noqa: E402
+from butlers.api.models.timeline import (  # noqa: E402
+    TimelineAttentionItem,
+    TimelineAttentionMeta,
+    TimelineAttentionResponse,
+    TimelineEvent,
+    TimelineResponse,
+)
 
 __all__ = [
     "ApprovalAction",
@@ -677,15 +695,6 @@ __all__ = [
     "ConversationStats",
     "ConversationSummary",
     "ConversationUpdateRequest",
-    "ConnectorCheckpoint",
-    "ConnectorCounters",
-    "ConnectorDaySummary",
-    "ConnectorDetail",
-    "ConnectorFanoutEntry",
-    "ConnectorStats",
-    "ConnectorStatsBucket",
-    "ConnectorStatsSummary",
-    "ConnectorSummary",
     "CursorPaginatedResponse",
     "CursorPaginationMeta",
     "DailyActivity",
@@ -741,6 +750,9 @@ __all__ = [
     "TickResponse",
     "TimelineEvent",
     "TimelineResponse",
+    "TimelineAttentionItem",
+    "TimelineAttentionMeta",
+    "TimelineAttentionResponse",
     "TopSession",
     "TriggerRequest",
     "TriggerResponse",

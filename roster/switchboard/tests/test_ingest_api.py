@@ -408,6 +408,80 @@ class TestIngestV1Basic:
         assert message["metakey"] == "value"
         assert message["nested"] == {"inner": "ab"}
 
+    async def test_ingest_attachments_round_trip_media_type_size_dimensions(
+        self, pool: asyncpg.Pool
+    ) -> None:
+        """A photo attachment's media_type/size_bytes/width/height persist and round-trip.
+
+        bu-2jtfw.7: a Telegram photo carries one IngestAttachment with a real
+        storage_ref; the caption (possibly "") is normalized_text, never a
+        synthesized "Photo" placeholder.
+        """
+        envelope = _make_telegram_envelope(
+            update_id="999003",
+            bot_id="test_bot",
+            sender_id="user_alice",
+            text="is this mold?",
+        )
+        envelope["payload"]["attachments"] = [
+            {
+                "media_type": "image/jpeg",
+                "storage_ref": "s3://test-bucket/connectors/2026/09/09/abc123.jpg",
+                "size_bytes": 204800,
+                "width": 800,
+                "height": 600,
+            }
+        ]
+
+        result = await ingest_v1(pool, envelope)
+        assert result.status == "accepted"
+
+        row = await pool.fetchrow(
+            "SELECT normalized_text, attachments FROM message_inbox WHERE id = $1",
+            result.request_id,
+        )
+        assert row is not None
+        assert row["normalized_text"] == "is this mold?"
+
+        attachments = _decode_jsonb(row["attachments"])
+        assert attachments == [
+            {
+                "media_type": "image/jpeg",
+                "storage_ref": "s3://test-bucket/connectors/2026/09/09/abc123.jpg",
+                "size_bytes": 204800,
+                "width": 800,
+                "height": 600,
+            }
+        ]
+
+    async def test_ingest_captionless_photo_normalized_text_is_empty_not_synthesized(
+        self, pool: asyncpg.Pool
+    ) -> None:
+        """A captionless photo's normalized_text persists as "", never a placeholder."""
+        envelope = _make_telegram_envelope(
+            update_id="999004",
+            bot_id="test_bot",
+            sender_id="user_alice",
+            text="",
+        )
+        envelope["payload"]["attachments"] = [
+            {
+                "media_type": "image/jpeg",
+                "storage_ref": "s3://test-bucket/connectors/2026/09/09/def456.jpg",
+                "size_bytes": 51200,
+            }
+        ]
+
+        result = await ingest_v1(pool, envelope)
+        assert result.status == "accepted"
+
+        row = await pool.fetchrow(
+            "SELECT normalized_text FROM message_inbox WHERE id = $1",
+            result.request_id,
+        )
+        assert row is not None
+        assert row["normalized_text"] == ""
+
 
 class TestIngestV1Deduplication:
     """Test deduplication and idempotency behavior."""

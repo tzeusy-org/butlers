@@ -5,7 +5,7 @@
 Defines the Concierge staffer — a read-only, staffer-typed infrastructure
 agent (`type = "staffer"` at `roster/concierge/`) that answers system-plane
 questions about the butler fleet itself: fleet status, spend, and session
-telemetry. It exists so the dashboard chat's question lane (bu-0ynlk.2) can
+telemetry. It exists so the dashboard chat's question lane can
 answer operational questions from typed read models instead of either
 fabricating an answer or misrouting an operational question to a domain
 butler with no authority over it. Concierge owns no write tools and never
@@ -73,20 +73,6 @@ or DELETE against any table, or trigger a mutation on another butler
 - **AND** no tool accepts a mutation-shaped argument (create/update/delete/
   trigger) for any resource outside Concierge's own core session log
 
-### Requirement: Tool Surface Budget
-
-Concierge's total MCP tool count (core tools plus every enabled module's
-tools) SHALL stay within the repo-wide 30-50 tool budget (RFC 0002 auditing).
-
-#### Scenario: Tool count assertion
-
-- **WHEN** a roster integration test boots Concierge with the `dashboard_read`
-  module enabled
-- **THEN** the total registered tool count is between 30 and 50 inclusive
-- **AND** every `dashboard_read_*` tool's docstring is non-empty (docstring
-  completeness for this bead's own tool surface; pre-existing gaps in shared
-  core tools are tracked separately, not by this assertion)
-
 ### Requirement: System-Plane Scope Boundary
 
 Concierge SHALL answer only system-plane questions (fleet status, spend,
@@ -145,12 +131,38 @@ a query against another butler's schema directly.
   `prompt`/`result`/`tool_calls`/`cost` column present in the view's column
   set)
 
+### Requirement: Complete Role-Fit Tool Registration
+
+Concierge SHALL register its complete role-fit MCP surface through the
+canonical FastMCP registry. The registered/callable set remains governed by
+effective core groups, module groups, type/name gates, module state, startup
+success, roster configuration, and manifesto scope. Canonical `tools/list`
+SHALL remain complete for the handlers admitted by those controls.
+
+The repo-wide 30-50 target SHALL apply to full tool definitions initially
+loaded into model context, as defined by RFC 0002 Amendment 1 and RFC 0027. It
+SHALL NOT be interpreted as a hard ceiling on Concierge's registered handlers
+or used to remove legitimate role-fit tools.
+
+#### Scenario: Complete registered surface is independent of initial model context
+
+- **WHEN** a roster integration test boots Concierge with the `dashboard_read`
+  module enabled and enumerates the canonical registered surface
+- **THEN** every core and module handler admitted by Concierge's effective
+  registration controls is available from canonical `tools/list`
+- **AND** the registered `dashboard_read_*` names exactly match the module's
+  role-fit dashboard-read contract
+- **AND** every `dashboard_read_*` tool's docstring is non-empty (docstring
+  completeness for Concierge's own tool surface; pre-existing gaps in shared
+  core tools are tracked separately, not by this assertion)
+- **AND** the registered handler count is not treated as evidence of the
+  number or schema bytes of definitions initially loaded into model context
+
 ## Non-Goals
 
 - Any write tool or Operator-style fleet control (out of scope; the existing
   `/api/butlers/*` admin surface remains the only mutation path).
 - Domain-question answering (stays with domain butlers).
-- The dashboard chat answer lane itself (bu-0ynlk.2) and the fast lane
-  (bu-0ynlk.6) — Concierge is a tool provider those lanes call, not the lane
+- The dashboard chat answer lane itself and the fast lane: Concierge is a tool provider those lanes call, not the lane
   implementation.
-- Page-context resolution beyond a stub (bu-0ynlk.4).
+- Page-context resolution beyond a stub.

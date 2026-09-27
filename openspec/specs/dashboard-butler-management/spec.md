@@ -1,7 +1,7 @@
 # Dashboard Butler Management
 
 ## Purpose
-Defines the dashboard surfaces for managing butlers as first-class entities: a fleet-wide butler list page, a per-butler detail page with 10+ tabbed views, and switchboard-specific operational surfaces. Together these views give the operator full visibility into butler identity, health, configuration, scheduling, state, memory, MCP tooling, session history, and (for the switchboard) registry, routing, triage, and backfill management. The dashboard is both an observability surface and a write-capable control plane -- operators can create schedules, mutate state, trigger sessions, invoke MCP tools, manage triage rules, and control backfill jobs without leaving the browser.
+Defines the dashboard surfaces for managing butlers as first-class entities: a fleet-wide butler list page, a per-butler detail page with six base tabs plus per-butler domain tabs, and switchboard-specific operational surfaces. Together these views give the operator full visibility into butler identity, health, activity, spend, approvals, memory, configuration, scheduling, state, MCP tooling, session history, and (for the switchboard) registry and routing. The dashboard is both an observability surface and a write-capable control plane -- operators can run and pause butlers, create schedules, mutate state, and invoke MCP tools without leaving the browser.
 
 ## Requirements
 
@@ -257,309 +257,132 @@ band composition addendum and visually in each cell's `ButlerMark` component.
   - Header strip clock: updates every minute via `<Time mode="clock-24h-mono">`,
     which aligns to the next minute boundary then fires a 60-second interval
 
-### Requirement: Butler Detail Page Structure
-The `/butlers/:name` page SHALL be a tabbed detail view where each butler is treated as a first-class navigable entity.
-
-#### Scenario: URL-driven tab routing
-- **WHEN** a user navigates to `/butlers/:name?tab=<value>`
-- **THEN** the active tab is set to the `tab` query parameter value
-- **AND** when `tab` is absent or invalid, the default tab is `overview`
-- **AND** tab changes update the URL via `replaceState` (no history entry)
-
-#### Scenario: Base tabs in operator mode
-- **WHEN** any butler detail page loads in operator mode
-- **THEN** the following tabs SHALL be visible: Overview, Sessions, Config, Skills, Schedules, Trigger, MCP, State, CRM, Memory
-
-#### Scenario: Conditionally shown tabs -- switchboard
-- **WHEN** the butler name is `switchboard`
-- **THEN** two additional tabs are shown after the base tabs: "Routing Log" and "Registry"
-
-#### Scenario: Conditionally shown tabs -- health
-- **WHEN** the butler name is `health`
-- **THEN** one additional tab is shown, labeled "Measurements"
-
-#### Scenario: Conditionally shown tabs -- general
-- **WHEN** the butler name is `general`
-- **THEN** one additional tab is shown: "Collections"
-
-#### Scenario: Lazy-loaded tabs for performance
-- **WHEN** a non-default tab is selected for the first time
-- **THEN** its component is loaded on demand via React `lazy()` with a centered "Loading {tab}..." fallback
-- **AND** the following tabs are lazy-loaded: Skills, Schedules, Trigger, MCP, State, Memory, Routing Log, Registry
-
-#### Scenario: Tab URL semantics and deep-linking
-- **WHEN** the active tab is controlled by the `?tab=` query parameter
-- **THEN** `overview` is the default tab and removes the query parameter from the URL
-- **AND** accepted deep-link values include all base tab keys for the active mode plus conditional tab keys for the specific butler
-- **AND** tab changes update the URL via `replaceState` without creating browser history entries
-
 ### Requirement: Butler detail page outer chrome uses status-board archetype
 
 The Butler detail page at `/butlers/:name` SHALL use `<Page archetype="status-board">`
-as its outer chrome. The tab block is the sole page body content; no footer KPI band,
-no breadcrumbs prop, and no ButlerHeartbeatTile are rendered at the page layer.
+as its outer chrome, with the tab block as the sole page body. No footer KPI
+band, breadcrumb trail, or heartbeat tile renders at the page layer.
 
-**Shell contract:**
-
-1. **Archetype.** The page MUST use `<Page archetype="status-board">` as its outer
-   shell. No `breadcrumbs` prop is passed; the butler detail page does not expose a
-   breadcrumb trail via the Page shell.
-
-2. **Title.** The `title` prop on `<Page>` MUST be the butler's name titleized
-   (e.g., `"relationship"` → `"Relationship"`).
-
-3. **Description.** The `description` prop on `<Page>` MUST be sourced from
-   `ButlerSummary.description` when available and `undefined` otherwise.
-
-4. **Header slot.** The `header` prop on `<Page>` MUST be
-   `<ButlerDetailHeader butler={name} actions={<ButlerDetailActions butlerName={name} onModeChange={setMode} />} />`.
-   `ButlerDetailHeader` renders the butler identity block (name H1, description,
-   activity status, port, uptime) using `ButlerMark` for the hue mark.
-   `ButlerDetailActions` renders the page-level operational controls: Force Run
-   button, Logs link, Config link, Prompt (`<ChatPanel />`), and Pause/Resume button.
-
-5. **No footer slot.** No footer KPI band (`ButlerDetailFooter` or equivalent) is
-   rendered. Identity and operational data live in the header slot and Overview tab
-   card respectively.
-
-6. **Loading state.** The `loading` prop on `<Page>` MUST reflect the top-level
-   butler record fetch status. Per-tab `TabFallback` fallbacks handle lazy-tab loading
-   independently. The Page archetype's own loading state is distinct from tab-level
-   lazy loading.
-
-7. **Error state.** The `error` prop on `<Page>` MUST be set when the butler record
-   fetch fails. An `onRetry` callback MUST be wired to invalidate the butler query.
-   Individual tab errors remain tab-scoped.
-
-8. **Body.** The `<Tabs>` block (TabsList + all TabsContent entries) is rendered as
-   the direct child of `<Page>`. No additional wrapper is needed at the page layer.
+- **Title and description.** The page title is the butler's name titleized
+  (e.g., `"relationship"` → `"Relationship"`); the description is the butler
+  summary's description when available.
+- **Header.** The page header is the butler detail header: the butler identity
+  block (letter-mark, name, description, activity status, port, uptime, schedule
+  facts) with the page actions inside it. The actions are, in order: a status
+  pill, the command bar (see Butler Detail Command Bar), a Logs link to
+  `?tab=activity&section=logs`, a Config link to `?tab=system&section=config`, a
+  Chat button that opens the butler chat panel, and a Pause/Resume control.
+- **Pause/Resume.** Pausing sets the butler's eligibility to `quarantined` and
+  resuming sets it to `active`, each behind an undo window. While paused, the
+  actions show when and why the butler was quarantined. The command palette
+  offers the same Pause or Resume verb.
+- **Loading and errors.** The page's loading state reflects the butler record
+  fetch; tab-level lazy loading is separate. A failed butler fetch sets the page
+  error with a retry that refetches the butler record. Tab errors stay
+  tab-scoped.
 
 #### Scenario: Page shell uses status-board archetype
 
 - **WHEN** the butler detail page renders for any butler name
-- **THEN** `<Page archetype="status-board">` MUST be the outer shell
-- **AND** no `breadcrumbs` prop MUST be passed to `<Page>`
-- **AND** no `ButlerHeartbeatTile` MUST be rendered at the page layer
-- **AND** no footer KPI band MUST be rendered at the page layer
+- **THEN** `<Page archetype="status-board">` SHALL be the outer shell
+- **AND** no breadcrumb trail, heartbeat tile, or footer KPI band SHALL render
+  at the page layer
 
 #### Scenario: Butler name as page title
 
 - **WHEN** the butler detail page renders for butler `"relationship"`
-- **THEN** the `title` prop on `<Page>` MUST be `"Relationship"` (titleized)
-- **AND** the `description` prop MUST be sourced from `ButlerSummary.description`
+- **THEN** the page title SHALL be `"Relationship"` (titleized)
+- **AND** the description SHALL come from the butler summary's description
   when available
 
 #### Scenario: Header slot composition
 
 - **WHEN** the butler detail page renders for a resolved butler
-- **THEN** `<ButlerDetailHeader>` MUST be passed as the `header` prop on `<Page>`
-- **AND** `<ButlerDetailActions>` MUST be passed as the `actions` prop on
-  `<ButlerDetailHeader>` (NOT directly as the `actions` prop on `<Page>`)
-- **AND** `ButlerDetailActions` MUST render: Force Run button, Logs link, Config
-  link, Prompt button (`<ChatPanel />`), and Pause/Resume button
+- **THEN** the page header SHALL be the butler detail header, with the page
+  actions rendered inside the header rather than as a separate page actions slot
+- **AND** the actions SHALL render, in order: status pill, command bar (prompt,
+  complexity, Run), Logs link, Config link, Chat, and Pause/Resume
+- **AND** the Logs link SHALL target `?tab=activity&section=logs` and the Config
+  link SHALL target `?tab=system&section=config`
 
 #### Scenario: Tabs body is the page body
 
 - **WHEN** the butler detail page renders the tab group
-- **THEN** the complete `<Tabs>` block (TabsList + all TabsContent entries) MUST be
-  rendered as the direct child inside `<Page>`
-- **AND** the tab structure, content, and behavior MUST be unchanged from the current
-  implementation
+- **THEN** the complete tab block (tab rail and every tab body) SHALL be the
+  direct body content of the page, with no additional page-layer wrapper
 
 #### Scenario: Top-level loading delegates to Page shell
 
 - **WHEN** the butler record fetch is in flight
-- **THEN** the `loading` prop on `<Page>` MUST be `true`
-- **AND** the Page archetype MUST handle the loading state via its own built-in
-  mechanism; no `DetailSkeleton` is explicitly passed by the page component
+- **THEN** the page SHALL be in its loading state
+- **AND** the Page shell SHALL render its own built-in loading treatment; the
+  page component SHALL NOT pass a bespoke skeleton
 
 #### Scenario: Unknown butler shows shell error
 
 - **WHEN** a user navigates to `/butlers/nonexistent` and the butler record fetch
   returns 404 or an error
-- **THEN** the `error` prop on `<Page>` MUST be set
-- **AND** `onRetry` MUST be wired to invalidate the butler query and trigger a refetch
-
----
-
-### Requirement: Butler detail page tab body vocabulary
-
-The Butler detail page tab body SHALL use a mode-gated tab vocabulary controlled by
-an operator/resident toggle persisted in `localStorage`. The `<Tabs>` block is the
-sole page body content inside `<Page archetype="status-board">`.
-
-**Slot mapping:**
-
-- **Body (Tabs block):** The `<Tabs>` block, containing `TabsList` (all visible tab
-  triggers for the active mode) and `TabsContent` for each tab. This is the entire
-  interactive surface for the butler workspace.
-- **No hero slot:** The butler identity (name, status, description, port, uptime) is
-  rendered in `ButlerDetailHeader` (the Page `header` slot) and inside the Overview
-  tab card. No separate page-level hero tier is needed.
-- **No drawer slot:** Credential and advanced configuration content lives inside
-  individual tabs (Config tab, State tab). No top-level drawer is rendered.
-- **Tabs are NOT a candidate for page-level archetype expansion:** The multi-tab
-  workspace is the correct answer for this record type. Future tab consolidation is
-  a separate audit concern.
-
-**Mode vocabulary:**
-
-- **Operator mode** (10 base tabs): Overview, Sessions, Config, Skills, Schedules,
-  Trigger, MCP, State, CRM, Memory. Extension tabs Models and Manage are also shown
-  in operator mode.
-- **Resident mode** (7 base tabs): Overview, Activity, Logs, Approvals, Spend,
-  Config, Memory. Default for first-time visitors.
-- A mode-toggle control (`DetailModeSwitch`) appears at the right end of the tab bar.
-  The selected mode is persisted in `localStorage` under `butlers.detail.mode`.
-- Deep-linking via `?tab=` MUST auto-promote the mode to the one that contains the
-  requested tab if the tab is exclusive to the other mode.
-
-**Butler-specific conditional tabs** (appended regardless of mode):
-
-| Butler | Additional tabs |
-|---|---|
-| `health` | Health |
-| `switchboard` | Routing Log, Registry |
-| `education` | Reviews |
-| `chronicler` | Timelines |
-| `finance` | Finances |
-| `general` | Collections |
-| `home` | Devices |
-| `lifestyle` | Taste |
-| `qa` | Investigations |
-| `relationship` | Contacts |
-| `travel` | Trips |
-
-#### Scenario: Operator mode base tabs
-
-- **WHEN** the butler detail page is in operator mode
-- **THEN** the following ten base tab triggers MUST be visible: Overview, Sessions,
-  Config, Skills, Schedules, Trigger, MCP, State, CRM, Memory
-- **AND** Models and Manage extension tabs MUST also be visible
-- **AND** these are rendered inside the `<TabsList>` inside `<Page>`
-
-#### Scenario: Resident mode base tabs
-
-- **WHEN** the butler detail page is in resident mode
-- **THEN** the following seven base tab triggers MUST be visible: Overview, Activity,
-  Logs, Approvals, Spend, Config, Memory
-- **AND** operator-only tabs (Sessions, Skills, Schedules, Trigger, MCP, State, CRM,
-  Models, Manage) MUST NOT be visible
-
-#### Scenario: Mode toggle and persistence
-
-- **WHEN** a user clicks the mode toggle at the end of the tab bar
-- **THEN** the tab vocabulary MUST switch between operator and resident modes
-- **AND** the selected mode MUST be persisted in `localStorage` under
-  `butlers.detail.mode` so it survives page reloads
-
----
-
-### Requirement: Tab Structures Reference (Non-Butler Pages)
-
-The following tab structures exist on pages outside the butler detail view and SHALL be documented here as a consolidated reference.
-
-#### Scenario: Memory browser tabs
-- **WHEN** the `/memory` page or the butler detail Memory tab is active
-- **THEN** a tabbed browser shows three tabs: Facts, Rules, Episodes
-- **AND** when opened inside a butler detail page, all queries are scope-filtered to that butler
-
-#### Scenario: Contact detail tabs
-- **WHEN** `/contacts/:contactId` is visited
-- **THEN** a tabbed view shows five tabs: Notes, Interactions, Gifts, Loans, Activity
-- **AND** each tab loads its data lazily on first selection
-
-#### Scenario: Approvals navigation integration
-- **WHEN** the approvals section is accessed from the sidebar
-- **THEN** two routes are available: `/approvals` (pending action queue with filters, metrics dashboard, and decision workflows) and `/approvals/rules` (standing rules list with detail, create, and revoke flows)
-- **AND** the main approvals page provides: metrics dashboard with pending count and approval/rejection/auto-approval stats, filterable action queue by tool/status/butler, action detail dialog with approve/reject/rule creation, and stale action expiry management
-- **AND** the rules page provides: filterable rules list by tool/active status/butler, rule detail dialog with constraint inspection, rule revocation capability, and use count and limit tracking
+- **THEN** the page error SHALL be set
+- **AND** its retry SHALL invalidate the butler query and trigger a refetch
 
 ### Requirement: Overview Tab
 
 The Butler detail Overview tab SHALL be the operational overview for the
-selected butler and SHALL render a responsive panel grid (`ButlerPanelGrid`,
-`frontend/src/components/butler-detail/atoms.tsx:53`) with up to four KPI columns
-on wide viewports. The grid SHALL contain, in order: four single-column KPI
-panels (status, sessions, spend, awaiting), a span-2 24-hour activity stripe
-panel, a span-2 recent-events panel, a span-2 awaiting-your-action panel, and a
-span-2 config panel (`frontend/src/components/butler-detail/ButlerOverviewTab.tsx`).
-While the top-level butler record is loading, the tab SHALL render a matching
-panel-grid skeleton (`OverviewSkeleton`) to prevent layout shift; per-panel data
-sources resolve their own loading/error states independently rather than gating
-the whole tab behind a single combined flag.
-
-> Reconciled 2026-06-13 (bu-1p7gr) to the shipped status-board/KPI-panel layout.
-> The earlier seven-unit card stack (identity/`ButlerMark` → process facts →
-> heartbeat row → Module Health → cost → recent sessions → `EligibilityTimeline`)
-> from the now-archived `redesign-detail-tab-overview-card-stack` change was
-> superseded in code by the status-board KPI-panel + 24h ActivityStripe redesign
-> and never shipped. This requirement now describes the actual
-> `ButlerOverviewTab.tsx` implementation. Identity (`ButlerMark`, name,
-> description, status) now lives in the page-level `ButlerDetailHeader`, not the
-> Overview tab; module health and eligibility live on their own tabs.
+selected butler: a responsive panel grid with up to four KPI columns on wide
+viewports. The grid contains, in order: four single-column KPI panels (status,
+sessions, spend, awaiting), then full-width-pair panels for 24-hour activity,
+recent events, awaiting-your-action, and config, followed by the delegations and
+domain-events panels. While the butler record is loading, the tab renders a
+matching panel-grid skeleton so the layout does not shift; each panel resolves
+its own loading and error state independently. Butler identity lives in the page
+header, not in this tab.
 
 #### Scenario: Status KPI panel
 
 - **WHEN** the Overview tab loads for a butler
 - **THEN** the "status" panel SHALL show a status dot and label derived from the
-  butler status (`ok`/`healthy` → green "online"; `error`/`down` → red; otherwise dim),
-  optionally suffixed with the activity
-  verb from the status-board row
+  butler status (`ok`/`healthy` → green "online"; `error`/`down` → red; otherwise
+  dim), optionally suffixed with the activity verb from the butler's status-board
+  row
 - **AND** the panel SHALL show a "last run" relative timestamp from the
-  status-board row's `lastRunISO`, rendering "--" when unavailable
-- **AND** the data SHALL come from the `useButler` hook
-  (`frontend/src/hooks/use-butlers.ts:29`) and the per-butler `StatusBoardRow`
-  produced by `useButlerStatusBoard`
-  (`frontend/src/hooks/use-butler-status-board.ts:38`, `:149`)
+  status-board row, rendering "--" when unavailable
 
 #### Scenario: Sessions KPI panel
 
 - **WHEN** the "sessions" panel renders
-- **THEN** it SHALL show the 24-hour session count as a `KpiCell`, sourced from
-  the status-board row's `sessions24h` and falling back to the butler record's
-  `sessions_24h` (`frontend/src/hooks/use-butler-status-board.ts:52`)
+- **THEN** it SHALL show the 24-hour session count from the status-board row,
+  falling back to the butler record's 24-hour session count
 
 #### Scenario: Spend KPI panel
 
 - **WHEN** today's spend summary is available
-- **THEN** the "spend" panel SHALL show the butler's USD cost for today as a
-  `KpiCell`, with a per-session cost sub-line, and costs below $0.01 SHALL
-  display as "$0.00"
+- **THEN** the "spend" panel SHALL show the butler's USD cost for today with a
+  per-session cost sub-line, and costs below $0.01 SHALL display as "$0.00"
 - **AND** while the spend query is loading the panel SHALL render a skeleton in
   place of the value
-- **AND** the cost SHALL be read from `useSpendSummary("today")`'s
-  `by_butler[butlerName]` (`frontend/src/hooks/use-spend.ts:41`)
 
 #### Scenario: Awaiting KPI panel
 
 - **WHEN** the "awaiting" panel renders
-- **THEN** it SHALL show the count of pending approval actions for this butler as
-  a `KpiCell`, toned amber when greater than zero, with sub-text "pending
-  review" or "nothing pending"
-- **AND** the count SHALL be sourced from
-  `useApprovalActions({ status: "pending", butler, limit: 5 })`
-  (`frontend/src/hooks/use-approvals.ts:47`)
+- **THEN** it SHALL show the count of this butler's pending approval actions,
+  toned amber when greater than zero, with sub-text "pending review" or "nothing
+  pending"
 
 #### Scenario: 24-hour activity stripe panel
 
-- **WHEN** the span-2 "activity" panel renders
-- **THEN** it SHALL render a 24-bucket `ActivityStripe` bar visualization with a
-  rolling relative-time axis (`-24h`, `-12h`, `now`) rather than clock-of-day
-  labels
-- **AND** the bucket values SHALL be the status-board row's `hourlyStripe`,
+- **WHEN** the "activity" panel renders
+- **THEN** it SHALL render a 24-bucket activity stripe with a rolling
+  relative-time axis (`-24h`, `-12h`, `now`) rather than clock-of-day labels
+- **AND** the bucket values SHALL be the status-board row's hourly stripe,
   defaulting to 24 zero buckets when unavailable
-  (`frontend/src/hooks/use-butler-status-board.ts:60`)
 
 #### Scenario: Recent events panel
 
-- **WHEN** the span-2 "recent" panel renders
-- **THEN** it SHALL show up to five newest activity-feed events for the butler,
-  each row showing a relative timestamp, the event summary, and an event-kind
-  label (session/approval/memory/other)
-- **AND** the data SHALL come from `useButlerActivityFeed(butlerName, 5)` over
-  `GET /api/butlers/{name}/activity-feed`
-  (`frontend/src/hooks/use-butler-analytics.ts:120`)
+- **WHEN** the "recent" panel renders
+- **THEN** it SHALL show up to five newest activity-feed events for the butler
+  from `GET /api/butlers/{name}/activity-feed`, each row showing a relative
+  timestamp, the event summary, and an event-kind label
+  (session/approval/memory/other)
 - **AND** each `session_completed` row SHALL render the API-provided safe summary
   from the same structured-trigger-first projection as Timeline, without a
   client-side raw-prompt or envelope fallback
@@ -568,24 +391,23 @@ the whole tab behind a single combined flag.
 
 #### Scenario: Awaiting-your-action panel
 
-- **WHEN** the span-2 "awaiting your action" panel renders
+- **WHEN** the "awaiting your action" panel renders
 - **THEN** it SHALL list the pending approval actions (agent summary or tool
   name, relative request time) each with a "review" link to `/approvals`
 - **AND** loading SHALL render skeleton rows, errors SHALL render "Could not load
   approvals.", and an empty list SHALL render "no items pending review"
-- **AND** the data SHALL come from the same `useApprovalActions` pending query as
-  the awaiting KPI panel (`frontend/src/hooks/use-approvals.ts:47`)
+- **AND** the list SHALL come from the same pending-approvals query as the
+  awaiting KPI panel
 
 #### Scenario: Config panel
 
-- **WHEN** the span-2 "config" panel renders
+- **WHEN** the "config" panel renders
 - **THEN** it SHALL show key/value rows for `port`, `registered` (hours derived
   from `registered_duration_seconds`), `modules` count, `schedules` count, and
   `skills` count, with the panel sub-title set to `config_path` when available
 - **AND** the process facts (`port`, `registered_duration_seconds`,
-  `config_path`) SHALL follow the process-facts contract and SHALL NOT render,
-  type, or request a `pid` field, consistent with the Config Tab "process" panel
-  below and the `add-butler-process-facts` contract
+  `config_path`) SHALL NOT render, type, or request a `pid` field, consistent
+  with the Config Tab "process" panel
 - **AND** missing process-facts source data SHALL render as explicit unavailable
   values ("--") rather than hiding the row
 
@@ -610,66 +432,47 @@ The sessions tab SHALL show paginated session history for the butler with drill-
 
 ### Requirement: Config Tab
 
-The Config tab SHALL provide full transparency into a butler's configuration
-files, restyled from a card-per-section layout to a 2x2 panel-grid block
-followed by a collapsed markdown accordion.
+The System tab's Config sub-section SHALL provide full transparency into a
+butler's configuration: a two-by-two panel grid followed by a collapsed
+accordion of the butler's configuration files.
 
-Layout (panel-grid frame, 4 columns):
-
-- **Row 1, panels 1-2 (span=2 each):**
-  - Panel 1, title "process": shows key process facts (container name, port,
-    registered duration, config path) sourced from the Overview process facts
-    card (identical data, read-only copy).
-  - Panel 2, title "schedule": shows all active schedules as a compact list
-    (name + next-run relative time via `<Time>`). Empty state: "No schedules."
-- **Row 2, panels 3-4 (span=2 each):**
-  - Panel 3, title "scopes and oauth": shows each module's OAuth authorization
-    status. Each module: name + status chip (authorized/unauthorized/not
-    required). Empty state: "No modules with OAuth."
-  - Panel 4, title "integrations": shows enabled modules as a badge list.
-    Empty state: "No modules enabled."
-- **Accordion block below the panel grid:** Each of the markdown config files
-  (butler.toml, CLAUDE.md, AGENTS.md, MANIFESTO.md) is rendered as a collapsed
-  accordion item. The accordion is collapsed by default. Expanding an item
-  reveals the file content in a monospace `<pre>` block. "Not found" is shown
-  when the value is null.
-
-The existing "Formatted" / "Raw" toggle for butler.toml content is preserved
-inside the accordion item for butler.toml.
-
-**Doctrine citations:**
-- `about/heart-and-soul/design-language.md` Non-Negotiable 4: `<Time>` for all
-  next-run timestamps.
-- `about/heart-and-soul/design-language.md` Non-Negotiable 6: no em-dashes in
-  panel titles, accordion labels, or empty state text.
-- `add-butler-process-facts`: process panel sources `container_name`, `port`,
-  `registered_duration_seconds`, `config_path` from the already-specified
-  process facts surface. No `pid` field.
+- **Panel grid.** "process" shows container name, port, registered duration,
+  and config path (read-only, the same facts as the Overview config panel, never
+  a `pid`). "schedule" lists active schedules by name with a relative next-run
+  time (empty: "No schedules."). "scopes and oauth" lists each module's OAuth
+  status as authorized, unauthorized, or not required (empty: "No modules with
+  OAuth."). "integrations" lists enabled modules as badges (empty: "No modules
+  enabled.").
+- **Accordion.** butler.toml, CLAUDE.md, AGENTS.md, and MANIFESTO.md each render
+  as a collapsed item that expands to the file content in a monospace block,
+  showing "Not found" when the file is absent. The butler.toml item keeps a
+  Formatted/Raw toggle.
 
 #### Scenario: Config 2x2 panel grid
 
-- **WHEN** the Config tab loads
-- **THEN** 4 panels SHALL be rendered in 2 rows: process (span=2), schedule
-  (span=2), scopes-oauth (span=2), integrations (span=2)
-- **AND** the panels SHALL use the panel-grid frame with `border-top border-left`
-  on the frame and `border-right border-bottom` on each panel
+- **WHEN** the Config sub-section loads
+- **THEN** four panels SHALL render in two rows of two: process, schedule,
+  scopes and oauth, integrations
+- **AND** the panels SHALL form a single ruled grid per the shared panel
+  vocabulary in dashboard-design-language
 
 #### Scenario: Schedule panel relative timestamps
 
 - **WHEN** the schedule panel renders a schedule's next-run time
-- **THEN** the time SHALL be rendered using `<Time>` in relative mode
-- **AND** no raw `toLocaleString()` or manual date arithmetic SHALL appear
+- **THEN** the time SHALL be rendered through the shared time primitive in
+  relative mode
+- **AND** no raw locale formatting or manual date arithmetic SHALL appear
 
 #### Scenario: Config markdown accordion collapsed by default
 
-- **WHEN** the Config tab renders
+- **WHEN** the Config sub-section renders
 - **THEN** the butler.toml, CLAUDE.md, AGENTS.md, and MANIFESTO.md items SHALL
   be collapsed by default
 - **AND** expanding an item SHALL reveal the full file content in a monospace
-  `<pre>` block
-- **AND** the butler.toml accordion item SHALL preserve the "Formatted" / "Raw"
-  toggle, where "Formatted" renders the TOML as a structured key-value tree and
-  "Raw" renders the JSON representation with 2-space indentation
+  block
+- **AND** the butler.toml item SHALL keep the "Formatted" / "Raw" toggle, where
+  "Formatted" renders the TOML as a structured key-value tree and "Raw" renders
+  the JSON representation with 2-space indentation
 
 #### Scenario: Config error and null states
 
@@ -681,23 +484,12 @@ inside the accordion item for butler.toml.
 - **AND** when the response has no config data, a "No configuration data
   available" message SHALL be displayed
 
-### Requirement: Skills Tab
-The skills tab SHALL show all skills available to a butler with drill-down and trigger integration.
-
-#### Scenario: Skill card grid
-- **WHEN** skills are loaded
-- **THEN** each skill is rendered as a card in a responsive grid (1/2/3 columns by breakpoint) showing the skill name, a "skill" badge, and the first non-heading, non-empty line of the SKILL.md content as a description (truncated to 120 characters)
-
-#### Scenario: Skill detail dialog
-- **WHEN** the operator clicks "View" on a skill card
-- **THEN** a dialog opens showing the skill name as title and the full SKILL.md content in a scrollable monospace block
-
-#### Scenario: Trigger integration
-- **WHEN** the operator clicks "Trigger" on a skill card
-- **THEN** the tab switches to the Trigger tab with the prompt pre-filled as "Use the {skill name} skill to "
-
 ### Requirement: Schedules Tab (CRUD)
 The schedules tab SHALL provide full CRUD management of a butler's scheduled tasks, including complexity tier configuration.
+
+The enabled badge SHALL send an explicit requested `enabled` state through the dashboard schedules API and the canonical `schedule_toggle` MCP action. The tab SHALL wait for the server response rather than claim an optimistic state. A successful response SHALL provide the observed state and safe `schedule.toggle` audit evidence. Missing or managed refusals SHALL appear as errors, never as pause/resume successes. Each row SHALL remain pending until its own toggle request settles, even when another row's request settles first.
+
+The dashboard SHALL attribute each schedule-toggle audit row to the authenticated owner, not the addressed butler. It SHALL retain the butler and schedule as target context and record the observed outcome for success or the bounded refusal code for failure.
 
 #### Scenario: Schedule table columns
 - **WHEN** schedules are loaded
@@ -721,40 +513,46 @@ The schedules tab SHALL provide full CRUD management of a butler's scheduled tas
 - **AND** confirming the deletion triggers the delete mutation and shows a success toast
 
 #### Scenario: Toggle schedule enabled state
-- **WHEN** the operator clicks the enabled/disabled badge on a schedule row
+- **WHEN** the operator clicks the enabled badge on an active schedule row
 - **THEN** the schedule's enabled state is toggled via mutation and a toast confirms the action
+- **AND** the mutation sends `enabled: false` to the canonical toggle action
+- **AND** only that row's toggle control remains disabled until its request settles
+- **AND** a pause success toast appears only after the response reports `observed_enabled=false`
+- **WHEN** the operator clicks the disabled badge on a paused schedule row
+- **THEN** the mutation sends `enabled: true`
+- **AND** a resume success toast appears only after the response reports `observed_enabled=true`
+
+#### Scenario: Server-observed toggle receipt is visible
+- **WHEN** a toggle response reports an observed state and `audit.action="schedule.toggle"`
+- **THEN** the schedules tab renders the observed enabled/disabled state
+- **AND** it exposes the safe audit action/result as a local receipt
+
+#### Scenario: Schedule toggle audit distinguishes actor from target
+- **WHEN** the owner requests a schedule toggle that succeeds or receives a managed refusal
+- **THEN** the audit row records the authenticated owner as actor
+- **AND** it records the addressed butler and schedule separately as target context
+- **AND** it records the observed outcome on success or the bounded refusal code on failure
+
+#### Scenario: Managed or missing toggle refusal remains an error
+- **WHEN** the canonical action returns `SCHEDULE_NOT_FOUND`, `SCHEDULE_TOML_MANAGED`, or `SCHEDULE_MANAGED`
+- **THEN** the schedules tab shows the typed failure
+- **AND** it does not show a success toast or optimistic state change for the refused row
+- **AND** that row's toggle control becomes available again after the refusal
+
+#### Scenario: Overlapping row toggles settle independently
+- **WHEN** toggles for two different schedule rows are pending at the same time
+- **AND** either request succeeds or is refused before the other settles
+- **THEN** the settled row's toggle control becomes available
+- **AND** the other row's toggle control remains disabled until its own request settles
+
+#### Scenario: Repeated requested state does not double-flip
+- **WHEN** the operator retries a toggle after the server already observes the requested state
+- **THEN** the schedules tab accepts the `already_requested` receipt as the observed truth
+- **AND** it does not imply that a second state transition occurred
 
 #### Scenario: Auto-refresh
 - **WHEN** the schedules tab is mounted
 - **THEN** schedule data is polled every 30 seconds
-
-### Requirement: Trigger Tab (Manual Session Invocation)
-The trigger tab SHALL allow operators to manually spawn a session for a butler with complexity-aware model selection.
-
-#### Scenario: Prompt input and submission
-- **WHEN** the trigger tab is active
-- **THEN** a card with a textarea, a complexity selector (dropdown: Trivial, Medium, High, Extra High; default Medium), and "Trigger Session" button is shown
-- **AND** the button is disabled when the textarea is empty or a trigger is in flight
-
-#### Scenario: Resolved model preview
-- **WHEN** the operator selects a complexity level
-- **THEN** below the dropdown, a muted text line shows the resolved model (e.g. "Will use: claude-sonnet via claude")
-- **AND** the preview updates reactively when complexity selection changes
-
-#### Scenario: Skill pre-fill from query parameter
-- **WHEN** the URL contains a `skill` query parameter
-- **THEN** the prompt textarea is pre-filled with "Use the {skill} skill to "
-
-#### Scenario: Result display
-- **WHEN** a trigger completes
-- **THEN** a result card shows a Success (emerald) or Failed (destructive) badge
-- **AND** successful results show the output in a monospace block with a link to the session
-- **AND** failed results show the error message
-
-#### Scenario: Ephemeral trigger history
-- **WHEN** triggers have been issued during the current page session
-- **THEN** a "Trigger History" card lists all previous triggers with their status badge, prompt text (truncated), complexity tier badge, timestamp, and session link
-- **AND** this history is not persisted and resets on page reload
 
 ### Requirement: MCP Debug Tab
 The MCP tab SHALL provide a debugging interface for directly invoking MCP tools on a butler.
@@ -814,689 +612,163 @@ The state tab SHALL provide a browser and editor for the butler's key-value stat
 - **WHEN** the state tab is mounted
 - **THEN** state entries are polled every 30 seconds
 
-### Requirement: Panel-grid frame
-
-All resident-mode tab bodies SHALL use a 4-column CSS grid as the composition
-frame. This mirrors the `/butlers` status-board cell convention introduced by
-the `bu-hb7dh` status-board redesign.
-
-Frame rules:
-- The outermost `<div>` of each tab body receives `border-top border-left` using
-  the `--border` token.
-- Each `<Panel>` child receives `border-right border-bottom` using the `--border`
-  token. Panels must not add their own top or left border.
-- The grid uses `grid-cols-4` (4 equal columns). Panels span 1, 2, 3, or 4
-  columns via a `span` prop.
-- Panel height is determined by content unless an explicit `height` prop is
-  provided (e.g., for fixed-height scroll bodies).
-- No background fill on the frame or on panels. Surface color is the page
-  background token.
-
-**Doctrine citations:**
-- `about/heart-and-soul/design-language.md` Non-Negotiable 1: no raw oklch or
-  hex in JSX; all borders use the `--border` semantic token.
-- `about/heart-and-soul/design-language.md` Non-Negotiable 2: the `<Page>`
-  primitive owns chrome; the panel grid is the tab body, not a competing shell.
-
-#### Scenario: Frame border topology
-
-- **WHEN** a resident-mode tab renders its panel grid
-- **THEN** the frame element SHALL have `border-top` and `border-left`
-- **AND** each Panel child SHALL have `border-right` and `border-bottom`
-- **AND** the resulting visual effect SHALL be a continuous ruled grid with no
-  doubled borders at interior edges
-
-### Requirement: Panel atom
-
-The `<Panel>` component SHALL be the shared container atom for all resident tab bodies.
-It encapsulates grid span, border application, and optional scroll behavior.
-
-Panel contract (`<Panel title sub span scroll height>`):
-
-| Prop | Type | Required | Description |
-|---|---|---|---|
-| `title` | `string` | Yes | Monospace eyebrow label rendered above the body. Sentence case, no em-dash. |
-| `sub` | `string` | No | Secondary label rendered beneath the title in muted 11px text. |
-| `span` | `1 \| 2 \| 3 \| 4` | No, default `1` | Number of grid columns the panel spans. |
-| `scroll` | `boolean` | No, default `false` | When true, the panel body is a `overflow-y: auto` region. |
-| `height` | `string` | No | CSS value for the panel body height when `scroll` is true (e.g., `"320px"`). |
-
-The `title` is styled as JetBrains Mono (the numerals/eyebrow family per the
-three-family type stack). It is the section's name, not a heading; it does not
-use a heading tag. It renders at 10px, uppercase, letter-spacing: 0.06em,
-`--muted-foreground` color.
-
-**Doctrine citations:**
-- `about/heart-and-soul/design-language.md` Type system: JetBrains Mono for
-  eyebrow titles (numerals family); Source Serif 4 reserved for Voice surfaces;
-  Inter Tight for labels and body text.
-- `about/heart-and-soul/design-language.md` Non-Negotiable 1: no inline style
-  for color or spacing; all values via token classes.
-- `about/heart-and-soul/design-language.md` Voice: sentence case, no em-dash
-  in any `title` or `sub` value.
-
-#### Scenario: Panel renders title eyebrow
-
-- **WHEN** a Panel is rendered with `title="session activity"`
-- **THEN** the eyebrow text "session activity" SHALL be rendered in JetBrains
-  Mono, uppercase, at `--muted-foreground`
-- **AND** the eyebrow SHALL appear above the panel body, separated by a thin
-  rule or spacing consistent with the design token scale
-
-#### Scenario: Panel scroll body
-
-- **WHEN** a Panel is rendered with `scroll={true}` and `height="320px"`
-- **THEN** the panel body region SHALL be scrollable along the y-axis
-- **AND** the panel height SHALL be constrained to 320px
-- **AND** content that overflows the fixed height SHALL be accessible by scrolling
-
-#### Scenario: Panel span
-
-- **WHEN** a Panel is rendered with `span={4}`
-- **THEN** the Panel SHALL span all 4 grid columns
-- **AND** the Panel SHALL receive `border-right border-bottom` regardless of span
-
-### Requirement: KPI quartet pattern
-
-The KPI quartet SHALL be a row of exactly 4 single-span Panels that appears at the top
-of Activity, Spend, and Memory tabs. It provides at-a-glance health for the
-tab's primary domain.
-
-Each KPI cell shows:
-1. A label in muted 11px Inter Tight (the metric name).
-2. A value in JetBrains Mono tabular-nums. Primary KPI values use 28px; secondary
-   values use 22px. The size is declared per-tab in the requirement below.
-3. An optional sub-line in 11px muted text (e.g., delta vs. prior period, unit).
-4. An optional tone applied as `--severity-high` (red), `--severity-medium`
-   (amber), or `--severity-low` (green) to the value text. No oklch literals.
-
-Tone is applied only when the metric signals a degraded or notable state (e.g.,
-error count > 0 renders the value in `--severity-high`). Normal/neutral values
-render in `--foreground` without tone override.
-
-**Doctrine citations:**
-- `about/heart-and-soul/design-language.md` Non-Negotiable 1: tone colors MUST
-  use named tokens (`--severity-high`, `--severity-medium`); raw oklch is banned.
-- `about/heart-and-soul/design-language.md` Type system: tabular-nums is
-  non-negotiable for every numeric value in the dashboard.
-- `about/heart-and-soul/design-language.md` Butler hue scope: butler hue is
-  letter-mark only; KPI cells do not receive butler-hue backgrounds.
-
-#### Scenario: KPI quartet renders four panels
-
-- **WHEN** a tab renders its KPI quartet
-- **THEN** exactly 4 single-span Panels SHALL be rendered side by side in the
-  first grid row
-- **AND** each Panel SHALL show label, value, and optional sub-line
-- **AND** all values SHALL use tabular-nums
-
-#### Scenario: KPI tone on elevated error count
-
-- **WHEN** a KPI cell's metric indicates a degraded state (e.g., error count > 0)
-- **THEN** the value text SHALL be colored using the appropriate severity token
-- **AND** the token SHALL NOT be an oklch literal or hex value
-
-#### Scenario: KPI sub-line delta
-
-- **WHEN** a KPI cell carries a comparison sub-line (e.g., "+3 today")
-- **THEN** the sub-line SHALL be rendered at 11px muted text below the value
-- **AND** positive deltas SHALL use `--severity-low`; negative deltas
-  SHALL use `--severity-medium` or `--severity-high` per the tab's definition
-
-### Requirement: RangeToggle vocabulary
-
-Tabs that aggregate data over a user-selectable time range SHALL expose a
-`RangeToggle` control with exactly three options: `24h`, `7d`, `30d`. The
-vocabulary MUST be consistent across all tabs that use a range.
-
-Rules:
-- Labels are monospace (JetBrains Mono), lowercase, no units spelled out.
-- Exactly one RangeToggle per page. If a tab uses a range, there is one toggle
-  for the whole tab body; panels that don't use the range ignore it.
-- Tabs that do not use a time range (Logs, Approvals, Config) SHALL NOT render a
-  RangeToggle.
-- The selected range controls the activity chart variant and the KPI quartet
-  comparison period.
-- Default range for all resident tabs is `24h`.
-
-**Doctrine citations:**
-- `about/heart-and-soul/design-language.md` Type system: JetBrains Mono for
-  mono labels.
-- `redesign-detail-page-tab-vocabulary`: resident tabs only; operator tabs
-  do not receive RangeToggle unless their own spec adds it.
-
-#### Scenario: RangeToggle default state
-
-- **WHEN** a tab that uses ranges (Activity, Spend, Memory) is first mounted
-- **THEN** the RangeToggle SHALL default to `24h`
-- **AND** the selected option SHALL be visually distinguished from unselected options
-
-#### Scenario: RangeToggle absent for non-range tabs
-
-- **WHEN** the Logs tab or Approvals tab is the active tab
-- **THEN** no RangeToggle SHALL be rendered anywhere on the page
-
 ### Requirement: Activity tab
 
-The Activity tab SHALL be the per-butler analytics surface. It replaces the current
-"Activity (coming soon)" stub and MUST render a panel-grid body with a KPI quartet,
-activity chart, and kind breakdown panel.
+The Activity tab's Analytics sub-section SHALL be the per-butler session
+analytics surface: a KPI quartet, a range-switchable activity chart, and a
+session-kind breakdown. A range toggle (`24h`, `7d`, `30d`, default `24h`) sets
+the window for every panel.
 
-Layout (panel-grid frame, 4 columns):
-
-- **Row 1:** KPI quartet (4 single-span panels):
-  - Sessions: count over the selected range. Primary 28px value. Sub-line:
-    change vs. prior period (e.g., "+2 vs. yesterday"). Tone: neutral.
-  - p50 latency: median session duration in seconds. 28px. Sub-line: "median".
-    Tone: amber if p50 > threshold (threshold TBD by implementation).
-  - p95 latency: 95th-percentile session duration. 28px. Sub-line: "95th pct".
-    Tone: amber if p95 > threshold.
-  - Errors: count of sessions with `exit_code != 0` or error flag over range.
-    28px. Tone: `--severity-high` when > 0, else neutral.
-- **Row 2:** Full-width panel (span=4), title "session activity":
-  - When range=`24h`: renders `<ActivityStripe>` (24 hourly columns).
-  - When range=`7d` or `30d`: renders `<DayBars7d30d>` (7 or 30 daily bars).
-  - Panel height fixed at 120px.
-- **Row 3:** Kind breakdown panel (span=4), title "session kinds":
-  - Lists each `(trigger_source, count)` pair returned by the kinds analytics
-    endpoint. One row per kind. Counts in tabular-nums 14px. Empty state: "No
-    session data for this range."
-
-Source data (Layer B beads, not added by this spec):
-- Hourly sessions: `GET /api/butlers/{name}/analytics/hourly` (bu-iuol4.4)
-- Daily sessions: `GET /api/butlers/{name}/analytics/daily` (bu-iuol4.5)
-- Latency: `GET /api/butlers/{name}/analytics/latency` (bu-iuol4.6)
-- Kinds: `GET /api/butlers/{name}/analytics/kinds` (bu-iuol4.7)
-
-**Doctrine citations:**
-- `about/heart-and-soul/design-language.md` Non-Negotiable 4: all timestamps
-  via `<Time>`; no `toLocaleString()`.
-- `redesign-detail-page-tab-vocabulary`: Activity is a resident-mode tab;
-  operator Sessions tab is unchanged.
-- `redesign-butler-detail-no-hero`: no Tier 2 hero; Activity tab is in the
-  primary slot inside `<Page archetype="detail">`.
+Data comes from the butler-scoped session analytics endpoints
+`GET /api/butlers/{name}/analytics/hourly-activity`, `.../daily-activity`,
+`.../latency-stats`, and `.../session-kinds`, plus the session aggregate for the
+failed-session count.
 
 #### Scenario: Activity tab KPI quartet
 
-- **WHEN** the Activity tab loads with range=`24h`
-- **THEN** 4 KPI cells SHALL be rendered: sessions count, p50 latency, p95
-  latency, and error count
-- **AND** all values SHALL use 28px tabular-nums in JetBrains Mono
-- **AND** the error count cell SHALL render in `--severity-high` when > 0
+- **WHEN** the Activity tab loads
+- **THEN** four KPI cells SHALL render: Sessions (the sum of the session-kind
+  counts in the window), p50 ms and p95 ms (session latency percentiles for the
+  window), and Errors (sessions that did not succeed in the window)
+- **AND** the Errors value SHALL use the high-severity tone when greater than
+  zero
+- **AND** when the metrics fail to load, the quartet SHALL show "Could not load
+  activity metrics."
 
 #### Scenario: Activity stripe for 24h range
 
-- **WHEN** the Activity tab range is `24h`
-- **THEN** the activity panel SHALL render `<ActivityStripe>` with 24 hourly
-  columns derived from the hourly analytics endpoint
-- **AND** the panel height SHALL be 120px fixed
+- **WHEN** the range is `24h`
+- **THEN** the activity panel SHALL render a 24-column hourly activity stripe
+  from the hourly-activity endpoint
+- **AND** a failed request SHALL show "Could not load hourly activity."
 
 #### Scenario: Day bars for 7d or 30d range
 
-- **WHEN** the Activity tab range is `7d` or `30d`
-- **THEN** the activity panel SHALL render `<DayBars7d30d>` with the
-  corresponding number of daily bars from the daily analytics endpoint
-- **AND** the panel height SHALL be 120px fixed
+- **WHEN** the range is `7d` or `30d`
+- **THEN** the activity panel SHALL render 7 or 30 daily bars from the
+  daily-activity endpoint
+- **AND** a failed request SHALL show "Could not load daily activity."
 
 #### Scenario: Kind breakdown panel
 
-- **WHEN** the kinds analytics endpoint returns results
-- **THEN** the kind breakdown panel SHALL list each trigger source and its count
-- **AND** counts SHALL be tabular-nums
+- **WHEN** the session-kinds endpoint returns results
+- **THEN** the "By kind" panel SHALL list each session kind with its count in
+  tabular numerals
+- **AND** a failed request SHALL show "Could not load session kind breakdown."
 
 #### Scenario: Activity tab empty state
 
-- **WHEN** all analytics endpoints return zero data for the selected butler
-- **THEN** each panel SHALL show an inline empty state: "No session data for
-  this range."
-- **AND** the KPI cells SHALL render `--` for the value rather than `0` or
-  a loading state
+- **WHEN** no sessions exist for the butler in the selected window
+- **THEN** the kind breakdown SHALL show "No sessions in this window."
+- **AND** KPI cells whose value is unavailable SHALL render a placeholder rather
+  than a fabricated `0`
 
 ### Requirement: Logs tab
 
-The Logs tab SHALL be the structured log viewer for a butler's daemon output. It
-replaces the current "Logs (coming soon)" stub and MUST render a full-width scroll
-panel with level filter chips and fixed-column mono log lines.
-
-Layout (panel-grid frame, 4 columns):
-
-- **Row 1:** Full-width panel (span=4), title "raw log", sub "poll · 5s":
-  - Filter chips row above the log list: ALL / INFO / DEBUG / WARN / ERROR.
-    Only one chip active at a time. ALL is the default.
-  - Log list below the chips. Each line is a monospace 11px row with three
-    fixed-width columns:
-    - Timestamp: 78px fixed, JetBrains Mono, rendered via `<Time>` at
-      millisecond-precision (e.g., "08:30:01.234"). This requires a new
-      `precision="ms"` or `format` prop on `<Time>` (tracked as part of
-      bu-iuol4.17 implementation scope).
-    - Level: 56px fixed, JetBrains Mono. Color: INFO = `--muted-foreground`,
-      DEBUG = `--muted-foreground`, WARN = `--severity-medium`, ERROR =
-      `--severity-high`.
-    - Message: flex remaining width, JetBrains Mono, no wrap.
-  - The panel body is a scroll region. Default height: 480px.
-  - Auto-scroll opt-in via a toggle in the panel header. When enabled, the list
-    scrolls to the newest entry on each poll cycle. When disabled, scroll
-    position is preserved.
-
-Data source: `GET /api/butlers/{name}/logs?level=<level>&limit=<n>` (bu-iuol4.10).
-Poll interval: 5 seconds while the tab is visible.
-
-**Doctrine citations:**
-- `about/heart-and-soul/design-language.md` Non-Negotiable 4: all timestamps via
-  `<Time>`; millisecond-precision display requires a `<Time>` extension
-  (new `precision="ms"` value) to be landed in bu-iuol4.17.
-- `about/heart-and-soul/design-language.md` Type system: JetBrains Mono for
-  timestamps, IDs, and level indicators.
-- `redesign-detail-page-tab-vocabulary`: Logs is a resident-mode tab with no
-  RangeToggle.
+The Activity tab's Logs sub-section SHALL be a structured viewer over the
+butler's daemon log, read from `GET /api/butlers/{name}/logs` and polled every
+five seconds while visible. It renders one full-width scroll panel with level
+filter chips and log lines in fixed timestamp, level, and message columns.
 
 #### Scenario: Log level filter chips
 
-- **WHEN** the Logs tab is active
-- **THEN** filter chips SHALL be rendered for ALL, INFO, DEBUG, WARN, ERROR
+- **WHEN** the Logs sub-section is active
+- **THEN** filter chips SHALL render for All, DEBUG, INFO, WARN, and ERROR, with
+  All selected by default
 - **AND** exactly one chip SHALL be active at a time
-- **AND** selecting a chip SHALL refetch or client-filter the log list to the
-  selected level
+- **AND** selecting a level chip SHALL refetch the log list at that level
 
 #### Scenario: Log line column widths
 
-- **WHEN** log lines are rendered
-- **THEN** the timestamp column SHALL be 78px fixed
-- **AND** the level column SHALL be 56px fixed
-- **AND** the message column SHALL take the remaining flex width
-- **AND** all three columns SHALL use JetBrains Mono at 11px
+- **WHEN** log lines render
+- **THEN** each line SHALL show a fixed-width millisecond-precision timestamp, a
+  fixed-width level, and a message filling the remaining width, all in the
+  monospace family
+- **AND** timestamps and levels SHALL stay column-aligned across lines
 
 #### Scenario: Log level color tokens
 
 - **WHEN** a log line has level WARN
-- **THEN** the level text SHALL be colored `--severity-medium`
+- **THEN** the level text SHALL use the amber token
 - **AND** no oklch literal or hex color SHALL be used
 
 - **WHEN** a log line has level ERROR
-- **THEN** the level text SHALL be colored `--severity-high`
+- **THEN** the level text SHALL use the destructive token
 
 #### Scenario: Logs tab auto-scroll
 
-- **WHEN** the auto-scroll toggle is enabled
-- **THEN** the log list SHALL scroll to the bottom after each poll delivers new entries
-- **AND** manual scrolling upward SHALL NOT be prevented while auto-scroll is on
+- **WHEN** auto-scroll is on (the default)
+- **THEN** the list SHALL scroll to the newest entry as polls deliver new lines
+- **AND** scrolling up SHALL pause following until the operator re-enables
+  auto-scroll
 
 #### Scenario: Logs tab empty state
 
-- **WHEN** the logs endpoint returns zero entries for the selected level
-- **THEN** the scroll panel SHALL display "No log entries." in muted text
-- **AND** no em-dash SHALL appear in the empty state text
+- **WHEN** the logs endpoint returns no entries for the selected level
+- **THEN** the panel SHALL display "No logs yet." in muted text
 
 ### Requirement: Approvals tab
 
-The Approvals tab SHALL list pending approval actions scoped to the current butler.
-It replaces the current "Approvals (coming soon)" stub and MUST render a full-width
-scroll panel with severity-dot rows and the settled empty-state copy.
-
-Layout (panel-grid frame, 4 columns):
-
-- **Row 1:** Full-width panel (span=4), title "pending approvals":
-  - Scroll body listing pending `ApprovalAction` items filtered to this butler.
-  - Each row in the list:
-    - An 8px severity dot: `high` severity = `--destructive` fill; `medium`
-      severity = `--severity-medium` fill; `low` severity =
-      `--muted-foreground` fill.
-    - Title: 14px Inter Tight, `--foreground`.
-    - Sub-line: 10px JetBrains Mono, `--muted-foreground`. Shows the detail
-      snippet and age (e.g., "approve tool call · 3m ago").
-    - Action link: "Review" text link navigating to the approval detail.
-  - Empty state (no pending items): "No items pending review." Muted text,
-    sentence case, no em-dash, no exclamation mark.
-  - The panel body is a scroll region with default height 480px.
-
-Data source: existing `/api/approvals/actions` endpoint via `useApprovals`,
-filtered client-side by butler name. No new backend changes.
-
-**Doctrine citations:**
-- `about/heart-and-soul/design-language.md` Non-Negotiable 1: severity dot fill
-  colors MUST use named tokens, not oklch literals.
-- `about/heart-and-soul/design-language.md` Voice: "No items pending review."
-  is sentence case, no em-dash, no exclamation.
-- `redesign-detail-page-tab-vocabulary`: Approvals is a resident-mode tab with
-  no RangeToggle.
+The Approvals tab SHALL list the pending approval actions for the current
+butler in one full-width scroll panel, each row deep-linking into that action.
 
 #### Scenario: Approvals list with pending items
 
 - **WHEN** the Approvals tab loads for a butler with pending approval actions
-- **THEN** each pending item SHALL be rendered with a severity dot, title,
-  sub-line, and action link
-- **AND** the severity dot for a high-severity item SHALL use `--destructive` fill
-- **AND** the severity dot for a medium-severity item SHALL use `--severity-medium` fill
-- **AND** the severity dot for a low-severity item SHALL use `--muted-foreground` fill
+- **THEN** each pending action SHALL render a severity dot, the tool name as
+  title, a sub-line with the agent summary and relative age, and a "Review" link
+  to `/approvals/{action_id}`
+- **AND** severity SHALL derive from the action's expiry: high (destructive fill)
+  when it expires within one hour or has expired, medium (amber fill) within 24
+  hours, and low (muted fill) otherwise or with no expiry
 
 #### Scenario: Approvals empty state
 
 - **WHEN** no pending approvals exist for the butler
 - **THEN** the panel SHALL display "No items pending review." in muted text
-- **AND** the text SHALL be sentence case with no em-dash, no exclamation mark
 
 #### Scenario: Approvals age rendering
 
 - **WHEN** a pending approval item is rendered
-- **THEN** the age displayed in the sub-line SHALL use `<Time>` for relative
-  formatting (e.g., "3m ago")
-- **AND** no raw `toLocaleString()` or `Date.now()` difference SHALL be used
+- **THEN** its age SHALL render through the shared time primitive in compact
+  relative form (e.g., "3m ago")
+- **AND** no raw locale formatting or manual date arithmetic SHALL be used
 
 ### Requirement: Spend tab
 
-The Spend tab SHALL be the per-butler cost analytics surface. It replaces the current
-"Spend (coming soon)" stub and MUST render a KPI quartet, spend trend chart, and model
-breakdown panel.
-
-Layout (panel-grid frame, 4 columns):
-
-- **Row 1:** KPI quartet (4 single-span panels):
-  - Today: butler's USD cost today. Primary 28px. Sub-line: "today". Tone: amber
-    if today spend exceeds yesterday's total.
-  - 30-day: butler's USD cost over the last 30 days. 22px. Sub-line: "30 days".
-  - Per-session: average cost per session over the selected range. 22px.
-    Sub-line: "per session".
-  - Tokens: input/output token ratio displayed as two values. 22px each.
-    Sub-line: "in / out". Tone: neutral.
-- **Row 2:** Full-width panel (span=4), title "spend trend":
-  - Bar chart showing daily spend over the selected range (7 bars for 7d, 30
-    bars for 30d, 24 hourly bars for 24h).
-  - Panel height fixed at 120px.
-- **Row 3:** Full-width panel (span=4), title "by model":
-  - KV list: each row shows `model name` (left, `--muted-foreground`) and `cost`
-    (right, tabular-nums, `--foreground`). Rows sorted by cost descending.
-  - Empty state: "No model cost data."
-
-Source data: `useCostSummary` and butler-scoped cost analytics endpoints (Layer B,
-bu-iuol4.8/bu-iuol4.9). No new `ButlerSummary` fields.
-
-**Doctrine citations:**
-- `about/heart-and-soul/design-language.md` Non-Negotiable 1: amber tone on
-  today cell uses `--severity-medium`, not oklch.
-- `about/heart-and-soul/design-language.md` Type system: tabular-nums on all
-  cost and token values.
-- `redesign-detail-page-tab-vocabulary`: Spend is a resident-mode tab.
+The Spend tab SHALL be the per-butler cost surface: a KPI quartet, a daily spend
+trend with a range toggle (`24h`, `7d`, `30d`), and a 30-day model breakdown.
+When the spend source is unavailable or some model usage is unpriced, the tab
+SHALL say so in a degraded-source note rather than presenting partial totals as
+complete.
 
 #### Scenario: Spend KPI quartet
 
 - **WHEN** the Spend tab loads
-- **THEN** 4 KPI cells SHALL be rendered: today, 30-day, per-session, tokens
-- **AND** all cost values SHALL be formatted as USD (e.g., "$0.04")
-- **AND** the today cell SHALL apply `--severity-medium` tone when today's spend
-  exceeds the prior day's total
+- **THEN** four KPI cells SHALL render: Spend today, Spend 30d, Cost / session ·
+  30d, and Tokens today
+- **AND** cost values SHALL be formatted as USD (e.g., "$0.04")
+- **AND** zero or unavailable spend values SHALL render dimmed
 
 #### Scenario: Spend trend bar chart
 
-- **WHEN** the Spend tab range is `24h`
-- **THEN** the spend trend panel SHALL render 24 hourly bars
-- **WHEN** the range is `7d`
-- **THEN** 7 daily bars SHALL be rendered
-- **WHEN** the range is `30d`
-- **THEN** 30 daily bars SHALL be rendered
+- **WHEN** the range is `24h`, `7d`, or `30d`
+- **THEN** the trend panel SHALL render one bar per UTC day over the last 1, 7,
+  or 30 days respectively
+- **AND** a failed request SHALL show "Could not load spend trend."
 
 #### Scenario: Model breakdown KV list
 
-- **WHEN** model cost data is available
-- **THEN** each model SHALL be listed with its cost in a KV pair
-- **AND** rows SHALL be sorted by cost descending
-- **AND** costs SHALL use tabular-nums
+- **WHEN** 30-day model cost data is available
+- **THEN** each model SHALL be listed with its cost, sorted by cost descending,
+  in tabular numerals
+- **AND** a failed request SHALL show "Could not load model breakdown."
 
 #### Scenario: Spend tab empty state
 
-- **WHEN** no spend data is available for the selected range
-- **THEN** each panel SHALL show an appropriate empty state in muted text
-- **AND** the KPI cells SHALL render "$0.00" or "--" as appropriate
-
-### Requirement: Memory Tab
-
-The Memory tab SHALL surface the per-butler memory subsystem state. It replaces the
-prior resident-mode Memory tab layout (which rendered `MemoryTierCards` + `MemoryBrowser`
-without per-butler scope enforcement). The new layout MUST make counts and recent writes
-primary via a KPI quartet and a recent-writes feed panel.
-
-Layout (panel-grid frame, 4 columns):
-
-- **Row 1:** KPI quartet (4 single-span panels):
-  - Episodes: total episode count. Primary 28px. Sub-line: "+N today" (count of
-    episodes added in the last 24h). Tone: neutral.
-  - Facts: total fact count. 28px. Sub-line: "+N today". Tone: neutral.
-  - Entities: total entity count. 28px. Sub-line: "+N today". Tone: neutral.
-  - Rules: total rule count. 28px. Sub-line: "+N today". Tone: neutral.
-- **Row 2:** Full-width panel (span=4), title "recent writes", scroll=true,
-  height="320px":
-  - Feed listing the most recent memory write events across episodes, facts, and
-    rules. Each row: `<Time>` relative timestamp (left, 80px, `--muted-foreground`)
-    + kind badge (Episode/Fact/Rule, 60px fixed) + content preview (flex, truncated
-    to one line). Rows sorted by timestamp descending (newest first).
-  - Empty state: "No recent memory writes." Muted text, no em-dash.
-
-In operator mode the existing tabbed memory browser remains available below the
-KPI quartet: scoped to the current butler, allowing navigation between episodes,
-facts, and rules with pagination and search.
-
-Source data: butler-scoped memory analytics endpoint (Layer B, bu-iuol4.12).
-No new `ButlerSummary` fields.
-
-**Doctrine citations:**
-- `about/heart-and-soul/design-language.md` Non-Negotiable 4: all timestamps
-  rendered via `<Time>`.
-- `about/heart-and-soul/design-language.md` Non-Negotiable 1: kind badges use
-  named tokens, not hex.
-- `redesign-detail-page-tab-vocabulary`: Memory appears in both resident mode
-  (this spec) and operator mode (existing Memory tab). The KPI quartet row is
-  additive; the existing memory browser below remains in operator mode.
-
-#### Scenario: Memory KPI quartet with "+N today" sub-lines
-
-- **WHEN** the Memory tab loads
-- **THEN** 4 KPI cells SHALL be rendered: episodes, facts, entities, rules
-- **AND** each cell's sub-line SHALL show "+N today" where N is the count of
-  writes in the last 24h
-- **AND** all counts SHALL use tabular-nums
-
-#### Scenario: Recent-writes feed scroll
-
-- **WHEN** the recent-writes panel contains more entries than its 320px height
-  can display
-- **THEN** the panel body SHALL be scrollable
-- **AND** no content SHALL be cut off without scroll access
-
-#### Scenario: Memory tab empty state
-
-- **WHEN** no memory data exists for the butler
-- **THEN** the KPI cells SHALL render `0` with "+0 today" sub-lines
-- **AND** the recent-writes panel SHALL display "No recent memory writes."
-- **AND** the text SHALL not contain an em-dash
-
-#### Scenario: Operator-mode memory browser
-
-- **WHEN** the Memory tab is viewed in operator mode
-- **THEN** a tabbed memory browser SHALL appear below the KPI quartet, scoped to
-  the current butler, allowing navigation between episodes, facts, and rules with
-  pagination and search
-
-### Requirement: CRM Tab (Butler-Specific)
-The CRM tab SHALL show relationship management features scoped to the relationship butler.
-
-#### Scenario: Relationship butler context
-- **WHEN** the CRM tab is viewed for the `relationship` butler
-- **THEN** an "Upcoming Dates" card shows birthdays, anniversaries, and other important dates in the next 30 days
-- **AND** each entry shows the date type badge, contact name (linked to contact detail), date, and a days-until badge (destructive styling when <= 3 days, "Today" / "Tomorrow" labels)
-- **AND** a "Quick Links" card provides navigation to `/contacts` and `/groups`
-
-#### Scenario: Non-relationship butler
-- **WHEN** the CRM tab is viewed for any butler other than `relationship`
-- **THEN** a centered message states "CRM features are only available for the relationship butler."
-
-### Requirement: Bespoke resident tab per domain butler
-
-Each domain butler SHALL support at most one bespoke resident-mode tab (zero or
-one — not zero or more). A butler that does not have a domain-specific surface
-MUST NOT invent a bespoke tab. Any bespoke tab MUST conform to the nine rules
-below.
-
-The following nine rules govern bespoke tabs:
-
-**Rule 1 — Cardinality.** Each butler MAY have at most one bespoke tab. No
-butler shall carry two or more bespoke tabs simultaneously in either mode.
-
-**Rule 2 — Insertion point.** In the tab bar, the bespoke tab MUST appear
-immediately after the Memory tab and before any operator-only tabs. In resident
-mode this places it at position 8 (Overview, Activity, Logs, Approvals, Spend,
-Config, Memory, <Bespoke>). In operator mode it appears at position 11
-(Overview, Sessions, Config, Skills, Schedules, Trigger, MCP, State, CRM,
-Memory, <Bespoke>).
-
-**Rule 3 — Label.** The bespoke tab label is butler-specific and registered in
-the canonical per-butler label table (see Requirement: Per-butler bespoke tab
-label registry below). Labels MUST be sentence-case, single-word preferred, and
-contain no punctuation. Multi-word labels are permitted only when no single-word
-label is accurate (e.g., a hypothetical "Task list" would be acceptable;
-"task-list" or "Task List" would not).
-
-**Rule 4 — Discovery mechanism.** Bespoke tab presence is determined by a
-hardcoded conditional on the butler name in
-`frontend/src/pages/ButlerDetailPage.tsx` and
-`frontend/src/pages/butler-detail-tabs.ts`. Discovery MUST NOT be driven by
-`butler.toml` fields or runtime API responses. This matches the existing
-conditional pattern (`showContactsTab = name === "relationship"`, etc.).
-
-**Rule 5 — Visual contract.** Bespoke tab body content MUST conform to the
-Panel grid and KPI quartet rules defined by the sibling resident-tab visual
-contract change (bu-iuol4.1). Pages MUST NOT reinvent card layout, spacing
-tokens, or KPI quartet shape. All bespoke tab bodies use the same Panel grid
-shell as resident base-tab bodies.
-
-**Rule 6 — Loading.** Bespoke tab body components MUST be lazy-loaded via React
-`lazy()` and wrapped in `<Suspense fallback={<TabFallback label="..." />}>`.
-The `<TabFallback>` component is the shared fallback defined in
-`ButlerDetailPage.tsx`. Inline tab body components (non-lazy) are not permitted
-for bespoke tabs.
-
-**Rule 7 — Offline/paused fallback.** When the butler is paused or quarantined,
-the bespoke tab MUST still render. It MUST display an appropriate empty state:
-a centered, muted sentence-case message describing the unavailability (e.g.,
-"No data available while this butler is paused."). The empty state MUST NOT use
-em-dashes, celebration copy, or title-case headings per voice rules.
-
-**Rule 8 — Mode independence.** Bespoke tabs are visible in both resident mode
-and operator mode. They are appended after Memory in both mode tab bars. Deep
-links to a bespoke tab key MUST NOT force a mode switch; the bespoke tab is
-reachable from either mode.
-
-**Rule 9 — Switchboard opt-out.** The switchboard butler explicitly MUST NOT
-carry a resident bespoke tab. Its two existing tabs — Routing Log and Registry —
-are operator-oriented surfaces that predate the resident vocabulary and serve
-ingress triage, not resident self-service. Those two tabs are preserved unchanged
-and are not reclassified as bespoke.
-
-#### Scenario: Bespoke tab appears in resident mode tab list
-
-- **WHEN** a domain butler (e.g., `relationship`) is viewed in resident mode
-- **THEN** the tab bar SHALL show: Overview, Activity, Logs, Approvals, Spend,
-  Config, Memory, <Bespoke label> — in that order
-- **AND** the bespoke tab label (e.g., "Contacts") MUST be sentence-case and
-  match the butler's registered bespoke label
-
-#### Scenario: Bespoke tab appears in operator mode tab list
-
-- **WHEN** a domain butler (e.g., `relationship`) is viewed in operator mode
-- **THEN** the tab bar SHALL show: Overview, Sessions, Config, Skills, Schedules,
-  Trigger, MCP, State, CRM, Memory, Contacts — in that order
-- **AND** operator-only tabs (Models, if exposed) appear after the bespoke tab
-
-#### Scenario: Bespoke tab is lazy-loaded
-
-- **WHEN** the bespoke tab is selected for the first time
-- **THEN** its body component MUST be loaded on demand via React `lazy()`
-- **AND** a `<Suspense fallback={<TabFallback label="..." />}>` MUST wrap the
-  component during loading
-- **AND** the fallback MUST show the butler-specific label text
-
-#### Scenario: Bespoke tab empty state when butler offline
-
-- **WHEN** the butler status is `paused` or eligibility is `quarantined`
-- **AND** the bespoke tab is selected
-- **THEN** the bespoke tab body MUST still render
-- **AND** it MUST display a centered, muted empty-state message in sentence case
-  (e.g., "No data available while this butler is paused.")
-- **AND** the message MUST NOT contain em-dashes, title-case headings, or
-  celebratory copy
-
-#### Scenario: Deep link to bespoke tab does not force mode switch
-
-- **WHEN** a user navigates to `/butlers/relationship?tab=contacts`
-- **AND** the stored mode is either `resident` or `operator`
-- **THEN** the bespoke `contacts` tab MUST be selected in the current mode
-  without switching to the other mode
-
-#### Scenario: Switchboard has no resident bespoke tab
-
-- **WHEN** the butler name is `switchboard`
-- **THEN** the tab bar in resident mode MUST contain only the seven resident
-  base tabs plus Routing Log and Registry — no additional bespoke tab
-- **AND** the tab bar in operator mode MUST contain the ten operator base tabs
-  plus Routing Log and Registry — no additional bespoke tab
-- **AND** Routing Log and Registry MUST remain unchanged in label, position, and
-  visibility
-
-#### Scenario: Single bespoke tab per butler
-
-- **WHEN** any domain butler is rendered
-- **THEN** at most one tab beyond Memory SHALL be present that is classified as
-  a bespoke tab for that butler
-- **AND** no butler SHALL render two or more bespoke tabs simultaneously
-
-### Requirement: Per-butler bespoke tab label registry
-
-Each domain butler that carries a bespoke tab SHALL use the label registered in
-the table below. The labels in this table are normative; any implementation that
-uses a different label for a listed butler is non-conformant. Switchboard is
-explicitly absent: it carries no resident bespoke tab (Rule 9).
-
-| Butler       | Bespoke tab label | Justification                                                                   |
-|-------------|-------------------|---------------------------------------------------------------------------------|
-| chronicler  | Timelines         | Core identity: "retrospective time butler" that projects events and episodes.   |
-| education   | Reviews           | Spaced-repetition review sessions are the primary user action; Anki integration is explicitly rejected by the manifesto ("We do not connect to Coursera, Anki, Canvas…"), so "Decks" is ruled out. |
-| finance     | Finances          | Direct mapping to the butler's domain: financial clarity over inbox noise.      |
-| general     | Collections       | The manifesto's organizing metaphor: "Collections let you group related things together." |
-| health      | Measurements      | Health butler leads with measurement tracking; the existing "Health" label is generic and collides with the butler name ("Measurements" is the primary tracking surface). |
-| home        | Devices           | Device orchestration and monitoring is the bespoke surface: "Monitor device health." |
-| lifestyle   | Taste             | Manifesto central concept: "Taste is autobiography"; the butler is the keeper of your taste. |
-| qa          | Investigations    | Primary operator surface: active and historical investigation dispatch records. |
-| relationship| Contacts          | Contact management is the primary bespoke surface: "A living database of the people in your life." |
-| travel      | Trips             | Trip-centric organization: "See your complete trip timeline" is the core value proposition. |
-
-Labels are sentence-case. No em-dashes. No exclamation marks. No title-case.
-Switchboard is absent from this table because it carries no resident bespoke tab.
-
-#### Scenario: Each butler renders its registered bespoke tab label
-
-- **GIVEN** the per-butler bespoke tab label registry above
-- **WHEN** a domain butler from the registry is viewed in resident mode or
-  operator mode
-- **THEN** the bespoke tab trigger SHALL display exactly the label registered
-  for that butler (e.g., `Timelines` for chronicler, `Investigations` for qa)
-- **AND** the label MUST be sentence-case and contain no punctuation
-- **AND** no butler in the table SHALL use a label that differs from the one
-  registered here
-
-#### Scenario: Switchboard does not render a bespoke tab from the registry
-
-- **WHEN** the butler name is `switchboard`
-- **THEN** the tab bar SHALL NOT contain any label from the per-butler registry
-- **AND** the only tabs beyond the base set are the existing operator-oriented
-  tabs: Routing Log and Registry
-
-#### Scenario: New butlers (general, lifestyle, qa) include bespoke tabs
-
-- **WHEN** any of `general`, `lifestyle`, or `qa` is viewed
-- **THEN** the bespoke tab SHALL appear at position 8 in resident mode
-  (immediately after Memory, before any operator-only tabs)
-- **AND** the labels SHALL be exactly: `Collections` (general), `Taste`
-  (lifestyle), `Investigations` (qa)
-- **AND** the health butler bespoke tab SHALL be relabeled from `Health` to
-  `Measurements` to match the registry
+- **WHEN** no spend data exists for the window
+- **THEN** the trend panel SHALL show "No spend data for this period." and the
+  model breakdown SHALL show "No model usage data available."
 
 ### Requirement: Health Tab (Butler-Specific)
 The health butler's bespoke tab SHALL be labeled "Measurements" and render a
@@ -1541,112 +813,6 @@ The routing log tab (switchboard-only) SHALL show inter-butler request routing a
 #### Scenario: Pagination
 - **WHEN** the routing log has more entries than one page (25 per page)
 - **THEN** Previous/Next pagination controls are shown with page count
-
-### Requirement: Switchboard Triage Filters
-
-The filters surface (accessible from the ingestion page at `/ingestion?tab=filters`) SHALL manage unified ingestion rules, thread affinity settings, and Gmail label filters. It replaces the previous dual-model UI (triage rules table + ManageSourceFiltersPanel sheet) with a single rules table.
-
-#### Scenario: Unified rules table with CRUD
-- **WHEN** the user navigates to `/ingestion?tab=filters`
-- **THEN** they see a single table of all ingestion rules with columns: Priority, Scope, Condition, Action, Enabled toggle, Actions (edit/delete)
-
-#### Scenario: Scope display and filtering
-- **WHEN** the rules table is rendered
-- **THEN** each rule's scope is shown as a badge: "Global" for global rules, or the connector identity (e.g., "gmail:user:dev") for connector-scoped rules
-- **AND** a scope filter dropdown above the table allows filtering by "All", "Global only", or specific connector scopes
-
-#### Scenario: Rule editor drawer with scope selector
-- **WHEN** the user creates or edits a rule
-- **THEN** the rule editor drawer includes a scope selector (Global / Connector) and, when Connector is selected, a connector type and endpoint identity picker
-- **AND** the action field is constrained based on scope: connector scope only allows "block"; global allows all actions
-
-#### Scenario: Test rule dry-run
-- **WHEN** the user clicks "Test" in the rule editor
-- **THEN** a test envelope is sent to POST `/ingestion-rules/test` and the result is displayed inline (matched/no-match with reason)
-
-#### Scenario: Thread affinity panel preserved
-- **WHEN** the user scrolls below the rules table
-- **THEN** the thread affinity panel (enable/disable toggle + TTL input) is displayed unchanged
-
-#### Scenario: Import seed rules
-- **WHEN** the user clicks "Import defaults"
-- **THEN** a preview dialog shows the 9 default seed rules (now as global ingestion rules) and imports them on confirmation
-
-#### Scenario: Connector detail page shows scoped rules
-- **WHEN** the user navigates to a connector detail page (e.g., `/ingestion/connectors/gmail/gmail:user:dev`)
-- **THEN** the page shows a rules section listing only rules with `scope = 'connector:gmail:gmail:user:dev'`, with an "+ Add Rule" button that pre-fills the scope
-
-### Requirement: Switchboard Backfill Management
-The backfill surface SHALL manage historical replay jobs across connectors.
-
-#### Scenario: Backfill job list with live polling
-- **WHEN** the backfill history tab loads
-- **THEN** a paginated table shows all backfill jobs with: ID (truncated), Connector type, Endpoint identity, Status badge (with spinner for active/pending), Rows processed, Cost/Cap display, Created (relative time), and lifecycle action buttons
-
-#### Scenario: Job status state machine
-- **WHEN** a backfill job is displayed
-- **THEN** action buttons are gated by the job's current status:
-  - **Pause:** available when `pending` or `active` and connector is online
-  - **Resume:** available when `paused` and connector is online
-  - **Cancel:** available when `pending`, `active`, `paused`, `cost_capped`, or `error`
-- **AND** all action buttons are disabled when any mutation is in flight
-
-#### Scenario: Expandable job detail row
-- **WHEN** the operator clicks a job row
-- **THEN** an expanded detail section shows: date range, rate limit, rows skipped, target categories, start/completion timestamps, error details, and connector offline warnings
-
-#### Scenario: Create backfill job dialog
-- **WHEN** the operator clicks "New Backfill Job"
-- **THEN** a dialog opens with: connector selector (only online connectors listed), date range (from/to date inputs), rate limit per hour (numeric, default 100), daily cost cap in dollars (numeric, default $5.00), and optional target categories (comma-separated)
-- **AND** when no connectors are online, manual connector type and endpoint identity inputs are shown as fallback
-
-#### Scenario: Active job progress polling
-- **WHEN** a backfill job has status `pending` or `active`
-- **THEN** its progress is polled every 5 seconds for live row count and cost updates
-- **AND** inactive jobs are polled every 30 seconds
-
-#### Scenario: Cost cap enforcement display
-- **WHEN** a job reaches its daily cost cap
-- **THEN** the status badge shows "cost capped" (destructive variant)
-- **AND** the cost/cap display shows both the spent amount and the cap limit
-
-### Requirement: Data Fetching Architecture
-All butler management surfaces SHALL use TanStack Query for data fetching with consistent patterns.
-
-#### Scenario: Query key hierarchy
-- **WHEN** butler-scoped data is fetched
-- **THEN** query keys follow the pattern `["butlers", butlerName, resource]` for cache isolation and targeted invalidation
-
-#### Scenario: Mutation invalidation
-- **WHEN** a write mutation succeeds (create, update, delete, toggle)
-- **THEN** the relevant query key family is invalidated to trigger a re-fetch
-- **AND** toast notifications confirm success or surface error messages
-
-#### Scenario: Optimistic polling intervals
-- **WHEN** list-type queries are mounted
-- **THEN** they use a 30-second `refetchInterval` by default
-- **AND** backfill job progress uses an accelerated 5-second interval for active jobs
-
-#### Scenario: Conditional query enabling
-- **WHEN** a query depends on a butler name parameter
-- **THEN** the query is disabled (`enabled: false`) when the butler name is empty or undefined
-
-### Requirement: Loading and Error State Consistency
-All butler management tabs SHALL follow consistent loading and error patterns.
-
-#### Scenario: Skeleton loading states
-- **WHEN** any tab's data is loading
-- **THEN** purpose-specific skeleton layouts are shown (card skeletons for overview, table row skeletons for lists, content block skeletons for config)
-- **AND** skeleton shapes approximate the final content layout
-
-#### Scenario: Error display pattern
-- **WHEN** a tab's data fetch fails
-- **THEN** the error is shown inline within a card using destructive text styling
-- **AND** the error message includes the exception message when available, falling back to "Unknown error"
-
-#### Scenario: Empty state messaging
-- **WHEN** a data set is empty (no schedules, no skills, no state entries)
-- **THEN** a centered, muted message describes the empty condition and, where applicable, guides the operator toward the creation action
 
 ### Requirement: Butler Detail Page — Dispatch Fold-In
 The existing `/butlers/{name}` detail page SHALL fold in the `ButlersExpanded` design, with sections for fallback chain, system prompt, tools, memory access, activity, and kill switch.
@@ -1703,26 +869,390 @@ The dashboard SHALL expose per-butler memory tier access.
 - **WHEN** `GET /api/butlers/{name}/memory-access` is called
 - **THEN** the response is `ApiResponse[MemoryAccess]` with `read: ("short"|"mid"|"long")[]`, `write: ("short"|"mid"|"long")[]`, `namespace: str`, `embedding_model: str`, `drops_7d: int`.
 
+### Requirement: Butler detail header schedule facts are truthful
+
+`ButlerDetailHeader` SHALL derive schedule facts only from enabled schedule
+rows with a parseable finite `next_run_at` instant. The header SHALL use the
+existing read-only schedule query and SHALL NOT write schedules, alter
+scheduler calculations, or derive status-board activity. A scheduled instant
+at or before the current wall clock is overdue; an instant strictly after it
+is future-next. The header SHALL recompute that classification on schedule
+polling and at least once per minute while mounted.
+
+#### Scenario: Earliest future schedule is shown as next
+
+- **WHEN** one or more enabled schedules have parseable `next_run_at` values
+  strictly after the current wall clock
+- **THEN** the header SHALL render the earliest such timestamp as its `next`
+  fact using the shared `<Time>` primitive
+- **AND** no later future schedule SHALL replace that fact
+
+#### Scenario: Stale schedule is shown as an actionable overdue fact
+
+- **WHEN** one or more enabled schedules have parseable `next_run_at` values
+  at or before the current wall clock
+- **THEN** the header SHALL render the oldest such timestamp as a visibly
+  named `overdue` fact with the schedule name and a deterministic relative age
+- **AND** the fact SHALL use the established amber foreground token and an
+  accessible link name that does not rely on color alone
+- **AND** the fact link SHALL target
+  `/butlers/:name?tab=system&section=schedules`
+- **AND** the stale timestamp SHALL NOT render as a literal `next` fact
+
+#### Scenario: Overdue and future facts coexist
+
+- **WHEN** enabled schedules include both overdue and future parseable
+  `next_run_at` values
+- **THEN** the header SHALL keep the most-overdue named fact visible
+- **AND** the earliest independently truthful future-next fact SHALL remain
+  visible
+
+#### Scenario: Unusable timestamps do not fabricate certainty
+
+- **WHEN** a schedule is disabled, has a null timestamp, has a malformed
+  timestamp, or has an unparsable timestamp
+- **THEN** that row SHALL contribute neither an overdue nor a future-next fact
+- **AND** the header SHALL render no fabricated schedule age or future time for
+  that row
+
+#### Scenario: Equal schedule instants select a stable named fact
+
+- **WHEN** multiple enabled parseable schedules tie for the selected overdue
+  or future timestamp
+- **THEN** the header SHALL select the fact deterministically by schedule name
+  and then schedule id
+
+### Requirement: Truthful Status-Board Summary and Error Composition
+
+The `/butlers` status board SHALL present fleet health from the canonical
+server-derived `BoardRow.activity` vocabulary. A healthy count SHALL exclude
+every row whose activity is `offline`, `quarantined`, `overdue`, or `unknown`.
+The `unknown` aggregate SHALL be derived from canonical row activity, not from
+registry `eligibility = unavailable`, which remains a separate availability
+diagnostic.
+
+The Page shell SHALL omit status-board header and footer slots only when its
+initial board request has failed and no cached rows exist. A normal empty
+response and initial loading continue to use the shell’s existing behavior.
+
+#### Scenario: Fleet health excludes every non-healthy activity
+
+- **WHEN** board rows contain one or more `offline`, `quarantined`, `overdue`,
+  or `unknown` canonical activity verdicts
+- **THEN** the header’s healthy/total pill subtracts all four counts from the
+  registered total
+- **AND** registry availability alone SHALL NOT change the `unknown` count or
+  make a row appear unhealthy without its canonical activity verdict
+
+#### Scenario: Initial failure has no misleading board chrome
+
+- **WHEN** the initial board request fails and no cached rows are available
+- **THEN** the Page error region renders the error and retry control
+- **AND** the status-board header and footer SHALL NOT render around that error
+
+#### Scenario: Cached refresh failure keeps contextual chrome
+
+- **WHEN** a board refresh fails after one or more cached rows were loaded
+- **THEN** the cached rows, status-board header, and footer remain visible
+- **AND** the page renders its stale-data warning instead of replacing the
+  board with a full-page error
+
+### Requirement: Canonical Status-Board Cadence Labels
+
+The board’s human-facing cadence label SHALL describe only a canonical
+interval: exactly one hour is `hourly`, exactly one day is `daily`, and
+exactly seven days is `weekly`. A positive interval that is not one of those
+canonical values, including two hours, SHALL be labeled `custom`. A butler with
+no enabled schedule SHALL retain a null cadence label. The raw
+`cadence_seconds` and cadence-overdue calculation remain authoritative and
+unchanged.
+
+#### Scenario: Canonical cadence interval has its named label
+
+- **WHEN** a butler’s shortest enabled cron interval is exactly one hour, one
+  day, or seven days
+- **THEN** its board row exposes `hourly`, `daily`, or `weekly` respectively
+
+#### Scenario: Noncanonical cadence avoids an inaccurate named label
+
+- **WHEN** a butler’s shortest enabled cron interval is two hours or any other
+  positive noncanonical duration
+- **THEN** its board row exposes `cadence_label = custom`
+- **AND** it SHALL NOT label that duration `hourly`, `daily`, or `weekly`
+
+### Requirement: Butler Detail Tab Set
+
+The `/butlers/:name` page SHALL render one tab vocabulary for every butler: six
+base tabs (Overview, Activity, Approvals, Spend, Memory, System) plus the
+butler's domain tabs from the Butler Domain Tabs registry. The tab rail shows
+Overview, Activity, Approvals, Spend, and Memory first, then the butler's domain
+tabs, and System last. No mode toggle exists; every tab is reachable for every
+butler that carries it.
+
+The Activity tab groups three sub-sections: Analytics (default, see Activity
+tab), Sessions (see Sessions Tab), and Logs (see Logs tab). The System tab
+groups seven sub-sections: Config (default, see Config Tab), Skills (see Skills
+Section), Schedules (see Schedules Tab (CRUD)), MCP (see MCP Debug Tab), State
+(see State Tab (CRUD)), Models, and Manage.
+
+#### Scenario: URL-driven tab routing
+
+- **WHEN** a user navigates to `/butlers/:name?tab=<value>`
+- **THEN** the active tab SHALL be the `tab` value when it is a base tab or one
+  of that butler's domain tabs
+- **AND** when `tab` is absent or not valid for that butler, the active tab
+  SHALL be Overview
+- **AND** selecting Overview SHALL remove the `tab` parameter from the URL
+- **AND** tab changes SHALL replace the current history entry rather than push
+  a new one
+
+#### Scenario: Base tabs for every butler
+
+- **WHEN** any butler detail page loads
+- **THEN** the tab rail SHALL show Overview, Activity, Approvals, Spend, Memory,
+  and System
+- **AND** no mode toggle or mode-gated tab SHALL be rendered
+
+#### Scenario: Domain tabs precede System
+
+- **WHEN** a butler with domain tabs is viewed (for example `switchboard`)
+- **THEN** its domain tabs (Routing Log, Registry) SHALL appear after Memory and
+  before System
+- **AND** System SHALL remain the last tab
+
+#### Scenario: Section sub-navigation is URL-driven
+
+- **WHEN** the Activity or System tab is active
+- **THEN** the active sub-section SHALL be carried in the `section` query
+  parameter
+- **AND** an absent or invalid `section` SHALL select the default sub-section
+  (Analytics for Activity, Config for System)
+- **AND** selecting the default sub-section SHALL remove `section` from the URL
+- **AND** selecting Analytics SHALL also clear any `since` and `until` filters
+
+#### Scenario: Deep link into a sub-section
+
+- **WHEN** a user navigates to `/butlers/:name?tab=system&section=schedules`
+- **THEN** the System tab SHALL open with the Schedules sub-section active
+
+#### Scenario: Lazy-loaded tab bodies
+
+- **WHEN** a tab or sub-section other than Overview, Activity analytics, or
+  System config is selected for the first time
+- **THEN** its body SHALL load on demand with a centered "Loading {label}..."
+  fallback while it loads
+
+#### Scenario: Keyboard tab navigation
+
+- **WHEN** the butler detail page is focused
+- **THEN** the digit keys 1 through 9 SHALL switch to the first nine tabs in
+  rail order
+- **AND** `[` and `]` SHALL switch to the previous and next tab, wrapping at the
+  ends
+
+#### Scenario: Reload from the command palette
+
+- **WHEN** the butler detail page is open
+- **THEN** the command palette SHALL offer a "Reload {butler}" command that
+  refetches the butler record
+
+### Requirement: Butler Domain Tabs
+
+A butler's detail page SHALL append the domain tabs registered for that butler
+in the table below, and no others. Domain tab presence is decided by the butler
+name in the frontend tab registry, never by `butler.toml` fields or runtime API
+responses. Labels are sentence-case with no punctuation.
+
+| Butler | Domain tabs (tab key: label) |
+|---|---|
+| chronicler | `timelines`: Timelines |
+| education | `reviews`: Reviews |
+| finance | `finances`: Finances |
+| general | `collections`: Collections; `entities`: Entities |
+| health | `health`: Measurements |
+| home | `devices`: Devices |
+| lifestyle | `taste`: Taste |
+| qa | `investigations`: Investigations |
+| relationship | `contacts`: Contacts |
+| switchboard | `routing-log`: Routing Log; `registry`: Registry |
+| travel | `trips`: Trips |
+
+Butlers absent from the table carry no domain tab. Domain tab bodies use the
+shared panel vocabulary specified in dashboard-design-language.
+
+#### Scenario: Each butler renders its registered domain tab labels
+
+- **WHEN** a butler listed in the registry is viewed
+- **THEN** the tab rail SHALL show exactly that butler's registered domain tab
+  labels, in registry order, between Memory and System
+- **AND** no butler SHALL render a domain tab registered to another butler
+
+#### Scenario: Butler without a domain tab
+
+- **WHEN** a butler absent from the registry is viewed
+- **THEN** the tab rail SHALL show only the six base tabs
+
+#### Scenario: Domain tab deep link
+
+- **WHEN** a user navigates to `/butlers/relationship?tab=contacts`
+- **THEN** the Contacts tab SHALL be active
+- **AND** navigating to `/butlers/finance?tab=contacts` SHALL fall back to
+  Overview
+
+#### Scenario: Domain tab is lazy-loaded
+
+- **WHEN** a domain tab is selected for the first time
+- **THEN** its body SHALL load on demand with a "Loading {label}..." fallback
+  naming that tab
+
+### Requirement: Butler Detail Command Bar
+
+The butler detail header SHALL provide a prompt-first command bar that starts a
+session for the butler: a prompt input, a complexity selector listing the
+backend complexity tiers (default workhorse), and a Run button.
+
+#### Scenario: Empty prompt fires the scheduled tick
+
+- **WHEN** the operator presses Run (or Enter) with an empty prompt
+- **THEN** the butler SHALL be triggered with its default scheduled-tick prompt
+  at the selected complexity
+- **AND** a "Force run triggered" confirmation toast SHALL appear
+
+#### Scenario: Custom prompt starts a session
+
+- **WHEN** the operator enters a prompt and presses Run
+- **THEN** the butler SHALL be triggered with that prompt at the selected
+  complexity
+- **AND** a "Prompt sent" confirmation toast SHALL appear
+
+#### Scenario: Run navigates to the new session
+
+- **WHEN** a trigger succeeds and returns a session id
+- **THEN** the page SHALL navigate to `/sessions/{session_id}`
+
+#### Scenario: Run failure and in-flight state
+
+- **WHEN** a trigger is in flight
+- **THEN** the prompt input, complexity selector, and Run button SHALL be
+  disabled and the button SHALL read "Running…"
+- **AND** when the trigger fails, a "Failed to run butler" error toast SHALL
+  appear
+
+### Requirement: Skills Section
+
+The System tab's Skills sub-section SHALL show all skills available to a butler
+with drill-down into each skill's SKILL.md.
+
+#### Scenario: Skill card grid
+
+- **WHEN** skills are loaded
+- **THEN** each skill SHALL render as a card in a responsive grid showing the
+  skill name, a "skill" badge, and the first non-heading, non-empty line of the
+  SKILL.md content as a description, truncated to 120 characters
+
+#### Scenario: Skill detail dialog
+
+- **WHEN** the operator clicks "View" on a skill card
+- **THEN** a dialog SHALL open showing the skill name as title and the full
+  SKILL.md content in a scrollable monospace block
+
+### Requirement: Butler Memory Tab Surface
+
+The butler detail Memory tab SHALL surface the butler's memory state as a KPI
+quartet over memory counts and a recent-writes feed, both scoped to the
+current butler. The cross-butler memory browser lives on `/memory`, not in this
+tab.
+
+#### Scenario: Memory KPI quartet with "+N today" sub-lines
+
+- **WHEN** the Memory tab loads
+- **THEN** four KPI cells SHALL render: Episodes, Facts, Entities, Rules
+- **AND** each cell's sub-line SHALL show "+N today", where N is the count added
+  in the last 24 hours
+- **AND** when the stats request fails, the quartet SHALL show "Could not load
+  memory stats."
+
+#### Scenario: Recent-writes feed
+
+- **WHEN** the recent-writes panel renders
+- **THEN** it SHALL list the butler's ten most recent episodes, newest first,
+  each with a relative timestamp, the butler name, and a one-line content
+  preview
+- **AND** the panel SHALL be a fixed-height scroll region so no entry is cut off
+  without scroll access
+- **AND** when the request fails, it SHALL show "Could not load recent writes."
+
+#### Scenario: Memory tab empty state
+
+- **WHEN** no episodes exist for the butler
+- **THEN** the recent-writes panel SHALL show "No memory writes recorded yet."
+- **AND** the KPI cells SHALL render zero counts with "+0 today" sub-lines
+
+### Requirement: Non-Butler Page Tab Structures
+
+Tabbed structures outside the butler detail view SHALL behave as specified here.
+
+#### Scenario: Memory browser tabs
+
+- **WHEN** the `/memory` page's browser renders
+- **THEN** it SHALL offer three registers: Facts, Rules, Episodes
+
+#### Scenario: Contact detail redirect
+
+- **WHEN** `/contacts/:contactId` is visited
+- **THEN** the route SHALL replace-navigate to `/entities/index?has=contact`
+- **AND** it SHALL NOT render the retired contact-detail page or its former tabs
+
+### Requirement: Composed prompt preview and roster drift truth
+
+The existing butler Configuration prompt section SHALL show the currently composed prompt preview
+rather than treating an absent database prompt row as absence of a system prompt. It SHALL compare
+current roster-source digests with the latest executed prompt receipt and display exactly one of
+`matches_git`, `drifted`, or `unknown`, with bounded roster-relative changed source names and no
+claim about dynamic-layer equality.
+
+#### Scenario: Composed prompt exists without a database row
+- **WHEN** a known roster butler has no database prompt-history row but its roster composition is available
+- **THEN** the Configuration section renders the composed prompt
+- **AND** it does not render `No system prompt configured.`
+
+#### Scenario: Roster source changes after execution
+- **WHEN** a roster file in a synthetic fixture tree changes after the newest session receipt
+- **THEN** the drift projection is `drifted`
+- **AND** it names the changed roster-relative source and the comparison time without exposing other prompt content
+
+#### Scenario: No executed receipt exists
+- **WHEN** no session prompt receipt exists for the butler
+- **THEN** the drift projection is `unknown`, never a green match
+
+#### Scenario: Unavailable or corrupt receipt remains explicit
+- **WHEN** the effective-prompt query fails or returns a corrupt receipt without verified prompt bytes
+- **THEN** the Configuration section renders an explicit unavailable or corrupt receipt state
+- **AND** it does not substitute or label the mutable authoring prompt as composed runtime instructions
+- **AND** the separate prompt edit control remains available
+
+### Requirement: Prompt preview does not expand authoring authority
+
+The composed preview and drift projection SHALL be read-only additions. They SHALL NOT add a new
+prompt authoring surface, change existing prompt PUT semantics, reinterpret a legacy database row
+as an owner overlay, or modify roster/manifesto content.
+
+#### Scenario: Existing edit control remains bounded
+- **WHEN** the composed preview is rendered
+- **THEN** existing prompt edit behavior remains separate from receipt and drift metadata
+- **AND** neither preview nor drift performs a prompt, roster, or manifesto write
+
 ## Source References
 
-- `about/heart-and-soul/design-language.md` Non-Negotiable 1 (one token system),
-  Non-Negotiable 2 (Page is a primitive), Non-Negotiable 4 (Time is a typed
-  primitive), Non-Negotiable 6 (no em-dashes), Voice and Copy rules, Type system
-  (three-family stack: Inter Tight / Source Serif 4 / JetBrains Mono), Butler
-  hue scope (letter-mark only).
-- `openspec/changes/redesign-detail-page-tab-vocabulary/` Gate B2 (bu-41p8z):
-  resident-mode tab vocabulary settled as Overview/Activity/Logs/Approvals/Spend/
-  Config/Memory.
-- `openspec/changes/redesign-butler-detail-no-hero/` Gate A A2 (bu-rx6c2): no
-  Tier 2 hero; primary slot is `<Tabs>`; identity stays in Overview tab.
-- `openspec/changes/redesign-detail-tab-overview-card-stack/`: Overview tab
-  seven-unit card stack.
-- `openspec/changes/detail-page-archetype/`: Butler detail page uses
-  `<Page archetype="detail">`; tab body is the primary slot.
-- `openspec/changes/add-butler-process-facts/`: Config process panel sources
-  `container_name`, `port`, `registered_duration_seconds`, `config_path`;
-  no `pid` field is permitted.
-- PLAN.md §6 Phase 7 — dispatch fold-in scope.
-- Visual reference: the `ButlersExpanded` redesign prototype (graduated; now
-  shipped in `frontend/`) for the dispatch fold-in.
+- `about/heart-and-soul/design-language.md`: token, `<Page>`, `<Time>`, voice,
+  and type-system doctrine the detail page follows.
+- `frontend/src/pages/ButlerDetailPage.tsx` and
+  `frontend/src/pages/butler-detail-tabs.ts`: detail page shell, tab rail, and
+  domain tab registry.
+- `frontend/src/components/butler-detail/`: header, command bar, Activity and
+  System sections, and every tab body.
+- `src/butlers/api/routers/butlers.py`, `butler_management.py`,
+  `butler_logs.py`, and `sessions.py` (under `src/butlers/api/routers/`):
+  butler record, prompt and tool management, log, and session analytics
+  endpoints.
 - Reuses `audit.append()` from dashboard-audit-log on every dispatch mutation.

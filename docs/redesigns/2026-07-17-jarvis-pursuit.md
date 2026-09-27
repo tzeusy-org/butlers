@@ -10,12 +10,12 @@ and **down for most later audits** (`source-confirmed`) — the outage itself is
 serving worktree's two unmerged commits broke the chronicler migration and left the stack dead
 for hours mid-run (see move 2).
 
-**Full per-agent structured output:** [`2026-07-17-jarvis-pursuit-data.json`](2026-07-17-jarvis-pursuit-data.json).
+**Full per-agent structured output:** `git show b23d5b76afab:docs/redesigns/2026-07-17-jarvis-pursuit-data.json`.
 Access pattern:
 
 ```bash
-jq '.audits[] | select(.page | startswith("<key>"))' docs/redesigns/2026-07-17-jarvis-pursuit-data.json
-jq '.synthesis.ranked_moves[] | select(.rank==1)'    docs/redesigns/2026-07-17-jarvis-pursuit-data.json
+git show b23d5b76afab:docs/redesigns/2026-07-17-jarvis-pursuit-data.json | jq '.audits[] | select(.page | startswith("<key>"))'
+git show b23d5b76afab:docs/redesigns/2026-07-17-jarvis-pursuit-data.json | jq '.synthesis.ranked_moves[] | select(.rank==1)'
 ```
 
 ## North star

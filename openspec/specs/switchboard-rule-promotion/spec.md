@@ -1,7 +1,7 @@
 # switchboard-rule-promotion Specification
 
 ## Purpose
-TBD - created by archiving change switchboard-rule-promotion. Update Purpose after archive.
+Lets the Switchboard learn deterministic triage rules from repeated routing verdicts: it logs every triage decision, suggests promoting consistent sender/verdict pairs to rules, applies promotions with owner confirmation, and demotes rules that spot-checks show have drifted.
 ## Requirements
 ### Requirement: Routing Verdict Log
 
@@ -262,8 +262,7 @@ a sender local-part matching `noreply`/`no-reply`/`notifications`/`alerts`
 The system SHALL apply a clearly-automated suppression suggestion automatically:
 a `rule_promotion_suggestions` row with `is_clearly_automated = TRUE` and
 `proposed_action` in (`skip`, `metadata_only`) MUST have its `ingestion_rules`
-row minted without an explicit confirm. This is the owner disposition (gate
-bu-4pq0s) — that tier only ever suppresses or downgrades an already-automated
+row minted without an explicit confirm. This is the owner disposition: that tier only ever suppresses or downgrades an already-automated
 sender (low blast radius) and never routes owner-facing traffic. RFC 0021's
 "no unattended auto-write" ratchet is scoped to `autonomy_suggestions`
 (butler-autonomy tool-calls), not ingestion routing rules; this requirement

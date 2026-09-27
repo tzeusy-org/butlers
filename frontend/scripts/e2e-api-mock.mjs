@@ -24,6 +24,18 @@ const server = http.createServer((request, response) => {
     return;
   }
 
+  // Domain-page E2E tests run with an explicit synthetic established session.
+  // The isolated owner-auth suite uses the real backend instead of this mock.
+  const expiry = new Date(Date.now() + 1_800_000).toISOString();
+  if (method === "GET" && url.pathname === "/api/auth/owner/status") {
+    writeJson(response, 200, { data: { state: "keyless_enrolled", authenticated: true, session_expires_at: expiry } });
+    return;
+  }
+  if (method === "GET" && url.pathname === "/api/auth/owner/csrf") {
+    writeJson(response, 200, { data: { csrf_token: "synthetic-domain-e2e-csrf", csrf_expires_at: expiry } });
+    return;
+  }
+
   if (url.pathname === "/api" || url.pathname.startsWith("/api/")) {
     writeJson(response, 404, {
       error: {

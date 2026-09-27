@@ -29,7 +29,9 @@ describe("QA dossier fix-column components", () => {
   });
 
   it("test_pr_panel_null_renders_escalated_message_only_when_escalated", () => {
-    render(<PRPanel pr={null} whyThisFix={null} stage="escalated" />);
+    render(
+      <PRPanel pr={null} whyThisFix={null} stage="escalated" proposalState="none" />,
+    );
 
     expect(screen.getByText("No PR. Escalated to user.")).toBeTruthy();
     expect(screen.getByText("No PR. Escalated to user.").className).toContain("italic");
@@ -37,7 +39,7 @@ describe("QA dossier fix-column components", () => {
   });
 
   it("test_pr_panel_null_renders_destructive_failed_message_when_failed", () => {
-    render(<PRPanel pr={null} whyThisFix={null} stage="failed" />);
+    render(<PRPanel pr={null} whyThisFix={null} stage="failed" proposalState="none" />);
 
     expect(screen.getByText("No PR. Investigation failed.")).toBeTruthy();
     expect(screen.getByText("No PR. Investigation failed.").className).toContain(
@@ -52,7 +54,7 @@ describe("QA dossier fix-column components", () => {
   it.each(["detect", "diagnose", "pr", "landed"] as const)(
     "test_pr_panel_null_renders_no_pr_yet_for_stage_%s",
     (stage) => {
-      render(<PRPanel pr={null} whyThisFix={null} stage={stage} />);
+      render(<PRPanel pr={null} whyThisFix={null} stage={stage} proposalState="none" />);
 
       expect(screen.getByText("No PR yet.")).toBeTruthy();
       expect(screen.queryByText("No PR. Escalated to user.")).toBeNull();
@@ -65,6 +67,7 @@ describe("QA dossier fix-column components", () => {
         pr={pr}
         whyThisFix="The failing runtime ignored catalog timeouts."
         stage="pr"
+        proposalState="published"
         diffSnapshot={[
           { kind: "meta", text: "src/butlers/core/spawner.py" },
           { kind: "-", text: "runtime.invoke(prompt)" },
@@ -98,6 +101,7 @@ describe("QA dossier fix-column components", () => {
         pr={{ ...pr, ci_status: null, additions: null, deletions: null }}
         whyThisFix={null}
         stage="pr"
+        proposalState="published"
       />,
     );
 
@@ -112,6 +116,7 @@ describe("QA dossier fix-column components", () => {
         whyThisFix="The failing runtime ignored catalog timeouts."
         diffSnapshot={[]}
         stage="pr"
+        proposalState="published"
       />,
     );
 
@@ -160,7 +165,14 @@ describe("QA dossier fix-column components", () => {
   ] as [QaPrSummary["state"], string][])(
     "test_pr_panel_state_chip_%s",
     (state, expectedBorderColor) => {
-      render(<PRPanel pr={{ ...pr, state }} whyThisFix={null} stage="pr" />);
+      render(
+        <PRPanel
+          pr={{ ...pr, state }}
+          whyThisFix={null}
+          stage="pr"
+          proposalState="published"
+        />,
+      );
 
       const chips = screen.getAllByText(state);
       // The chip takes its status colour from StateDot's exported tone registry.

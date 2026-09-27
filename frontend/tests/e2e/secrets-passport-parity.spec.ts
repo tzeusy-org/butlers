@@ -78,8 +78,6 @@ const MOCK_INVENTORY_RESPONSE = {
     system: [
       {
         key: "BUTLER_TELEGRAM_TOKEN",
-        category: "messaging",
-        description: "Bot token for Telegram.",
         state: "ok",
         fingerprint: "sha256:ab12cd34",
         last_verified: "14:01 today",
@@ -90,8 +88,6 @@ const MOCK_INVENTORY_RESPONSE = {
     cli: [
       {
         key: "claude-cli",
-        category: "runtime",
-        description: "Claude Code",
         state: "ok",
         fingerprint: "sha256:11a47cd2",
         last_verified: "14:15 today",
@@ -426,8 +422,8 @@ test.describe("PageUser (C10–C15)", () => {
   test("C11: Spotify recovery action starts the connector OAuth flow", async ({ page }) => {
     // Spotify authorizes through the connector PKCE flow, so the deterministic
     // assertion is the POST to /api/connectors/spotify/oauth/start (not the
-    // generalized /api/secrets/user/spotify/reauthorize, whose app credentials
-    // were never provisioned). We assert on the network request rather than
+    // generic /api/secrets/user/spotify/reauthorize route). We assert on the
+    // network request rather than
     // transient "redirecting" text; the success handler sets
     // window.location.href to the provider URL, so abort that target to keep
     // the test page put.
@@ -609,8 +605,6 @@ test.describe("PageCli (C22–C28)", () => {
     const inventoryWithGeneric = JSON.parse(JSON.stringify(MOCK_INVENTORY_RESPONSE));
     inventoryWithGeneric.data.cli.push({
       key: "generic-token",
-      category: "runtime",
-      description: "Generic token runtime",
       state: "ok",
       fingerprint: "sha256:gentoken",
       last_verified: "13:00 today",
@@ -649,8 +643,6 @@ test.describe("PageCli (C22–C28)", () => {
     const inventoryWithMirror = JSON.parse(JSON.stringify(MOCK_INVENTORY_RESPONSE));
     inventoryWithMirror.data.cli.push({
       key: "cli-auth/orphan-provider",
-      category: "cli-auth",
-      description: "Orphaned CLI auth mirror",
       state: "ok",
       fingerprint: "sha256:orphan01",
       last_verified: "13:00 today",
@@ -676,8 +668,6 @@ test.describe("PageCli (C22–C28)", () => {
     const inventoryWithGeneric = JSON.parse(JSON.stringify(MOCK_INVENTORY_RESPONSE));
     inventoryWithGeneric.data.cli.push({
       key: "generic-token",
-      category: "runtime",
-      description: "Generic token runtime",
       state: "ok",
       fingerprint: "sha256:gentoken",
       last_verified: "13:00 today",
@@ -752,8 +742,6 @@ test.describe("PageCli (C22–C28)", () => {
     const inventoryWithDevice = JSON.parse(JSON.stringify(MOCK_INVENTORY_RESPONSE));
     inventoryWithDevice.data.cli.push({
       key: "github-cli",
-      category: "runtime",
-      description: "GitHub CLI",
       state: "never_set",
       fingerprint: null,
       last_verified: null,
@@ -788,8 +776,6 @@ test.describe("PageCli (C22–C28)", () => {
     const inventoryWithDevice = JSON.parse(JSON.stringify(MOCK_INVENTORY_RESPONSE));
     inventoryWithDevice.data.cli.push({
       key: "github-cli2",
-      category: "runtime",
-      description: "GitHub CLI 2",
       state: "ok",
       fingerprint: "sha256:ghcli2",
       last_verified: "12:00 today",
@@ -1421,8 +1407,6 @@ test.describe("Error / edge paths", () => {
     const inventoryWithGeneric = JSON.parse(JSON.stringify(MOCK_INVENTORY_RESPONSE));
     inventoryWithGeneric.data.cli.push({
       key: "generic-token",
-      category: "runtime",
-      description: "Generic token runtime",
       state: "ok",
       fingerprint: "sha256:gentoken",
       last_verified: "13:00 today",
@@ -1486,8 +1470,6 @@ test.describe("No-dead-control assertion", () => {
     const inventoryMissing = JSON.parse(JSON.stringify(MOCK_INVENTORY_RESPONSE));
     inventoryMissing.data.system = [{
       key: "MISSING_KEY",
-      category: "general",
-      description: "A missing key.",
       state: "missing",
       fingerprint: null,
       last_verified: null,
@@ -1514,8 +1496,6 @@ test.describe("No-dead-control assertion", () => {
     const inventoryMissingCli = JSON.parse(JSON.stringify(MOCK_INVENTORY_RESPONSE));
     inventoryMissingCli.data.cli = [{
       key: "missing-cli",
-      category: "runtime",
-      description: "Missing CLI token",
       state: "never_set",
       fingerprint: null,
       last_verified: null,

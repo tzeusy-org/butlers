@@ -2,6 +2,30 @@
 
 > Your guide to Butlers — your personal AI agent system — from first run to production operation.
 
+## Butlers in One Page
+
+Butlers is a personal AI agent system that takes recurring mental labour off one person's plate.
+Every instance belongs to exactly one owner, who holds the database, the credentials, and the
+model keys; there is no hosted service and no multi-tenancy. It is not a chatbot, a monolithic
+agent, or a framework for other products: butlers act on schedules and incoming events, each within
+one life domain. [Vision](../about/heart-and-soul/vision.md) is the binding statement of goals,
+non-goals, and non-negotiable rules.
+
+![Butlers system overview](overview/system-overview.svg)
+
+- **Butler daemon.** Each butler is a long-running MCP server with deterministic core
+  infrastructure — state store, scheduler, LLM CLI spawner, session log. Intelligence lives only in
+  the ephemeral LLM session it spawns per trigger, wired exclusively to that butler's tools. Domain
+  butlers serve the owner; staffers (such as the Switchboard) serve the system.
+- **Modules** add MCP tools, migrations, and lifecycle hooks inside a daemon and never touch core.
+- **Connectors** are separate processes that normalise external events (Telegram, Gmail, ...) and
+  submit them to the Switchboard; they never classify or route.
+- **Switchboard** is the single ingress: it classifies each request and dispatches to domain
+  butlers over MCP. Butlers never call each other directly.
+- **Dashboard** is a FastAPI API plus a web frontend behind owner authentication.
+- **PostgreSQL** is one database with one schema per butler; cross-butler data (identity,
+  credentials) lives in `public`, and each butler's role sees only its schema plus `public`.
+
 ## Reading Path
 
 New here? Follow this sequence:
@@ -30,9 +54,9 @@ Then explore by topic as needed:
 - [Runtime](runtime/index.md) — spawner, scheduler, sessions, model routing, tool call capture
 
 ### Components
-- [Butlers](butlers/index.md) — switchboard, general, relationship, health, messenger, finance, education, travel, home
-- [Modules](modules/index.md) — memory, calendar, contacts, approvals, email, telegram, mailbox, metrics, pipeline
-- [Connectors](connectors/index.md) — telegram bot, telegram user client, gmail, heartbeat, live listener
+- [Butlers](butlers/index.md) — the roster: one role profile per butler
+- [Modules](modules/index.md) — capability units a butler opts into via `butler.toml`
+- [Connectors](connectors/index.md) — per-transport ingestion adapters
 
 ### Interfaces
 - [Frontend](frontend/index.md) — dashboard UI, information architecture, API contracts
@@ -40,7 +64,7 @@ Then explore by topic as needed:
 
 ### Infrastructure
 - [Data and Storage](data_and_storage/index.md) — schema topology, migrations, state store, blob storage, credential store
-- [Identity and Secrets](identity_and_secrets/index.md) — owner identity, contacts, OAuth, CLI auth, environment variables
+- [Identity and Secrets](identity_and_secrets/index.md) — owner identity, OAuth, CLI auth, environment variables
 - [Operations](operations/index.md) — Docker deployment, environment config, Grafana monitoring, troubleshooting
 
 ### Quality and Planning

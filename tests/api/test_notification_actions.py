@@ -18,11 +18,11 @@ from unittest.mock import ANY, AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.briefing.cache import BriefingCache
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.notifications import _get_db_manager as _notif_get_db
 from butlers.api.routers.notifications import get_cache
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 

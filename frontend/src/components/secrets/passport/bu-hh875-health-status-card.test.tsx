@@ -130,12 +130,16 @@ vi.mock("@/hooks/use-google-health.ts", async (importOriginal) => {
 // Top-level imports
 import * as useSecretsModule from "@/hooks/use-secrets.ts";
 import * as useGoogleHealthModule from "@/hooks/use-google-health.ts";
-import { GOOGLE_HEALTH_SCOPES } from "@/api/client.ts";
+import { GOOGLE_HEALTH_SCOPE_FAMILIES } from "@/api/client.ts";
 import { PageGoogleAccounts } from "./pages.tsx";
 import {
   computeTestModeBannerVariant,
   TEST_MODE_RED_THRESHOLD_MS,
 } from "@/lib/google-health-test-mode.ts";
+
+const GOOGLE_HEALTH_SCOPES = GOOGLE_HEALTH_SCOPE_FAMILIES.map(
+  (family) => `https://www.googleapis.com/auth/googlehealth.${family}.readonly`,
+);
 
 // ---------------------------------------------------------------------------
 // Helpers

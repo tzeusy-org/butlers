@@ -126,8 +126,7 @@ credentials across a soft delete.
 
 ### Requirement: Metadata Schema
 
-The implementation SHALL provide the behavior described by this requirement.
-The `metadata` JSONB column stores per-account configuration overrides.
+The `metadata` JSONB column SHALL store per-account configuration overrides.
 
 #### Scenario: Default metadata structure
 

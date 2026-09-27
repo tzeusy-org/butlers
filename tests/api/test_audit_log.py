@@ -25,7 +25,6 @@ import pytest
 from asyncpg.exceptions import UndefinedTableError
 from fastapi.testclient import TestClient
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.models.audit import AuditLogEntry
 from butlers.api.routers import audit as audit_module
@@ -36,6 +35,7 @@ from butlers.api.routers.audit import (
     audit_log_appended_total,
 )
 from butlers.core.credential_keys import normalize_credential_key
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 
@@ -1170,6 +1170,8 @@ def test_kind_privileged_sql_is_consequence_allowlist():
         "data.%",
         "webhook.%",
         "spend.%",
+        "runtime_config_patch",
+        "PUT /api/butlers/%/model-overrides",
     ):
         assert action_family in sql
     assert "result = 'error'" in sql
@@ -1233,8 +1235,10 @@ def test_kind_privileged_returns_mutation_rows():
         _sample_row(row_id=1, action="permission.set"),
         _sample_row(row_id=2, action="data.export"),
         _sample_row(row_id=3, action="webhook.create"),
+        _sample_row(row_id=4, action="runtime_config_patch"),
+        _sample_row(row_id=5, action="PUT /api/butlers/qa/model-overrides"),
     ]
-    app, _, _ = _make_audit_app(mutation_rows, total=3)
+    app, _, _ = _make_audit_app(mutation_rows, total=5)
     client = TestClient(app)
     resp = client.get("/api/audit-log?kind=privileged&limit=15")
     assert resp.status_code == 200
@@ -1243,6 +1247,8 @@ def test_kind_privileged_returns_mutation_rows():
     assert "permission.set" in actions
     assert "data.export" in actions
     assert "webhook.create" in actions
+    assert "runtime_config_patch" in actions
+    assert "PUT /api/butlers/qa/model-overrides" in actions
 
 
 # ---------------------------------------------------------------------------

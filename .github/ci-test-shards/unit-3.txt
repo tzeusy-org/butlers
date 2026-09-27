@@ -95,6 +95,7 @@ tests/connectors/test_google_drive_connector.py
 tests/connectors/test_home_assistant_rest_fallback.py
 tests/connectors/test_home_assistant_transport_contract.py
 tests/connectors/test_spotify_client.py
+tests/connectors/test_spotify_track_plays.py
 tests/connectors/test_steam_account_registry.py
 tests/connectors/test_telegram_bot_gap_interview.py
 tests/contracts/test_approval_gates.py
@@ -166,7 +167,6 @@ tests/daemon/test_startup_coverage_gaps.py
 tests/daemon/test_startup_guard.py
 tests/dashboard/test_briefing_attention_contract.py
 tests/features/test_skills_validation.py
-tests/integration/test_mailbox_module.py
 tests/jobs/test_commitment_escalation.py
 tests/jobs/test_deploy_drift.py
 tests/jobs/test_flight_status.py
@@ -180,12 +180,14 @@ tests/migrations/test_entity_v3_lifecycle_migration.py
 tests/migrations/test_home_assistant_person_entity_only_migration.py
 tests/migrations/test_message_inbox_scanner_index_migration.py
 tests/migrations/test_predicate_registry_migration.py
+tests/migrations/test_reclassify_health_write_sensitivity_migration.py
 tests/migrations/test_rehome_contact_profile_migration.py
 tests/migrations/test_relationship_facts_migration.py
 tests/migrations/test_runtime_config_migration.py
 tests/migrations/test_secrets_be1_migration.py
 tests/migrations/test_tombstone_memory_calendar_episodes_migration.py
 tests/migrations/test_v_overlay_contributions_migration.py
+tests/modules/memory/test_local_read_ceiling.py
 tests/modules/memory/test_reembedding.py
 tests/modules/memory/test_tools_preferences.py
 tests/modules/memory/test_tools_reading.py
@@ -214,6 +216,7 @@ tests/scripts/test_compose_sysctls.py
 tests/scripts/test_generate_runtime_cli_sandbox_manifest.py
 tests/scripts/test_pg_dump_backup.py
 tests/scripts/test_restore_drill_tcp_proxy.py
+tests/scripts/test_route_a_meeting_prep_harness.py
 tests/scripts/test_validate_pr_review.py
 tests/smoke/test_daemon_lifecycle.py
 tests/smoke/test_route_inbox_recovery.py

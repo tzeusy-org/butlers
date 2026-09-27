@@ -1,6 +1,7 @@
 """Tests for context parameter in trigger (butlers-06j.2).
 
-Also covers spawned-prompt parity across runtime adapters (bu-1mq1d.3).
+Also covers spawned-prompt parity across runtime adapters (bu-1mq1d.3) and
+the per-layer prompt-composition token digest (bu-hz0g0).
 """
 
 from __future__ import annotations
@@ -12,7 +13,14 @@ import pytest
 
 from butlers.config import ButlerConfig
 from butlers.core.runtimes.base import RuntimeAdapter
+from butlers.core.skills import read_system_prompt_with_sources
 from butlers.core.spawner import Spawner
+from butlers.core.spawner_context import (
+    ComposedPrompt,
+    _compose_system_prompt,
+    compose_effective_system_prompt_receipt,
+    compose_prompt_digest,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -178,3 +186,138 @@ class TestSpawnedPromptParityAcrossRuntimes:
             "section (roster/relationship/AGENTS.md 'Scope Filter' heading) — a Claude-runtime "
             "session would silently skip the scope='relationship' facts-table guard."
         )
+
+
+class TestComposePromptDigest:
+    """bu-hz0g0: per-layer token digest for the composed system prompt.
+
+    ``compose_prompt_digest`` measures the five layers represented by the
+    ledger schema at the spawn seam. It estimates each layer's token count at
+    chars/4 (the same heuristic
+    ``butlers.modules.pipeline._load_email_history`` uses) rather than
+    requiring a tokenizer on the spawn hot path.
+    """
+
+    def test_all_layers_present_estimates_chars_over_four(self) -> None:
+        digest = compose_prompt_digest(
+            "base" * 10,  # 40 chars
+            "memory" * 10,  # 60 chars
+            general_timezone_instruction="tz" * 10,  # 20 chars
+            routing_instructions="route" * 10,  # 50 chars
+            context_preamble="ctx" * 10,  # 30 chars
+        )
+        assert digest == ComposedPrompt(
+            base_prompt_tokens=10,
+            timezone_instruction_tokens=5,
+            context_preamble_tokens=7,
+            routing_instructions_tokens=12,
+            memory_context_tokens=15,
+        )
+
+    def test_missing_optional_layers_are_zero_not_none(self) -> None:
+        digest = compose_prompt_digest("base prompt text", None)
+        assert digest == ComposedPrompt(
+            base_prompt_tokens=len("base prompt text") // 4,
+            timezone_instruction_tokens=0,
+            context_preamble_tokens=0,
+            routing_instructions_tokens=0,
+            memory_context_tokens=0,
+        )
+
+    def test_empty_string_layer_is_zero(self) -> None:
+        digest = compose_prompt_digest("base", "", general_timezone_instruction="")
+        assert digest.memory_context_tokens == 0
+        assert digest.timezone_instruction_tokens == 0
+
+
+class TestBlindSpotPreambleComposition:
+    """bu-2jtfw.13 AC1: a blind-spot-free composition is byte-identical to today's."""
+
+    def test_none_blind_spot_preamble_leaves_composition_unchanged(self) -> None:
+        without_param = _compose_system_prompt(
+            "base",
+            "memory",
+            general_timezone_instruction="tz",
+            routing_instructions="routing",
+            context_preamble="context",
+        )
+        with_none_param = _compose_system_prompt(
+            "base",
+            "memory",
+            general_timezone_instruction="tz",
+            routing_instructions="routing",
+            context_preamble="context",
+            blind_spot_preamble=None,
+        )
+        assert without_param == with_none_param
+
+    def test_blind_spot_preamble_layers_between_context_and_routing(self) -> None:
+        composed = _compose_system_prompt(
+            "base",
+            None,
+            context_preamble="context",
+            blind_spot_preamble="blind-spot-block",
+            routing_instructions="routing",
+        )
+        assert composed == "base\n\ncontext\n\nblind-spot-block\n\nrouting"
+
+
+def test_effective_prompt_receipt_is_deterministic_for_synthetic_roster(tmp_path: Path) -> None:
+    """The receipt covers exact composed UTF-8 bytes and every named layer."""
+    roster = tmp_path / "roster"
+    config_dir = roster / "synthetic"
+    shared = roster / "shared"
+    config_dir.mkdir(parents=True)
+    shared.mkdir()
+    (config_dir / "CLAUDE.md").write_text("@AGENTS.md", encoding="utf-8")
+    (config_dir / "AGENTS.md").write_text("# Synthetic identity\nUse tools.", encoding="utf-8")
+    (shared / "BUTLER_SKILLS.md").write_text("# Shared skills", encoding="utf-8")
+
+    resolved = read_system_prompt_with_sources(config_dir, "synthetic")
+    base_sources = [(source.source, source.status, source.content) for source in resolved.sources]
+    first = compose_effective_system_prompt_receipt(
+        resolved.prompt,
+        None,
+        base_sources=base_sources,
+        general_timezone_instruction="Timezone: UTC",
+    )
+    second = compose_effective_system_prompt_receipt(
+        resolved.prompt,
+        None,
+        base_sources=base_sources,
+        general_timezone_instruction="Timezone: UTC",
+    )
+
+    assert first == second
+    assert first.prompt == ("# Synthetic identity\nUse tools.\n\n# Shared skills\n\nTimezone: UTC")
+    assert first.total_bytes == len(first.prompt.encode("utf-8"))
+    assert first.digest == "a2946810270f4009bb3949b1929980dcfe31e79885f6abd153a15df05c876c0f"
+    assert [entry.source for entry in first.provenance] == [
+        "roster:synthetic/CLAUDE.md",
+        "roster:synthetic/AGENTS.md",
+        "roster:shared/BUTLER_SKILLS.md",
+        "roster:shared/MCP_LOGGING.md",
+        "general_settings",
+        "situational_context",
+        "blind_spot_disclosure",
+        "switchboard_routing_instructions",
+        "memory_context",
+    ]
+    assert [entry.status for entry in first.provenance] == [
+        "present",
+        "present",
+        "present",
+        "unavailable",
+        "present",
+        "unavailable",
+        "unavailable",
+        "unavailable",
+        "unavailable",
+    ]
+    assert all(str(tmp_path) not in entry.source for entry in first.provenance)
+    assert all(
+        (entry.bytes == 0 and entry.sha is None)
+        if entry.status == "unavailable"
+        else entry.sha is not None
+        for entry in first.provenance
+    )

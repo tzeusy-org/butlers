@@ -132,7 +132,7 @@ export default function MemorySearch() {
               inputRef.current?.blur();
             }
           }}
-          className="min-w-0 flex-1 bg-transparent font-mono text-[11px] text-fg placeholder:text-[var(--mfg)] focus:outline-none"
+          className="min-w-0 flex-1 bg-transparent font-mono text-[11px] text-fg placeholder:text-[var(--mfg)] focus:outline-none focus:ring-focus"
         />
         {hasQuery && (
           <button

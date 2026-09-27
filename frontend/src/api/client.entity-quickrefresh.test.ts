@@ -26,11 +26,35 @@ function mockJson(body: unknown) {
 }
 
 import {
+  getEntityActivity,
   getEntityActivityBins,
   getEntityCoreDates,
   getEntityDeltaFacts,
   markEntityView,
 } from "./client.ts";
+
+describe("getEntityActivity", () => {
+  it("uses the canonical stream route, pagination, and request cancellation", async () => {
+    mockJson({
+      items: [],
+      total: 0,
+      limit: 25,
+      offset: 5,
+      degraded: false,
+      degraded_reason: null,
+    });
+    const signal = new AbortController().signal;
+
+    const result = await getEntityActivity("e1", { limit: 25, offset: 5, signal });
+
+    expect(result.items).toEqual([]);
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(String(url)).toContain("/relationship/entities/e1/activity?");
+    expect(String(url)).toContain("limit=25");
+    expect(String(url)).toContain("offset=5");
+    expect(init).toMatchObject({ signal });
+  });
+});
 
 describe("getEntityActivityBins", () => {
   it("sends bins=daily&bins_only=true and reads the bins series", async () => {

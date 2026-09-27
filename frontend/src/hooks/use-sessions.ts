@@ -3,19 +3,35 @@
  */
 
 import { useQueries, useQuery } from "@tanstack/react-query";
-import type { ApiResponse, SessionDetail, SessionParams, SessionSummary } from "@/api/types.ts";
+import type {
+  ApiResponse,
+  SessionDetail,
+  SessionParams,
+  SessionPromptReceipt,
+  SessionSummary,
+} from "@/api/types.ts";
 import { POLL_RUNNING_SESSION_MS } from "@/lib/poll-policy";
 import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval";
 
 import {
   getButlerSessions,
   getSession,
+  getSessionPrompt,
   getSessionAggregate,
   getSessions,
 } from "@/api/index.ts";
 
 interface SessionQueryOptions {
   refetchInterval?: number | false;
+}
+
+/** Fetch sensitive effective-prompt content only after its disclosure is opened. */
+export function useSessionPromptReceipt(id: string) {
+  return useQuery<ApiResponse<SessionPromptReceipt>>({
+    queryKey: ["session-prompt-receipt", id],
+    queryFn: () => getSessionPrompt(id),
+    staleTime: Number.POSITIVE_INFINITY,
+  });
 }
 
 /**
@@ -143,6 +159,7 @@ function detailSeedFromSummary(summary: SessionSummary): ApiResponse<SessionDeta
       parent_session_id: null,
       complexity: summary.complexity ?? null,
       resolution_source: null,
+      purpose_lane: summary.purpose_lane ?? null,
       process_log: null,
     },
     meta: {},

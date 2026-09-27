@@ -25,9 +25,9 @@ from contextlib import asynccontextmanager
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.routers.memory import _get_db_manager
 from butlers.modules.memory.consolidation import _record_consolidation_run
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -50,9 +50,10 @@ CREATE TABLE IF NOT EXISTS facts (
     validity TEXT NOT NULL DEFAULT 'active'
 );
 CREATE TABLE IF NOT EXISTS rules (
-    id       BIGSERIAL PRIMARY KEY,
-    maturity TEXT NOT NULL DEFAULT 'candidate',
-    metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+    id         BIGSERIAL PRIMARY KEY,
+    maturity   TEXT NOT NULL DEFAULT 'candidate',
+    metadata   JSONB NOT NULL DEFAULT '{}'::jsonb,
+    retired_at TIMESTAMPTZ
 );
 CREATE TABLE IF NOT EXISTS public.consolidation_runs (
     id                 BIGSERIAL PRIMARY KEY,

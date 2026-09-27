@@ -19,6 +19,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { axe, toHaveNoViolations } from "jest-axe";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
 
@@ -26,7 +27,20 @@ import { FloatingChatWidget } from "./FloatingChatWidget";
 import { CommandRegistryProvider, useCommandMenuActions } from "@/lib/command-registry";
 import { PageContextProvider } from "@/lib/page-context.tsx";
 import { __resetChatUnreadWatermarkForTests } from "@/hooks/use-chat-unread.ts";
+import { OPEN_CHAT_WIDGET_EVENT } from "@/lib/shortcut-help";
+import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
 import type { ConversationSummary, Message } from "@/api/types.ts";
+
+expect.extend(toHaveNoViolations);
+
+const announceMock = vi.fn();
+vi.mock("@/lib/shell-announcer", () => ({
+  announce: (text: string) => announceMock(text),
+}));
+
+vi.mock("@/hooks/use-prefers-reduced-motion", () => ({
+  usePrefersReducedMotion: vi.fn(() => false),
+}));
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -54,17 +68,23 @@ vi.mock("@/api/client.ts", () => ({
 const createConversationMock = vi.fn();
 const sendMessageMock = vi.fn();
 const cancelConversationMessageTurnMock = vi.fn();
+const getConversationMessagesMock = vi.fn();
 vi.mock("@/api/index.ts", () => ({
   createConversation: (...args: unknown[]) => createConversationMock(...args),
   sendMessage: (...args: unknown[]) => sendMessageMock(...args),
   cancelConversationMessageTurn: (...args: unknown[]) =>
     cancelConversationMessageTurnMock(...args),
+  getConversationMessages: (...args: unknown[]) => getConversationMessagesMock(...args),
 }));
 
 // consumeSseStream is mocked to synchronously replay a scripted event queue,
 // bypassing real stream parsing entirely.
 let scriptedEvents: Array<{ event: string; data: unknown }> = [];
 let activeSseEventHandler: ((event: { event: string; data: unknown }) => void) | null = null;
+// bu-0ynlk.7: simulates a non-abort transport failure (network reset, proxy
+// drop) interrupting the stream after `scriptedEvents` has been replayed,
+// rather than the stream completing normally with `done`.
+let simulateStreamFailure: Error | null = null;
 vi.mock("./sse-utils.ts", () => ({
   consumeSseStream: async (
     _response: Response,
@@ -72,6 +92,11 @@ vi.mock("./sse-utils.ts", () => ({
   ) => {
     activeSseEventHandler = onEvent;
     for (const evt of scriptedEvents) onEvent(evt);
+    if (simulateStreamFailure) {
+      const err = simulateStreamFailure;
+      simulateStreamFailure = null;
+      throw err;
+    }
   },
 }));
 
@@ -270,11 +295,17 @@ beforeEach(() => {
   vi.clearAllMocks();
   scriptedEvents = [];
   activeSseEventHandler = null;
+  simulateStreamFailure = null;
+  // Safe default for the non-abort-stream-failure recovery refetch
+  // (bu-0ynlk.7) -- most tests never exercise that path, but an unconfigured
+  // mock returning `undefined` would throw on `.data` access if one did.
+  getConversationMessagesMock.mockResolvedValue({ data: [] });
   mockHooksWithConversations();
   // useChatUnreadBadge's watermark is a real (unmocked) module-scope store —
   // reset it + localStorage so badge state never leaks across tests.
   window.localStorage.clear();
   __resetChatUnreadWatermarkForTests();
+  vi.mocked(usePrefersReducedMotion).mockReturnValue(false);
 });
 
 afterEach(() => cleanup());
@@ -317,7 +348,7 @@ describe("FloatingChatWidget — trigger and open/close", () => {
     expect(screen.getByTestId("floating-chat-trigger")).toBeDefined();
   });
 
-  it("focuses its non-modal panel and restores the trigger after Escape closes it", () => {
+  it("focuses its non-modal panel's composer (not the title) and restores the trigger after Escape closes it (bu-0ynlk.13)", () => {
     renderWidget();
     const trigger = screen.getByTestId("floating-chat-trigger");
     trigger.focus();
@@ -326,12 +357,9 @@ describe("FloatingChatWidget — trigger and open/close", () => {
 
     const panel = screen.getByTestId("floating-chat-panel");
     expect(panel.getAttribute("aria-modal")).toBeNull();
-    expect(document.activeElement).toBe(
-      within(panel).getByRole("heading", { name: "Talk to Butlers" }),
-    );
-
     const input = within(panel).getByPlaceholderText("Type a message...");
-    input.focus();
+    expect(document.activeElement).toBe(input);
+
     expect(fireEvent.keyDown(input, { key: "Tab" })).toBe(true);
     expect(document.activeElement).toBe(input);
 
@@ -735,6 +763,87 @@ describe("FloatingChatWidget — unread badge", () => {
 // Send-error classification
 // ---------------------------------------------------------------------------
 
+describe("FloatingChatWidget — stream-failure recovery (bu-0ynlk.7)", () => {
+  it("recovers silently when the reply already landed despite a non-abort stream failure", async () => {
+    mockHooksEmpty();
+    createConversationMock.mockResolvedValue({ ok: true } as Response);
+    scriptedEvents = [
+      {
+        event: "conversation_created",
+        data: { conversation_id: "conv-recovered-1", title: null },
+      },
+    ];
+    simulateStreamFailure = new Error("network reset");
+    getConversationMessagesMock.mockResolvedValue({
+      data: [
+        {
+          id: "reply-1",
+          conversation_id: "conv-recovered-1",
+          role: "assistant",
+          content: "Here's your answer.",
+          tool_calls: null,
+          error: null,
+          model: null,
+          input_tokens: null,
+          output_tokens: null,
+          duration_ms: null,
+          session_id: null,
+          request_id: null,
+          created_at: "2027-01-01T00:00:00.000Z",
+        },
+      ],
+    });
+
+    renderWidget();
+    fireEvent.click(screen.getByTestId("floating-chat-trigger"));
+
+    const input = screen.getByPlaceholderText("Type a message...");
+    fireEvent.change(input, { target: { value: "hello" } });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Send message"));
+    });
+
+    await waitFor(() => {
+      expect(getConversationMessagesMock).toHaveBeenCalledWith("switchboard", "conv-recovered-1");
+    });
+    expect(screen.queryByTestId("chat-widget-error-banner")).toBeNull();
+  });
+
+  it("still shows the failure banner when the refetch proves no reply landed", async () => {
+    mockHooksEmpty();
+    createConversationMock.mockResolvedValue({ ok: true } as Response);
+    scriptedEvents = [
+      {
+        event: "conversation_created",
+        data: { conversation_id: "conv-unrecovered-1", title: null },
+      },
+    ];
+    simulateStreamFailure = new Error("network reset");
+    getConversationMessagesMock.mockResolvedValue({ data: [] });
+
+    renderWidget();
+    fireEvent.click(screen.getByTestId("floating-chat-trigger"));
+
+    const input = screen.getByPlaceholderText("Type a message...");
+    fireEvent.change(input, { target: { value: "hello" } });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Send message"));
+    });
+
+    await waitFor(() => {
+      expect(getConversationMessagesMock).toHaveBeenCalledWith(
+        "switchboard",
+        "conv-unrecovered-1",
+      );
+    });
+    expect(screen.getByTestId("chat-widget-error-banner").textContent).toContain(
+      "Failed to send message.",
+    );
+  });
+});
+
 describe("FloatingChatWidget — send-error classification", () => {
   it("uses doctrine-compliant copy for a generic transport failure", async () => {
     mockHooksEmpty();
@@ -1009,7 +1118,7 @@ describe("FloatingChatWidget — Stop button", () => {
     await waitFor(() => {
       expect(screen.getByText("Cancelled by owner")).toBeDefined();
     });
-    expect(screen.getByRole("status").textContent).toBe("This turn was stopped.");
+    expect(screen.getByTestId("chat-stop-status").textContent).toBe("This turn was stopped.");
   });
 
   it("keeps the optimistic message visible through a confirmed Stop before conversation_created", async () => {
@@ -1073,7 +1182,7 @@ describe("FloatingChatWidget — Stop button", () => {
       await Promise.resolve();
     });
 
-    expect(screen.getByRole("status").textContent).toBe("Stopping this turn.");
+    expect(screen.getByTestId("chat-stop-status").textContent).toBe("Stopping this turn.");
     expect(screen.queryByTestId("chat-activity-status")).toBeNull();
     expect(screen.queryByRole("link", { name: "finance" })).toBeNull();
 
@@ -1084,7 +1193,7 @@ describe("FloatingChatWidget — Stop button", () => {
       });
     });
     expect(screen.getByText("Cancelled by owner")).toBeDefined();
-    expect(screen.getByRole("status").textContent).toBe("This turn was stopped.");
+    expect(screen.getByTestId("chat-stop-status").textContent).toBe("This turn was stopped.");
     expect(screen.queryByTestId("chat-activity-status")).toBeNull();
     expect(screen.queryByRole("link", { name: "finance" })).toBeNull();
 
@@ -1117,7 +1226,7 @@ describe("FloatingChatWidget — Stop button", () => {
 
     expect(screen.getByText("Cancelled by owner")).toBeDefined();
     expect(screen.queryByText("Waiting for the in-flight ingress to settle.")).toBeNull();
-    expect(screen.getByRole("status").textContent).toBe("This turn was stopped.");
+    expect(screen.getByTestId("chat-stop-status").textContent).toBe("This turn was stopped.");
   });
 
   it("keeps an SSE-confirmed Stop visible when its POST later says already finished", async () => {
@@ -1148,7 +1257,7 @@ describe("FloatingChatWidget — Stop button", () => {
     });
 
     expect(screen.getByText("Cancelled by owner")).toBeDefined();
-    expect(screen.getByRole("status").textContent).toBe("This turn was stopped.");
+    expect(screen.getByTestId("chat-stop-status").textContent).toBe("This turn was stopped.");
   });
 
   it("ignores a late Stop result after the owner starts a different turn", async () => {
@@ -1163,7 +1272,7 @@ describe("FloatingChatWidget — Stop button", () => {
 
     fireEvent.click(screen.getByTestId("chat-stop-button"));
     expect((screen.getByTestId("chat-stop-button") as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByRole("status").textContent).toBe("Stopping this turn.");
+    expect(screen.getByTestId("chat-stop-status").textContent).toBe("Stopping this turn.");
     fireEvent.click(screen.getByTestId("chat-widget-new-button"));
 
     scriptedEvents = [
@@ -1236,5 +1345,181 @@ describe("FloatingChatWidget — Stop button", () => {
       queryKey: ["conversation-messages", "switchboard", "conv-finished-1"],
     });
     expect(useConversationMessages).toHaveBeenLastCalledWith("switchboard", "conv-finished-1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Global 'c' shortcut (bu-0ynlk.13)
+// ---------------------------------------------------------------------------
+
+describe("FloatingChatWidget — global 'c' shortcut (bu-0ynlk.13)", () => {
+  it("opens the widget and focuses the composer when closed", () => {
+    renderWidget();
+    expect(screen.queryByTestId("floating-chat-panel")).toBeNull();
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(OPEN_CHAT_WIDGET_EVENT));
+    });
+
+    const panel = screen.getByTestId("floating-chat-panel");
+    const input = within(panel).getByPlaceholderText("Type a message...");
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("refocuses the composer when already open", () => {
+    renderWidget();
+    fireEvent.click(screen.getByTestId("floating-chat-trigger"));
+    const panel = screen.getByTestId("floating-chat-panel");
+    const input = within(panel).getByPlaceholderText("Type a message...");
+
+    const closeButton = screen.getByTestId("chat-widget-close-button");
+    closeButton.focus();
+    expect(document.activeElement).toBe(closeButton);
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(OPEN_CHAT_WIDGET_EVENT));
+    });
+
+    expect(document.activeElement).toBe(input);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Header touch targets + keyboard-viewport-aware height (bu-0ynlk.13)
+// ---------------------------------------------------------------------------
+
+describe("FloatingChatWidget — header touch targets and height (bu-0ynlk.13)", () => {
+  it("renders header buttons at icon-sm (>=32px) inside a gap-1.5 container", () => {
+    renderWidget();
+    fireEvent.click(screen.getByTestId("floating-chat-trigger"));
+
+    const historyButton = screen.getByTestId("chat-widget-history-button");
+    const newButton = screen.getByTestId("chat-widget-new-button");
+    const closeButton = screen.getByTestId("chat-widget-close-button");
+    for (const button of [historyButton, newButton, closeButton]) {
+      expect(button.className).toContain("size-8");
+      expect(button.className).not.toContain("size-6");
+    }
+
+    const container = closeButton.parentElement as HTMLElement;
+    expect(container.className).toContain("gap-1.5");
+  });
+
+  it("uses a dvh/visualViewport height, never the fixed 70vh (bu-0ynlk.13)", () => {
+    renderWidget();
+    fireEvent.click(screen.getByTestId("floating-chat-trigger"));
+    const panel = screen.getByTestId("floating-chat-panel");
+    expect(panel.className).not.toContain("70vh");
+    expect(panel.className).toContain("dvh");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WCAG 2.2 2.4.11 focus-not-obscured guard (bu-0ynlk.13)
+// ---------------------------------------------------------------------------
+
+describe("FloatingChatWidget — focus-not-obscured guard (bu-0ynlk.13)", () => {
+  function mockRect(el: HTMLElement, rect: Partial<DOMRect>) {
+    vi.spyOn(el, "getBoundingClientRect").mockReturnValue({
+      top: 0,
+      bottom: 0,
+      left: 0,
+      right: 0,
+      width: 0,
+      height: 0,
+      x: 0,
+      y: 0,
+      toJSON: () => {},
+      ...rect,
+    } as DOMRect);
+  }
+
+  function focusBehindPanel() {
+    renderWidget();
+    fireEvent.click(screen.getByTestId("floating-chat-trigger"));
+    const panel = screen.getByTestId("floating-chat-panel");
+    mockRect(panel, { top: 100, bottom: 400, left: 100, right: 400 });
+
+    const behind = document.createElement("button");
+    behind.textContent = "behind the panel";
+    document.body.appendChild(behind);
+    mockRect(behind, { top: 150, bottom: 180, left: 150, right: 200 });
+    const scrollIntoView = vi.fn();
+    behind.scrollIntoView = scrollIntoView;
+
+    fireEvent.focusIn(behind);
+
+    return { scrollIntoView, behind };
+  }
+
+  it("scrolls a focused element clear of the panel's footprint", () => {
+    const { scrollIntoView, behind } = focusBehindPanel();
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "nearest" });
+    behind.remove();
+  });
+
+  it("scrolls instantly under prefers-reduced-motion", () => {
+    vi.mocked(usePrefersReducedMotion).mockReturnValue(true);
+    const { scrollIntoView, behind } = focusBehindPanel();
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "auto", block: "nearest" });
+    behind.remove();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unread state routed through the shell announcer (bu-0ynlk.13)
+// ---------------------------------------------------------------------------
+
+describe("FloatingChatWidget — unread reply announced via shell announcer (bu-0ynlk.13)", () => {
+  function conversationsWithLatestReplyAt(latestReplyAt: string | null): ConversationSummary[] {
+    return [
+      { ...CONVERSATIONS[0], latest_assistant_reply_at: latestReplyAt },
+      CONVERSATIONS[1],
+    ];
+  }
+
+  function mockConversationTotals(latestReplyAt: string | null) {
+    vi.mocked(useConversations).mockReturnValue({
+      data: { data: conversationsWithLatestReplyAt(latestReplyAt), meta: {} },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useConversations>);
+  }
+
+  it("announces once when a reply lands while closed, not on every subsequent poll", () => {
+    mockConversationTotals("2026-07-05T09:00:00.000Z");
+    const { rerenderWidget } = renderWidget();
+    expect(announceMock).not.toHaveBeenCalled();
+
+    mockConversationTotals("2026-07-05T09:05:00.000Z");
+    rerenderWidget();
+    expect(announceMock).toHaveBeenCalledTimes(1);
+
+    // A later poll surfacing the SAME unread state must not re-announce.
+    rerenderWidget();
+    expect(announceMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// axe (bu-0ynlk.13)
+// ---------------------------------------------------------------------------
+
+describe("FloatingChatWidget — axe", () => {
+  it("has no axe violations on the open widget", async () => {
+    renderWidget();
+    fireEvent.click(screen.getByTestId("floating-chat-trigger"));
+    const panel = screen.getByTestId("floating-chat-panel");
+    const results = await axe(panel, { rules: { "color-contrast": { enabled: false } } });
+    expect(results).toHaveNoViolations();
+  });
+
+  it("has no axe violations on the empty state", async () => {
+    mockHooksEmpty();
+    renderWidget();
+    fireEvent.click(screen.getByTestId("floating-chat-trigger"));
+    const panel = screen.getByTestId("floating-chat-panel");
+    expect(screen.getByText("New conversation")).toBeDefined();
+    const results = await axe(panel, { rules: { "color-contrast": { enabled: false } } });
+    expect(results).toHaveNoViolations();
   });
 });

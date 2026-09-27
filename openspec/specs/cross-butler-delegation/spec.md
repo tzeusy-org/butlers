@@ -4,10 +4,8 @@
 
 Defines the cross-butler delegation ledger: how one butler asks a question
 that another butler's domain covers, how the target is resolved, how routing
-happens, and how the answer is recorded and discovered. Sequenced after the
-`memory_catalog` default-on flip (bu-qvnce.15) per the 2026-07-04 JARVIS
-pursuit dossier (`docs/redesigns/2026-07-04-jarvis-pursuit.md`). bu-gxmfx
-implements v1: post question -> resolve -> route -> record answer -> discover.
+happens, and how the answer is recorded and discovered. The lifecycle is:
+post question -> resolve -> route -> record answer -> discover.
 ## Requirements
 ### Requirement: Ledger Of Record
 Every delegated question SHALL be recorded as exactly one row in
@@ -57,7 +55,7 @@ butler-local relevance index SHALL be introduced for this resolution.
 ### Requirement: Routing Goes Through The Switchboard
 Dispatch of a resolved delegated question to its target butler SHALL go
 through the Switchboard's existing `route()` primitive (the same routing
-function used by `post_mail`, `correct_route`, and `route_to_butler`) --
+function used by `correct_route` and `route_to_butler`) --
 never a bespoke point-to-point dispatch path.
 
 #### Scenario: Non-Switchboard asker dispatches via the Switchboard MCP client
@@ -135,7 +133,7 @@ one shared `public` table reachable from any pool).
 - **THEN** the response is `404 Not Found`, never a `200` with null/empty
   data standing in for "not found"
 
-#### Scenario: Wake-protocol fields are discoverable, not just the answer (bu-ep4ks.3)
+#### Scenario: Wake-protocol fields are discoverable, not just the answer
 - **WHEN** `GET /api/delegation/ledger` or `GET /api/delegation/ledger/{id}`
   returns a row
 - **THEN** the response includes `wake_state`, `wake_key`, `wake_task_id`,

@@ -79,6 +79,7 @@ class InsightBrokerModule(Module):
         from butlers.tools.switchboard.insight.broker import (
             propose_insight_candidate as _propose,
         )
+        from butlers.tools.switchboard.insight.broker import record_insight_feedback as _feedback
 
         @mcp.tool()
         async def propose_insight_candidate(
@@ -143,4 +144,29 @@ class InsightBrokerModule(Module):
                 cooldown_days=cooldown_days,
                 channel=channel,
                 metadata=metadata,
+            )
+
+        @mcp.tool()
+        async def insight_mark_useful(insight_id: str) -> dict[str, Any]:
+            """Mark a delivered proactive insight useful and restore its family."""
+            return await _feedback(
+                self._get_pool(), insight_id=insight_id, verdict="useful", actor="owner"
+            )
+
+        @mcp.tool()
+        async def insight_snooze(insight_id: str, snooze_until: str) -> dict[str, Any]:
+            """Pause an insight family until a bounded ISO-8601 instant."""
+            return await _feedback(
+                self._get_pool(),
+                insight_id=insight_id,
+                verdict="not_now",
+                snooze_until=snooze_until,
+                actor="owner",
+            )
+
+        @mcp.tool()
+        async def insight_mute(insight_id: str) -> dict[str, Any]:
+            """Mute an insight family indefinitely; a later useful reverses it."""
+            return await _feedback(
+                self._get_pool(), insight_id=insight_id, verdict="never", actor="owner"
             )

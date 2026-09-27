@@ -8,8 +8,7 @@ Deterministic Python job handlers for the Home butler's scheduled monitoring tas
 
 ### Requirement: Job Handler Signature and Registration
 
-The implementation SHALL provide the behavior described by this requirement.
-All home deterministic job handlers follow the standard `_DeterministicScheduleJobHandler` signature and are registered in the daemon's job registry.
+All home deterministic job handlers SHALL follow the standard `_DeterministicScheduleJobHandler` signature and be registered in the daemon's job registry.
 
 #### Scenario: Job handler signature
 
@@ -42,8 +41,7 @@ and then converts Markdown to Telegram HTML.
 
 ### Requirement: Threshold Loading from State Store
 
-The implementation SHALL provide the behavior described by this requirement.
-All monitoring thresholds are loaded from the state store at job invocation time, with hardcoded defaults used only if no stored value exists. This enables user-configurable monitoring sensitivity.
+All monitoring thresholds SHALL be loaded from the state store at job invocation time, with hardcoded defaults used only if no stored value exists. This enables user-configurable monitoring sensitivity.
 
 #### Scenario: Load threshold from state store
 
@@ -72,8 +70,7 @@ All monitoring thresholds are loaded from the state store at job invocation time
 
 ### Requirement: Device Health Check Job
 
-The implementation SHALL provide the behavior described by this requirement.
-The `device_health_check` job reads all HA entity states, classifies battery and connectivity issues by severity, stores findings in memory, and sends a Telegram notification.
+The `device_health_check` job SHALL read all HA entity states, classify battery and connectivity issues by severity, store findings in memory, and send a Telegram notification.
 
 #### Scenario: Entity survey from connector cache
 
@@ -138,8 +135,7 @@ The `device_health_check` job reads all HA entity states, classifies battery and
 
 ### Requirement: Environment Report Job
 
-The implementation SHALL provide the behavior described by this requirement.
-The `environment_report` job reads environmental sensors per area, compares against stored comfort preferences, and sends a room-by-room report.
+The `environment_report` job SHALL read environmental sensors per area, compare against stored comfort preferences, and send a room-by-room report.
 
 #### Scenario: Area and sensor discovery
 
@@ -197,8 +193,7 @@ The `environment_report` job reads environmental sensors per area, compares agai
 
 ### Requirement: Energy Digest Job
 
-The implementation SHALL provide the behavior described by this requirement.
-The `energy_digest` job fetches weekly energy statistics, computes top consumers and trends vs. baselines, and sends a structured weekly digest.
+The `energy_digest` job SHALL fetch weekly energy statistics, compute top consumers and trends vs. baselines, and send a structured weekly digest.
 
 #### Scenario: Energy sensor discovery
 
@@ -272,8 +267,7 @@ The `energy_digest` job fetches weekly energy statistics, computes top consumers
 
 ### Requirement: Entity State Access and HA Statistics Fallback for Jobs
 
-The implementation SHALL provide the behavior described by this requirement.
-Job handlers read current entity state from the connector-populated `ha_entity_snapshot` table. A short-lived HA WebSocket client is available for historical statistics queries that the connector does not provide.
+Job handlers SHALL read current entity state from the connector-populated `ha_entity_snapshot` table. A short-lived HA WebSocket client is available for historical statistics queries that the connector does not provide.
 
 #### Scenario: Entity state from connector cache
 
@@ -308,9 +302,7 @@ Job handlers read current entity state from the connector-populated `ha_entity_s
 
 ### Requirement: HA Source Health Guard for Snapshot Readers
 
-The implementation SHALL provide the behavior described by this requirement.
-Reading `ha_entity_snapshot` alone cannot tell a caller whether Home Assistant
-is currently reachable — a snapshot captured during an outage is re-stamped
+A caller SHALL NOT rely on `ha_entity_snapshot` alone to determine whether Home Assistant is currently reachable — a snapshot captured during an outage is re-stamped
 with a fresh `captured_at` on every persistence cycle and looks identical to
 a genuinely current one. Before trusting `ha_entity_snapshot`, job handlers
 and the generic snapshot reader SHALL check `ha_source_health` (maintained by
@@ -350,3 +342,76 @@ timestamp, not by comparing it with a separate process clock.
 - **THEN** the reader or job handler SHALL proceed to query
   `ha_entity_snapshot` exactly as it did before this requirement existed
   (including the pre-existing empty-snapshot handling)
+
+### Requirement: Atmosphere Feed Refresh Job
+
+The `atmosphere_feed_refresh` job SHALL be a zero-LLM, deterministic context
+producer that keeps the shared weather/AQI/pollen feed warm for the owner's
+configured home location. Unlike a message-ingestion connector, there is no
+external "message" to classify or route — it SHALL be scheduled directly on
+the Home butler (`dispatch_mode = "job"`, cron `*/30 * * * *`).
+
+#### Scenario: Job handler signature
+
+- **WHEN** the `atmosphere_feed_refresh` job handler is invoked by the
+  scheduler
+- **THEN** it SHALL accept `pool: asyncpg.Pool` and
+  `job_args: dict[str, Any] | None` as parameters
+- **AND** it SHALL return `dict[str, Any]` describing the outcome
+
+#### Scenario: Job registry registration
+
+- **WHEN** the daemon initializes `_DETERMINISTIC_SCHEDULE_JOB_REGISTRY`
+- **THEN** the `"home"` entry SHALL include `atmosphere_feed_refresh`
+  alongside the existing deterministic handlers
+
+#### Scenario: Home location resolution
+
+- **WHEN** the job runs
+- **THEN** it SHALL resolve the home location from
+  `ATMOSPHERE_HOME_LAT`/`ATMOSPHERE_HOME_LON` environment variables first
+- **AND** fall back to the owner's `entity_info` row of type
+  `home_coordinates` (stored as `"lat,lon"`) when the env vars are absent or
+  unparseable
+
+#### Scenario: Not configured — honest skip, not an error
+
+- **WHEN** neither the env vars nor `entity_info` resolve a usable home
+  location
+- **THEN** the job SHALL NOT attempt an upstream fetch
+- **AND** it SHALL upsert `public.atmosphere_feed_status` with
+  `configured = false`
+- **AND** it SHALL return `{"skipped": true, "reason": "not_configured"}`
+  rather than raising or logging an error
+
+#### Scenario: Successful fetch stores a reading and resets failure state
+
+- **WHEN** the home location is configured and the Open-Meteo forecast and
+  air-quality requests both succeed
+- **THEN** the job SHALL insert one row into `public.atmosphere_readings`
+  with the parsed temperature, humidity, precipitation, weather code, wind
+  speed, AQI (US and European), PM2.5/PM10, and pollen fields
+- **AND** it SHALL upsert `public.atmosphere_feed_status` with
+  `configured = true`, `last_success_at` set to now, `last_error` cleared,
+  and `consecutive_failures` reset to `0`
+
+#### Scenario: Fetch failure degrades honestly without crashing
+
+- **WHEN** the home location is configured but the upstream request fails
+  (transport error or non-2xx status)
+- **THEN** the job SHALL NOT insert a row into `atmosphere_readings`
+- **AND** it SHALL upsert `atmosphere_feed_status` with `last_error` set to
+  the failure description and `consecutive_failures` incremented
+- **AND** the job function SHALL NOT raise — it returns a result dict
+  describing the failure so the scheduler records a normal (non-crashed) run
+
+#### Scenario: Pollen absence is classified, not conflated with failure
+
+- **WHEN** Open-Meteo's air-quality response returns `null` for every pollen
+  field (the location is outside Europe, where Open-Meteo does not forecast
+  pollen)
+- **THEN** the stored reading SHALL have `pollen_available = false` and all
+  pollen columns `NULL`
+- **AND** this SHALL NOT increment `consecutive_failures` or set
+  `last_error` — it is a legitimately-absent field for that location, not a
+  fetch failure

@@ -21,7 +21,6 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 import butlers.api.routers.settings_console as console_mod
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerConnectionInfo,
@@ -32,6 +31,7 @@ from butlers.api.deps import (
 )
 from butlers.core.model_routing import check_monthly_ceiling
 from butlers.core.pricing import ModelPricing, PricingConfig
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 

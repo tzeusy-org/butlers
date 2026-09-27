@@ -24,10 +24,10 @@ import httpx
 import pytest
 
 import butlers.tools.health as health_tools
-from butlers.api.app import create_app
 from butlers.api.briefing.cache import BriefingCache
 from butlers.api.db import DatabaseManager
 from butlers.credential_store import CredentialStore
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
 

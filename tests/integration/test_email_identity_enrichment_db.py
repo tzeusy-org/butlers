@@ -34,7 +34,13 @@ from typing import Any
 
 import pytest
 
-from butlers.testing.schema_standins import ENTITY_PREDICATE_REGISTRY, PENDING_ACTIONS
+from butlers.testing.approval_delivery_schema import install_approval_delivery_schema
+from butlers.testing.schema_standins import (
+    APPROVAL_EVENTS,
+    APPROVAL_RULES,
+    ENTITY_PREDICATE_REGISTRY,
+    PENDING_ACTIONS,
+)
 
 
 def _apply_evidence_schema():
@@ -159,6 +165,9 @@ async def identity_pool(provisioned_postgres_pool):
             )
         """)
         await pool.execute(PENDING_ACTIONS.ddl())
+        await pool.execute(APPROVAL_RULES.ddl())
+        await pool.execute(APPROVAL_EVENTS.ddl())
+        await install_approval_delivery_schema(pool)
         yield pool
 
 

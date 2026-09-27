@@ -22,8 +22,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from butlers.connectors.discretion import DiscretionEvaluator
-from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
-from butlers.core.model_routing import Complexity, QuotaStatus, SpendRoutingResult
+from butlers.connectors.discretion_dispatcher import (
+    PURPOSE_LANE_PRIVATE_CONTENT,
+    DiscretionDispatcher,
+)
+from butlers.core.model_routing import (
+    Complexity,
+    QuotaStatus,
+    SpendRoutingResult,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -36,6 +43,36 @@ def _catalog_result() -> tuple[str, str, list, uuid.UUID, int, str]:
 
 def _allowed_quota() -> QuotaStatus:
     return QuotaStatus(allowed=True, usage_24h=0, limit_24h=None, usage_30d=0, limit_30d=None)
+
+
+def _resolver_with_receipt(catalog):
+    async def _resolve(*_args, **kwargs):
+        receipt = MagicMock()
+        receipt.describe.return_value = {
+            "policy_version": "2",
+            "winner": {
+                "catalog_entry_id": str(catalog[3]),
+                "runtime_type": catalog[0],
+                "model_id": catalog[1],
+                "effective_tier": catalog[5],
+                "reason": "sole_candidate",
+            },
+            "candidates": [
+                {
+                    "catalog_entry_id": str(catalog[3]),
+                    "runtime_type": catalog[0],
+                    "model_id": catalog[1],
+                    "effective_tier": catalog[5],
+                    "outcome": "selected",
+                    "exclusion": None,
+                    "exclusions": [],
+                }
+            ],
+        }
+        kwargs["receipt_sink"].append(receipt)
+        return catalog
+
+    return _resolve
 
 
 def _make_adapter(result_text: str = "FORWARD", usage: dict | None = None) -> MagicMock:
@@ -130,12 +167,10 @@ async def test_call_with_identity_records_per_connector_butler_name() -> None:
     pool = MagicMock()
     dispatcher = DiscretionDispatcher(pool=pool)
     adapter = _make_adapter()
+    resolver = AsyncMock(return_value=_catalog_result())
 
     with (
-        patch(
-            f"{_MODULE}.resolve_model_with_effective_tier",
-            AsyncMock(return_value=_catalog_result()),
-        ),
+        patch(f"{_MODULE}.resolve_model_with_effective_tier", resolver),
         patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
@@ -144,11 +179,75 @@ async def test_call_with_identity_records_per_connector_butler_name() -> None:
         result = await dispatcher.call("hi", identity="tg:12345")
 
     assert result == "FORWARD"
+    intent = resolver.await_args.kwargs["receipt_intent"]
+    assert intent.trigger_class == "discretion"
+    assert intent.required_features == frozenset()
+    assert adapter.invoke.await_args.kwargs["mcp_servers"] == {}
     mock_record.assert_awaited_once()
     _, kwargs = mock_record.call_args
     assert kwargs["butler_name"] == "tg:12345"
     assert kwargs["purpose"] == "discretion"
     assert kwargs["session_id"] is None
+    # bu-hz0g0: the discretion lane never composes a layered prompt, so it
+    # passes none of record_token_usage()'s composition/resume kwargs -- the
+    # ledger columns land honestly NULL rather than a fabricated 0.
+    for composition_kwarg in (
+        "base_prompt_tokens",
+        "timezone_instruction_tokens",
+        "context_preamble_tokens",
+        "routing_instructions_tokens",
+        "memory_context_tokens",
+        "resume_outcome",
+    ):
+        assert kwargs.get(composition_kwarg) is None
+
+
+async def test_private_content_uses_normal_catalog_and_content_blind_attribution() -> None:
+    """The private lane records provenance without changing model selection."""
+    pool = MagicMock()
+    dispatcher = DiscretionDispatcher(
+        pool=pool,
+        purpose_lane=PURPOSE_LANE_PRIVATE_CONTENT,
+    )
+    adapter = _make_adapter()
+    remote = _catalog_result()
+    unchanged = SpendRoutingResult(resolved=remote[:5])
+    provider_config = {"remote": {"options": {"baseURL": "https://example.invalid"}}}
+
+    with (
+        patch(
+            f"{_MODULE}.resolve_model_with_effective_tier",
+            AsyncMock(side_effect=_resolver_with_receipt(remote)),
+        ),
+        patch(
+            f"{_MODULE}.apply_spend_routing_rules",
+            AsyncMock(return_value=unchanged),
+        ),
+        patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
+        patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter) as get_adapter,
+        patch.object(
+            dispatcher, "_resolve_provider_config", AsyncMock(return_value=provider_config)
+        ) as provider_lookup,
+        patch(f"{_MODULE}.record_token_usage", AsyncMock()) as record_usage,
+        patch(f"{_MODULE}.record_dispatch_attempt", AsyncMock()) as record_attempt,
+    ):
+        result = await dispatcher.call("private fixture", identity="synthetic-chat")
+
+    assert result == "FORWARD"
+    get_adapter.assert_called_once_with(remote[0], provider_config)
+    provider_lookup.assert_awaited_once_with(remote[1])
+    assert adapter.invoke.await_args.kwargs["model"] == remote[1]
+    assert record_usage.await_args.kwargs["purpose"] == PURPOSE_LANE_PRIVATE_CONTENT
+    assert record_usage.await_args.kwargs["purpose_lane"] == PURPOSE_LANE_PRIVATE_CONTENT
+    assert record_usage.await_args.kwargs["butler_name"] == "__discretion__"
+    assert record_attempt.await_args.kwargs["outcome"] == "success"
+    assert record_attempt.await_args.kwargs["purpose_lane"] == PURPOSE_LANE_PRIVATE_CONTENT
+    receipt = record_attempt.await_args.kwargs["resolution_receipt"]
+    assert receipt["winner"]["catalog_entry_id"] == str(remote[3])
+    assert [c["outcome"] for c in receipt["candidates"]].count("selected") == 1
+    selected = next(c for c in receipt["candidates"] if c["outcome"] == "selected")
+    assert selected["catalog_entry_id"] == str(remote[3])
+    assert selected["exclusion"] is None
 
 
 async def test_call_without_identity_falls_back_to_constructor_butler_name() -> None:
@@ -199,7 +298,7 @@ async def test_call_keeps_declared_adapter_setup_allowance_outside_model_timeout
     with (
         patch(
             f"{_MODULE}.resolve_model_with_effective_tier",
-            AsyncMock(return_value=catalog),
+            AsyncMock(side_effect=_resolver_with_receipt(catalog)),
         ),
         patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
@@ -288,7 +387,7 @@ async def test_call_applies_matching_spend_rule_reroutes_model() -> None:
     with (
         patch(
             f"{_MODULE}.resolve_model_with_effective_tier",
-            AsyncMock(return_value=catalog),
+            AsyncMock(side_effect=_resolver_with_receipt(catalog)),
         ),
         patch(
             f"{_MODULE}.apply_spend_routing_rules", AsyncMock(return_value=rerouted)
@@ -297,6 +396,7 @@ async def test_call_applies_matching_spend_rule_reroutes_model() -> None:
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter) as mock_get,
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
         patch(f"{_MODULE}.record_token_usage", AsyncMock()) as mock_record,
+        patch(f"{_MODULE}.record_dispatch_attempt", AsyncMock()) as record_attempt,
     ):
         result = await dispatcher.call("hi", identity="tg:1")
 
@@ -326,6 +426,12 @@ async def test_call_applies_matching_spend_rule_reroutes_model() -> None:
     assert record_kwargs["purpose"] == "discretion"
     assert record_kwargs["butler_name"] == "tg:1"
     assert record_kwargs["catalog_entry_id"] == rerouted.resolved[3]
+    receipt = record_attempt.await_args.kwargs["resolution_receipt"]
+    assert receipt["winner"]["catalog_entry_id"] == str(rerouted.resolved[3])
+    assert receipt["winner"]["reason"] == "spend_rule_override"
+    assert receipt["selection_override"] == {"reason": "spend_rule_override"}
+    assert [c["outcome"] for c in receipt["candidates"]].count("selected") == 1
+    assert next(c for c in receipt["candidates"] if c["outcome"] == "selected")["exclusion"] is None
 
 
 async def test_call_no_matching_rule_keeps_tier_resolved_model() -> None:

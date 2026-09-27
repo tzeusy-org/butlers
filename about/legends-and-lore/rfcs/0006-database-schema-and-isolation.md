@@ -82,7 +82,6 @@ Module-specific tables are added by module migration chains (see below). Example
 - **Memory module:** `episodes`, `facts`, `rules`, `entities`, `predicate_registry`, `consolidation_state`, and others (25+ revisions).
 - **Approvals module:** `approval_actions`, `approval_rules`, `approval_events` (3+ revisions).
 - **Contacts module:** `contacts_sync` and related tables (2+ revisions).
-- **Mailbox module:** `mailbox` (1+ revision).
 
 ### Cross-Butler Identity Tables (in `public`)
 
@@ -191,6 +190,16 @@ explicit producer grants are restored. Producer and Switchboard access additiona
 expected active `SET ROLE`; shared connecting-login membership is an effective-role boundary, not
 an independently authenticated or cryptographic per-butler identity. No worker, transport, API,
 or historic-incident backfill is activated by the representation migration.
+
+The 2026-09-23 fleet-liveness target contract extends this narrow producer
+pattern to independently observed fleet-control and QA-patrol-overdue
+condition episodes. The controller may append only a fixed, server-derived,
+content-blind condition identity through a dedicated operation; it does not
+gain raw outbox DML or dashboard owner authority. A schema or bootstrap grant
+change must prove the effective runtime roles and forced-RLS behavior, including
+bootstrap replay. The existing fenced Switchboard worker retains transport
+ownership and at-most-once uncertainty semantics. This design amendment does
+not activate a new external monitor or historical backfill.
 
 `public.approvals_policy` is the single dashboard-managed Owner Attention Policy
 authority. It is evaluated as an end-exclusive IANA-timezone interval and is

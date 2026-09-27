@@ -1,0 +1,7 @@
+# Intentional replacements under exact owner adoption
+
+The overwrite guard reports15 changed baseline clauses across four full MODIFIED requirements. They are intentional replacements, not accidental losses: agent token injection/available environment; coarse token-only publication/no-merge/no-review claims; broad credential-resolution fallback; push-before-validation; sanitizer-triggered remote deletion; raw local validation reasons. The owner-adopted eight-clause contract replaces these with credential-free investigation, dedicated publisher ownership/residual risk, validate-before-push, fixed categories and no implicit delete. All other baseline clauses and scenario names remain in the full blocks.
+
+Independent review must confirm this disposition before adding ONLY this change's15 clause digests to scripts/spec-overwrite-baseline.json. Do not globally refresh unrelated historical debt: current check reports three obsolete unrelated email ratchet entries which are outside this source task. Independent review approved exactly these15 clause digests; the ratchet adds only this change's four keys and preserves every pre-existing key/value, including unrelated obsolete email entries.
+
+The two additional reviewed concordance replacements strengthen committed-proposal retention from bounded diff/notes to sealed artifact plus binding/stage, and replace definite-failure wording with explicit failure-or-ambiguity truth. They preserve the original retained-evidence outcome while preventing false unpublished claims.

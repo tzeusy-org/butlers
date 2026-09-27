@@ -329,7 +329,7 @@ function PlexNode({
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
-      className={`group absolute left-0 top-0 flex -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-0.5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
+      className={`group absolute left-0 top-0 flex -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-0.5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus ${
         dragging
           ? "z-20 cursor-grabbing"
           : "transition-transform duration-slow ease-out-quart"
@@ -1254,9 +1254,9 @@ function EntityDossier({
       {/* Latest touch per channel; the block hides itself when empty. */}
       <LatestInteractionsBlock entityId={entityId} />
 
-      {/* Operator verbs: log an interaction, capture a gift idea, draft a
-          reach-out, or note something without leaving the canvas. Compact
-          because the dossier rail is 18rem wide (bu-6t8ix.4). */}
+      {/* Operator verbs: log an interaction, capture a gift idea, or note
+          something without leaving the canvas. Compact because the dossier
+          rail is 18rem wide (bu-6t8ix.4). */}
       <section>
         <p className="mb-1.5 font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--mfg)]">
           Record
@@ -1995,7 +1995,7 @@ export default function PlexPage() {
           onPointerMove={handleStagePointerMove}
           onPointerUp={handleStagePointerUp}
           data-testid="plex-canvas"
-          className={`relative min-h-0 min-w-0 flex-1 select-none overflow-hidden rounded-sm outline-none focus-visible:ring-1 focus-visible:ring-ring ${
+          className={`relative min-h-0 min-w-0 flex-1 select-none overflow-hidden rounded-sm outline-none focus-visible:ring-1 focus-visible:ring-focus ${
             panning ? "cursor-grabbing" : "cursor-grab"
           }`}
         >

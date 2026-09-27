@@ -28,6 +28,168 @@ pytestmark = pytest.mark.unit
 _NOW = datetime.now(tz=UTC)
 
 
+async def test_ingestion_read_budget_preserves_other_routes_and_releases_capacity(monkeypatch):
+    import asyncio
+
+    from fastapi import APIRouter
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+
+    from butlers.api import ingestion_read_budget as budget
+
+    monkeypatch.setattr(budget, "_ADMISSION_TIMEOUT_S", 0.02)
+    metric_reader = InMemoryMetricReader()
+    provider = MeterProvider(metric_readers=[metric_reader])
+    meter = provider.get_meter("test-ingestion-budget")
+    monkeypatch.setattr(budget, "_WAIT_SECONDS", meter.create_histogram("admission", unit="s"))
+    monkeypatch.setattr(budget, "_READ_SECONDS", meter.create_histogram("duration", unit="s"))
+    monkeypatch.setattr(budget, "_OUTCOMES", meter.create_counter("outcomes"))
+    app = FastAPI()
+    router = APIRouter(route_class=budget.IngestionReadBudgetRoute)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    active = 0
+
+    @router.get("/read")
+    async def read():
+        nonlocal active
+        active += 1
+        if active == 2:
+            entered.set()
+        await release.wait()
+        return {"ok": True}
+
+    @router.post("/write")
+    async def write():
+        return {"ok": True}
+
+    @app.get("/critical")
+    async def critical():
+        return {"ok": True}
+
+    app.include_router(router)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        reads = [asyncio.create_task(client.get("/read")) for _ in range(2)]
+        try:
+            await asyncio.wait_for(entered.wait(), 1)
+            assert (await client.get("/critical")).status_code == 200
+            assert (await client.post("/write")).status_code == 200
+            busy = await client.get("/read")
+            assert busy.status_code == 503
+            assert busy.headers["retry-after"] == "1"
+            assert active == 2
+        finally:
+            release.set()
+            await asyncio.gather(*reads)
+        assert (await client.get("/read")).status_code == 200
+    captured = {
+        metric.name: metric.data.data_points
+        for resource in metric_reader.get_metrics_data().resource_metrics
+        for scope in resource.scope_metrics
+        for metric in scope.metrics
+    }
+    assert sum(point.count for point in captured["admission"]) == 4
+    assert sum(point.count for point in captured["duration"]) == 3
+    assert {point.attributes["outcome"]: point.value for point in captured["outcomes"]} == {
+        "busy": 1,
+        "ok": 3,
+    }
+    assert all(
+        set(point.attributes) <= {"operation", "outcome"}
+        for points in captured.values()
+        for point in points
+    )
+    provider.shutdown()
+
+
+async def test_ingestion_read_timeout_cancels_query_and_returns_capacity(monkeypatch):
+    import asyncio
+
+    from fastapi import APIRouter
+
+    from butlers.api import ingestion_read_budget as budget
+
+    monkeypatch.setattr(budget, "_READ_TIMEOUT_S", 0.02)
+    app = FastAPI()
+    router = APIRouter(route_class=budget.IngestionReadBudgetRoute)
+    cancelled = asyncio.Event()
+
+    @router.get("/slow")
+    async def slow():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    app.include_router(router)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        assert (await client.get("/slow")).status_code == 503
+        assert cancelled.is_set()
+        limiter = app.state.ingestion_read_limiter
+        for _ in range(2):
+            await asyncio.wait_for(limiter.acquire(), 0.1)
+        limiter.release()
+        limiter.release()
+
+
+async def test_ingestion_disconnect_cancels_read_before_deadline():
+    import asyncio
+
+    from fastapi import APIRouter
+
+    from butlers.api.ingestion_read_budget import IngestionReadBudgetRoute
+
+    app = FastAPI()
+    router = APIRouter(route_class=IngestionReadBudgetRoute)
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    @router.get("/read")
+    async def read():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    app.include_router(router)
+    messages = []
+
+    async def receive():
+        await started.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        messages.append(message)
+
+    await asyncio.wait_for(
+        app(
+            {
+                "type": "http",
+                "asgi": {"version": "3.0"},
+                "http_version": "1.1",
+                "method": "GET",
+                "scheme": "http",
+                "path": "/read",
+                "root_path": "",
+                "query_string": b"",
+                "headers": [],
+                "server": ("test", 80),
+                "client": ("test", 1),
+            },
+            receive,
+            send,
+        ),
+        1,
+    )
+    assert cancelled.is_set()
+    assert messages[0]["status"] == 499
+
+
 def _make_event_row(*, event_id=None, status="ingested"):
     return {
         "id": event_id or str(uuid4()),

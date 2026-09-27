@@ -644,6 +644,20 @@ BEGIN
         _connector_role
     );
 
+    -- Cost claims are append/lifecycle evidence. Generic public-table bootstrap
+    -- grants must not make their current assertion, resolution, or audit rows
+    -- deletable. Forced RLS remains the authority fence; these revokes keep the
+    -- catalog privileges equally narrow after every bootstrap replay.
+    IF to_regclass('public.cost_claims') IS NOT NULL THEN
+        FOREACH _role IN ARRAY _all_runtime_roles || ARRAY[_connector_role] LOOP
+            EXECUTE format(
+                'REVOKE DELETE ON TABLE public.cost_claims, '
+                'public.cost_claim_resolutions, public.cost_claim_events FROM %I',
+                _role
+            );
+        END LOOP;
+    END IF;
+
     RAISE NOTICE 'Bootstrap complete for database "%" (migration/runtime user "%")', _db_name, _migration_user;
 END
 $$;
@@ -4889,3 +4903,15 @@ END;
 $$;
 
 RESET ROLE;
+
+-- Owner-auth migration runs as a normal migration login. Provision its isolated
+-- capability role here, under bootstrap authority; never grant CREATEROLE to
+-- the migrator. Login credentials/membership remain explicit host provisioning.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'dashboard_auth_api') THEN
+        CREATE ROLE dashboard_auth_api NOLOGIN NOINHERIT NOSUPERUSER NOCREATEROLE
+            NOCREATEDB NOREPLICATION NOBYPASSRLS;
+    END IF;
+END;
+$$;

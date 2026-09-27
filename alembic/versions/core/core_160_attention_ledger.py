@@ -31,7 +31,7 @@ singleton policy tables that currently ship with quiet hours *disabled*
 Both seeds are guarded by ``WHERE quiet_start_hour IS NULL AND
 quiet_end_hour IS NULL`` (resp. ``quiet_start``/``quiet_end``) so an owner who
 has already configured either policy is never overwritten. This is a
-single-owner deployment (uniquosity@gmail.com, Asia/Singapore) — the seeded
+single-owner deployment (owner@example.com, Asia/Singapore) — the seeded
 window (23:00-08:00 SGT) is a starting default, not a hardcoded constraint;
 either table remains editable via its existing surface.
 """

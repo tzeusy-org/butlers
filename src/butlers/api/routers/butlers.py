@@ -15,6 +15,7 @@ import os
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import anyio
 from croniter import croniter
@@ -33,6 +34,7 @@ from butlers.api.deps import (
 )
 from butlers.api.models import (
     ApiResponse,
+    BlindSpotSignal,
     ButlerConfigResponse,
     ButlerDetail,
     ButlerSummary,
@@ -55,6 +57,7 @@ from butlers.core.pricing import PricingConfig, estimate_session_cost
 from butlers.core.sessions import sessions_summary
 from butlers.tools.switchboard.registry.registry import (
     _derive_eligibility_state,
+    receiver_route_cutover_enabled,
 )
 
 logger = logging.getLogger(__name__)
@@ -251,6 +254,47 @@ async def _fetch_registered_duration(
     return max(elapsed, 0.0)
 
 
+async def _fetch_blind_spots(
+    db: DatabaseManager,
+    butler_name: str,
+    modules: dict[str, Any],
+) -> tuple[list[BlindSpotSignal], datetime | None, bool]:
+    """Return the same declared-signal blind-spot projection the spawner injects.
+
+    Derives its patterns from :func:`butlers.core.blind_spot_declarations.declared_signal_patterns`
+    and evaluates them via :func:`butlers.core.expected_signals.evaluate_declared_signals` --
+    the exact functions the spawner's preamble injection calls (bu-2jtfw.13 AC5:
+    this endpoint and the injected preamble must never disagree).
+
+    Returns an empty, non-failed projection when the butler's pool is
+    unavailable or it has no eligible declared dependencies.
+    """
+    from butlers.core.blind_spot_declarations import declared_signal_patterns
+    from butlers.core.expected_signals import evaluate_declared_signals
+
+    patterns = declared_signal_patterns(modules)
+    if not patterns:
+        return [], None, False
+
+    try:
+        pool = db.pool(butler_name)
+    except KeyError:
+        return [], None, False
+
+    snapshot = await evaluate_declared_signals(pool, signal_key_like_patterns=patterns)
+    signals = [
+        BlindSpotSignal(
+            signal_key=s.signal_key,
+            producer=s.producer,
+            last_observed_at=s.last_observed_at,
+            state=s.state.value,
+            unmeasurable_reason=s.unmeasurable_reason,
+        )
+        for s in snapshot.signals
+    ]
+    return signals, snapshot.evaluated_at, snapshot.query_failed
+
+
 def _build_process_facts(
     connection_info: ButlerConnectionInfo,
     roster_dir: Path,
@@ -363,6 +407,28 @@ _DEFAULT_STALE_SECONDS = 5 * 60
 # tolerance the deleted bespoke butler_registry CASE used
 # (`last_seen_at > NOW() + INTERVAL '5 minutes' THEN 'degraded'`).
 _CLOCK_SKEW_TOLERANCE_SECONDS = 5 * 60
+
+_BOARD_RECEIVER_REGISTRY_SQL = """
+    SELECT r.name, c.healthy_observed_at AS last_seen_at,
+           CASE WHEN c.policy_state != 'active' THEN 'quarantined'
+                WHEN c.observed_state = 'healthy'
+                 AND c.observed_boot_epoch = c.boot_epoch
+                 AND c.route_compatible IS TRUE AND c.accepting_routes IS TRUE
+                THEN 'active' ELSE 'stale' END AS eligibility_state,
+           CASE WHEN c.policy_state != 'active' THEN c.policy_changed_at
+                ELSE NULL END AS quarantined_at,
+           CASE WHEN c.policy_state != 'active'
+                THEN 'protected_policy:' || c.policy_state
+                ELSE NULL END AS quarantine_reason,
+           r.liveness_ttl_seconds
+    FROM butler_registry AS r
+    JOIN butler_registry_control_plane AS c USING (name)
+"""
+_BOARD_LEGACY_REGISTRY_SQL = """
+    SELECT name, last_seen_at, eligibility_state, quarantined_at,
+           quarantine_reason, liveness_ttl_seconds
+    FROM butler_registry
+"""
 
 
 class BoardRow(BaseModel):
@@ -634,9 +700,13 @@ async def _fetch_board_row(
     if registry_source_error or reg is None:
         eligibility = "unavailable"
     else:
-        # Derive eligibility from freshness (TTL staleness) rather than raw stored state.
-        # This mirrors the freshness rule used in _derive_eligibility_state.
-        eligibility = _derive_eligibility_state(reg, now=now)
+        # Receiver state/compatibility can deny a target while its last good
+        # observation remains recent. Freshness can only narrow an active row.
+        eligibility = (
+            "stale"
+            if reg["eligibility_state"] == "stale"
+            else _derive_eligibility_state(reg, now=now)
+        )
 
     quarantine_reason = reg["quarantine_reason"] if reg else None
     quarantined_dt = (
@@ -827,12 +897,13 @@ async def get_butlers_board(
     registry_source_error = False
     try:
         sw_pool = db.pool("switchboard")
+        registry_query = (
+            _BOARD_RECEIVER_REGISTRY_SQL
+            if receiver_route_cutover_enabled()
+            else _BOARD_LEGACY_REGISTRY_SQL
+        )
         registry_rows = await asyncio.wait_for(
-            sw_pool.fetch(
-                "SELECT name, last_seen_at, eligibility_state, quarantined_at, quarantine_reason,"
-                " liveness_ttl_seconds"
-                " FROM butler_registry"
-            ),
+            sw_pool.fetch(registry_query),
             timeout=_STATUS_TIMEOUT_S,
         )
         for row in registry_rows:
@@ -915,6 +986,9 @@ async def get_butler_detail(
     last_session_started_at = await _fetch_last_session_started_at(db, name)
     registered_duration = await _fetch_registered_duration(db, name)
     process_facts = _build_process_facts(connection_info, roster_dir, registered_duration)
+    blind_spots, blind_spots_evaluated_at, blind_spots_query_failed = await _fetch_blind_spots(
+        db, name, config.modules
+    )
 
     detail = ButlerDetail(
         name=config.name,
@@ -930,6 +1004,9 @@ async def get_butler_detail(
         sessions_24h=sessions_map.get(name, 0),
         last_session_started_at=last_session_started_at,
         process_facts=process_facts,
+        blind_spots=blind_spots,
+        blind_spots_evaluated_at=blind_spots_evaluated_at,
+        blind_spots_query_failed=blind_spots_query_failed,
     )
 
     return ApiResponse[ButlerDetail](data=detail)

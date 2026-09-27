@@ -46,6 +46,7 @@ from fastapi import (
 from fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from butlers.api.audit_emit import authenticated_principal
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
 from butlers.api.deps import (
@@ -137,11 +138,18 @@ SELECT
     tul.butler_name AS butler_name,
     COALESCE(tul.purpose, 'unknown') AS purpose,
     mc.model_id AS model_id,
-    COUNT(*)::bigint AS calls,
-    COALESCE(SUM(tul.input_tokens), 0)::bigint AS input_tokens,
-    COALESCE(SUM(tul.output_tokens), 0)::bigint AS output_tokens,
-    COALESCE(SUM(tul.cached_input_tokens), 0)::bigint AS cached_input_tokens,
-    COALESCE(SUM(tul.cache_creation_tokens), 0)::bigint AS cache_creation_tokens
+    COUNT(*) FILTER (WHERE tul.usage_source = 'measured')::bigint AS calls,
+    COUNT(*) FILTER (WHERE tul.usage_source = 'unmeasurable')::bigint
+        AS unmeasurable_attempts,
+    BOOL_OR(tul.session_id IS NOT NULL) AS has_session,
+    COALESCE(SUM(tul.input_tokens) FILTER (WHERE tul.usage_source = 'measured'), 0)::bigint
+        AS input_tokens,
+    COALESCE(SUM(tul.output_tokens) FILTER (WHERE tul.usage_source = 'measured'), 0)::bigint
+        AS output_tokens,
+    COALESCE(SUM(tul.cached_input_tokens) FILTER (WHERE tul.usage_source = 'measured'), 0)::bigint
+        AS cached_input_tokens,
+    COALESCE(SUM(tul.cache_creation_tokens) FILTER (WHERE tul.usage_source = 'measured'), 0)::bigint
+        AS cache_creation_tokens
 FROM public.token_usage_ledger tul
 JOIN public.model_catalog mc ON mc.id = tul.catalog_entry_id
 WHERE tul.recorded_at >= $1
@@ -398,6 +406,13 @@ async def _ledger_session_divergences(
 
     ledger_by_butler_day: dict[tuple[str, str], int] = defaultdict(int)
     for row in rows:
+        # Connector discretion and synthetic dashboard runtime calls are
+        # intentionally recorded without a task-session id. They are valid
+        # spend sources, but there can never be a roster session pool to
+        # compare them with. Only an explicit false value opts a grouped row
+        # out; older/partial evidence stays fail-closed as roster-backed.
+        if row.get("has_session") is False:
+            continue
         key = (str(row.get("butler_name") or "unknown"), str(row.get("day") or ""))
         ledger_by_butler_day[key] += sum(
             int(row.get(field) or 0)
@@ -887,6 +902,7 @@ async def get_cost_summary(
             data=SpendSummary(
                 period=period_label,
                 total_cost_usd=0.0,
+                measured_usd=0.0,
                 total_sessions=0,
                 total_input_tokens=0,
                 total_output_tokens=0,
@@ -904,6 +920,8 @@ async def get_cost_summary(
         data=SpendSummary(
             period=period_label,
             total_cost_usd=round(spend.cost_usd, 6),
+            measured_usd=round(spend.cost_usd, 6),
+            unmeasurable_attempts=spend.unmeasurable_attempts,
             total_sessions=sum(int(row.get("calls") or 0) for row in rows),
             total_input_tokens=input_tokens,
             total_output_tokens=output_tokens,
@@ -1084,6 +1102,7 @@ def _top_sessions_from_data(
                 output_tokens=output_tokens,
                 model=model_id,
                 started_at=s.get("started_at", ""),
+                purpose_lane=s.get("purpose_lane"),
             )
         )
     return sessions
@@ -1700,6 +1719,8 @@ class ForecastResponse(BaseModel):
     days_in_month: int
     days_elapsed: int
     mtd_usd: float
+    measured_usd: float = 0.0
+    unmeasurable_attempts: int = 0
     ceiling_usd: float | None
     projection_confidence: Literal["low", "normal"]
     # True when pricing MTD from public.token_usage_ledger (the same source
@@ -1820,6 +1841,8 @@ async def get_spend_forecast(
             days_in_month=days_in_month,
             days_elapsed=days_elapsed,
             mtd_usd=round(mtd_spend.cost_usd, 6),
+            measured_usd=round(mtd_spend.cost_usd, 6),
+            unmeasurable_attempts=mtd_spend.unmeasurable_attempts,
             ceiling_usd=ceiling_usd,
             projection_confidence=projection_confidence_for(days_elapsed),
             ceiling_source_error=ceiling_source_error,
@@ -2055,10 +2078,11 @@ async def create_spend_rule(
     try:
         await audit_append(
             db.pool("switchboard"),
-            actor="owner",
+            actor=authenticated_principal(),
             action="spend.rule.create",
             target=f"rule:{rule.id}",
             note=f"position={position} condition={condition_payload} action={action_payload}",
+            result="success",
         )
     except Exception:
         logger.warning("Audit append failed for spend.rule.create", exc_info=True)
@@ -2165,10 +2189,11 @@ async def update_spend_rule(
     try:
         await audit_append(
             db.pool("switchboard"),
-            actor="owner",
+            actor=authenticated_principal(),
             action="spend.rule.update",
             target=f"rule:{rule_id}",
             note=f"position={new_position} condition={new_condition} action={new_action}",
+            result="success",
         )
     except Exception:
         logger.warning("Audit append failed for spend.rule.update", exc_info=True)

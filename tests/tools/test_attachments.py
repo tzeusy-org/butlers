@@ -7,7 +7,11 @@ import pytest
 from moto.server import ThreadedMotoServer
 
 from butlers.storage import BlobNotFoundError, S3BlobStore
-from butlers.tools.attachments import MAX_ATTACHMENT_SIZE_BYTES, get_attachment
+from butlers.tools.attachments import (
+    MAX_ATTACHMENT_SIZE_BYTES,
+    MAX_INLINE_BASE64_BYTES,
+    get_attachment,
+)
 
 TEST_BUCKET = "test-butlers-blobs"
 TEST_BUTLER = "testbutler"
@@ -68,17 +72,32 @@ async def test_get_attachment_error_cases(blob_store):
     with pytest.raises(ValueError, match="size limit"):
         await get_attachment(blob_store, storage_ref)
 
-    # At limit is allowed
+    # At the absolute 5MB ceiling but over the inline base64 cap: refused
+    # (typed refusal), not a multi-MB base64 dump into a JSON tool result
+    # (bu-2jtfw.7 — see test_attachment_view.py's contract test).
     at_limit = b"x" * MAX_ATTACHMENT_SIZE_BYTES
     ref2 = await blob_store.put(at_limit, content_type="application/octet-stream")
     result = await get_attachment(blob_store, ref2)
+    assert result["status"] == "refused"
+    assert result["reason"] == "inline_size_cap_exceeded"
     assert result["size_bytes"] == MAX_ATTACHMENT_SIZE_BYTES
+    assert "data_base64" not in result
 
     with pytest.raises(BlobNotFoundError):
         await get_attachment(blob_store, f"s3://{TEST_BUCKET}/{TEST_BUTLER}/2026/01/01/nope.jpg")
 
     with pytest.raises(ValueError, match="Invalid storage_ref format"):
         await get_attachment(blob_store, "not-a-valid-ref-format")
+
+
+async def test_get_attachment_inline_cap(blob_store):
+    """A blob whose base64 fits under the inline cap is still returned inline."""
+    # 3 bytes -> 4 base64 chars, keep well under the cap.
+    small = b"x" * ((MAX_INLINE_BASE64_BYTES // 4) * 3 - 3)
+    ref = await blob_store.put(small, content_type="application/octet-stream")
+    result = await get_attachment(blob_store, ref)
+    assert "data_base64" in result
+    assert len(result["data_base64"]) <= MAX_INLINE_BASE64_BYTES
 
 
 async def test_get_attachment_reports_blob_store_unavailable():

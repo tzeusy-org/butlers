@@ -28,9 +28,12 @@ from butlers.core.dispatch_intent import (
     DispatchIntent,
     FitCode,
     derive_dispatch_intent,
+    discretion_dispatch_intent,
 )
+from butlers.core.dispatch_outcomes import record_dispatch_attempt
 from butlers.core.model_capabilities import ModelFeature
 from butlers.core.model_routing import (
+    _BREAKER_FAILURE_THRESHOLD,
     CandidateOutcome,
     Complexity,
     TierQuotaExhausted,
@@ -38,6 +41,7 @@ from butlers.core.model_routing import (
     resolve_dispatch,
     resolve_model_with_effective_tier,
 )
+from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
@@ -53,7 +57,6 @@ BUTLER = "general"
 # Every trigger source except ``healing``/``qa`` gets MCP tool wiring in the spawner,
 # so this is the intent shape that matters most in production.
 TOOL_INTENT = derive_dispatch_intent("external", Complexity.CHEAP)
-NO_REQUIREMENTS_INTENT = derive_dispatch_intent("healing", Complexity.CHEAP)
 
 
 @pytest.fixture(scope="module")
@@ -66,7 +69,7 @@ def migrated_db_url(postgres_container) -> str:
 async def pool(migrated_db_url: str) -> asyncpg.Pool:
     """Pool with catalog, override, counter, and quota tables cleared between tests."""
     clear_routing_decision_cache()
-    p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=3)
+    p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=1)
     await p.execute(
         "TRUNCATE public.model_round_robin_counters, public.butler_model_overrides, "
         "public.token_limits, public.token_usage_ledger, public.model_catalog CASCADE"
@@ -144,28 +147,34 @@ async def test_hard_fit_excludes_tool_incapable_top_priority_entry(pool: asyncpg
     assert _outcome(resolution, claude_id) is CandidateOutcome.SELECTED
 
 
-async def test_intent_requiring_nothing_matches_legacy_selection(pool: asyncpg.Pool) -> None:
-    """Migration safety: no requirements means no behaviour change, including the winner."""
-    api_id = await _insert_entry(pool, alias="ctl-api", runtime_type="api", priority=30)
+async def test_discretion_receipt_capture_matches_legacy_selection(pool: asyncpg.Pool) -> None:
+    """Receipt capture cannot change the winner for tool-less discretion calls."""
+    api_id = await _insert_entry(
+        pool,
+        alias="ctl-api",
+        runtime_type="api",
+        priority=30,
+        capabilities=json.dumps({"no_such_feature": True}),
+    )
     await _insert_entry(pool, alias="ctl-claude", runtime_type="claude", priority=10)
 
     legacy = await resolve_model_with_effective_tier(
         pool, BUTLER, Complexity.CHEAP, allow_tier_fallthrough=False
     )
-    resolution = await resolve_dispatch(
-        pool, BUTLER, NO_REQUIREMENTS_INTENT, allow_tier_fallthrough=False
-    )
+    receipt_sink = []
     via_kwarg = await resolve_model_with_effective_tier(
         pool,
         BUTLER,
         Complexity.CHEAP,
         allow_tier_fallthrough=False,
-        intent=NO_REQUIREMENTS_INTENT,
+        receipt_intent=discretion_dispatch_intent(Complexity.CHEAP),
+        receipt_sink=receipt_sink,
     )
     assert legacy is not None
     assert legacy[3] == api_id
-    assert resolution.selection == legacy
     assert via_kwarg == legacy
+    assert receipt_sink[0].selection == legacy
+    assert receipt_sink[0].requested_intent.required_features == frozenset()
 
 
 async def test_falls_through_when_the_whole_tier_misfits(pool: asyncpg.Pool) -> None:
@@ -339,3 +348,47 @@ async def test_receipt_is_json_safe_and_prompt_free(pool: asyncpg.Pool) -> None:
     # Evidence age is present as a field and null until an attempt exists.
     assert excluded["evidence_age_s"] is None
     assert excluded["evidence_samples"] == 0
+
+
+async def test_breaker_open_candidate_is_explained_and_receipt_persists(
+    pool: asyncpg.Pool,
+) -> None:
+    """A breaker exclusion remains visible without becoming eligible again."""
+    broken_id = await _insert_entry(pool, alias="rc-breaker", priority=30)
+    selected_id = await _insert_entry(pool, alias="rc-healthy", priority=10)
+    for attempt_index in range(_BREAKER_FAILURE_THRESHOLD):
+        await pool.execute(
+            """
+            INSERT INTO public.model_dispatch_attempts
+                (catalog_entry_id, butler, outcome, attempt_index)
+            VALUES ($1, $2, 'runtime_failure', $3)
+            """,
+            broken_id,
+            BUTLER,
+            attempt_index,
+        )
+
+    resolution = await resolve_dispatch(pool, BUTLER, TOOL_INTENT, allow_tier_fallthrough=False)
+    assert resolution.selection is not None
+    assert resolution.selection[3] == selected_id
+    payload = resolution.describe()
+    excluded = next(c for c in payload["candidates"] if c["catalog_entry_id"] == str(broken_id))
+    assert excluded["outcome"] == "excluded_breaker"
+    assert excluded["exclusion"] == "breaker_open"
+
+    async with pool.acquire() as connection:
+        await register_jsonb_codec(connection)
+    attempt_id = await record_dispatch_attempt(
+        pool,
+        catalog_entry_id=selected_id,
+        butler=BUTLER,
+        outcome="success",
+        attempt_index=0,
+        resolution_receipt=payload,
+    )
+    stored = await pool.fetchval(
+        "SELECT resolution_receipt FROM public.model_dispatch_attempts WHERE id = $1",
+        attempt_id,
+    )
+    assert stored["winner"]["catalog_entry_id"] == str(selected_id)
+    assert stored["truncated"] is False

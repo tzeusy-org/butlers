@@ -132,7 +132,7 @@ class TestInlineKeyboardSupport:
         }
         response = MagicMock()
         response.status_code = 200
-        response.json.return_value = {"ok": True}
+        response.json.return_value = {"ok": True, "result": {"message_id": 43}}
 
         with (
             patch("butlers.modules.telegram.write_audit_entry", new_callable=AsyncMock),
@@ -216,7 +216,7 @@ class TestTelegramSendAuditEmit:
         # Fake successful HTTP response
         fake_resp = MagicMock()
         fake_resp.status_code = 200
-        fake_resp.json.return_value = {"ok": True}
+        fake_resp.json.return_value = {"ok": True, "result": {"message_id": 44}}
 
         with (
             patch(
@@ -236,6 +236,95 @@ class TestTelegramSendAuditEmit:
         assert call_args.args[2] == "telegram_send"
         assert call_args.args[3]["chat_id"] == "123456"
         assert "text_length" in call_args.args[3]
+        assert call_args.args[3]["provider_message_id"] == 44
+
+    @pytest.mark.parametrize(
+        "provider_body",
+        [
+            {"ok": False, "description": "rejected"},
+            {"ok": True},
+            {"ok": True, "result": {}},
+            {"ok": True, "result": {"message_id": None}},
+            {"ok": True, "result": {"message_id": "42"}},
+            {"ok": True, "result": {"message_id": True}},
+            {"ok": True, "result": {"message_id": 0}},
+            {"ok": True, "result": {"message_id": -1}},
+        ],
+    )
+    async def test_http_200_without_valid_telegram_receipt_is_failure(
+        self, provider_body: dict[str, Any]
+    ) -> None:
+        mod = TelegramModule()
+        mod._butler_name = "test-butler"
+        mod.wire_audit_pool(MagicMock())
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = provider_body
+
+        with (
+            patch("butlers.modules.telegram.write_audit_entry", new_callable=AsyncMock) as audit,
+            patch.object(mod, "_get_client") as mock_get_client,
+            patch.object(mod, "_base_url", return_value="https://api.telegram.org/bot<token>"),
+        ):
+            client = AsyncMock()
+            client.post = AsyncMock(return_value=response)
+            mock_get_client.return_value = client
+
+            with pytest.raises(RuntimeError, match="telegram_provider_response"):
+                await mod._send_message("123456", "Hello")
+
+        audit.assert_awaited_once()
+        assert audit.await_args.kwargs["result"] == "error"
+        assert audit.await_args.kwargs["error"] == "telegram_provider_response_invalid"
+
+    async def test_non_json_http_200_is_failure_and_audited(self) -> None:
+        mod = TelegramModule()
+        mod._butler_name = "test-butler"
+        mod.wire_audit_pool(MagicMock())
+        response = MagicMock()
+        response.status_code = 200
+        response.json.side_effect = ValueError("not json")
+
+        with (
+            patch("butlers.modules.telegram.write_audit_entry", new_callable=AsyncMock) as audit,
+            patch.object(mod, "_get_client") as mock_get_client,
+            patch.object(mod, "_base_url", return_value="https://api.telegram.org/bot<token>"),
+        ):
+            client = AsyncMock()
+            client.post = AsyncMock(return_value=response)
+            mock_get_client.return_value = client
+
+            with pytest.raises(RuntimeError, match="telegram_provider_response"):
+                await mod._send_message("123456", "Hello")
+
+        audit.assert_awaited_once()
+        assert audit.await_args.kwargs["result"] == "error"
+        assert audit.await_args.kwargs["error"] == "telegram_provider_response_invalid"
+
+    async def test_transport_timeout_is_failure_and_audited(self) -> None:
+        mod = TelegramModule()
+        mod._butler_name = "test-butler"
+        mod.wire_audit_pool(MagicMock())
+        timeout = httpx.ReadTimeout(
+            "timeout",
+            request=httpx.Request("POST", "https://api.telegram.org/bot<token>/sendMessage"),
+        )
+
+        with (
+            patch("butlers.modules.telegram.write_audit_entry", new_callable=AsyncMock) as audit,
+            patch.object(mod, "_get_client") as mock_get_client,
+            patch.object(mod, "_base_url", return_value="https://api.telegram.org/bot<token>"),
+        ):
+            client = AsyncMock()
+            client.post = AsyncMock(side_effect=timeout)
+            mock_get_client.return_value = client
+
+            with pytest.raises(httpx.ReadTimeout):
+                await mod._send_message("123456", "Hello")
+
+        audit.assert_awaited_once()
+        assert audit.await_args.kwargs["result"] == "error"
+        assert audit.await_args.kwargs["error"] == "telegram_transport_timeout"
 
     async def test_audit_emitted_on_error(self) -> None:
         mod = TelegramModule()
@@ -355,7 +444,7 @@ class TestTelegramSendPermissionEnforcement:
 
         fake_resp = MagicMock()
         fake_resp.status_code = 200
-        fake_resp.json.return_value = {"ok": True}
+        fake_resp.json.return_value = {"ok": True, "result": {"message_id": 45}}
 
         with (
             patch(
@@ -373,7 +462,7 @@ class TestTelegramSendPermissionEnforcement:
 
             result = await mod._send_message("123456", "Hello world")
 
-        assert result == {"ok": True}
+        assert result == {"ok": True, "result": {"message_id": 45}}
         mock_client.post.assert_awaited_once()
         # Gate consulted the matrix with the notify capability.
         assert mock_require.await_args.args[2] == "notify"

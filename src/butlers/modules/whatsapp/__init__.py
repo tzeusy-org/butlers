@@ -220,7 +220,7 @@ class WhatsAppModule(Module):
             )
 
         # connected/logged_in are the bridge's authoritative liveness fields
-        # (see docs/whatsapp-setup.md §2.1); state can lag a missed event.
+        # (see docs/connectors/whatsapp.md §2.1); state can lag a missed event.
         linked = bool(status.get("connected")) and bool(status.get("logged_in"))
         if not linked and status.get("state") != "connected":
             state = status.get("state") or "unknown"

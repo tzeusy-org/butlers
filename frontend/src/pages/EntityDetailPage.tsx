@@ -22,15 +22,20 @@ import { toast } from "sonner";
 import { Time } from "@/components/ui/time";
 import { Tip } from "@/components/ui/tip";
 import { ENTITY_DETAIL_INITIAL_FACTS_LIMIT } from "@/lib/entity-detail-query";
+import {
+  entityActivityItemKey,
+  entityActivityNeedsRefresh,
+} from "@/lib/entity-activity-pages";
 import { getEntityGloss, DUNBAR_TIER_VALUES, ENTITY_TYPE_VALUES, CURATION_RAIL_GLOSSES } from "@/lib/entity-glosses";
 import type { DunbarTier, EntityState, EntityType, CurationRailAction } from "@/lib/entity-glosses";
 
 import type {
   ContactSummary,
+  EntityActivityItem,
   EntityFact,
   EntityFactStalenessBand,
   EntityFactsValidity,
-  EntityTimelineItem,
+  EntityRebindReceipt,
   Fact,
   MessageThreadSummary,
   NeighbourEntry,
@@ -89,15 +94,14 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useContacts } from "@/hooks/use-contacts";
 import {
   useArchiveRelationshipEntity,
+  useEntityActivity,
   useEntityActivityBins,
   useEntityDeltaFacts,
   useEntityFacts,
   useEntityGifts,
   useEntityLoans,
-  useEntityReachOutDrafts,
   useEntityMessageThreads,
   useEntityNeighbours,
-  useEntityTimeline,
   useRelationshipEntities,
   useRelationshipEntitiesByIds,
   useRelationshipEntityQueue,
@@ -146,6 +150,47 @@ function resolveMergeMetadata(
   if (!survivorId || survivorId === entityId) return { kind: "inconsistent" };
 
   return { kind: "redirect", survivorId };
+}
+
+function RebindReceiptCohort({ receipts }: { receipts: EntityRebindReceipt[] }) {
+  if (receipts.length === 0) return null;
+  const latestId = receipts[0]?.rebind_id;
+  const cohort = receipts.filter((receipt) => receipt.rebind_id === latestId);
+  return (
+    <section
+      className="rounded-md border border-border bg-muted/20 px-3 py-2"
+      data-testid="entity-rebind-cohort"
+      aria-label="Entity rebind receipts"
+    >
+      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        Memory rebind
+      </p>
+      <ul className="mt-2 flex flex-wrap gap-2">
+        {cohort.map((receipt) => {
+          const label =
+            receipt.status === "active"
+              ? `${receipt.references_rebound} rebound`
+              : receipt.status === "failed"
+                ? `Failed${receipt.error_class ? ` · ${receipt.error_class}` : ""}`
+                : receipt.status === "pending"
+                  ? "Not yet reported"
+                  : "No local table";
+          return (
+            <li key={`${receipt.rebind_id}:${receipt.target_schema}`} className="flex items-center gap-1">
+              <span className="text-xs text-foreground">{receipt.target_schema}</span>
+              <Badge
+                variant={receipt.status === "failed" ? "destructive" : "outline"}
+                className="text-[10px]"
+                data-status={receipt.status}
+              >
+                {label}
+              </Badge>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
 }
 
 /**
@@ -607,6 +652,7 @@ const _TIMELINE_FILTERS: { id: TimelineFilter; label: string }[] = [
   { id: "loan", label: "Loans" },
   { id: "life_event", label: "Life events" },
 ];
+const _EMPTY_ACTIVITY_ITEMS: EntityActivityItem[] = [];
 
 function timelineKindGlyph(kind: string): string {
   switch (kind) {
@@ -628,19 +674,52 @@ function timelineKindGlyph(kind: string): string {
 }
 
 function ActivityTimeline({ entityId }: { entityId: string }) {
-  const { data: items, isLoading, isError, refetch } = useEntityTimeline(entityId);
+  const {
+    data: activityPages,
+    isLoading,
+    isError,
+    isRefetching,
+    refetch,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useEntityActivity(entityId, { limit: 200 });
   const [filter, setFilter] = useState<TimelineFilter>("all");
+  const loadMoreInFlightRef = useRef(false);
+  const pages = useMemo(() => activityPages?.pages ?? [], [activityPages?.pages]);
+  const items = useMemo(() => {
+    if (pages.length === 0) return _EMPTY_ACTIVITY_ITEMS;
+    const seen = new Set<string>();
+    return pages.flatMap((page) => page.items.filter((item) => {
+      const key = entityActivityItemKey(item);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }));
+  }, [pages]);
+  const total = pages[0]?.total ?? 0;
+  const isDegraded = pages.some((page) => page.degraded);
+  const hasUnloaded = items.length < total;
+  const activityChanged = entityActivityNeedsRefresh(pages, hasNextPage === true, items.length);
+  const retryActivity = () => void refetch({ cancelRefetch: false });
+  const loadMoreActivity = () => {
+    if (loadMoreInFlightRef.current) return;
+    loadMoreInFlightRef.current = true;
+    void Promise.resolve(fetchNextPage({ cancelRefetch: false })).finally(() => {
+      loadMoreInFlightRef.current = false;
+    });
+  };
 
   const counts = useMemo(() => {
     const acc: Record<TimelineFilter, number> = {
-      all: items?.length ?? 0,
+      all: items.length,
       interaction: 0,
       note: 0,
       gift: 0,
       loan: 0,
       life_event: 0,
     };
-    for (const it of items ?? []) {
+    for (const it of items) {
       if (it.kind in acc) {
         acc[it.kind as TimelineFilter] += 1;
       }
@@ -649,17 +728,24 @@ function ActivityTimeline({ entityId }: { entityId: string }) {
   }, [items]);
 
   const filtered = useMemo(() => {
-    if (!items) return [];
     if (filter === "all") return items;
     return items.filter((it) => it.kind === filter);
   }, [items, filter]);
+
+  const timelineRows = filtered.length > 0 && (
+    <ul className="divide-y divide-border border-y">
+      {filtered.map((item) => (
+        <TimelineRow key={`${item.src}:${item.store ?? "none"}:${item.id}`} item={item} />
+      ))}
+    </ul>
+  );
 
   return (
     <section className="space-y-3">
       <div className="flex items-baseline justify-between gap-3">
         <h2 className="text-lg font-semibold">Activity</h2>
         <span className="text-muted-foreground text-xs">
-          {items ? `${items.length} entries` : ""}
+          {pages.length > 0 ? `Showing ${items.length} of ${total}` : ""}
         </span>
       </div>
 
@@ -667,11 +753,12 @@ function ActivityTimeline({ entityId }: { entityId: string }) {
         {_TIMELINE_FILTERS.map((f) => {
           const active = f.id === filter;
           const count = counts[f.id];
-          const disabled = count === 0 && f.id !== "all";
+          const disabled = count === 0 && f.id !== "all" && !hasUnloaded;
           return (
             <button
               key={f.id}
               type="button"
+              aria-label={`${f.label}${count > 0 || hasUnloaded ? ` ${count}${hasUnloaded ? "+" : ""}` : ""}`}
               onClick={() => setFilter(f.id)}
               disabled={disabled}
               className={
@@ -684,9 +771,9 @@ function ActivityTimeline({ entityId }: { entityId: string }) {
               }
             >
               {f.label}
-              {count > 0 && (
+              {(count > 0 || hasUnloaded) && (
                 <span className={"ml-1.5 tabular-nums " + (active ? "" : "text-muted-foreground")}>
-                  {count}
+                  {" "}{count}{hasUnloaded ? "+" : ""}
                 </span>
               )}
             </button>
@@ -694,14 +781,27 @@ function ActivityTimeline({ entityId }: { entityId: string }) {
         })}
       </div>
 
+      {activityChanged && (
+        <div
+          role="alert"
+          className="border-border bg-muted/30 flex items-center justify-between gap-3 rounded border px-3 py-2"
+          data-testid="entity-activity-changed"
+        >
+          <p className="text-sm">Activity changed while loading.</p>
+          <Button variant="outline" size="sm" onClick={retryActivity} disabled={isRefetching}>
+            {isRefetching ? "Refreshing…" : "Refresh activity"}
+          </Button>
+        </div>
+      )}
+
       {isLoading ? (
         <div className="space-y-2 py-2">
           {Array.from({ length: 4 }, (_, i) => (
             <Skeleton key={i} className="h-10 w-full" />
           ))}
         </div>
-      ) : isError && (!items || items.length === 0) ? (
-        // A failed timeline fetch must not render "No activity recorded yet." —
+      ) : isError && items.length === 0 ? (
+        // A failed activity fetch must not render "No activity recorded yet." —
         // a down backend would read as a genuinely quiet history (bu-mkd5r).
         <div
           role="alert"
@@ -709,32 +809,70 @@ function ActivityTimeline({ entityId }: { entityId: string }) {
           data-testid="entity-timeline-error"
         >
           <p className="text-destructive text-sm">Couldn&rsquo;t load activity. Retry.</p>
-          <Button variant="outline" size="sm" onClick={() => void refetch()}>
-            Retry
+          <Button variant="outline" size="sm" onClick={retryActivity} disabled={isRefetching}>
+            {isRefetching ? "Retrying…" : "Retry"}
           </Button>
         </div>
+      ) : isError ? (
+        <>
+          <SourceDegradedNote
+            testId="entity-activity-fetch-error"
+            label="Activity"
+            detail="unavailable"
+            onRetry={retryActivity}
+          />
+          {timelineRows}
+        </>
+      ) : isDegraded ? (
+        <>
+          <SourceDegradedNote
+            testId="entity-activity-degraded"
+            label="Chronicle activity"
+            detail="unavailable"
+            onRetry={retryActivity}
+          />
+          {timelineRows}
+        </>
       ) : filtered.length === 0 ? (
         <p className="text-muted-foreground py-8 text-center text-sm">
           {filter === "all"
             ? "No activity recorded yet."
-            : `No ${_TIMELINE_FILTERS.find((f) => f.id === filter)?.label.toLowerCase()} yet.`}
+            : hasUnloaded
+              ? `No ${_TIMELINE_FILTERS.find((f) => f.id === filter)?.label.toLowerCase()} loaded yet.`
+              : `No ${_TIMELINE_FILTERS.find((f) => f.id === filter)?.label.toLowerCase()} yet.`}
         </p>
-      ) : (
-        <ul className="divide-y divide-border border-y">
-          {filtered.map((item) => (
-            <TimelineRow key={item.id} item={item} />
-          ))}
-        </ul>
+      ) : timelineRows}
+
+      {hasNextPage && !activityChanged && (
+        <div className="flex items-center justify-between gap-3 border-t pt-3">
+          <span className="text-muted-foreground text-xs tabular-nums">
+            {items.length} of {total} loaded
+          </span>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={loadMoreActivity}
+            disabled={isFetchingNextPage}
+            data-testid="entity-activity-load-more"
+          >
+            {isFetchingNextPage ? "Loading…" : "Load more activity"}
+          </Button>
+        </div>
       )}
     </section>
   );
 }
 
-function TimelineRow({ item }: { item: EntityTimelineItem }) {
-  const date = item.valid_at ? new Date(item.valid_at) : null;
-  const subtitle = item.predicate.startsWith("interaction_")
-    ? item.predicate.slice("interaction_".length).replaceAll("_", " ")
-    : item.predicate.replaceAll("_", " ");
+function TimelineRow({ item }: { item: EntityActivityItem }) {
+  const date = item.ts ? new Date(item.ts) : null;
+  const predicate = item.predicate ?? item.kind;
+  const subtitle =
+    item.src === "chronicler"
+      ? "Chronicle episode"
+      : predicate.startsWith("interaction_")
+        ? predicate.slice("interaction_".length).replaceAll("_", " ")
+        : predicate.replaceAll("_", " ");
 
   return (
     <li className="flex items-start gap-3 py-2.5">
@@ -746,11 +884,11 @@ function TimelineRow({ item }: { item: EntityTimelineItem }) {
         {timelineKindGlyph(item.kind)}
       </span>
       <div className="min-w-0 flex-1">
-        {item.content && (
-          <p className="text-sm leading-snug">{item.content}</p>
+        {item.summary && (
+          <p className="text-sm leading-snug">{item.summary}</p>
         )}
         <p className="text-muted-foreground mt-0.5 text-xs capitalize">
-          {subtitle}
+          {item.src === "chronicler" ? subtitle : `Relationship · ${subtitle}`}
         </p>
       </div>
       <span className="text-muted-foreground shrink-0 text-xs tabular-nums">
@@ -822,55 +960,9 @@ function GiftsPanel({ entityId }: { entityId: string }) {
  * bu-86c4c.1: this page used to render `{loan.currency} {loan.amount_cents}`
  * directly — a $150 loan displayed as "USD 15000".
  */
-/**
- * Reach-out drafts: text the owner wrote and did not send.
- *
- * Kept visually distinct from the interaction timeline for exactly that
- * reason. A draft is not a touch, and letting it read as one would inflate
- * every recency signal on this page.
- */
-function ReachOutDraftsPanel({ entityId }: { entityId: string }) {
-  const { data: drafts, isLoading, isError, refetch } = useEntityReachOutDrafts(entityId);
-  if (isLoading) return null;
-  // A dropped read must not look like "nothing drafted" (bu-hckjv).
-  if (isError) {
-    return (
-      <SourceDegradedNote
-        testId="entity-reach-out-drafts-error"
-        label="Drafts"
-        onRetry={() => void refetch()}
-      />
-    );
-  }
-  if (!drafts || drafts.length === 0) return null;
-
-  return (
-    <section className="space-y-2" data-testid="entity-reach-out-drafts">
-      <div className="flex items-baseline gap-3">
-        <h3 className="text-sm font-semibold uppercase tracking-wide">
-          Drafts
-        </h3>
-        <span className="text-muted-foreground text-xs">{drafts.length}</span>
-        <span className="text-muted-foreground text-xs">not sent</span>
-      </div>
-      <ul className="space-y-1.5">
-        {drafts.map((draft) => (
-          <li key={draft.id} className="flex items-baseline gap-3 text-sm">
-            <span className="flex-1 truncate">{draft.message ?? "Empty draft"}</span>
-            {draft.channel && (
-              <span className="text-muted-foreground text-xs">{draft.channel}</span>
-            )}
-            {draft.created_at && (
-              <span className="text-muted-foreground text-xs tabular-nums">
-                <Time value={draft.created_at} mode="absolute" precision="day" />
-              </span>
-            )}
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
+// The reach-out drafts panel (an inert, never-sent fact list) was retired in
+// bu-2jtfw.11, replaced by the prepared-action mechanism surfaced on the
+// insight digest rather than an entity-tab panel.
 
 function formatLoanAmount(amountCents: string | null, currency: string | null): string | null {
   if (amountCents == null) return null;
@@ -1291,7 +1383,7 @@ function FactRow({
                 revealed ? "Hide provenance" : "Reveal provenance"
               }
               onClick={() => setRevealed((v) => !v)}
-              className="rounded px-1 font-mono text-[10px] leading-none text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="rounded px-1 font-mono text-[10px] leading-none text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
             >
               {revealed ? "−" : "i"}
             </button>
@@ -1753,7 +1845,7 @@ function EntityDetailModeToggle({
       data-testid="entity-mode-toggle"
       onClick={() => onModeChange(nextMode)}
       title={`${mode === "editorial" ? "Editorial" : "Workbench"} mode: click to switch to ${nextMode}`}
-      className="inline-flex items-center gap-1.5 rounded border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:border-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      className="inline-flex items-center gap-1.5 rounded border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:border-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
     >
       <Layers className="h-3.5 w-3.5" aria-hidden />
       {mode === "editorial" ? "Editorial" : "Workbench"}
@@ -1902,7 +1994,7 @@ function WorkbenchContextRail({
                 type="button"
                 data-testid="workbench-shares-identifiers"
                 onClick={() => onOpenMergeReviewWith(peer.id)}
-                className="block w-full text-left font-mono text-[10px] uppercase leading-relaxed tracking-[0.08em] text-[var(--amber-text)] hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="block w-full text-left font-mono text-[10px] uppercase leading-relaxed tracking-[0.08em] text-[var(--amber-text)] hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
               >
                 {peer.name ?? "another entity"}, likely the same →
               </button>
@@ -2036,8 +2128,8 @@ function CurationAction({
       disabled={disabled}
       className={
         destructive
-          ? "block w-full rounded border border-border px-2.5 py-1.5 text-left font-mono text-[11px] uppercase tracking-[0.04em] text-destructive transition-colors hover:border-destructive hover:bg-destructive/10 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          : "block w-full rounded border border-border px-2.5 py-1.5 text-left font-mono text-[11px] uppercase tracking-[0.04em] text-muted-foreground transition-colors hover:border-foreground hover:text-foreground disabled:opacity-40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          ? "block w-full rounded border border-border px-2.5 py-1.5 text-left font-mono text-[11px] uppercase tracking-[0.04em] text-destructive transition-colors hover:border-destructive hover:bg-destructive/10 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
+          : "block w-full rounded border border-border px-2.5 py-1.5 text-left font-mono text-[11px] uppercase tracking-[0.04em] text-muted-foreground transition-colors hover:border-foreground hover:text-foreground disabled:opacity-40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
       }
     >
       {label}
@@ -2077,7 +2169,7 @@ function EditorialCurationCell({
       className={[
         "group flex flex-col gap-1 rounded border px-3 py-2.5 text-left transition-colors",
         "disabled:cursor-not-allowed disabled:opacity-40",
-        "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+        "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus",
         isDestructive
           ? "border-border text-destructive hover:border-destructive hover:bg-destructive/5"
           : "border-border text-foreground hover:border-foreground/40 hover:bg-muted/20",
@@ -2248,7 +2340,7 @@ function WorkbenchActionRail({
             type="button"
             data-testid="workbench-duplicate-commit"
             onClick={onOpenMergeReview}
-            className="inline-flex items-center gap-1.5 rounded border border-[var(--amber)] px-2.5 py-1 font-mono text-[11px] uppercase tracking-[0.04em] text-[var(--amber-text)] transition-colors hover:bg-[var(--amber)]/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="inline-flex items-center gap-1.5 rounded border border-[var(--amber)] px-2.5 py-1 font-mono text-[11px] uppercase tracking-[0.04em] text-[var(--amber-text)] transition-colors hover:bg-[var(--amber)]/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
           >
             <Layers className="h-3.5 w-3.5" aria-hidden />
             Review &amp; merge →
@@ -2792,7 +2884,7 @@ export default function EntityDetailPage() {
           setForgetError(null);
           setForgetDialogOpen(true);
         }}
-        className="inline-flex items-center gap-1.5 rounded border border-border px-2.5 py-1 text-xs font-medium text-destructive transition-colors hover:border-destructive hover:bg-destructive/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        className="inline-flex items-center gap-1.5 rounded border border-border px-2.5 py-1 text-xs font-medium text-destructive transition-colors hover:border-destructive hover:bg-destructive/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus"
       >
         <Trash2 className="h-3.5 w-3.5" aria-hidden />
         Forget
@@ -2835,9 +2927,10 @@ export default function EntityDetailPage() {
           tabIndex={0}
           onKeyDown={handleDetailKeyDown}
           data-testid="entity-detail-root"
-          className="outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-2"
+          className="outline-none focus-visible:ring-1 focus-visible:ring-focus focus-visible:ring-offset-2"
         >
           {/* eslint-enable jsx-a11y/no-static-element-interactions, jsx-a11y/no-noninteractive-tabindex */}
+          <RebindReceiptCohort receipts={entity.rebind_receipts ?? []} />
           {mergeMetadata.kind === "inconsistent" && (
             <div
               className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm"
@@ -3180,8 +3273,8 @@ export default function EntityDetailPage() {
               {/* Activity timeline — primary content */}
               <ActivityTimeline entityId={entityId} />
 
-              {/* Operator verbs — log-interaction, gift-idea, draft-reach-out,
-                  note. Every chip writes a real fact (bu-6t8ix.4). */}
+              {/* Operator verbs — log-interaction, gift-idea, note. Every
+                  chip writes a real fact (bu-6t8ix.4). */}
               <EntityVerbRail entityId={entityId} />
 
               {/* Gifts and loans — structured panels, hidden when empty */}
@@ -3189,9 +3282,6 @@ export default function EntityDetailPage() {
                 <GiftsPanel entityId={entityId} />
                 <LoansPanel entityId={entityId} />
               </div>
-
-              {/* Reach-out drafts — written, deliberately not sent */}
-              <ReachOutDraftsPanel entityId={entityId} />
 
               {/* Message threads — only when matches exist */}
               <MessageThreadsSection entityId={entityId} />
@@ -3237,40 +3327,44 @@ export default function EntityDetailPage() {
               {practicalDrawer}
 
               {/* Workbench three-rail layout: context · workbench · curation.
-                  No 44px Display here (the identity hero above carries the name). */}
-              <div
-                className="grid grid-cols-1 gap-6 lg:grid-cols-[240px_minmax(0,1fr)_280px]"
-                data-testid="workbench-three-rail"
-              >
-                <WorkbenchContextRail
-                  entityId={entity.id}
-                  duplicatePeers={duplicatePeers}
-                  onOpenMergeReviewWith={openMergeReviewWith}
-                />
+                  Switch on usable content width so a docked chat rail cannot
+                  collapse the middle column. No 44px Display here (the identity
+                  hero above carries the name). */}
+              <div className="@container">
+                <div
+                  className="grid grid-cols-1 gap-6 @3xl:grid-cols-[240px_minmax(0,1fr)_280px]"
+                  data-testid="workbench-three-rail"
+                >
+                  <WorkbenchContextRail
+                    entityId={entity.id}
+                    duplicatePeers={duplicatePeers}
+                    onOpenMergeReviewWith={openMergeReviewWith}
+                  />
 
-                <div className="min-w-0 space-y-5">
-                  <WorkbenchKpiStrip entityId={entity.id} />
-                  {/* Dense sortable provenance grid over BOTH stores. */}
-                  <ProvenanceGrid entityId={entity.id} defaultStoreAll />
+                  <div className="min-w-0 space-y-5">
+                    <WorkbenchKpiStrip entityId={entity.id} />
+                    {/* Dense sortable provenance grid over BOTH stores. */}
+                    <ProvenanceGrid entityId={entity.id} defaultStoreAll />
+                  </div>
+
+                  <WorkbenchActionRail
+                    entityId={entity.id}
+                    isUnidentified={entity.unidentified}
+                    duplicatePeerId={duplicatePeerId}
+                    duplicateEvidence={duplicateEvidence}
+                    onOpenMergeReview={openMergeReview}
+                    onPromote={handlePromoteEntity}
+                    onPromoteTier={() => stepDunbarTier("promote")}
+                    onDemoteTier={() => stepDunbarTier("demote")}
+                    onEditAliases={handleEditAliases}
+                    onEditContacts={handleEditContacts}
+                    onArchive={handleArchiveEntity}
+                    onForget={() => {
+                      setForgetError(null);
+                      setForgetDialogOpen(true);
+                    }}
+                  />
                 </div>
-
-                <WorkbenchActionRail
-                  entityId={entity.id}
-                  isUnidentified={entity.unidentified}
-                  duplicatePeerId={duplicatePeerId}
-                  duplicateEvidence={duplicateEvidence}
-                  onOpenMergeReview={openMergeReview}
-                  onPromote={handlePromoteEntity}
-                  onPromoteTier={() => stepDunbarTier("promote")}
-                  onDemoteTier={() => stepDunbarTier("demote")}
-                  onEditAliases={handleEditAliases}
-                  onEditContacts={handleEditContacts}
-                  onArchive={handleArchiveEntity}
-                  onForget={() => {
-                    setForgetError(null);
-                    setForgetDialogOpen(true);
-                  }}
-                />
               </div>
             </>
           )}

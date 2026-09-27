@@ -113,6 +113,14 @@ describe("SessionTable cancellation status", () => {
   });
 });
 
+describe("SessionTable purpose lane", () => {
+  it("renders an accessible private-content badge", () => {
+    const html = renderTable([makeSession({ purpose_lane: "private_content" })]);
+    expect(html).toContain("Purpose lane: Private content");
+    expect(html).toContain("Private content");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Cost column (bu-ptaub)
 // ---------------------------------------------------------------------------

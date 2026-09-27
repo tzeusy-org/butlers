@@ -1,0 +1,41 @@
+# Route A's app image is deliberately self-contained: this Dockerfile has no
+# remote frontend directive and every base or dependency cache is a required,
+# digest-pinned local launcher input.
+ARG ROUTE_A_GO_IMAGE
+ARG ROUTE_A_BASE_IMAGE
+
+FROM ${ROUTE_A_GO_IMAGE} AS go-builder
+ARG ROUTE_A_GO_DEPS_IMAGE
+
+WORKDIR /build
+COPY --from=${ROUTE_A_GO_DEPS_IMAGE} /go/pkg/mod/ /go/pkg/mod/
+COPY --from=${ROUTE_A_GO_DEPS_IMAGE} /root/.cache/go-build/ /root/.cache/go-build/
+ENV GOPROXY=off
+ENV GOFLAGS=-mod=readonly
+COPY whatsapp-bridge/go.mod whatsapp-bridge/go.sum ./
+RUN go mod download
+COPY whatsapp-bridge/ ./
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /out/whatsapp-bridge ./cmd/bridge
+
+FROM ${ROUTE_A_BASE_IMAGE}
+ARG ROUTE_A_UV_CACHE_IMAGE
+ARG GIT_SHA="unknown"
+
+COPY --from=${ROUTE_A_UV_CACHE_IMAGE} /root/.cache/uv/ /root/.cache/uv/
+COPY --from=go-builder /out/whatsapp-bridge /usr/local/bin/whatsapp-bridge
+
+WORKDIR /app
+ENV GIT_SHA=${GIT_SHA}
+ENV UV_TORCH_BACKEND=cpu
+COPY pyproject.toml uv.lock ./
+COPY src/ src/
+RUN uv sync --offline --frozen --no-dev --extra whatsapp
+COPY alembic/alembic.ini alembic.ini
+COPY alembic/ alembic/
+COPY scripts/ scripts/
+COPY roster/ roster/
+COPY pricing.toml pricing.toml
+COPY model_catalog_defaults.toml model_catalog_defaults.toml
+
+ENTRYPOINT ["uv", "run", "--frozen", "--no-dev", "butlers"]
+CMD ["run", "--config", "/etc/butler"]

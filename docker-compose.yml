@@ -238,6 +238,7 @@ services:
     command: ["dashboard", "--host", "0.0.0.0", "--port", "41200"]
     environment:
       <<: *postgres-env
+      BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: ${BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER:-0}
       GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-http://localhost:41200/api/oauth/google/callback}
       OAUTH_DASHBOARD_URL: ${OAUTH_DASHBOARD_URL:-}
       GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
@@ -253,6 +254,12 @@ services:
       BUTLERS_API_DB_POOL_MIN_SIZE: ${BUTLERS_API_DB_POOL_MIN_SIZE:-0}
       BUTLERS_API_DB_POOL_MAX_SIZE: ${BUTLERS_API_DB_POOL_MAX_SIZE:-2}
       DASHBOARD_API_KEY: ${DASHBOARD_API_KEY:-}
+      DASHBOARD_AUTH_DB_USER: ${DASHBOARD_AUTH_DB_USER:-}
+      DASHBOARD_AUTH_DB_PASSWORD: ${DASHBOARD_AUTH_DB_PASSWORD:-}
+      DASHBOARD_AUTH_ORIGIN: ${DASHBOARD_AUTH_ORIGIN:-}
+      DASHBOARD_AUTH_RP_ID: ${DASHBOARD_AUTH_RP_ID:-}
+      DASHBOARD_AUTH_DEPLOYMENT: ${DASHBOARD_AUTH_DEPLOYMENT:-default}
+      DASHBOARD_AUTH_TRUSTED_PROXY_PEERS: ${DASHBOARD_AUTH_TRUSTED_PROXY_PEERS:-}
       # bu-g4jg1: butlers.jobs.external_deadman runs in THIS container and reads
       # this from os.environ. Unset/empty leaves the loop disabled (by design).
       # Without this passthrough, setting it in .env has no effect at all --
@@ -634,6 +641,7 @@ services:
     environment:
       <<: *postgres-env
       BUTLERS_SWITCHBOARD_URL: http://dashboard-api:41200
+      BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: ${BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER:-0}
       # Owner-facing alerts are generated here, not in dashboard-api.  Preserve
       # the configured public frontend origin (including any path prefix) so a
       # Telegram deep link never falls back to the daemon host's localhost.
@@ -785,6 +793,7 @@ services:
     environment:
       <<: *postgres-env
       BUTLERS_SWITCHBOARD_URL: http://dashboard-api:41200
+      BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: ${BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER:-1}
       DASHBOARD_URL: ${DASHBOARD_URL:-${OAUTH_DASHBOARD_URL:-http://localhost:41200}}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       HOME: /root
@@ -831,6 +840,7 @@ services:
       - "127.0.0.1:${DASHBOARD_HOST_PORT:-41200}:41200"
     environment:
       <<: *postgres-env
+      BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: ${BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER:-1}
       GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-http://localhost:41200/api/oauth/google/callback}
       OAUTH_DASHBOARD_URL: ${OAUTH_DASHBOARD_URL:-}
       GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
@@ -846,6 +856,12 @@ services:
       BUTLERS_API_DB_POOL_MIN_SIZE: ${BUTLERS_API_DB_POOL_MIN_SIZE:-0}
       BUTLERS_API_DB_POOL_MAX_SIZE: ${BUTLERS_API_DB_POOL_MAX_SIZE:-2}
       DASHBOARD_API_KEY: ${DASHBOARD_API_KEY:-}
+      DASHBOARD_AUTH_DB_USER: ${DASHBOARD_AUTH_DB_USER:-}
+      DASHBOARD_AUTH_DB_PASSWORD: ${DASHBOARD_AUTH_DB_PASSWORD:-}
+      DASHBOARD_AUTH_ORIGIN: ${DASHBOARD_AUTH_ORIGIN:-}
+      DASHBOARD_AUTH_RP_ID: ${DASHBOARD_AUTH_RP_ID:-}
+      DASHBOARD_AUTH_DEPLOYMENT: ${DASHBOARD_AUTH_DEPLOYMENT:-default}
+      DASHBOARD_AUTH_TRUSTED_PROXY_PEERS: ${DASHBOARD_AUTH_TRUSTED_PROXY_PEERS:-}
       # bu-g4jg1: see the dashboard-api service above for why this passthrough
       # is required for butlers.jobs.external_deadman to see the URL at all.
       EXTERNAL_DEADMAN_URL: ${EXTERNAL_DEADMAN_URL:-}

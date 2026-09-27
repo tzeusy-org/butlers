@@ -13,6 +13,7 @@ from pathlib import Path
 
 import click
 
+from butlers.api.owner_auth.host_cli import auth as owner_auth_commands
 from butlers.config import ConfigError, load_config
 from butlers.db import is_db_unreachable
 
@@ -229,7 +230,14 @@ def dashboard(host: str, port: int) -> None:
     import uvicorn
 
     click.echo(f"Starting Butlers dashboard on {host}:{port}")
-    uvicorn.run("butlers.api.app:create_app", host=host, port=port, factory=True)
+    uvicorn.run(
+        "butlers.api.app:create_app",
+        host=host,
+        port=port,
+        factory=True,
+        proxy_headers=False,
+        access_log=False,
+    )
 
 
 @cli.command()
@@ -776,3 +784,8 @@ async def _start_single(config_path: Path) -> None:
 
     await shutdown_event.wait()
     await daemon.shutdown()
+
+
+# Host-only commands are deliberately absent from the dashboard HTTP router.
+
+cli.add_command(owner_auth_commands)

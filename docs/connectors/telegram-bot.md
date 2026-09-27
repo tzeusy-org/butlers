@@ -93,21 +93,13 @@ Policy rules are DB-backed with TTL refresh. On DB error, evaluation fails open 
 
 ## Interactivity Surface
 
-The connector supports these interactive tools:
+The connector only ingests. Replies and reactions are MCP tools of the
+[Telegram module](../modules/telegram.md) (`TelegramModule.register_tools` in
+`src/butlers/modules/telegram.py`), which send, reply to, and react to messages.
 
-- `telegram_send_message` -- Send a message to a chat.
-- `telegram_reply_to_message` -- Reply to a specific message.
-- `telegram_get_updates` -- Read recent updates.
-
-Lifecycle reactions on inbound messages (best-effort):
-
-| Stage | Emoji |
-|---|---|
-| In-progress | Eyes |
-| Success | Checkmark |
-| Failure | Alien |
-
-If Telegram rejects a reaction with a 400 error, processing continues with a logged warning.
+Lifecycle reactions on inbound messages (in progress, success, failure) are set best-effort by the
+Switchboard through the module's `react_for_ingest()`; the emoji constants live in
+`src/butlers/core/channel_reactions.py`. A rejected reaction is logged and never blocks processing.
 
 ## Environment Variables
 
@@ -174,6 +166,20 @@ psql -h localhost -U butlers -d butlers -c \
 grep "endpoint_identity\|getMe" /var/log/butlers/telegram-bot-connector.log 2>/dev/null | head -5
 # Expected: log shows getMe() call on startup; endpoint_identity set to telegram:bot:@<username>
 ```
+
+## Implementation Notes
+
+- `_get_updates` treats `HTTP 409 Conflict` (another poller or a webhook) as recoverable: it
+  records source status `conflict`, logs the parsed Telegram description at warning level, and
+  returns `[]`.
+- `source_thread_identity` may be `<chat_id>` or `<chat_id>:<message_id>`; the pipeline's
+  `_load_realtime_history` groups Telegram history by numeric chat id so reply-form identities do
+  not collapse history to one row.
+- The bot and user-client connectors start from DB credentials when credential env vars are
+  missing; only `SWITCHBOARD_MCP_URL` is a required non-credential env var, and endpoint identity is
+  resolved from the Telegram API at startup.
+- `_get_updates` treats `HTTP 429` as recoverable: it records `rate_limited` metrics, honours
+  `Retry-After` (header, then `result.parameters.retry_after`) and returns `[]` instead of raising.
 
 ## Related Pages
 

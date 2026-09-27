@@ -11,9 +11,8 @@ fingerprint-based triage and deduplication layer, an investigation dispatch pipe
 isolated git worktrees, and a dashboard surface for operator visibility. The QA Staffer subsumes
 and supersedes the per-butler `self-healing-*` capability family: the unified QA pipeline delivers
 richer cross-system coverage than per-butler autonomous repair, and maintaining two parallel
-self-repair stacks would create ambiguity about which system owns a given finding. The legacy
-`self-healing-dispatch`, `self-healing-module`, and `self-healing-skill` specs are **deprecated**
-as of this RFC (see §"Legacy Self-Healing Deprecation").
+self-repair stacks would create ambiguity about which system owns a given finding. The
+`self-healing-*` specs are retired; see §"Healing Substrate Reuse".
 
 ## Motivation
 
@@ -148,7 +147,7 @@ Gate rejections before any investigation session launches are recorded as dispat
 
 | Available | Not available |
 |---|---|
-| `GH_TOKEN` (from `CredentialStore.resolve("BUTLERS_QA_GH_TOKEN")`) | Butler DB connection strings |
+| No GitHub publication credential | Butler DB connection strings and publisher secrets |
 | `PATH`, `UV_CACHE_DIR` | API keys, OAuth tokens, user data |
 | *(nothing else)* | Any `BUTLERS_*` env vars |
 
@@ -170,18 +169,26 @@ instructions (`bd` usage, self-managed PR/push steps, etc.).
 
 **Anonymized PR pipeline:**
 
-1. Agent commits fix and pushes branch.
-2. PR title and body pass through `anonymize()` + `validate_anonymized()`.
-3. If validation fails, the remote branch is deleted and the attempt transitions to
-   `anonymization_failed`.
-4. PR created via `gh pr create` with labels `["self-healing", "automated"]`.
-5. PR body includes: root cause, affected butler(s), fix summary, patrol cycle reference, and
-   (when `dashboard_base_url` is configured) a link to `/qa/investigations/<attempt_id>`.
+1. Agent commits only in its credential-free investigation worktree; it never pushes.
+2. Trusted export freezes every newly reachable source/commit/author/message plus proposed PR
+   text and fixed labels, then validates the entire immutable artifact before any external mutation.
+3. Validation refusal records `anonymization_failed` without remote publication or deletion.
+4. The trusted deterministic publisher reserves the exact attempt-bound mutation stage durably,
+   publishes only the validated branch bytes with an atomic expected-head fence, and creates/updates
+   only the bound PR with sanitized fixed labels `["self-healing", "automated"]`.
+5. PR body includes root cause, affected butler(s), fix summary, patrol reference and the configured
+   approved dashboard link; every field remains subject to the same pre-egress validation.
+6. Definite failure with proof that no PR was created may report `proposal_state = "unpublished"`
+   while retaining sealed source, diff and notes. Missing local PR metadata alone is not such proof.
+   Timeout or uncertain provider response records an ambiguous publication stage; it preserves
+   expected head/resource binding and immutable evidence for exact read-only reconciliation.
+   It never blindly retries, deletes a remote resource, or claims published/unpublished without proof.
 
-**GitHub credentials:** scoped to branch push + PR creation + PR labeling only.
-Token SHALL NOT have merge or approve permissions — humans remain in the merge seat.
+**GitHub credentials:** resolved only by a trusted deterministic publisher from the dedicated QA category. Investigators have no token or generic publication authority. The closed surface allows only validated attempt-bound branch/PR publication and fixed labels; merge, review, approval and queue are refused. Provider grants may be coarser than this effective boundary. Humans remain in the merge seat; trusted-publisher compromise remains a stated residual risk.
 Managed via the dashboard at `/settings` (QA Staffer card); if absent, the investigation
 completes but transitions to `failed` with reason `"no_gh_token"`.
+An authenticated-but-forbidden push or PR operation instead records `git_auth_failed` with
+content-blind repository-scope/organization-authorization guidance.
 
 **Phase sessions:** v1 uses a single `investigate` phase per investigation. The tracking
 infrastructure (`record_phase_session`, `update_phase_session_status`) is in place to support
@@ -211,11 +218,26 @@ The QA Staffer's scheduler drives a patrol loop at a configurable interval (defa
 Each patrol cycle is a discrete unit of work with its own `public.qa_patrols` record:
 
 ```
-status: running | clean | findings_dispatched | error | skipped_overlap
+status: running | clean | findings_dispatched | suppressed | error | skipped_overlap
 columns: id (UUIDv7), started_at, completed_at, status,
          findings_count, novel_count, dispatched_count,
-         log_lookback_minutes, sources_polled (text[]), error_detail
+         log_lookback_minutes, sources_polled (text[]), error_detail,
+         origin (scheduled | operator_synthetic), enabled_sources_snapshot (text[]),
+         enabled_sources_config_digest, discovery_complete (boolean)
 ```
+
+The local patrol scheduler continues when only the remote Switchboard registry
+observation of QA is stale; an explicit administrative pause or quarantine is
+a separate policy gate. An independent supervised control-plane observer checks
+patrol age, because QA cannot discover a patrol that never ran.
+Only a completed scheduled `clean`, `findings_dispatched`, or genuine
+filtered-finding `suppressed` patrol with every source enabled under the
+current configuration successfully completed renews the assurance clock.
+The origin, captured enabled set/config digest, and completion marker prove
+that claim. An `error`, `skipped_overlap`, dashboard-created synthetic
+`suppressed`, still-running, older-configuration, or ambiguous legacy row does
+not. Existing historical rows remain readable but are not backfilled as
+qualifying from a status or free-text error alone.
 
 **Overlap prevention:** if a patrol tick fires while the previous cycle is still running, the
 tick is skipped and recorded as `status = "skipped_overlap"`.
@@ -259,7 +281,7 @@ router is unchanged.
 | `GET /api/qa/patrols/:patrolId` | Full patrol record with nested findings |
 | `GET /api/qa/patrols/:patrolId/findings` | All findings for a patrol, with dedup reasons and source types |
 | `GET /api/qa/investigations` | Paginated QA-originated `healing_attempts`; `?status=` filter |
-| `GET /api/qa/known-issues` | Active/open issues (`dispatch_pending`, `investigating`, `pr_open`) grouped by fingerprint |
+| `GET /api/qa/known-issues` | Active/open issues (`investigating`, `pr_open`) grouped by fingerprint; `dispatch_pending` is not a persisted attempt status |
 | `GET /api/qa/meta-review` | QA-self-recursive findings routed to operator lane; never auto-investigated |
 | `POST /api/qa/dismiss` | Add a fingerprint to the dismissal cache with configurable duration |
 | `GET /api/qa/dismissals` | List active dismissals |
@@ -318,59 +340,12 @@ contribution schedules. It registers with the Switchboard for butler-to-staffer 
 (RFC 0003 §8 covers the staffer archetype). Cross-butler DB access uses the
 `public.v_qa_recent_failures` read-only view per the RFC 0010 pattern.
 
-## Legacy Self-Healing Deprecation
+## Healing Substrate Reuse
 
-### Status of legacy specs
-
-The following capability specs are **deprecated** and superseded by the QA pipeline defined in
-this RFC:
-
-| Spec | Status | Superseded by |
-|---|---|---|
-| `self-healing-dispatch` | **Deprecated** | QA investigation dispatch (§D4) |
-| `self-healing-module` | **Deprecated** | QA `butler_reports` discovery source (§D1) + `report_finding` MCP tool |
-| `self-healing-skill` | **Deprecated** | QA skill at `roster/shared/skills/self-healing/` (content preserved; attribution changes) |
-
-The `healing-*` support specs (`healing-anonymizer`, `healing-model-tier`, `healing-session-tracking`,
-`healing-worktree`) are **implementation substrate, not deprecated**. The QA pipeline reuses
-them directly:
-
-- `healing-anonymizer` — QA anonymizes PR content through the same pipeline.
-- `healing-model-tier` — QA investigations use `complexity = "self_healing"` model resolution.
-- `healing-session-tracking` — QA writes to `public.healing_attempts`; the schema is extended
-  with `qa_patrol_id` but the table itself is the same.
-- `healing-worktree` — QA uses the shared worktree lifecycle infrastructure.
-
-### Why option (b) — declare deprecated, do not fold
-
-The reconciliation report (§"Doctrine conflicts found") identified two resolution options for
-the `self-healing-dispatch` / `qa-investigation-dispatch` coexistence problem:
-
-- **(a)** Fold `self-healing-*` specs into the QA capability set.
-- **(b)** Mark them deprecated with superseded-by pointers.
-
-Option (b) is recommended for three reasons:
-
-1. **Minimal churn.** Live code currently implements the `self-healing-module` `report_error`
-   tool. The correct migration path is to route `report_error` through the QA Staffer's
-   `report_finding` relay rather than deleting the tool. Folding specs would suggest the code
-   disappears; deprecation correctly signals "superseded, remove in a follow-up cycle."
-2. **Audit trail.** Deprecation with a superseded-by pointer preserves the design history and
-   makes future archive-sweep automation straightforward (`openspec-bulk-archive-change` can
-   batch-archive any spec carrying a `**Status:** Deprecated` banner).
-3. **Scope hygiene.** This RFC is a design contract, not an implementation task. Physically
-   archiving 3+ specs belongs in a separate chore bead ("sweep self-healing-* specs as
-   superseded") that can be reviewed and merged atomically.
-
-### Migration path
-
-1. Immediately: `self-healing-dispatch`, `self-healing-module`, and `self-healing-skill` specs
-   receive deprecation banners pointing to this RFC (see note below about spec edits).
-2. Follow-up bead: butlers' existing `report_error` MCP tool implementations are updated to
-   relay via `switchboard_client.call_tool("route", {"target_butler": "qa", ...})` instead of
-   invoking `dispatch_healing()` directly, making them aliases over the QA relay.
-3. Archive sweep bead: once the relay migration is merged and validated, the deprecated specs
-   are bulk-archived via `openspec-bulk-archive-change`.
+QA reuses the `healing-*` substrate specs directly: `healing-anonymizer` (PR content
+anonymization), `healing-model-tier` (`complexity = "self_healing"` model resolution),
+`healing-session-tracking` (`public.healing_attempts`, extended with `qa_patrol_id`), and
+`healing-worktree` (shared worktree lifecycle).
 
 ## Non-Goals
 
@@ -381,28 +356,6 @@ Option (b) is recommended for three reasons:
 - QA does NOT provide user-facing insights or recommendations; that is the Proactive Butler's domain.
 - QA does NOT implement the `prometheus_metrics`, `mcp_reachability`, `scheduler_drift`,
   `connector_heartbeat`, or `git_regression` discovery sources in v1.
-
-## Rollout
-
-1. Bootstrap `roster/qa/` with `butler.toml` (`type = "staffer"`), `MANIFESTO.md`, `CLAUDE.md`,
-   `AGENTS.md`.
-2. Apply database migrations: `public.qa_patrols`, `public.qa_findings`, `public.qa_dismissals`,
-   add `qa_patrol_id` column to `public.healing_attempts`, create `public.v_qa_recent_failures`
-   view with per-schema GRANTs.
-3. Implement `DiscoverySource` protocol and v1 sources (`log_scanner`, `session_records`,
-   `butler_reports`) under `src/butlers/core/qa/sources/`.
-4. Implement triage layer (`src/butlers/core/qa/triage.py`).
-5. Implement dispatch layer (`src/butlers/core/qa/dispatch.py`) — reusing `healing/` substrate.
-6. Implement `qa` module (`src/butlers/modules/qa/`) with `register_tools`, `on_startup`,
-   `on_shutdown`, and patrol loop scheduler entry.
-7. Add API routes at `roster/qa/api/router.py` (auto-discovered per RFC 0007).
-8. Add frontend pages: `/qa`, `/qa/patrols/:patrolId`, `/qa/investigations/:attemptId`,
-   home-page QA widget.
-9. Update Switchboard to exclude QA staffer from user-message routing and register for
-   butler-to-staffer MCP reachability.
-10. Provision `BUTLERS_QA_GH_TOKEN` secret via the dashboard; confirm git author identity settings.
-11. Mark `self-healing-dispatch`, `self-healing-module`, `self-healing-skill` as deprecated
-    in `openspec/specs/` (superseded-by pointer to RFC 0015).
 
 ## Open Questions
 
@@ -439,3 +392,75 @@ Option (b) is recommended for three reasons:
 - `openspec/specs/healing-model-tier/` — `self_healing` model tier (reused by QA).
 - `openspec/specs/healing-session-tracking/` — `healing_attempts` table schema (extended by QA).
 - `openspec/specs/healing-worktree/` — Worktree lifecycle infrastructure (reused by QA).
+
+## Amendment (2026-09-23): Independent Patrol Assurance and Fleet Correlation
+
+**Status:** Approved target contract in
+`openspec/changes/restore-butler-control-plane-liveness`; implementation
+remains separate from this design amendment.
+
+Derived remote registry staleness cannot suppress QA's local deterministic
+patrol. A separately supervised control-plane observer checks both fleet
+readiness and the age of the latest completed patrol. If QA stops scheduling,
+the observer still records durable, content-blind overdue evidence and the
+semantic `/ready` response becomes false. Observer failure itself is
+distinguishable from a healthy fleet; failed or partial observation cannot
+resolve an open condition.
+
+One correlated fleet expiry produces one condition episode and attention
+stream with bounded per-butler impact evidence, rather than one autonomous QA
+investigation for each stale agent. Its source and fingerprint use the
+infrastructure condition ledger's explicit canonical identity, and resolution
+requires a complete successful snapshot. QA discovery can continue recording
+findings while model or GitHub authority is unavailable; investigation
+dispatch remains subject to its existing gates. The observer is deterministic
+infrastructure, not a second QA LLM agent or a replacement for the five
+`DiscoverySource` implementations in §D1.
+At cutover, legacy per-butler liveness episodes remain historically readable,
+their impact is linked to the fleet condition, and duplicate investigation or
+owner pages are suppressed. They resolve only when a complete receiver-observed
+snapshot proves recovery for the affected daemon, never merely because the
+fleet condition replaced their producer.
+
+## Adopted restricted publisher target
+
+The exact owner-adopted eight-requirement contract is preserved at `openspec/changes/confine-qa-publication-authority/adopted-contract.md` (SHA25690d904ee0e4cb9a8c2b23ca07739bf580d167fa9e2f1d7f0a5b0a59959b2d8e9). Its purpose-bound binding, process isolation, immutable export, closed operations, provider-control evidence and ambiguous-outcome handling are binding target behavior. Implementation remains outstanding; this amendment does not claim existing deployments are confined. Live credentials/provisioning/provider canary/cleanup/deployment/activation remain separately gated.
+
+## Restricted publication authority and durable outcome contract
+
+The following adopted target is unimplemented until its source program and isolation verification land.
+
+## Process and filesystem boundary
+
+Trusted dispatcher creates attempt binding before spawn. Run investigation AND review-follow-up build/test code under a distinct unprivileged OS identity and private process/mount namespace. Publisher has separate service identity, no ptrace/shared proc visibility or agent-writable executable/config/library path. Secret files and process environment belong only to publisher namespace; neither root-equivalent container privilege, host PID, shared writable sockets, Docker socket, inherited FDs nor same-UID isolation is acceptable. Sandbox sees only its disposable checkout, explicitly approved caches and bounded build environment; do not inherit HOME, PYTHONPATH, gitconfig, credential helpers, shell startup or agent-selected executable lookup. Credentials from environment override are not an isolation primitive. No GitHub token enters initial or follow-up environment. If runtime cannot enforce this profile, investigation may remain nonpublishing, and automated publication is unavailable, never token-injection fallback.
+
+A typed dispatcher/publisher IPC message identifies only a server-created attempt and expected artifact digest; the request carries no repository/ref/URL/token/command choice. Per-attempt session identity prevents another sandbox claiming it. Dispatcher-owned state binds allowlisted repository ID, target base, newly allocated QA branch, allowed fixed labels, expected remote head and created PR ID. Peer credentials and issuer binding are validated before processing. No generic execute/publish RPC is exposed to model tools. Provider grants and live repository protections remain separately verified operational evidence.
+
+## Immutable export before all remote effects
+
+Inventory initial investigation, follow-up, clone/fetch/preparation, branch update and failure cleanup paths in dispatch.py. No credentialed subprocess ever executes in an agent checkout or consumes its .git/config, hooks, filters, alternates, symlinks, credential helpers, URL or executable. Trusted uncredentialed export freezes a full source snapshot and required ancestry against server-pinned base. Reconstruct trusted publication commits from sealed content rather than pushing agent-controlled commit history. Validate EVERY newly reachable blob/tree/commit/author/message and final PR text/fixed labels before push; no PII in earlier commits can hide behind a clean final diff. Unsupported binary/submodule/link/metadata sanitization fails closed rather than assuming clean. Existing anonymizer remains required but is not a semantic guarantee for arbitrary source; validation may refuse an unprovable export. Artifact is copied into publisher-owned immutable content storage and digest checked at use, so agent edits cannot race validation. No agent code is executed for validation inside credential boundary.
+
+Repository operations use pinned trusted transport with fixed origin/repository/ref; no user git configuration. Ref creation/update uses ordinary non-force push with an atomic expected-old-ref check at receive-pack; a transport unable to express the binding fails closed. New commits descend from the bound expected head; unknown/changed remote head yields conflict, not force, rebase, deletion or repair of foreign work. PR creation binds exact repository/base/head; PR update only title/body/fixed labels of recorded attempt PR. No retarget, auto-merge, approval/review, merge queue, protected-ref write, delete, release, settings/workflow/secret/access-management API or generic URL operation. Agent workflow content is treated as untrusted source; effective provider/CI controls must be assessed before activation so branch publication cannot quietly regrant forbidden agent authority through privileged automation. This does not change ordinary human-requested source PR workflows.
+
+## Durable state and failure semantics
+
+Persist attempt-bound immutable export digest, exact expected source/remote head, allocated branch, PR identity, next operation and outcome before egress, outside agent filesystem. Use a new then-free core migration (current inspected head core249; no QA-specific migration chain) beside public.healing_attempts/core005 and qa_patrols/core051; a dedicated public.qa_publication_operations table is proposed with operation UUID, attempt FK, monotonically ordered stage, expected/new OID, fixed operation kind, request digest, start/end timestamps and sanitized result enum. No credential/provider body/private identifier copied into operational receipts. Server-held binding state may retain repository/ref/PR IDs as private authority data, never as LLM result fields.
+
+Lifecycle: sealed -> validated -> branch_publish_reserved -> branch_published -> pr_create_reserved -> pr_created -> labels_reserved -> complete; terminal operation outcomes refused/conflict/ambiguous; an ambiguous operation still holds its publication lineage active as specified below. A unique attempt+operation sequence admits one mutation. Duplicate same digest returns stored status; changed payload refuses. Reserve durably BEFORE send. Crash/timeout after reservation is ambiguous, not retryable by guessing. Read-only reconcile only the exact bound ref/PR and intended head; if proof is absent retain hold. Do not scan arbitrary repositories or allocate another branch/PR. No remote deletion, including sanitizer failure or rollback. Failure before first push publishes nothing; failure after a prior valid publication retains existing resource and sanitized stage. Deletion/cleanup needs separate operational authority. An unsuccessful new update cannot erase the previous successful published proof.
+
+Roles: investigation has no DB access. QA trusted publisher uses a separately scoped pool with effective butler_qa_rw role for operation state under enabled+forced RLS; exact migration/runtime owner privileges and bootstrap replay tests must establish no cross-butler/roleless mutation. State transition function validates expected revision and fixed columns; no caller-selected SQL/schema. Table owner is fenced, TRUNCATE denied explicitly, terminal receipts immutable. Backups retain attempt bindings/operations with their owning QA database; restore disables publication until a new executor epoch invalidates pre-restore pending mutation capabilities and ambiguous old stages are reconciled. No automatic after-restore replay; do not use short-lived runtime-probe nonce retention for this durable authority. No live DB migration is authorized.
+
+
+Export sealing must quiesce the investigator and all descendants or copy via immutable handles before validation; a worktree lock alone is insufficient. No shared repository .git, host HOME or Docker socket enters either isolation profile. Existing device-auth sandbox supplies candidate low-level namespace primitives only; it does not establish the QA boundary.
+
+QA publication rejects agent changes to workflow/action definitions, CI privilege configuration and publication-control files by default. These cannot become an alternate credential/merge route through remote automation. This is an allowed-tree constraint enforced before push, not merely a promise not to execute workflows locally. Any separately desired CI repair needs a human-owned source workflow, never a broader QA publisher operation.
+
+### Durable backup and restore fence
+
+Publication operation state and immutable resource bindings SHALL be backed up in a consistent snapshot with the owning QA attempt data; they are not expiring runtime-probe nonce records. Role-scoped export/import SHALL preserve forced RLS, terminal immutability and no-TRUNCATE fences without blanket runtime/migration-login access. Restore SHALL start publication disabled and rotate a host-held executor epoch outside restored content before any new mutation admission. Old pending capabilities cannot execute against a restored snapshot lacking their consumed stage; all restored ambiguous/in-flight operations require exact read-only reconciliation or remain held. Enabling the new epoch is a separately authorized operational step, not automatic source rollback or migration.
+
+### Ambiguous publication is a durable lineage admission hold
+
+An ambiguous publication operation SHALL create or preserve an active publication hold keyed to its server-held investigation lineage (including the original finding identity and all follow-ups), not only its individual attempt UUID or operation sequence. Initial investigation completion, follow-up completion, watchdog timeout, cooldown expiry, triage, poll/restart recovery and create-or-join admission SHALL consult that hold before allocating any fresh publication attempt/ref/PR. A terminal transport record MUST NOT be mapped to ordinary failed/timeout that later permits a new lineage publication. The local investigation may finish computing, but publication remains held until exact bound-resource read-only reconciliation proves its outcome and explicitly resolves the hold. Operator intent to retry without that proof is not reconciliation.
+
+Cleanup SHALL retain sealed artifact, expected-head/branch/PR binding, operation stage and lineage hold across worktree teardown and process/database recovery. No expiry, retention cleanup or automatic stale-attempt recovery can erase the hold or release a replacement resource. Resolved outcomes may follow their normal bounded next action only after the same durable transaction records the resource proof and hold resolution. Missing reconciliation evidence stays held; unrelated lineages remain independently runnable.

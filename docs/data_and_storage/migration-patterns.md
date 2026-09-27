@@ -20,13 +20,12 @@ The core chain manages shared infrastructure tables used by all butlers:
 - `scheduled_tasks` -- Cron scheduler
 - `sessions` -- Session log
 - `butler_secrets` -- Credential store
-- `public.contacts`, `public.contact_info` -- Identity tables
 - `public.entities`, `public.entity_info` -- Entity graph
 - `public.google_accounts` -- Google OAuth registry
 - `ingestion_events` -- Switchboard ingestion log
 - `model_catalog` -- LLM model definitions
 
-Core migrations use the branch label `"core"` and revision IDs like `core_001`, `core_002`, etc. As of writing, the core chain has 38+ revisions.
+Core migrations use the branch label `"core"` and revision IDs like `core_001`, `core_002`, etc.
 
 ### Module Chains
 
@@ -159,20 +158,10 @@ at the old OID, which looks like convergence and is not. And rewrite the body, n
 the rows: a backfill corrects history and then drifts again on the next insert, so
 assert on a row written *after* the change, never on historical rows alone.
 
-A later revision may pin such a teardown shut. `core_199` installs
-`public.runtime_attention_producer_control` and
-`public.runtime_attention_plant_legacy_debounce_marker()`; its downgrade
-deliberately retains both, and nothing in this repository drops either one. Because the
-`core_198` downgrade precondition requires both to be absent, a database that
-has reached `core_199` can never run the `core_198` teardown again, and
-`runtime_attention_admin.rollback_interface()` is no longer reachable through
-Alembic. Its two forward-remediation refusals, the pre-lock fast path and the
-authoritative recheck under `ACCESS EXCLUSIVE`, are one guard in two positions
-and still fire for a privileged bootstrap owner who invokes the function
-directly, which is why they are retained rather than deleted. When a boundary
-becomes one-way like this, record it in the operator documentation for the
-subsystem; a rollback that a database can no longer perform is unavailable, not
-merely untested.
+A later revision can make a teardown one-way. When that happens, record it in the operator
+documentation for the subsystem: a rollback that a database can no longer perform is unavailable,
+not merely untested. The runtime-attention boundary is the worked example; see the
+[Runtime Attention runbook](../operations/runtime-attention.md#stop-paging).
 
 ## Verification
 
@@ -210,6 +199,50 @@ grep -r "branch_labels" src/butlers/modules/memory/migrations/ | head -5
 uv run pytest tests/test_migrations.py -q --tb=short 2>&1 | tail -20
 # Expected: all migration integrity tests pass
 ```
+
+## Implementation Notes
+
+- Alembic loads every `*.py` in a versions directory, so a stray file with a duplicate `revision`
+  breaks the chain even when chain tests only check expected filenames.
+- Revision identifiers are global across chains and branches. Parallel branches collide: two PRs
+  once both minted `core_164` and merged green. Before publishing a migration, take the next number
+  from every live branch (`git ls-remote --heads origin`, then `git ls-tree -r --name-only
+  origin/<branch> -- alembic/versions/core/`), not just `origin/main`, and re-run
+  `tests/config/test_migration_chain_head.py` against the merge result. The
+  `migration-chain-main.yml` workflow re-runs that guard on every `main` push.
+- Head-pinned assertions derive the head: use `butlers.testing.migration.assert_at_chain_head()` or
+  `butlers.migrations.get_chain_head(chain)`. An AST guard in `test_migration_chain_head.py` fails a
+  literal revision compared with an `alembic_version` read; a deliberate pin carries
+  `# pinned-revision: <why>` on the marker line.
+- Rollback is not uniform: `core_196` and `core_198` install trusted-bootstrap boundaries whose
+  downgrade may refuse. A test that rolls back an old migration bounds its upgrade to the revision it
+  owns (`core@<rev>`, or `create_migrated_test_db(..., revisions={"core": "core_NNN"})`), never
+  `core@head` then down. `tests/config/test_bounded_revision_downgrade_guard.py` derives the
+  boundary set from the migration sources.
+- `create_migrated_test_db()` returns the ordinary migration login, which has no privileges on
+  `public.runtime_attention_outbox` (FORCE RLS). Read such tables through
+  `migration_bootstrap_db_url()` from a module-scoped db-name fixture.
+- Core revisions replay against shared `public.*` data whenever a new schema is added, so a CHECK
+  replacement in a historical revision must carry the cumulative vocabulary and a downgrade must
+  not narrow persisted values. Prove it with a real-Postgres test that migrates a second schema from
+  base after seeding current values.
+- Table rewrites (rename old, create new) keep the old index names on the backup table; new index
+  names must not collide.
+- `_build_alembic_config` escapes `%` as `%%` in `sqlalchemy.url`; percent-encoded libpq options
+  otherwise raise `configparser` interpolation errors.
+- Compare `timestamptz` with a `DATE` UTC-explicitly: `ts >= (v_month::timestamp AT TIME ZONE
+  'UTC')`. A bare `ts >= v_month` promotes through the session `TimeZone`.
+- The `test_core_chain_serializes_global_runtime_attention_*` tests contend on a global
+  cross-process lock and fail spuriously beside another run on the same Postgres.
+- CLI migration entrypoints (`butlers db migrate`, compose's `migrations` service) apply the same
+  module schema override as daemon startup: memory chains honour `[modules.memory].memory_schema`
+  (e.g. chronicler's `chronicler_mem`), not the owning butler schema.
+- A migration that rewrites enum-like `TEXT` values under a `CHECK` must drop or replace the
+  constraint before writing; fresh-schema tests pass either way, live upgrades do not.
+- Derive the expected core head from `alembic/versions/core/` in tests, never a pinned constant.
+- Two open PRs taking the same `core_NNN`: merge the first, then rebase the second, `git mv` it to
+  the next number, repoint `down_revision`, update chain-head literals in tests, and push with
+  `--force-with-lease`. Renumber before review so the reviewed head is final.
 
 ## Related Pages
 

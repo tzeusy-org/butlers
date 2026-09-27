@@ -3,8 +3,7 @@
 Verifies the guidance surface for the four delegation tools
 (delegate_ask/receive/answer/wake) reaches every non-staffer roster: via the
 shared skill symlink pattern for most butlers, and via a Travel-local
-standalone copy (Travel does not `@include` roster/shared/AGENTS.md, so it
-cannot inherit the shared BUTLER_SKILLS.md-independent skill list). Staffers
+standalone copy. Staffers
 (messenger, qa, switchboard) must NOT gain the skill directory — the
 delegation tools are excluded for them (bu-27dxl.5.2's admission boundary).
 """
@@ -68,10 +67,10 @@ def test_travel_has_local_non_shared_copy() -> None:
     assert not local.is_symlink(), "Travel's copy must be a local file, not a shared symlink"
     assert "delegate_ask" in skill_md.read_text(encoding="utf-8")
 
-    # Travel's own AGENTS.md does not `@include ../shared/AGENTS.md`, so the
-    # mention must live directly in Travel's own guidance text.
+    # Travel retains its local skill reference while composing the roster-wide
+    # shared instructions required by the butler-base prompt contract.
     agents_md = (ROSTER_DIR / "travel" / "AGENTS.md").read_text(encoding="utf-8")
-    assert "@../shared/AGENTS.md" not in agents_md
+    assert agents_md.splitlines()[0] == "@../shared/AGENTS.md"
     assert "cross-butler-delegation" in agents_md
 
 
@@ -84,14 +83,16 @@ def test_staffer_rosters_do_not_gain_delegation_skill(staffer: str) -> None:
     )
 
 
-def test_finance_resolved_system_prompt_surfaces_delegation_guidance() -> None:
+@pytest.mark.parametrize("butler", ("finance", "travel"))
+def test_resolved_system_prompt_surfaces_shared_and_delegation_guidance(butler: str) -> None:
     """End-to-end: the actual prompt-assembly pipeline surfaces the mention.
 
     Exercises process_system_prompt_base (the same function read_system_prompt
-    uses) against Finance's real on-disk CLAUDE.md, proving the guidance
-    reaches the resolved system prompt, not just the source files.
+    uses) against real on-disk CLAUDE.md files, proving both shared and local
+    guidance reach the resolved system prompt, not just the source files.
     """
-    finance_dir = ROSTER_DIR / "finance"
-    base_content = (finance_dir / "CLAUDE.md").read_text(encoding="utf-8")
-    resolved = process_system_prompt_base(base_content, finance_dir)
+    config_dir = ROSTER_DIR / butler
+    base_content = (config_dir / "CLAUDE.md").read_text(encoding="utf-8")
+    resolved = process_system_prompt_base(base_content, config_dir)
+    assert "# Shared Butler Instructions" in resolved
     assert "cross-butler-delegation" in resolved

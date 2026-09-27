@@ -4,6 +4,19 @@
 > **Audience:** Anyone adding or changing a dashboard API endpoint, or rendering its payload.
 > **Prerequisites:** [Dashboard API](dashboard-api.md).
 
+## Envelopes and errors
+
+The shared wrappers live in `src/butlers/api/models/__init__.py`: `ApiResponse[T]`
+(`{"data": T, "meta": {...}}`), `PaginatedResponse[T]` (offset/limit with `meta.total`),
+`CursorPaginatedResponse[T]` (see below), and `ErrorResponse` (`{"error": {"code", "message",
+"butler"?, "details"?}}`). New endpoints use these wrappers. A few domain routers (for example
+timeline and relationship) return unwrapped typed payloads; each route's `response_model` is the
+authority, surfaced in the generated OpenAPI schema. Error codes are stable machine strings;
+clients branch on `error.code`, never on `message`.
+
+API routes do not redirect on a trailing slash (`redirect_slashes = False` in
+`src/butlers/api/app.py`): register and call the exact path.
+
 ## Mount boundary
 
 The dashboard API is mounted at `/api` locally but may be path-mounted or use an absolute
@@ -32,10 +45,9 @@ Response envelope:
 - The optional `sort=cost` view keeps this cursor-shaped envelope but its opaque cursor encodes
   a page offset; do not mix cursors between sort modes.
 
-Channel filtering uses `channels` as the primary comma-separated source-channel filter. The server
-still accepts the deprecated single-value `source_channel` query parameter for compatibility, but
-it is server-only and is not exposed by the private frontend client. When both parameters are
-present, `channels` takes precedence over `source_channel`.
+Channel filtering uses `channels` (comma-separated). The single-value `source_channel` query
+parameter is a server-side compatibility alias only: the frontend client never sends it, new
+callers must not use it, and `channels` wins when both are present.
 
 ## Degraded-mode response envelope
 
@@ -48,9 +60,9 @@ unreachable, aggregate fields contain zeros and the envelope includes:
 ```
 
 Never treat a missing or `false` `aggregates_available` field as an error — show a "metrics
-unavailable" indicator in the UI instead. (Phase 4a, PRs #1762, #1798.)
+unavailable" indicator in the UI instead.
 
-### Fleet-wide convention (bu-qvnce.1, 2026-07-04)
+### Fleet-wide convention
 
 Every fan-out/aggregation endpoint across the dashboard API follows the same rule: **a source that
 raises or is unreachable must never render as a truthful empty/zero/all-clear result.** The concrete
@@ -89,6 +101,36 @@ Gate any verdict/all-clear renderer on the relevant flag(s) using the `SourceDeg
 vocabulary (`frontend/src/components/ui/query-boundary.tsx`) — name the degraded source inline
 (colon-separated source and reason), never suppress it.
 
+### Section-level partial aggregation
+
+An aggregation with independent query sections keeps the successful sections
+when one query fails. Its payload exposes a closed availability state and one
+content-blind status entry per section; the failed section uses a safe
+compatibility fallback only when the status says unavailable.
+
+For example, the Lifestyle taste summary may return:
+
+```json
+{
+  "data": {
+    "total_works": 0,
+    "total_signals": 340,
+    "availability": "partial",
+    "ledger_available": true,
+    "query_availability": [
+      {"query": "total_works", "state": "unavailable", "reason": "query_failed"},
+      {"query": "total_signals", "state": "available", "reason": null}
+    ]
+  }
+}
+```
+
+The frontend renders the failed section as unavailable and preserves the
+successful value. A complete response with zero values is a genuine empty
+result; when every section is unavailable, the aggregate state is
+unavailable, never a genuine empty result. Status entries must not carry
+SQL, exception text, credentials, or source payloads.
+
 ### Currency-honest money aggregates
 
 An endpoint without an owner-sourced FX rate must aggregate monetary rows by their stored ISO
@@ -99,7 +141,25 @@ remain numeric for wire compatibility, but when more than one currency contribut
 as if it had one denomination. A single-currency result carries that real currency; an empty result
 does not invent USD.
 
+## Implementation Notes
+
+- `GET /api/audit-log` treats `UndefinedTableError` on `dashboard_audit_log` as an empty page
+  (`data=[]`, `total=0`), not a 500, because the dashboard can start against an unmigrated or
+  offline switchboard schema.
+- The notifications endpoints treat a missing switchboard `notifications` table like an unavailable
+  pool: empty pages and zeroed stats, not a 500, before switchboard migrations run.
+- Currentness: audit groups and QA patrol failures count as current only inside the closed
+  `[now-window, now]` interval (future timestamps excluded), and a failed-notification query and its
+  drill-down link share one captured `since`/`until` pair.
+- TanStack Query can report `isError` while keeping data from an earlier success: show stale
+  freshness beside retained rows instead of replacing them with an error banner.
+- Timeline partial sources: keep the generic `meta.degraded_sources` signal and add
+  `meta.degraded_butlers` only for named failed session pools (the frontend defaults the additive
+  field). When unpinned, commit current rows and cursor before fetching older data, so a failed page
+  stays visible and retries the same cursor.
+
 ## Related Pages
 
 - [Dashboard API](dashboard-api.md) --- application factory, router discovery, SSE streaming
-- [Backend API Contract](../frontend/backend-api-contract.md) --- per-domain endpoint contracts consumed by the frontend
+- `openspec/specs/dashboard-*` --- required per-domain endpoint behavior
+- `src/butlers/api/app.py` and `roster/{butler}/api/router.py` --- the routers and their response models

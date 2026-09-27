@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -8,7 +9,12 @@ import { useModalChoreography } from "@/hooks/use-modal-choreography";
 import { masteryStatusBadgeClassName } from "./mastery-status";
 import NodeSourceAnnotations from "./NodeSourceAnnotations";
 import QuizHistoryList from "./QuizHistoryList";
-import { conceptTypeLabel, parseConceptType, type RegistryStatus } from "./source-annotations";
+import {
+  conceptTypeLabel,
+  parseConceptType,
+  parseSourceRefs,
+  type RegistryStatus,
+} from "./source-annotations";
 
 interface NodeDetailPanelProps {
   mindMapId: string | null;
@@ -24,20 +30,35 @@ export default function NodeDetailPanel({
   const { data: mindMap } = useMindMap(mindMapId);
   const node = mindMap?.nodes?.find((n) => n.id === nodeId);
 
-  // Source-annotation provenance (bu-istke.5). The registry is fetched
-  // separately from the map, so its three outcomes stay distinct all the way
-  // to the render: a resolved list can prove a source_id dangling, while a
-  // loading or failed fetch proves nothing and must not be reported as one.
+  // Source-annotation provenance (bu-istke.5). Only the source_ids named on
+  // this node are resolved (bu-sovji) — not the whole registry — so the
+  // registry outcomes stay distinct all the way to the render: a resolved
+  // list can prove a source_id dangling, while a loading or failed fetch
+  // proves nothing and must not be reported as one.
+  const sourceIds = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          parseSourceRefs(node?.metadata)
+            .map((ref) => ref.sourceId)
+            .filter((id): id is string => id !== null),
+        ),
+      ),
+    [node?.metadata],
+  );
   const {
     data: sources,
     isLoading: sourcesLoading,
     isError: sourcesError,
-  } = useEducationSources();
-  const registryStatus: RegistryStatus = sourcesError
-    ? "unavailable"
-    : sourcesLoading || sources === undefined
-      ? "loading"
-      : "resolved";
+  } = useEducationSources(sourceIds);
+  const registryStatus: RegistryStatus =
+    sourceIds.length === 0
+      ? "resolved"
+      : sourcesError
+        ? "unavailable"
+        : sourcesLoading || sources === undefined
+          ? "loading"
+          : "resolved";
   const conceptType = parseConceptType(node?.metadata);
 
   // Focus choreography (bu-x7syp): on open, focus moves into the panel and
@@ -68,7 +89,7 @@ export default function NodeDetailPanel({
       {/* Focus lands here on open (tabIndex=-1: programmatically focusable,
           not a Tab stop); visually hidden since CardTitle below already
           carries the same information for sighted users. */}
-      <h2 ref={initialFocusRef} tabIndex={-1} className="sr-only focus:outline-none">
+      <h2 ref={initialFocusRef} tabIndex={-1} className="sr-only">
         Node details: {node.label}
       </h2>
       <Card>

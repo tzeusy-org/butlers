@@ -32,7 +32,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Time } from '@/components/ui/time'
 import { categoricalFillForeground, categoricalHueVar } from '@/lib/visual-token-roles'
 import {
-  useIngestionEventLineage,
+  useIngestionEventSessions,
   useIngestionEventReplays,
   useIngestionEventPayload,
   useIngestionEventDetail,
@@ -190,7 +190,7 @@ function DrawerSessionsTab({
   event: IngestionEventSummary
   decompositionOutput: Record<string, unknown> | null
 }) {
-  const { sessions } = useIngestionEventLineage(requestId, { enabled: true })
+  const sessions = useIngestionEventSessions(requestId, { enabled: true })
   const sessionList = sessions.data?.data ?? []
 
   if (sessions.isLoading) {
@@ -627,7 +627,7 @@ export function EventDrawer({ event, onClose, onOptimisticUpdate }: EventDrawerP
   const { data: detailData } = useIngestionEventDetail(event.id, { enabled: true })
   const detail = detailData?.data ?? null
 
-  const { sessions } = useIngestionEventLineage(event.id, { enabled: true })
+  const sessions = useIngestionEventSessions(event.id, { enabled: true })
   const sessionList = sessions.data?.data ?? []
   // Stable primitive: true once session data has loaded (avoids a new [] reference on each render
   // during the loading state, which would cause the scroll effect to fire on every render).
@@ -691,7 +691,7 @@ export function EventDrawer({ event, onClose, onOptimisticUpdate }: EventDrawerP
       {/* Focus lands here on open (tabIndex=-1: programmatically focusable,
           not a Tab stop); visually hidden since StatusBadge + timestamp
           already carry the same information for sighted users. */}
-      <h2 ref={headingRef} tabIndex={-1} className="sr-only focus:outline-none">
+      <h2 ref={headingRef} tabIndex={-1} className="sr-only">
         Event detail: {event.source_channel ?? 'unknown channel'}, {event.status}
       </h2>
       {/* Polite live-region announcement — screen-reader users hear the

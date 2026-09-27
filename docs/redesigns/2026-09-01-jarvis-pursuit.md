@@ -6,11 +6,11 @@ audits on sonnet/medium, 4 cross-cutting sweeps and 6 ecosystem lenses on opus/h
 inline on the fable orchestrator. Zero agent errors. Prior run: `2026-08-09-jarvis-pursuit.md`
 (epic `bu-6jv4m`, released 2026-08-10; leftovers still open: `.1 .5 .6 .12 .16`).
 
-**Full structured output**: `docs/redesigns/2026-09-01-jarvis-pursuit-data.json`. Access pattern:
+**Full structured output**: `git show b23d5b76afab:docs/redesigns/2026-09-01-jarvis-pursuit-data.json`. Access pattern:
 
 ```bash
-jq '.audits[] | select(.page=="page: spend")' docs/redesigns/2026-09-01-jarvis-pursuit-data.json
-jq -r '.audits[] | "\(.page)\t\(.verdict)"'   docs/redesigns/2026-09-01-jarvis-pursuit-data.json
+git show b23d5b76afab:docs/redesigns/2026-09-01-jarvis-pursuit-data.json | jq '.audits[] | select(.page=="page: spend")'
+git show b23d5b76afab:docs/redesigns/2026-09-01-jarvis-pursuit-data.json | jq -r '.audits[] | "\(.page)\t\(.verdict)"'
 ```
 
 Labels: `qc: <slice>` (4), `page: <surface>` (16), `cross: <sweep>` (4), `eco: <lens>` (6).

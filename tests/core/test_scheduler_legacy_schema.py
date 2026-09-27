@@ -84,6 +84,7 @@ async def test_tick_uses_null_until_at_projection_for_legacy_schema(caplog) -> N
         "max_token_budget",
         "task_type",
         "until_at",
+        "continuity",
     }
     due_task_queries = [
         query

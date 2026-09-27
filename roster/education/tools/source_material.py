@@ -7,13 +7,14 @@ map node metadata that may still refer to its source ID.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
 
-from butlers.core.state import state_delete, state_list, state_set
+from butlers.core.state import state_delete, state_get, state_list, state_set
 
 SOURCE_KEY_PREFIX = "education/source/"
 _SOURCE_TYPES = frozenset({"article", "book", "documentation", "paper"})
@@ -102,6 +103,27 @@ async def source_material_list(pool: asyncpg.Pool) -> list[dict[str, Any]]:
             continue
         sources.append({"source_id": source_id, **value})
     return sources
+
+
+async def source_material_get_many(
+    pool: asyncpg.Pool, source_ids: list[str]
+) -> list[dict[str, Any]]:
+    """Resolve specific source IDs against the registry.
+
+    An ID with no matching record (removed, or never registered) is simply
+    absent from the result rather than an error — this is the registry-miss
+    case a dangling ``source_refs`` entry must be told apart from a registry
+    failure, which the caller reports separately by letting the pool error
+    propagate. Result order does not follow ``source_ids``.
+    """
+    if not source_ids:
+        return []
+    values = await asyncio.gather(*(state_get(pool, _source_key(sid)) for sid in source_ids))
+    return [
+        {"source_id": source_id, **value}
+        for source_id, value in zip(source_ids, values, strict=True)
+        if isinstance(value, dict)
+    ]
 
 
 async def source_material_remove(pool: asyncpg.Pool, source_id: str) -> dict[str, str]:

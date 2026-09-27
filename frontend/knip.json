@@ -1,6 +1,10 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
-  "entry": ["scripts/e2e-api-mock.mjs"],
+  "entry": [
+    "scripts/e2e-api-mock.mjs",
+    "playwright.route-a.config.ts",
+    "route-a-api-receipt.mjs"
+  ],
   "ignoreExportsUsedInFile": true,
   "rules": {
     "files": "error",
@@ -15,5 +19,8 @@
     "nsTypes": "error",
     "duplicates": "error",
     "enumMembers": "off"
-  }
+  },
+  "ignoreBinaries": [
+    "openssl"
+  ]
 }

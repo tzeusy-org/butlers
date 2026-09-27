@@ -308,8 +308,7 @@ test("oauth roundtrip: google re-authorize click → redirect → callback → t
 // ---------------------------------------------------------------------------
 // 2. (Spotify roundtrip removed)
 //
-// Spotify no longer uses the generalized /oauth/<provider>/start dance. It
-// authorizes through the connector PKCE flow (POST
+// Spotify authorizes through the connector PKCE flow (POST
 // /api/connectors/spotify/oauth/start → the provider's own authorization URL →
 // /api/connectors/spotify/oauth/callback), which is what the registered Spotify
 // app's redirect URIs point at. The generalized roundtrip and its ?toast=

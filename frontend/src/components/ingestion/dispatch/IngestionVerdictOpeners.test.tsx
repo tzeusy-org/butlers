@@ -6,7 +6,6 @@ import { MemoryRouter } from "react-router";
 
 vi.mock("@/hooks/use-ingestion", () => ({
   useConnectorSummaries: vi.fn(),
-  useConnectorSummariesWithAggregates: vi.fn(),
   usePipelineStats: vi.fn(),
 }));
 
@@ -21,7 +20,6 @@ import {
 } from "@/components/ingestion/dispatch/IngestionVerdictOpeners";
 import {
   useConnectorSummaries,
-  useConnectorSummariesWithAggregates,
   usePipelineStats,
 } from "@/hooks/use-ingestion";
 import { useIngestionWindowRollup } from "@/hooks/use-ingestion-events";
@@ -58,11 +56,6 @@ beforeEach(() => {
     isError: false,
   } as never);
   vi.mocked(useConnectorSummaries).mockReturnValue({
-    data: { data: [healthyConnector] },
-    isLoading: false,
-    isError: false,
-  } as never);
-  vi.mocked(useConnectorSummariesWithAggregates).mockReturnValue({
     data: { data: { connectors: [healthyConnector] } },
     isLoading: false,
     isError: false,
@@ -92,7 +85,7 @@ beforeEach(() => {
 describe("Ingestion verdict openers", () => {
   it("makes an attention connector on the timeline a real detail door", () => {
     vi.mocked(useConnectorSummaries).mockReturnValue({
-      data: { data: [offlineConnector] },
+      data: { data: { connectors: [offlineConnector] } },
       isLoading: false,
       isError: false,
     } as never);
@@ -105,7 +98,7 @@ describe("Ingestion verdict openers", () => {
   });
 
   it("names connector activity degradation instead of rendering an all-clear", () => {
-    vi.mocked(useConnectorSummariesWithAggregates).mockReturnValue({
+    vi.mocked(useConnectorSummaries).mockReturnValue({
       data: {
         data: {
           connectors: [healthyConnector],
@@ -124,7 +117,7 @@ describe("Ingestion verdict openers", () => {
 
   it("names a registry fallback on the timeline instead of rendering an all-clear", () => {
     vi.mocked(useConnectorSummaries).mockReturnValue({
-      data: { data: [], meta: { connector_registry_available: false } },
+      data: { data: { connectors: [], connector_registry_available: false } },
       isLoading: false,
       isError: false,
     } as never);
@@ -175,7 +168,7 @@ describe("Ingestion verdict openers", () => {
   });
 
   it("names a registry fallback on the connectors roster instead of healthy zero", () => {
-    vi.mocked(useConnectorSummariesWithAggregates).mockReturnValue({
+    vi.mocked(useConnectorSummaries).mockReturnValue({
       data: { data: { connectors: [], connector_registry_available: false } },
       isLoading: false,
       isError: false,
@@ -185,6 +178,20 @@ describe("Ingestion verdict openers", () => {
 
     expect(html).toContain("connector registry unavailable");
     expect(html).not.toContain("ingestion-connectors-verdict-all-clear");
+  });
+
+  it("excludes archived identities from timeline and roster verdict attention", () => {
+    vi.mocked(useConnectorSummaries).mockReturnValue({
+      data: { data: { connectors: [{ ...offlineConnector, archived: true }] } },
+      isLoading: false,
+      isError: false,
+    } as never);
+
+    const timeline = render(<IngestionTimelineVerdictOpener range="24h" />);
+    const roster = render(<IngestionConnectorsVerdictOpener />);
+
+    expect(timeline).not.toContain("calendar · primary needs attention");
+    expect(roster).not.toContain("calendar · primary needs attention");
   });
 
   it("reports the filters funnel drop without linking back to its current page", () => {

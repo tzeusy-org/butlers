@@ -2,7 +2,7 @@
 
 Unique behaviors not in test_adapter_contract.py:
 - Binary discovery (_find_gemini_binary)
-- _filter_env passes all keys through
+- _filter_env preserves runtime keys
 - parse_system_prompt_file: GEMINI.md priority, AGENTS.md fallback
 - build_config_file writes gemini_mcp.json
 - _parse_gemini_output: functionCall formats
@@ -32,7 +32,7 @@ _EXEC = "butlers.core.runtimes.gemini.asyncio.create_subprocess_exec"
 
 
 def test_binary_filter_env_and_system_prompt(tmp_path: Path):
-    """Binary discovery; _filter_env passes all keys; system prompt: GEMINI.md > AGENTS.md."""
+    """Binary discovery; _filter_env preserves runtime keys; system prompt: GEMINI.md > AGENTS.md."""
     with patch("butlers.core.runtimes.gemini.shutil.which", return_value="/usr/bin/gemini"):
         assert _find_gemini_binary() == "/usr/bin/gemini"
     with patch("butlers.core.runtimes.gemini.shutil.which", return_value=None):

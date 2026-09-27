@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { toast } from "sonner";
 
-import type { Schedule } from "@/api/types.ts";
+import type { Schedule, ScheduleToggleResult } from "@/api/types.ts";
 import { ScheduleForm } from "@/components/schedules/ScheduleForm";
 import type { ScheduleFormValues } from "@/components/schedules/ScheduleForm";
 import { ScheduleTable } from "@/components/schedules/ScheduleTable";
@@ -63,6 +63,8 @@ export default function ButlerSchedulesTab({ butlerName }: ButlerSchedulesTabPro
 
   // Track which schedule is currently being triggered
   const [triggeringId, setTriggeringId] = useState<string | null>(null);
+  const [togglingIds, setTogglingIds] = useState<ReadonlySet<string>>(new Set());
+  const [toggleReceipt, setToggleReceipt] = useState<ScheduleToggleResult | null>(null);
 
   // ---------------------------------------------------------------------------
   // Handlers
@@ -78,15 +80,29 @@ export default function ButlerSchedulesTab({ butlerName }: ButlerSchedulesTabPro
     setFormOpen(true);
   }
 
-  function handleToggle(schedule: Schedule) {
-    toggleMutation.mutate(schedule.id, {
-      onSuccess: () => {
-        toast.success(`Schedule "${schedule.name}" ${schedule.enabled ? "disabled" : "enabled"}`);
-      },
-      onError: (err) => {
-        toast.error(`Failed to toggle schedule: ${err instanceof Error ? err.message : "Unknown error"}`);
-      },
-    });
+  async function handleToggle(schedule: Schedule) {
+    const requestedEnabled = !schedule.enabled;
+    setTogglingIds((pending) => new Set(pending).add(schedule.id));
+    setToggleReceipt(null);
+    try {
+      const response = await toggleMutation.mutateAsync({
+        scheduleId: schedule.id,
+        enabled: requestedEnabled,
+      });
+      const receipt = response.data;
+      setToggleReceipt(receipt);
+      toast.success(
+        `${receipt.observed_enabled ? "Event resumed" : "Event paused"} (Schedule "${schedule.name}" confirmed by server)`,
+      );
+    } catch (err) {
+      toast.error(`Failed to toggle schedule: ${err instanceof Error ? err.message : "Unknown error"}`);
+    } finally {
+      setTogglingIds((pending) => {
+        const remaining = new Set(pending);
+        remaining.delete(schedule.id);
+        return remaining;
+      });
+    }
   }
 
   function handleTrigger(schedule: Schedule) {
@@ -192,9 +208,17 @@ export default function ButlerSchedulesTab({ butlerName }: ButlerSchedulesTabPro
             onEdit={handleEdit}
             onDelete={handleDeleteClick}
             triggeringId={triggeringId}
+            togglingIds={togglingIds}
           />
         </CardContent>
       </Card>
+
+      {toggleReceipt && (
+        <p className="text-sm text-muted-foreground" role="status">
+          Server confirmed schedule &quot;{toggleReceipt.name}&quot; is {toggleReceipt.observed_enabled ? "enabled" : "disabled"}.
+          Audit receipt: {toggleReceipt.audit.action} ({toggleReceipt.audit.result}).
+        </p>
+      )}
 
       {/* Create / Edit form dialog */}
       <ScheduleForm

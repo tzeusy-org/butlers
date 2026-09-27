@@ -16,14 +16,20 @@
  * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
  *       dashboard-ingestion-dispatch-console/spec.md §"Connector with auth issue"
  * Reference: (ingestion dispatch redesign, graduated) ingestion-connectors-a.jsx §"Attention strip"
+ *
+ * Not shared with pages/SettingsConsolePage.tsx's inline AttentionStrip
+ * (bu-q5mb1): that one renders a vertical bordered list of server-computed,
+ * bus-live AttentionItem rows with capping/expand-collapse — a different data
+ * shape (pre-derived items vs. raw ConnectorSummary[]) and a different layout
+ * with no overlapping render logic. Kept separate deliberately rather than
+ * forced into one parameterized primitive.
  */
 
 import { Link } from 'react-router'
 import type { ConnectorSummary } from '@/api/types'
 import {
   deriveConnectorDispatchInfo,
-  authStatusLabel,
-  authStatusColor,
+  authStatusPresentation,
 } from './connector-auth'
 
 interface AttentionStripProps {
@@ -40,8 +46,9 @@ interface AttentionStripProps {
 export function AttentionStrip({ connectors }: AttentionStripProps) {
   const issues = connectors.filter(
     (c) =>
-      deriveConnectorDispatchInfo(c).needsAttention ||
-      Boolean(c.operational_warnings?.length),
+      !c.archived &&
+      (deriveConnectorDispatchInfo(c).needsAttention ||
+        Boolean(c.operational_warnings?.length)),
   )
 
   if (issues.length === 0) return null
@@ -58,7 +65,7 @@ export function AttentionStrip({ connectors }: AttentionStripProps) {
         </span>
         <span
           data-testid="attention-count"
-          className="font-mono text-[10px] tabular-nums text-[color:var(--red,oklch(0.62_0.20_25))] leading-none"
+          className="font-mono text-[10px] tabular-nums text-[var(--red-text)] leading-none"
         >
           {issues.length}
         </span>
@@ -72,12 +79,13 @@ export function AttentionStrip({ connectors }: AttentionStripProps) {
           // the full operational warning remains visible on the roster row.
           const hasOperationalWarning =
             !info.needsAttention && Boolean(c.operational_warnings?.length)
+          const authPresentation = authStatusPresentation(info)
           const label = hasOperationalWarning
             ? 'cadence sparse'
-            : authStatusLabel(info.authStatus)
+            : authPresentation.label
           const colorClass = hasOperationalWarning
             ? 'text-[var(--amber-text)]'
-            : authStatusColor(info.authStatus)
+            : authPresentation.colorClass
           const displayName = formatConnectorName(c)
 
           return (

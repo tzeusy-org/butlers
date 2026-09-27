@@ -220,7 +220,11 @@ def _patch_infra():
     mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
     mock_pool.execute = AsyncMock(return_value=None)
     mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect())
-    mock_pool.fetchval = AsyncMock(return_value=None)
+
+    async def fetchval(query, *_args):
+        return 1 if "public.register_butler_boot" in query else None
+
+    mock_pool.fetchval = AsyncMock(side_effect=fetchval)
     mock_pool.fetch = AsyncMock(return_value=[])
 
     mock_db = MagicMock()
@@ -458,6 +462,20 @@ class TestDaemonGracefulShutdown:
         )
         await daemon2.shutdown()
         patches2["mock_spawner"].drain.assert_awaited_once_with(timeout=15.0)
+
+    async def test_failed_boot_registration_never_advertises_acceptance(
+        self, tmp_path: Path
+    ) -> None:
+        patches = _patch_infra()
+        patches["mock_db"].pool.fetchval.side_effect = RuntimeError("registration unavailable")
+        daemon = await self._start_daemon(_make_butler_toml(tmp_path), patches)
+        try:
+            assert daemon._boot_epoch is None
+            assert daemon._accepting_connections is False
+            assert daemon._boot_registration_task is not None
+        finally:
+            await daemon.shutdown()
+        assert daemon._boot_registration_task is None
 
         # Correct shutdown order
         registry = _make_registry(StubModuleOk)

@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Pending Actions Queue
-The `pending_actions` table SHALL provide a durable queue and audit log for approval-gated tool invocations, storing `id`, `tool_name`, `tool_args` (JSONB), `status`, `requested_at`, and optional `agent_summary`, `session_id`, `expires_at`, `decided_by`, `decided_at`, `execution_result`, `approval_rule_id`, `why`, `evidence`, and producer-opt-in `deduplication_key`; every newly admitted `pending` row SHALL commit in the same transaction as one unique, schema-local approval delivery-intent root whose immutable logical action key and admission classification are safe for end-to-end notification recovery. The first three actions receive direct presentations; the fourth `cohort_anchor` joins and creates the cohort-owned digest; later `collapsed` actions record a terminal non-sendable local presentation and join that cohort.
+The `pending_actions` table SHALL provide a durable queue and audit log for approval-gated tool invocations, storing `id`, `tool_name`, `tool_args` (JSONB), `status`, `requested_at`, and optional `agent_summary`, `session_id`, `expires_at`, `decided_by`, `decided_at`, `execution_result`, `approval_rule_id`, `why`, `evidence`, and producer-opt-in `deduplication_key`; every newly admitted `pending` row SHALL commit in the same transaction as one unique, schema-local approval delivery-intent root whose immutable logical action key and admission classification are safe for end-to-end notification recovery. The first three ordinary actions receive direct presentations; the fourth `cohort_anchor` joins and creates the cohort-owned digest; later ordinary `collapsed` actions record a terminal non-sendable local presentation and join that cohort. A digest-only `origin='prepared'` action uses the same durable representation with one standalone terminal `collapsed` action presentation, no cohort membership, no burst-count effect, and no provider or defer activation.
 
 ID: REQ-module-approvals-001
 Source: RFC-0021,RFC-0023
@@ -22,6 +22,12 @@ Scope: v1-mandatory
 - **THEN** the pending row and one foreign-keyed intent with the action's immutable logical key plus its required direct presentation, cohort anchor/digest, or collapsed terminal presentation and membership commit together or both roll back
 - **AND** an unavailable notification runtime does not permit a pending row without its intent
 
+#### Scenario: Prepared action admission stays durable and silent
+- **WHEN** a relationship or travel producer admits a digest-only action with `origin='prepared'`
+- **THEN** the pending row, intent, and standalone terminal `collapsed` presentation commit atomically when admission is enabled
+- **AND** it creates no cohort membership, due work, legacy emission, provider call, or defer successor
+- **AND** default-off admission commits only the established prepared pending row
+
 #### Scenario: List pending actions with status filter
 - **WHEN** `list_pending_actions` is called with an optional status filter and limit
 - **THEN** matching rows are returned ordered by `requested_at DESC`
@@ -38,7 +44,13 @@ Scope: v1-mandatory
 - **AND** delivery backlog metrics remain a separate safe aggregation rather than action payload data
 
 ### Requirement: Status Transition Contract
-The approval lifecycle SHALL allow `pending -> approved|rejected|expired` and `approved -> executed|abandoned`, with `rejected|expired|executed|abandoned` terminal and invalid transitions raising `InvalidTransitionError`; every transition out of `pending` SHALL atomically fence or cancel its nonterminal approval-delivery presentations without granting the notification worker domain-action mutation authority. Each authenticated dashboard defer remains a pending-state operation and appends exactly one bounded successor presentation generation through its own shared transaction path.
+
+The approval lifecycle MUST allow `pending -> approved|rejected|expired`,
+`approved -> executed|abandoned`, and no transition from
+`rejected|expired|executed|abandoned`. Invalid transitions raise
+`InvalidTransitionError`.
+
+Every transition out of `pending` SHALL atomically fence or cancel its nonterminal approval-delivery presentations without granting the notification worker domain-action mutation authority. Each authenticated dashboard defer remains a pending-state operation and appends exactly one bounded successor presentation generation through its own shared transaction path.
 
 ID: REQ-module-approvals-002
 Source: RFC-0021,RFC-0023
@@ -83,3 +95,32 @@ Scope: v1-mandatory
 - **WHEN** the executor is called for an action that is already `executed`
 - **THEN** the stored `execution_result` is returned idempotently
 - **AND** no second execution or notification delivery occurs
+
+#### Scenario: Abandon an approved unexecuted action
+
+- **WHEN** an authenticated dashboard actor requests abandonment with a
+  non-blank reason for an action whose status is `approved` and execution
+  result is null
+- **THEN** a compare-and-set UPDATE transitions it to `abandoned`
+- **AND** an immutable `action_abandoned` event records the actor and exact
+  reason in the same transaction
+- **AND** the action cannot subsequently execute or return to an eligible
+  recovery state.
+
+#### Scenario: Invalid abandonment source state is rejected
+
+- **WHEN** abandonment targets an action that is pending, rejected, expired,
+  executed, abandoned, or has a non-null execution result
+- **THEN** no action state or event is written
+- **AND** the caller receives a transition error describing the durable current
+  state.
+
+#### Scenario: Retry and abandonment race
+
+- **WHEN** retry dispatch and abandonment concurrently target the same approved
+  action with a null execution result
+- **THEN** the executor acquires a database row lock before any handler is
+  invoked, and abandonment's compare-and-set waits for that lock
+- **AND** only the winning terminal outcome is durably recorded
+- **AND** the loser returns the current durable state without appending another
+  terminal event.

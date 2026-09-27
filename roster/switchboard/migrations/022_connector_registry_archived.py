@@ -1,4 +1,4 @@
-"""connector_registry: add archived_at (soft-archive) + seed four dead identities.
+"""connector_registry: add archived_at (soft-archive) + seed dead identities.
 
 Revision ID: sw_022
 Revises: sw_021
@@ -24,16 +24,22 @@ NULL means active. A non-NULL value is the archival timestamp.
 
 Data seed
 ---------
-Idempotently archives the four dead identities found during the 2026-07-05
+Idempotently archives the dead identities found during the 2026-07-05
 ingestion history audit (bu-33dm2). Only rows currently un-archived and matching
-one of the four identities are touched, so re-running is a no-op and any identity
+one of those identities are touched, so re-running is a no-op and any identity
 already archived / disconnected is left alone. ``endpoint_identity`` is stored in
 its full connector-type-prefixed form (``google_health:degraded``,
 ``owntracks:unknown``, ``home_assistant:<host>:<port>``), so the WHERE clauses
-match that prefixed value — not the bare tail. The
-``google_health:user:<owner>:<uuid>`` identity carries an account-specific UUID
-suffix, so it is matched by its stable ``google_health:user:<owner>:`` prefix
-rather than the volatile UUID. This is a data-fix migration (same pattern as
+match that prefixed value — not the bare tail.
+
+The audit also found superseded ``google_health:user:<owner>:<uuid>:<resource>``
+rows for one specific account. That statement was deployment-specific (it
+hardcoded one owner's email, so it matched nothing on any other install) and has
+been removed to keep the repo user-agnostic; the only database it applied to has
+already run sw_022. It is intentionally NOT generalised to every account: that
+key shape is the live per-resource cursor identity, so a generic predicate would
+archive active cursors on other installs. Stale rows of that shape can be
+archived per-endpoint via the dashboard archive action. This is a data-fix migration (same pattern as
 sw_013's ``replay_safe=FALSE`` email seed); it deliberately does NOT delete
 anything.
 
@@ -54,7 +60,7 @@ branch_labels = None
 depends_on = None
 
 
-#: Idempotent data-seed: archive the four dead endpoint identities (bu-33dm2).
+#: Idempotent data-seed: archive the dead endpoint identities (bu-33dm2).
 #: Each statement only touches rows still un-archived and matching that exact
 #: identity, so re-running the migration is a no-op.
 #:
@@ -62,29 +68,15 @@ depends_on = None
 #: connector-type-prefixed form (the value each connector emits and cursor_store
 #: persists verbatim), e.g. ``google_health:degraded``,
 #: ``owntracks:unknown``, ``home_assistant:<host>:<port>`` — NOT the bare tail.
-#: (Confirmed against live registry rows, e.g.
-#: ``google_health:user:uniquosity@gmail.com:<uuid>:<resource>``.) The WHERE
-#: clauses must therefore match the prefixed value or they archive nothing.
-#:
-#: The google_health ``user:<owner>:<uuid>`` identity carries an account-specific
-#: UUID (and per-resource) suffix, so it is matched by its stable
-#: ``google_health:user:<owner>:`` prefix (LIKE) rather than the volatile UUID.
-#: The trailing ``:`` in that prefix intentionally excludes the canonical
-#: ``google_health:user:<owner>`` heartbeat row (no UUID) — only the superseded
-#: UUID/resource-cursor rows are archived. The literal prefixes contain no
-#: ``%``/``_`` wildcards, so no LIKE escaping is required.
+#: The WHERE clauses must therefore match the prefixed value or they archive
+#: nothing. (A former account-specific google_health statement was removed; see
+#: the module docstring.)
 _ARCHIVE_DEAD_IDENTITIES_SQL = [
     """
     UPDATE connector_registry SET archived_at = now()
      WHERE archived_at IS NULL
        AND connector_type = 'google_health'
        AND endpoint_identity = 'google_health:degraded'
-    """,
-    """
-    UPDATE connector_registry SET archived_at = now()
-     WHERE archived_at IS NULL
-       AND connector_type = 'google_health'
-       AND endpoint_identity LIKE 'google_health:user:uniquosity@gmail.com:%'
     """,
     """
     UPDATE connector_registry SET archived_at = now()
@@ -111,7 +103,7 @@ def upgrade() -> None:
     )
 
     # Partial index for the "live" set (not deleted AND not archived) — the set
-    # the fleet-health rollups (cross-summary, /connectors/summary) scan.
+    # the fleet-health /api/ingestion/connectors/cross-summary scans.
     op.execute(
         """
         CREATE INDEX IF NOT EXISTS ix_connector_registry_live
@@ -120,7 +112,7 @@ def upgrade() -> None:
         """
     )
 
-    # Idempotent data seed — archive the four dead identities (bu-33dm2).
+    # Idempotent data seed — archive the dead identities (bu-33dm2).
     for stmt in _ARCHIVE_DEAD_IDENTITIES_SQL:
         op.execute(stmt)
 

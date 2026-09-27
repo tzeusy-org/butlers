@@ -23,22 +23,63 @@ The QA dispatcher SHALL create investigations for novel findings, using the exis
 - **AND** a log INFO message indicates skipped findings count
 
 ### Requirement: Gate Sequence Preservation
-The QA dispatcher SHALL preserve the existing 10-gate dispatch sequence from self-healing, applied to each novel finding before investigation. Note: triage performs a fast dedup check (non-atomic) to filter obvious duplicates early; the dispatch gates perform the authoritative atomic claim. Cooldown appears in both layers intentionally — triage's check is a fast-path optimization, dispatch's is the atomic guarantee.
+
+The QA dispatcher SHALL preserve the existing admission protections for each
+novel finding before investigation. Triage performs a fast non-atomic dedup
+check to filter obvious duplicates early; dispatch performs the authoritative
+atomic claim only after normal eligibility and active-infrastructure-condition
+suppression have both been evaluated.
 
 #### Scenario: Gates applied per-finding after triage
-- **WHEN** a novel finding passes triage (fast dedup check)
-- **THEN** the dispatcher applies the authoritative gate sequence: no-recursion guard (trigger_source), opt-in gate, fingerprint (already computed), severity gate, novelty gate (authoritative atomic claim — this is the authoritative check, not a duplicate of triage's fast check), cooldown gate, concurrency cap, circuit breaker, model resolution
-- **AND** findings rejected by any gate are recorded with the rejection reason in `qa_findings.dedup_reason`
-- **AND** any rejection before the first investigation session launches is tracked as a dispatch decision, not an execution failure
+- **WHEN** a novel finding passes triage's fast dedup check
+- **THEN** the dispatcher applies normal eligibility checks for recursion,
+  opt-in, fingerprint, severity, cooldown, concurrency cap, circuit breaker,
+  and model resolution
+- **AND** after those checks pass but before `create_or_join_attempt`, an
+  `infra_state` finding is matched against an active infrastructure condition
+  by explicit canonical source and fingerprint
+- **AND** only a finding without a matching active condition proceeds to the
+  authoritative atomic novelty claim and then to worktree/session launch
+- **AND** findings rejected by a normal eligibility gate or active-condition
+  suppression are recorded with their explicit rejection reason in
+  `qa_findings.dedup_reason`
+- **AND** any rejection before the first investigation session launches is tracked as a
+  dispatch decision, not an execution failure
+
+#### Scenario: Active infrastructure condition is checked before attempt claim
+- **WHEN** an otherwise eligible `infra_state` finding matches an `open` or
+  `aging` infrastructure-condition episode
+- **THEN** the dispatcher writes the decision-only `infra_condition_open`
+  dispatch event before calling `create_or_join_attempt`
+- **AND** it returns without creating, joining, deleting, or changing a
+  `healing_attempt`
+- **AND** it invokes no LLM, creates no runtime session, and creates no
+  worktree
 
 ### Requirement: Gate Rejections Do Not Count as Execution Failures
-QA admission-control outcomes SHALL remain distinct from launched investigation outcomes.
+
+QA admission-control outcomes SHALL remain distinct from launched
+investigation outcomes.
 
 #### Scenario: Circuit breaker or cooldown rejection before launch
-- **WHEN** a finding is rejected by cooldown, concurrency cap, circuit breaker, or no-model before any QA investigation session launches
-- **THEN** no investigation attempt is marked `failed` solely because of that rejection
-- **AND** the rejection does NOT contribute to the QA circuit-breaker failure streak
-- **AND** the dashboard exposes it as a dispatch decision rather than a failed execution
+- **WHEN** a finding is rejected by cooldown, concurrency cap, circuit
+  breaker, or no-model before any QA investigation session launches
+- **THEN** no investigation attempt is marked `failed` solely because of that
+  rejection
+- **AND** the rejection does NOT contribute to the QA circuit-breaker failure
+  streak
+- **AND** the dashboard exposes it as a dispatch decision rather than a
+  failed execution
+
+#### Scenario: Active infrastructure condition rejection before claim
+- **WHEN** an otherwise eligible `infra_state` finding is suppressed because
+  its canonical condition remains active
+- **THEN** `healing_dispatch_events` records `decision = infra_condition_open`
+  with null attempt linkage
+- **AND** no `healing_attempts` row, worktree, runtime session, or LLM
+  invocation exists as a consequence of that suppression
+- **AND** the event does NOT contribute to QA circuit-breaker execution
+  history
 
 #### Scenario: Infra-condition suppression links back to the suppressing condition (bu-ep4ks.3)
 - **WHEN** an `infra_state` finding is rejected because an active standing
@@ -89,9 +130,10 @@ Investigation agents SHALL operate in a sandboxed environment with minimal crede
 #### Scenario: GitHub credentials from secrets store
 - **WHEN** the QA staffer needs to create a PR
 - **THEN** it retrieves the GitHub token from the system secrets store at key `BUTLERS_QA_GH_TOKEN` (managed via the dashboard at /secrets)
-- **AND** the token is scoped to: branch push + PR creation + PR labeling on `Tzeusy/butlers`
+- **AND** the token is scoped to: branch push + PR creation + PR labeling on `tzeusy-org/butlers`
 - **AND** the token SHALL NOT have merge or approve permissions — humans remain in the merge seat
 - **AND** if the secret is not found, the investigation completes but transitions to `failed` with reason `"no_gh_token"`
+- **AND** if GitHub authenticates the token but denies repository write authorization (`Permission to … denied` or HTTP 403), the investigation transitions to `failed` with the stable `git_auth_failed` class and content-blind guidance to verify repository scope and organization authorization
 
 ### Requirement: QA Investigation Agent Prompt
 The QA investigation agent SHALL receive a prompt that includes the error context from the discovery source, not from a live session. No raw logs or user data are included.
@@ -182,6 +224,13 @@ Investigation agents SHALL create PRs through the anonymization pipeline, ensuri
 - **AND** the PR is created via `gh pr create` with the sanitized labels (default `["self-healing", "automated"]`)
 - **AND** the PR body includes: root cause analysis, affected butler(s), fix summary, patrol cycle reference (patrol ID, not raw log content), and a note that it was auto-generated by the QA staffer
 
+#### Scenario: Committed proposal cannot be published
+- **WHEN** the investigation agent commits a diff but branch push or PR creation fails
+- **THEN** the dispatcher persists the bounded diff snapshot and investigation notes before worktree teardown
+- **AND** the case API derives `proposal_state = "unpublished"` when no PR exists and the retained diff is non-empty
+- **AND** the failed attempt records the actual sanitized publication failure rather than claiming that no fix was produced
+- **AND** no credential value, token fragment, or raw authorization response is added to the proposal state
+
 #### Scenario: Anonymization validation failure
 - **WHEN** `validate_anonymized()` detects residual PII in PR content
 - **THEN** the remote branch is deleted
@@ -252,6 +301,8 @@ The investigation agent SHALL emit a structured `investigation_notes` JSON artif
 - **AND** the JSON conforms to the `InvestigationNotes` schema (`schema_version`, `headline`, `hypothesis`, `blurb_segments`, `claims`, `evidence_lines`, `counter_evidence`, `why_this_fix`, `diff_snapshot`)
 - **AND** the artifact is governed by the portable file contract: the agent writes plain JSON matching the schema, and the dispatcher validates the file after the runtime exits
 - **AND** runtime-specific final-response structured-output modes are not required for this artifact unless the `RuntimeAdapter.invoke()` contract gains an explicit artifact-file schema channel
+- **AND** `headline`, `hypothesis`, and `blurb_segments` describe only observed behavior and established diagnosis, never proposed code as though it were already active
+- **AND** `why_this_fix` always remains proposal language because the artifact is written before publication and is never authority that proposed code is active or landed
 
 #### Scenario: Dispatcher reads and persists notes
 - **WHEN** the agent signals completion and before worktree teardown
@@ -306,11 +357,13 @@ The dispatcher SHALL emit structured journal events into `public.qa_investigatio
 - **THEN** the dispatcher inserts a `qa_investigation_events` row with `step = 'escalated'`, `text` summarizing the reason, and a `detail` referencing the user-action surface (e.g., `"surfaced on /overview attention"`)
 
 ### Requirement: Raw Log Retention and Cleanup
-QA SHALL purge raw log content from `qa_findings.structured_evidence.evidence_lines[]` on a documented schedule, while preserving the narrative payload indefinitely.
+QA SHALL purge raw log content from
+`qa_findings.structured_evidence.investigation_notes.evidence_lines[]` on a
+documented schedule, while preserving the other narrative fields indefinitely.
 
 #### Scenario: Daily retention cleanup
 - **WHEN** the daily QA cleanup job runs (configured by `[modules.qa].retention_cleanup_hour`, default 04:00 UTC)
-- **THEN** for every `qa_findings` row whose linked `healing_attempts.closed_at` is non-null AND older than 14 days, OR whose own `created_at` is older than 30 days, the `evidence_lines[]` field is stripped from `structured_evidence.investigation_notes`
+- **THEN** for every `qa_findings` row whose linked `healing_attempts.closed_at` is non-null and older than 14 days, OR which has no linked attempt and `created_at` older than 30 days, the `evidence_lines[]` field is stripped from `structured_evidence.investigation_notes`
 - **AND** all other narrative fields (`headline`, `hypothesis`, `why_this_fix`, `diff_snapshot`, `counter_evidence`, `blurb_segments`, `claims`) are preserved
 - **AND** the `qa_findings_retention_purged_total` Prometheus counter is incremented by the number of rows updated in the run
 

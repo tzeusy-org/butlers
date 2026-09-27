@@ -47,7 +47,7 @@ The Switchboard is the sole entry point for all inbound messages. It classifies 
 | Failure | Symptom | Recovery |
 |---|---|---|
 | Classification timeout | Message stays in buffer, dispatch not attempted | Cold-path scanner reclaims after `scanner_grace_s`; retried automatically |
-| Domain butler unreachable | Dispatch returns error; route marked ineligible | Eligibility sweep reinstates the route once butler is healthy |
+| Domain butler unreachable | Dispatch returns typed no-attempt or uncertain evidence | Legacy eligibility sweep remains authoritative until the separate receiver-derived cutover; after that gate, an otherwise eligible stale target gets one bounded Switchboard-owned identity recheck, never a policy override |
 | Buffer worker crash | In-flight dispatches lost | Scanner recovers items from DB after `scanner_grace_s` grace period |
 | Switchboard restart | In-memory queue drained | Buffer scanner re-ingests unfinished items from DB on startup |
 | Staffer classification leak | Staffer appears as routing candidate | Classification layer enforces type=butler filter; staffers are never candidates |

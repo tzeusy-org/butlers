@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import asyncpg
 
+from butlers.core.control_plane_identity import ExpectedDaemon, expected_from_roster
 from butlers.core.liveness import CLOCK_SKEW_TOLERANCE, is_liveness_stale
 from butlers.core.mcp_urls import runtime_mcp_url
 
@@ -32,6 +36,205 @@ _AGENT_TYPES = frozenset({AGENT_TYPE_BUTLER, AGENT_TYPE_STAFFER})
 
 DEFAULT_LIVENESS_TTL_SECONDS = 300
 DEFAULT_ROUTE_CONTRACT_VERSION = 1
+_RECEIVER_ROUTE_CUTOVER_ENV = "BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER"
+
+
+def receiver_route_cutover_enabled() -> bool:
+    """Use the separated receiver observations for route admission."""
+    return os.environ.get(_RECEIVER_ROUTE_CUTOVER_ENV) == "1"
+
+
+@dataclass(frozen=True)
+class ControlPlaneTargetDecision:
+    """Read-only route admission facts from L1, with no legacy projection write."""
+
+    state: str  # ready | stale | denied
+    reason: str
+    expected: ExpectedDaemon
+    endpoint_url: str | None = None
+    boot_epoch: int | None = None
+    boot_instance_id: uuid.UUID | None = None
+    healthy_observed_at: datetime | None = None
+    state_updated_at: datetime | None = None
+
+
+def expected_route_target(
+    name: str,
+    *,
+    required_capability: str | None = None,
+    route_contract_version: int = DEFAULT_ROUTE_CONTRACT_VERSION,
+) -> ExpectedDaemon | None:
+    """Resolve exact Git authority, never a daemon-authored capability or URL."""
+    from butlers.config import list_butlers
+
+    configs = list_butlers()
+    targets = expected_from_roster(configs)
+    for config, target in zip(configs, targets, strict=True):
+        if target.name != name:
+            continue
+        if not (
+            config.runtime_seed.route_contract_min
+            <= route_contract_version
+            <= config.runtime_seed.route_contract_max
+        ):
+            return None
+        allowed = set(config.modules) | {"trigger"}
+        if required_capability and required_capability not in allowed:
+            return None
+        return target
+    return None
+
+
+async def resolve_control_plane_target(
+    pool: asyncpg.Pool,
+    expected: ExpectedDaemon,
+    *,
+    required_capability: str | None = None,
+    route_contract_version: int = DEFAULT_ROUTE_CONTRACT_VERSION,
+) -> ControlPlaneTargetDecision:
+    """Read separated policy/observation and select the Git-roster endpoint.
+
+    This is the same effect-free resolver used by the prospective route cutover
+    and the internal preflight.  In particular, it never calls the legacy
+    resolver, which reconciles and writes ``eligibility_state`` on reads.
+    """
+    row = await pool.fetchrow(
+        """
+        SELECT c.name, c.policy_state, c.observed_state, c.boot_instance_id,
+               c.boot_epoch, c.observed_boot_epoch, c.healthy_observed_at,
+               c.route_compatible, c.accepting_routes, c.updated_at,
+               r.liveness_ttl_seconds, r.route_contract_min, r.route_contract_max,
+               r.capabilities, clock_timestamp() AS server_now
+        FROM switchboard.butler_registry_control_plane AS c
+        JOIN switchboard.butler_registry AS r USING (name)
+        WHERE c.name = $1
+        """,
+        expected.name,
+    )
+    if row is None:
+        return ControlPlaneTargetDecision("denied", "missing_target", expected)
+    facts = dict(row)
+    if facts.get("name") != expected.name or facts.get("policy_state") not in {
+        "active",
+        "paused",
+        "quarantined",
+        "review_required",
+    }:
+        return ControlPlaneTargetDecision("denied", "invalid_record", expected)
+    if facts["policy_state"] != "active":
+        return ControlPlaneTargetDecision("denied", "policy_denied", expected)
+
+    minimum, maximum = facts.get("route_contract_min"), facts.get("route_contract_max")
+    if (
+        type(minimum) is not int
+        or type(maximum) is not int
+        or not minimum <= route_contract_version <= maximum
+    ):
+        return ControlPlaneTargetDecision("denied", "incompatible", expected)
+    if facts.get("route_compatible") is False:
+        return ControlPlaneTargetDecision("denied", "incompatible", expected)
+    if facts.get("accepting_routes") is False:
+        return ControlPlaneTargetDecision("denied", "not_accepting", expected)
+    if facts.get("route_compatible") not in (True, None) or facts.get("accepting_routes") not in (
+        True,
+        None,
+    ):
+        return ControlPlaneTargetDecision("denied", "invalid_record", expected)
+    capabilities = facts.get("capabilities")
+    if isinstance(capabilities, str):
+        try:
+            capabilities = json.loads(capabilities)
+        except json.JSONDecodeError:
+            capabilities = None
+    if not isinstance(capabilities, list) or any(not isinstance(v, str) for v in capabilities):
+        return ControlPlaneTargetDecision("denied", "invalid_record", expected)
+    if required_capability and required_capability.lower() not in {
+        value.lower() for value in capabilities
+    }:
+        return ControlPlaneTargetDecision("denied", "missing_capability", expected)
+
+    epoch = facts.get("boot_epoch")
+    instance_id = facts.get("boot_instance_id")
+    ttl = facts.get("liveness_ttl_seconds")
+    server_now = facts.get("server_now")
+    healthy_at = facts.get("healthy_observed_at")
+    if (
+        type(epoch) is not int
+        or epoch <= 0
+        or not isinstance(instance_id, uuid.UUID)
+        or instance_id.version != 7
+        or type(ttl) is not int
+        or ttl <= 0
+        or not isinstance(server_now, datetime)
+        or server_now.tzinfo is None
+        or (
+            healthy_at is not None
+            and (not isinstance(healthy_at, datetime) or healthy_at.tzinfo is None)
+        )
+    ):
+        return ControlPlaneTargetDecision("denied", "invalid_record", expected)
+    if healthy_at is not None and healthy_at > server_now:
+        return ControlPlaneTargetDecision("denied", "invalid_record", expected)
+    if facts.get("observed_state") not in {"healthy", "stale", "unavailable", "observer_unknown"}:
+        return ControlPlaneTargetDecision("denied", "invalid_record", expected)
+
+    ready = (
+        facts.get("observed_state") == "healthy"
+        and facts.get("observed_boot_epoch") == epoch
+        and facts.get("route_compatible") is True
+        and facts.get("accepting_routes") is True
+        and healthy_at is not None
+        and (server_now - healthy_at).total_seconds() <= ttl
+    )
+    return ControlPlaneTargetDecision(
+        "ready" if ready else "stale",
+        "ready" if ready else "stale_observation",
+        expected,
+        endpoint_url=runtime_mcp_url(expected.port),
+        boot_epoch=epoch,
+        boot_instance_id=instance_id,
+        healthy_observed_at=healthy_at,
+        state_updated_at=facts.get("updated_at"),
+    )
+
+
+async def list_control_plane_candidates(
+    pool: asyncpg.Pool, *, butler_only: bool = False
+) -> list[dict[str, Any]]:
+    """List configured targets that pass non-health route gates.
+
+    Stale observations remain candidates: the route dispatcher owns the one
+    bounded recheck before a target call. Legacy eligibility is never read or
+    reconciled here, and a registry row cannot introduce an unconfigured target.
+    """
+    from butlers.config import ButlerType, list_butlers
+
+    configs = list_butlers()
+    registered = {
+        row["name"] for row in await pool.fetch("SELECT name FROM switchboard.butler_registry")
+    }
+    candidates: list[dict[str, Any]] = []
+    for config, expected in zip(configs, expected_from_roster(configs), strict=True):
+        if config.name not in registered or (butler_only and config.type != ButlerType.BUTLER):
+            continue
+        if not (
+            config.runtime_seed.route_contract_min
+            <= DEFAULT_ROUTE_CONTRACT_VERSION
+            <= config.runtime_seed.route_contract_max
+        ):
+            continue
+        decision = await resolve_control_plane_target(pool, expected)
+        if decision.state == "denied":
+            continue
+        candidates.append(
+            {
+                "name": config.name,
+                "description": config.description,
+                "modules": list(config.modules),
+                "agent_type": config.type.value,
+            }
+        )
+    return candidates
 
 
 def _normalize_string_list(raw: Any) -> list[str]:
@@ -331,7 +534,7 @@ async def register_butler(
     )
     previous_last_seen_at = existing["last_seen_at"] if existing is not None else None
 
-    await pool.execute(
+    stored = await pool.fetchrow(
         """
         INSERT INTO switchboard.butler_registry (
             name,
@@ -379,6 +582,7 @@ async def register_butler(
             capabilities = EXCLUDED.capabilities,
             eligibility_updated_at = EXCLUDED.eligibility_updated_at,
             agent_type = EXCLUDED.agent_type
+        RETURNING eligibility_state, last_seen_at
         """,
         name,
         endpoint_url,
@@ -394,17 +598,98 @@ async def register_butler(
         normalized_type,
     )
 
-    if previous_state is not None and previous_state != ELIGIBILITY_ACTIVE:
+    # sw_035's compatibility trigger can retain a restrictive operator policy
+    # even though this legacy UPSERT requests "active".  Audit the committed
+    # projection, not the request we attempted.
+    stored_state = _normalize_eligibility_state(stored["eligibility_state"])
+    if previous_state is not None and previous_state != stored_state:
         await _audit_eligibility_transition(
             pool,
             name=name,
             previous_state=previous_state,
-            new_state=ELIGIBILITY_ACTIVE,
-            reason=_transition_reason(previous_state, ELIGIBILITY_ACTIVE),
+            new_state=stored_state,
+            reason=_transition_reason(previous_state, stored_state),
             previous_last_seen_at=previous_last_seen_at,
-            new_last_seen_at=now,
+            new_last_seen_at=stored["last_seen_at"],
             observed_at=now,
         )
+
+
+async def register_boot(
+    pool: asyncpg.Pool,
+    name: str,
+    instance_id: uuid.UUID,
+) -> int:
+    """Commit a successor epoch through the role-bound database operation."""
+    return int(
+        await pool.fetchval(
+            "SELECT public.register_butler_boot($1, $2)",
+            name,
+            instance_id,
+        )
+    )
+
+
+async def reserve_probe(pool: asyncpg.Pool, name: str) -> tuple[int, int] | None:
+    """Reserve one database-owned sequence for a receiver observation."""
+    row = await pool.fetchrow(
+        "SELECT boot_epoch, probe_sequence FROM public.reserve_butler_probe($1)",
+        name,
+    )
+    if row is None:
+        return None
+    return int(row["boot_epoch"]), int(row["probe_sequence"])
+
+
+async def record_probe(
+    pool: asyncpg.Pool,
+    name: str,
+    *,
+    boot_epoch: int,
+    probe_sequence: int,
+    healthy: bool,
+    compatible: bool | None,
+    accepting: bool | None,
+    failure_class: str | None = None,
+) -> bool:
+    """Record a fenced attempt without accepting caller-authored timestamps."""
+    return bool(
+        await pool.fetchval(
+            "SELECT public.record_butler_probe($1, $2, $3, $4, $5, $6, $7)",
+            name,
+            boot_epoch,
+            probe_sequence,
+            healthy,
+            compatible,
+            accepting,
+            failure_class,
+        )
+    )
+
+
+async def set_operator_policy(pool: asyncpg.Pool, name: str, policy: str) -> str:
+    """Set server-attributed policy and return the legacy eligibility projection."""
+    return str(
+        await pool.fetchval(
+            "SELECT public.set_butler_registry_policy($1, $2)",
+            name,
+            policy,
+        )
+    )
+
+
+async def get_control_plane_state(pool: asyncpg.Pool, name: str) -> dict[str, Any] | None:
+    """Read separated facts alongside the unchanged legacy route projection."""
+    row = await pool.fetchrow(
+        """
+        SELECT c.*, r.eligibility_state AS legacy_eligibility_state
+        FROM switchboard.butler_registry_control_plane AS c
+        JOIN switchboard.butler_registry AS r USING (name)
+        WHERE c.name = $1
+        """,
+        name,
+    )
+    return dict(row) if row is not None else None
 
 
 async def resolve_routing_target(
@@ -591,3 +876,42 @@ async def discover_butlers(
             except Exception:
                 logger.exception("Failed to discover butler in %s", config_dir)
     return discovered
+
+
+async def seed_missing_roster_butlers(pool: asyncpg.Pool, butlers_dir: Path) -> int:
+    """Insert only absent Git-roster identities before L2 boot registration.
+
+    Existing legacy rows, policy projections, and boot epochs are never updated
+    here.  A concurrent daemon registration can safely retry after this INSERT
+    commits; sw_035's insert trigger creates its unknown control-plane row.
+    """
+    from butlers.config import load_config
+
+    inserted = 0
+    for config_dir in sorted(Path(butlers_dir).iterdir()):
+        if not (config_dir / "butler.toml").is_file():
+            continue
+        config = load_config(config_dir)
+        modules = sorted(config.modules)
+        capabilities = sorted(set(modules) | {"trigger"})
+        status = await pool.execute(
+            """
+            INSERT INTO switchboard.butler_registry (
+                name, endpoint_url, description, modules, capabilities,
+                liveness_ttl_seconds, route_contract_min, route_contract_max,
+                agent_type
+            ) VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9)
+            ON CONFLICT (name) DO NOTHING
+            """,
+            config.name,
+            runtime_mcp_url(config.port),
+            config.description,
+            modules,
+            capabilities,
+            config.runtime_seed.liveness_ttl_seconds,
+            config.runtime_seed.route_contract_min,
+            config.runtime_seed.route_contract_max,
+            config.type.value,
+        )
+        inserted += int(status.endswith(" 1"))
+    return inserted

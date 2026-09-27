@@ -26,8 +26,7 @@ The `public.ingestion_events` table is the canonical first-class record of every
 
 ### Requirement: Ingestion Event Query by ID
 
-The implementation SHALL provide the behavior described by this requirement.
-Fetch a single ingestion event record by its UUID7 primary key.
+`ingestion_event_get()` SHALL fetch a single ingestion event record by its UUID7 primary key.
 
 #### Scenario: Successful lookup
 - **WHEN** `ingestion_event_get(pool, event_id)` is called with a valid UUID7
@@ -39,8 +38,7 @@ Fetch a single ingestion event record by its UUID7 primary key.
 
 ### Requirement: Ingestion Event List (Paginated)
 
-The implementation SHALL provide the behavior described by this requirement.
-Return a unified stream of all ingestion events (ingested, filtered, errored) ordered by `received_at DESC, id DESC` using keyset (cursor) pagination, with optional filtering. The function returns a dict with `items`, `next_cursor` (opaque, or null on the last page), and `has_more`. There is no `offset` or `total`. A `sort="cost"` mode orders by `cost_usd DESC NULLS LAST` and pages via an opaque offset-encoding cursor.
+The function SHALL return a unified stream of all ingestion events (ingested, filtered, errored) ordered by `received_at DESC, id DESC` using keyset (cursor) pagination, with optional filtering. The function returns a dict with `items`, `next_cursor` (opaque, or null on the last page), and `has_more`. There is no `offset` or `total`. A `sort="cost"` mode orders by `cost_usd DESC NULLS LAST` and pages via an opaque offset-encoding cursor.
 
 #### Scenario: Paginated list
 - **WHEN** `ingestion_events_list(pool, limit=20, cursor=None)` is called
@@ -67,8 +65,7 @@ Return a unified stream of all ingestion events (ingested, filtered, errored) or
 
 ### Requirement: Session Lineage Query
 
-The implementation SHALL provide the behavior described by this requirement.
-Return all sessions spawned from a given `request_id`, joined across all butler schemas. Works for both connector-sourced events (via `ingestion_event_id` FK) and internally-minted request IDs (via direct `request_id` match).
+The function SHALL return all sessions spawned from a given `request_id`, joined across all butler schemas. Works for both connector-sourced events (via `ingestion_event_id` FK) and internally-minted request IDs (via direct `request_id` match).
 
 #### Scenario: Lineage for a connector-sourced event
 - **WHEN** `ingestion_event_sessions(db, request_id, pricing=None)` is called (where `db` is a DatabaseManager that fans out across all butler schemas) with a UUID7 that has a corresponding `public.ingestion_events` row
@@ -81,8 +78,7 @@ Return all sessions spawned from a given `request_id`, joined across all butler 
 
 ### Requirement: Dashboard Channel as Valid Ingestion Source
 
-The implementation SHALL provide the behavior described by this requirement.
-The `public.ingestion_events` table accepts events with `source_channel = "dashboard"`. Dashboard-originated events follow the same deduplication, request-context, and lineage semantics as connector-originated events without becoming connector provenance or acquiring connector-specific filtered-event/status semantics.
+The `public.ingestion_events` table SHALL accept events with `source_channel = "dashboard"`. Dashboard-originated events follow the same deduplication, request-context, and lineage semantics as connector-originated events without becoming connector provenance or acquiring connector-specific filtered-event/status semantics.
 
 #### Scenario: Dashboard ingestion event recorded
 - **WHEN** a dashboard conversation message is ingested by the Switchboard
@@ -104,13 +100,80 @@ The `public.ingestion_events` table accepts events with `source_channel = "dashb
 
 ### Requirement: Token and Cost Rollup per Request ID
 The system MUST aggregate token usage and cost across all sessions attributed
-to a single `request_id`.
+to a single `request_id` while distinguishing missing model pricing from an
+absence of runtime usage.
 
 #### Scenario: Rollup for a request ID
 - **WHEN** `ingestion_event_rollup(request_id, sessions, pricing=None)` is called (synchronous; it aggregates the session list returned by `ingestion_event_sessions`, it does not query the database itself)
-- **THEN** the result includes `total_sessions`, `total_input_tokens`, `total_output_tokens`, nullable `total_cost`, `unpriced_session_count`, and a `by_butler` breakdown with per-butler token totals, nullable known-cost subtotal, and unpriced-session count.
+- **THEN** the result includes `total_sessions`, `total_input_tokens`, `total_output_tokens`, nullable `total_cost`, `unpriced_session_count`, `no_usage_session_count`, and a `by_butler` breakdown with per-butler token totals, nullable known-cost subtotal, and unpriced-session count.
+- **AND** `unpriced_session_count` counts only sessions with usage whose model cost cannot be resolved, while `no_usage_session_count` counts sessions with neither usage nor a known stored cost.
 - **AND** an all-unpriced group returns `total_cost: null` and a positive `unpriced_session_count`; a mixed group returns its known-priced subtotal with a positive count; an explicitly declared known zero returns `0.0` with a zero count.
 - **AND** `GET /api/ingestion/events/{request_id}/rollup`, `GET /api/ingestion/events` list enrichment, and `GET /api/ingestion/rollup` expose the same coverage state through their API models and frontend types.
 - **AND** list enrichment uses the available session lineage as its cost evidence rather than retaining a denormalized compatibility zero when that lineage is unpriced or partial.
 - **AND** lazy write-back to `public.ingestion_events.cost_usd` occurs only when at least one session exists, every session has a known price, and the known subtotal is non-null; an explicitly known `0.0` MUST still be persisted.
 - **AND** the rollup covers all sessions with `request_id` equal to the given value regardless of whether an `ingestion_events` row exists.
+
+### Requirement: Indexed Filtered Event Identity Reads
+
+Filtered-event detail and replay-policy reads SHALL have an ID-leading index
+on every partition, including newly created partitions. Index installation
+SHALL preserve event data and permit ingestion writes during leaf-index builds.
+
+#### Scenario: Identity lookup across retained partitions
+
+- **WHEN** a detail or replay-policy read selects events by ID without a date
+- **THEN** PostgreSQL can use an ID-leading index on each retained partition
+- **AND** replay eligibility still comes from the authoritative connector policy
+
+#### Scenario: Interrupted index installation is retryable
+
+- **WHEN** installation is retried after an interrupted concurrent leaf build
+- **THEN** the migration repairs the incomplete leaf index and attaches it
+- **AND** a subsequent per-schema migration run preserves completed indexes
+- **AND** future partitions inherit the same ID lookup index
+
+### Requirement: Complete Window Rollup Evidence
+
+Window rollups SHALL aggregate all sessions belonging to the matching events
+through their owning database pools. The matching event set SHALL remain in
+PostgreSQL instead of being truncated to an application-side ID sample. An
+unavailable event or session source SHALL produce an unavailable response,
+not a fabricated zero or an unlabelled partial total.
+
+#### Scenario: A window contains more than ten thousand events
+
+- **WHEN** a matching window exceeds ten thousand events
+- **THEN** the session and cost aggregates include matches beyond that threshold
+- **AND** channel, status, search and trace filters apply to the complete aggregate
+- **AND** priced, unpriced and no-usage evidence retain their existing meanings
+
+#### Scenario: An aggregate source fails
+
+- **WHEN** an event count or any owning session aggregate cannot be read
+- **THEN** the window-rollup endpoint returns HTTP 503
+- **AND** it does not publish incomplete numeric totals as a successful response
+
+### Requirement: Session Cost Evidence
+List and detail session projections SHALL expose cost evidence without exposing
+raw runtime failures.
+
+#### Scenario: Failed session produces no usage
+- **WHEN** a failed session has no token buckets and no known stored cost
+- **THEN** its `cost_evidence` is `no_usage`
+- **AND** the raw persisted error text is not returned by the ingestion API
+
+#### Scenario: Session has usage but no price
+- **WHEN** a session has one or more token buckets but its model cannot be
+  resolved to a cost
+- **THEN** its `cost_evidence` is `unpriced`
+- **AND** it contributes to `unpriced_session_count`, not
+  `no_usage_session_count`
+
+### Requirement: Replay Policy Evidence on Timeline Rows
+Every ingestion list row SHALL include server-derived replay-policy evidence.
+
+#### Scenario: Unknown policy is fail-closed in a list response
+- **WHEN** source or registry data cannot resolve a row's replay policy
+- **THEN** the row reports a non-actionable replay policy with a
+  non-sensitive reason
+- **AND** clients MUST NOT assume the row is replay-safe from missing data

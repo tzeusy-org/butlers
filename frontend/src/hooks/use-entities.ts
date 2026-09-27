@@ -8,7 +8,7 @@
  */
 
 import { useEffect, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   addEntityContact,
@@ -21,6 +21,7 @@ import {
   updateEntityContact,
   dismissRelationshipEntityQueueItem,
   forgetRelationshipEntity,
+  getEntityActivity,
   getEntityActivityBins,
   getEntityConcentration,
   getEntityCoreDates,
@@ -29,15 +30,14 @@ import {
   createEntityGift,
   createEntityInteraction,
   createEntityNote,
-  createEntityReachOutDraft,
   getEntityGifts,
   getEntityLinkedContacts,
   getEntityLoans,
-  getEntityReachOutDrafts,
   getEntityMessageThreads,
   getEntityNeighbours,
   getPlexHalo,
   getEntityTimeline,
+  getEntityCadence,
   getRelationshipEntityQueue,
   listRelationshipEntities,
   markEntityView,
@@ -55,7 +55,6 @@ import type {
   CreateEntityGiftRequest,
   CreateEntityInteractionRequest,
   CreateEntityNoteRequest,
-  CreateEntityReachOutDraftRequest,
   DismissEntityPairRequest,
   UpdateEntityContactRequest,
   EntityFactsParams,
@@ -78,6 +77,11 @@ import {
   snapshotAndUpdateQueries,
   useOptimisticMutation,
 } from "@/hooks/use-optimistic-mutation";
+import {
+  entityActivityInvalidationKeys,
+  invalidateEntityActivityFamily,
+} from "@/hooks/entity-activity-cache";
+import { entityActivityPagesDrifted } from "@/lib/entity-activity-pages";
 
 /** Fetch all contacts linked to a relationship entity. */
 export function useEntityLinkedContacts(entityId: string | undefined) {
@@ -97,15 +101,6 @@ export function useEntityGifts(entityId: string | undefined) {
   });
 }
 
-/** Fetch reach-out drafts for a relationship entity (drafted, never sent). */
-export function useEntityReachOutDrafts(entityId: string | undefined) {
-  return useQuery({
-    queryKey: ["entity-reach-out-drafts", entityId],
-    queryFn: () => getEntityReachOutDrafts(entityId!),
-    enabled: !!entityId,
-  });
-}
-
 /** Fetch loans tab data for a relationship entity. */
 export function useEntityLoans(entityId: string | undefined) {
   return useQuery({
@@ -121,6 +116,41 @@ export function useEntityTimeline(entityId: string | undefined) {
     queryKey: ["entity-timeline", entityId],
     queryFn: () => getEntityTimeline(entityId!),
     enabled: !!entityId,
+  });
+}
+
+/** Fetch the canonical merged entity activity stream with cancellable pagination. */
+export function useEntityActivity(
+  entityId: string | undefined,
+  params?: { limit?: number },
+) {
+  const limit = params?.limit ?? 50;
+  return useInfiniteQuery({
+    queryKey: ["entity-activity", entityId, limit],
+    queryFn: ({ pageParam, signal }) =>
+      getEntityActivity(entityId!, { limit, offset: pageParam as number, signal }),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, allPages) => {
+      if (entityActivityPagesDrifted(allPages)) return undefined;
+      const nextOffset = lastPage.offset + lastPage.items.length;
+      return lastPage.items.length > 0 && nextOffset < lastPage.total ? nextOffset : undefined;
+    },
+    enabled: !!entityId,
+  });
+}
+
+/** Fetch cadence evidence scoped to the exact window represented by the tile label. */
+export const ENTITY_CADENCE_REFRESH_MS = 30_000;
+export const ENTITY_CADENCE_MAX_AGE_MS = 90_000;
+
+export function useEntityCadence(entityId: string | undefined, windowDays: number) {
+  return useQuery({
+    queryKey: ["entity-cadence", entityId, windowDays],
+    queryFn: () => getEntityCadence(entityId!, windowDays),
+    enabled: !!entityId,
+    refetchInterval: ENTITY_CADENCE_REFRESH_MS,
+    refetchIntervalInBackground: true,
+    refetchOnWindowFocus: "always",
   });
 }
 
@@ -628,6 +658,7 @@ export function useForgetRelationshipEntity() {
       // The entity DETAIL page reads ["memory-entity", id] (use-memory.ts useEntity),
       // so invalidate that too or the detail view shows stale post-forget data.
       void queryClient.invalidateQueries({ queryKey: ["memory-entity", entityId] });
+      invalidateEntityActivityFamily(queryClient, entityId);
     },
   });
 }
@@ -668,6 +699,8 @@ export function useMergeRelationshipEntities() {
       // tombstoned source detail route should reflect the merge too).
       void queryClient.invalidateQueries({ queryKey: ["memory-entity", request.entityA] });
       void queryClient.invalidateQueries({ queryKey: ["memory-entity", request.entityB] });
+      invalidateEntityActivityFamily(queryClient, request.entityA);
+      invalidateEntityActivityFamily(queryClient, request.entityB);
     },
   });
 }
@@ -721,6 +754,7 @@ export function useUpdateEntityDunbarTier() {
     onSuccess: (_, { entityId }) => {
       void queryClient.invalidateQueries({ queryKey: ["memory-entity", entityId] });
       void queryClient.invalidateQueries({ queryKey: ["dunbar-ranking"] });
+      invalidateEntityActivityFamily(queryClient, entityId);
     },
   });
 }
@@ -751,6 +785,7 @@ export function useAddEntityContact() {
       void queryClient.invalidateQueries({ queryKey: ["entity-linked-contacts", entityId] });
       void queryClient.invalidateQueries({ queryKey: ["entity-facts", entityId] });
       void queryClient.invalidateQueries({ queryKey: ["relationship-entities"] });
+      invalidateEntityActivityFamily(queryClient, entityId);
     },
   });
 }
@@ -780,6 +815,7 @@ export function useDeleteEntityContact() {
       void queryClient.invalidateQueries({ queryKey: ["entity-linked-contacts", entityId] });
       void queryClient.invalidateQueries({ queryKey: ["entity-facts", entityId] });
       void queryClient.invalidateQueries({ queryKey: ["relationship-entities"] });
+      invalidateEntityActivityFamily(queryClient, entityId);
     },
   });
 }
@@ -854,6 +890,7 @@ export function useUpdateEntityContact() {
       void queryClient.invalidateQueries({ queryKey: ["entity-linked-contacts", entityId] });
       void queryClient.invalidateQueries({ queryKey: ["entity-facts", entityId] });
       void queryClient.invalidateQueries({ queryKey: ["relationship-entities"] });
+      invalidateEntityActivityFamily(queryClient, entityId);
     },
   });
 }
@@ -902,6 +939,7 @@ export function useSetPreferredChannel() {
     invalidateQueryKeys: ({ entityId }) => [
       ["entity-linked-contacts", entityId],
       ["entity-facts", entityId],
+      ...entityActivityInvalidationKeys(entityId),
     ],
   });
 }
@@ -941,15 +979,18 @@ export function useClearPreferredChannel() {
     invalidateQueryKeys: ({ entityId }) => [
       ["entity-linked-contacts", entityId],
       ["entity-facts", entityId],
+      ...entityActivityInvalidationKeys(entityId),
     ],
   });
 }
 
 // ---------------------------------------------------------------------------
-// Entity tab write mutations — the log-interaction, gift-idea, and
-// draft-reach-out operator verbs (bu-6t8ix.4)
+// Entity tab write mutations — the log-interaction and gift-idea operator
+// verbs (bu-6t8ix.4). A third verb, draft-reach-out
+// (useCreateEntityReachOutDraft), shipped alongside these and was retired in
+// bu-2jtfw.11, replaced by the prepared-action mechanism.
 //
-// All four are HONEST-PENDING, not optimistic: each writes a real fact into
+// Both are HONEST-PENDING, not optimistic: each writes a real fact into
 // the relationship butler's store, so the affordance stays in its pending
 // state until the server confirms rather than pretending the record exists.
 // Each invalidates the unified timeline, which is what actually renders these
@@ -963,6 +1004,7 @@ export function useCreateEntityNote() {
     mutationFn: ({ entityId, request }: { entityId: string; request: CreateEntityNoteRequest }) =>
       createEntityNote(entityId, request),
     onSuccess: (_, { entityId }) => {
+      invalidateEntityActivityFamily(queryClient, entityId);
       void queryClient.invalidateQueries({ queryKey: ["entity-timeline", entityId] });
     },
   });
@@ -986,8 +1028,9 @@ export function useCreateEntityInteraction() {
       request: CreateEntityInteractionRequest;
     }) => createEntityInteraction(entityId, request),
     onSuccess: (_, { entityId }) => {
+      invalidateEntityActivityFamily(queryClient, entityId);
       void queryClient.invalidateQueries({ queryKey: ["entity-timeline", entityId] });
-      void queryClient.invalidateQueries({ queryKey: ["entity-activity-bins", entityId] });
+      void queryClient.invalidateQueries({ queryKey: ["entity-cadence", entityId] });
       void queryClient.invalidateQueries({ queryKey: ["entity-message-threads", entityId] });
     },
   });
@@ -1001,30 +1044,8 @@ export function useCreateEntityGift() {
       createEntityGift(entityId, request),
     onSuccess: (_, { entityId }) => {
       void queryClient.invalidateQueries({ queryKey: ["entity-gifts", entityId] });
+      invalidateEntityActivityFamily(queryClient, entityId);
       void queryClient.invalidateQueries({ queryKey: ["entity-timeline", entityId] });
-    },
-  });
-}
-
-/**
- * Draft a reach-out message for an entity.
- *
- * Drafts only: nothing is sent, so no message-thread or interaction query is
- * invalidated here. A draft becomes a real touch only if the owner separately
- * sends it and logs that.
- */
-export function useCreateEntityReachOutDraft() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({
-      entityId,
-      request,
-    }: {
-      entityId: string;
-      request: CreateEntityReachOutDraftRequest;
-    }) => createEntityReachOutDraft(entityId, request),
-    onSuccess: (_, { entityId }) => {
-      void queryClient.invalidateQueries({ queryKey: ["entity-reach-out-drafts", entityId] });
     },
   });
 }

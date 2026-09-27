@@ -5,7 +5,9 @@ the human-in-the-loop approvals queue: listing approval actions, viewing action
 detail, deciding actions (approve/deny/defer), managing notification policy
 (quiet hours), streaming lifecycle events, and surfacing autonomy promotion/
 demotion suggestions.
+
 ## Requirements
+
 ### Requirement: Approvals action list API
 
 The dashboard API SHALL expose `GET /api/approvals/actions` which returns a paginated list of approval actions.
@@ -248,14 +250,18 @@ An approval whose backend `status` is `"approved"` (approved but not yet dispatc
 
 ### Requirement: Approvals Flat List API
 
-The dashboard SHALL expose `GET /api/approvals?state=waiting|decided|all|stalled` as a flat-list view complementing the existing `GET /api/approvals/actions` paginated list.
+The dashboard SHALL expose `GET /api/approvals?state=waiting|decided|all|stalled`
+as a flat-list view complementing the existing `GET /api/approvals/actions`
+paginated list.
 
 #### Scenario: Filter by state
 
 - **WHEN** `GET /api/approvals?state=waiting` is called
-- **THEN** the response is `ApiResponse[ApprovalSummary[]]` containing only actions in `pending` state, ordered `created_at DESC`.
+- **THEN** the response is `ApiResponse[ApprovalSummary[]]` containing only
+  actions in `pending` state, ordered `created_at DESC`.
 - **WHEN** `GET /api/approvals?state=decided` is called
-- **THEN** the response contains actions in `approved | rejected | expired | executed | abandoned` states.
+- **THEN** the response contains actions in `approved | rejected | expired |
+  executed | abandoned` states.
 - **WHEN** `GET /api/approvals?state=all` is called or `state` is omitted
 - **THEN** all states are included.
 
@@ -273,6 +279,41 @@ actions across the endpoint's eligible approval-source population. The list
 filter and the aggregate SHALL use the same per-pool eligibility and exact
 stalled predicate.
 
+#### Scenario: Stalled filter selects only approved actions without execution
+
+- **WHEN** `GET /api/approvals?state=stalled` reads a population containing
+  approved actions with null and non-null execution results plus other statuses
+- **THEN** it returns only actions whose status is `approved` and whose
+  `execution_result` is null
+- **AND** it does not return an `executed`, `pending`, `rejected`, `expired`,
+  `abandoned`, or approved action with a non-null execution result.
+
+#### Scenario: History retry uses the durable eligibility predicate
+
+- **WHEN** the bounded history response includes approved actions with null and
+  non-null execution results
+- **THEN** each `ApprovalSummary` includes its nullable, redacted
+  `execution_result`
+- **AND** the dashboard renders Retry only for actions whose status is
+  `approved` and whose `execution_result` is null.
+
+#### Scenario: Stalled metadata is independent of the page window
+
+- **WHEN** `GET /api/approvals?state=decided&limit=30` returns a bounded
+  history page while more than 30 older/newer rows exist
+- **THEN** `meta.stalled_count` equals the count of every eligible stalled
+  approval, not the count of rows on that page
+- **AND** the same count is returned for `state=waiting`, `state=decided`,
+  `state=all`, and `state=stalled` requests over the same healthy population.
+
+#### Scenario: Degraded approval sources cannot imply an all-clear
+
+- **WHEN** any eligible approval source cannot supply its list or stalled
+  aggregate contribution
+- **THEN** the flat response identifies that source in `meta.sources_degraded`
+- **AND** any returned `meta.stalled_count` is treated as observed partial
+  coverage rather than proof that no stalled approvals exist.
+
 #### Scenario: Dashboard abandons an eligible stalled action
 
 - **WHEN** `POST /api/approvals/{id}/abandon` receives a non-blank reason from
@@ -284,41 +325,6 @@ stalled predicate.
 - **WHEN** a callback, MCP, automatic, bulk, or scheduled path attempts the
   same operation
 - **THEN** that path does not expose or invoke abandonment.
-
-#### Scenario: Stalled filter selects only approved actions without execution
-
-- **WHEN** `GET /api/approvals?state=stalled` reads a population containing
-  approved actions with null and non-null execution results plus other statuses
-- **THEN** it returns only actions whose status is `approved` and whose
-  `execution_result` is null
-- **AND** it does not return an `executed`, `pending`, `rejected`, `expired`,
-  `abandoned`, or approved action with a non-null execution result
-
-#### Scenario: History retry uses the durable eligibility predicate
-
-- **WHEN** the bounded history response includes approved actions with null and
-  non-null execution results
-- **THEN** each `ApprovalSummary` includes its nullable, redacted
-  `execution_result`
-- **AND** the dashboard renders Retry only for actions whose status is
-  `approved` and whose `execution_result` is null
-
-#### Scenario: Stalled metadata is independent of the page window
-
-- **WHEN** `GET /api/approvals?state=decided&limit=30` returns a bounded
-  history page while more than 30 older/newer rows exist
-- **THEN** `meta.stalled_count` equals the count of every eligible stalled
-  approval, not the count of rows on that page
-- **AND** the same count is returned for `state=waiting`, `state=decided`,
-  `state=all`, and `state=stalled` requests over the same healthy population
-
-#### Scenario: Degraded approval sources cannot imply an all-clear
-
-- **WHEN** any eligible approval source cannot supply its list or stalled
-  aggregate contribution
-- **THEN** the flat response identifies that source in `meta.sources_degraded`
-- **AND** any returned `meta.stalled_count` is treated as observed partial
-  coverage rather than proof that no stalled approvals exist
 
 ### Requirement: Trust Console verdict uses stalled radar metadata
 
@@ -346,38 +352,78 @@ as a calm all-clear.
 
 ### Requirement: Approval Detail API
 
-The dashboard SHALL expose `GET /api/approvals/{id}` returning the full dossier for one approval.
+The dashboard SHALL expose `GET /api/approvals/{id}` returning the full dossier
+for one approval.
 
 #### Scenario: Detail response shape
 
 - **WHEN** `GET /api/approvals/{id}` is called
-- **THEN** the response is `ApiResponse[ApprovalDetail]` with fields `id`, `title`, `butler`, `created_at` (alias `ts`), `expires_at` (alias `expires`), `why` (string | null — serif paragraph), `evidence` (string[] | null — mono lines), `proposed_action` (object describing the tool call being approved), `session_id` (string | null — the originating session/trace, when known).
-- **AND** when `why` or `evidence` is null (legacy row), the UI renders a serif-italic empty state for the missing section.
-- **AND** when `session_id` is present, the dossier header links to `/sessions/{session_id}` so the owner can inspect the originating session/trace before deciding.
+- **THEN** the response is `ApiResponse[ApprovalDetail]` with fields `id`,
+  `title`, `butler`, `status`, `created_at` (alias `ts`), `expires_at` (alias
+  `expires`), `why` (string | null — serif paragraph), `evidence` (string[] |
+  null — mono lines), `proposed_action` (object describing the tool call being
+  approved), `session_id` (string | null — the originating session/trace, when
+  known), `decided_by` (string | null), `decided_at` (timestamp | null),
+  `denial_reason` (string | null), and `execution_result` (object | null).
+- **AND** when `why` or `evidence` is null (legacy row), the UI renders a
+  serif-italic empty state for the missing section.
+- **AND** when `session_id` is present, the dossier header links to
+  `/sessions/{session_id}` so the owner can inspect the originating
+  session/trace before deciding.
 
 ### Requirement: Approval Verbs
 
-The dashboard SHALL expose explicit verb endpoints for approve, deny, and defer.
+The dashboard SHALL expose explicit verb endpoints for approve, deny, defer,
+and dashboard-only abandonment.
 
 #### Scenario: Approve with optional edits
 
 - **WHEN** `POST /api/approvals/{id}/approve {edits?: object}` is called
-- **THEN** the action is approved with any supplied `edits` applied to its arguments
-- **AND** `audit.append("approval.approve", target=action_id, note=json.dumps(edits))` is invoked
-- **AND** the underlying tool is executed via the shared executor (existing module-approvals behavior).
+- **THEN** the action is approved with any supplied `edits` applied to its
+  arguments
+- **AND** `audit.append("approval.approve", target=action_id,
+  note=json.dumps(edits))` is invoked
+- **AND** the underlying tool is executed via the shared executor (existing
+  module-approvals behavior).
 
 #### Scenario: Deny with reason
 
 - **WHEN** `POST /api/approvals/{id}/deny {reason?: str}` is called
 - **THEN** the action transitions to `rejected`
-- **AND** `audit.append("approval.deny", target=action_id, note=reason)` is invoked.
+- **AND** `audit.append("approval.deny", target=action_id, note=reason)` is
+  invoked.
 
 #### Scenario: Defer with bounded hours
 
 - **WHEN** `POST /api/approvals/{id}/defer {hours: int}` is called
 - **THEN** the call is rejected with `422` unless `1 ≤ hours ≤ 168`
-- **AND** on success, the action's `expires_at` is extended by `hours` and the notification re-presentation timer is reset to `now + hours`
-- **AND** `audit.append("approval.defer", target=action_id, note=str(hours))` is invoked.
+- **AND** on success, the action's `expires_at` is extended by `hours` and the
+  notification re-presentation timer is reset to `now + hours`
+- **AND** `audit.append("approval.defer", target=action_id, note=str(hours))`
+  is invoked.
+
+#### Scenario: Dashboard abandons an eligible stalled action
+
+- **WHEN** `POST /api/approvals/{id}/abandon {reason: string}` is called by an
+  authenticated dashboard actor for an action whose status is `approved` and
+  execution result is null
+- **THEN** the action transitions to `abandoned` with an immutable
+  `action_abandoned` event carrying the actor and non-blank reason
+- **AND** the response reports the terminal status
+- **AND** the action is absent from stalled results and has no Retry affordance.
+
+#### Scenario: Dashboard rejects invalid abandonment without mutation
+
+- **WHEN** the abandon endpoint receives a blank reason or an action outside
+  the exact approved/null-execution predicate
+- **THEN** it returns a validation or transition error without writing an event
+  or changing the action.
+
+#### Scenario: Abandonment has no alternate invocation path
+
+- **WHEN** an approval is surfaced through an MCP tool, Telegram callback,
+  automatic workflow, scheduled cleanup, or bulk operation
+- **THEN** that path does not expose or invoke abandonment.
 
 ### Requirement: Post-Approval Teaching Digest
 
@@ -409,8 +455,9 @@ After a successful approval, `/approvals` SHALL offer a short, inline opportunit
 ### Requirement: Owner Attention Policy
 
 The dashboard SHALL expose the stable `GET/PUT /api/approvals/policy` endpoint
-to manage the global Owner Attention Policy. The policy controls routine owner
-attention suppression; it does not configure per-butler `delivery_preferences`.
+to manage the global Owner Attention Policy. The policy controls routine
+owner-attention suppression; it does not configure per-butler
+`delivery_preferences`.
 
 #### Scenario: Read policy
 
@@ -419,25 +466,26 @@ attention suppression; it does not configure per-butler `delivery_preferences`.
   `quiet_start_hour: int` (0–23), `quiet_end_hour: int` (0–23), and
   `timezone: str` (IANA)
 - **AND** its semantics are an end-exclusive
-  `[quiet_start_hour, quiet_end_hour)` Owner Attention Policy interval.
+  `[quiet_start_hour, quiet_end_hour)` Owner Attention Policy interval
 
 #### Scenario: Update complete policy
 
 - **WHEN** `PUT /api/approvals/policy` is called with both hour fields in
   0–23 and a recognized IANA timezone
-- **THEN** the singleton row is updated and `audit.append("approvals.policy")` is invoked.
+- **THEN** the singleton row is updated and `audit.append("approvals.policy")`
+  is invoked
 
 #### Scenario: Reject incomplete or invalid policy
 
 - **WHEN** `PUT /api/approvals/policy` supplies only one quiet hour or an
   unrecognized IANA timezone
-- **THEN** validation rejects the request without mutating the singleton row.
+- **THEN** validation rejects the request without mutating the singleton row
 
 #### Scenario: Quiet hours defer a routine owner-default notification
 
 - **WHEN** the notification dispatcher handles a routine implicit-owner `send`
   or `insight` call with priority other than `high`
-- **AND** the current local hour is within the end-exclusive policy interval
+- **AND** the current local time is within the end-exclusive policy interval
 - **THEN** it parks the full envelope in the originating schema's
   `deferred_notifications` table for the exact configured quiet end
 - **AND** it returns the established `deferred` result rather than silently
@@ -455,14 +503,12 @@ attention suppression; it does not configure per-butler `delivery_preferences`.
 
 ### Requirement: Approvals Live Stream
 
-The dashboard SHALL fan approval lifecycle events onto the unified fleet event bus (`WS /api/events/stream`) (the earlier dedicated `WS /api/approvals/stream` route was retired in bu-01r64.2 once the bus fully covered this traffic).
+The dashboard SHALL fan approval lifecycle events onto the unified fleet event bus (`WS /api/events/stream`). There is no dedicated approvals stream route.
 
 #### Scenario: Stream event shape
 
 - **WHEN** an approval transitions state
 - **THEN** an event `{type: "approval", data: {kind: "created"|"approved"|"rejected"|"deferred"|"executed"|"expired"|"abandoned", approval_id, ...}}` is broadcast on `WS /api/events/stream`.
-
----
 
 ### Requirement: Promotion Suggestions API Endpoint
 
@@ -589,79 +635,25 @@ The approvals dashboard page at `/approvals` SHALL include an "Autonomy Suggesti
 
 ### Requirement: Rule Promotion Suggestions API Endpoint
 
-The dashboard API SHALL expose `GET /api/switchboard/rule-promotion-suggestions`, returning a paginated list of switchboard ingestion-rule promotion and demotion suggestions. This is a distinct endpoint namespace from `GET /api/approvals/suggestions` (autonomy tool-call suggestions) — the two suggestion families track different underlying tables (`switchboard.rule_promotion_suggestions` vs `autonomy_suggestions`) and are not merged into one response shape, though both render through the dashboard's approvals-surface visual language.
+The dashboard API SHALL expose `GET /api/switchboard/rule-promotion-suggestions`, taking no query parameters and returning `ApiResponse[RulePromotionSurface]` with two sections, `pending` and `auto_applied`, drawn from `switchboard.rule_promotion_suggestions`. This is a distinct endpoint namespace from `GET /api/approvals/suggestions` (autonomy tool-call suggestions) — the two suggestion families track different underlying tables and are not merged into one response shape, though both render through the dashboard's approvals-surface visual language.
 
-The endpoint SHALL accept query parameters `status` (default `pending_review`), `is_clearly_automated` (optional boolean filter), `limit` (default 20), `offset` (default 0).
+- `pending` holds `pending_review` promotion suggestions that need an owner decision: every `route_to:<butler>` suggestion and any suggestion that is not clearly automated. Clearly-automated suggestions whose action is `skip` or `metadata_only` auto-apply and never appear here. Each item carries `id`, `sender_key`, `source_channel`, `proposed_rule_type`, `proposed_condition`, `proposed_action`, `evidence_count`, `is_clearly_automated`, `first_evidence_at`, `last_evidence_at`, and `created_at`, ordered by `created_at ASC`.
+- `auto_applied` holds suggestions confirmed by the auto-apply actor, newest decision first and capped at 50. Each item carries `id`, `sender_key`, `source_channel`, `proposed_action`, `evidence_count`, `created_rule_id`, `rule_enabled` (the minted rule's live `enabled` state), `decided_at`, and `decided_by`.
 
-Each returned suggestion object MUST include: `id`, `sender_key`, `source_channel`, `proposed_rule_type`, `proposed_condition`, `proposed_action`, `evidence_count`, `first_evidence_at`, `last_evidence_at`, `is_clearly_automated`, `status`, `created_rule_id`, `created_at`, `decided_at`, `decided_by`.
+If either section's query fails, that section MUST be returned empty and its source name (`rule_promotion_pending` or `rule_promotion_auto_applied`) MUST be listed in `meta.sources_degraded`, so a read failure is never shown as a genuinely empty queue.
 
 #### Scenario: Fetch pending rule promotion suggestions
 
-- **WHEN** `GET /api/switchboard/rule-promotion-suggestions?status=pending_review` is called
-- **THEN** the API MUST return all pending suggestions sorted by `evidence_count DESC, last_evidence_at DESC`
-- **AND** the response status MUST be 200
+- **WHEN** `GET /api/switchboard/rule-promotion-suggestions` is called and pending suggestions exist
+- **THEN** the response status MUST be 200
+- **AND** `data.pending` MUST list them oldest first, excluding clearly-automated `skip`/`metadata_only` suggestions
+- **AND** `data.auto_applied` MUST list auto-applied promotions with their minted rule's `rule_enabled` state
 
 #### Scenario: No pending suggestions
 
-- **WHEN** `GET /api/switchboard/rule-promotion-suggestions?status=pending_review` is called and none exist
-- **THEN** the API MUST return an empty array with response status 200
-
-### Requirement: Rule Promotion Suggestion Confirm/Bulk-Confirm/Dismiss Endpoints
-
-The dashboard API SHALL expose:
-- `POST /api/switchboard/rule-promotion-suggestions/{id}/confirm` — confirms a single suggestion, creating the corresponding `ingestion_rules` row.
-- `POST /api/switchboard/rule-promotion-suggestions/bulk-confirm` — accepts a list of suggestion ids and confirms each independently, reporting per-id success/failure rather than failing the whole batch on one error. Intended for the batched automated-sender confirm affordance; the API MUST NOT skip the confirm requirement for any id in the batch (see `switchboard-rule-promotion` spec, "Owner-Confirmed Promotion").
-- `POST /api/switchboard/rule-promotion-suggestions/{id}/dismiss` — accepts an optional `{"reason": string}` body, sets `cooldown_until`, transitions to `dismissed`.
-
-All three endpoints require authenticated human actor context.
-
-#### Scenario: Confirm a single suggestion
-
-- **WHEN** `POST /api/switchboard/rule-promotion-suggestions/{id}/confirm` is called with authenticated context on a `pending_review` suggestion
-- **THEN** the response MUST include the created `rule_id`
-- **AND** the response status MUST be 200
-
-#### Scenario: Bulk-confirm reports per-item results
-
-- **WHEN** `POST /api/switchboard/rule-promotion-suggestions/bulk-confirm` is called with 5 suggestion ids, one of which is already `dismissed`
-- **THEN** the response MUST indicate 4 successful confirmations and 1 per-item failure, not a single all-or-nothing error
-- **AND** the response status MUST be 200 for the batch call itself (individual failures are reported in the body, not via HTTP status)
-
-#### Scenario: Dismiss with reason
-
-- **WHEN** `POST /api/switchboard/rule-promotion-suggestions/{id}/dismiss` is called with `{"reason": "Sender's routing target changed"}`
-- **THEN** the suggestion MUST transition to `dismissed` with the reason recorded
-
-### Requirement: Rule Promotion Suggestions Dashboard Section
-
-The approvals dashboard page SHALL include a "Rule Promotion" section, visually consistent with the existing Autonomy Suggestions section but rendering `switchboard.rule_promotion_suggestions` data, displayed when pending suggestions exist.
-
-`route_to` suggestions MUST render as individual cards showing: the sender identity (`sender_key`), proposed target butler, evidence count, and first/last evidence dates, with "Confirm" and "Dismiss" actions per card.
-
-`is_clearly_automated = TRUE` suggestions with `proposed_action` in (`skip`, `metadata_only`) MUST render grouped, with a single "Confirm all N" batched action calling the bulk-confirm endpoint, alongside the ability to expand and dismiss individual senders from the group before confirming the rest.
-
-Demotion suggestions (rules flagged via spot-check drift) MUST render with a warning/alert visual style distinct from promotion cards, showing the rule's current scope description and the recent spot-check disagreement rate, with "Revoke rule" and "Keep rule" actions.
-
-#### Scenario: Route-to suggestion card displayed individually
-
-- **WHEN** a pending `route_to` suggestion exists
-- **THEN** the dashboard MUST display it as its own card, not grouped with other suggestions
-
-#### Scenario: Automated senders grouped with batch confirm
-
-- **WHEN** 9 pending suggestions exist, all `is_clearly_automated=TRUE` with `proposed_action='skip'`
-- **THEN** the dashboard MUST display them grouped under a single "Confirm all 9 automated senders" action
-
-#### Scenario: Confirming from the dashboard calls the API
-
-- **WHEN** a user clicks "Confirm" on an individual rule-promotion suggestion card
-- **THEN** the dashboard MUST call `POST /api/switchboard/rule-promotion-suggestions/{id}/confirm`
-- **AND** the card MUST be removed from the section on success with a success toast naming the new rule
-
-#### Scenario: No pending suggestions hides the section
-
-- **WHEN** no pending rule-promotion or demotion suggestions exist
-- **THEN** the Rule Promotion section MUST NOT be rendered
+- **WHEN** `GET /api/switchboard/rule-promotion-suggestions` is called and no pending or auto-applied suggestions exist
+- **THEN** the API MUST return empty `pending` and `auto_applied` arrays with response status 200
+- **AND** `meta.sources_degraded` MUST NOT name either section
 
 ### Requirement: Rule Promotion Metrics Endpoint and Tile
 
@@ -690,6 +682,301 @@ The approvals dashboard SHALL render a rule-promotion metrics tile from this end
 
 - **WHEN** the metrics tile renders the sessions-avoided figure
 - **THEN** the tile MUST label it an estimate rather than an exact measured count
+
+### Requirement: Decision and execution outcome in approval dossier
+
+The dashboard SHALL render an approval's retained decision provenance and safe
+terminal outcome from the approval-detail response. It SHALL not add a durable
+copy of an audit-event rejection reason or broaden retry behavior.
+
+#### Scenario: Rejection reason comes from the latest immutable event
+
+- **WHEN** a rejected action has one or more immutable `action_rejected`
+  `approval_events` with a recorded reason
+- **THEN** the detail response includes the reason from the latest such event
+  as `denial_reason`
+- **AND** the dossier renders that recorded denial reason alongside its existing
+  `decided_by` and `decided_at` provenance.
+
+#### Scenario: Legacy or unavailable rejection event does not break detail
+
+- **WHEN** an action has no readable `action_rejected` event, including a legacy
+  row or a pool where the optional event lookup is unavailable
+- **THEN** the detail response includes `denial_reason: null`
+- **AND** the remaining dossier detail remains available without synthesizing a
+  reason from presentation text.
+
+#### Scenario: Execution outcome is redacted before presentation
+
+- **WHEN** an action has a persisted `execution_result`
+- **THEN** the detail response and dossier render only the result after the
+  established approvals redaction contract is applied
+- **AND** an execution-result `error` does not expose its raw message or any
+  secret-derived text.
+
+#### Scenario: Retry is offered only to an approved unexecuted action
+
+- **WHEN** the dossier detail reports `status = "approved"` and
+  `execution_result = null`
+- **THEN** the dossier renders its Retry dispatch control.
+
+#### Scenario: Retry is absent after an execution record or a non-approved decision
+
+- **WHEN** the dossier detail has a non-null `execution_result` or a status
+  other than `approved`
+- **THEN** the dossier does not render Retry dispatch
+- **AND** an executed failure is not made retryable by this dashboard surface.
+
+### Requirement: Retry Reports Dispatch Failure Class Truthfully
+
+Approval Retry endpoints MUST distinguish failure to reach the owning butler from a
+reachable executor or tool rejection. Neither failure class may be presented as
+successful execution, and safe actionable detail MUST be returned for a reachable
+rejection.
+
+#### Scenario: Owning butler is unreachable
+
+- **WHEN** Retry cannot establish a dispatch path to the owning butler
+- **THEN** the API returns an unavailable response identifying that no owning butler is reachable
+
+#### Scenario: Reachable executor rejects stored action
+
+- **WHEN** Retry reaches the owning butler and its executor or native handler rejects the stored action
+- **THEN** the API returns a failure response identifying an executor or tool rejection
+- **AND** the response includes bounded safe detail suitable for operator diagnosis
+- **AND** it MUST NOT claim that no butler was reachable
+
+#### Scenario: Retry execution fails
+
+- **WHEN** either Retry endpoint receives a dispatch failure
+- **THEN** the action remains `approved` with `execution_result = null`
+
+### Requirement: Approval readers preserve unavailable source evidence
+
+The `/approvals` surface SHALL distinguish a successful empty metrics,
+autonomy-suggestions, or rule-promotion response from a failed or degraded
+read. A family-specific approval metrics failure SHALL name the affected pool
+and never imply a zero-derived all-clear. A whole suggestions or promotion
+query failure SHALL render a named unavailable state with a read-only retry;
+an error after cached cards or a cached tile SHALL retain that usable evidence
+alongside the unavailable state.
+
+#### Scenario: Pending metrics are partial
+
+- **WHEN** approval metrics include non-empty
+  `meta.pending_actions_sources_degraded`
+- **THEN** `/approvals` names the unavailable pending-actions source(s) and
+  exposes a retry of the metrics read
+- **AND** it does not present the partial pending count as a complete empty or
+  all-clear result
+- **AND** the independently fetched queue remains visible according to its own
+  source health.
+
+#### Scenario: Rule metrics are partial without affecting action metrics
+
+- **WHEN** approval metrics include non-empty
+  `meta.approval_rules_sources_degraded` but no pending-actions degradation
+- **THEN** `/approvals` names the unavailable rule source(s) and exposes a
+  retry of the metrics read
+- **AND** it does not classify a partial active-rule count as a real zero
+- **AND** it does not label a healthy pending-actions result unavailable.
+
+#### Scenario: A suggestions reader fails before returning data
+
+- **WHEN** an autonomy-suggestions or rule-promotion-suggestions query fails
+  before a successful response is available
+- **THEN** its section renders a named unavailable state and a retry control
+- **AND** it does not hide the section by treating the missing response as an
+  empty suggestions list.
+
+#### Scenario: A promotion reader retains cached evidence on refresh failure
+
+- **WHEN** a rule-promotion suggestions or statistics query fails after cached
+  cards or statistics are available
+- **THEN** the cached cards or tile remain visible
+- **AND** a named unavailable state and retry control are rendered beside that
+  stale evidence
+- **AND** an existing per-block `meta.sources_degraded` note continues to hide
+  only its affected fabricated-zero block.
+
+### Requirement: URL-backed stalled approvals lane
+
+The Approvals Trust Console SHALL treat its `state` query parameter as the
+source of truth for the rail lane. The default rail SHALL read the waiting
+flat approvals state, and `/approvals?state=stalled` SHALL read the existing
+flat stalled state whose rows satisfy exactly `status = approved` and
+`execution_result = null`. The dashboard SHALL NOT persist `stalled` as an
+approval status.
+
+The lane control and its rows SHALL use native keyboard-operable elements,
+show visible focus, and expose the active lane semantically. Selecting a
+dossier from the stalled lane SHALL retain `state=stalled` in its URL.
+
+#### Scenario: Direct stalled deep link opens the stalled rail
+
+- **WHEN** the owner navigates directly to `/approvals?state=stalled`
+- **THEN** the Trust Console requests the flat approvals endpoint with
+  `state=stalled`
+- **AND** the rail labels and displays only the returned stalled rows rather
+  than the waiting queue.
+
+#### Scenario: Direct stalled dossier remains reachable beyond the rail page
+
+- **WHEN** the owner navigates to `/approvals/{id}?state=stalled` and the
+  approval is stalled but falls outside the current bounded flat-result page
+- **THEN** after the current stalled flat result settles, the Trust Console
+  verifies that id through a dedicated forced-fresh detail query that does not
+  reuse the ordinary dossier cache
+- **AND** it displays the dossier only when that current verifier response has
+  the exact requested id, `status = approved`, and an explicitly null
+  `execution_result`
+- **AND** it suppresses the dossier while verification is pending or fails,
+  and when the response is pending, has a non-null or missing execution
+  result, or names another id.
+
+#### Scenario: Empty stalled lane remains truthful
+
+- **WHEN** the settled stalled flat response has no rows and no degraded
+  sources
+- **THEN** the Trust Console reports that there are no stalled approvals
+- **AND** it does not claim that no approvals are waiting or prompt the owner
+  to select a pending approval.
+
+#### Scenario: Stalled radar has a truthful drill-down destination
+
+- **WHEN** the flat response reports one or more stalled actions in
+  `meta.stalled_count`
+- **THEN** the stalled verdict clause is a keyboard-operable link to
+  `/approvals?state=stalled`
+- **AND** it does not fabricate a link to a particular approval id from the
+  aggregate count.
+
+#### Scenario: Stalled lane does not expose pending-decision shortcuts
+
+- **WHEN** the owner is viewing the stalled lane
+- **THEN** its rail remains navigable by the existing keyboard movement
+  controls
+- **AND** it does not register approval, denial, or defer keyboard verbs for
+  the selected stalled row.
+
+### Requirement: Safe retry refreshes confirmed approval state
+
+The dashboard SHALL reuse the existing Retry dispatch action only when an
+approval has `status = approved` and an explicitly null `execution_result`.
+It SHALL NOT render Retry for an executed failure, any non-approved status, or
+an unknown/missing execution result. The Retry control SHALL remain pending
+without locally removing the row while its server request is in flight.
+
+After a successful server response, the dashboard SHALL invalidate all flat
+approval query variants, the affected approval dossier, every isolated Stalled
+direct-link verifier generation for that id, approval history, and approval
+metrics so the count, lane, history, and dossier reconcile from
+server-authoritative data. It SHALL not optimistically remove the row or
+invalidate those views when the retry request fails.
+
+#### Scenario: Retry stays bounded to an approved action without a result
+
+- **WHEN** a stalled row has `status = approved` and
+  `execution_result = null`
+- **THEN** the dashboard renders the existing Retry dispatch control
+- **AND** when the same row has a non-null or missing execution result, or a
+  different status, the dashboard renders no Retry control.
+
+#### Scenario: Confirmed retry reconciles every approval read
+
+- **WHEN** the owner activates Retry dispatch and the server returns a
+  successful response
+- **THEN** the UI reports whether dispatch ran from that response
+- **AND** it invalidates the waiting and stalled flat views, history, the
+  affected dossier, any isolated Stalled direct-link verifier for that id, and
+  metrics after that completion.
+
+#### Scenario: Failed retry leaves the server-authoritative row visible
+
+- **WHEN** the Retry dispatch request fails
+- **THEN** the dashboard reports the returned error without claiming a
+  dispatch cause
+- **AND** it does not optimistically remove the row or invalidate the
+  approval read caches.
+
+### Requirement: Unroutable command recovery
+
+The Approvals command surface SHALL expose replay-eligible dashboard dead letters whose routing attempt reached zero targets. This is an owner-visible recovery queue, not a claim that a target accepted the original message.
+
+#### Scenario: Unroutable question appears as a command row
+- **WHEN** `GET /api/approvals/unroutable` finds a replay-eligible dashboard dead letter with typed unroutable routing evidence
+- **THEN** `/approvals` SHALL render a compact `Unroutable: <question>` row
+- **AND** the row SHALL offer a Retry verb without rendering the prior outcome as routed
+
+#### Scenario: First retry queues one replay
+- **WHEN** the owner invokes `POST /api/approvals/unroutable/{id}/retry` for an eligible dead letter
+- **THEN** exactly one replay request SHALL be durably queued with lineage to the original dead letter
+- **AND** the response SHALL identify the queued replay without claiming that routing has already succeeded
+
+#### Scenario: Repeated or concurrent retry is idempotent
+- **WHEN** the retry verb is invoked again for the same dead letter while or after its replay is queued
+- **THEN** it SHALL return HTTP 409 Conflict
+- **AND** it SHALL not enqueue a second replay request
+
+#### Scenario: Unroutable recovery read is unavailable
+- **WHEN** the unroutable-command read fails
+- **THEN** the command surface SHALL show a named unavailable state
+- **AND** it SHALL not substitute an empty all-clear
+
+### Requirement: Rule Promotion Suggestion Confirm, Dismiss, and Rule-Enabled Endpoints
+
+The dashboard API SHALL expose three per-suggestion owner actions under `/api/switchboard/rule-promotion-suggestions/{id}`; there is no bulk-confirm endpoint:
+
+- `POST .../{id}/confirm` mints the `ingestion_rules` row for a `pending_review` suggestion and returns `ApiResponse[IngestionRule]`. It returns 404 when the suggestion does not exist, 409 when it is not `pending_review`, and 422 for an invalid id or a `route_to` target that is not a registered butler. Each confirm is audited as `rule_promotion_confirm`.
+- `POST .../{id}/dismiss` accepts an optional body `{reason, cooldown_days}` (`cooldown_days` defaults to 30 and MUST be non-negative), transitions the suggestion to `dismissed`, and records the reason, `cooldown_until`, and `decided_by = 'owner'`. It returns 404 when the suggestion does not exist and 409 when it is not `pending_review`.
+- `POST .../{id}/rule-enabled` accepts `{enabled}` and toggles the rule minted from that suggestion, returning `{rule_id, enabled}`. It returns 404 when the suggestion or its rule does not exist and 409 when the suggestion has no minted rule. This is the reversible control for auto-applied promotions.
+
+#### Scenario: Confirm a single suggestion
+
+- **WHEN** `POST /api/switchboard/rule-promotion-suggestions/{id}/confirm` is called on a `pending_review` suggestion
+- **THEN** the response status MUST be 200 and the body MUST carry the created ingestion rule
+- **AND** a second confirm of the same suggestion MUST return 409
+
+#### Scenario: Dismiss with reason
+
+- **WHEN** `POST /api/switchboard/rule-promotion-suggestions/{id}/dismiss` is called with `{"reason": "Sender's routing target changed"}`
+- **THEN** the suggestion MUST transition to `dismissed` with the reason and a cooldown recorded
+
+#### Scenario: Disable an auto-applied rule
+
+- **WHEN** `POST /api/switchboard/rule-promotion-suggestions/{id}/rule-enabled` is called with `{"enabled": false}` for an auto-applied suggestion
+- **THEN** the minted rule MUST be disabled and the response MUST report `{rule_id, enabled: false}`
+- **AND** calling it with `{"enabled": true}` MUST re-enable the same rule
+
+### Requirement: Rule Promotion Approvals Banner
+
+The approvals dashboard page SHALL render a rule-promotion banner, visually consistent with the Autonomy Suggestions section, fed by `GET /api/switchboard/rule-promotion-suggestions`.
+
+- Each `pending` suggestion MUST render as its own card showing the sender and proposed action, the evidence count, and "Confirm rule" and "Dismiss" actions.
+- Each `auto_applied` suggestion MUST render informationally (it needs no confirmation) with its evidence count marked as clearly automated and a reversible "Disable rule" / "Re-enable rule" control backed by the rule-enabled endpoint.
+- When the read fails, the banner MUST show a degraded-source note rather than hiding itself.
+
+#### Scenario: Pending suggestion renders as its own card
+
+- **WHEN** a pending `route_to` suggestion exists
+- **THEN** the banner MUST display it as its own card, not grouped with other suggestions
+
+#### Scenario: Confirming from the dashboard calls the API
+
+- **WHEN** the owner clicks "Confirm rule" on a pending card
+- **THEN** the dashboard MUST call `POST /api/switchboard/rule-promotion-suggestions/{id}/confirm`
+- **AND** on success the card MUST leave the banner and a "Routing rule created" toast MUST appear
+
+#### Scenario: Auto-applied promotions are reversible
+
+- **WHEN** an auto-applied promotion is listed
+- **THEN** it MUST render without a confirm action
+- **AND** clicking "Disable rule" MUST call the rule-enabled endpoint and the control MUST then offer "Re-enable rule"
+
+#### Scenario: Nothing to show hides the banner
+
+- **WHEN** there are no pending items, no auto-applied items, and no read error
+- **THEN** the rule-promotion banner MUST NOT be rendered
 
 ## Source References
 

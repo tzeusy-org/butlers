@@ -77,6 +77,53 @@ def _prepare_scheduled_prompt(
     return prepared_prompt
 
 
+async def _continuity_block_for_task(
+    pool: asyncpg.Pool,
+    *,
+    butler_name: str | None,
+    task_name: str,
+    now: datetime,
+) -> str | None:
+    """Return the task-continuity injection block for one opted-in recurring task.
+
+    Reads the single "live" row from ``public.task_continuity`` for
+    ``(butler_name, task_name)`` -- see ``core_229_task_continuity_ledger.py``.
+    Never raises: continuity is an additive opt-in convenience, not a
+    fail-closed honesty layer like the blind-spot preamble, so a query error
+    here degrades to ``None`` (today's behavior) rather than blocking dispatch.
+
+    Returns a block naming the previous run's carry-forward content and its
+    age when a live row exists, or an honest "no carry-forward" block when the
+    task has run before under continuity but never called ``carry_forward`` --
+    the gap must be named, never silently treated as if nothing changed.
+    """
+    if not butler_name:
+        return None
+    try:
+        from butlers.core.task_continuity import fetch_live_carry_forward
+
+        row = await fetch_live_carry_forward(pool, butler_name=butler_name, task_name=task_name)
+    except Exception:
+        logger.warning(
+            "Task-continuity lookup failed for butler=%s task=%s; dispatching without it",
+            butler_name,
+            task_name,
+            exc_info=True,
+        )
+        return None
+
+    if row is None:
+        return f"## Task Continuity — {task_name}\n\nThe last run recorded no carry-forward."
+
+    recorded_at = row["recorded_at"]
+    age_seconds = max(0, int((now - recorded_at).total_seconds()))
+    return (
+        f"## Task Continuity — {task_name}\n\n"
+        f"The previous run (session {row['session_id']}, recorded {recorded_at.isoformat()}, "
+        f"{age_seconds}s ago) concluded:\n\n{row['carry_forward']}"
+    )
+
+
 async def _run_completion_hook(
     completion_hooks: dict[str, Any] | None,
     *,
@@ -660,6 +707,8 @@ async def sync_schedules(
         if raw_budget is not None:
             max_token_budget = int(raw_budget) if isinstance(raw_budget, (int, float)) else None
 
+        continuity = bool(schedule.get("continuity", False))
+
         normalized_schedules.append(
             {
                 "name": name,
@@ -671,6 +720,7 @@ async def sync_schedules(
                 "job_args": job_args,
                 "complexity": complexity,
                 "max_token_budget": max_token_budget,
+                "continuity": continuity,
                 # Deadline-specific fields — validated above for deadline tasks,
                 # None for cron tasks; always present so the needs_update check
                 # can compare them without KeyError.
@@ -692,13 +742,17 @@ async def sync_schedules(
     _has_budget = await _has_column(pool, "scheduled_tasks", "max_token_budget")
     _budget_select = ", max_token_budget" if _has_budget else ""
 
+    # Detect whether the continuity column exists (added in core_229).
+    _has_continuity = await _has_column(pool, "scheduled_tasks", "continuity")
+    _continuity_select = ", continuity" if _has_continuity else ""
+
     # Fetch existing tasks whose names match any TOML schedule (regardless of source).
     # A runtime-created task (source='db') may share a name with a TOML schedule;
     # TOML takes ownership on next startup to avoid unique-constraint violations.
     rows = await pool.fetch(
         f"""
         SELECT id, name, source, cron, prompt, dispatch_mode, job_name, job_args,
-               complexity, enabled{_temporal_select}{_budget_select}
+               complexity, enabled{_temporal_select}{_budget_select}{_continuity_select}
         FROM scheduled_tasks
         WHERE name = ANY($1::text[])
         """,
@@ -708,7 +762,7 @@ async def sync_schedules(
     toml_only_rows = await pool.fetch(
         f"""
         SELECT id, name, cron, prompt, dispatch_mode, job_name, job_args,
-               complexity, enabled{_temporal_select}{_budget_select}
+               complexity, enabled{_temporal_select}{_budget_select}{_continuity_select}
         FROM scheduled_tasks
         WHERE source = 'toml' AND name != ALL($1::text[])
         """,
@@ -729,6 +783,7 @@ async def sync_schedules(
         job_args = entry["job_args"]
         complexity = entry["complexity"]
         max_token_budget = entry["max_token_budget"]
+        continuity = entry["continuity"]
         target_date = entry["target_date"]
         lead_time_days = entry["lead_time_days"]
         alert_thresholds = entry["alert_thresholds"]
@@ -760,6 +815,9 @@ async def sync_schedules(
             # Also detect changes to max_token_budget when schema supports it.
             if not needs_update and _has_budget:
                 needs_update = existing.get("max_token_budget") != max_token_budget
+            # Also detect changes to continuity when schema supports it.
+            if not needs_update and _has_continuity:
+                needs_update = bool(existing.get("continuity")) != continuity
             # Also detect changes to deadline-specific fields when schema supports them.
             # Restrict to deadline tasks to avoid spurious updates on cron tasks that
             # may carry stale deadline-column values from a prior task_type migration.
@@ -812,6 +870,12 @@ async def sync_schedules(
                         """,
                         *base_args,
                     )
+                    if _has_continuity:
+                        await pool.execute(
+                            "UPDATE scheduled_tasks SET continuity = $2 WHERE id = $1",
+                            existing["id"],
+                            continuity,
+                        )
                 else:
                     _budget_set_cron = ", max_token_budget = $9" if _has_budget else ""
                     base_args = [
@@ -843,6 +907,12 @@ async def sync_schedules(
                         """,
                         *base_args,
                     )
+                    if _has_continuity:
+                        await pool.execute(
+                            "UPDATE scheduled_tasks SET continuity = $2 WHERE id = $1",
+                            existing["id"],
+                            continuity,
+                        )
                 logger.info("Updated TOML schedule: %s", name)
         else:
             # Insert new TOML task
@@ -865,7 +935,7 @@ async def sync_schedules(
                 ]
                 if _has_budget:
                     base_args.append(max_token_budget)
-                await pool.execute(
+                new_id = await pool.fetchval(
                     f"""
                     INSERT INTO scheduled_tasks (
                         name,
@@ -885,9 +955,16 @@ async def sync_schedules(
                     )
                     VALUES ($1, $2, $3, $4, $5, $6, $7, 'toml', true, $8,
                             $9, $10, $11, $12{_budget_val})
+                    RETURNING id
                     """,
                     *base_args,
                 )
+                if _has_continuity:
+                    await pool.execute(
+                        "UPDATE scheduled_tasks SET continuity = $2 WHERE id = $1",
+                        new_id,
+                        continuity,
+                    )
             else:
                 _budget_val_cron = ", $9" if _has_budget else ""
                 base_args = [
@@ -902,7 +979,7 @@ async def sync_schedules(
                 ]
                 if _has_budget:
                     base_args.append(max_token_budget)
-                await pool.execute(
+                new_id = await pool.fetchval(
                     f"""
                     INSERT INTO scheduled_tasks (
                         name,
@@ -917,9 +994,16 @@ async def sync_schedules(
                         next_run_at{_budget_col}
                     )
                     VALUES ($1, $2, $3, $4, $5, $6, $7, 'toml', true, $8{_budget_val_cron})
+                    RETURNING id
                     """,
                     *base_args,
                 )
+                if _has_continuity:
+                    await pool.execute(
+                        "UPDATE scheduled_tasks SET continuity = $2 WHERE id = $1",
+                        new_id,
+                        continuity,
+                    )
             logger.info("Inserted TOML schedule: %s", name)
 
     # Disable TOML tasks no longer present in config
@@ -1897,17 +1981,14 @@ async def _butler_dispatch_gated(
 ) -> str | None:
     """Return a gate reason when scheduled dispatch must be suppressed.
 
-    A butler that has been paused/quarantined (or has gone stale) in the
-    Switchboard's ``butler_registry`` must NOT have its scheduled cron/deadline
-    ticks fire — otherwise pausing a butler in the dashboard leaves its cron
-    ticks running (the bug this guards against).
+    A butler under an administrative hold must not run scheduled ticks. Under
+    receiver-derived routing, remote observation staleness is not an authority
+    to stop a healthy local scheduler.
 
-    The canonical eligibility decision lives in the Switchboard registry, so we
-    reuse :func:`resolve_routing_target` (the same accessor the routing path
-    uses) rather than re-deriving the state here.  A target is gated for
-    scheduled dispatch under exactly the same default policy the router applies
-    to inbound routing: ``quarantined`` and ``stale`` are both gated, ``active``
-    is allowed.
+    With the receiver cutover enabled, the administrative policy row gates
+    local dispatch; a missing row or non-active policy suppresses the tick.
+    With the flag disabled, the legacy route resolver also gates stale
+    heartbeat state.
 
     Returns ``None`` when dispatch should proceed (eligible, or no gating
     context available), or a human-readable reason string when dispatch must be
@@ -1919,7 +2000,20 @@ async def _butler_dispatch_gated(
         return None
 
     try:
-        from butlers.tools.switchboard.registry.registry import resolve_routing_target
+        from butlers.tools.switchboard.registry.registry import (
+            receiver_route_cutover_enabled,
+            resolve_routing_target,
+        )
+
+        if receiver_route_cutover_enabled():
+            row = await eligibility_pool.fetchrow(
+                "SELECT policy_state FROM switchboard.butler_registry_control_plane"
+                " WHERE name = $1",
+                butler_name,
+            )
+            if row is None or row["policy_state"] != "active":
+                return f"Butler {butler_name!r} is held by administrative policy"
+            return None
 
         target, error = await resolve_routing_target(
             eligibility_pool,
@@ -2054,11 +2148,12 @@ async def tick(
         scheduled_task_columns = await _existing_columns(
             pool,
             "scheduled_tasks",
-            {"task_type", "max_token_budget", "until_at"},
+            {"task_type", "max_token_budget", "until_at", "continuity"},
         )
         _has_task_type_col = "task_type" in scheduled_task_columns
         _has_budget_col = "max_token_budget" in scheduled_task_columns
         _has_until_at_col = "until_at" in scheduled_task_columns
+        _has_continuity_col = "continuity" in scheduled_task_columns
         if not _has_until_at_col:
             logger.warning(
                 "scheduled_tasks.until_at column missing in current schema; "
@@ -2134,10 +2229,12 @@ async def tick(
             _until_at_select = (
                 ", until_at" if _has_until_at_col else ", NULL::timestamptz AS until_at"
             )
+            _continuity_col_select = ", continuity" if _has_continuity_col else ""
             rows = await pool.fetch(
                 f"""
                 SELECT id, name, cron, dispatch_mode, prompt, job_name, job_args,
                        complexity, timezone, next_run_at{_until_at_select}{_budget_col_select}
+                       {_continuity_col_select}
                 FROM scheduled_tasks
                 WHERE enabled = true
                   {cron_filter}
@@ -2162,6 +2259,7 @@ async def tick(
             job_args = _jsonb_to_dict(row["job_args"], context=f"scheduled_tasks[{name}]")
             task_complexity = _parse_complexity_from_db_row(row)
             max_token_budget: int | None = row["max_token_budget"] if _has_budget_col else None
+            continuity_enabled: bool = bool(row["continuity"]) if _has_continuity_col else False
 
             # Effective cron timezone: a non-UTC per-row value overrides; the
             # default 'UTC'/NULL sentinel follows the owner's general timezone.
@@ -2239,6 +2337,15 @@ async def tick(
                         run_at=now,
                         timezone=task_timezone,
                     )
+                    if continuity_enabled:
+                        continuity_block = await _continuity_block_for_task(
+                            pool,
+                            butler_name=butler_name,
+                            task_name=name,
+                            now=now,
+                        )
+                        if continuity_block:
+                            dispatched_prompt = f"{dispatched_prompt}\n\n{continuity_block}"
                     dispatch_kwargs: dict[str, Any] = {
                         "prompt": dispatched_prompt,
                         "trigger_source": f"schedule:{name}",
@@ -2736,6 +2843,133 @@ async def schedule_update(
     await pool.execute(query, *params)
 
     logger.info("Updated schedule %s: %s", task_id, list(normalized_fields.keys()))
+
+
+def _schedule_toggle_error(
+    task_id: uuid.UUID,
+    code: str,
+    message: str,
+    *,
+    source: str | None = None,
+) -> dict[str, Any]:
+    """Build a bounded, content-free schedule-toggle refusal."""
+    result: dict[str, Any] = {
+        "id": str(task_id),
+        "status": "error",
+        "code": code,
+        "message": message,
+        "error": message,
+    }
+    if source is not None:
+        result["source"] = source
+    return result
+
+
+async def schedule_toggle(
+    pool: asyncpg.Pool,
+    task_id: uuid.UUID,
+    *,
+    enabled: bool,
+    stagger_key: str | None = None,
+    max_stagger_seconds: int = _DEFAULT_MAX_STAGGER_SECONDS,
+) -> dict[str, Any]:
+    """Set one runtime schedule to the requested enabled state.
+
+    ``enabled`` is the required, retry-safe request: repeating the same
+    request returns an unchanged receipt instead of flipping the row again.
+
+    TOML and other non-DB rows are configuration- or subsystem-managed and
+    cannot be changed through this interactive action.  Every refusal is a
+    bounded result rather than a false success.
+    """
+    if not isinstance(enabled, bool):
+        return _schedule_toggle_error(
+            task_id,
+            "SCHEDULE_TOGGLE_INVALID",
+            "enabled must be a boolean",
+        )
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                """
+                SELECT id, name, cron, timezone, source, enabled, next_run_at
+                FROM scheduled_tasks
+                WHERE id = $1
+                FOR UPDATE
+                """,
+                task_id,
+            )
+            if row is None:
+                return _schedule_toggle_error(
+                    task_id,
+                    "SCHEDULE_NOT_FOUND",
+                    f"Schedule {task_id} not found",
+                )
+
+            source = str(row["source"])
+            if source == "toml":
+                return _schedule_toggle_error(
+                    task_id,
+                    "SCHEDULE_TOML_MANAGED",
+                    "TOML-managed schedules can only be changed in butler.toml",
+                    source=source,
+                )
+            if source != "db":
+                return _schedule_toggle_error(
+                    task_id,
+                    "SCHEDULE_MANAGED",
+                    f"Schedule source {source!r} is managed by its owning subsystem",
+                    source=source,
+                )
+
+            current_enabled = bool(row["enabled"])
+            requested_enabled = enabled
+            if current_enabled == requested_enabled:
+                observed_next_run_at = row["next_run_at"]
+                changed = False
+            else:
+                observed_next_run_at = (
+                    _next_run(
+                        row["cron"],
+                        timezone=row["timezone"],
+                        stagger_key=stagger_key,
+                        max_stagger_seconds=max_stagger_seconds,
+                    )
+                    if requested_enabled
+                    else None
+                )
+                observed_next_run_at = await conn.fetchval(
+                    """
+                    UPDATE scheduled_tasks
+                    SET enabled = $2, next_run_at = $3, updated_at = now()
+                    WHERE id = $1
+                    RETURNING next_run_at
+                    """,
+                    task_id,
+                    requested_enabled,
+                    observed_next_run_at,
+                )
+                changed = True
+
+            return {
+                "id": str(task_id),
+                "name": row["name"],
+                "source": source,
+                "status": "updated" if changed else "unchanged",
+                "outcome": "applied" if changed else "already_requested",
+                "requested_enabled": requested_enabled,
+                "observed_enabled": requested_enabled,
+                "changed": changed,
+                "next_run_at": (
+                    observed_next_run_at.isoformat() if observed_next_run_at is not None else None
+                ),
+                "audit": {
+                    "action": "schedule.toggle",
+                    "result": "success",
+                    "target": f"schedule:{task_id}",
+                },
+            }
 
 
 async def schedule_delete(pool: asyncpg.Pool, task_id: uuid.UUID) -> None:

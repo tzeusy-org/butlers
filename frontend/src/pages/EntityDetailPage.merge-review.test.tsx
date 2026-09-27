@@ -50,6 +50,8 @@ vi.mock("@/hooks/use-memory", () => ({
 const useRelationshipEntityQueue = vi.fn();
 
 vi.mock("@/hooks/use-entities", () => ({
+  ENTITY_CADENCE_REFRESH_MS: 30_000,
+  ENTITY_CADENCE_MAX_AGE_MS: 90_000,
   // EntityDetailPage renders EntityVerbRail (bu-6t8ix.4); its four write verbs each
   // call a mutation hook from this module. Inert here: these suites submit nothing,
   // the hooks only need to exist and report an idle state. Declared inline because a
@@ -85,6 +87,8 @@ vi.mock("@/hooks/use-entities", () => ({
     error: null,
   })),
   useEntityTimeline: vi.fn(() => ({ data: [], isLoading: false })),
+  useEntityActivity: vi.fn(() => ({ data: { pages: [{ items: [], total: 0, limit: 50, offset: 0, degraded: false, degraded_reason: null }], pageParams: [0] }, isLoading: false, isError: false, isRefetching: false, refetch: vi.fn(), fetchNextPage: vi.fn(), hasNextPage: false, isFetchingNextPage: false })),
+  useEntityCadence: vi.fn(() => ({ data: { window_days: 30, interaction_count: 0, completeness: "complete", has_more: false }, isLoading: false, isError: false })),
   useEntityGifts: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityLoans: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityMessageThreads: vi.fn(() => ({ data: [], isLoading: false })),
@@ -211,6 +215,24 @@ afterEach(() => {
 });
 
 describe("EntityDetailPage — merge-review entry points", () => {
+  it("renders active, failed, and pending rebind receipts without hiding unknown work", () => {
+    useRelationshipEntityQueue.mockReturnValue(EMPTY_QUEUE);
+    render("/entities/entity-001", {
+      ...ENTITY,
+      rebind_receipts: [
+        { rebind_id: "rebind-1", target_schema: "relationship", references_rebound: 4, status: "active", error_class: null, completed_at: "2026-09-21T00:00:00Z" },
+        { rebind_id: "rebind-1", target_schema: "finance", references_rebound: 0, status: "failed", error_class: "SerializationError", completed_at: "2026-09-21T00:00:01Z" },
+        { rebind_id: "rebind-1", target_schema: "travel", references_rebound: 0, status: "pending", error_class: null, completed_at: null },
+      ],
+    });
+
+    const cohort = container.querySelector("[data-testid='entity-rebind-cohort']");
+    expect(cohort?.textContent).toContain("relationship4 rebound");
+    expect(cohort?.textContent).toContain("financeFailed · SerializationError");
+    expect(cohort?.textContent).toContain("travelNot yet reported");
+    expect(cohort?.querySelectorAll("[data-status='pending']")).toHaveLength(1);
+  });
+
   it("renders the duplicate-warning panel when duplicate evidence exists", () => {
     useRelationshipEntityQueue.mockReturnValue(DUP_QUEUE);
     render();

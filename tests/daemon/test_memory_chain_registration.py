@@ -117,6 +117,7 @@ class TestMemoryChainRegistration:
             "009_widen_facts_unique_indexes_fading.py",
             "010_preserve_episode_provenance.py",
             "011_grant_chronicler_health_facts.py",
+            "012_rule_retirement.py",
         ]
         assert has_butler_chain("memory") is False
         assert has_butler_chain("nonexistent_butler_xyz") is False
@@ -133,6 +134,7 @@ class TestMemoryChainRegistration:
             ("009_widen_facts_unique_indexes_fading.py", "mem_009", "mem_008"),
             ("010_preserve_episode_provenance.py", "mem_010", "mem_009"),
             ("011_grant_chronicler_health_facts.py", "mem_011", "mem_010"),
+            ("012_rule_retirement.py", "mem_012", "mem_011"),
         ]
 
         def _load_migration(filename: str):
@@ -158,7 +160,7 @@ class TestMemoryChainRegistration:
         root = _load_migration(_EXPECTED_CHAIN[0][0])
         assert root.branch_labels == ("memory",)
         assert len(revisions) == len(set(revisions))
-        current = "mem_011"
+        current = "mem_012"
         path = [current]
         while chain_map.get(current) is not None:
             current = chain_map[current]
@@ -176,6 +178,7 @@ class TestMemoryChainRegistration:
             "mem_009",
             "mem_010",
             "mem_011",
+            "mem_012",
         ]
 
 

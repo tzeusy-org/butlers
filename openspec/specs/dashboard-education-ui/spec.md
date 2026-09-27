@@ -65,20 +65,77 @@ The Curriculum tab SHALL be the default active tab.
 
 ### Requirement: Mind map graph visualization in Curriculum tab
 
-The Curriculum tab SHALL render the selected mind map as an interactive directed acyclic graph (DAG) using XYFlow with dagre top-to-bottom layout.
+The Curriculum tab SHALL render the selected mind map as an interactive directed acyclic graph (DAG) using XYFlow with dagre top-to-bottom layout, with the following guarantees:
+- Each node SHALL display the concept label and a mastery score badge. Nodes SHALL be color-coded by `mastery_status`:
+  - `mastered`: emerald (`#10b981`)
+  - `reviewing`: blue (`#3b82f6`)
+  - `learning`: amber (`#f59e0b`)
+  - `diagnosed`: slate (`#64748b`)
+  - `unseen`: gray (`#d1d5db`)
+- Edges of type `prerequisite` SHALL render as solid arrows. Edges of type `related` SHALL render as dashed lines.
+- Frontier nodes (from the `/frontier` endpoint) SHALL have a pulsing ring indicator to highlight them as next teachable concepts.
+- Clicking a node SHALL select it through the shared page-level handler and reveal the shared detail panel showing: node label, description, mastery score, mastery status, next review date (if scheduled), effort estimate, the spaced-repetition internals `ease_factor` and `repetitions`, and a link to view quiz history for that node.
+- The detail panel SHALL additionally render the node's pedagogy annotations when its `metadata`
+carries them: `concept_type` as a tag beside the mastery status, and each `source_refs` entry as a
+row bearing a leading provenance label in plain words, the entry's `location`, and its optional
+`note`. A node whose metadata carries neither annotation SHALL render exactly as before.
+- Provenance SHALL be resolved against the source registry, by requesting
+`GET /api/education/sources?source_ids=...` with the `source_id`s present on the node's
+`source_refs` (never the full registry), and rendered in exactly one of four states:
+  - **Referenced** when the entry records `provenance: "referenced"` (or names a source and records
+  no provenance) AND the registry resolves its `source_id`. Only this state SHALL render the
+  resolved source title or a link to the registered source's URL.
+  - **Model-recalled** when the entry records `provenance: "model-recalled"` or carries a null
+  `source_id`, regardless of whether the registry resolves the source, together with text stating
+  that the butler did not read the source and the location is unverified.
+  - **Source no longer registered** when the registry resolves and does not contain the entry's
+  `source_id`. The panel SHALL show no title and no citation link, and SHALL surface the
+  unresolved `source_id` so the owner can act on it.
+  - **Not checked against the registry** when the registry request is loading or failed. The panel
+  SHALL NOT report the entry as registered or as unregistered, because it has no basis for either.
+- An entry with an unrecognized `provenance` value SHALL be rendered as model-recalled: a malformed
+annotation is never promoted to a citation.
 
-Each node SHALL display the concept label and a mastery score badge. Nodes SHALL be color-coded by `mastery_status`:
-- `mastered`: emerald (`#10b981`)
-- `reviewing`: blue (`#3b82f6`)
-- `learning`: amber (`#f59e0b`)
-- `diagnosed`: slate (`#64748b`)
-- `unseen`: gray (`#d1d5db`)
+ID: REQ-dashboard-education-ui-001
+Source: source-grounded-education design.md; REQ-education-source-grounding-002; REQ-dashboard-education-api-001
+Scope: v1-mandatory
 
-Edges of type `prerequisite` SHALL render as solid arrows. Edges of type `related` SHALL render as dashed lines.
+#### Scenario: Referenced source annotation on node detail
 
-Frontier nodes (from the `/frontier` endpoint) SHALL have a pulsing ring indicator to highlight them as next teachable concepts.
+- **WHEN** a node's `metadata.source_refs` carries an entry with `provenance: "referenced"` whose
+  `source_id` is present in the source registry
+- **THEN** the detail panel SHALL show the label "Referenced", the registered source's title, and
+  the entry's location
+- **AND** a link to the registered source's URL SHALL be offered when the record has one
 
-Clicking a node SHALL select it through the shared page-level handler and reveal the shared detail panel showing: node label, description, mastery score, mastery status, next review date (if scheduled), effort estimate, the spaced-repetition internals `ease_factor` and `repetitions`, and a link to view quiz history for that node.
+#### Scenario: Model-recalled location against a registered source
+
+- **WHEN** a node's `metadata.source_refs` carries an entry with `provenance: "model-recalled"`
+  whose `source_id` is present in the source registry
+- **THEN** the detail panel SHALL label the entry "Model-recalled" and state that the location is
+  unverified
+- **AND** SHALL NOT offer a link to the registered source
+
+#### Scenario: Dangling source reference after the source is removed
+
+- **WHEN** a node's `metadata.source_refs` names a `source_id` the registry does not contain
+- **THEN** the detail panel SHALL label the entry "Source no longer registered"
+- **AND** SHALL show no source title and no citation link
+- **AND** SHALL show the unresolved `source_id`
+
+#### Scenario: Source registry unavailable
+
+- **WHEN** the source registry request is still loading or has failed
+- **AND** a node's `metadata.source_refs` names a `source_id`
+- **THEN** the detail panel SHALL label the entry as not checked against the registry
+- **AND** SHALL NOT label it registered or unregistered, and SHALL show no source title
+
+#### Scenario: Concept type tag on node detail
+
+- **WHEN** a node's `metadata.concept_type` is one of `factual`, `procedural`, `conceptual`, or
+  `creative`
+- **THEN** the detail panel SHALL render it as a tag beside the mastery status
+- **AND** a node with no `concept_type`, or an unrecognized one, SHALL render no such tag
 
 #### Scenario: Render a mind map with mixed mastery statuses
 
@@ -103,8 +160,6 @@ Clicking a node SHALL select it through the shared page-level handler and reveal
 
 - **WHEN** the Curriculum tab loads for a mind map with 0 nodes
 - **THEN** the graph area SHALL display "This curriculum has no concepts yet — the butler is still building it"
-
----
 
 ### Requirement: Curriculum management actions
 
@@ -149,9 +204,13 @@ After a curriculum request is accepted, the Education page SHALL render a receip
 
 The panel SHALL render four distinct states and SHALL NOT collapse any of them into another:
 - **accepted / running** — the request was accepted and work is in flight. The panel SHALL say so and SHALL NOT claim the curriculum exists or that the owner has been contacted.
-- **completed** — the receipt carries terminal evidence. The panel SHALL name the curriculum topic and SHALL distinguish `calibration_ready_at` being set (the teaching flow has started calibrating) from it being unset, rather than implying calibration in both cases.
+- **completed** — the receipt carries terminal evidence. The panel SHALL name the curriculum topic and SHALL distinguish `calibration_ready_at` being set (the teaching flow has started calibrating) from it being unset, rather than implying calibration in both cases. The panel SHALL state what became of the calibration notice as a line separate from calibration, so that a reader cannot take calibration having started as evidence of having been messaged.
 - **failed** — the panel SHALL render the terminal `failure_reason` in owner-readable language and SHALL offer a retry.
 - **unavailable** — when `receipts_available` is `false`, the panel SHALL say the status could not be read, and SHALL NOT render an all-clear or an empty "no request" state.
+
+The panel SHALL claim that a message went out only from `calibration_notice_outcome`, and only for the value `delivered`. That claim SHALL be worded as the delivery channel having accepted the message, because that is the strongest thing the notification path attests; the panel SHALL NOT state or imply that the owner received or read anything.
+
+For every other outcome — a recorded `failed`, `suppressed`, `deferred` or `coalesced` dispatch, a `no_record` absence, an `unproven` read, a null outcome, or an outcome the frontend does not recognise — the panel SHALL say that contact is not confirmed, and SHALL direct the owner to this panel rather than to their messages. An unrecognised outcome SHALL degrade to "not confirmed" and never to an implied yes, so a new backend outcome cannot silently become a delivery claim in the UI.
 
 The panel SHALL provide doors to the evidence it names: a link to the session (`/sessions/{session_id}`) whenever `session_id` is present, including on the failure path, and a control that opens the correlated curriculum whenever `mind_map_id` is present.
 
@@ -172,6 +231,20 @@ The panel SHALL be announced to assistive technology as a live status region, an
 - **WHEN** the tracked receipt has status `completed` with a `mind_map_id` and a `session_id`
 - **THEN** the panel SHALL offer a control that selects that curriculum
 - **AND** SHALL offer a link to `/sessions/{session_id}`
+
+#### Scenario: Calibration started does not become "the butler messaged you"
+
+- **WHEN** the tracked receipt has status `completed` with `calibration_ready_at` set
+- **AND** `calibration_notice_outcome` is `failed`, `suppressed`, `no_record`, `unproven`, null, or a value the frontend does not recognise
+- **THEN** the panel SHALL state that contact is not confirmed and point the owner at this panel
+- **AND** SHALL NOT state that a message reached the owner
+- **AND** SHALL still state that calibration has started
+
+#### Scenario: Channel acceptance is stated as channel acceptance
+
+- **WHEN** the tracked receipt carries `calibration_notice_outcome: "delivered"`
+- **THEN** the panel SHALL say the owner's messaging channel accepted the butler's starting message
+- **AND** SHALL NOT describe it as read, seen, or received by the owner
 
 #### Scenario: Failed request is legible and retryable
 
@@ -201,8 +274,6 @@ The panel SHALL be announced to assistive technology as a live status region, an
 
 - **WHEN** a request submitted in this session settled longer than the recency window ago
 - **THEN** the panel SHALL still render its terminal outcome
-
----
 
 ### Requirement: Spaced repetition review timeline in Reviews tab
 

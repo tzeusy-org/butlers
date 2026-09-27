@@ -57,6 +57,8 @@ async def test_check_monthly_ceiling_unit_behaviors() -> None:
     usage_rows = [
         {
             "model_id": "claude-haiku",
+            "calls": 1,
+            "unmeasurable_attempts": 1,
             "input_tokens": 1000,
             "output_tokens": 500,
             "cached_input_tokens": 0,
@@ -71,6 +73,7 @@ async def test_check_monthly_ceiling_unit_behaviors() -> None:
     with patch("butlers.core.pricing.estimate_session_cost", return_value=42.0):
         under = await check_monthly_ceiling(pool_under)
     assert under.allowed is True and under.mtd_usd == 42.0 and under.ceiling_usd == 100.0
+    assert under.unmeasurable_attempts == 1
 
     # Over ceiling → blocked.
     pool_over = MagicMock()
@@ -79,6 +82,7 @@ async def test_check_monthly_ceiling_unit_behaviors() -> None:
     with patch("butlers.core.pricing.estimate_session_cost", return_value=150.0):
         over = await check_monthly_ceiling(pool_over)
     assert over.allowed is False and over.mtd_usd == 150.0 and over.ceiling_usd == 100.0
+    assert over.unmeasurable_attempts == 1
 
     # Fail-open on DB error.
     pool_err = MagicMock()
@@ -101,6 +105,8 @@ async def test_price_mtd_from_ledger_is_check_monthly_ceilings_pricing_source() 
     usage_rows = [
         {
             "model_id": "claude-haiku",
+            "calls": 1,
+            "unmeasurable_attempts": 1,
             "input_tokens": 1000,
             "output_tokens": 500,
             "cached_input_tokens": 0,
@@ -116,8 +122,10 @@ async def test_price_mtd_from_ledger_is_check_monthly_ceilings_pricing_source() 
         ceiling = await check_monthly_ceiling(pool)
 
     assert direct_mtd.cost_usd == 42.0
+    assert direct_mtd.unmeasurable_attempts == 1
     assert direct_mtd.unpriced_models == ()
     assert ceiling.mtd_usd == direct_mtd.cost_usd
+    assert ceiling.unmeasurable_attempts == 1
 
 
 @pytest.mark.unit

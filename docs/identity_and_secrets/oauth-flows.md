@@ -165,8 +165,35 @@ print(repr(c))
 # Expected: repr shows '[REDACTED]' for client_secret and refresh_token -- no raw secret values
 ```
 
+## Implementation Notes
+
+- One `public.google_accounts` row backs the Drive, Calendar, Gmail and Health connectors, whose
+  account-sync loops each filter on `status='active'` plus a qualifying scope in `granted_scopes`.
+  Narrowing scopes or flipping `status` in one flow silently drops the others at their next sync.
+- Re-auth therefore requests incremental authorisation (`include_granted_scopes=true` on both
+  authorize builders in `oauth.py`): the callback persists `token_data["scope"]` verbatim, so a
+  non-incremental request would narrow the shared grant.
+- Only a genuine `invalid_grant` may mark the shared account `revoked`; transient or scope-local
+  failures stay connector-local (the per-account `auth_error` flag).
+- Google OAuth scopes are the fixed `_DEFAULT_SCOPES` set in `src/butlers/api/routers/oauth.py`
+  (Gmail, Calendar and the People scopes); there is no `GOOGLE_OAUTH_SCOPES` override. User-facing
+  OAuth guidance points at the dashboard flow and DB persistence, never at env-var fallbacks.
+- The Google Health API (`health.googleapis.com/v4`) rejects any access token carrying non-health
+  scopes (`403 DISALLOWED_OAUTH_SCOPES`), so callers mint a health-only token by passing the
+  `googlehealth` `.readonly` scopes in the refresh exchange (`google_health.py`,
+  `secrets_v2.py::_mint_health_access_token`). A v4 `403` means "scope not granted" only for a
+  down-scoped token.
+- Google may report a broader scope variant than requested (`googlehealth.sleep` for
+  `.readonly`): match granted scopes by family (`google_health_scope_family` /
+  `googleHealthScopeFamily`), never by exact URL. Granted scopes live per account in
+  `public.google_accounts.granted_scopes`.
+- Account reauthorisation links must pass an explicit `scope_set` to keep optional scopes; the
+  default (`base+gmail+calendar+contacts+drive`) omits Health and overwrites `granted_scopes`.
+- `entity_info` `google_oauth_refresh` values are plaintext (`secured=true` is a display marker);
+  app credentials are `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` in `butler_secrets`.
+
 ## Related Pages
 
 - [Credential Store](../data_and_storage/credential-store.md) -- `butler_secrets` table
 - [Owner Identity](owner-identity.md) -- Entity-based credential storage
-- [Contact System](contact-system.md) -- Google Contacts provider integration
+- [Contacts Module](../modules/contacts.md) -- Google Contacts provider sync

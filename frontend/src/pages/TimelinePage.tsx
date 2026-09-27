@@ -15,7 +15,7 @@
  * §"7. One Timeline").
  */
 
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
 
 import { Badge } from "@/components/ui/badge";
@@ -34,16 +34,20 @@ import { LiveStatusBadge } from "@/components/ui/live-status-badge";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { DispatchLayout, DispatchHeader, DispatchSurface } from "@/components/ingestion/dispatch";
 import { NewEventsPill } from "@/components/timeline/NewEventsPill";
+import { TimelineAttentionStrip } from "@/components/timeline/TimelineAttentionStrip";
 import { TimelineLedger } from "@/components/timeline/TimelineLedger";
+import { TimelineDensity } from "@/components/timeline/TimelineDensity";
 import { useButlers } from "@/hooks/use-butlers.ts";
 import { usePageActions, type PageAction } from "@/hooks/use-page-actions";
 import { useTimelineLedger } from "@/hooks/use-timeline-ledger";
+import { useTimelineAttention, useTimelineEvent, useTimelineHistogram } from "@/hooks/use-timeline";
 import {
   useTimelineSavedViews,
   useCreateTimelineSavedView,
   useDeleteTimelineSavedView,
 } from "@/hooks/use-timeline-saved-views";
 import type { TimelineSavedViewFilterSpec } from "@/api/types.ts";
+import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
 import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
@@ -93,6 +97,82 @@ function writeCsvList(sp: URLSearchParams, key: string, values: string[]): void 
   else sp.delete(key);
 }
 
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
+
+function iso(value: number): string {
+  return new Date(value).toISOString();
+}
+
+function latestCompleteHour(now = Date.now()): { since: string; until: string } {
+  const until = Math.floor(now / HOUR_MS) * HOUR_MS;
+  return { since: iso(until - HOUR_MS), until: iso(until) };
+}
+
+function parseAwareTimestamp(value: string): number | null {
+  if (!/(?:Z|[+-]\d{2}:\d{2})$/i.test(value)) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+interface TimelineIntervalState {
+  valid: boolean;
+  explicit: boolean;
+  since: string;
+  until: string;
+  bucketSince?: string;
+  bucketUntil?: string;
+}
+
+function parseTimelineInterval(sp: URLSearchParams): TimelineIntervalState {
+  const latest = latestCompleteHour();
+  const sinceRaw = sp.get("since");
+  const untilRaw = sp.get("until");
+  const bucketSinceRaw = sp.get("bucket_since");
+  const bucketUntilRaw = sp.get("bucket_until");
+  const explicit = sinceRaw !== null || untilRaw !== null;
+  if ((sinceRaw === null) !== (untilRaw === null)) return { ...latest, valid: false, explicit };
+
+  const sinceMs = sinceRaw === null ? Date.parse(latest.since) : parseAwareTimestamp(sinceRaw);
+  const untilMs = untilRaw === null ? Date.parse(latest.until) : parseAwareTimestamp(untilRaw);
+  if (
+    sinceMs === null ||
+    untilMs === null ||
+    sinceMs % MINUTE_MS !== 0 ||
+    untilMs % MINUTE_MS !== 0 ||
+    untilMs - sinceMs !== HOUR_MS
+  ) {
+    return { ...latest, valid: false, explicit };
+  }
+  const since = iso(sinceMs);
+  const until = iso(untilMs);
+  if ((bucketSinceRaw === null) !== (bucketUntilRaw === null)) {
+    return { since, until, valid: false, explicit };
+  }
+  if (bucketSinceRaw === null) return { since, until, valid: true, explicit };
+
+  const bucketSinceMs = parseAwareTimestamp(bucketSinceRaw);
+  const bucketUntilMs = parseAwareTimestamp(bucketUntilRaw!);
+  if (
+    bucketSinceMs === null ||
+    bucketUntilMs === null ||
+    bucketSinceMs % MINUTE_MS !== 0 ||
+    bucketUntilMs - bucketSinceMs !== MINUTE_MS ||
+    bucketSinceMs < sinceMs ||
+    bucketUntilMs > untilMs
+  ) {
+    return { since, until, valid: false, explicit };
+  }
+  return {
+    since,
+    until,
+    bucketSince: iso(bucketSinceMs),
+    bucketUntil: iso(bucketUntilMs),
+    valid: true,
+    explicit,
+  };
+}
+
 export default function TimelinePage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const selectedButlers = useMemo(() => parseCsvList(searchParams, "butler"), [searchParams]);
@@ -100,6 +180,7 @@ export default function TimelinePage() {
   const trace = searchParams.get("trace")?.trim() || undefined;
   const activeViewId = searchParams.get("view") ?? "all";
   const includeInternal = searchParams.get("internal") === "1";
+  const interval = useMemo(() => parseTimelineInterval(searchParams), [searchParams]);
 
   const {
     data: butlersResponse,
@@ -113,8 +194,10 @@ export default function TimelinePage() {
       butler: selectedButlers.length > 0 ? selectedButlers : undefined,
       event_type: selectedTypes.length > 0 ? selectedTypes : undefined,
       trace,
+      since: interval.bucketSince,
+      until: interval.bucketUntil,
     }),
-    [selectedButlers, selectedTypes, trace],
+    [selectedButlers, selectedTypes, trace, interval.bucketSince, interval.bucketUntil],
   );
 
   const {
@@ -135,7 +218,43 @@ export default function TimelinePage() {
     degradedButlers,
     heartbeatRollup,
     isLiveFeedDown,
-  } = useTimelineLedger(filters);
+  } = useTimelineLedger(filters, { enabled: interval.valid });
+
+  const histogramParams = useMemo(
+    () => ({
+      since: interval.since,
+      until: interval.until,
+      butler: selectedButlers.length > 0 ? selectedButlers : undefined,
+      event_type: selectedTypes.length > 0 ? selectedTypes : undefined,
+      trace,
+    }),
+    [interval.since, interval.until, selectedButlers, selectedTypes, trace],
+  );
+  const histogram = useTimelineHistogram(histogramParams, interval.valid);
+  const attentionParams = useMemo(
+    () => ({
+      butler: selectedButlers.length > 0 ? selectedButlers : undefined,
+      trace,
+    }),
+    [selectedButlers, trace],
+  );
+  const attention = useTimelineAttention(attentionParams);
+  const selectedEventId = searchParams.get("event");
+  const selectedEventInLedger = Boolean(
+    selectedEventId && events.some((event) => event.id === selectedEventId),
+  );
+  const selectedEvent = useTimelineEvent(
+    selectedEventId,
+    attentionParams,
+    interval.valid && !selectedEventInLedger,
+  );
+  const resolvedEvent = selectedEvent.data?.data[0];
+  const eventResolutionFailed = Boolean(
+    selectedEventId &&
+      !selectedEventInLedger &&
+      (selectedEvent.isError ||
+        (!resolvedEvent && Boolean(selectedEvent.data?.meta.degraded_sources.length))),
+  );
 
   // Saved views — shared /api/timeline/saved-views backend (bu-vgj88),
   // already generic (consumed by the ingestion ledger before this page).
@@ -158,7 +277,7 @@ export default function TimelinePage() {
     writeCsvList(sp, "butler", butlers);
   }
 
-  function selectBuiltInView(view: BuiltInView) {
+  const selectBuiltInView = useCallback((view: BuiltInView) => {
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev);
       if (view.id === "all") next.delete("view");
@@ -167,7 +286,19 @@ export default function TimelinePage() {
       writeCsvList(next, "butler", []);
       return next;
     });
-  }
+  }, [setSearchParams]);
+
+  const builtInViewCommands = useMemo<PaletteCommand[]>(
+    () =>
+      BUILT_IN_VIEWS.map((view) => ({
+        id: `timeline-view-${view.id}`,
+        label: view.label,
+        keywords: ["timeline", "view", "preset", view.label],
+        perform: () => selectBuiltInView(view),
+      })),
+    [selectBuiltInView],
+  );
+  useRegisterCommands(builtInViewCommands);
 
   function selectCustomView(id: string, spec: TimelineSavedViewFilterSpec) {
     setSearchParams((prev) => {
@@ -238,6 +369,69 @@ export default function TimelinePage() {
     });
   }
 
+  function writeChartWindow(since: string, until: string) {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set("since", since);
+      next.set("until", until);
+      next.delete("bucket_since");
+      next.delete("bucket_until");
+      next.delete("event");
+      return next;
+    });
+  }
+
+  function shiftChart(hours: number) {
+    writeChartWindow(
+      iso(Date.parse(interval.since) + hours * HOUR_MS),
+      iso(Date.parse(interval.until) + hours * HOUR_MS),
+    );
+  }
+
+  function selectBucket(since: string, until: string) {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set("since", interval.since);
+      next.set("until", interval.until);
+      next.set("bucket_since", since);
+      next.set("bucket_until", until);
+      next.delete("event");
+      return next;
+    });
+  }
+
+  function clearInterval() {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete("since");
+      next.delete("until");
+      next.delete("bucket_since");
+      next.delete("bucket_until");
+      return next;
+    });
+  }
+
+  function clearBucketSelection() {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete("bucket_since");
+      next.delete("bucket_until");
+      return next;
+    });
+  }
+
+  const jumpToLatest = useCallback(() => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete("since");
+      next.delete("until");
+      next.delete("bucket_since");
+      next.delete("bucket_until");
+      return next;
+    });
+    showNewEvents();
+  }, [showNewEvents, setSearchParams]);
+
   // Live status: driven by the newest loaded event when pinned to now — the
   // same freshness convention as the ingestion ledger's LiveStatusBadge.
   const latestReceivedAt = isLoading ? undefined : (events[0]?.timestamp ?? null);
@@ -259,6 +453,7 @@ export default function TimelinePage() {
   // page's own retry affordance; "n" is only registered while there is
   // something to jump to, matching the NewEventsPill's own visibility.
   const pageActions = useMemo<PageAction[]>(() => {
+    if (!interval.valid) return [];
     const actions: PageAction[] = [
       {
         id: "timeline-refresh",
@@ -269,18 +464,18 @@ export default function TimelinePage() {
         handler: () => void refetch(),
       },
     ];
-    if (newCount > 0) {
+    if (newCount > 0 || interval.explicit || interval.bucketSince) {
       actions.push({
         id: "timeline-jump-latest",
         label: "Jump to latest events",
         key: "n",
         display: ["n"],
         description: "Jump to latest events",
-        handler: showNewEvents,
+        handler: jumpToLatest,
       });
     }
     return actions;
-  }, [refetch, newCount, showNewEvents]);
+  }, [refetch, newCount, interval.valid, interval.explicit, interval.bucketSince, jumpToLatest]);
   usePageActions(pageActions);
 
   return (
@@ -289,11 +484,59 @@ export default function TimelinePage() {
         eyebrow="Fleet · timeline"
         headline="Every household event, newest first."
         description="Sessions, notifications, and errors across every butler: the fleet's single chronicle."
-        aside={<LiveStatusBadge latestReceivedAt={latestReceivedAt} isDown={isLiveFeedDown} />}
+        aside={interval.valid
+          ? <LiveStatusBadge latestReceivedAt={latestReceivedAt} isDown={isLiveFeedDown} />
+          : null}
       />
 
       <DispatchSurface className="space-y-4">
-        {trace && (
+        {!interval.valid ? (
+          <section className="flex items-center justify-between gap-3 rounded border border-destructive/40 px-3 py-2" role="alert">
+            <span className="text-sm">The Timeline interval in this URL is invalid.</span>
+            <Button type="button" variant="outline" size="xs" onClick={clearInterval}>Clear interval</Button>
+          </section>
+        ) : (
+          <section className="space-y-3" aria-label="Timeline hour density">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-1">
+                <Button type="button" variant="outline" size="xs" onClick={() => shiftChart(-1)}>Previous hour</Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="xs"
+                  onClick={() => shiftChart(1)}
+                  disabled={Date.parse(interval.until) >= Date.parse(latestCompleteHour().until)}
+                >
+                  Next hour
+                </Button>
+                <Button type="button" variant="ghost" size="xs" onClick={clearInterval}>Latest hour</Button>
+              </div>
+              {interval.bucketSince ? (
+                <Button type="button" variant="ghost" size="xs" onClick={clearBucketSelection}>Clear selection</Button>
+              ) : null}
+            </div>
+            <TimelineDensity
+              key={`${interval.since}:${interval.bucketSince ?? "live"}`}
+              histogram={histogram.data}
+              isLoading={histogram.isLoading}
+              isError={histogram.isError}
+              selectedSince={interval.bucketSince}
+              onSelect={selectBucket}
+              onRetry={() => void histogram.refetch()}
+            />
+          </section>
+        )}
+
+        <TimelineAttentionStrip
+          attention={attention.data}
+          isLoading={attention.isLoading}
+          isError={attention.isError}
+          onRetry={() => void attention.refetch()}
+          selectedButlers={selectedButlers}
+          trace={trace}
+        />
+
+        {interval.valid && trace && (
           <section
             className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border border-border rounded bg-muted/10 px-3 py-2"
             aria-label="Trace scope"
@@ -315,7 +558,7 @@ export default function TimelinePage() {
           </section>
         )}
 
-        {hasDegradedSource && (
+        {interval.valid && hasDegradedSource && (
           <SourceDegradedNote
             label="Timeline"
             detail={degradedSourceDetail}
@@ -324,7 +567,7 @@ export default function TimelinePage() {
           />
         )}
 
-        {heartbeatRollup.ticks > 0 && (
+        {interval.valid && heartbeatRollup.ticks > 0 && (
           <p
             className="font-mono text-[11px] text-muted-foreground"
             data-testid="timeline-heartbeat-rollup"
@@ -338,7 +581,7 @@ export default function TimelinePage() {
         )}
 
         {/* Toolbar */}
-        <div className="space-y-3">
+        {interval.valid && <div className="space-y-3">
           {/* Saved views */}
           <div className="flex flex-wrap items-center gap-1.5">
             {BUILT_IN_VIEWS.map((view) => (
@@ -475,28 +718,38 @@ export default function TimelinePage() {
               Internal
             </Button>
           </div>
-        </div>
+        </div>}
 
-        <NewEventsPill count={newCount} onClick={showNewEvents} />
+        {interval.valid ? (
+          <>
+            <NewEventsPill count={newCount} onClick={showNewEvents} />
 
-        <FetchingDim isFetching={isLiveHeadRefreshing}>
-          <TimelineLedger
-            events={events}
-            isLoading={isLoading}
-            includeInternal={includeInternal}
-            isError={isError}
-            onRetry={refetch}
-            hasPartialData={hasDegradedSource}
-            hasMore={hasMore}
-            onLoadMore={loadMore}
-            loadMoreError={loadMoreError}
-            onRetryLoadMore={retryLoadMore}
-            isLoadingMore={isLoadingMore}
-          />
-        </FetchingDim>
+            <FetchingDim isFetching={isLiveHeadRefreshing}>
+              <TimelineLedger
+                events={events}
+                resolvedEvent={resolvedEvent}
+                isResolvingEvent={Boolean(
+                  selectedEventId && !selectedEventInLedger && selectedEvent.isLoading,
+                )}
+                eventResolutionFailed={eventResolutionFailed}
+                onRetryEventResolution={() => void selectedEvent.refetch()}
+                isLoading={isLoading}
+                includeInternal={includeInternal}
+                isError={isError}
+                onRetry={refetch}
+                hasPartialData={hasDegradedSource}
+                hasMore={hasMore}
+                onLoadMore={loadMore}
+                loadMoreError={loadMoreError}
+                onRetryLoadMore={retryLoadMore}
+                isLoadingMore={isLoadingMore}
+              />
+            </FetchingDim>
+          </>
+        ) : null}
       </DispatchSurface>
 
-      <Dialog open={saveDialogOpen} onOpenChange={setSaveDialogOpen}>
+      <Dialog open={interval.valid && saveDialogOpen} onOpenChange={setSaveDialogOpen}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Save current view</DialogTitle>

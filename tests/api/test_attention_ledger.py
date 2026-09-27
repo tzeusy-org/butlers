@@ -50,6 +50,7 @@ def _row(**overrides: object) -> dict:
         "deferred": 3,
         "suppressed": 120,
         "failed": 0,
+        "expired_unseen": 0,
         "total": 123,
     }
     base.update(overrides)
@@ -297,6 +298,28 @@ async def test_summary_counts_failed_outcome_separately_from_deferred(app):
     assert result.by_source[0].deferred == 0
     fetch_sql = pool.fetch.call_args_list[0].args[0]
     assert "outcome = 'failed'" in fetch_sql
+
+
+async def test_summary_counts_expired_unseen_per_origin():
+    from datetime import datetime
+
+    from butlers.api.routers.attention_ledger import _query_ledger_summary
+
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(return_value=[_row(origin_butler="health", expired_unseen=3, total=3)])
+
+    result = await _query_ledger_summary(
+        pool,
+        since=datetime(2026, 7, 1, tzinfo=UTC),
+        until=None,
+        intent=None,
+        source="insight",
+        origin_butler=None,
+    )
+
+    assert result.by_source[0].origin_butler == "health"
+    assert result.by_source[0].expired_unseen == 3
+    assert "outcome = 'expired'" in pool.fetch.call_args.args[0]
 
 
 async def test_summary_endpoint_end_to_end_surfaces_flagged_source(app):

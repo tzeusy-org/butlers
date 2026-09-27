@@ -520,6 +520,72 @@ def test_approval_request_contract_requires_actions_and_decision_tokens():
         )
 
 
+def test_approval_recovery_contract_is_closed_and_reconcile_is_correlation_only():
+    subject_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    subject_key = f"approval:relationship:{subject_id}"
+    action_url = f"https://dashboard.example.test/approvals/{subject_id}"
+    handoff = {
+        "schema_version": "notify.v1",
+        "origin_butler": "relationship",
+        "delivery": {
+            "intent": "approval_request",
+            "channel": "telegram",
+            "message": "Synthetic approval request.",
+            "recipient": "owner-recipient-synthetic",
+        },
+        "actions": [
+            {
+                "verb": "approve",
+                "callback_token": "synthetic-callback",
+                "dashboard_url": action_url,
+            },
+            {
+                "verb": "reject",
+                "callback_token": "synthetic-callback",
+                "dashboard_url": action_url,
+            },
+            {"verb": "open_dashboard", "dashboard_url": action_url},
+        ],
+        "recovery": {
+            "operation": "handoff",
+            "subject_kind": "action",
+            "subject_key": subject_key,
+            "presentation_key": f"{subject_key}:p:1",
+            "presentation_generation": 1,
+            "presentation_mode": "single",
+        },
+    }
+    parsed = parse_notify_request(handoff)
+    assert parsed.recovery is not None
+    assert parsed.recovery.presentation_key == f"{subject_key}:p:1"
+
+    reconcile = {
+        "schema_version": "notify.v1",
+        "origin_butler": "relationship",
+        "delivery": {"intent": "approval_request", "channel": "telegram", "message": ""},
+        "recovery": {**handoff["recovery"], "operation": "reconcile"},
+    }
+    assert parse_notify_request(reconcile).recovery.operation == "reconcile"
+
+    with pytest.raises(ValidationError):
+        parse_notify_request(
+            {
+                **reconcile,
+                "delivery": {**reconcile["delivery"], "message": "must-not-travel"},
+            }
+        )
+    with pytest.raises(ValidationError):
+        parse_notify_request(
+            {
+                **handoff,
+                "recovery": {
+                    **handoff["recovery"],
+                    "presentation_key": f"{subject_key}:p:2",
+                },
+            }
+        )
+
+
 # ---------------------------------------------------------------------------
 # IngestSenderV1 group chat metadata fields (RFC 0013 D3)
 # ---------------------------------------------------------------------------

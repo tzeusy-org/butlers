@@ -13,7 +13,8 @@ store so the UI can offer one-tap fixes, rendering an empty/informational state
 until a proposal producer runs.
 
 ## Requirements
-### Requirement: [TARGET-STATE] Forward-Window Conflict Scan Endpoint
+
+### Requirement: Forward-Window Conflict Scan Endpoint
 
 The capability SHALL expose `GET /api/calendar/workspace/conflicts` that
 accepts `start`, `end`, optional `timezone`, and optional `butler_name`
@@ -28,9 +29,10 @@ with `issues: []` and `issues_available: false`; HTTP 500 MUST NOT be returned.
 
 Before detection runs, the endpoint MUST collapse cross-source duplicate rows
 with the SAME dedup pass the workspace grid read applies (persisted match
-strategy, keep-separate pins honored) and MUST exclude butler-authored shadow
-copies of the owner's own events from pairing — see the dedup and
-butler-shadow-copy scenarios below. A dedup-store read failure degrades to the
+strategy, keep-separate pins honored). Provenance-based candidate exclusion
+MUST be governed exclusively by the Provenance-Aware Conflict Candidate
+Filter; title prefixes, source names, and calendar lanes MUST NOT infer
+authorship or exclude a timed row. A dedup-store read failure degrades to the
 default strategy with no overrides (fail-open) rather than failing the scan.
 
 #### Scenario: Overlap detected in window
@@ -137,7 +139,7 @@ default strategy with no overrides (fail-open) rather than failing the scan.
 - **AND** a genuine overlap between two DIFFERENT butler-authored events
   (neither shadows a same-titled non-butler row) is still detected normally
 
-### Requirement: [TARGET-STATE] ConflictScanResponse Model
+### Requirement: ConflictScanResponse Model
 
 The response envelope MUST conform to the following schema, with all fields
 present. `issues_available` SHALL be `false` in degraded mode — which includes
@@ -184,7 +186,7 @@ accepted or dismissed proposals MUST NOT appear in this list.
 - **THEN** the matching `ConflictIssue` includes that proposal's UUID in `proposal_ids`
 - **AND** the proposal UUID is NOT included if its status is `accepted` or `dismissed`
 
-### Requirement: [TARGET-STATE] FE Radar Banner
+### Requirement: FE Radar Banner
 
 The week/day view SHALL fetch `GET /api/calendar/workspace/conflicts` for the
 visible window and MUST render a radar banner above the calendar grid when
@@ -226,7 +228,7 @@ The banner MUST:
 - **WHEN** the conflicts endpoint returns `issues_available: false`
 - **THEN** no radar banner is rendered (silent degraded mode)
 
-### Requirement: [TARGET-STATE] Amber Edge on Overlapping Grid Entries
+### Requirement: Amber Edge on Overlapping Grid Entries
 
 The FE MUST render each grid event block whose `entry_id` appears in any
 `overlap` issue's `events` list with a thin amber left border. The implementation
@@ -249,3 +251,58 @@ NOT be changed for this feature.
 - **WHEN** the conflicts endpoint returns `issues_available: false`
 - **THEN** no event blocks receive the amber-edge style
 
+### Requirement: Provenance-Aware Conflict Candidate Filter
+
+The conflict radar SHALL continue to render all projected workspace rows, but
+before overlap, back-to-back, or overloaded-day detection it SHALL exclude an
+event with explicit `metadata.butler_generated=true`. It SHALL also exclude an
+all-day event and a legacy locally-midnight-aligned event spanning at least 24
+hours in its valid stored IANA timezone. The filter SHALL run before all three
+detectors so an excluded row cannot pair, extend a density chain, or contribute
+meeting hours.
+
+The filter SHALL use only the explicit metadata marker for generated-event
+exclusion. A comparable timed human event without that marker SHALL preserve
+the existing radar behavior. Malformed metadata SHALL be treated as no explicit
+marker; an invalid or missing timezone SHALL make only the legacy-midnight
+inference unavailable. These malformed inputs SHALL not raise and SHALL not
+hide a timed event solely through a failed parse.
+
+#### Scenario: Generated row remains visible but produces no radar issue
+
+- **WHEN** a butler-generated projection row overlaps or adjoins a human event
+- **THEN** the workspace projection still returns the generated row
+- **AND** the radar reports no overlap or back-to-back issue from that pair
+- **AND** the generated row contributes no hours to an overloaded-day issue
+
+#### Scenario: Equivalent human rows retain detector behavior
+
+- **WHEN** two timed human projection rows have the same timing as excluded
+  generated rows but lack `metadata.butler_generated=true`
+- **THEN** overlap, back-to-back, and overloaded-day detection retain their
+  existing behavior
+
+#### Scenario: Unmarked BUTLER-prefixed provider event retains detector behavior
+
+- **WHEN** a timed provider projection row has a title beginning `BUTLER:` but
+  default or unmarked metadata, and it overlaps, adjoins, or contributes meeting
+  hours alongside another timed human row
+- **THEN** it remains a radar candidate and overlap, back-to-back, and
+  overloaded-day detection retain their existing behavior
+- **AND** title, source, and lane do not substitute for explicit generated
+  metadata
+
+#### Scenario: Legacy midnight row is excluded from every detector
+
+- **WHEN** a legacy row has `all_day=false`, lasts at least 24 hours, and has
+  local-midnight boundaries in its valid IANA timezone
+- **THEN** it does not participate in overlap, back-to-back, or overloaded-day
+  detection
+
+#### Scenario: Malformed provenance does not hide a timed event
+
+- **WHEN** an otherwise valid timed row has malformed metadata or an invalid
+  timezone
+- **THEN** the radar does not raise
+- **AND** malformed metadata alone does not exclude it as generated
+- **AND** an invalid timezone alone does not exclude it as a legacy all-day row

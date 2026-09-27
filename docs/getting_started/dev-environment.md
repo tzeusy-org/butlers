@@ -6,28 +6,47 @@
 
 ## Overview
 
-There are two ways to run the Butlers development environment: the automated tmux approach using `dev.sh`, and the manual approach where you start each service individually. Both end up with the same set of running services: PostgreSQL, butler daemons, connectors, and the dashboard.
+There are two ways to run the Butlers development environment: Docker Compose through
+`scripts/compose.sh` (the default), or starting each service by hand. Both use an external
+PostgreSQL server and end up with the same services: butler daemons, connectors, and the dashboard.
 
-## Quick Start (tmux)
-
-The fastest path from clone to running system:
+## Quick Start (Docker Compose)
 
 ```bash
-# 1. Install Python dependencies
+# 1. Install Python dependencies (tests, CLI, local tooling)
 uv sync --dev
 
-# 2. Start everything in tmux
-./scripts/dev.sh
+# 2. Start the dev stack
+./scripts/compose.sh
 ```
 
-This launches a tmux session with panes for:
+The script loads `.env.dev` (database connection), builds the image, and starts every butler
+daemon in `butlers-up`, the connectors, the dashboard API, and the Vite frontend. Dev mode
+hot-reloads `src/` and publishes on dev host ports so it can run beside a prod stack
+(`./scripts/compose.sh --prod`); the ports for both modes are in the
+[deployment port map](../../about/lay-and-land/deployment.md#port-assignments). The script header
+documents the flags for the OAuth gate, Tailscale, audio, and observability options.
 
-- PostgreSQL (via Docker Compose)
-- All butler daemons (Switchboard, General, Relationship, Health, Messenger, etc.)
-- Connector processes (Telegram bot, Telegram user-client, Gmail)
-- Dashboard API and frontend
+### Chronicles map basemap
 
-The `dev.sh` script sources secrets from `/secrets/.dev.env` and per-connector files under `secrets/connectors/`. Create these before your first run (see [Prerequisites](prerequisites.md) for the expected file layout). If a connector's secret file is missing, that connector pane will fail to start without affecting other services.
+The Chronicles location map uses CARTO raster basemaps. CARTO requires a
+basemap API key for these tiles; the key must be present when the Vite frontend
+starts so it can append the `key` query parameter to tile requests.
+
+Inject the dev project through Bitwarden Secrets Manager when starting the
+Compose stack:
+
+```bash
+set -a
+source /secrets/.env
+set +a
+bws run --project-id "${BWS_TZEHOUSE_ID_DEV}" -- ./scripts/compose.sh
+```
+
+The secret is named `CARTO_BASEMAP_API_KEY`. Compose passes it to the frontend
+as `VITE_CARTO_BASEMAP_API_KEY`; do not put the value in a tracked `.env` file.
+Because the browser receives the key, restrict it to the dev dashboard domain
+in CARTO rather than treating it as a backend-only secret.
 
 ## Manual Approach
 
@@ -112,65 +131,18 @@ In another terminal, start the frontend:
 cd frontend && npm install && npm run dev
 ```
 
-The dashboard will be available at `http://localhost:41173`.
+Vite prints the URL it serves on (its default port unless you pass `--port`); `/api` requests are
+proxied to `VITE_PROXY_TARGET`, defaulting to `http://localhost:41200`.
 
 ### Step 5: Authenticate LLM Runtimes
 
 Open the dashboard in your browser and navigate to the Settings page. For each LLM runtime provider your butlers use (Claude, Codex, Gemini), click "Login" and follow the OAuth device-code flow. Once authenticated, tokens are persisted and butlers can spawn LLM sessions.
 
-## Docker Compose (dev profile)
-
-An alternative to starting services individually is the Docker Compose `dev` profile, which runs PostgreSQL, the Dashboard API, and the Vite frontend together:
-
-```bash
-docker compose --profile dev up
-```
-
-This starts:
-
-- Dashboard API on port 41200
-- Vite dev server on port 41173
-
-PostgreSQL remains external — configure `POSTGRES_HOST` in your environment
-file before starting the compose stack.
-
-### Chronicles map basemap
-
-The Chronicles location map uses CARTO raster basemaps. CARTO requires a
-basemap API key for these tiles; the key must be present when the Vite frontend
-starts so it can append the `key` query parameter to tile requests.
-
-Inject the dev project through Bitwarden Secrets Manager when starting the
-Compose stack:
-
-```bash
-set -a
-source /secrets/.env
-set +a
-bws run --project-id "${BWS_TZEHOUSE_ID_DEV}" -- ./scripts/compose.sh
-```
-
-The secret is named `CARTO_BASEMAP_API_KEY`. Compose passes it to the frontend
-as `VITE_CARTO_BASEMAP_API_KEY`; do not put the value in a tracked `.env` file.
-Because the browser receives the key, restrict it to the dev dashboard domain
-in CARTO rather than treating it as a backend-only secret.
-
-You would still need to start butler daemons separately via `butlers up`.
-
 ## Service Ports
 
-| Service | Port | Description |
-| --- | --- | --- |
-| Switchboard | 41100 | Message router --- routes MCP requests to domain butlers |
-| General | 41101 | Catch-all assistant with collections and entities |
-| Relationship | 41102 | Contacts, interactions, gifts, activity feed |
-| Health | 41103 | Measurements, medications, conditions, symptoms |
-| Messenger | 41104 | Delivery relay --- Telegram and email channel outputs |
-| Dashboard API | 41200 | Web UI backend for monitoring and managing butlers |
-| Frontend | 41173 | Vite dev server (development only) |
-| PostgreSQL | 5432 | Shared database server (one DB, per-butler schemas) |
-
-Butler MCP servers occupy the 41100--41199 port range. OTLP HTTP traces (port 4318) are sent to an external Alloy instance and are not exposed locally.
+Every port -- butler MCP servers, connectors, dashboard, and the per-mode host ports -- is listed
+once in the [deployment port map](../../about/lay-and-land/deployment.md#port-assignments). OTLP
+traces go to an external collector and are not exposed locally.
 
 ## Listing Discovered Butlers
 
@@ -229,6 +201,22 @@ kill %1  # Stop the background API
 ```
 
 If the dashboard responds with `{"status": "ok"}`, the database and API are functioning. If `butlers list` shows butlers with correct ports and statuses, the dev environment matches what this page describes.
+
+## Implementation Notes
+
+- Debug compose services with `docker logs` and build `psql` commands from `.env.dev`
+  (`POSTGRES_DB` may be unset; scripts default to `butlers`). Live run logs are inside the
+  containers under `/app/logs/...`; the worktree's `logs/` can lag or belong to another run.
+- On the tailnet, `/butlers-dev/` serves the Vite frontend and live JSON APIs are under
+  `/butlers-dev-api/api/...`. Probing `/butlers-dev/api/...` returns the frontend's HTML fallback.
+- `butlers-dev-dashboard-api-hotreload-1` does not reload Python despite its name: restart it after
+  backend changes land on `main`. The Vite container does hot-reload.
+- Prototyping beside butlers-dev: run a worktree Vite with `--base /butlers-<name>/` and
+  `VITE_API_URL=/butlers-dev-api/api` (the default `/api` escapes tailscale path mounts), expose it
+  with `tailscale serve --bg --set-path /butlers-<name> ...`, and verify through the tailnet URL.
+  For backend changes, run a second `butlers dashboard` from the worktree with the container's
+  `POSTGRES_*` env and mount it at `/butlers-<name>-api`. Kill helpers by listening port, never
+  with a `pkill -f` pattern that matches your own shell.
 
 ## Related Pages
 

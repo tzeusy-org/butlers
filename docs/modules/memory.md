@@ -63,39 +63,33 @@ Behavior guidance learned from repeated outcomes. Rules track maturity (`candida
 
 ## Tools Provided
 
-The module registers 23 shared MCP tools. Relationship additionally registers
-the approval-gated `memory_reclassify` command used by its episodic-predicate
-curation job. That conditional command only changes an active fact to
-`volatile`; its memory type, fact ID, and target permanence are all
-safety-critical approval-rule arguments.
+Tools are registered in `MemoryModule.register_tools` (`src/butlers/modules/memory/__init__.py`),
+with implementations under `src/butlers/modules/memory/tools/`; read it for the current names and
+signatures. Each tool is registered under a tool group (`core`, `entity`, ...), so a butler's
+`groups` config can load only part of the surface (see [Module System](module-system.md)). The
+families:
 
-| Tool | Category | Description |
-|------|----------|-------------|
-| `memory_store_episode` | Writing | Store a raw episode from a runtime session |
-| `memory_store_fact` | Writing | Store a durable fact with entity anchoring and predicate validation |
-| `memory_store_rule` | Writing | Store a behavioral rule |
-| `memory_search` | Reading | Search memory by query with filters |
-| `memory_recall` | Reading | Recall facts/rules relevant to a prompt |
-| `memory_get` | Reading | Get a specific memory artifact by ID |
-| `memory_context` | Context | Assemble sectioned context within a token budget |
-| `memory_confirm` | Feedback | Confirm a fact/rule (resets decay clock) |
-| `memory_mark_helpful` | Feedback | Mark a rule application as helpful |
-| `memory_mark_harmful` | Feedback | Mark a rule application as harmful |
-| `memory_forget` | Management | Retract a memory artifact |
-| `memory_reclassify` | Management (Relationship only) | Reclassify an approved active fact to volatile permanence |
-| `memory_stats` | Management | Get memory statistics |
-| `memory_predicate_list` | Predicates | List registered predicates |
-| `memory_predicate_search` | Predicates | Hybrid search for predicates (trigram + full-text + semantic) |
-| `memory_entity_create` | Entities | Create a new entity identity |
-| `memory_entity_get` | Entities | Retrieve an entity record |
-| `memory_entity_update` | Entities | Update entity fields |
-| `memory_entity_resolve` | Entities | Resolve a name string to entity candidates |
-| `memory_entity_merge` | Entities | Merge two entities (re-point all facts) |
-| `memory_entity_neighbors` | Entities | Get graph neighbors of an entity |
-| `memory_run_consolidation` | Maintenance | Trigger episode consolidation |
-| `memory_run_episode_cleanup` | Maintenance | Clean up expired episodes |
-| `memory_catalog_search` | Catalog | Search the shared memory catalog |
-| `memory_catalog_fetch` | Catalog | Follow a catalog pointer under held read authority |
+- **Writing** (`memory_store_episode`, `memory_store_fact`, `memory_store_rule`) -- store raw
+  episodes, entity-anchored facts with predicate validation, and behavioural rules.
+- **Reading and context** (`memory_search`, `memory_recall`, `memory_get`, `memory_context`) --
+  retrieval (below) and token-budgeted, sectioned context assembly.
+- **Feedback** (`memory_confirm`, `memory_mark_helpful`, `memory_mark_harmful`) -- reset decay and
+  drive rule maturity.
+- **Management** (`memory_forget`, `memory_stats`) -- retraction and statistics.
+- **Preferences** (`memory_set_preference`, `memory_get_preferences`) -- owner preferences stored
+  as `preferences:<domain>_<name>` facts.
+- **Predicates and entities** (`memory_predicate_*`, `memory_entity_*`) -- predicate registry
+  search, and entity create/get/update/resolve/merge/neighbour traversal.
+- **Maintenance** (`memory_run_consolidation`, `memory_run_episode_cleanup`, `memory_reembed*`) --
+  consolidation, episode expiry, and re-embedding stale vectors (dry-run by default).
+- **Catalog** (`memory_catalog_search`) -- search the shared `public.memory_catalog`. Following a
+  catalog pointer (`memory_catalog_fetch`) is a core tool, not part of this module
+  (`src/butlers/core_tools/_memory_catalog.py`).
+
+The Relationship butler additionally gets `memory_reclassify`, registered only when
+`butler_name == "relationship"` and approval-gated for its episodic-predicate curation job. It only
+moves an active fact to `volatile` permanence; its memory type, fact id and target permanence are
+all safety-critical approval-rule arguments.
 
 ## Retrieval
 
@@ -115,22 +109,24 @@ score = 0.4 * relevance + 0.3 * importance + 0.2 * recency + 0.1 * effective_con
 
 The [`memory_context` interface](../../src/butlers/modules/memory/tools/context.py)
 assembles sections in the order below and omits empty sections. Its
-`token_budget` is approximate: the implementation allocates character quotas
-using four characters per token, not a model tokenizer.
+`token_budget` is converted to a hard character budget using four characters
+per token, not a model tokenizer. The preamble, section headers, and the
+content-blind `withheld: N` privacy receipt all consume that same total budget.
 
 | Section | Character allocation | Ordering and selection |
 |---|---|---|
-| Profile Facts | 30% | Owner facts by importance descending, creation time descending, then ID ascending |
+| Profile Facts | 20% | Owner facts by importance descending, creation time descending, then ID ascending |
 | Task-Relevant Facts | 35% | Recall facts excluding profile duplicates, by composite score descending, creation time descending, then ID ascending |
 | Active Rules | 20% | Maturity rank descending, effectiveness descending, creation time descending, then ID ascending |
 | Recent Episodes | 15% | Newest first; opt-in with `include_recent_episodes=True` |
-| Fleet Knowledge | 10% additional | Opt-in with `include_fleet_knowledge=True`; other butlers' catalog entries under the server-held catalog read policy |
+| Fleet Knowledge | 10% | Opt-in with `include_fleet_knowledge=True`; other butlers' catalog entries under the server-held catalog read policy |
 
 The first three sections have explicit stable tie breakers. Recent episodes
 are ordered by creation time without a secondary ID sort. These are section
-quotas, not a hard bound on the complete prompt: headers also consume space,
-and enabling Fleet Knowledge adds its quota without reducing the others.
-Catalog search failure omits that optional section instead of failing assembly.
+quotas totaling 100% across all five sections, including the two opt-in
+sections. Enabling Fleet Knowledge does not add an extra quota beyond the hard
+total budget. Catalog search failure omits that optional section instead of
+failing assembly.
 
 The retired memory design proposed a shared `TokenBudgeter` abstraction and a
 uniform tie-breaking rule for every section. Those implementation proposals are
@@ -166,7 +162,7 @@ Rules' terminal soft-delete state — the equivalent of a fact's `expired` /
 falls below its expiry threshold. Unlike fading, there is no separate
 "forgotten" column to add: a rule has exactly two liveness states (live, or
 forgotten), not a multi-value lifecycle, so a boolean JSONB flag is the
-right-sized representation (bu-5ud8p.2). Every reader that reports rule
+right-sized representation. Every reader that reports rule
 counts or lists rules — the dashboard API (`GET /api/memory/stats`'s
 `candidate_rules`/`established_rules`/`proven_rules`/`anti_pattern_rules`,
 including the "Proven rules" KPI; `GET /api/memory/rules`; the
@@ -260,13 +256,20 @@ Run it only from an operator-controlled environment whose standard `POSTGRES_*`/
 
 [`measure_catalog_ivfflat`](../../src/butlers/modules/memory/catalog_measurement.py) uses one repeatable-read PostgreSQL read-only transaction **per vector**, plain `EXPLAIN (FORMAT JSON)`, and the same filters as the live query. Each snapshot contains that vector's candidate count, approximate query, plan observation, and (when under the cap) exact comparison, keeping the comparison coherent while the live catalog changes without retaining one snapshot for the whole vector batch. The exact reference is skipped before it runs when the filtered population exceeds the hard 50,000-row cap. A transaction therefore contains at most four read statements; a run is further bounded to 25 vectors, `limit <= 50`, and a 10-second client-side timeout per database operation. It does **not** issue DDL/DML, `SET`, `ANALYZE`, `VACUUM`, `REINDEX`, or any pgvector/index tuning command. The maintenance observations are read-only snapshots, not maintenance work.
 
-The command can inform a later proposal but cannot authorize tuning. A proposal requires at least 20 observations for which both the exact comparator completed and the named IVFFlat index was planned, plus either mean recall@limit below 0.98 or a candidate-shortfall rate of at least 10% with p95 shortfall of at least one result. Re-run in a separate window and review the aggregate evidence before considering any change. This is catalog IVFFlat evidence only; it is deliberately separate from HNSW production-table work (`bu-715xd`).
+The command can inform a later proposal but cannot authorize tuning. A proposal requires at least 20 observations for which both the exact comparator completed and the named IVFFlat index was planned, plus either mean recall@limit below 0.98 or a candidate-shortfall rate of at least 10% with p95 shortfall of at least one result. Re-run in a separate window and review the aggregate evidence before considering any change. This is catalog IVFFlat evidence only; it is deliberately separate from HNSW production-table work.
 
 ## Entity Resolution
 
 The `memory_entity_resolve` tool maps ambiguous name strings to stable entity identities using a 4-tier waterfall: role match -> exact (canonical or alias) -> prefix/substring -> fuzzy (edit distance <= 2). Context boosting from graph neighborhood and caller-provided `context_hints` refines scoring.
 
 Entities are never hard-deleted. Merging sets `metadata.merged_into`; the source entity is tombstoned and excluded from future resolution.
+
+`memory_entity_merge` is a compatibility surface, not a second merge
+implementation. It dispatches to Relationship's merge authority. Local memory
+references are rebound from `public.entity_rebind_log`; each memory-enabled
+daemon handles only its own schema, reacts to live `entity.rebound.v1` events,
+establishes its listener before replaying pending receipts on startup, and
+re-establishes the listener plus replay after a retained connection failure.
 
 ## Database Tables
 
@@ -287,6 +290,48 @@ Entity identity tables live in the `public` schema: `public.entities`.
 ## Dependencies
 
 None. The memory module is a leaf module with no dependencies on other modules.
+
+## Implementation Notes
+
+- Catalog read authority is server-held in each schema's
+  `runtime_config.catalog_read_sensitivity` (`normal|internal|confidential`). MCP search and fetch
+  expose no caller ceiling. Cross-butler canonical fetches route through Switchboard to the owning
+  butler's `memory_get`; never add cross-schema SELECT or a caller-parameterised SECURITY DEFINER
+  shortcut.
+- `/api/memory/*` fans out across the butler pools that carry memory tables and never requires
+  `db.pool("memory")`. Pools without memory tables are skipped, so a deployment with none returns
+  empty payloads (404 for ID lookups), not 503. `/api/memory/reembed/pending` skips non-memory
+  schemas such as `chronicler`, whose `episodes` table has no `embedding` column.
+- `store_fact` fills `source_butler` from runtime context and reuses the session's canonical
+  episode when `source_episode_id` is omitted. A writer that bypasses it (bulk SQL, scheduled jobs)
+  must pass `source_butler` or call `resolve_write_provenance(...)`, or the facts UI shows blank
+  provenance.
+- Tool metadata must describe list-only inputs with valid and invalid examples
+  (`tags=["x"]`, `types=["fact"]`, never `types="facts"`), and `memory_search.types` / `.mode` are
+  typed as `Literal` so the MCP schema exposes enums. The same applies to `notify.request_context`,
+  which must be an object, never a JSON string.
+- Entity merge tombstones the source (`metadata.merged_into`), hides it from list, search and
+  `entity_resolve`, re-links `public.contacts.entity_id`, and unions only the source's `aliases`
+  (not its `canonical_name`) onto the target. Dunbar enrichment keeps the highest `dunbar_score`
+  across contacts sharing an `entity_id`.
+- Entity-dedup curation treats any `pending`, `approved`, `rejected` or `abandoned` merge row for
+  the ordered pair as existing state; retention keeps rejected and abandoned decisions, and curation
+  never retries or mutates an approved or abandoned merge.
+- `memory_ann_observability` measures only the local HNSW tables through the module's own pool, so
+  private schemas stay isolated. Exact recall runs only below a 2,000-row estimate and a 1,024-page
+  cap with local timeouts; otherwise it reports degraded or no-data and never runs maintenance.
+- Entity-dedup curation keys `pending_actions.deduplication_key` as
+  `relationship:entity-dedup:<source>:<target>`; `approvals_013` makes it unique for live lifecycle
+  states while keeping NULL historic rows. The surviving target is the earliest `(created_at, id)`.
+- `store_fact` defaults `sensitivity` to `'normal'`, so the failure mode is a domain write path that
+  never passes one. There is no predicate-to-sensitivity map: each domain passes its own
+  classification (`roster/health/tools/_helpers.py::HEALTH_SENSITIVITY_CONFIDENTIAL`). Audit new
+  `store_fact`/`store_rule` call sites for an implicit `'normal'`.
+- `memory_search`, `memory_recall` and `memory_get` closures pass one server-held
+  `CatalogReadPolicy` from the owning daemon's `runtime_config.catalog_read_sensitivity`; a private
+  memory schema never substitutes its own row. `memory_get` applies the ceiling inside its
+  `UPDATE ... RETURNING`; `memory_context` reserves preamble and `withheld: N` text before fitting
+  Profile Facts; an explicit higher sensitivity filter raises `SensitivityAuthorizationError`.
 
 ## Related Pages
 

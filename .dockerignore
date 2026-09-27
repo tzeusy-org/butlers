@@ -23,7 +23,7 @@ logs/
 *.log
 
 # Secrets (never send to Docker)
-.env
+.env*
 /secrets/
 
 # Build artifacts

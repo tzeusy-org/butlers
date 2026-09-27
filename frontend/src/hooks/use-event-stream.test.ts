@@ -12,7 +12,7 @@
  * - Non-snapshot events are routed through applyFleetEvent() and onEvent
  * - Snapshot events replay each buffered event through applyFleetEvent()
  *   and onEvent, not through the cache patch keyed on "snapshot" itself
- * - The api_key query param is appended when provided
+ * - Authentication stays out of the WebSocket URL
  * - The hook closes the socket on unmount and reports status "closed"
  */
 
@@ -117,15 +117,47 @@ import { EVENT_HEARTBEAT_DEADLINE_MS, useEventStream } from "./use-event-stream"
 // ---------------------------------------------------------------------------
 
 describe("useEventStream", () => {
+  it("coalesces ingestion bursts and snapshot replay without postponing the refresh indefinitely", () => {
+    vi.useFakeTimers();
+    const onEvent = vi.fn();
+    renderHook(() => useEventStream({ onEvent }));
+    const event = { type: "ingestion", ts: 1, data: {} };
+    act(() => getLastWsInstance()?.simulateMessage({ type: "snapshot", ts: 1, events: [event, event] }));
+    act(() => vi.advanceTimersByTime(200));
+    act(() => getLastWsInstance()?.simulateMessage(event));
+    expect(mockApplyFleetEvent).not.toHaveBeenCalled();
+    expect(onEvent).toHaveBeenCalledTimes(3);
+    act(() => vi.advanceTimersByTime(50));
+    expect(mockApplyFleetEvent).toHaveBeenCalledTimes(1);
+    expect(mockApplyFleetEvent).toHaveBeenCalledWith(mockQueryClient, event);
+    act(() => getLastWsInstance()?.simulateMessage(event));
+    act(() => vi.advanceTimersByTime(250));
+    expect(mockApplyFleetEvent).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["unmount", "disconnect", "disable"])("cancels a queued ingestion refresh on %s", (mode) => {
+    vi.useFakeTimers();
+    const { result, unmount, rerender } = renderHook(({ enabled }) => useEventStream({ enabled }), {
+      initialProps: { enabled: true },
+    });
+    act(() => getLastWsInstance()?.simulateMessage({ type: "ingestion", ts: 1, data: {} }));
+    act(() => {
+      if (mode === "unmount") unmount();
+      else if (mode === "disconnect") result.current.disconnect();
+      else rerender({ enabled: false });
+    });
+    act(() => vi.advanceTimersByTime(250));
+    expect(mockApplyFleetEvent).not.toHaveBeenCalled();
+  });
   it("opens a WebSocket to /events/stream on mount", () => {
     renderHook(() => useEventStream());
     expect(wsConstructorSpy).toHaveBeenCalledOnce();
     expect(wsConstructorSpy.mock.calls[0][0]).toContain("/events/stream");
   });
 
-  it("appends api_key param when provided", () => {
-    renderHook(() => useEventStream({ apiKey: "mysecret" }));
-    expect(wsConstructorSpy.mock.calls[0][0]).toContain("api_key=mysecret");
+  it("keeps credentials out of the stream URL", () => {
+    renderHook(() => useEventStream());
+    expect(wsConstructorSpy.mock.calls[0][0]).not.toContain("api_key");
   });
 
   it("does not open WebSocket when enabled=false", () => {
@@ -323,6 +355,16 @@ describe("useEventStream", () => {
     // observe the "closed" status transition here — see the disconnect()
     // test below for that assertion while still mounted.
     expect(ws?.close).toHaveBeenCalled();
+  });
+
+  it.each([4401, 4403])("stops reconnecting on authentication close %s", (code) => {
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useEventStream());
+    const ws = getLastWsInstance();
+    act(() => ws?.simulateClose(code));
+    expect(result.current.status).toBe("closed");
+    act(() => vi.advanceTimersByTime(60_000));
+    expect(wsConstructorSpy).toHaveBeenCalledOnce();
   });
 
   it("disconnect() closes the socket and sets status to 'closed'", async () => {

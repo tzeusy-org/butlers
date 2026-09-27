@@ -87,6 +87,7 @@ import { SpendVerdictOpener } from "@/components/costs/SpendVerdictOpener";
 import { formatCostUsd } from "@/lib/format-cost";
 import { cn } from "@/lib/utils";
 import { Time } from "@/components/ui/time";
+import { PurposeLaneBadge } from "@/components/sessions/PurposeLaneBadge";
 import { announce } from "@/lib/shell-announcer";
 import { usePageSubject } from "@/lib/page-context.tsx";
 import {
@@ -332,6 +333,7 @@ function KpiCell({ label, value, sub, tone = "fg", testId }: KpiCellProps) {
 function KpiStrip({ forecast }: { forecast: ForecastData }) {
   const daysRemaining = forecast.days_in_month - forecast.days_elapsed;
   const unpricedCalls = unpricedCallCount(forecast.unpriced_models);
+  const unmeasurableAttempts = forecast.unmeasurable_attempts ?? 0;
   const blindModels = forecast.ceiling_blind_to_unpriced_models ?? 0;
   const pct =
     forecast.ceiling_usd != null && forecast.ceiling_usd > 0
@@ -353,11 +355,17 @@ function KpiStrip({ forecast }: { forecast: ForecastData }) {
         testId="kpi-mtd"
         label="MTD Spend"
         value={formatCostUsd(forecast.mtd_usd)}
-        sub={
+        sub={[
+          `${forecast.days_elapsed} day${forecast.days_elapsed === 1 ? "" : "s"} elapsed`,
+          unmeasurableAttempts > 0
+            ? `${unmeasurableAttempts.toLocaleString()} attempts unpriced`
+            : null,
           unpricedCalls > 0
-            ? `${forecast.days_elapsed} day${forecast.days_elapsed === 1 ? "" : "s"} elapsed · excludes ${unpricedCalls.toLocaleString()} unpriced calls`
-            : `${forecast.days_elapsed} day${forecast.days_elapsed === 1 ? "" : "s"} elapsed`
-        }
+            ? `excludes ${unpricedCalls.toLocaleString()} unpriced calls`
+            : null,
+        ]
+          .filter(Boolean)
+          .join(" · ")}
       />
       <KpiCell
         testId="kpi-projected-eom"
@@ -1153,6 +1161,9 @@ function TopSessionsSection({
                       <TableHead className="text-left py-2 px-2 font-normal">
                         Model
                       </TableHead>
+                      <TableHead className="text-left py-2 px-2 font-normal">
+                        Purpose
+                      </TableHead>
                       <TableHead className="text-right py-2 px-2 font-normal">
                         Tokens
                       </TableHead>
@@ -1180,6 +1191,9 @@ function TopSessionsSection({
                         </TableCell>
                         <TableCell className="py-2 px-2 text-muted-foreground text-xs">
                           {s.model}
+                        </TableCell>
+                        <TableCell className="py-2 px-2">
+                          <PurposeLaneBadge lane={s.purpose_lane} />
                         </TableCell>
                         <TableCell className="py-2 px-2 text-right tabular-nums text-xs">
                           {s.input_tokens.toLocaleString()} /{" "}
@@ -1740,7 +1754,7 @@ function RulesTable({
                 aria-label={`Routing rule at position ${rule.position} of ${rules.length}${isGrabbed ? ", grabbed. Use arrow keys to move, space or enter to drop, escape to cancel" : ". Press space or enter to reorder with the keyboard"}`}
                 className={cn(
                   "border-border/60 hover:bg-muted/30 cursor-grab active:cursor-grabbing",
-                  "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-fg",
+                  "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-focus",
                   isGrabbed &&
                     "bg-muted/50 outline outline-2 outline-offset-[-2px] outline-fg",
                 )}
@@ -2149,6 +2163,7 @@ function CreateRuleForm({ onCancel, onCreated }: CreateRuleFormProps) {
 function SpendRulesSection() {
   const queryClient = useQueryClient();
   const [creating, setCreating] = useState(false);
+  const [searchParams] = useSearchParams();
   // Live path: spendPatch invalidates ["spend-rules"] on every spend call
   // event (bu-01r64.4) -- a reconciliation nudge alongside the direct
   // mutation invalidations below (create/delete/reorder), not their
@@ -2242,6 +2257,43 @@ function SpendRulesSection() {
   });
 
   const rules = data?.data ?? [];
+
+  // Deep-link-and-highlight (bu-lygbct): an audit-log row referencing a spend
+  // rule by id (target scheme "rule:<id>") links here as a ?rule= query
+  // param carrying that same id. Once the rule list has loaded, scroll to
+  // and flash the matching row via its
+  // already-rendered `data-rule-id` anchor -- resolved entirely from data
+  // this section already fetches, no new backend endpoint needed. Mirrors
+  // CalendarWorkspacePage's jump-to-flash and chat's scrollToMessageAnchor.
+  // Attribute-value match (not a CSS.escape'd selector, mirroring
+  // NotificationsPage's identical focus-sync effect) -- a rule id is an
+  // opaque server-issued string, not something safe to interpolate into a
+  // selector.
+  const requestedRuleId = searchParams.get("rule");
+  useEffect(() => {
+    if (!requestedRuleId || isLoading) return;
+    let el: HTMLElement | null = null;
+    for (const node of document.querySelectorAll<HTMLElement>("[data-rule-id]")) {
+      if (node.getAttribute("data-rule-id") === requestedRuleId) {
+        el = node;
+        break;
+      }
+    }
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.classList.add("spend-rule-highlight");
+    const timer = window.setTimeout(() => {
+      el.classList.remove("spend-rule-highlight");
+    }, 2200);
+    return () => {
+      window.clearTimeout(timer);
+      el.classList.remove("spend-rule-highlight");
+    };
+    // `data` (not the derived `rules`) -- `data?.data ?? []` builds a new
+    // array literal on every render, which would re-run this effect
+    // spuriously; `data` itself is only a new reference when the query
+    // actually refetches.
+  }, [requestedRuleId, isLoading, data]);
 
   // Palette verb (bu-t64p2 -- reachability sweep, bu-qvnce.11 slice 5). Reuses
   // this section's own existing "+ Add rule" affordance.

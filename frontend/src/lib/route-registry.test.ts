@@ -83,6 +83,15 @@ describe("route-registry", () => {
     expect(unique.size).toBe(chords.length);
   });
 
+  it("gives every global capability one unique chord", () => {
+    const globalRoutes = ALL_ROUTES.filter((route) => route.discoverability === "global");
+    const chords = globalRoutes.map((route) => route.chord);
+
+    expect(globalRoutes.length).toBeGreaterThan(0);
+    expect(chords.every((chord): chord is string => Boolean(chord))).toBe(true);
+    expect(new Set(chords).size).toBe(chords.length);
+  });
+
   it("carries every route the original hardcoded g-chord switch statement supported", () => {
     // Historical chord set from use-keyboard-shortcuts.ts before bu-86c4c.7.
     const expectedChordLetters = ["o", "b", "s", "t", "n", "i", "a", "m", "c", "h", "e"];

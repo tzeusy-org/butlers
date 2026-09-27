@@ -33,10 +33,10 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -153,6 +153,63 @@ async def _seed_filtered_event(
 # ---------------------------------------------------------------------------
 # Cross-table, cross-partition stacking correctness
 # ---------------------------------------------------------------------------
+
+
+async def test_window_rollup_counts_all_matching_sessions_and_rejects_missing_source(
+    pool, migrated_db_url
+):
+    """A large window must include sessions beyond the former 10,000-ID cap."""
+    from butlers.core.ingestion_events import ingestion_window_rollup
+
+    ts = datetime(2026, 6, 30, 12, tzinfo=UTC)
+    await pool.execute("TRUNCATE TABLE public.sessions CASCADE")
+    await pool.execute(
+        """
+        INSERT INTO public.ingestion_events (
+            id, received_at, source_channel, source_provider,
+            source_endpoint_identity, external_event_id, dedupe_key,
+            dedupe_strategy, ingestion_tier, policy_tier, status
+        )
+        SELECT gen_random_uuid(), $1, 'email', 'gmail', 'test',
+               n::text, n::text, 'connector_api', 'full', 'default', 'ingested'
+        FROM generate_series(1, 10001) AS n
+        """,
+        ts,
+    )
+    filtered_id = await _seed_filtered_event(pool, received_at=ts)
+    await pool.execute(
+        """
+        INSERT INTO public.sessions (prompt, trigger_source, request_id, cost)
+        SELECT 'test', 'test', id::text, '{"total_usd": 0.01}'::jsonb
+        FROM public.ingestion_events
+        UNION ALL
+        SELECT 'test', 'test', $1, '{"total_usd": 0.02}'::jsonb
+        """,
+        str(filtered_id),
+    )
+    db = DatabaseManager()
+    db._pools = {"test": pool}
+    result = await ingestion_window_rollup(pool, from_dt=ts, to_dt=ts + timedelta(days=1), db=db)
+    assert result["events"] == 10002
+    assert result["sessions"] == 10002
+    assert result["cost"] == pytest.approx(100.03)
+    filtered = await ingestion_window_rollup(pool, statuses=["filtered"], db=db)
+    assert filtered["events"] == filtered["sessions"] == 1
+    assert filtered["cost"] == pytest.approx(0.02)
+
+    # A genuinely failing owning source must not fabricate a zero subtotal.
+    missing_source = await asyncpg.create_pool(
+        migrated_db_url,
+        min_size=1,
+        max_size=1,
+        server_settings={"search_path": "pg_catalog"},
+    )
+    try:
+        db._pools["missing"] = missing_source
+        with pytest.raises(RuntimeError, match="session sources unavailable"):
+            await ingestion_window_rollup(pool, db=db)
+    finally:
+        await missing_source.close()
 
 
 async def test_histogram_stacks_counts_across_both_tables_and_partitions(pool):

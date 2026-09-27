@@ -7,8 +7,7 @@ The OwnTracks connector receives HTTP webhook POSTs from the OwnTracks mobile ap
 
 ### Requirement: Connector Identity and Role
 
-The implementation SHALL provide the behavior described by this requirement.
-The OwnTracks connector bridges the OwnTracks mobile app into the butler ecosystem as a location data ingestion channel.
+The OwnTracks connector SHALL bridge the OwnTracks mobile app into the butler ecosystem as a location data ingestion channel.
 
 #### Scenario: Connector as location webhook receiver
 - **WHEN** the OwnTracks connector runs
@@ -30,8 +29,7 @@ The OwnTracks connector bridges the OwnTracks mobile app into the butler ecosyst
 
 ### Requirement: Webhook Server
 
-The implementation SHALL provide the behavior described by this requirement.
-The connector runs a FastAPI HTTP server that receives OwnTracks webhook POSTs and serves health/metrics endpoints on the same port.
+The connector SHALL run a FastAPI HTTP server that receives OwnTracks webhook POSTs and serves health/metrics endpoints on the same port.
 
 #### Scenario: Webhook endpoint
 - **WHEN** the OwnTracks app sends an HTTP POST to `/owntracks/webhook`
@@ -75,8 +73,7 @@ Every incoming webhook POST MUST be authenticated via a bearer token before proc
 
 ### Requirement: Dashboard Setup UX
 
-The implementation SHALL provide the behavior described by this requirement.
-A dedicated "OwnTracks" section on the Butlers dashboard settings page provides the complete setup flow for connecting the OwnTracks mobile app.
+A dedicated "OwnTracks" section on the Butlers dashboard settings page SHALL provide the complete setup flow for connecting the OwnTracks mobile app.
 
 #### Scenario: Settings section layout
 - **WHEN** the user navigates to `/butlers/settings`
@@ -118,8 +115,7 @@ A dedicated "OwnTracks" section on the Butlers dashboard settings page provides 
 
 ### Requirement: Supported Payload Types
 
-The implementation SHALL provide the behavior described by this requirement.
-The connector processes a defined subset of OwnTracks payload types and silently ignores the rest.
+The connector SHALL process a defined subset of OwnTracks payload types and silently ignore the rest.
 
 #### Scenario: Location payload (`_type: "location"`)
 - **WHEN** a payload with `_type = "location"` is received
@@ -143,8 +139,7 @@ The connector processes a defined subset of OwnTracks payload types and silently
 
 ### Requirement: ingest.v1 Field Mapping
 
-The implementation SHALL provide the behavior described by this requirement.
-Each OwnTracks event is normalized to the canonical `ingest.v1` envelope.
+Each OwnTracks event SHALL be normalized to the canonical `ingest.v1` envelope.
 
 #### Scenario: Location event field mapping
 - **WHEN** a location event is normalized
@@ -171,8 +166,7 @@ Each OwnTracks event is normalized to the canonical `ingest.v1` envelope.
 
 ### Requirement: Normalized Text Generation
 
-The implementation SHALL provide the behavior described by this requirement.
-The connector generates human-readable summaries for `payload.normalized_text` based on event type.
+The connector SHALL generate human-readable summaries for `payload.normalized_text` based on event type.
 
 #### Scenario: Location event text (Tier 2 / metadata)
 - **WHEN** a location event is normalized with `ingestion_tier = "metadata"`
@@ -195,8 +189,7 @@ The connector generates human-readable summaries for `payload.normalized_text` b
 
 ### Requirement: Privacy Controls
 
-The implementation SHALL provide the behavior described by this requirement.
-Location data is privacy-sensitive. The connector enforces conservative defaults and explicit opt-in for full data capture.
+The connector SHALL enforce conservative defaults and explicit opt-in for full data capture, since location data is privacy-sensitive.
 
 #### Scenario: Default ingestion tier
 - **WHEN** the connector starts without `CONNECTOR_INGESTION_TIER` set
@@ -302,8 +295,7 @@ degraded source rather than present an all-clear.
 
 ### Requirement: Data Retention
 
-The implementation SHALL provide the behavior described by this requirement.
-Location events are automatically purged after a configurable retention period.
+Location events SHALL be automatically purged after a configurable retention period.
 
 #### Scenario: Retention purge schedule
 - **WHEN** the connector is running
@@ -326,8 +318,7 @@ Location events are automatically purged after a configurable retention period.
 
 ### Requirement: Checkpoint and Resume
 
-The implementation SHALL provide the behavior described by this requirement.
-The connector persists a timestamp-based checkpoint for crash-safe restart.
+The connector SHALL persist a timestamp-based checkpoint for crash-safe restart.
 
 #### Scenario: Checkpoint persistence
 - **WHEN** an event is successfully submitted to the Switchboard (accepted or duplicate)
@@ -344,8 +335,7 @@ The connector persists a timestamp-based checkpoint for crash-safe restart.
 
 ### Requirement: Connector Lifecycle
 
-The implementation SHALL provide the behavior described by this requirement.
-The connector follows the connector base contract for heartbeat, metrics, health, filtered events, and replay queue.
+The connector SHALL follow the connector base contract for heartbeat, metrics, health, filtered events, and replay queue.
 
 #### Scenario: Heartbeat
 - **WHEN** the connector is running
@@ -373,8 +363,7 @@ The connector follows the connector base contract for heartbeat, metrics, health
 
 ### Requirement: Environment Variables
 
-The implementation SHALL provide the behavior described by this requirement.
-The connector is configured via environment variables following the base connector contract plus OwnTracks-specific variables.
+The connector SHALL be configured via environment variables following the base connector contract plus OwnTracks-specific variables.
 
 #### Scenario: Required environment variables
 - **WHEN** the connector starts
@@ -392,8 +381,7 @@ The connector is configured via environment variables following the base connect
 
 ### Requirement: Context Bus Integration
 
-The implementation SHALL provide the behavior described by this requirement.
-OwnTracks events feed the situational context bus (RFC 0009). Context signal derivation is a butler-side concern -- the connector only ingests and normalizes events. Butlers consuming OwnTracks events interpret them and write context signals via `set_context()` / `clear_context()`.
+OwnTracks events SHALL feed the situational context bus (RFC 0009). Context signal derivation is a butler-side concern -- the connector only ingests and normalizes events. Butlers consuming OwnTracks events interpret them and write context signals via `set_context()` / `clear_context()`.
 
 #### Scenario: Travel butler derives at_home from geofence transition
 - **WHEN** the travel butler processes an OwnTracks transition event with `event = "enter"` and `desc = "Home"`
@@ -425,8 +413,7 @@ OwnTracks events feed the situational context bus (RFC 0009). Context signal der
 
 ### Requirement: Docker Compose Integration
 
-The implementation SHALL provide the behavior described by this requirement.
-The connector is deployed as a standalone service in the docker-compose stack.
+The connector SHALL be deployed as a standalone service in the docker-compose stack.
 
 #### Scenario: Service definition
 - **WHEN** the connector is deployed via docker-compose
@@ -440,3 +427,35 @@ The connector is deployed as a standalone service in the docker-compose stack.
 - **THEN** it is on the `db` and `backend` networks
 - **AND** the health port (40086) is exposed for monitoring (bound to 127.0.0.1 via `OWNTRACKS_HOST_PORT`)
 - **AND** the webhook port MUST be reachable by the OwnTracks mobile app (tailnet routing or reverse proxy)
+
+### Requirement: Retention Purge Degradation Visibility
+The OwnTracks connector SHALL maintain a process-local consecutive failure streak for its
+retention purge task. A caught purge failure SHALL remain non-fatal and retryable, increment the
+streak, and make the existing connector health and heartbeat state `degraded` with a sanitized,
+count-based diagnostic. A successful purge SHALL reset the streak and clear retention-derived
+degradation. The exposed diagnostic SHALL NOT include raw exception details.
+
+#### Scenario: First and repeated purge failures degrade the connector
+- **WHEN** one or more retention purge attempts raise an exception
+- **THEN** each failure is logged and the purge loop remains running for its next scheduled retry
+- **AND** the process-local failure streak increases once per failed attempt
+- **AND** existing health and heartbeat state report `degraded` with only the consecutive-failure count
+
+#### Scenario: Successful purge clears retention degradation
+- **WHEN** a retention purge succeeds after one or more failed attempts
+- **THEN** the process-local failure streak resets to zero
+- **AND** retention-derived health degradation and its diagnostic are cleared
+
+#### Scenario: Existing connector error retains priority
+- **WHEN** the connector already has an `error` health condition and the retention failure streak is nonzero
+- **THEN** health and heartbeat state continue to report the existing `error` condition rather than retention degradation
+
+#### Scenario: Retention diagnostic is sanitized
+- **WHEN** a retention purge raises an exception containing sensitive or implementation-specific text
+- **THEN** the exposed health and heartbeat diagnostic contains neither the exception message nor traceback
+- **AND** the diagnostic is derived only from the process-local consecutive-failure count
+
+#### Scenario: The streak is not durable
+- **WHEN** the OwnTracks connector process restarts
+- **THEN** retention failure tracking begins with a zero streak
+- **AND** no database migration, durable counter, alert, notification, or new API surface is introduced

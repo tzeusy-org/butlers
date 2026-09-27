@@ -61,6 +61,7 @@ from butlers.core_tools._base import ToolContext
 from butlers.core_tools._notifications import register_notification_tools
 from butlers.daemon import ButlerDaemon
 from butlers.modules.approvals.email_guard import check_email_recipient, check_recipient
+from butlers.testing.approval_delivery_schema import install_approval_delivery_schema
 from butlers.testing.schema_standins import (
     APPROVAL_EVENTS,
     APPROVAL_RULES,
@@ -91,6 +92,7 @@ async def pending_actions_pool(provisioned_postgres_pool):
         await pool.execute(PENDING_ACTIONS.ddl())
         await pool.execute(APPROVAL_RULES.ddl())
         await pool.execute(APPROVAL_EVENTS.ddl())
+        await install_approval_delivery_schema(pool)
         # connector_registry stand-in for the disconnect/rotate-token endpoints.
         # Shared declaration, not a local column list: a local one only covers
         # today's queries and breaks silently when the chain widens (bu-r8opr).
@@ -131,11 +133,16 @@ async def pending_actions_pool(provisioned_postgres_pool):
 
 async def _fetch_latest_tool_args(pool, tool_name: str) -> Any:
     row = await pool.fetchrow(
-        "SELECT tool_args FROM pending_actions WHERE tool_name = $1 "
-        "ORDER BY requested_at DESC LIMIT 1",
+        "SELECT pa.tool_args, adi.id AS delivery_intent_id "
+        "FROM pending_actions AS pa "
+        "LEFT JOIN approval_delivery_intents AS adi ON adi.action_id = pa.id "
+        "WHERE pa.tool_name = $1 ORDER BY pa.requested_at DESC LIMIT 1",
         tool_name,
     )
     assert row is not None, f"no pending_actions row found for tool_name={tool_name!r}"
+    assert row["delivery_intent_id"] is not None, (
+        f"pending action for {tool_name!r} committed without its delivery intent"
+    )
     return row["tool_args"]
 
 
