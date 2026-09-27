@@ -20,6 +20,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastmcp import FastMCP
 
 from butlers.config import (
     ApprovalConfig,
@@ -354,30 +355,7 @@ def _make_daemon_patches() -> dict[str, Any]:
 async def _boot_daemon_with_notify(butler_dir: Path) -> tuple[Any, Any]:
     """Boot a daemon and extract the notify tool function."""
     patches = _make_daemon_patches()
-    notify_fn = None
-    mock_mcp = MagicMock()
-    registered: dict[str, Any] = {}
-
-    class _FakeTool:
-        def __init__(self, name: str, fn: Any):
-            self.name = name
-            self.fn = fn
-
-    def tool_decorator(*_decorator_args, **_decorator_kwargs):
-        def decorator(fn):
-            nonlocal notify_fn
-            if fn.__name__ == "notify":
-                notify_fn = fn
-            registered[fn.__name__] = _FakeTool(fn.__name__, fn)
-            return fn
-
-        return decorator
-
-    async def list_tools() -> list[Any]:
-        return list(registered.values())
-
-    mock_mcp.tool = tool_decorator
-    mock_mcp.list_tools = list_tools
+    runtime_mcp = FastMCP("email-outbound-notify")
 
     with (
         patches["db_from_env"],
@@ -387,7 +365,7 @@ async def _boot_daemon_with_notify(butler_dir: Path) -> tuple[Any, Any]:
         patches["init_telemetry"],
         patches["configure_logging"],
         patches["sync_schedules"],
-        patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
+        patch("butlers.lifecycle.FastMCP", return_value=runtime_mcp),
         patches["Spawner"],
         patches["start_mcp_server"],
         patches["connect_switchboard"],
@@ -399,7 +377,9 @@ async def _boot_daemon_with_notify(butler_dir: Path) -> tuple[Any, Any]:
     ):
         daemon = ButlerDaemon(butler_dir)
         await daemon.start()
-        return daemon, notify_fn
+        notify_tool = await runtime_mcp.get_tool("notify")
+        assert notify_tool is not None
+        return daemon, notify_tool.fn
 
 
 def _mock_switchboard_client() -> Any:
@@ -1377,34 +1357,7 @@ async def _boot_messenger_with_route_execute(
 ) -> tuple[Any, Any]:
     """Boot a messenger daemon and extract the route_execute tool function."""
     patches = _make_daemon_patches()
-    route_execute_fn = None
-    mock_mcp = MagicMock()
-    registered_names: set[str] = set()
-
-    class _FakeTool:
-        def __init__(self, name: str) -> None:
-            self.name = name
-
-    def tool_decorator(*_decorator_args, **_decorator_kwargs):
-        def decorator(fn):
-            nonlocal route_execute_fn
-            name = _decorator_kwargs.get("name") or getattr(fn, "__name__", "")
-            if name:
-                registered_names.add(name)
-            if getattr(fn, "__name__", "") == "route_execute" or (
-                _decorator_kwargs.get("name") == "route.execute"
-            ):
-                route_execute_fn = fn
-            return fn
-
-        return decorator
-
-    async def list_tools() -> list[Any]:
-        return [_FakeTool(name) for name in registered_names]
-
-    mock_mcp.tool = tool_decorator
-    mock_mcp.get_tool = AsyncMock(return_value=None)
-    mock_mcp.list_tools = list_tools
+    runtime_mcp = FastMCP("email-outbound-route-execute")
 
     with (
         patches["db_from_env"],
@@ -1414,7 +1367,7 @@ async def _boot_messenger_with_route_execute(
         patches["init_telemetry"],
         patches["configure_logging"],
         patches["sync_schedules"],
-        patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
+        patch("butlers.lifecycle.FastMCP", return_value=runtime_mcp),
         patches["Spawner"],
         patches["start_mcp_server"],
         patches["connect_switchboard"],
@@ -1426,7 +1379,9 @@ async def _boot_messenger_with_route_execute(
     ):
         daemon = ButlerDaemon(butler_dir)
         await daemon.start()
-        return daemon, route_execute_fn
+        route_execute_tool = await runtime_mcp.get_tool("route.execute")
+        assert route_execute_tool is not None
+        return daemon, route_execute_tool.fn
 
 
 def _make_route_envelope(

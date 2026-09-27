@@ -7,11 +7,14 @@ from pathlib import Path
 import pytest
 
 from butlers.core.skills import (
+    SkillIdentityError,
     append_agents_md,
     get_skills_dir,
+    list_skill_identities,
     read_agents_md,
     read_system_prompt,
     read_system_prompt_with_sources,
+    resolve_skill_identity,
     write_agents_md,
 )
 
@@ -272,6 +275,48 @@ def test_get_skills_dir(tmp_path: Path) -> None:
     assert skill_dirs == ["calendar-check", "email-send"]
     for skill_name in skill_dirs:
         assert (result / skill_name / "SKILL.md").is_file()
+
+
+def test_skill_identity_uses_canonical_agents_source_for_claude_alias(tmp_path: Path) -> None:
+    skill_file = tmp_path / ".agents" / "skills" / "email-send" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True)
+    skill_file.write_text("# Email send\n", encoding="utf-8")
+    (tmp_path / ".claude").symlink_to(".agents", target_is_directory=True)
+
+    identity = resolve_skill_identity(tmp_path, "email-send")
+
+    assert identity.name == "email-send"
+    assert identity.canonical_source == ".agents/skills/email-send/SKILL.md"
+    assert identity.compatibility_aliases == (".claude/skills/email-send/SKILL.md",)
+    assert identity.content_digest == list_skill_identities(tmp_path)[0].content_digest
+
+
+def test_skill_identity_missing_or_unreadable_source_is_explicit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with pytest.raises(SkillIdentityError, match="missing"):
+        resolve_skill_identity(tmp_path, "absent")
+
+    skill_file = tmp_path / ".agents" / "skills" / "present" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True)
+    skill_file.write_text("# Present\n", encoding="utf-8")
+    original_read_bytes = Path.read_bytes
+
+    def read_bytes(path: Path) -> bytes:
+        if path == skill_file:
+            raise OSError("synthetic unreadable source")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    with pytest.raises(SkillIdentityError, match="unreadable"):
+        resolve_skill_identity(tmp_path, "present")
+
+    monkeypatch.setattr(Path, "read_bytes", original_read_bytes)
+    divergent = tmp_path / ".claude" / "skills" / "present"
+    divergent.mkdir(parents=True)
+    (divergent / "SKILL.md").write_text("# Forked\n", encoding="utf-8")
+    with pytest.raises(SkillIdentityError, match="forks canonical identity"):
+        resolve_skill_identity(tmp_path, "present")
 
 
 # ---------------------------------------------------------------------------

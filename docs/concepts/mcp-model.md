@@ -18,7 +18,9 @@ The startup sequence for tool registration is:
 2. Register core tools (status, trigger, route.execute, and others).
 3. Resolve module dependency order via topological sort.
 4. Call `register_tools(mcp, config, db)` on each enabled module in dependency order.
-5. Start the SSE server.
+5. Apply approval wrappers to configured tools.
+6. Finalize an immutable value catalog from the resulting public FastMCP definitions.
+7. Start the SSE server.
 
 ## Core Tools
 
@@ -51,6 +53,10 @@ Each butler can have a skills directory at `roster/<butler>/.agents/skills/`. Sk
 - **`read_system_prompt(config_dir, butler_name)`** --- Reads `CLAUDE.md` from the butler's config directory, resolves `<!-- @include path.md -->` directives relative to the roster directory, and appends shared snippets (`BUTLER_SKILLS.md`, `MCP_LOGGING.md`).
 - **`get_skills_dir(config_dir)`** --- Returns the path to `.agents/skills/` if it exists.
 - **`list_valid_skills(skills_dir)`** --- Lists skill directories with valid kebab-case names, warning and skipping invalid ones.
+- **`resolve_skill_identity(config_dir, skill_name)`** --- Resolves a skill to its canonical
+  `.agents/skills/<name>/SKILL.md` identity and content digest. A `.claude/skills` compatibility
+  alias is recorded only when it resolves to that same physical source; missing or unreadable
+  canonical sources fail explicitly.
 - **`read_agents_md` / `write_agents_md` / `append_agents_md`** --- Read/write access to `AGENTS.md`, the runtime agent notes file that LLM sessions can use for persistent inter-session memory.
 
 Skill names must follow kebab-case: start with a lowercase letter, allow lowercase letters, digits, and hyphens between segments. The pattern is `^[a-z][a-z0-9]*(-[a-z0-9]+)*$`.
@@ -62,6 +68,26 @@ When the spawner invokes an LLM session, it generates a temporary MCP configurat
 ## Tool Sensitivity Metadata
 
 The `ToolMeta` dataclass allows modules to declare per-argument sensitivity information via `arg_sensitivities`. This is used by the approvals module to determine which tool calls require human approval before execution. Arguments not explicitly listed fall back to a heuristic-based sensitivity classifier.
+
+## Registered Definition Catalog
+
+The daemon owns one immutable catalog per startup generation. It is finalized after approval
+wrapping, so its model-visible input schemas and descriptions describe the same final definitions
+served by FastMCP. Catalog entries record canonical name, module, group, namespace,
+LLM-presentability, eager/deferred posture, sensitivity declarations, immutable definition values,
+and stable digests. The checked-in inventory is validated against an executable union of core,
+built-in module, and roster-module registrars, including their finite name/type/group/config gates.
+
+An unclassified legacy tool remains presentable and eager for compatibility, while the catalog
+marks classification incomplete. Classification never adds a handler or grants call authority.
+Infrastructure-only entries remain in canonical FastMCP `tools/list` and remain callable by their
+existing authenticated callers even though their metadata marks them unsuitable for future LLM
+presentation.
+
+The adapter work described by RFC 0027 is not implemented in this slice. No runtime host consumes
+the catalog yet, and there is no host allowlist, search corpus, deferred schema loading, provider
+admission, or native Tool Search activation. Spawned sessions therefore retain the existing
+canonical MCP behavior until that separately reviewed adapter work lands.
 
 ## Verification
 

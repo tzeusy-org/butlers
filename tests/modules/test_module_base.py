@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
-from butlers.modules.base import Module, ToolGroupMixin, group_enabled
+from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, group_enabled
 
 pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
@@ -164,6 +164,36 @@ def test_minimal_concrete_module():
     assert mod.config_schema is EmptyConfig
     assert mod.dependencies == []
     assert mod.migration_revisions() is None
+
+
+def test_tool_meta_combines_sensitivity_and_presentation_metadata():
+    meta = ToolMeta(
+        arg_sensitivities={"recipient": True},
+        canonical_name="notify",
+        module_name="core",
+        group_name="notifications",
+        namespace="core.notifications",
+        llm_presentable=True,
+        load_posture="deferred",
+    )
+
+    assert meta.arg_sensitivities == {"recipient": True}
+    assert meta.canonical_name == "notify"
+    assert meta.module_name == "core"
+    assert meta.group_name == "notifications"
+    assert meta.namespace == "core.notifications"
+    assert meta.llm_presentable is True
+    assert meta.load_posture == "deferred"
+
+
+def test_tool_meta_unclassified_default_preserves_legacy_compatibility():
+    meta = ToolMeta(arg_sensitivities={"_write": True})
+
+    assert meta.arg_sensitivities == {"_write": True}
+    assert meta.canonical_name is None
+    assert meta.module_name is None
+    assert meta.llm_presentable is None
+    assert meta.load_posture is None
 
 
 def test_module_with_no_dependencies():

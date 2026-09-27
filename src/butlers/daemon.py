@@ -74,6 +74,12 @@ from butlers.core.state import state_set as _state_set
 from butlers.core.tool_call_capture import (
     get_current_runtime_session_id,
 )
+from butlers.core.tool_catalog import (
+    ToolCatalog,
+    ToolCatalogError,
+    build_tool_catalog,
+    validate_tool_metadata,
+)
 from butlers.core.utils import generate_uuid7_string
 from butlers.credential_store import (
     CredentialStore,
@@ -220,6 +226,8 @@ class ButlerDaemon:
         self._gated_tool_originals: dict[str, Any] = {}
         # Maps registered tool name → module name for gating and introspection.
         self._tool_module_map: dict[str, str] = {}
+        self._resolved_tool_metadata: dict[str, ToolMeta] = {}
+        self._tool_catalog: ToolCatalog | None = None
         self._declared_tool_names: set[str] = set()
         self._effective_tool_names: set[str] = set()
         self._registered_tool_names: set[str] = set()
@@ -1368,6 +1376,7 @@ class ButlerDaemon:
         self._effective_tool_names = getattr(self, "_effective_tool_names", set())
         self._registered_tool_names = getattr(self, "_registered_tool_names", set())
         self._tool_registration_failures = getattr(self, "_tool_registration_failures", {})
+        self._tool_module_map = getattr(self, "_tool_module_map", {})
 
         butler_name = self.config.name
         butler_type = self.config.type
@@ -1434,6 +1443,94 @@ class ButlerDaemon:
         self._declared_tool_names.update(_declared_core_names | direct_names)
         self._effective_tool_names.update(_effective_core_names | direct_names)
         self._registered_tool_names.update(mcp._registered_tool_names)
+        for tool_name in mcp._registered_tool_names:
+            self._tool_module_map[tool_name] = "core"
+
+    def _collect_tool_metadata(self) -> dict[str, ToolMeta]:
+        """Merge module sensitivities with the central presentation inventory."""
+        from butlers.core.tool_presentation_inventory import TOOL_PRESENTATION_BY_NAME
+
+        sensitivities: dict[str, ToolMeta] = {}
+        for mod in self._active_modules:
+            try:
+                declared = mod.tool_metadata()
+                if declared:
+                    sensitivities.update(declared)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Module '%s' tool_metadata() failed: %s", mod.name, exc)
+
+        # Keep declarations for approval validation even when a focused test or
+        # gated configuration omits the handler. The catalog consumes only
+        # names returned by the final FastMCP registry.
+        resolved: dict[str, ToolMeta] = dict(sensitivities)
+        for tool_name in getattr(self, "_registered_tool_names", set()):
+            sensitivity = sensitivities.get(tool_name, ToolMeta())
+            actual_owner = self._tool_module_map.get(tool_name)
+            if actual_owner is None:
+                raise ToolCatalogError(f"registered tool has no owner: {tool_name}")
+            module_classified = validate_tool_metadata(tool_name, actual_owner, sensitivity)
+            presentation = TOOL_PRESENTATION_BY_NAME.get(tool_name)
+            if presentation is None:
+                resolved[tool_name] = sensitivity
+                continue
+            if actual_owner != presentation.module_name:
+                raise ToolCatalogError(
+                    f"tool presentation owner mismatch for {tool_name!r}: "
+                    f"registered={actual_owner!r}, declared={presentation.module_name!r}"
+                )
+            if module_classified:
+                conflicts = {
+                    "canonical_name": (sensitivity.canonical_name, presentation.canonical_name),
+                    "module_name": (sensitivity.module_name, presentation.module_name),
+                    "group_name": (sensitivity.group_name, presentation.group_name),
+                    "namespace": (sensitivity.namespace, presentation.namespace),
+                    "llm_presentable": (
+                        sensitivity.llm_presentable,
+                        presentation.llm_presentable,
+                    ),
+                    "load_posture": (sensitivity.load_posture, presentation.load_posture),
+                }
+                mismatches = [
+                    field_name
+                    for field_name, (supplied, canonical) in conflicts.items()
+                    if supplied != canonical
+                ]
+                if mismatches:
+                    raise ToolCatalogError(
+                        f"tool presentation metadata conflicts with central inventory for "
+                        f"{tool_name!r}: {', '.join(mismatches)}"
+                    )
+            resolved[tool_name] = ToolMeta(
+                arg_sensitivities=dict(sensitivity.arg_sensitivities),
+                canonical_name=presentation.canonical_name,
+                module_name=presentation.module_name,
+                group_name=presentation.group_name,
+                namespace=presentation.namespace,
+                llm_presentable=presentation.llm_presentable,
+                load_posture=presentation.load_posture,
+            )
+        self._resolved_tool_metadata = resolved
+        return resolved
+
+    async def _finalize_tool_catalog(self) -> ToolCatalog:
+        """Publish an all-or-nothing snapshot of final post-approval definitions."""
+        candidate = await build_tool_catalog(
+            self.mcp,
+            tool_owners=self._tool_module_map,
+            tool_metadata=self._resolved_tool_metadata or self._collect_tool_metadata(),
+        )
+        current = getattr(self, "_tool_catalog", None)
+        if current is not None and current.generation_digest == candidate.generation_digest:
+            return current
+        self._tool_catalog = candidate
+        return candidate
+
+    @property
+    def tool_catalog(self) -> ToolCatalog:
+        """Return the finalized generation without re-reading or mutating FastMCP."""
+        if self._tool_catalog is None:
+            raise RuntimeError("tool catalog has not been finalized")
+        return self._tool_catalog
 
     def _validate_module_configs(self) -> dict[str, Any]:
         """Validate each module's raw config dict against its config_schema.
@@ -1498,6 +1595,7 @@ class ButlerDaemon:
         self._effective_tool_names = getattr(self, "_effective_tool_names", set())
         self._registered_tool_names = getattr(self, "_registered_tool_names", set())
         self._tool_registration_failures = getattr(self, "_tool_registration_failures", {})
+        self._tool_module_map = getattr(self, "_tool_module_map", {})
 
         for mod in self._modules:
             mod_status = self._module_statuses.get(mod.name)
@@ -1574,17 +1672,8 @@ class ButlerDaemon:
             (mod for mod in self._active_modules if mod.name == "approvals"),
             None,
         )
-        tool_metadata: dict[str, ToolMeta] = {}
+        tool_metadata = ButlerDaemon._collect_tool_metadata(self)
         if approvals_module is not None:
-            for mod in self._active_modules:
-                try:
-                    declared = mod.tool_metadata()
-                    if declared:
-                        tool_metadata.update(declared)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("Module '%s' tool_metadata() failed: %s", mod.name, exc)
-                    continue
-
             set_tool_metadata = getattr(approvals_module, "set_tool_metadata", None)
             if callable(set_tool_metadata):
                 set_tool_metadata(tool_metadata)
