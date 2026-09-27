@@ -4,7 +4,7 @@ The owner adopted the bounded Models exact-path proof contract and repository de
 
 ## What Changes
 
-- Publish RFC0036 and all mandatory normative storage/ingress/executor companions.
+- Publish RFC0036 with the mandatory storage/ingress/executor companion bodies incorporated in full.
 - Add ten Models vision-proof requirements; extend catalog envelope/fit and Models UI requirements while preserving existing baseline clauses.
 - Preserve exact adopted source and source/implementation allocation evidence.
 
