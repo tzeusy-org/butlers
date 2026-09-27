@@ -487,6 +487,10 @@ accordion of the butler's configuration files.
 ### Requirement: Schedules Tab (CRUD)
 The schedules tab SHALL provide full CRUD management of a butler's scheduled tasks, including complexity tier configuration.
 
+The enabled badge SHALL send an explicit requested `enabled` state through the dashboard schedules API and the canonical `schedule_toggle` MCP action. The tab SHALL wait for the server response rather than claim an optimistic state. A successful response SHALL provide the observed state and safe `schedule.toggle` audit evidence. Missing or managed refusals SHALL appear as errors, never as pause/resume successes. Each row SHALL remain pending until its own toggle request settles, even when another row's request settles first.
+
+The dashboard SHALL attribute each schedule-toggle audit row to the authenticated owner, not the addressed butler. It SHALL retain the butler and schedule as target context and record the observed outcome for success or the bounded refusal code for failure.
+
 #### Scenario: Schedule table columns
 - **WHEN** schedules are loaded
 - **THEN** a table displays: Name, Cron expression (monospace badge), Mode (prompt/job badge), Prompt/Job details (truncated to 80 chars), Complexity (tier badge), Enabled toggle (On/Off badge, clickable), Source, Next Run (relative time with absolute tooltip), Last Run (relative time with absolute tooltip), and Actions (Edit, Delete)
@@ -509,8 +513,42 @@ The schedules tab SHALL provide full CRUD management of a butler's scheduled tas
 - **AND** confirming the deletion triggers the delete mutation and shows a success toast
 
 #### Scenario: Toggle schedule enabled state
-- **WHEN** the operator clicks the enabled/disabled badge on a schedule row
+- **WHEN** the operator clicks the enabled badge on an active schedule row
 - **THEN** the schedule's enabled state is toggled via mutation and a toast confirms the action
+- **AND** the mutation sends `enabled: false` to the canonical toggle action
+- **AND** only that row's toggle control remains disabled until its request settles
+- **AND** a pause success toast appears only after the response reports `observed_enabled=false`
+- **WHEN** the operator clicks the disabled badge on a paused schedule row
+- **THEN** the mutation sends `enabled: true`
+- **AND** a resume success toast appears only after the response reports `observed_enabled=true`
+
+#### Scenario: Server-observed toggle receipt is visible
+- **WHEN** a toggle response reports an observed state and `audit.action="schedule.toggle"`
+- **THEN** the schedules tab renders the observed enabled/disabled state
+- **AND** it exposes the safe audit action/result as a local receipt
+
+#### Scenario: Schedule toggle audit distinguishes actor from target
+- **WHEN** the owner requests a schedule toggle that succeeds or receives a managed refusal
+- **THEN** the audit row records the authenticated owner as actor
+- **AND** it records the addressed butler and schedule separately as target context
+- **AND** it records the observed outcome on success or the bounded refusal code on failure
+
+#### Scenario: Managed or missing toggle refusal remains an error
+- **WHEN** the canonical action returns `SCHEDULE_NOT_FOUND`, `SCHEDULE_TOML_MANAGED`, or `SCHEDULE_MANAGED`
+- **THEN** the schedules tab shows the typed failure
+- **AND** it does not show a success toast or optimistic state change for the refused row
+- **AND** that row's toggle control becomes available again after the refusal
+
+#### Scenario: Overlapping row toggles settle independently
+- **WHEN** toggles for two different schedule rows are pending at the same time
+- **AND** either request succeeds or is refused before the other settles
+- **THEN** the settled row's toggle control becomes available
+- **AND** the other row's toggle control remains disabled until its own request settles
+
+#### Scenario: Repeated requested state does not double-flip
+- **WHEN** the operator retries a toggle after the server already observes the requested state
+- **THEN** the schedules tab accepts the `already_requested` receipt as the observed truth
+- **AND** it does not imply that a second state transition occurred
 
 #### Scenario: Auto-refresh
 - **WHEN** the schedules tab is mounted
@@ -1164,6 +1202,45 @@ Tabbed structures outside the butler detail view SHALL behave as specified here.
 - **WHEN** `/contacts/:contactId` is visited
 - **THEN** the route SHALL replace-navigate to `/entities/index?has=contact`
 - **AND** it SHALL NOT render the retired contact-detail page or its former tabs
+
+### Requirement: Composed prompt preview and roster drift truth
+
+The existing butler Configuration prompt section SHALL show the currently composed prompt preview
+rather than treating an absent database prompt row as absence of a system prompt. It SHALL compare
+current roster-source digests with the latest executed prompt receipt and display exactly one of
+`matches_git`, `drifted`, or `unknown`, with bounded roster-relative changed source names and no
+claim about dynamic-layer equality.
+
+#### Scenario: Composed prompt exists without a database row
+- **WHEN** a known roster butler has no database prompt-history row but its roster composition is available
+- **THEN** the Configuration section renders the composed prompt
+- **AND** it does not render `No system prompt configured.`
+
+#### Scenario: Roster source changes after execution
+- **WHEN** a roster file in a synthetic fixture tree changes after the newest session receipt
+- **THEN** the drift projection is `drifted`
+- **AND** it names the changed roster-relative source and the comparison time without exposing other prompt content
+
+#### Scenario: No executed receipt exists
+- **WHEN** no session prompt receipt exists for the butler
+- **THEN** the drift projection is `unknown`, never a green match
+
+#### Scenario: Unavailable or corrupt receipt remains explicit
+- **WHEN** the effective-prompt query fails or returns a corrupt receipt without verified prompt bytes
+- **THEN** the Configuration section renders an explicit unavailable or corrupt receipt state
+- **AND** it does not substitute or label the mutable authoring prompt as composed runtime instructions
+- **AND** the separate prompt edit control remains available
+
+### Requirement: Prompt preview does not expand authoring authority
+
+The composed preview and drift projection SHALL be read-only additions. They SHALL NOT add a new
+prompt authoring surface, change existing prompt PUT semantics, reinterpret a legacy database row
+as an owner overlay, or modify roster/manifesto content.
+
+#### Scenario: Existing edit control remains bounded
+- **WHEN** the composed preview is rendered
+- **THEN** existing prompt edit behavior remains separate from receipt and drift metadata
+- **AND** neither preview nor drift performs a prompt, roster, or manifesto write
 
 ## Source References
 
