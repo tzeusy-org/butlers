@@ -36,7 +36,7 @@ Scope: v1-mandatory
 ## ADDED Requirements
 
 ### Requirement: [TARGET-STATE] Patrol continues through derived remote staleness
-The QA Staffer's deterministic local patrol and recovery schedules SHALL remain runnable when its remote registry observation is stale. Only explicit authorized administrative pause or quarantine may stop local schedules. Investigation dispatch MAY be suppressed by its separately defined admission gates while discovery evidence remains durable.
+The QA Staffer's deterministic local patrol and recovery schedules SHALL remain runnable when its remote registry observation is stale. Explicit authorized administrative pause, quarantine, or operator-provenance review_required suppresses new local admissions. Ambiguous legacy review_required and missing, malformed, denied, or unreadable policy authority are separately typed safety refusals, not remote-staleness gates or attributed owner stops. Investigation dispatch MAY be suppressed by its separately defined admission gates while discovery evidence remains durable.
 
 ID: REQ-staffer-qa-006
 Source: heart-and-soul/vision.md:51-53,80-84; RFC 0015 §D6; docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md §4 QA circular gate
