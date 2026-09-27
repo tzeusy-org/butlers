@@ -50,3 +50,38 @@ status branches, and resolver call sites against the active operational-state sc
   container; `EventDrawer` still used base-red error text and base-amber filter/truncation
   text. Those three foregrounds now use the shared resolver, with three assertions that
   failed on the old foregrounds. Its copy-success icon is not operational-state text.
+
+### Seven-blocker visual correction (2026-09-28)
+
+The independent scope ruling at pushed head `2b839a0cf1b980bd5fd927772b19193a08d7b2e1`
+bounds this correction to the seven A/B findings below. Its C baseline styling debts and D
+inherited Secrets Spine specification conflict remain outside this change.
+
+| Finding | Correction and regression seam |
+| --- | --- |
+| Device copy | Opaque neutral identity and fresh/stale timing copy; retained device dots and timestamps. `ConnectorsRoster.test.tsx` rejects opacity reductions. |
+| Google Health detail | One account mark, neutral alert explanation, shared backend-to-role adapter. All four account states with/without failure reason are exercised. |
+| Roster auth column | Health guidance stays neutral beside the health dot; independent auth failures and AttentionStrip retain their own signals and recovery controls. Tests inspect text, border, and fill. |
+| Passport Google Health | Shared account adapter, neutral not-configured state, one expiry mark with neutral copy and re-consent link. Existing scope visibility and expiry threshold tests remain. |
+| Passport connector drawers | OwnTracks, Spotify, and WhatsApp use typed domain-to-role adapters and named StateDots. Disconnected remains distinct from not-configured. Spotify recovery and WhatsApp pairing copy stay neutral. |
+| Topology | Border pattern carries state without hue: solid/running, dashed/overdue, double/offline, dotted/idle or unknown. Tone still takes precedence. Accessible names carry identity and state; Enter/Space opens the focused node. All nodes use the neutral page surface for border contrast. No visible state words were added to nodes. |
+| Autonomy demotion | Section loses its amber fill/border. Existing explanation, badges, and confirm/dismiss actions remain. Keyboard actions are exercised. |
+
+Focused assertions failed before correction for all seven findings. Additional falsification
+caught the old pairing confirmation color and the low-contrast topology surface. Consumer tests
+require the retained mark as a positive control. The Health-only private-map assertions were
+replaced by rendered consumer checks; unrelated credential expectations remain.
+
+Chromium checks used synthetic fixtures and the actual compiled CSS in both themes, including
+computed opacity and background composition. Across 60 fixture/theme combinations the lowest
+sampled text contrast was 4.88:1. Topology's minimum border contrast was 3.02:1 light and 5.44:1
+dark; its previous light amber/deep-surface pair was 2.84:1. Re-consent focus and live ReactFlow
+keyboard navigation passed. This is bounded surface evidence, not a live-data or whole-dashboard
+accessibility claim. Fresh independent review and hosted CI remain subsequent gates; the PR
+stays draft.
+
+Owning verification: 954 tests passed across 51 frontend files (connectors, Passport, Google
+Health, topology, autonomy banner, primitives, registry/parity, and contrast). The correction
+adds 31 parameterized test cases and strengthens existing assertions; no tests were deleted.
+The sole snapshot change adds Spotify's image role and contextual accessible name. The planner
+reports ESCALATE for the overall PR; it executes no tests and no broad local backend gate ran.

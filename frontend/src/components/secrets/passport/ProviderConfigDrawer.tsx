@@ -36,6 +36,8 @@
 // ---------------------------------------------------------------------------
 
 import * as React from "react";
+import { StateDot, type DispatchState } from "@/components/ui/StateDot";
+import type { OwnTracksState, SpotifyState, WhatsAppState } from "@/api/types";
 
 import { TelegramSessionSetup } from "@/components/relationship/TelegramSessionSetup";
 import { Mono, PillBtn, Eyebrow } from "./atoms.tsx";
@@ -67,6 +69,28 @@ import {
   useWhatsAppPairPoll,
   useWhatsAppDisconnect,
 } from "@/hooks/use-whatsapp.ts";
+
+// Domain-to-role adapters preserve provider semantics; StateDot owns all colors.
+const ownTracksState: Record<OwnTracksState, DispatchState> = {
+  connected: "ok",
+  no_events: "degraded",
+  stale: "degraded",
+  offline: "error",
+  not_configured: "waiting",
+};
+const spotifyState: Record<SpotifyState, DispatchState> = {
+  connected: "ok",
+  error: "error",
+  unconfigured: "waiting",
+  authorization_needed: "degraded",
+  needs_reauth: "degraded",
+};
+const whatsAppState: Record<WhatsAppState, DispatchState> = {
+  connected: "ok",
+  disconnected: "waiting",
+  pair_required: "degraded",
+  not_configured: "waiting",
+};
 
 // ---------------------------------------------------------------------------
 // ProviderConfigDrawer — generic drawer shell
@@ -479,12 +503,6 @@ export function OwnTracksDrawerContent() {
 
   const status = statusQuery.data;
   const config = configQuery.data;
-  // "connected" is the only OwnTracksState that means "live and receiving
-  // events" (see OwnTracksConnectionState in
-  // src/butlers/api/models/owntracks.py) — no_events/stale/offline are all
-  // "token configured but not fully healthy", which the amber "idle" dot
-  // below already covers via tokenConfigured.
-  const isActive = status?.state === "connected";
   const tokenConfigured = status?.token_configured ?? false;
 
   function handleGenerate() {
@@ -524,18 +542,9 @@ export function OwnTracksDrawerContent() {
     <div className="flex flex-col gap-4" data-owntracks-drawer-content="true">
       {/* Status dot */}
       <div className="flex items-center gap-2.5">
-        <span
-          className="inline-block shrink-0 rounded-full"
-          style={{
-            width: 6,
-            height: 6,
-            backgroundColor: isActive
-              ? "var(--green)"
-              : tokenConfigured
-                ? "var(--amber)"
-                : "var(--dim)",
-          }}
-          aria-label={isActive ? "active" : tokenConfigured ? "idle" : "not configured"}
+        <StateDot
+          state={status ? ownTracksState[status.state] : "waiting"}
+          aria-label={`OwnTracks: ${status ? status.state.replaceAll("_", " ") : "unknown"}`}
           data-owntracks-status-dot="true"
         />
         {status && (
@@ -1066,30 +1075,9 @@ export function SpotifyDrawerContent() {
     <div className="flex flex-col gap-4" data-spotify-drawer-content="true">
       {/* Status row — dot only, never a word in the main flow */}
       <div className="flex items-center gap-2.5">
-        <span
-          className="inline-block shrink-0 rounded-full"
-          style={{
-            width: 6,
-            height: 6,
-            backgroundColor: isConnected
-              ? "var(--green)"
-              : isNotConfigured
-                ? "var(--dim)"
-                : isError
-                  ? "var(--red)"
-                  : needsAuth
-                    ? "var(--amber)"
-                    : "var(--amber)",
-          }}
-          aria-label={
-            isConnected
-              ? "connected"
-              : isNotConfigured
-                ? "not configured"
-                : isError
-                  ? "error"
-                  : "needs auth"
-          }
+        <StateDot
+          state={status ? spotifyState[status.state] : "waiting"}
+          aria-label={`Spotify: ${status ? status.state.replaceAll("_", " ") : "unknown"}`}
           data-spotify-status-dot="true"
         />
         <Mono size={11} color="var(--mfg)">Spotify connector</Mono>
@@ -1122,10 +1110,10 @@ export function SpotifyDrawerContent() {
       {isError && (
         <div
           className="flex flex-col gap-3 p-3.5"
-          style={{ border: "1px solid var(--red)", background: "var(--bg-elev)" }}
+          style={{ border: "1px solid var(--border)" }}
           data-spotify-error-card="true"
         >
-          <Mono size={11} upper tracking="0.12em" color="var(--red)">
+          <Mono size={11} upper tracking="0.12em" color="var(--mfg)">
             Error: re-authorization needed
           </Mono>
           <Mono size={11} color="var(--mfg)">Reconnect Spotify to continue.</Mono>
@@ -1456,25 +1444,16 @@ export function WhatsAppDrawerContent() {
     <div className="flex flex-col gap-4" data-whatsapp-drawer-content="true">
       {/* Status row — dot only */}
       <div className="flex items-center gap-2.5">
-        <span
-          className="inline-block shrink-0 rounded-full"
-          style={{
-            width: 6,
-            height: 6,
-            backgroundColor: isConnected
-              ? "var(--green)"
-              : isPairRequired
-                ? "var(--amber)"
-                : "var(--dim)",
-          }}
-          aria-label={isConnected ? "connected" : isPairRequired ? "pair required" : "not configured"}
+        <StateDot
+          state={status ? whatsAppState[status.state] : "waiting"}
+          aria-label={`WhatsApp: ${status ? status.state.replaceAll("_", " ") : "unknown"}`}
           data-whatsapp-status-dot="true"
         />
         {status?.phone && (
           <Mono size={11} color="var(--mfg)">{status.phone}</Mono>
         )}
         {pairedPhone && !status?.phone && (
-          <Mono size={11} color="var(--green)">{pairedPhone}</Mono>
+          <Mono size={11} color="var(--mfg)">{pairedPhone}</Mono>
         )}
       </div>
 

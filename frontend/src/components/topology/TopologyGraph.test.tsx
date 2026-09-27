@@ -22,7 +22,9 @@ import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { render as renderDom, cleanup, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { MemoryRouter, useLocation } from "react-router";
 
 import TopologyGraph from "./TopologyGraph";
 
@@ -48,7 +50,7 @@ vi.mock("@xyflow/react", () => ({
   ReactFlow: ({ nodes, edges }: { nodes: AnyNode[]; edges: AnyNode[] }) => (
     <div data-testid="reactflow">
       {nodes.map((n) => (
-        <div key={n.id} data-testid={`node-${n.id}`} style={n.style}>
+        <div key={n.id} data-testid={`node-${n.id}`} style={n.style} aria-label={n.ariaLabel} className="react-flow__node" data-id={n.id} role="link" tabIndex={0}>
           {n.data?.label}
         </div>
       ))}
@@ -131,23 +133,23 @@ describe("TopologyGraph -- canonical liveness tone coloring", () => {
       });
 
       for (const [nodeName, neutralBackground] of [
-        ["switchboard", "var(--bg-deep)"],
-        ["heartbeat", "var(--bg-deep)"],
-        ["general", "var(--bg-deep)"],
+        ["switchboard", "var(--bg)"],
+        ["heartbeat", "var(--bg)"],
+        ["general", "var(--bg)"],
         ["connector-gmail-user@example.com", "var(--bg)"],
       ]) {
         const nodeMatch = html.match(new RegExp(`<div data-testid="node-${nodeName}"[^>]*>`));
         expect(nodeMatch).not.toBeNull();
         expect(nodeMatch![0]).toContain(`background:${neutralBackground}`);
         expect(nodeMatch![0]).toContain("color:var(--fg)");
-        expect(nodeMatch![0]).toContain("border:2px");
+        expect(nodeMatch![0]).toMatch(/border:[23]px/);
         expect(nodeMatch![0]).toContain(stateColor);
         expect(nodeMatch![0]).not.toContain(`background:${stateColor}`);
         expect(nodeMatch![0]).not.toContain("color:white");
       }
 
       const heartbeatMatch = html.match(/<div data-testid="node-heartbeat"[^>]*>/);
-      expect(heartbeatMatch![0]).toContain(`border:2px dashed ${stateColor}`);
+      expect(heartbeatMatch![0]).toContain(stateColor);
     }
   });
 
@@ -197,7 +199,7 @@ describe("TopologyGraph -- canonical liveness tone coloring", () => {
     });
     const node = html.match(/<div data-testid="node-connector-gmail-me"[^>]*>/);
     expect(node).not.toBeNull();
-    expect(node![0]).toContain(`border:2px solid ${token}`);
+    expect(node![0]).toContain(token);
   });
 
   it("animates the switchboard edge only when the butler's tone is green (running)", () => {
@@ -273,4 +275,33 @@ describe("TopologyGraph -- connectors-source degraded note", () => {
     expect(html).toContain('data-testid="reactflow"');
     expect(html).toContain('data-testid="node-general"');
   });
+});
+
+it("every node kind encodes state in its border pattern and accessible name, without visible state words", () => {
+  for (const [tone, pattern, label, liveness] of [
+    ["green", "solid", "running", "online"], ["amber", "dashed", "overdue", "stale"],
+    ["red", "double", "offline or quarantined", "offline"], ["neutral", "dotted", "idle or unknown", "unknown"],
+  ] as const) {
+    const doc = new DOMParser().parseFromString(render({butlers: ["switchboard", "heartbeat", "general"].map(name => ({name, status: "ok", tone})), connectors: [{connector_type: "gmail", endpoint_identity: "synthetic@example.com", liveness}]}), "text/html");
+    for (const name of ["switchboard", "heartbeat", "general", "connector-gmail-synthetic@example.com"]) {
+      const node = doc.querySelector(`[data-testid="node-${name}"]`) as HTMLElement;
+      expect(node.getAttribute("style")).toMatch(new RegExp(`border:(?:2|3)px ${pattern}`));
+      expect(node.getAttribute("aria-label")).toContain(name.startsWith("connector-") ? liveness : label);
+      expect(node.getAttribute("aria-label")).toContain(name.startsWith("connector-") ? "synthetic@example.com" : name);
+      expect(node.textContent).not.toContain(label);
+      expect(node.getAttribute("style")).toContain("color:var(--fg)");
+    }
+  }
+});
+
+it("keyboard activation opens the focused topology node", async () => {
+  function Destination() { return <output>{useLocation().pathname}</output>; }
+  renderDom(<MemoryRouter><TopologyGraph butlers={[{name: "general", status: "ok"}]} /><Destination /></MemoryRouter>);
+  try {
+    const user = userEvent.setup();
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByTestId("node-general"));
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("status").textContent).toBe("/butlers/general");
+  } finally { cleanup(); }
 });
