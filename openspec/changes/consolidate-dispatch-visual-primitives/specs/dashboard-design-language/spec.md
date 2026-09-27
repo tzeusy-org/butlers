@@ -47,6 +47,20 @@ path shim. New code SHALL use Section or the narrow Tile role directly.
 - **AND** degraded and error text resolve to the AA-safe `--amber-text` and `--red-text` tokens rather than the base fill tokens
 - **AND** the consumer does not define a duplicate state-to-token map or a second visible status affordance
 
+#### Scenario: Migrated state copy remains readable without repeating the mark
+
+- **WHEN** a connector or Google Health surface renders identity, timing, health guidance, or recovery copy beside its state mark
+- **THEN** supporting copy is neutral and clears normal-text AA contrast against its actual surface in both themes, including opacity
+- **AND** the state mark remains present, with a meaningful accessible name
+- **AND** independent authorization failures retain their own recovery actions and semantics
+
+#### Scenario: Topology state is perceivable without hue
+
+- **WHEN** a topology node renders a state border
+- **THEN** the border pattern distinguishes the operational state without relying on hue
+- **AND** the accessible node name includes identity and the effective state, preserving canonical tone precedence
+- **AND** node labels gain no visible state words, and keyboard activation reaches the same destination as pointer activation
+
 ## MODIFIED Requirements
 
 ### Requirement: Semantic Visual Role Matrix

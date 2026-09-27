@@ -132,7 +132,7 @@ function PromotionCard({ suggestion, onConfirm, onDismiss, isPending }: Suggesti
 
 function DemotionCard({ suggestion, onConfirm, onDismiss, isPending }: SuggestionCardProps) {
   return (
-    <Section className="border-[var(--amber)] bg-[var(--amber)]/30">
+    <Section>
       <SectionHeader className="pb-2">
         <div className="flex items-start justify-between gap-2">
           <div className="flex items-center gap-2">

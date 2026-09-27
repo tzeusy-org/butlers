@@ -424,7 +424,7 @@ describe('AC2: auth issues appear consistently in attention strip and row', () =
 
     const pausedStatus = container.querySelector('[data-testid="auth-status-google_calendar"]')
     expect(pausedStatus?.textContent?.toLowerCase()).toContain('connector paused')
-    expect(pausedStatus?.getAttribute('style')).toContain('var(--amber-text)')
+    expect(pausedStatus?.getAttribute('style')).toContain('var(--muted-foreground)')
 
     const pausedAttention = container.querySelector('[data-testid="attention-item-google_calendar"]')
     expect(pausedAttention?.textContent?.toLowerCase()).toContain('connector paused')
@@ -558,24 +558,27 @@ describe('AC3: single health verdict per row (dot + word)', () => {
   })
 
   it.each([
-    ['stale', 'Degraded', 'var(--amber)'],
-    ['offline', 'Error', 'var(--red)'],
-  ])('%s healthy connector has one state mark and an accessible verdict', (liveness, label, color) => {
-    mockHooks([{ ...STALE_CONNECTOR, liveness }])
+    ['stale', 'healthy', 'Degraded', 'var(--amber)'],
+    ['offline', 'healthy', 'Error', 'var(--red)'],
+    ['online', 'degraded', 'Degraded', 'var(--amber)'],
+    ['online', 'paused', 'Degraded', 'var(--amber)'],
+    ['online', 'unknown', 'Degraded', 'var(--amber)'],
+  ])('%s healthy connector has one state mark and an accessible verdict', (liveness, state, label, color) => {
+    mockHooks([{ ...STALE_CONNECTOR, liveness, state }])
     renderRoster(container, root)
 
     const row = within(container).getByTestId('connector-row-telegram')
     const dot = within(row).getByRole('img', { name: label })
     expect(dot.style.backgroundColor).toBe(color)
-    expect(within(row).getByText(liveness).closest('[aria-hidden="true"]')).toBeNull()
+    expect(within(row).getByTestId('health-verdict-telegram').closest('[aria-hidden="true"]')).toBeNull()
 
     // Count rendered state-colored shapes, including decorative ones hidden
     // from assistive technology. JSDOM does not expand Tailwind utilities, so
     // inspect both inline fills and token-based background classes. The dot
     // is a positive control: removing all status marks must also fail.
     const stateMarks = Array.from(row.querySelectorAll<HTMLElement>('*')).filter((element) =>
-      /var\(--(?:red|amber|green)\)/.test(element.style.backgroundColor) ||
-      /bg-\[(?:color:)?var\(--(?:red|amber|green)\)\]/.test(element.className),
+      /var\(--(?:red|amber|green)(?:-text)?\)/.test(element.getAttribute('style') ?? '') ||
+      /(?:bg|text|border)-\[(?:color:)?var\(--(?:red|amber|green)(?:-text)?\)\]/.test(element.getAttribute('class') ?? ''),
     )
     expect(stateMarks).toEqual([dot])
   })
@@ -615,7 +618,7 @@ describe('bu-14gso: offline connector with frozen error state', () => {
     expect(status?.textContent?.toLowerCase()).not.toContain('reauth')
     expect(status?.textContent?.toLowerCase()).toContain('connector offline')
     expect(status?.textContent?.toLowerCase()).not.toContain('authorized')
-    expect(status?.getAttribute('style')).toContain('var(--red-text)')
+    expect(status?.getAttribute('style')).toContain('var(--muted-foreground)')
     expect(status?.className).not.toContain('--green')
   })
 
@@ -723,7 +726,7 @@ describe('reauth pill is the reauth action', () => {
     const pill = container.querySelector('[data-testid="auth-status-gmail"]')
     expect(pill?.tagName).not.toBe('A')
     expect(pill?.textContent?.toLowerCase()).toBe('authorized')
-    expect(pill?.getAttribute('style')).toContain('var(--green)')
+    expect(pill?.getAttribute('style')).toContain('var(--muted-foreground)')
   })
 })
 
@@ -855,6 +858,18 @@ describe('per-device liveness (bu-e16to)', () => {
     )
     expect(fresh?.textContent).toMatch(/^last ·/)
     expect(stale?.textContent).toMatch(/^stale ·/)
+    for (const [identity, label, color] of [
+      ['owntracks:th', 'OK', 'var(--green)'],
+      ['owntracks:el', 'Error', 'var(--red)'],
+    ]) {
+      const device = within(container).getByTestId(`connector-device-${identity}`)
+      const dot = within(device).getByRole('img', { name: label })
+      expect(dot.style.backgroundColor).toBe(color)
+      for (const copy of [within(device).getByText(identity), within(device).getByTestId(`connector-device-lastseen-${identity}`)]) {
+        expect(copy.className).toMatch(/text-muted-foreground(?: |$)/)
+        expect(copy.className).not.toMatch(/text-muted-foreground\/|opacity-/)
+      }
+    }
   })
 
   it('does not render a devices section for a single-device connector', () => {

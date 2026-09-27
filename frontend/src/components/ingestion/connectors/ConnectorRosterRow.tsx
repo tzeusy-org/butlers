@@ -96,7 +96,8 @@ export function ConnectorRosterRow({
   const eventsCount = events24h ?? c.today?.messages_ingested ?? 0
 
   const authPresentation = authStatusPresentation(info)
-  const authColor = authPresentation.color
+  // Health is already carried by the row dot. Independent auth failures retain their tone.
+  const authColor = info.authStatus === 'ok' ? 'var(--muted-foreground)' : authPresentation.color
   const verdictWord = healthVerdictWord(c, info)
   const verdictState = healthDotState(info.health)
 

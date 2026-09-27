@@ -162,7 +162,7 @@ describe("GoogleHealthStatusCard — single account", () => {
     const accountState = screen.getByTestId("account-state");
     expect(accountState.textContent).toBe("healthy");
     expect(accountState.className).toContain("text-muted-foreground");
-    expect(screen.getByRole("img", { name: "Healthy" })).toBeDefined();
+    expect(screen.getByRole("img", { name: "Google Health: healthy" })).toBeDefined();
   });
 
   it("shows sleep_sessions_7d correctly", () => {
@@ -201,7 +201,7 @@ describe("GoogleHealthStatusCard — single account state colours", () => {
     const accountState = screen.getByTestId("account-state");
     expect(accountState.textContent).toBe("degraded");
     expect(accountState.className).toContain("text-muted-foreground");
-    expect(screen.getByRole("img", { name: "Degraded" })).toBeDefined();
+    expect(screen.getByRole("img", { name: "Google Health: degraded" })).toBeDefined();
   });
 
   it("renders error state on widget", () => {
@@ -214,7 +214,7 @@ describe("GoogleHealthStatusCard — single account state colours", () => {
     const accountState = screen.getByTestId("account-state");
     expect(accountState.textContent).toBe("error");
     expect(accountState.className).toContain("text-muted-foreground");
-    expect(screen.getByRole("img", { name: "Error" })).toBeDefined();
+    expect(screen.getByRole("img", { name: "Google Health: error" })).toBeDefined();
   });
 });
 
@@ -260,7 +260,8 @@ describe("GoogleHealthStatusCard — connector-failing (degraded) signal", () =>
     renderCard(errored);
     const banner = screen.getByTestId("connector-error-banner");
     expect(banner.textContent).toContain("unavailable");
-    expect(banner.className).toContain("var(--red)");
+    expect(banner.className).toContain("text-muted-foreground");
+    expect(banner.className).not.toMatch(/var\(--(?:red|amber)/);
     expect(banner.className).not.toContain("oklch(");
   });
 
@@ -355,4 +356,22 @@ describe("GoogleHealthStatusCard — multi-account", () => {
     expect(states).toContain("healthy");
     expect(states).toContain("degraded");
   });
+});
+
+afterEach(cleanup);
+
+// One signal per account, including degraded failures that must never look red.
+it.each(["healthy", "degraded", "error", "not_configured"] as const)("single account signal: %s", (state) => {
+  for (const error_message of [null, "token_invalid"]) {
+    const view = renderCard({ ...SINGLE_ACCOUNT_STATUS, accounts: [{ ...SINGLE_ACCOUNT_STATUS.accounts[0], state, error_message }] });
+    const widget = screen.getByTestId("google-health-account-widget");
+    const mark = widget.querySelector('[role="img"]') as HTMLElement;
+    expect(mark).not.toBeNull();
+    expect(mark.getAttribute("aria-label")).toBe(`Google Health: ${state.replaceAll("_", " ")}`);
+    expect(mark.style.backgroundColor).toBe(({ healthy: "var(--green)", degraded: "var(--amber)", error: "var(--red)", not_configured: "var(--dim)" })[state]);
+    const signals = [...widget.querySelectorAll<HTMLElement>("*")].filter(el => /var\(--(?:red|amber|green)(?:-text)?\)/.test((el.getAttribute("style") ?? "") + el.className));
+    expect(signals).toEqual(state === "not_configured" ? [] : [mark]);
+    expect(widget.querySelector('[role="alert"]') !== null).toBe((state === "error" || state === "degraded") && error_message !== null);
+    view.unmount();
+  }
 });

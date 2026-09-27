@@ -1895,6 +1895,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Last ingest
 - Sleep sessions · 7d
 - Daily summaries · 7d
+- Google Health: {}
 
 ## `frontend/src/components/butler-detail/HomeAtmosphereLocationPanel.tsx`
 
@@ -3768,14 +3769,15 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - not configured
 - paste long-lived access token
 - Telegram
+- OwnTracks: {}
 - OwnTracks
 - Steam Web API key
 - Steam
-- needs auth
+- Spotify: {}
 - Spotify app client_id
 - Spotify
 - WhatsApp pairing QR code
-- pair required
+- WhatsApp: {}
 - WhatsApp
 
 ## `frontend/src/components/secrets/passport/Spine.tsx`
@@ -3863,6 +3865,9 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - oauth · connect now
 - owner entity ID not available: cannot connect provider
 - other integrations
+- Google Health consent: about to expire
+- Google Health consent: test mode
+- Google Health: {}
 - incoming url
 - last seen
 - last verified
@@ -4400,4 +4405,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3454*
+*Total strings: 3459*

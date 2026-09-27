@@ -50,36 +50,40 @@ interface TopologyGraphProps {
   connectorsError?: boolean;
 }
 
-function toneColor(tone: CellTone): string {
-  switch (tone) {
-    case "green":
-      return stateColorVar("ok");
-    case "amber":
-      return stateColorVar("degraded");
-    case "red":
-      return stateColorVar("error");
-    case "neutral":
-      return stateColorVar("waiting");
-  }
-}
+const TONE_STATE = { green: "ok", amber: "degraded", red: "error", neutral: "waiting" } as const;
+// Pattern and color share one border; the node shape continues to identify its role.
+const STATE_BORDER = {
+  ok: "2px solid",
+  degraded: "2px dashed",
+  error: "3px double",
+  waiting: "2px dotted",
+} as const;
+const TONE_LABEL = { green: "running", amber: "overdue", red: "offline or quarantined", neutral: "idle or unknown" } as const;
 
-function getStatusColor(status: string, tone?: CellTone): string {
-  if (tone) {
-    return toneColor(tone);
-  }
+function nodeState(status: string, tone?: CellTone) {
+  if (tone) return TONE_STATE[tone];
   switch (status) {
     case "ok":
     case "online":
-      return stateColorVar("ok");
+      return "ok";
     case "down":
     case "offline":
-      return stateColorVar("error");
+      return "error";
     case "degraded":
     case "stale":
-      return stateColorVar("degraded");
+      return "degraded";
     default:
-      return stateColorVar("waiting");
+      return "waiting";
   }
+}
+
+function stateBorder(status: string, tone?: CellTone): string {
+  const state = nodeState(status, tone);
+  return `${STATE_BORDER[state]} ${stateColorVar(state)}`;
+}
+
+function nodeStateLabel(status: string, tone?: CellTone): string {
+  return tone ? TONE_LABEL[tone] : status;
 }
 
 function connectorLabel(c: ConnectorNode): string {
@@ -107,15 +111,16 @@ function buildNodes(
   const centerY = 250;
 
   if (switchboard) {
-    const stateColor = getStatusColor(switchboard.status, switchboard.tone);
     nodes.push({
       id: switchboard.name,
       position: { x: centerX - 70, y: centerY - 20 },
       data: { label: switchboard.name },
+      ariaRole: "link",
+      ariaLabel: `${switchboard.name}: ${nodeStateLabel(switchboard.status, switchboard.tone)}`,
       style: {
-        background: "var(--bg-deep)",
+        background: "var(--bg)",
         color: "var(--fg)",
-        border: `2px solid ${stateColor}`,
+        border: stateBorder(switchboard.status, switchboard.tone),
         borderRadius: "12px",
         padding: "16px 24px",
         fontWeight: 700,
@@ -128,15 +133,16 @@ function buildNodes(
 
   // Heartbeat node: top-right
   if (heartbeat) {
-    const stateColor = getStatusColor(heartbeat.status, heartbeat.tone);
     nodes.push({
       id: heartbeat.name,
       position: { x: 550, y: 50 },
       data: { label: heartbeat.name },
+      ariaRole: "link",
+      ariaLabel: `${heartbeat.name}: ${nodeStateLabel(heartbeat.status, heartbeat.tone)}`,
       style: {
-        background: "var(--bg-deep)",
+        background: "var(--bg)",
         color: "var(--fg)",
-        border: `2px dashed ${stateColor}`,
+        border: stateBorder(heartbeat.status, heartbeat.tone),
         borderRadius: "50%",
         padding: "12px",
         fontWeight: 600,
@@ -166,10 +172,12 @@ function buildNodes(
       id: butler.name,
       position: { x, y },
       data: { label: butler.name },
+      ariaRole: "link",
+      ariaLabel: `${butler.name}: ${nodeStateLabel(butler.status, butler.tone)}`,
       style: {
-        background: "var(--bg-deep)",
+        background: "var(--bg)",
         color: "var(--fg)",
-        border: `2px solid ${getStatusColor(butler.status, butler.tone)}`,
+        border: stateBorder(butler.status, butler.tone),
         borderRadius: "8px",
         padding: "10px 16px",
         fontWeight: 500,
@@ -196,10 +204,12 @@ function buildNodes(
       id: connId,
       position: { x, y },
       data: { label: connectorLabel(connector) },
+      ariaRole: "link",
+      ariaLabel: `${connector.connector_type} ${connector.endpoint_identity}: ${connector.liveness}`,
       style: {
         background: "var(--bg)",
         color: "var(--fg)",
-        border: `2px solid ${getStatusColor(connector.liveness)}`,
+        border: stateBorder(connector.liveness),
         borderRadius: "8px",
         padding: "8px 12px",
         fontWeight: 500,
@@ -293,19 +303,17 @@ export default function TopologyGraph({
   const nodes = useMemo(() => buildNodes(butlers, connectors), [butlers, connectors]);
   const edges = useMemo(() => buildEdges(butlers, connectors), [butlers, connectors]);
 
+  const openNode = useCallback((id: string) => {
+    if (id.startsWith("connector-")) {
+      const parts = id.replace("connector-", "").split("-");
+      navigate(`/ingestion/connectors/${parts[0]}/${parts.slice(1).join("-")}`);
+    } else {
+      navigate(`/butlers/${id}`);
+    }
+  }, [navigate]);
+
   const onNodeClick: NodeMouseHandler = useCallback(
-    (_, node) => {
-      if (node.id.startsWith("connector-")) {
-        // connector-{type}-{identity} → /ingestion/connectors/{type}/{identity}
-        const parts = node.id.replace("connector-", "").split("-");
-        const connType = parts[0];
-        const identity = parts.slice(1).join("-");
-        navigate(`/ingestion/connectors/${connType}/${identity}`);
-      } else {
-        navigate(`/butlers/${node.id}`);
-      }
-    },
-    [navigate],
+    (_, node) => openNode(node.id), [openNode],
   );
 
   if (isLoading) {
@@ -342,24 +350,24 @@ export default function TopologyGraph({
         <SectionTitle>Ecosystem Topology</SectionTitle>
       </SectionHeader>
       <SectionContent>
-        {/* Legend -- the graph's colors are otherwise unexplained; this
+        {/* Legend -- the graph's border patterns and colors are otherwise unexplained; this
             names the one canonical liveness vocabulary shared with the
             roster board and heartbeat tile. */}
         <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
           <span className="flex items-center gap-1.5">
-            <span className="inline-block size-2 rounded-full" style={{ background: toneColor("green") }} aria-hidden="true" />
+            <span className="inline-block h-3 w-5" style={{ border: stateBorder("", "green") }} aria-hidden="true" />
             Running
           </span>
           <span className="flex items-center gap-1.5">
-            <span className="inline-block size-2 rounded-full" style={{ background: toneColor("neutral") }} aria-hidden="true" />
+            <span className="inline-block h-3 w-5" style={{ border: stateBorder("", "neutral") }} aria-hidden="true" />
             Idle
           </span>
           <span className="flex items-center gap-1.5">
-            <span className="inline-block size-2 rounded-full" style={{ background: toneColor("amber") }} aria-hidden="true" />
+            <span className="inline-block h-3 w-5" style={{ border: stateBorder("", "amber") }} aria-hidden="true" />
             Overdue
           </span>
           <span className="flex items-center gap-1.5">
-            <span className="inline-block size-2 rounded-full" style={{ background: toneColor("red") }} aria-hidden="true" />
+            <span className="inline-block h-3 w-5" style={{ border: stateBorder("", "red") }} aria-hidden="true" />
             Offline / Quarantined
           </span>
         </div>
@@ -373,7 +381,19 @@ export default function TopologyGraph({
             className="mb-2"
           />
         )}
-        <div className="h-96">
+        <div className="h-96" onKeyDownCapture={(event) => {
+          // ReactFlow uses Enter/Space for selection but does not invoke onNodeClick.
+          // Only activate the focused node itself, leaving graph pan/drag keys intact.
+          const target = event.target as HTMLElement;
+          if ((event.key === "Enter" || event.key === " ") && target.matches(".react-flow__node")) {
+            const id = target.dataset.id;
+            if (id) {
+              event.preventDefault();
+              event.stopPropagation();
+              openNode(id);
+            }
+          }
+        }}>
           <ReactFlow
             nodes={nodes}
             edges={edges}

@@ -40,11 +40,11 @@ export function ConnectorDeviceBadges({ devices }: ConnectorDeviceBadgesProps) {
           data-testid={`connector-device-${d.sender_identity}`}
         >
           <StateDot state={d.stale ? 'error' : 'ok'} size={4} />
-          <span className="font-mono text-[10px] tracking-[0.02em] text-muted-foreground/80">
+          <span className="font-mono text-[10px] tracking-[0.02em] text-muted-foreground">
             {d.sender_identity}
           </span>
           <span
-            className="font-mono text-[10px] text-muted-foreground/60"
+            className="font-mono text-[10px] text-muted-foreground"
             data-testid={`connector-device-lastseen-${d.sender_identity}`}
           >
             {d.stale ? 'stale · ' : 'last · '}

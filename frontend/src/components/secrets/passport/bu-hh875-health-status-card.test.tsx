@@ -517,3 +517,31 @@ describe("computeTestModeBannerVariant: 5d6h red boundary [bu-bxu50]", () => {
     expect(computeTestModeBannerVariant(null, now)).toBe("orange");
   });
 });
+
+describe("Health single signals", () => {
+  it.each(["healthy", "degraded", "error", "not_configured"] as const)("maps %s to one accessible account mark", (state) => {
+    mockPrimaryWithHealth();
+    mockHealthStatus(makeHealthStatus({state}));
+    const doc = new DOMParser().parseFromString(renderInRouter(<PageGoogleAccounts />), "text/html");
+    const card = doc.querySelector('[data-testid="health-passport-status-card"]')!;
+    const mark = card.querySelector('[role="img"]') as HTMLElement;
+    expect(mark).not.toBeNull();
+    expect(mark.getAttribute("aria-label")).toBe(`Google Health: ${state.replaceAll("_", " ")}`);
+    expect(mark.style.backgroundColor).toBe(({ healthy: "var(--green)", degraded: "var(--amber)", error: "var(--red)", not_configured: "var(--dim)" })[state]);
+    const signals = [...card.querySelectorAll<HTMLElement>("*")].filter(el => /var\(--(?:red|amber|green)(?:-text)?\)/.test(el.getAttribute("style") ?? ""));
+    expect(signals).toEqual(state === "not_configured" ? [] : [mark]);
+  });
+  it.each([false, true])("expiry has one mark and neutral recovery copy, expiring=%s", (expiring) => {
+    mockPrimaryWithHealth();
+    mockHealthStatus(makeHealthStatus({test_mode: true, last_token_refresh_at: refreshedMsAgo(expiring ? 6 * ONE_DAY_MS : ONE_DAY_MS)}));
+    const doc = new DOMParser().parseFromString(renderInRouter(<PageGoogleAccounts />), "text/html");
+    const banner = doc.querySelector('[data-testid="test-mode-expiry-banner"]')!;
+    const mark = banner.querySelector('[role="img"]') as HTMLElement;
+    expect(mark).not.toBeNull();
+    expect(mark.style.backgroundColor).toBe(expiring ? "var(--red)" : "var(--amber)");
+    const signals = [banner, ...banner.querySelectorAll("*")].filter(el => /var\(--(?:red|amber|green)(?:-text)?\)/.test(el.getAttribute("style") ?? ""));
+    expect(signals).toEqual([mark]);
+    expect(banner.querySelector("a")?.getAttribute("href")).toContain("scope_set=health");
+    expect(banner.querySelector("a")?.textContent).toContain("re-consent");
+  });
+});

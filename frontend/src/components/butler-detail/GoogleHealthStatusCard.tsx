@@ -29,6 +29,7 @@ import {
 } from "@/components/ui/Section";
 import { Badge } from "@/components/ui/badge";
 import { Time } from "@/components/ui/time";
+import { googleHealthState } from "@/lib/google-health-state";
 import { StateDot } from "@/components/ui/StateDot";
 import {
   GOOGLE_HEALTH_SCOPE_FAMILIES,
@@ -36,27 +37,8 @@ import {
 } from "@/api/client";
 import type {
   GoogleHealthAccountStatus,
-  GoogleHealthConnectorState,
   GoogleHealthStatusResponse,
 } from "@/api/types";
-
-/**
- * Maps GoogleHealthConnectorState to a StateDot-compatible state.
- * `not_configured` falls back to `archived` (muted) since StateDot does not
- * have a direct equivalent.
- */
-function toDotState(state: GoogleHealthConnectorState) {
-  switch (state) {
-    case "healthy":
-      return "healthy" as const;
-    case "degraded":
-      return "degraded" as const;
-    case "error":
-      return "error" as const;
-    default:
-      return "archived" as const;
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Connector-failure (degraded/error) message helper
@@ -98,7 +80,7 @@ function ConnectorErrorBanner({ code }: { code: string }) {
     <div
       role="alert"
       data-testid="connector-error-banner"
-      className="mb-3 rounded border border-[color:var(--red)]/40 bg-[color:var(--red)]/10 px-2.5 py-2 text-xs text-[color:var(--red)]"
+      className="mb-3 text-xs text-muted-foreground"
     >
       {formatConnectorError(code)}
     </div>
@@ -136,7 +118,7 @@ function AccountWidget({ account, isPrimary }: AccountWidgetProps) {
       <SectionHeader className="flex flex-row items-center justify-between gap-2 pb-2">
         <SectionTitle className="flex min-w-0 items-center gap-2">
           {/* State dot — uses StateDot primitive for consistent token-based colour */}
-          <StateDot state={toDotState(account.state)} size={8} />
+          <StateDot state={googleHealthState(account.state)} aria-label={`Google Health: ${account.state.replaceAll("_", " ")}`} size={8} />
           <span className="truncate" data-testid="account-email">
             {account.email}
           </span>
