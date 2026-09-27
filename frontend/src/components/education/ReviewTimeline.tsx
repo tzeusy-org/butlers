@@ -202,7 +202,7 @@ export default function ReviewTimeline({ onSelectNode }: ReviewTimelineProps) {
       {groups.map((group) => (
         <Section key={group.label}>
           <SectionHeader className="pb-2">
-            <SectionTitle className="text-sm font-medium">{group.label}</SectionTitle>
+            <SectionTitle>{group.label}</SectionTitle>
           </SectionHeader>
           <SectionContent
             className={`divide-y border-l-4 ${group.borderClass}`}

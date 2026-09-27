@@ -31,8 +31,6 @@ const PROMOTION_ACCENT_CLASSES = {
   card: "border-blue-200 bg-blue-50/30 dark:border-blue-800 dark:bg-blue-950/20",
   // eslint-disable-next-line no-restricted-syntax -- informational rule-promotion prompt, not live operational status.
   icon: "h-4 w-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5",
-  // eslint-disable-next-line no-restricted-syntax -- informational rule-promotion prompt, not live operational status.
-  title: "text-sm font-semibold text-blue-900 dark:text-blue-100",
   // eslint-disable-next-line no-restricted-syntax -- informational rule-promotion prompt action, not live operational status.
   action: "bg-blue-600 hover:bg-blue-700 text-white",
 } as const;
@@ -45,7 +43,7 @@ function PendingCard({ suggestion, onConfirm, onDismiss, isPending }: PendingCar
         <div className="flex items-start justify-between gap-2">
           <div className="flex items-center gap-2">
             <TrendingUp className={PROMOTION_ACCENT_CLASSES.icon} />
-            <SectionTitle className={PROMOTION_ACCENT_CLASSES.title}>
+            <SectionTitle>
               Promote to standing rule
             </SectionTitle>
           </div>
@@ -105,7 +103,7 @@ function AutoAppliedCard({ item, onSetEnabled, isPending }: AutoAppliedCardProps
         <div className="flex items-start justify-between gap-2">
           <div className="flex items-center gap-2">
             <ShieldCheck className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
-            <SectionTitle className="text-sm font-semibold text-foreground/80">
+            <SectionTitle>
               Auto-applied rule
             </SectionTitle>
           </div>

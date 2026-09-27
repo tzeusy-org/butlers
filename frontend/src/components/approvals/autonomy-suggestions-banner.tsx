@@ -27,8 +27,6 @@ const PROMOTION_ACCENT_CLASSES = {
   card: "border-blue-200 bg-blue-50/30 dark:border-blue-800 dark:bg-blue-950/20",
   // eslint-disable-next-line no-restricted-syntax -- informational promotion prompt, not live operational status.
   icon: "h-4 w-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5",
-  // eslint-disable-next-line no-restricted-syntax -- informational promotion prompt, not live operational status.
-  title: "text-sm font-semibold text-blue-900 dark:text-blue-100",
   // eslint-disable-next-line no-restricted-syntax -- informational promotion prompt action, not live operational status.
   action: "bg-blue-600 hover:bg-blue-700 text-white",
 } as const;
@@ -78,7 +76,7 @@ function PromotionCard({ suggestion, onConfirm, onDismiss, isPending }: Suggesti
         <div className="flex items-start justify-between gap-2">
           <div className="flex items-center gap-2">
             <TrendingUp className={PROMOTION_ACCENT_CLASSES.icon} />
-            <SectionTitle className={PROMOTION_ACCENT_CLASSES.title}>
+            <SectionTitle>
               Promote to standing rule
             </SectionTitle>
           </div>
@@ -139,7 +137,7 @@ function DemotionCard({ suggestion, onConfirm, onDismiss, isPending }: Suggestio
         <div className="flex items-start justify-between gap-2">
           <div className="flex items-center gap-2">
             <AlertTriangle className="h-4 w-4 text-[var(--amber-text)] shrink-0 mt-0.5" />
-            <SectionTitle className="text-sm font-semibold text-[var(--amber-text)]">
+            <SectionTitle>
               Review Standing Rule
             </SectionTitle>
           </div>

@@ -139,7 +139,7 @@ function RelationshipKpiStrip({ ranking, overdueCount, totalContacts, isLoading,
     return (
       <Section data-testid="kpi-strip">
         <SectionHeader>
-          <SectionTitle className="text-sm font-medium">Relationship overview</SectionTitle>
+          <SectionTitle>Relationship overview</SectionTitle>
         </SectionHeader>
         <SectionContent className="p-0 pb-4">{kpiSkeleton}</SectionContent>
       </Section>
@@ -150,7 +150,7 @@ function RelationshipKpiStrip({ ranking, overdueCount, totalContacts, isLoading,
     return (
       <Section data-testid="kpi-strip">
         <SectionHeader>
-          <SectionTitle className="text-sm font-medium">Relationship overview</SectionTitle>
+          <SectionTitle>Relationship overview</SectionTitle>
         </SectionHeader>
         <SectionContent>
           <ErrorLine>Could not load relationship overview.</ErrorLine>
@@ -174,7 +174,7 @@ function RelationshipKpiStrip({ ranking, overdueCount, totalContacts, isLoading,
   return (
     <Section data-testid="kpi-strip">
       <SectionHeader>
-        <SectionTitle className="text-sm font-medium">Relationship overview</SectionTitle>
+        <SectionTitle>Relationship overview</SectionTitle>
       </SectionHeader>
       <SectionContent>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-6">
@@ -590,7 +590,7 @@ export default function ButlerRelationshipContactsTab() {
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
         <Section className="lg:col-span-2" data-testid="tier-distribution-card">
           <SectionHeader>
-            <SectionTitle className="text-sm font-medium">Tier distribution</SectionTitle>
+            <SectionTitle>Tier distribution</SectionTitle>
           </SectionHeader>
           <SectionContent>
             <TierDistributionPanel ranking={dunbarData} isLoading={dunbarLoading} isError={dunbarError} />
@@ -599,7 +599,7 @@ export default function ButlerRelationshipContactsTab() {
 
         <Section className="lg:col-span-2" data-testid="overdue-card">
           <SectionHeader>
-            <SectionTitle className="text-sm font-medium">Overdue · cadence-aware</SectionTitle>
+            <SectionTitle>Overdue · cadence-aware</SectionTitle>
           </SectionHeader>
           <SectionContent>
             <OverduePanel
@@ -615,7 +615,7 @@ export default function ButlerRelationshipContactsTab() {
       {/* Panel 4: Watchlist T1+T2 — full width, scrollable */}
       <Section data-testid="watchlist-card">
         <SectionHeader>
-          <SectionTitle className="text-sm font-medium">Watchlist · T1 + T2</SectionTitle>
+          <SectionTitle>Watchlist · T1 + T2</SectionTitle>
         </SectionHeader>
         <SectionContent>
           <WatchlistPanel
@@ -632,7 +632,7 @@ export default function ButlerRelationshipContactsTab() {
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
         <Section className="lg:col-span-3" data-testid="thread-card">
           <SectionHeader>
-            <SectionTitle className="text-sm font-medium">
+            <SectionTitle>
               {selectedContactName
                 ? `Thread · ${selectedContactName}`
                 : "Thread · select a contact"}
@@ -651,7 +651,7 @@ export default function ButlerRelationshipContactsTab() {
 
         <Section className="lg:col-span-1" data-testid="known-facts-card">
           <SectionHeader>
-            <SectionTitle className="text-sm font-medium">Known facts</SectionTitle>
+            <SectionTitle>Known facts</SectionTitle>
           </SectionHeader>
           <SectionContent>
             <KnownFactsPanel contact={selectedContact} contactName={selectedContactName} />

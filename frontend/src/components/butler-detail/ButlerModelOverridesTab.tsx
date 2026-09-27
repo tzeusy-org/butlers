@@ -101,7 +101,7 @@ function EffectiveModelsTable({ butlerName }: { butlerName: string }) {
   return (
     <Section>
       <SectionHeader>
-        <SectionTitle className="text-base">Effective Models per Tier</SectionTitle>
+        <SectionTitle>Effective Models per Tier</SectionTitle>
         <SectionDescription>
           Resolved model for each complexity tier (accounting for overrides).
         </SectionDescription>
@@ -458,7 +458,7 @@ export default function ButlerModelOverridesTab({
       <Section>
         <SectionHeader className="flex flex-row items-center justify-between">
           <div>
-            <SectionTitle className="text-base">Per-Butler Overrides</SectionTitle>
+            <SectionTitle>Per-Butler Overrides</SectionTitle>
             <SectionDescription>
               Override specific catalog entries for this butler.
             </SectionDescription>
