@@ -203,7 +203,6 @@ tests/modules/test_decision_memory_writeback.py
 tests/modules/test_email_guard.py
 tests/modules/test_gate_safety_critical.py
 tests/modules/test_home_maintenance_tools.py
-tests/modules/test_mailbox_migrations.py
 tests/modules/test_module_base.py
 tests/modules/test_module_calendar.py
 tests/modules/test_module_email.py

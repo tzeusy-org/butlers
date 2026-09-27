@@ -50,10 +50,8 @@ tests/integration/test_domain_event_bus_roundtrip.py
 tests/integration/test_gap_interview_integration.py
 tests/integration/test_infra_state_condition_suppression_roundtrip.py
 tests/integration/test_ingestion_replay_reconcile_db.py
-tests/integration/test_mailbox_module.py
 tests/integration/test_owntracks_ssid_adapter_integration.py
 tests/integration/test_passive_interaction_sender_identity_sql.py
-tests/integration/test_post_mail.py
 tests/integration/test_scheduler_jsonb_roundtrip.py
 tests/integration/test_switchboard_routing_tools_search_path.py
 tests/integration/test_switchboard_routing_verdict_log_migration.py

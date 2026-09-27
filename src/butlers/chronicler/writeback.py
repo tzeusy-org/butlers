@@ -11,8 +11,9 @@ data (``daily_rollups``, ``daily_rollup_flags``, ``episode_entities``) and:
    at 1.0 by ``store_fact``), and decay (via ``permanence``);
 2. writes self-reminder facts marking low-confidence day blocks for
    re-reconciliation once more evidence lands;
-3. PROPOSES recurring-companion enrichment to the ``relationship`` butler over
-   MCP (switchboard-routed ``post_mail``) — never a direct cross-schema write.
+3. PROPOSES recurring-companion enrichment through an injected
+   ``propose_enrichment_fn`` (no production transport is wired today) — never a
+   direct cross-schema write.
 
 Invariants (the §8.6 acceptance contract):
 
@@ -628,53 +629,6 @@ def build_chronicler_fact_writer(pool: Any, embedding_engine: Any) -> StoreFactF
     return _write
 
 
-def build_relationship_enrichment_proposer(
-    switchboard_client_getter: Callable[[], Any],
-) -> ProposeEnrichmentFn:
-    """Return a proposer that hands enrichment to relationship over MCP.
-
-    ``switchboard_client_getter`` is read lazily at call time (the switchboard
-    connection is established after the scheduler loop starts, and the day-close
-    hook fires ~once daily long after). Uses the switchboard's ``post_mail``
-    tool to deliver a structured, non owner-facing proposal to the relationship
-    butler's mailbox. The relationship butler decides whether/how to assert it
-    through its OWN authoritative writer; the chronicler never touches
-    ``relationship.entity_facts``. A missing client is a silent no-op.
-    """
-
-    async def _propose(proposal: EnrichmentProposal) -> Any:
-        switchboard_client = switchboard_client_getter()
-        if switchboard_client is None:
-            logger.debug(
-                "chronicler writeback: no switchboard client; skipping enrichment proposal for %s",
-                proposal.entity_id,
-            )
-            return None
-        return await switchboard_client.call_tool(
-            "post_mail",
-            {
-                "target_butler": RELATIONSHIP_BUTLER,
-                "sender": SOURCE_BUTLER,
-                "sender_channel": "butler",
-                "subject": "Recurring-companion enrichment proposal",
-                "body": proposal.message,
-                "metadata": {
-                    "kind": "enrichment_proposal",
-                    "predicate": proposal.predicate,
-                    "entity_id": proposal.entity_id,
-                    "distinct_days": proposal.distinct_days,
-                    "episode_count": proposal.episode_count,
-                    "window_start": proposal.window_start.isoformat(),
-                    "window_end": proposal.window_end.isoformat(),
-                    "dedup_key": proposal.dedup_key,
-                    **proposal.metadata,
-                },
-            },
-        )
-
-    return _propose
-
-
 __all__ = [
     "COMPANION_MIN_DISTINCT_DAYS",
     "PREDICATE_LANE_SKEW",
@@ -688,7 +642,6 @@ __all__ = [
     "InsightFact",
     "WriteBackResult",
     "build_chronicler_fact_writer",
-    "build_relationship_enrichment_proposer",
     "execute_writeback",
     "fetch_companion_copresence",
     "run_day_close_writeback",

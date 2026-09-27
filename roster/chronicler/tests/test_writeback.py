@@ -32,7 +32,6 @@ from butlers.chronicler.writeback import (
     EnrichmentProposal,
     InsightFact,
     build_chronicler_fact_writer,
-    build_relationship_enrichment_proposer,
     execute_writeback,
     synthesize_enrichment_proposals,
     synthesize_lane_skew_insights,
@@ -293,45 +292,3 @@ async def test_fact_writer_binds_chronicler_schema(monkeypatch):
     assert captured["pool"] is sentinel_pool
     assert captured["source_butler"] == SOURCE_BUTLER
     assert captured["source_schema"] == SOURCE_BUTLER
-
-
-async def test_enrichment_proposer_posts_mail_to_relationship():
-    client = SimpleNamespace(call_tool=AsyncMock(return_value={"ok": True}))
-    propose = build_relationship_enrichment_proposer(lambda: client)
-    proposal = EnrichmentProposal(
-        entity_id="e-1",
-        predicate=PREDICATE_RECURRING_COMPANION,
-        distinct_days=5,
-        episode_count=12,
-        window_start=date(2026, 6, 12),
-        window_end=_DAY,
-        dedup_key="recurring-companion:e-1:2026-06-12_2026-07-09",
-        message="Recurring companion",
-    )
-    await propose(proposal)
-    client.call_tool.assert_awaited_once()
-    tool_name, args = client.call_tool.await_args.args
-    assert tool_name == "post_mail"
-    assert args["target_butler"] == "relationship"
-    assert args["sender"] == SOURCE_BUTLER
-    assert args["metadata"]["entity_id"] == "e-1"
-
-
-async def test_enrichment_proposer_noop_without_client():
-    propose = build_relationship_enrichment_proposer(lambda: None)
-    # No client available → silent no-op, no exception.
-    assert (
-        await propose(
-            EnrichmentProposal(
-                entity_id="e-1",
-                predicate=PREDICATE_RECURRING_COMPANION,
-                distinct_days=5,
-                episode_count=12,
-                window_start=date(2026, 6, 12),
-                window_end=_DAY,
-                dedup_key="k",
-                message="m",
-            )
-        )
-        is None
-    )

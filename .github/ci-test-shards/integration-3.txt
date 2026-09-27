@@ -49,7 +49,6 @@ tests/integration/test_home_maintenance_schema_faithful.py
 tests/integration/test_idempotent_ingestion.py
 tests/integration/test_infra_state_views_migration.py
 tests/integration/test_ingest_attachments_persistence.py
-tests/integration/test_mailbox_integration.py
 tests/integration/test_owntracks_place_cluster_integration.py
 tests/integration/test_sessions_degraded_meta_db.py
 tests/integration/test_switchboard_rule_promotion_apply.py
@@ -62,6 +61,7 @@ tests/migrations/test_chronicler_health_facts_grant_migration.py
 tests/migrations/test_complexity_tier_rename_migration.py
 tests/migrations/test_contacts_fk_repoint_head.py
 tests/migrations/test_drop_contacts_preferred_channel.py
+tests/migrations/test_drop_mailbox_table_migration.py
 tests/migrations/test_entity_v3_lifecycle_migration.py
 tests/migrations/test_healing_breaker_reset_backfill_migration.py
 tests/migrations/test_infra_conditions_migration.py
