@@ -122,6 +122,6 @@
 - [x] 5.1 After the separately approved implementation is merged, sync the new
   capability to `openspec/specs/home-assistant-person-mapping/spec.md` and
   archive this change. Archival does not authorize deployment or mapping use.
-  Done (PR #PRNUM): capability synced to
+  Done (PR #4284): capability synced to
   `openspec/specs/home-assistant-person-mapping/spec.md` and change archived.
   Archival does not authorize deployment or mapping use.
