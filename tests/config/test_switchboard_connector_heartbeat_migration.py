@@ -11,6 +11,7 @@ import pytest
 from sqlalchemy import create_engine, text
 
 from alembic import command
+from butlers.core.definer_search_path import is_pinned
 from butlers.testing.migration import (
     create_migration_db,
     get_column_info,
@@ -161,27 +162,13 @@ def test_connector_heartbeat_tables_schema(postgres_container):
     assert _get_partition_count(db_url, "connector_heartbeat_log") >= 1
 
 
-def _assert_search_path_is_minimal(config: list[str], expected_schema: str) -> None:
-    """Assert SECURITY DEFINER search_path is pinned to the expected schema only.
+def _assert_search_path_is_minimal(config: list[str]) -> None:
+    """Assert SECURITY DEFINER search_path is exactly ``pg_catalog, pg_temp``.
 
-    Guards against regressions that would re-expose ``public`` (or any other
-    arbitrary schema) inside a ``SECURITY DEFINER`` function.
+    The home schema is CREATE-able by the runtime role, so it must not be on
+    the path; the body names it as a migration-time literal instead (sw_039).
     """
-    search_path_settings = [s for s in config if s.startswith("search_path=")]
-    assert len(search_path_settings) == 1, (
-        f"Expected exactly one search_path setting, got: {search_path_settings}"
-    )
-    setting = search_path_settings[0]
-    value = setting.split("=", 1)[1]
-    parts = [p.strip().strip('"') for p in value.split(",")]
-    # Allow ``pg_temp`` (PostgreSQL appends it implicitly anyway) and the
-    # function's home schema. Reject anything else — especially ``public``
-    # and ``$user``.
-    allowed = {expected_schema, "pg_temp"}
-    assert set(parts) <= allowed, (
-        f"search_path leaks unexpected schemas: {parts} (allowed: {allowed})"
-    )
-    assert expected_schema in parts, f"search_path missing target schema {expected_schema}: {parts}"
+    assert is_pinned(config), f"search_path is not pinned: {config}"
 
 
 def test_runtime_role_can_ensure_connector_heartbeat_partition(postgres_container):
@@ -197,7 +184,7 @@ def test_runtime_role_can_ensure_connector_heartbeat_partition(postgres_containe
             db_url, function_name, schema_name="switchboard"
         )
         assert security_definer, f"{function_name} must be SECURITY DEFINER"
-        _assert_search_path_is_minimal(config, expected_schema="switchboard")
+        _assert_search_path_is_minimal(config)
 
     partition_name = _execute_as_role(
         db_url,

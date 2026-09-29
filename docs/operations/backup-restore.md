@@ -255,6 +255,13 @@ cluster superuser to rebuild the fences.
 real dumps and real clusters, including both rejected alternatives, so neither
 can be reintroduced without the test saying why it was rejected.
 
+A dump preserves each function's `proconfig`, so a dump taken before the
+definer search-path pins (core_252, sw_039 and the init-db finalizers) restores
+definers that still have a `CREATE`-able schema on their path. Bring a restored
+database to the current bootstrap and migration heads before exposing it. The
+catalog guard `tests/migrations/test_definer_search_path_pins.py` defines the
+end state: every `SECURITY DEFINER` path is exactly `pg_catalog, pg_temp`.
+
 ## Managed restore drill
 
 The `restore-drill-executor` is the only process allowed to perform the

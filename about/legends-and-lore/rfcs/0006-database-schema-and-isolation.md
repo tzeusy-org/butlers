@@ -185,11 +185,17 @@ matrix must be updated. The authoritative runtime specification is in
 `runtime_attention_outbox` is an exception to the legacy broad-public development grant baseline:
 `scripts/init-db.sql` runs its bootstrap-owned ACL finalizer after that baseline on every rerun.
 The outbox owner is a membership-free NOLOGIN role, its `SECURITY DEFINER` append operations use a
-fixed `pg_catalog, public, pg_temp` search path, and `PUBLIC` execution is revoked before the
+fixed `pg_catalog, pg_temp` search path, and `PUBLIC` execution is revoked before the
 explicit producer grants are restored. Producer and Switchboard access additionally require the
 expected active `SET ROLE`; shared connecting-login membership is an effective-role boundary, not
 an independently authenticated or cryptographic per-butler identity. No worker, transport, API,
 or historic-incident backfill is activated by the representation migration.
+
+That search path is the rule for every `SECURITY DEFINER` function, not just these ones. It is exactly
+`pg_catalog, pg_temp`, and the body schema-qualifies every relation and non-catalog function,
+because `public` and each butler schema are `CREATE`-able by a less-privileged role. The catalog
+guard `tests/migrations/test_definer_search_path_pins.py` enforces it with an empty allowlist
+(see `docs/data_and_storage/migration-patterns.md`).
 
 The 2026-09-23 fleet-liveness target contract extends this narrow producer
 pattern to independently observed fleet-control and QA-patrol-overdue
