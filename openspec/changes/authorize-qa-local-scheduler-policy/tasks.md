@@ -3,8 +3,8 @@
 - [x] 0.1 Independently review this exact proposed RFC/OpenSpec text against
   Rule 3, RFCs 0001/0003/0006/0010, `sw_035`, QA's runtime-role and audit
   pools, and the active liveness delta.
-  Evidence: independent review bead `bu-g0jsht` (closed), plus the review of
-  PR #4241, which integrated the adopted text into canonical documentation.
+  Evidence: independent review bead `bu-g0jsht` (closed), plus the independent
+  canonical-integration verification recorded on `bu-4gwc0j` for PR #4241 (583f054e2).
 - [x] 0.2 Obtain the owner's explicit choice on the paired proposed Rule 3
   doctrine text, narrow QA-only RFC exception, and the typed unknown-policy clarification to
   `REQ-staffer-qa-006`. Unanswered or declined means no projection grant, Q1 scheduler
