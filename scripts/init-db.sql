@@ -3581,6 +3581,157 @@ BEGIN
 END;
 $$;
 
+-- bu-giazn6: the condition marker's last_delivery_state must follow every
+-- delivery transition, not only those the controller happens to observe while
+-- a condition is still active, so it stays truthful after the outbox row is
+-- gone.  One AFTER UPDATE trigger on the outbox covers every writer (the
+-- Switchboard worker's claim, terminal, and fencing UPDATEs) in the same
+-- transaction; the worker role itself gains no privilege on the marker.  The
+-- v4 append's refresh branch stays as a no-op fallback: with the trigger
+-- installed the marker already equals the outbox state, and after a rollback
+-- it restores the v4 behaviour exactly.
+CREATE OR REPLACE FUNCTION public.runtime_attention_upgrade_condition_marker_v5()
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $runtime_attention_condition_marker_v5$
+DECLARE
+    v_migration_role NAME;
+BEGIN
+    SELECT migration_role INTO v_migration_role
+    FROM runtime_attention_admin.bootstrap_configuration
+    WHERE singleton;
+    IF v_migration_role IS NULL
+       OR to_regclass('public.runtime_attention_outbox') IS NULL
+       OR to_regclass('public.runtime_attention_condition_episodes') IS NULL THEN
+        RAISE EXCEPTION
+            'runtime-attention condition marker upgrade requires the v4 condition marker';
+    END IF;
+    IF NOT COALESCE((SELECT rolsuper FROM pg_roles WHERE rolname = session_user), false)
+       AND session_user <> v_migration_role THEN
+        RAISE EXCEPTION
+            'runtime-attention condition marker upgrade requires its configured migration role';
+    END IF;
+
+    -- Owner-run: only the no-login outbox owner (the marker's sole RLS
+    -- principal) writes the marker.  The body schema-qualifies its relation.
+    CREATE OR REPLACE FUNCTION public.runtime_attention_sync_condition_marker()
+    RETURNS trigger
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = pg_catalog, pg_temp
+    AS $runtime_attention_sync_condition_marker$
+    BEGIN
+        UPDATE public.runtime_attention_condition_episodes
+        SET last_delivery_state = NEW.lifecycle_state, updated_at = now()
+        WHERE episode_id = NEW.id
+          AND last_delivery_state IS DISTINCT FROM NEW.lifecycle_state;
+        RETURN NULL;
+    END;
+    $runtime_attention_sync_condition_marker$;
+    ALTER FUNCTION public.runtime_attention_sync_condition_marker()
+        OWNER TO runtime_attention_outbox_owner;
+    REVOKE ALL PRIVILEGES ON FUNCTION public.runtime_attention_sync_condition_marker()
+        FROM PUBLIC;
+
+    DROP TRIGGER IF EXISTS runtime_attention_condition_marker_sync_trigger
+        ON public.runtime_attention_outbox;
+    CREATE TRIGGER runtime_attention_condition_marker_sync_trigger
+        AFTER UPDATE OF lifecycle_state ON public.runtime_attention_outbox
+        FOR EACH ROW
+        WHEN (NEW.source = 'control_plane_condition'
+              AND NEW.lifecycle_state IS DISTINCT FROM OLD.lifecycle_state)
+        EXECUTE FUNCTION public.runtime_attention_sync_condition_marker();
+
+    -- Converge markers left stale before the trigger existed.  Idempotent.
+    UPDATE public.runtime_attention_condition_episodes AS marker
+    SET last_delivery_state = episode.lifecycle_state, updated_at = now()
+    FROM public.runtime_attention_outbox AS episode
+    WHERE episode.id = marker.episode_id
+      AND marker.last_delivery_state IS DISTINCT FROM episode.lifecycle_state;
+
+    EXECUTE format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION public.runtime_attention_upgrade_condition_marker_v5() FROM %I',
+        v_migration_role
+    );
+    ALTER FUNCTION public.runtime_attention_deactivate_condition_marker_v5()
+        OWNER TO runtime_attention_outbox_owner;
+    ALTER FUNCTION public.runtime_attention_upgrade_condition_marker_v5()
+        OWNER TO runtime_attention_outbox_owner;
+END;
+$runtime_attention_condition_marker_v5$;
+
+-- Rollback removes the trigger and its function and keeps every marker row
+-- and its last recorded delivery category.  Unlike the v4 deactivator it is
+-- not a definer: it runs with the calling bootstrap superuser's authority so it
+-- can also hand the upgrader back to the bootstrap and re-offer it, making a
+-- later re-upgrade a plain migration step.
+CREATE OR REPLACE FUNCTION public.runtime_attention_deactivate_condition_marker_v5()
+RETURNS void
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = pg_catalog, pg_temp
+AS $runtime_attention_deactivate_condition_marker_v5$
+DECLARE
+    v_migration_role NAME;
+    v_bootstrap_owner NAME;
+BEGIN
+    IF NOT COALESCE((SELECT rolsuper FROM pg_roles WHERE rolname = current_user), false) THEN
+        RAISE EXCEPTION 'runtime-attention condition marker rollback requires bootstrap superuser'
+            USING ERRCODE = '42501';
+    END IF;
+    IF to_regclass('public.runtime_attention_outbox') IS NOT NULL THEN
+        DROP TRIGGER IF EXISTS runtime_attention_condition_marker_sync_trigger
+            ON public.runtime_attention_outbox;
+    END IF;
+    DROP FUNCTION IF EXISTS public.runtime_attention_sync_condition_marker();
+
+    SELECT migration_role INTO v_migration_role
+    FROM runtime_attention_admin.bootstrap_configuration
+    WHERE singleton;
+    SELECT pg_get_userbyid(nspowner) INTO v_bootstrap_owner
+    FROM pg_namespace
+    WHERE nspname = 'runtime_attention_admin';
+    IF v_bootstrap_owner IS NOT NULL THEN
+        EXECUTE format(
+            'ALTER FUNCTION public.runtime_attention_upgrade_condition_marker_v5() OWNER TO %I',
+            v_bootstrap_owner
+        );
+    END IF;
+    IF v_migration_role IS NOT NULL THEN
+        EXECUTE format(
+            'GRANT EXECUTE ON FUNCTION public.runtime_attention_upgrade_condition_marker_v5() TO %I',
+            v_migration_role
+        );
+    END IF;
+END;
+$runtime_attention_deactivate_condition_marker_v5$;
+
+REVOKE ALL PRIVILEGES ON FUNCTION public.runtime_attention_upgrade_condition_marker_v5() FROM PUBLIC;
+REVOKE ALL PRIVILEGES ON FUNCTION public.runtime_attention_deactivate_condition_marker_v5() FROM PUBLIC;
+
+DO $$
+DECLARE
+    v_migration_role NAME := COALESCE(
+        NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers'
+    )::name;
+BEGIN
+    -- Bootstrap-owned until used, as v4: a rollback removes the installed
+    -- function, so hand the upgrader back to the bootstrap and re-offer it.
+    IF to_regprocedure('public.runtime_attention_sync_condition_marker()') IS NULL THEN
+        EXECUTE format(
+            'ALTER FUNCTION public.runtime_attention_upgrade_condition_marker_v5() OWNER TO %I',
+            current_user
+        );
+        EXECUTE format(
+            'GRANT EXECUTE ON FUNCTION public.runtime_attention_upgrade_condition_marker_v5() TO %I',
+            v_migration_role
+        );
+    END IF;
+END;
+$$;
+
 RESET ROLE;
 
 -- ── Runtime-attention outbox bootstrap boundary ────────────────────────────
@@ -4115,6 +4266,64 @@ $runtime_attention_finalize_condition_v4$;
 
 REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.finalize_condition_v4(NAME) FROM PUBLIC;
 
+-- Re-fence the installed v5 marker sync on every init-db rerun.  The interface
+-- finalizer drops every non-internal outbox trigger first, so this restores
+-- the sync trigger beside the guard, with its owner-run definer pinned and
+-- executable by nobody but its owner.
+CREATE OR REPLACE FUNCTION runtime_attention_admin.finalize_condition_marker_v5()
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $runtime_attention_finalize_condition_marker_v5$
+DECLARE
+    v_acl_role NAME;
+BEGIN
+    IF to_regprocedure('public.runtime_attention_sync_condition_marker()') IS NULL
+       OR to_regclass('public.runtime_attention_condition_episodes') IS NULL
+       OR to_regclass('public.runtime_attention_outbox') IS NULL THEN
+        RAISE EXCEPTION 'runtime-attention condition marker sync is incomplete';
+    END IF;
+    EXECUTE 'ALTER FUNCTION public.runtime_attention_sync_condition_marker() OWNER TO runtime_attention_outbox_owner';
+    EXECUTE 'ALTER FUNCTION public.runtime_attention_sync_condition_marker() SET search_path = pg_catalog, pg_temp';
+    EXECUTE 'ALTER FUNCTION public.runtime_attention_upgrade_condition_marker_v5() OWNER TO runtime_attention_outbox_owner';
+    FOR v_acl_role IN
+        SELECT DISTINCT role_row.rolname::name
+        FROM pg_proc AS interface_function
+        CROSS JOIN LATERAL aclexplode(
+            COALESCE(interface_function.proacl, acldefault('f', interface_function.proowner))
+        ) AS acl
+        JOIN pg_roles AS role_row ON role_row.oid = acl.grantee
+        WHERE interface_function.oid IN (
+            'public.runtime_attention_sync_condition_marker()'::regprocedure,
+            'public.runtime_attention_upgrade_condition_marker_v5()'::regprocedure
+        )
+          AND role_row.rolname <> 'runtime_attention_outbox_owner'
+    LOOP
+        EXECUTE format(
+            'REVOKE ALL PRIVILEGES ON FUNCTION public.runtime_attention_sync_condition_marker() FROM %I',
+            v_acl_role
+        );
+        EXECUTE format(
+            'REVOKE ALL PRIVILEGES ON FUNCTION public.runtime_attention_upgrade_condition_marker_v5() FROM %I',
+            v_acl_role
+        );
+    END LOOP;
+    EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION public.runtime_attention_sync_condition_marker() FROM PUBLIC';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION public.runtime_attention_upgrade_condition_marker_v5() FROM PUBLIC';
+    EXECUTE 'DROP TRIGGER IF EXISTS runtime_attention_condition_marker_sync_trigger '
+        || 'ON public.runtime_attention_outbox';
+    EXECUTE 'CREATE TRIGGER runtime_attention_condition_marker_sync_trigger '
+        || 'AFTER UPDATE OF lifecycle_state ON public.runtime_attention_outbox '
+        || 'FOR EACH ROW '
+        || 'WHEN (NEW.source = ''control_plane_condition'' '
+        || 'AND NEW.lifecycle_state IS DISTINCT FROM OLD.lifecycle_state) '
+        || 'EXECUTE FUNCTION public.runtime_attention_sync_condition_marker()';
+END;
+$runtime_attention_finalize_condition_marker_v5$;
+
+REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.finalize_condition_marker_v5() FROM PUBLIC;
+
 CREATE OR REPLACE FUNCTION runtime_attention_admin.finalize_interface()
 RETURNS void
 LANGUAGE plpgsql
@@ -4157,7 +4366,9 @@ BEGIN
        OR to_regprocedure('public.runtime_attention_upgrade_operator_v3()') IS NULL
        OR to_regprocedure('public.runtime_attention_deactivate_operator_v3()') IS NULL
        OR to_regprocedure('public.runtime_attention_upgrade_condition_v4()') IS NULL
-       OR to_regprocedure('public.runtime_attention_deactivate_condition_v4()') IS NULL THEN
+       OR to_regprocedure('public.runtime_attention_deactivate_condition_v4()') IS NULL
+       OR to_regprocedure('public.runtime_attention_upgrade_condition_marker_v5()') IS NULL
+       OR to_regprocedure('public.runtime_attention_deactivate_condition_marker_v5()') IS NULL THEN
         RAISE EXCEPTION 'runtime-attention interface is incomplete';
     END IF;
     IF EXISTS (
@@ -4180,7 +4391,9 @@ BEGIN
             'public.runtime_attention_upgrade_operator_v3()'::regprocedure,
             'public.runtime_attention_deactivate_operator_v3()'::regprocedure,
             'public.runtime_attention_upgrade_condition_v4()'::regprocedure,
-            'public.runtime_attention_deactivate_condition_v4()'::regprocedure
+            'public.runtime_attention_deactivate_condition_v4()'::regprocedure,
+            'public.runtime_attention_upgrade_condition_marker_v5()'::regprocedure,
+            'public.runtime_attention_deactivate_condition_marker_v5()'::regprocedure
         )
           AND interface_function.proowner NOT IN (v_bootstrap_owner, v_outbox_owner)
     ) THEN
@@ -4208,6 +4421,7 @@ BEGIN
     -- The v4 condition upgrader follows the same bootstrap-owned-until-used
     -- rule; its installed objects are re-fenced on every rerun.
     EXECUTE 'ALTER FUNCTION public.runtime_attention_deactivate_condition_v4() OWNER TO runtime_attention_outbox_owner';
+    EXECUTE 'ALTER FUNCTION public.runtime_attention_deactivate_condition_marker_v5() OWNER TO runtime_attention_outbox_owner';
     IF to_regclass('public.runtime_attention_condition_control') IS NOT NULL THEN
         PERFORM runtime_attention_admin.finalize_condition_v4(v_migration_role);
     END IF;
@@ -4297,6 +4511,11 @@ BEGIN
     EXECUTE 'CREATE TRIGGER runtime_attention_delivery_lease_guard_trigger '
         || 'BEFORE INSERT OR UPDATE ON public.runtime_attention_delivery_lease '
         || 'FOR EACH ROW EXECUTE FUNCTION public.runtime_attention_delivery_lease_guard()';
+    -- The v5 condition-marker sync is the one other bootstrap-defined outbox
+    -- trigger; restore it (and re-fence its definer) only while installed.
+    IF to_regprocedure('public.runtime_attention_sync_condition_marker()') IS NOT NULL THEN
+        PERFORM runtime_attention_admin.finalize_condition_marker_v5();
+    END IF;
 
     EXECUTE 'REVOKE ALL PRIVILEGES ON SCHEMA public FROM runtime_attention_outbox_owner';
     EXECUTE 'GRANT USAGE ON SCHEMA public TO runtime_attention_outbox_owner';
@@ -4314,6 +4533,8 @@ BEGIN
     EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION public.runtime_attention_delivery_lease_guard() FROM PUBLIC';
     EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION public.runtime_attention_upgrade_operator_v3() FROM PUBLIC';
     EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION public.runtime_attention_deactivate_operator_v3() FROM PUBLIC';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION public.runtime_attention_upgrade_condition_marker_v5() FROM PUBLIC';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION public.runtime_attention_deactivate_condition_marker_v5() FROM PUBLIC';
     EXECUTE 'REVOKE ALL PRIVILEGES ON SCHEMA runtime_attention_admin FROM PUBLIC';
     EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE runtime_attention_admin.bootstrap_configuration FROM PUBLIC';
 

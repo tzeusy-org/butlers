@@ -474,7 +474,8 @@ Owner attention (`core_251`): each controller pass calls the fixed
 The producer appends one content-blind `control_plane_condition` outbox
 episode per active fleet or `patrol_overdue` condition episode after a
 five-minute attention grace, and returns the same episode on every later call.
-A condition-side marker keeps that identity after outbox retention. The
+A condition-side marker keeps that identity, and (since `core_253`) mirrors
+every delivery transition, after outbox retention. The
 existing fenced at-most-once Switchboard worker delivers it, and the owner sees
 the linked `pending`, `worker_unavailable`, `sending`, `sent`, `failed`, or
 `uncertain` status on `GET /api/system/conditions`. An uncertain delivery is

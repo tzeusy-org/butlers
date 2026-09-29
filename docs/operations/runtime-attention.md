@@ -42,8 +42,14 @@ for each active `control_plane_fleet` or `qa_patrol_assurance`/`patrol_overdue` 
   constraints enforce both. Daemon names, endpoints, summaries, and errors never enter the outbox.
   Switchboard's existing fenced worker delivers the episode with fixed copy.
 - **Retention cannot re-page.** `public.runtime_attention_condition_episodes` is the condition-side
-  marker. It keeps the emitted episode id and the last delivery state it saw after the outbox row
-  ages out, and the producer returns that id rather than minting a new one.
+  marker. It keeps the emitted episode id and the last delivery state after the outbox row ages
+  out, and the producer returns that id rather than minting a new one. Since `core_253` the
+  delivery state mirrors every lifecycle transition, including one after the condition resolved:
+  an owner-run AFTER UPDATE trigger (`runtime_attention_condition_marker_sync_trigger`, definer
+  `public.runtime_attention_sync_condition_marker()`, pinned to `pg_catalog, pg_temp`) updates it
+  in the worker's own transaction. The worker role gains no marker privilege. The bootstrap-only
+  `public.runtime_attention_deactivate_condition_marker_v5()` removes the trigger and keeps every
+  marker, and `init-db.sql` reruns restore the trigger while it is installed.
 - **Owner status.** `GET /api/system/conditions` attaches `attention` to each fleet and overdue-QA
   row. It reads the content-blind `public.observe_runtime_attention_conditions()` projection,
   which is granted to the migration and dashboard login only and refuses `SET ROLE`. `status` is
