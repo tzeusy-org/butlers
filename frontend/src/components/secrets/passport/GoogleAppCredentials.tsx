@@ -3,7 +3,7 @@
 //
 // Surfaced on the System-credential pages for GOOGLE_OAUTH_CLIENT_ID and
 // GOOGLE_OAUTH_CLIENT_SECRET (see PageSystemConnected). Replaces the former
-// standalone /settings/owner page: the client_id + client_secret are written
+// standalone owner-settings page: the client_id + client_secret are written
 // together via PUT /api/oauth/google/credentials (which preserves any existing
 // refresh token), and the operator can (re-)authorize the Google account.
 //
