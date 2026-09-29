@@ -695,17 +695,6 @@ class ContactsModule(Module):
                     apply_contact=backfill_engine,
                 )
 
-                # For telegram, enrich chat IDs after each sync cycle
-                on_cycle_complete = None
-                if entry.type == "telegram":
-                    tg_provider = provider
-                    tg_pool = pool
-
-                    async def _telegram_post_sync(result: ContactsSyncResult) -> None:
-                        await _enrich_telegram_chat_ids(tg_provider, tg_pool)
-
-                    on_cycle_complete = _telegram_post_sync
-
                 runtime = ContactsSyncRuntime(
                     sync_engine=sync_engine,
                     state_store=state_store,
@@ -713,7 +702,6 @@ class ContactsModule(Module):
                     account_id=account_id,
                     incremental_interval=timedelta(minutes=self._config.sync.interval_minutes),
                     forced_full_interval=timedelta(days=self._config.sync.full_sync_interval_days),
-                    on_cycle_complete=on_cycle_complete,
                 )
 
                 await runtime.start()
@@ -954,25 +942,6 @@ class ContactsModule(Module):
         await provider.validate_credentials()
         logger.info("ContactsModule: Telegram provider credentials validated")
         return provider
-
-
-async def _enrich_telegram_chat_ids(provider: TelegramContactsProvider, pool: Any) -> None:
-    """Post-sync enrichment for Telegram private chat IDs — disabled after cut-over.
-
-    ``telegram_chat_id`` is a routing identifier with NO triple predicate (it is
-    a numeric chat ID, not a user-facing handle), so it has no home in
-    ``relationship.entity_facts``.  This enrichment therefore no longer persists
-    anything and is a no-op.
-
-    NOTE (follow-up): re-homing routing identifiers like ``telegram_chat_id`` is
-    out of scope for the channel-fact triple model and tracked as a follow-up —
-    they need a dedicated routing-identifier store, not the contact_info table.
-    """
-    logger.debug(
-        "_enrich_telegram_chat_ids: skipped — telegram_chat_id has no triple home "
-        "after the contact_info write-path cut-over (no-op)"
-    )
-    return
 
 
 __all__ = [
