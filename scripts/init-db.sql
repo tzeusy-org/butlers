@@ -3157,6 +3157,387 @@ BEGIN
 END;
 $$;
 
+-- REQ-butler-control-plane-liveness-007: owner attention for the independent
+-- fleet-control and QA-patrol-overdue conditions.  Like v3 this is a
+-- privileged, versioned upgrader: the migration login only invokes it once,
+-- and afterwards holds nothing but the content-blind condition projection.
+-- Switchboard's role (the Dashboard observer's role view) is the only
+-- producer; the existing fenced worker delivers the rows it appends.
+CREATE OR REPLACE FUNCTION public.runtime_attention_upgrade_condition_v4()
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $runtime_attention_condition_v4$
+DECLARE
+    v_migration_role NAME;
+BEGIN
+    SELECT migration_role INTO v_migration_role
+    FROM runtime_attention_admin.bootstrap_configuration
+    WHERE singleton;
+    IF v_migration_role IS NULL
+       OR to_regclass('public.runtime_attention_outbox') IS NULL
+       OR to_regclass('public.runtime_attention_delivery_lease') IS NULL
+       OR to_regclass('public.runtime_attention_operator_control') IS NULL
+       OR to_regclass('public.infra_conditions') IS NULL THEN
+        RAISE EXCEPTION
+            'runtime-attention condition upgrade requires the v3 outbox and condition ledger';
+    END IF;
+    IF NOT COALESCE((SELECT rolsuper FROM pg_roles WHERE rolname = session_user), false)
+       AND session_user <> v_migration_role THEN
+        RAISE EXCEPTION 'runtime-attention condition upgrade requires its configured migration role';
+    END IF;
+
+    CREATE TABLE IF NOT EXISTS public.runtime_attention_condition_control (
+        singleton BOOLEAN PRIMARY KEY DEFAULT true CHECK (singleton),
+        interface_version INTEGER NOT NULL CHECK (interface_version = 4),
+        producer_enabled BOOLEAN NOT NULL
+    );
+    INSERT INTO public.runtime_attention_condition_control (
+        singleton, interface_version, producer_enabled
+    ) VALUES (true, 4, true)
+    ON CONFLICT (singleton) DO UPDATE SET
+        interface_version = 4,
+        producer_enabled = true;
+
+    -- The condition-side emission marker.  Outbox rows age out after their
+    -- retention window; this row does not, so a still-active condition keeps
+    -- its emitted episode identity and last verified delivery category and is
+    -- never mistaken for an unpaged episode.  No FK: the outbox row it names
+    -- may be gone.
+    CREATE TABLE IF NOT EXISTS public.runtime_attention_condition_episodes (
+        condition_id UUID PRIMARY KEY,
+        condition_kind TEXT NOT NULL
+            CHECK (condition_kind IN ('fleet_control', 'qa_patrol_overdue')),
+        episode_id UUID NOT NULL UNIQUE,
+        last_delivery_state TEXT NOT NULL
+            CHECK (last_delivery_state IN ('pending', 'sending', 'sent', 'failed', 'uncertain')),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    ALTER TABLE public.runtime_attention_outbox
+        DROP CONSTRAINT IF EXISTS runtime_attention_outbox_source_check,
+        DROP CONSTRAINT IF EXISTS ck_runtime_attention_outbox_source,
+        ADD CONSTRAINT ck_runtime_attention_outbox_source CHECK (
+            source IN ('model_breaker', 'fleet_halt', 'control_plane_condition')
+        ),
+        DROP CONSTRAINT ck_runtime_attention_outbox_source_edge,
+        ADD CONSTRAINT ck_runtime_attention_outbox_source_edge CHECK (
+            (manual_reissue_of IS NULL AND source = 'model_breaker'
+                AND triggering_attempt_id IS NOT NULL AND fleet_halt_month IS NULL)
+            OR (manual_reissue_of IS NULL AND source = 'fleet_halt'
+                AND triggering_attempt_id IS NULL AND fleet_halt_month IS NOT NULL)
+            OR (manual_reissue_of IS NULL AND source = 'control_plane_condition'
+                AND triggering_attempt_id IS NULL AND fleet_halt_month IS NULL)
+            OR (manual_reissue_of IS NOT NULL
+                AND triggering_attempt_id IS NULL AND fleet_halt_month IS NULL)
+        ),
+        -- v3's three branches verbatim, plus one fixed condition projection:
+        -- the ledger row id, its fixed kind, and when it was first detected.
+        -- No summary, daemon name, endpoint, or condition metadata.
+        DROP CONSTRAINT ck_runtime_attention_outbox_snapshot_allowlist,
+        ADD CONSTRAINT ck_runtime_attention_outbox_snapshot_allowlist CHECK (
+            (manual_reissue_of IS NULL AND source = 'model_breaker'
+                AND source_snapshot ?& ARRAY[
+                    'catalog_entry_id', 'alias', 'model_id',
+                    'triggering_attempt_id', 'consecutive_failures'
+                ]
+                AND source_snapshot - ARRAY[
+                    'catalog_entry_id', 'alias', 'model_id',
+                    'triggering_attempt_id', 'consecutive_failures'
+                ] = '{}'::jsonb)
+            OR (manual_reissue_of IS NULL AND source = 'fleet_halt'
+                AND source_snapshot ?& ARRAY['month', 'denied_count', 'first_denied_at']
+                AND source_snapshot - ARRAY['month', 'denied_count', 'first_denied_at']
+                    = '{}'::jsonb)
+            OR (manual_reissue_of IS NOT NULL AND source = 'model_breaker'
+                AND source_snapshot ?& ARRAY[
+                    'catalog_entry_id', 'alias', 'model_id', 'triggering_attempt_id',
+                    'consecutive_failures', 'reissue_of'
+                ]
+                AND source_snapshot - ARRAY[
+                    'catalog_entry_id', 'alias', 'model_id', 'triggering_attempt_id',
+                    'consecutive_failures', 'reissue_of'
+                ] = '{}'::jsonb)
+            OR (manual_reissue_of IS NULL AND source = 'control_plane_condition'
+                AND source_snapshot ?& ARRAY['condition_id', 'condition_kind', 'first_detected_at']
+                AND source_snapshot - ARRAY['condition_id', 'condition_kind', 'first_detected_at']
+                    = '{}'::jsonb
+                AND source_snapshot->>'condition_kind' IN ('fleet_control', 'qa_patrol_overdue'))
+        ),
+        DROP CONSTRAINT ck_runtime_attention_outbox_payload_allowlist,
+        ADD CONSTRAINT ck_runtime_attention_outbox_payload_allowlist CHECK (
+            (manual_reissue_of IS NULL AND source = 'model_breaker'
+                AND payload ?& ARRAY['classification', 'consecutive_failures', 'door']
+                AND payload - ARRAY['classification', 'consecutive_failures', 'door']
+                    = '{}'::jsonb)
+            OR (manual_reissue_of IS NULL AND source = 'fleet_halt'
+                AND payload ?& ARRAY['classification', 'door']
+                AND payload - ARRAY['classification', 'door'] = '{}'::jsonb)
+            OR (manual_reissue_of IS NOT NULL AND source = 'model_breaker'
+                AND payload ?& ARRAY['classification', 'consecutive_failures', 'door']
+                AND payload - ARRAY['classification', 'consecutive_failures', 'door']
+                    = '{}'::jsonb)
+            OR (manual_reissue_of IS NULL AND source = 'control_plane_condition'
+                AND payload ?& ARRAY['classification', 'door']
+                AND payload - ARRAY['classification', 'door'] = '{}'::jsonb
+                AND (payload->>'classification', payload->>'door') IN (
+                    ('fleet_control_unhealthy', '/system'),
+                    ('qa_patrol_overdue', '/system')
+                ))
+        );
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_runtime_attention_outbox_control_plane_condition
+        ON public.runtime_attention_outbox ((source_snapshot->>'condition_id'))
+        WHERE source = 'control_plane_condition' AND manual_reissue_of IS NULL;
+
+    -- Both v4 definers resolve names with pg_catalog and pg_temp only, and
+    -- every relation below is schema-qualified.  The migration login can
+    -- CREATE in public, so a public search_path would let it plant a better
+    -- overload (e.g. public.hashtextextended(text, integer)) that then runs as
+    -- runtime_attention_outbox_owner.
+    CREATE OR REPLACE FUNCTION public.append_runtime_attention_condition(p_condition_id UUID)
+    RETURNS UUID
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = pg_catalog, pg_temp
+    AS $append_runtime_attention_condition$
+    DECLARE
+        -- The producer-owned initial attention grace.  The observer cycles
+        -- every half TTL, so an append lands well inside the ten-minute bound
+        -- while a single transient failing cycle cannot page the owner.
+        v_attention_grace CONSTANT INTERVAL := interval '5 minutes';
+        v_enabled BOOLEAN;
+        v_marker public.runtime_attention_condition_episodes%ROWTYPE;
+        v_condition RECORD;
+        v_kind TEXT;
+        v_episode_id UUID;
+        v_state TEXT;
+    BEGIN
+        IF current_setting('role', true) IS DISTINCT FROM 'butler_switchboard_rw' THEN
+            RAISE EXCEPTION 'runtime-attention condition producer requires SET ROLE butler_switchboard_rw'
+                USING ERRCODE = '42501';
+        END IF;
+        SELECT producer_enabled INTO v_enabled
+        FROM public.runtime_attention_condition_control WHERE singleton;
+        IF NOT COALESCE(v_enabled, false) THEN
+            RETURN NULL;
+        END IF;
+
+        PERFORM pg_advisory_xact_lock(
+            hashtextextended('runtime_attention_condition:' || p_condition_id::text, 0::bigint)
+        );
+        -- Emitted once, forever.  Only refresh the retained delivery category
+        -- while the outbox row still exists; never mint a successor.
+        SELECT * INTO v_marker
+        FROM public.runtime_attention_condition_episodes
+        WHERE condition_id = p_condition_id;
+        IF FOUND THEN
+            SELECT lifecycle_state INTO v_state
+            FROM public.runtime_attention_outbox WHERE id = v_marker.episode_id;
+            IF v_state IS NOT NULL AND v_state IS DISTINCT FROM v_marker.last_delivery_state THEN
+                UPDATE public.runtime_attention_condition_episodes
+                SET last_delivery_state = v_state, updated_at = now()
+                WHERE condition_id = p_condition_id;
+            END IF;
+            RETURN v_marker.episode_id;
+        END IF;
+
+        SELECT source, fingerprint, state, first_detected_at INTO v_condition
+        FROM public.infra_conditions WHERE id = p_condition_id;
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'runtime-attention condition not found' USING ERRCODE = 'P0002';
+        END IF;
+        -- Fixed server-side identities (butlers.core.fleet_conditions).  The
+        -- stopped-by-policy QA identity is an intentional hold, not a page.
+        v_kind := CASE
+            WHEN v_condition.source = 'control_plane_fleet'
+             AND v_condition.fingerprint
+                 = '72d8afdcf22a218132518788e87ecc64113b4d45b07616a628b840f985f9e799'
+                THEN 'fleet_control'
+            WHEN v_condition.source = 'qa_patrol_assurance'
+             AND v_condition.fingerprint
+                 = 'd3273e18ff648f040725c226cbde2317c3a20a06b2f7355186bc7e43979fbff2'
+                THEN 'qa_patrol_overdue'
+        END;
+        IF v_kind IS NULL THEN
+            RAISE EXCEPTION 'runtime-attention condition is not an owner-attention identity'
+                USING ERRCODE = '22023';
+        END IF;
+        IF v_condition.state NOT IN ('open', 'aging')
+           OR v_condition.first_detected_at > clock_timestamp() - v_attention_grace THEN
+            RETURN NULL;
+        END IF;
+
+        INSERT INTO public.runtime_attention_outbox (source, source_snapshot, payload)
+        VALUES (
+            'control_plane_condition',
+            jsonb_build_object(
+                'condition_id', p_condition_id::text,
+                'condition_kind', v_kind,
+                'first_detected_at', v_condition.first_detected_at
+            ),
+            jsonb_build_object(
+                'classification',
+                CASE v_kind
+                    WHEN 'fleet_control' THEN 'fleet_control_unhealthy'
+                    ELSE 'qa_patrol_overdue'
+                END,
+                'door', '/system'
+            )
+        )
+        ON CONFLICT ((source_snapshot->>'condition_id'))
+            WHERE source = 'control_plane_condition' AND manual_reissue_of IS NULL
+            DO NOTHING
+        RETURNING id, lifecycle_state INTO v_episode_id, v_state;
+        IF v_episode_id IS NULL THEN
+            SELECT id, lifecycle_state INTO v_episode_id, v_state
+            FROM public.runtime_attention_outbox
+            WHERE source = 'control_plane_condition'
+              AND manual_reissue_of IS NULL
+              AND source_snapshot->>'condition_id' = p_condition_id::text;
+        END IF;
+        INSERT INTO public.runtime_attention_condition_episodes (
+            condition_id, condition_kind, episode_id, last_delivery_state
+        ) VALUES (p_condition_id, v_kind, v_episode_id, v_state)
+        ON CONFLICT (condition_id) DO NOTHING;
+        RETURN v_episode_id;
+    END;
+    $append_runtime_attention_condition$;
+
+    CREATE OR REPLACE FUNCTION public.observe_runtime_attention_conditions()
+    RETURNS TABLE (
+        condition_id UUID,
+        condition_kind TEXT,
+        episode_id UUID,
+        lifecycle_state TEXT,
+        outbox_retained BOOLEAN,
+        created_at TIMESTAMPTZ,
+        updated_at TIMESTAMPTZ,
+        delivered_at TIMESTAMPTZ,
+        delivery_error_class TEXT,
+        delivery_error_detail TEXT,
+        delivery_worker_live BOOLEAN
+    )
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = pg_catalog, pg_temp
+    AS $observe_runtime_attention_conditions$
+    BEGIN
+        IF COALESCE(current_setting('role', true), 'none') <> 'none' THEN
+            RAISE EXCEPTION 'runtime-attention operator observation forbids SET ROLE'
+                USING ERRCODE = '42501';
+        END IF;
+        RETURN QUERY
+        SELECT marker.condition_id,
+               marker.condition_kind,
+               marker.episode_id,
+               COALESCE(episode.lifecycle_state, marker.last_delivery_state),
+               episode.id IS NOT NULL,
+               marker.created_at,
+               COALESCE(episode.updated_at, marker.updated_at),
+               episode.delivered_at,
+               episode.delivery_error_class,
+               episode.delivery_error_detail,
+               EXISTS (
+                   SELECT 1 FROM public.runtime_attention_delivery_lease AS lease
+                   WHERE lease.lease_name = 'runtime_attention_delivery'
+                     AND lease.lease_token IS NOT NULL
+                     AND lease.expires_at > clock_timestamp()
+               )
+        FROM public.runtime_attention_condition_episodes AS marker
+        LEFT JOIN public.runtime_attention_outbox AS episode ON episode.id = marker.episode_id
+        ORDER BY marker.created_at DESC, marker.condition_id;
+    END;
+    $observe_runtime_attention_conditions$;
+
+    GRANT SELECT ON TABLE public.infra_conditions TO runtime_attention_outbox_owner;
+    ALTER TABLE public.runtime_attention_condition_control
+        OWNER TO runtime_attention_outbox_owner;
+    ALTER TABLE public.runtime_attention_condition_episodes
+        OWNER TO runtime_attention_outbox_owner;
+    ALTER TABLE public.runtime_attention_condition_episodes ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE public.runtime_attention_condition_episodes FORCE ROW LEVEL SECURITY;
+    DROP POLICY IF EXISTS runtime_attention_condition_episodes_owner
+        ON public.runtime_attention_condition_episodes;
+    CREATE POLICY runtime_attention_condition_episodes_owner
+        ON public.runtime_attention_condition_episodes
+        FOR ALL TO runtime_attention_outbox_owner USING (true) WITH CHECK (true);
+    ALTER FUNCTION public.append_runtime_attention_condition(UUID)
+        OWNER TO runtime_attention_outbox_owner;
+    ALTER FUNCTION public.observe_runtime_attention_conditions()
+        OWNER TO runtime_attention_outbox_owner;
+    REVOKE ALL PRIVILEGES ON TABLE public.runtime_attention_condition_control FROM PUBLIC;
+    REVOKE ALL PRIVILEGES ON TABLE public.runtime_attention_condition_episodes FROM PUBLIC;
+    REVOKE ALL PRIVILEGES ON FUNCTION public.append_runtime_attention_condition(UUID) FROM PUBLIC;
+    REVOKE ALL PRIVILEGES ON FUNCTION public.observe_runtime_attention_conditions() FROM PUBLIC;
+    GRANT EXECUTE ON FUNCTION public.append_runtime_attention_condition(UUID)
+        TO butler_switchboard_rw;
+    EXECUTE format(
+        'GRANT SELECT ON TABLE public.runtime_attention_condition_control TO %I',
+        v_migration_role
+    );
+    EXECUTE format(
+        'GRANT EXECUTE ON FUNCTION public.observe_runtime_attention_conditions() TO %I',
+        v_migration_role
+    );
+    EXECUTE format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION public.runtime_attention_upgrade_condition_v4() FROM %I',
+        v_migration_role
+    );
+    -- Fence both entry points behind the no-login owner once the one-shot
+    -- DDL has run, exactly as v3 does; the finalizer reasserts it on reruns.
+    ALTER FUNCTION public.runtime_attention_deactivate_condition_v4()
+        OWNER TO runtime_attention_outbox_owner;
+    ALTER FUNCTION public.runtime_attention_upgrade_condition_v4()
+        OWNER TO runtime_attention_outbox_owner;
+END;
+$runtime_attention_condition_v4$;
+
+-- Rollback stops new appends only.  Emitted rows, markers, and their delivery
+-- truth stay; a re-enable cannot re-page a condition that already has a marker.
+CREATE OR REPLACE FUNCTION public.runtime_attention_deactivate_condition_v4()
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $runtime_attention_deactivate_condition_v4$
+BEGIN
+    IF NOT COALESCE((SELECT rolsuper FROM pg_roles WHERE rolname = session_user), false) THEN
+        RAISE EXCEPTION 'runtime-attention condition rollback requires bootstrap superuser';
+    END IF;
+    UPDATE public.runtime_attention_condition_control SET producer_enabled = false
+    WHERE singleton;
+END;
+$runtime_attention_deactivate_condition_v4$;
+
+REVOKE ALL PRIVILEGES ON FUNCTION public.runtime_attention_upgrade_condition_v4() FROM PUBLIC;
+REVOKE ALL PRIVILEGES ON FUNCTION public.runtime_attention_deactivate_condition_v4() FROM PUBLIC;
+
+DO $$
+DECLARE
+    v_migration_role NAME := COALESCE(
+        NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers'
+    )::name;
+BEGIN
+    IF to_regprocedure('public.append_runtime_attention_condition(uuid)') IS NULL THEN
+        EXECUTE format(
+            'GRANT EXECUTE ON FUNCTION public.runtime_attention_upgrade_condition_v4() TO %I',
+            v_migration_role
+        );
+    ELSE
+        EXECUTE format(
+            'GRANT SELECT ON TABLE public.runtime_attention_condition_control TO %I',
+            v_migration_role
+        );
+        EXECUTE format(
+            'GRANT EXECUTE ON FUNCTION public.observe_runtime_attention_conditions() TO %I',
+            v_migration_role
+        );
+    END IF;
+END;
+$$;
+
 RESET ROLE;
 
 -- ── Runtime-attention outbox bootstrap boundary ────────────────────────────
@@ -3579,6 +3960,118 @@ BEGIN
 END;
 $runtime_attention_install_fleet_halt_producer_v2$;
 
+-- Re-fence the installed v4 condition interface on every init-db rerun: exact
+-- owner, one owner-only RLS policy on the marker, Switchboard as the only
+-- producer, and the migration login holding only the projection.
+CREATE OR REPLACE FUNCTION runtime_attention_admin.finalize_condition_v4(p_migration_role NAME)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $runtime_attention_finalize_condition_v4$
+DECLARE
+    v_acl_role NAME;
+    v_policy_name NAME;
+BEGIN
+    IF to_regclass('public.runtime_attention_condition_episodes') IS NULL
+       OR to_regprocedure('public.append_runtime_attention_condition(uuid)') IS NULL
+       OR to_regprocedure('public.observe_runtime_attention_conditions()') IS NULL
+       OR to_regclass('public.infra_conditions') IS NULL THEN
+        RAISE EXCEPTION 'runtime-attention condition interface is incomplete';
+    END IF;
+    EXECUTE 'ALTER TABLE public.runtime_attention_condition_control OWNER TO runtime_attention_outbox_owner';
+    EXECUTE 'ALTER TABLE public.runtime_attention_condition_episodes OWNER TO runtime_attention_outbox_owner';
+    EXECUTE 'ALTER FUNCTION public.append_runtime_attention_condition(uuid) OWNER TO runtime_attention_outbox_owner';
+    EXECUTE 'ALTER FUNCTION public.observe_runtime_attention_conditions() OWNER TO runtime_attention_outbox_owner';
+    EXECUTE 'ALTER FUNCTION public.runtime_attention_upgrade_condition_v4() OWNER TO runtime_attention_outbox_owner';
+    EXECUTE 'ALTER FUNCTION public.append_runtime_attention_condition(uuid) SET search_path = pg_catalog, pg_temp';
+    EXECUTE 'ALTER FUNCTION public.observe_runtime_attention_conditions() SET search_path = pg_catalog, pg_temp';
+
+    EXECUTE 'ALTER TABLE public.runtime_attention_condition_episodes ENABLE ROW LEVEL SECURITY';
+    EXECUTE 'ALTER TABLE public.runtime_attention_condition_episodes FORCE ROW LEVEL SECURITY';
+    FOR v_policy_name IN
+        SELECT policy.polname::name
+        FROM pg_policy AS policy
+        WHERE policy.polrelid = 'public.runtime_attention_condition_episodes'::regclass
+    LOOP
+        EXECUTE format(
+            'DROP POLICY %I ON public.runtime_attention_condition_episodes', v_policy_name
+        );
+    END LOOP;
+    EXECUTE 'CREATE POLICY runtime_attention_condition_episodes_owner '
+        || 'ON public.runtime_attention_condition_episodes '
+        || 'FOR ALL TO runtime_attention_outbox_owner USING (true) WITH CHECK (true)';
+
+    -- Only the no-login owner touches the marker and control rows directly;
+    -- only Switchboard's role may append; only the migration login observes.
+    FOR v_acl_role IN
+        SELECT DISTINCT role_row.rolname::name
+        FROM pg_class AS relation
+        CROSS JOIN LATERAL aclexplode(
+            COALESCE(relation.relacl, acldefault('r', relation.relowner))
+        ) AS acl
+        JOIN pg_roles AS role_row ON role_row.oid = acl.grantee
+        WHERE relation.oid IN (
+            'public.runtime_attention_condition_control'::regclass,
+            'public.runtime_attention_condition_episodes'::regclass
+        )
+          AND role_row.rolname <> 'runtime_attention_outbox_owner'
+    LOOP
+        EXECUTE format(
+            'REVOKE ALL PRIVILEGES ON TABLE public.runtime_attention_condition_control FROM %I',
+            v_acl_role
+        );
+        EXECUTE format(
+            'REVOKE ALL PRIVILEGES ON TABLE public.runtime_attention_condition_episodes FROM %I',
+            v_acl_role
+        );
+    END LOOP;
+    FOR v_acl_role IN
+        SELECT DISTINCT role_row.rolname::name
+        FROM pg_proc AS interface_function
+        CROSS JOIN LATERAL aclexplode(
+            COALESCE(interface_function.proacl, acldefault('f', interface_function.proowner))
+        ) AS acl
+        JOIN pg_roles AS role_row ON role_row.oid = acl.grantee
+        WHERE interface_function.oid IN (
+            'public.append_runtime_attention_condition(uuid)'::regprocedure,
+            'public.observe_runtime_attention_conditions()'::regprocedure,
+            'public.runtime_attention_upgrade_condition_v4()'::regprocedure
+        )
+          AND role_row.rolname <> 'runtime_attention_outbox_owner'
+    LOOP
+        EXECUTE format(
+            'REVOKE ALL PRIVILEGES ON FUNCTION public.append_runtime_attention_condition(uuid) FROM %I',
+            v_acl_role
+        );
+        EXECUTE format(
+            'REVOKE ALL PRIVILEGES ON FUNCTION public.observe_runtime_attention_conditions() FROM %I',
+            v_acl_role
+        );
+        EXECUTE format(
+            'REVOKE ALL PRIVILEGES ON FUNCTION public.runtime_attention_upgrade_condition_v4() FROM %I',
+            v_acl_role
+        );
+    END LOOP;
+    EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE public.runtime_attention_condition_control FROM PUBLIC';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE public.runtime_attention_condition_episodes FROM PUBLIC';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION public.append_runtime_attention_condition(uuid) FROM PUBLIC';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION public.observe_runtime_attention_conditions() FROM PUBLIC';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION public.runtime_attention_upgrade_condition_v4() FROM PUBLIC';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public.append_runtime_attention_condition(uuid) TO butler_switchboard_rw';
+    EXECUTE format(
+        'GRANT SELECT ON TABLE public.runtime_attention_condition_control TO %I', p_migration_role
+    );
+    EXECUTE format(
+        'GRANT EXECUTE ON FUNCTION public.observe_runtime_attention_conditions() TO %I',
+        p_migration_role
+    );
+    EXECUTE 'GRANT SELECT ON TABLE public.infra_conditions TO runtime_attention_outbox_owner';
+END;
+$runtime_attention_finalize_condition_v4$;
+
+REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.finalize_condition_v4(NAME) FROM PUBLIC;
+
 CREATE OR REPLACE FUNCTION runtime_attention_admin.finalize_interface()
 RETURNS void
 LANGUAGE plpgsql
@@ -3619,7 +4112,9 @@ BEGIN
        OR to_regprocedure('public.runtime_attention_outbox_guard()') IS NULL
        OR to_regprocedure('public.runtime_attention_delivery_lease_guard()') IS NULL
        OR to_regprocedure('public.runtime_attention_upgrade_operator_v3()') IS NULL
-       OR to_regprocedure('public.runtime_attention_deactivate_operator_v3()') IS NULL THEN
+       OR to_regprocedure('public.runtime_attention_deactivate_operator_v3()') IS NULL
+       OR to_regprocedure('public.runtime_attention_upgrade_condition_v4()') IS NULL
+       OR to_regprocedure('public.runtime_attention_deactivate_condition_v4()') IS NULL THEN
         RAISE EXCEPTION 'runtime-attention interface is incomplete';
     END IF;
     IF EXISTS (
@@ -3640,7 +4135,9 @@ BEGIN
             'public.runtime_attention_outbox_guard()'::regprocedure,
             'public.runtime_attention_delivery_lease_guard()'::regprocedure,
             'public.runtime_attention_upgrade_operator_v3()'::regprocedure,
-            'public.runtime_attention_deactivate_operator_v3()'::regprocedure
+            'public.runtime_attention_deactivate_operator_v3()'::regprocedure,
+            'public.runtime_attention_upgrade_condition_v4()'::regprocedure,
+            'public.runtime_attention_deactivate_condition_v4()'::regprocedure
         )
           AND interface_function.proowner NOT IN (v_bootstrap_owner, v_outbox_owner)
     ) THEN
@@ -3664,6 +4161,12 @@ BEGIN
     IF to_regclass('public.runtime_attention_operator_control') IS NOT NULL THEN
         EXECUTE 'ALTER TABLE public.runtime_attention_operator_control OWNER TO runtime_attention_outbox_owner';
         EXECUTE 'ALTER FUNCTION public.runtime_attention_upgrade_operator_v3() OWNER TO runtime_attention_outbox_owner';
+    END IF;
+    -- The v4 condition upgrader follows the same bootstrap-owned-until-used
+    -- rule; its installed objects are re-fenced on every rerun.
+    EXECUTE 'ALTER FUNCTION public.runtime_attention_deactivate_condition_v4() OWNER TO runtime_attention_outbox_owner';
+    IF to_regclass('public.runtime_attention_condition_control') IS NOT NULL THEN
+        PERFORM runtime_attention_admin.finalize_condition_v4(v_migration_role);
     END IF;
     EXECUTE 'ALTER FUNCTION public.append_runtime_attention_model_breaker(bigint) SET search_path = pg_catalog, public, pg_temp';
     EXECUTE 'ALTER FUNCTION public.append_runtime_attention_fleet_halt() SET search_path = pg_catalog, public, pg_temp';

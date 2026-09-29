@@ -731,3 +731,158 @@ async def test_delivery_logs_carry_typed_outcomes_and_no_secrets(
         assert "outcome=uncertain" in caplog.text
         for secret in ("hunter2", "987654321", "bot_token", "Breaker opened"):
             assert secret not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# REQ-butler-control-plane-liveness-007 — fleet and overdue-QA condition episodes
+# ---------------------------------------------------------------------------
+
+
+async def _seed_due_condition(pool: asyncpg.Pool, *, qa: bool = False) -> uuid.UUID:
+    """Open one paging condition already past the producer's attention grace."""
+    from butlers.core.fleet_conditions import (
+        FLEET_FINGERPRINT,
+        FLEET_SOURCE,
+        QA_PATROL_OVERDUE_FINGERPRINT,
+        QA_PATROL_SOURCE,
+    )
+
+    source, fingerprint = (
+        (QA_PATROL_SOURCE, QA_PATROL_OVERDUE_FINGERPRINT)
+        if qa
+        else (FLEET_SOURCE, FLEET_FINGERPRINT)
+    )
+    return await pool.fetchval(
+        """
+        INSERT INTO public.infra_conditions (
+            source, fingerprint, episode, first_detected_at, summary
+        ) VALUES ($1, $2, 1, now() - interval '6 minutes', 'general: 127.0.0.1:41101 refused')
+        RETURNING id
+        """,
+        source,
+        fingerprint,
+    )
+
+
+async def _controller_append(pool: asyncpg.Pool) -> list[Any]:
+    """Run the controller's attention step exactly as the Dashboard observer does."""
+    from butlers.core.control_plane_identity import DashboardProbeRoleView
+    from butlers.core.fleet_conditions import append_due_condition_attention
+
+    return await append_due_condition_attention(pool, DashboardProbeRoleView(pool))
+
+
+async def _condition_statuses(pool: asyncpg.Pool) -> dict[uuid.UUID, tuple[str, str | None]]:
+    """Owner-facing status per condition, through the dashboard's own projection path."""
+    from butlers.api.runtime_attention_status import condition_attention_status, safe_reason
+
+    return {
+        row["condition_id"]: (
+            condition_attention_status(row),
+            safe_reason(row["delivery_error_class"], row["delivery_error_detail"]),
+        )
+        for row in await pool.fetch("SELECT * FROM public.observe_runtime_attention_conditions()")
+    }
+
+
+async def test_condition_episodes_deliver_fixed_copy_once(migrated_core_postgres_pool) -> None:
+    """Confirmed delivery: fixed content-blind text, ``sent``, and no second page."""
+    from butlers.tools.switchboard.runtime_attention.worker import _episode_message
+
+    async with migrated_core_postgres_pool(min_pool_size=3, max_pool_size=6) as pool:
+        fleet = await _seed_due_condition(pool)
+        qa = await _seed_due_condition(pool, qa=True)
+        episodes = await _controller_append(pool)
+        assert len(set(episodes)) == 2 and None not in episodes
+
+        messages: list[str] = []
+
+        async def transport(episode: OutboxEpisode) -> TransportResult:
+            messages.append(_episode_message(episode))
+            return CONFIRMED
+
+        repository = RuntimeAttentionOutbox(pool, instance_id="worker-a")
+        cycle = await _worker(repository, transport).run_once()
+        assert cycle.delivered == 2
+        assert sorted(messages) == [
+            "Runtime attention: butler fleet control is unhealthy; expected daemons are not "
+            "receiver-ready. Open /system to review.",
+            "Runtime attention: no qualifying QA patrol has completed within its expected "
+            "window. Open /system to review.",
+        ]
+        for leaked in ("general", "127.0.0.1", "refused"):
+            assert not any(leaked in message for message in messages)
+
+        statuses = await _condition_statuses(pool)
+        assert statuses[fleet] == ("sent", None)
+        assert statuses[qa] == ("sent", None)
+
+        # Every later controller pass returns the same episodes; nothing re-pages.
+        assert sorted(await _controller_append(pool)) == sorted(episodes)
+        replay = _Spy(CONFIRMED)
+        assert (await _worker(repository, replay).run_once()).outcomes == ()
+        assert replay.calls == []
+
+
+async def test_condition_delivery_outcomes_stay_distinct_without_resend(
+    migrated_core_postgres_pool,
+) -> None:
+    """Worker-down, dead claim, pre-send failure: truthful, bounded, never resent."""
+    async with migrated_core_postgres_pool(min_pool_size=3, max_pool_size=6) as pool:
+        fleet = await _seed_due_condition(pool)
+        [fleet_episode] = await _controller_append(pool)
+
+        # Appended but no delivery service holds the lease: visibly not sending.
+        assert (await _condition_statuses(pool))[fleet] == ("worker_unavailable", None)
+        repo_a = RuntimeAttentionOutbox(pool, instance_id="worker-a")
+        lease_a = await repo_a.acquire_service_lease()
+        assert lease_a is not None
+        assert (await _condition_statuses(pool))[fleet] == ("pending", None)
+
+        # Worker A claims, then dies mid-send: ``sending`` is never "delivered".
+        claimed = await repo_a.claim_next_pending(lease_a)
+        assert claimed is not None and claimed.id == fleet_episode
+        await repo_a.release_service_lease(lease_a)
+        assert (await _condition_statuses(pool))[fleet][0] == "sending"
+
+        # Recovery fences the dead claim to uncertain; nothing resends it, and
+        # the controller keeps returning the same episode.
+        repo_b = RuntimeAttentionOutbox(pool, instance_id="worker-b")
+        lease_b = await repo_b.acquire_service_lease()
+        assert lease_b is not None
+        claims = await repo_b.list_recoverable(lease_b, stale_after_seconds=0.0)
+        assert [claim.id for claim in claims] == [fleet_episode]
+        assert await repo_b.fence_stale_claim(claims[0], lease_b) is True
+        await repo_b.release_service_lease(lease_b)
+        replay = _Spy(CONFIRMED)
+        await _worker(repo_b, replay).run_once()
+        assert replay.calls == []
+        assert (await _condition_statuses(pool))[fleet] == (
+            "uncertain",
+            "A dead delivery claim was fenced as uncertain",
+        )
+        assert await _controller_append(pool) == [fleet_episode]
+        await _worker(repo_b, replay).run_once()
+        assert replay.calls == []
+
+        # A proven pre-send failure alone follows the bounded backoff, then fails
+        # terminally without minting another episode.
+        qa = await _seed_due_condition(pool, qa=True)
+        episodes = await _controller_append(pool)
+        qa_episode = next(e for e in episodes if e != fleet_episode)
+        unavailable = _Spy(RECIPIENT_UNAVAILABLE)
+        sleeps: list[float] = []
+        await _worker(repo_b, unavailable, sleeps).run_once()
+        assert unavailable.calls == [qa_episode] * MAX_TRANSPORT_ATTEMPTS
+        assert sleeps == list(RETRY_BACKOFF_SECONDS)
+        assert (await _condition_statuses(pool))[qa] == (
+            "failed",
+            "Recipient unavailable before delivery",
+        )
+        assert sorted(await _controller_append(pool)) == sorted([fleet_episode, qa_episode])
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM public.observe_runtime_attention_conditions()"
+            )
+            == 2
+        )

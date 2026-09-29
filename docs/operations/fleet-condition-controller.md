@@ -6,8 +6,10 @@ This runbook covers the independent controller for
 after each cycle of the supervised receiver observer
 (`fleet_shadow_observer`). It does not depend on QA's scheduler or a routable
 QA registry row. It writes durable episodes to `public.infra_conditions`.
-Owner attention for these episodes belongs to the runtime-attention work and
-is not produced here.
+After both checks, each cycle also asks the runtime-attention producer for one
+owner-attention episode per active fleet or `patrol_overdue` condition. See
+[Runtime Attention](runtime-attention.md#fleet-and-qa-condition-attention).
+`patrol_stopped_by_policy` is an intentional hold and never pages.
 
 ## Conditions
 
@@ -16,6 +18,7 @@ is not produced here.
 | `control_plane_fleet` | One fixed, versioned fingerprint | At least one expected, non-paused daemon is not receiver-ready | A complete observer cycle finds every non-paused daemon ready |
 | `qa_patrol_assurance` | `patrol_overdue` | No qualifying QA patrol completed within twice `[modules.qa].patrol_interval_minutes` | A qualifying patrol is inside that window |
 | `qa_patrol_assurance` | `patrol_stopped_by_policy` | The same absence while QA is `paused`, `quarantined`, or `review_required/operator` | As above, or the owner releases QA and it becomes `patrol_overdue` |
+| `qa_patrol_assurance` | `patrol_config_unproven` (per digest, never pages) | The controller first sees a digest with no qualifying patrol | A qualifying patrol completes under that digest |
 
 - The fleet episode's `metadata.affected` lists each affected daemon with its
   probe category and policy. Thirteen daemons made stale by one observer fault
@@ -24,6 +27,16 @@ is not produced here.
   A daemon it could not observe is unknown, not healthy.
 - A daemon whose owner policy is `paused` is an intentional exclusion.
   Quarantine and review holds still count as affected.
+- With no qualifying patrol under the current enabled-source digest (first
+  deploy or a source change), the overdue clock starts at the digest's first
+  durable observation. That is the earlier of its first recorded patrol and a
+  `patrol_config_unproven` episode, whose fingerprint includes the digest.
+  The controller opens that episode the first time it sees the digest, and it
+  stays active until a qualifying patrol resolves it. A controller restart or
+  a Dashboard redeploy therefore cannot reset the clock.
+  - The episode never pages.
+  - Until twice the cadence has passed, it is the only thing written. A
+    healthy QA is not paged, and an open overdue episode is not resolved.
 - If QA's owner policy cannot be read, an overdue patrol is recorded with
   `policy_known=false` and neither QA identity is resolved.
 

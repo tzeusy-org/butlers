@@ -19,6 +19,14 @@ sources in ``public.infra_conditions``:
     configured cadence. When QA is held by owner policy the same absence is
     recorded as the distinct ``patrol_stopped_by_policy`` identity.
 
+Owner attention (REQ-butler-control-plane-liveness-007): every pass also asks
+the fixed ``public.append_runtime_attention_condition`` producer, under
+Switchboard's role, for one outbox episode per active fleet or overdue-QA
+condition episode. The producer owns the attention grace and idempotency, so
+repeating the call each cycle is how an interrupted append is repaired; a
+condition that already paged returns the same episode and never re-pages.
+The stopped-by-policy identity is an intentional hold and is not paged.
+
 Fleet-condition handoff (``BUTLERS_FLEET_CONDITION_HANDOFF=1``): QA's
 ``infra_state`` source stops emitting per-butler ``ButlerHeartbeatStale``
 findings and records one fleet-linked finding instead. Pre-existing per-butler
@@ -69,6 +77,21 @@ _LEGACY_SOURCE: Final[str] = "infra_state"
 _HANDOFF_ENV: Final[str] = "BUTLERS_FLEET_CONDITION_HANDOFF"
 _CONDITION_INITIAL_GRACE_S: Final[float] = 3600.0
 _MAX_AFFECTED_EVIDENCE: Final[int] = 100
+
+_ACTIVE_ATTENTION_CONDITIONS_SQL: Final[str] = """
+    SELECT id FROM public.infra_conditions
+    WHERE state IN ('open', 'aging')
+      AND ((source = $1 AND fingerprint = $2) OR (source = $3 AND fingerprint = $4))
+    ORDER BY first_detected_at
+"""
+_DIGEST_FIRST_SEEN_SQL: Final[str] = """
+    SELECT min(started_at) FROM public.qa_patrols WHERE enabled_sources_config_digest = $1
+"""
+_ACTIVE_EPISODE_FIRST_DETECTED_SQL: Final[str] = """
+    SELECT first_detected_at FROM public.infra_conditions
+    WHERE source = $1 AND fingerprint = $2 AND state IN ('open', 'aging')
+"""
+_APPEND_ATTENTION_SQL: Final[str] = "SELECT public.append_runtime_attention_condition($1)"
 
 _ACTIVE_LEGACY_LIVENESS_SQL: Final[str] = """
     SELECT id, fingerprint, summary, metadata, metadata->>'source_butler' AS butler
@@ -165,14 +188,66 @@ def _policy_stops_qa(policy: Any) -> bool:
     )
 
 
+def qa_patrol_unproven_fingerprint(digest: str) -> str:
+    """The non-paging identity that dates an enabled-source digest's first observation."""
+    return compute_fingerprint(
+        QA_PATROL_SOURCE,
+        IDENTITY_VERSION,
+        {"condition": "patrol_config_unproven", "enabled_sources_config_digest": digest},
+    )
+
+
 async def reconcile_qa_patrol_assurance(
     pool: Any, policy_reader: Any, contract: QaPatrolContract
 ) -> list[ConditionTransition]:
-    """Check qualifying QA patrol age against twice its cadence, independently of QA."""
+    """Check qualifying QA patrol age against twice its cadence, independently of QA.
+
+    With no qualifying patrol under the current enabled-source digest (a first
+    deploy or a source change), the overdue clock starts at the digest's first
+    durable observation: the earlier of its first recorded patrol and the
+    ``patrol_config_unproven`` ledger episode this controller opens for it. That
+    episode stays active until a qualifying patrol resolves it, so a controller
+    or process restart cannot reset the clock. It never pages. Until twice the
+    cadence has passed, only that episode is written: a healthy QA is not
+    paged and an existing overdue episode is not resolved.
+    """
     last: datetime | None = await pool.fetchval(
         LAST_QUALIFYING_PATROL_SQL, list(QUALIFYING_PATROL_STATUSES), contract.digest
     )
     now: datetime = await pool.fetchval("SELECT clock_timestamp()")
+    unproven: Observation | None = None
+    if last is None:
+        unproven_fingerprint = qa_patrol_unproven_fingerprint(contract.digest)
+        unproven = Observation(
+            fingerprint=unproven_fingerprint,
+            summary=(
+                "No qualifying QA patrol yet under the current enabled-source configuration "
+                f"(overdue after {int(contract.overdue_after_s // 60)}m)"
+            ),
+            metadata={
+                "enabled_sources_config_digest": contract.digest,
+                "overdue_after_s": contract.overdue_after_s,
+            },
+            identity_version=IDENTITY_VERSION,
+        )
+        first_seen = [
+            seen
+            for seen in (
+                await pool.fetchval(_DIGEST_FIRST_SEEN_SQL, contract.digest),
+                await pool.fetchval(
+                    _ACTIVE_EPISODE_FIRST_DETECTED_SQL, QA_PATROL_SOURCE, unproven_fingerprint
+                ),
+            )
+            if seen is not None
+        ]
+        if not first_seen or (now - min(first_seen)).total_seconds() <= contract.overdue_after_s:
+            return await reconcile_snapshot(
+                pool,
+                source=QA_PATROL_SOURCE,
+                observations=[unproven],
+                snapshot_complete=False,
+                initial_grace_seconds=_CONDITION_INITIAL_GRACE_S,
+            )
     if last is not None and (now - last).total_seconds() <= contract.overdue_after_s:
         return await reconcile_snapshot(
             pool,
@@ -210,14 +285,42 @@ async def reconcile_qa_patrol_assurance(
         identity_version=IDENTITY_VERSION,
     )
     # Without a readable policy the overdue/stopped split is unproven, so the
-    # observation adds evidence without resolving the other identity.
+    # observation adds evidence without resolving the other identity.  The
+    # unproven-configuration episode stays active beside it.
     return await reconcile_snapshot(
         pool,
         source=QA_PATROL_SOURCE,
-        observations=[observation],
+        observations=[observation] if unproven is None else [observation, unproven],
         snapshot_complete=policy_known,
         initial_grace_seconds=_CONDITION_INITIAL_GRACE_S,
     )
+
+
+async def append_due_condition_attention(pool: Any, producer: Any) -> list[Any]:
+    """Append or repair one attention episode per active paging condition.
+
+    ``producer`` must run under Switchboard's role; the database refuses any
+    other. Returns the episode ids the producer reported (``None`` while a
+    condition is still inside its attention grace or the producer is off).
+    A failing append for one condition never blocks the next.
+    """
+    rows = await pool.fetch(
+        _ACTIVE_ATTENTION_CONDITIONS_SQL,
+        FLEET_SOURCE,
+        FLEET_FINGERPRINT,
+        QA_PATROL_SOURCE,
+        QA_PATROL_OVERDUE_FINGERPRINT,
+    )
+    episodes: list[Any] = []
+    for row in rows:
+        try:
+            episodes.append(await producer.fetchval(_APPEND_ATTENTION_SQL, row["id"]))
+        except Exception as exc:  # noqa: BLE001 - reduced to a typed log
+            logger.warning(
+                "Fleet condition controller: attention append failed (category=%s)",
+                type(exc).__name__,
+            )
+    return episodes
 
 
 async def run_controller_pass(
@@ -227,17 +330,20 @@ async def run_controller_pass(
     expected_names: frozenset[str],
     qa_contract: QaPatrolContract | None,
 ) -> None:
-    """Run both independent checks; one failing never blocks the other."""
+    """Run both independent checks, then attention; no step blocks another."""
     try:
         await reconcile_fleet_condition(pool, cycle, expected_names)
     except Exception:
         logger.exception("Fleet condition controller: fleet reconciliation failed")
-    if qa_contract is None:
-        return
+    if qa_contract is not None:
+        try:
+            await reconcile_qa_patrol_assurance(pool, policy_reader, qa_contract)
+        except Exception:
+            logger.exception("Fleet condition controller: QA patrol assurance failed")
     try:
-        await reconcile_qa_patrol_assurance(pool, policy_reader, qa_contract)
+        await append_due_condition_attention(pool, policy_reader)
     except Exception:
-        logger.exception("Fleet condition controller: QA patrol assurance failed")
+        logger.exception("Fleet condition controller: attention append failed")
 
 
 def controller_after_cycle(
@@ -246,7 +352,8 @@ def controller_after_cycle(
     """Bind the controller to the exact Git roster for the observer's ``after_cycle``.
 
     ``pool`` writes the condition ledger and reads ``public.qa_patrols``; the
-    observer's Switchboard role view reads QA's owner policy.
+    observer's Switchboard role view reads QA's owner policy and is the only
+    identity the attention producer accepts.
     """
     expected_names = frozenset(config.name for config in configs)
     qa_contract = next(

@@ -73,6 +73,10 @@
 #     public.runtime_attention_delivery_lease
 #     public.runtime_attention_producer_control
 #         runtime-attention delivery state and its producer control row.
+#   - public.runtime_attention_condition_episodes
+#         the condition-side emission marker (core_251). It travels with the
+#         outbox it points at: a restore that loses both can page a
+#         still-active fleet or QA condition once more, never silently drop it.
 #   - public.expected_signals                 rebuildable liveness-qualified
 #         cadence state. Source observations and connector heartbeats remain in
 #         the dump; the next detector run recreates this projection.
@@ -130,7 +134,7 @@ BACKUP_EXCLUDE_SCHEMAS="restore_drill_executor restore_drill_executor_admin dnd_
 # public.audit_log is deliberately NOT here: it carries the restore-drill
 # evidence projection, and excluding it is the one edit that would silently
 # empty that path. Four tests across two files fail if it is added.
-BACKUP_EXCLUDE_TABLES="public.dnd_generation_mutations public.user_context public.runtime_attention_outbox public.runtime_attention_delivery_lease public.runtime_attention_producer_control public.expected_signals public.runtime_probe_control_receipts public.fleet_cases public.fleet_case_links public.task_continuity"
+BACKUP_EXCLUDE_TABLES="public.dnd_generation_mutations public.user_context public.runtime_attention_outbox public.runtime_attention_delivery_lease public.runtime_attention_producer_control public.runtime_attention_condition_episodes public.expected_signals public.runtime_probe_control_receipts public.fleet_cases public.fleet_case_links public.task_continuity"
 # Durable FORCE RLS application data carried by the scoped staging block.
 # Parsed and policy-verified by tests/scripts/test_pg_dump_backup.py.
 BACKUP_SCOPED_DATA_TABLES="public.cost_claims public.cost_claim_resolutions public.cost_claim_events"
