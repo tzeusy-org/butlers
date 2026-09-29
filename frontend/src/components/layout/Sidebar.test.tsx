@@ -406,6 +406,46 @@ describe("Sidebar", () => {
   // Mobile expanded mode renders labels alongside links
   // -------------------------------------------------------------------------
 
+  it("toggles group sections without motion and rotates the chevron 120ms linear (Motion Vocabulary)", () => {
+    setButlersState({
+      data: {
+        data: [{ name: "health", status: "ok", port: 40109, type: "butler" as const, sessions_24h: 0 }],
+        meta: {},
+      },
+    });
+    for (const renderVariant of [render, renderMobile]) {
+      renderVariant("/");
+      const group = Array.from(container.querySelectorAll("button[aria-expanded]")).find(
+        (button) =>
+          button.getAttribute("aria-label") === "Health" || button.textContent?.includes("Health"),
+      ) as HTMLButtonElement;
+      expect(group).toBeInstanceOf(HTMLButtonElement);
+      const children = container
+        .querySelector('a[href="/health/measurements"]')
+        ?.closest("[aria-hidden]") as HTMLElement;
+      const chevrons = group.querySelectorAll("svg");
+      const chevron = chevrons[chevrons.length - 1];
+
+      expect(children.className).not.toMatch(/transition/);
+      expect(chevron.getAttribute("class")).toContain("transition-transform");
+      expect(chevron.getAttribute("class")).toContain("duration-[120ms]");
+      expect(chevron.getAttribute("class")).toContain("ease-linear");
+
+      expect(group.getAttribute("aria-expanded")).toBe("false");
+      expect(children.getAttribute("aria-hidden")).toBe("true");
+      expect(children.hasAttribute("inert")).toBe(true);
+
+      act(() => {
+        fireEvent.click(group);
+      });
+      expect(group.getAttribute("aria-expanded")).toBe("true");
+      expect(children.getAttribute("aria-hidden")).toBe("false");
+      expect(children.hasAttribute("inert")).toBe(false);
+      expect(children.className).not.toMatch(/transition/);
+      expect(chevron.getAttribute("class")).toContain("rotate-90");
+    }
+  });
+
   describe("mobile expanded mode", () => {
     beforeEach(() => {
       setButlersState({
