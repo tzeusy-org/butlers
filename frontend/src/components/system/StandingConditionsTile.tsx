@@ -27,6 +27,12 @@
 // structured fields, plus a filter across the two classes. Everything about
 // the non-commitment rendering path is deliberately untouched: a row with no
 // commitment metadata takes exactly the same code it took before.
+//
+// bu-py5jgj: fleet-control and overdue-QA rows may carry `attention`, the
+// linked owner-alert delivery status (REQ-butler-control-plane-liveness-007).
+// It renders as one fixed-copy line under the row; only "sent" reads as
+// delivered, and "unavailable" marks the tile degraded. Display only: there
+// is deliberately no resend control here.
 // ---------------------------------------------------------------------------
 
 import { useMemo, useState } from "react"
@@ -47,7 +53,7 @@ import { useRelationshipEntitiesByIds } from "@/hooks/use-entities"
 import { useInfraConditionSuppressionCounts } from "@/hooks/use-healing"
 import { formatDurationCompact } from "@/lib/format-duration"
 import { cn } from "@/lib/utils"
-import type { ConditionEntry } from "@/api/types"
+import type { ConditionAttention, ConditionEntry } from "@/api/types"
 
 // ---------------------------------------------------------------------------
 // Commitment metadata convention (butlers/core/commitments.py)
@@ -293,6 +299,51 @@ function CommitmentDetail({
   )
 }
 
+// ---------------------------------------------------------------------------
+// Linked owner-alert status (docs/operations/runtime-attention.md, Owner status)
+// ---------------------------------------------------------------------------
+
+/** Fixed copy per status; `warn` marks every status that is not a calm, known state. */
+const ATTENTION_COPY: Record<string, { label: string; warn: boolean }> = {
+  pending: { label: "Owner alert queued", warn: false },
+  worker_unavailable: { label: "Owner alert queued; no delivery worker is running", warn: true },
+  sending: { label: "Owner alert sending; delivery not confirmed", warn: false },
+  sent: { label: "Owner alert delivered", warn: false },
+  failed: { label: "Owner alert not delivered", warn: true },
+  uncertain: { label: "Owner alert may not have arrived; it is not resent automatically", warn: true },
+  unavailable: { label: "Owner alert status unknown", warn: true },
+}
+
+function attentionCopy(status: string): { label: string; warn: boolean } {
+  // An unrecognized future status is shown as-is and never as delivered.
+  return Object.hasOwn(ATTENTION_COPY, status)
+    ? ATTENTION_COPY[status]
+    : { label: `Owner alert status: ${status}`, warn: true }
+}
+
+function ConditionAttentionLine({ attention }: { attention: ConditionAttention }) {
+  const { label, warn } = attentionCopy(attention.status)
+  const delivered = attention.status === "sent"
+  const at = delivered ? attention.delivered_at : attention.created_at
+  return (
+    <div
+      className={cn("mt-0.5 text-xs", warn ? "text-destructive font-medium" : "text-muted-foreground")}
+      data-testid="condition-attention"
+      data-status={attention.status}
+    >
+      {label}
+      {at ? (
+        <>
+          {delivered ? " " : " · raised "}
+          <Time value={at} mode="relative" />
+        </>
+      ) : null}
+      {attention.safe_reason ? ` · ${attention.safe_reason}` : null}
+      {attention.outbox_retained === false ? " · last recorded state" : null}
+    </div>
+  )
+}
+
 function ConditionRow({
   condition,
   commitment,
@@ -340,6 +391,7 @@ function ConditionRow({
           isResolved={isResolved}
         />
       ) : null}
+      {condition.attention ? <ConditionAttentionLine attention={condition.attention} /> : null}
       <div className="text-muted-foreground text-xs">
         {isResolved ? (
           supersededByVersion !== null ? (
@@ -538,6 +590,10 @@ export function StandingConditionsTile() {
     condition,
     commitment: commitmentFields(condition),
   }))
+  // A source that could not report alert delivery is a degraded read, never calm.
+  const attentionUnavailable = merged.some(
+    (condition) => condition.attention?.status === "unavailable",
+  )
   const visible = sortForDisplay(
     decorated.filter(({ commitment }) =>
       filter === "all"
@@ -551,7 +607,9 @@ export function StandingConditionsTile() {
   return (
     <TileFrame
       testId="standing-conditions-content"
-      degraded={!infraAvailable || !ownerAvailable || suppressionCountsError}
+      degraded={
+        !infraAvailable || !ownerAvailable || suppressionCountsError || attentionUnavailable
+      }
     >
       {!infraAvailable ? (
         <SourceDegradedNote

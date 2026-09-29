@@ -60,7 +60,9 @@ for each active `control_plane_fleet` or `qa_patrol_assurance`/`patrol_overdue` 
   | `unavailable` | The projection itself could not be read, which is not an all-clear |
 
   `safe_reason` maps the stored `(delivery_error_class, delivery_error_detail)` pair to fixed copy
-  (`src/butlers/api/runtime_attention_status.py`). The Spend page uses the same mapping.
+  (`src/butlers/api/runtime_attention_status.py`). The Spend page uses the same mapping. The
+  System page Standing Conditions tile renders this status on each row with fixed copy, where
+  only `sent` reads as delivered and `unavailable` marks the tile degraded.
 - **Retries.** Only a proven pre-transport failure retries, and only inside the worker's bounded
   backoff. Nothing reissues an uncertain condition episode, and the operator reissue in
   `reissue_runtime_attention_episode` covers model-breaker episodes only.
