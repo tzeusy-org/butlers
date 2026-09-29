@@ -351,7 +351,7 @@ function NavGroup({
               strokeWidth="2"
               strokeLinecap="round"
               strokeLinejoin="round"
-              className={`absolute bottom-1.5 right-1.5 shrink-0 text-muted-foreground/60 transition-transform duration-base ease-out-quart ${expanded ? 'rotate-90' : ''}`}
+              className={`absolute bottom-1.5 right-1.5 shrink-0 text-muted-foreground/60 transition-transform duration-[120ms] ease-linear ${expanded ? 'rotate-90' : ''}`}
               aria-hidden="true"
             >
               <path d="m9 18 6-6-6-6" />
@@ -363,13 +363,11 @@ function NavGroup({
         </TooltipContent>
       </Tooltip>
 
-      {/* Children */}
+      {/* Children. Motion Vocabulary: expand/collapse is instant; only the chevron rotates. */}
       <div
         inert={!expanded ? '' : undefined}
         aria-hidden={!expanded}
-        className={`overflow-hidden transition-all duration-base ease-out-quart ${
-          expanded ? 'max-h-96 opacity-100' : 'max-h-0 opacity-0'
-        }`}
+        className={`overflow-hidden ${expanded ? '' : 'hidden'}`}
       >
         {item.children.map((child) => {
           const childActive = isPathActive(location.pathname, child.path, child.end)
@@ -895,7 +893,7 @@ function MobileNavGroup({
           strokeWidth="2"
           strokeLinecap="round"
           strokeLinejoin="round"
-          className={`shrink-0 transition-transform duration-base ease-out-quart ${expanded ? 'rotate-90' : ''}`}
+          className={`shrink-0 transition-transform duration-[120ms] ease-linear ${expanded ? 'rotate-90' : ''}`}
           aria-hidden="true"
         >
           <path d="m9 18 6-6-6-6" />
@@ -904,9 +902,7 @@ function MobileNavGroup({
       <div
         inert={!expanded ? '' : undefined}
         aria-hidden={!expanded}
-        className={`overflow-hidden transition-all duration-base ease-out-quart ${
-          expanded ? 'max-h-96 opacity-100' : 'max-h-0 opacity-0'
-        }`}
+        className={`overflow-hidden ${expanded ? '' : 'hidden'}`}
       >
         {item.children.map((child) => (
           <MobileNavGroupChildLink
