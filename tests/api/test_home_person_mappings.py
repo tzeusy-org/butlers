@@ -117,7 +117,9 @@ def _mounted(seams, app=None):
     return app
 
 
-async def _raw_post(app, chunks: list[bytes], headers: list[tuple[bytes, bytes]]):
+async def _raw_post(
+    app, chunks: list[bytes], headers: list[tuple[bytes, bytes]], query_string: bytes = b""
+):
     """Drive one POST through the full ASGI stack, counting ``receive`` calls."""
     pending = list(chunks)
     received = 0
@@ -142,7 +144,7 @@ async def _raw_post(app, chunks: list[bytes], headers: list[tuple[bytes, bytes]]
         "scheme": "https",
         "path": _ROUTE,
         "raw_path": _ROUTE.encode(),
-        "query_string": b"",
+        "query_string": query_string,
         "root_path": "",
         "headers": [(b"host", b"butlers.example.test"), *headers],
         "client": ("127.0.0.1", 50000),
@@ -999,6 +1001,180 @@ async def test_mounted_duplicates_and_legacy_null_target_refuse_without_writes(
             "WHERE ha_entity_id = 'person.legacy_null_fixture'"
         )
         is None
+    )
+
+
+def _body(value) -> bytes:
+    return json.dumps(value).encode()
+
+
+def _pairs(*pairs: tuple[str, str]) -> dict:
+    return {"mappings": [{"ha_person_id": h, "entity_id": e} for h, e in pairs]}
+
+
+def _decoded_mappings(body: bytes) -> list[dict]:
+    try:
+        value = json.loads(body)
+    except ValueError:
+        return []
+    mappings = value.get("mappings") if isinstance(value, dict) else value
+    if isinstance(mappings, dict):
+        mappings = [mappings]
+    return [m for m in mappings or [] if isinstance(m, dict)]
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_mounted_structural_refusals_are_fixed_422_without_writes(
+    mapping_pool, seams
+) -> None:
+    """Every count, shape, identifier, key and query refusal is one fixed audited 422."""
+    seams.manager.serving = mapping_pool
+    entity = str(uuid4())
+    one = _body(_pairs(("person.structural_valid", entity)))
+    bodies: dict[str, bytes] = {
+        "count-empty": _body({"mappings": []}),
+        "count-51": _body(_pairs(*((f"person.count_{i:02d}", str(uuid4())) for i in range(51)))),
+        "shape-top-list": _body([{"ha_person_id": "person.shape_list", "entity_id": entity}]),
+        "shape-missing-mappings": _body({}),
+        "shape-extra-top-field": _body({**_pairs(("person.shape_extra", entity)), "force": True}),
+        "shape-mappings-not-list": _body(
+            {"mappings": {"ha_person_id": "person.shape_obj", "entity_id": entity}}
+        ),
+        "shape-member-missing-entity": _body({"mappings": [{"ha_person_id": "person.shape_m"}]}),
+        "shape-member-extra-field": _body(
+            {"mappings": [{"ha_person_id": "person.shape_x", "entity_id": entity, "note": "x"}]}
+        ),
+        "shape-member-int": _body({"mappings": [{"ha_person_id": 1, "entity_id": entity}]}),
+        "shape-invalid-utf8": b'{"mappings":[{"ha_person_id":"person.\xff","entity_id":"x"}]}',
+        "shape-malformed-json": b'{"mappings":[',
+        **{
+            f"ha-{name}": _body(_pairs((ha_id, entity)))
+            for name, ha_id in {
+                "uppercase": "Person.a",
+                "empty-suffix": "person.",
+                "hyphen": "person.a-b",
+                "leading-space": " person.a",
+                "trailing-newline": "person.a\n",
+                "other-domain": "sensor.a",
+                "non-ascii": "person.é",
+                "256-bytes": "person." + "a" * 249,
+            }.items()
+        },
+        **{
+            f"entity-{name}": _body(_pairs(("person.entity_spelling", value)))
+            for name, value in {
+                "uppercase": entity.upper(),
+                "braced": "{" + entity + "}",
+                "hex32": UUID(entity).hex,
+                "urn": UUID(entity).urn,
+                "not-a-uuid": "not-a-uuid",
+            }.items()
+        },
+    }
+    valid_key = _key(b"structural-valid")
+    cases: dict[str, tuple[bytes, list[tuple[bytes, bytes]], bytes, int]] = {
+        name: (body, [(b"idempotency-key", _key(name.encode()).encode())], b"", 0)
+        for name, body in bodies.items()
+    }
+    for name, raw_key in {
+        "key-absent": None,
+        "key-42": valid_key[:42],
+        "key-44": valid_key + "A",
+        "key-plus": "+" + valid_key[1:],
+        "key-slash": "/" + valid_key[1:],
+        "key-padded": valid_key + "=",
+    }.items():
+        key_headers = [] if raw_key is None else [(b"idempotency-key", raw_key.encode())]
+        cases[name] = (one, key_headers, b"", 1)
+    cases["query"] = (one, [(b"idempotency-key", valid_key.encode())], b"probe=1", 0)
+
+    app = _mounted(seams)
+    for name, (body, key_headers, query, received_count) in cases.items():
+        decoder_calls = seams.decoder_calls
+        status, payload, receives = await _raw_post(
+            app,
+            [body],
+            [(b"content-type", b"application/json"), *key_headers],
+            query_string=query,
+        )
+        assert (status, payload["error"]["code"]) == (422, "INVALID_REQUEST"), name
+        assert set(payload) == {"error"} and set(payload["error"]) == {
+            "code",
+            "message",
+            "butler",
+            "details",
+        }, name
+        details = payload["error"]["details"]
+        assert set(details) == _RECEIPT_FIELDS, name
+        assert details["complete"] is False, name
+        assert details["received_count"] == received_count, name
+        assert (
+            details["created_count"],
+            details["unchanged_count"],
+            details["conflict_count"],
+            details["invalid_reference_count"],
+        ) == (0, 0, 0, 0), name
+        assert [
+            (audit["outcome"], audit["failure_category"])
+            for audit in await _audits(mapping_pool, details["receipt"])
+        ] == [("refused", "request_invalid")], name
+        for header, value in key_headers:
+            assert not await mapping_pool.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM public.ha_person_mapping_receipts "
+                "WHERE key_digest = $1 AND outcome = 'success')",
+                _key_digest(value.decode()),
+            ), name
+        if name == "query":
+            assert (receives, seams.decoder_calls) == (0, decoder_calls), name
+    assert seams.generic == []
+    ha_ids = {
+        mapping["ha_person_id"]
+        for body, *_ in cases.values()
+        for mapping in _decoded_mappings(body)
+        if isinstance(mapping.get("ha_person_id"), str)
+    }
+    assert ha_ids and await _mapped_count(mapping_pool, *ha_ids) == 0
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_mounted_count_and_length_edges_pass_structural_validation(
+    mapping_pool, seams
+) -> None:
+    """Exactly 50 members and a 255-byte identifier clear validation and reach references."""
+    seams.manager.serving = mapping_pool
+    cases = {
+        "edge-50": [(f"person.edge_{i:02d}", str(uuid4())) for i in range(50)],
+        "edge-255-bytes": [("person." + "a" * 248, str(uuid4()))],
+    }
+    assert len(cases["edge-255-bytes"][0][0].encode()) == 255
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_mounted(seams)), base_url=_ORIGIN
+    ) as client:
+        for name, pairs in cases.items():
+            response = await client.post(
+                _ROUTE, json=_pairs(*pairs), headers={"Idempotency-Key": _key(name.encode())}
+            )
+            assert (response.status_code, response.json()["error"]["code"]) == (
+                422,
+                "INVALID_REFERENCE",
+            ), name
+            details = response.json()["error"]["details"]
+            assert (
+                details["complete"],
+                details["received_count"],
+                details["invalid_reference_count"],
+                details["created_count"],
+            ) == (False, len(pairs), len(pairs), 0), name
+            assert [
+                (audit["outcome"], audit["failure_category"])
+                for audit in await _audits(mapping_pool, details["receipt"])
+            ] == [("refused", "reference_invalid")], name
+    assert (
+        await _mapped_count(mapping_pool, *(h for pairs in cases.values() for h, _ in pairs)) == 0
     )
 
 
