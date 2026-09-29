@@ -3842,7 +3842,8 @@ BEGIN
               'upgrade_producers_v2',
               'deactivate_producers_v2',
               'install_legacy_debounce_marker',
-              'install_fleet_halt_producer_v2'
+              'install_fleet_halt_producer_v2',
+              'finalize_condition_marker_v5'
           )
           AND admin_function.pronargs = 0
           AND admin_function.proowner <> v_bootstrap_owner
