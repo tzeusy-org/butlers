@@ -246,7 +246,10 @@ async def _decide_batch(
         entity_ids = [uuid.UUID(item.entity_id) for item in batch.mappings]
         entity_rows = await connection.fetch(
             """
-            SELECT id, entity_type, metadata
+            SELECT id,
+                   entity_type = 'person'
+                   AND metadata->>'merged_into' IS NULL
+                   AND metadata->>'deleted_at' IS NULL AS live
             FROM public.entities
             WHERE id = ANY($1::uuid[])
             ORDER BY id
@@ -254,13 +257,7 @@ async def _decide_batch(
             """,
             entity_ids,
         )
-        live_ids = {
-            row["id"]
-            for row in entity_rows
-            if row["entity_type"] == "person"
-            and not (row["metadata"] or {}).get("merged_into")
-            and not (row["metadata"] or {}).get("deleted_at")
-        }
+        live_ids = {row["id"] for row in entity_rows if row["live"]}
         invalid_count = len(set(entity_ids) - live_ids)
         if invalid_count:
             receipt = MappingReceipt(
