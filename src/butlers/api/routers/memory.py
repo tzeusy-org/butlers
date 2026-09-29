@@ -21,7 +21,6 @@ from typing import Literal
 
 from asyncpg.exceptions import UndefinedTableError
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
-from pydantic import BaseModel
 
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
@@ -2171,81 +2170,6 @@ async def update_entity(
 
 
 # ---------------------------------------------------------------------------
-# PUT /api/memory/entities/{entity_id}/linked-contact
-# ---------------------------------------------------------------------------
-
-
-class _LinkContactRequest(BaseModel):
-    contact_id: str
-
-
-@router.put("/entities/{entity_id}/linked-contact")
-async def set_linked_contact(
-    entity_id: str,
-    body: _LinkContactRequest = Body(...),
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> dict:
-    """Migrate any contact-scoped facts onto this entity.
-
-    public.contacts is retired (bu-jnaa3): there is no contact row to link, so
-    this route no longer writes ``contacts.entity_id``. It still migrates any
-    existing contact-scoped facts (stored with ``subject = 'contact:{cid}'`` or
-    legacy bare-UUID ``subject = '{cid}'``) to the entity by setting their
-    ``entity_id`` column, so facts created before entity promotion are visible
-    on the entity detail page.
-    """
-    import uuid as _uuid
-
-    pool = _any_pool(db)
-    eid = _uuid.UUID(entity_id)
-    cid = _uuid.UUID(body.contact_id)
-
-    # Verify entity exists
-    entity = await pool.fetchval("SELECT id FROM public.entities WHERE id = $1", eid)
-    if entity is None:
-        raise HTTPException(status_code=404, detail="Entity not found")
-
-    # Migrate existing contact-scoped facts to the entity across all memory pools.
-    # Matches both the current 'contact:{cid}' prefix and legacy bare-UUID subjects.
-    cid_str = str(cid)
-    prefixed_subject = f"contact:{cid_str}"
-
-    async def _migrate_facts(butler_name: str, fpool: object) -> int:
-        relation = _memory_relation(db, butler_name, "facts")
-        result = await fpool.execute(
-            f"UPDATE {relation} SET entity_id = $1"
-            " WHERE (subject = $2 OR subject = $3)"
-            " AND entity_id IS NULL"
-            " AND validity IN ('active', 'fading')",
-            eid,
-            prefixed_subject,
-            cid_str,
-        )
-        # asyncpg returns 'UPDATE N' — extract the count
-        return int(result.split()[-1]) if result else 0
-
-    tracker = DegradedSources(logger)
-    counts = await _fan_out_memory_queries(
-        db,
-        query_name="migrate_contact_facts",
-        query_fn=_migrate_facts,
-        tracker=tracker,
-    )
-    if tracker.failed:
-        names = ", ".join(tracker.names)
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                f"Contact fact migration incomplete: {len(tracker.names)} butler database(s) "
-                f"unreachable ({names}); one or more pools may not have migrated their facts."
-            ),
-        )
-    migrated = sum(c for c in counts if c)
-
-    return {"entity_id": str(eid), "contact_id": str(cid), "facts_migrated": migrated}
-
-
-# ---------------------------------------------------------------------------
 # POST /api/memory/entities/{entity_id}/merge was removed (bu-f0i4w).
 #
 # It merged memory `facts` via `entity_merge` with no compare view, no
@@ -2453,18 +2377,10 @@ async def unarchive_entity(
 
 
 # ---------------------------------------------------------------------------
-# DELETE /api/memory/entities/{entity_id}/linked-contact
+# PUT and DELETE /api/memory/entities/{entity_id}/linked-contact were removed
+# (bu-7og5se). public.contacts is retired, so no surface can supply the contact
+# id PUT needed to adopt contact-scoped facts, and DELETE was already a no-op.
 # ---------------------------------------------------------------------------
-
-
-@router.delete("/entities/{entity_id}/linked-contact", status_code=204)
-async def unlink_contact(
-    entity_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> None:
-    """No-op: public.contacts is retired (bu-jnaa3), so there is no contact link
-    to clear. Retained for API compatibility; returns 204."""
-    return None
 
 
 # ---------------------------------------------------------------------------

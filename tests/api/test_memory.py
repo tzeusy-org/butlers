@@ -2294,41 +2294,23 @@ async def test_entity_detail_skips_absent_fact_schema_without_degraded_flag(app)
     assert "pools_failed" not in resp.json()["meta"]
 
 
-@pytest.mark.parametrize(
-    ("error", "expected_status"),
-    [
-        (RuntimeError("connection reset by peer"), 503),
-        (UndefinedTableError("relation does not exist"), 200),
-    ],
-)
-async def test_migrate_contact_facts_does_not_claim_success_after_failed_source(
-    error: Exception | None, expected_status: int, app
-) -> None:
-    """Contact migration succeeds only when every memory-capable source answered."""
-    entity_id = uuid.uuid4()
-    contact_id = uuid.uuid4()
-    db = _MemoryFanOutDB(
-        {
-            "atlas": _EntityMemoryPool(entity=_make_entity_row(entity_id)),
-            "finance": _EntityMemoryPool(fact_update_error=error),
-        },
-        memory_schema_absent={"finance"} if isinstance(error, UndefinedTableError) else None,
-    )
-    app.dependency_overrides[_get_db_manager] = lambda: db
+async def test_retired_linked_contact_routes_are_absent_and_touch_no_pool(app) -> None:
+    """PUT/DELETE .../linked-contact are retired (public.contacts is gone, bu-7og5se)."""
+    assert not [path for path in app.openapi()["paths"] if path.endswith("/linked-contact")]
 
+    db = MagicMock()
+    app.dependency_overrides[_get_db_manager] = lambda: db
+    path = f"/api/memory/entities/{uuid.uuid4()}/linked-contact"
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.put(
-            f"/api/memory/entities/{entity_id}/linked-contact",
-            json={"contact_id": str(contact_id)},
-        )
+        responses = [
+            await client.put(path, json={"contact_id": str(uuid.uuid4())}),
+            await client.delete(path),
+        ]
 
-    assert resp.status_code == expected_status
-    if expected_status == 200:
-        assert resp.json()["facts_migrated"] == 0
-    else:
-        assert "finance" in resp.json()["detail"]
+    assert [response.status_code in {404, 405} for response in responses] == [True, True]
+    assert db.method_calls == []
 
 
 async def test_delete_entity_stops_on_failed_fact_precheck(app) -> None:
