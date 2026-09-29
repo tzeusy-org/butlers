@@ -606,6 +606,22 @@ _TRUSTED_FINALIZED_INTERFACE_SQL_TEMPLATE = """
                     trigger_row.tgname <> 'runtime_attention_outbox_guard_trigger'
                     OR trigger_row.tgfoid <> outbox_guard.oid
                 )
+                -- core_253 (bu-giazn6) adds exactly one more bootstrap trigger:
+                -- the condition-marker sync, bound to its owner-run definer.
+                AND NOT (
+                    trigger_row.tgname = 'runtime_attention_condition_marker_sync_trigger'
+                    AND EXISTS (
+                        SELECT 1
+                        FROM pg_proc AS marker_sync
+                        WHERE marker_sync.oid = trigger_row.tgfoid
+                          AND marker_sync.pronamespace = public_schema.oid
+                          AND marker_sync.proname = 'runtime_attention_sync_condition_marker'
+                          AND marker_sync.pronargs = 0
+                          AND marker_sync.prorettype = 'trigger'::regtype
+                          AND marker_sync.prosecdef
+                          AND marker_sync.proowner = outbox_owner.oid
+                    )
+                )
           )
           AND NOT EXISTS (
               SELECT 1
