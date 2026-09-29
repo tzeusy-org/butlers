@@ -148,21 +148,28 @@ _TRUSTED_FINALIZED_INTERFACE_SQL_TEMPLATE = """
           AND active_switchboard_role.prosecdef
           AND outbox_guard.prosecdef
           AND delivery_lease_guard.prosecdef
-          AND model_breaker.proconfig = ARRAY[
-              'search_path=pg_catalog, public, pg_temp'
-          ]::text[]
-          AND fleet_halt.proconfig = ARRAY[
-              'search_path=pg_catalog, public, pg_temp'
-          ]::text[]
-          AND active_switchboard_role.proconfig = ARRAY[
-              'search_path=pg_catalog, public, pg_temp'
-          ]::text[]
-          AND outbox_guard.proconfig = ARRAY[
-              'search_path=pg_catalog, public, pg_temp'
-          ]::text[]
-          AND delivery_lease_guard.proconfig = ARRAY[
-              'search_path=pg_catalog, public, pg_temp'
-          ]::text[]
+          -- bu-mms5xl: the finalizer pins pg_catalog, pg_temp on every init-db
+          -- rerun; a database not yet rebootstrapped still carries the old path.
+          AND model_breaker.proconfig::text[] IN (
+              ARRAY['search_path=pg_catalog, pg_temp'],
+              ARRAY['search_path=pg_catalog, public, pg_temp']
+          )
+          AND fleet_halt.proconfig::text[] IN (
+              ARRAY['search_path=pg_catalog, pg_temp'],
+              ARRAY['search_path=pg_catalog, public, pg_temp']
+          )
+          AND active_switchboard_role.proconfig::text[] IN (
+              ARRAY['search_path=pg_catalog, pg_temp'],
+              ARRAY['search_path=pg_catalog, public, pg_temp']
+          )
+          AND outbox_guard.proconfig::text[] IN (
+              ARRAY['search_path=pg_catalog, pg_temp'],
+              ARRAY['search_path=pg_catalog, public, pg_temp']
+          )
+          AND delivery_lease_guard.proconfig::text[] IN (
+              ARRAY['search_path=pg_catalog, pg_temp'],
+              ARRAY['search_path=pg_catalog, public, pg_temp']
+          )
           AND installer.proowner = admin_schema.nspowner
           AND finalizer.proowner = admin_schema.nspowner
           AND rollback_interface.proowner = admin_schema.nspowner

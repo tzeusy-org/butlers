@@ -2907,7 +2907,7 @@ BEGIN
     )
     LANGUAGE plpgsql
     SECURITY DEFINER
-    SET search_path = pg_catalog, public, pg_temp
+    SET search_path = pg_catalog, pg_temp
     AS $observe_runtime_attention_models$
     BEGIN
         IF COALESCE(current_setting('role', true), 'none') <> 'none' THEN
@@ -2964,7 +2964,7 @@ BEGIN
     )
     LANGUAGE plpgsql
     SECURITY DEFINER
-    SET search_path = pg_catalog, public, pg_temp
+    SET search_path = pg_catalog, pg_temp
     AS $observe_runtime_attention_fleet_halt$
     BEGIN
         IF COALESCE(current_setting('role', true), 'none') <> 'none' THEN
@@ -2992,7 +2992,7 @@ BEGIN
     )
     LANGUAGE plpgsql
     SECURITY DEFINER
-    SET search_path = pg_catalog, public, pg_temp
+    SET search_path = pg_catalog, pg_temp
     AS $reissue_runtime_attention_episode$
     DECLARE
         v_original public.runtime_attention_outbox%ROWTYPE;
@@ -3783,7 +3783,7 @@ BEGIN
     -- finalizer exists to do -- cannot turn this into a fleet-wide failure to
     -- record dispatch attempts.  core_199's catalog proof also asserts prosecdef.
     SECURITY DEFINER
-    SET search_path = pg_catalog, public, pg_temp
+    SET search_path = pg_catalog, pg_temp
     AS $runtime_attention_plant_legacy_debounce_marker_v2$
     DECLARE
         v_active_role TEXT := COALESCE(current_setting('role', true), '');
@@ -3853,7 +3853,7 @@ BEGIN
     RETURNS UUID
     LANGUAGE plpgsql
     SECURITY DEFINER
-    SET search_path = pg_catalog, public, pg_temp
+    SET search_path = pg_catalog, pg_temp
     AS $runtime_attention_fleet_halt_v2$
     DECLARE
         -- transaction_timestamp(), not clock_timestamp(), and identical to v1's
@@ -3927,7 +3927,7 @@ BEGIN
             RETURN NULL;
         END IF;
         PERFORM pg_advisory_xact_lock(
-            hashtextextended('runtime_attention_fleet_halt:' || v_month::text, 0)
+            hashtextextended('runtime_attention_fleet_halt:' || v_month::text, 0::bigint)
         );
         INSERT INTO public.runtime_attention_outbox (
             source, fleet_halt_month, source_snapshot, payload
@@ -4168,11 +4168,23 @@ BEGIN
     IF to_regclass('public.runtime_attention_condition_control') IS NOT NULL THEN
         PERFORM runtime_attention_admin.finalize_condition_v4(v_migration_role);
     END IF;
-    EXECUTE 'ALTER FUNCTION public.append_runtime_attention_model_breaker(bigint) SET search_path = pg_catalog, public, pg_temp';
-    EXECUTE 'ALTER FUNCTION public.append_runtime_attention_fleet_halt() SET search_path = pg_catalog, public, pg_temp';
-    EXECUTE 'ALTER FUNCTION public.runtime_attention_active_switchboard_role() SET search_path = pg_catalog, public, pg_temp';
-    EXECUTE 'ALTER FUNCTION public.runtime_attention_outbox_guard() SET search_path = pg_catalog, public, pg_temp';
-    EXECUTE 'ALTER FUNCTION public.runtime_attention_delivery_lease_guard() SET search_path = pg_catalog, public, pg_temp';
+    -- bu-mms5xl: every runtime-attention definer resolves names in pg_catalog
+    -- and pg_temp only.  The migration login can CREATE in public, so a
+    -- public entry would let it plant a better-matching overload (e.g.
+    -- public.hashtextextended(text, integer)) that then runs as
+    -- runtime_attention_outbox_owner.  Bodies schema-qualify every relation.
+    -- The v3 operator functions are created once by their upgrader, so the
+    -- pin on an already-upgraded database lands here.
+    IF to_regprocedure('public.reissue_runtime_attention_episode(uuid)') IS NOT NULL THEN
+        EXECUTE 'ALTER FUNCTION public.observe_runtime_attention_models() SET search_path = pg_catalog, pg_temp';
+        EXECUTE 'ALTER FUNCTION public.observe_runtime_attention_fleet_halt() SET search_path = pg_catalog, pg_temp';
+        EXECUTE 'ALTER FUNCTION public.reissue_runtime_attention_episode(uuid) SET search_path = pg_catalog, pg_temp';
+    END IF;
+    EXECUTE 'ALTER FUNCTION public.append_runtime_attention_model_breaker(bigint) SET search_path = pg_catalog, pg_temp';
+    EXECUTE 'ALTER FUNCTION public.append_runtime_attention_fleet_halt() SET search_path = pg_catalog, pg_temp';
+    EXECUTE 'ALTER FUNCTION public.runtime_attention_active_switchboard_role() SET search_path = pg_catalog, pg_temp';
+    EXECUTE 'ALTER FUNCTION public.runtime_attention_outbox_guard() SET search_path = pg_catalog, pg_temp';
+    EXECUTE 'ALTER FUNCTION public.runtime_attention_delivery_lease_guard() SET search_path = pg_catalog, pg_temp';
 
     EXECUTE 'ALTER TABLE public.runtime_attention_outbox ENABLE ROW LEVEL SECURITY';
     EXECUTE 'ALTER TABLE public.runtime_attention_outbox FORCE ROW LEVEL SECURITY';
@@ -4488,7 +4500,7 @@ BEGIN
         EXECUTE 'ALTER FUNCTION public.runtime_attention_plant_legacy_debounce_marker() '
             || 'OWNER TO runtime_attention_outbox_owner';
         EXECUTE 'ALTER FUNCTION public.runtime_attention_plant_legacy_debounce_marker() '
-            || 'SET search_path = pg_catalog, public, pg_temp';
+            || 'SET search_path = pg_catalog, pg_temp';
         EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION '
             || 'public.runtime_attention_plant_legacy_debounce_marker() FROM PUBLIC';
         -- Adopt the current body last, after the ALTERs above have proven the
@@ -4715,7 +4727,7 @@ BEGIN
     RETURNS boolean
     LANGUAGE plpgsql
     SECURITY DEFINER
-    SET search_path = pg_catalog, public, pg_temp
+    SET search_path = pg_catalog, pg_temp
     AS $runtime_attention_switchboard_role$
     BEGIN
         IF current_setting('role', true) IS DISTINCT FROM 'butler_switchboard_rw' THEN
@@ -4730,7 +4742,7 @@ BEGIN
     RETURNS trigger
     LANGUAGE plpgsql
     SECURITY DEFINER
-    SET search_path = pg_catalog, public, pg_temp
+    SET search_path = pg_catalog, pg_temp
     AS $runtime_attention_guard$
     BEGIN
         IF TG_OP = 'UPDATE' THEN
@@ -4828,7 +4840,7 @@ BEGIN
     RETURNS trigger
     LANGUAGE plpgsql
     SECURITY DEFINER
-    SET search_path = pg_catalog, public, pg_temp
+    SET search_path = pg_catalog, pg_temp
     AS $runtime_attention_lease_guard$
     BEGIN
         IF TG_OP = 'INSERT' THEN
@@ -4890,7 +4902,7 @@ BEGIN
     RETURNS UUID
     LANGUAGE plpgsql
     SECURITY DEFINER
-    SET search_path = pg_catalog, public, pg_temp
+    SET search_path = pg_catalog, pg_temp
     AS $runtime_attention_model_breaker$
     DECLARE
         v_catalog_entry_id UUID;
@@ -5003,7 +5015,7 @@ BEGIN
     RETURNS UUID
     LANGUAGE plpgsql
     SECURITY DEFINER
-    SET search_path = pg_catalog, public, pg_temp
+    SET search_path = pg_catalog, pg_temp
     AS $runtime_attention_fleet_halt$
     DECLARE
         v_month DATE := date_trunc('month', now() AT TIME ZONE 'UTC')::date;
@@ -5123,7 +5135,7 @@ BEGIN
     RETURNS UUID
     LANGUAGE plpgsql
     SECURITY DEFINER
-    SET search_path = pg_catalog, public, pg_temp
+    SET search_path = pg_catalog, pg_temp
     AS $runtime_attention_model_breaker_v2$
     DECLARE
         v_catalog_entry_id UUID;

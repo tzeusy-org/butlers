@@ -75,6 +75,16 @@ FROM public.observe_runtime_attention_conditions();
 A `Fleet condition controller: attention append failed (category=...)` warning names only the
 exception type. `UndefinedFunction` means the database has not reached `core_251`.
 `InsufficientPrivilegeError` means the Dashboard pool cannot `SET ROLE butler_switchboard_rw`.
+## Definer search path
+
+Every runtime-attention `SECURITY DEFINER` function runs with
+`search_path = pg_catalog, pg_temp`, and its body schema-qualifies each relation. The migration
+login can `CREATE` in `public`. With `public` on a definer's path, it could plant a better-matching
+overload, such as `public.hashtextextended(text, integer)` for a bare `0` seed, and run that
+overload as `runtime_attention_outbox_owner`. `runtime_attention_admin.finalize_interface()`
+re-applies the pin on every init-db rerun. That rerun also pins the v3 operator functions. A
+database bootstrapped before this rule keeps `public` on the path until the bootstrap runs again
+(see [Repair drift](#repair-drift)). A new definer must use the same path.
 
 ## Check
 
