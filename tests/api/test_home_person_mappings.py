@@ -3,26 +3,31 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import json
+import logging
 import shutil
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
 import asyncpg
+import httpx
 import pytest
 import pytest_asyncio
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
+from prometheus_client import REGISTRY
 from sqlalchemy import create_engine
 
 from alembic import command
-from butlers.api.owner_control import require_dashboard_owner_control
+from butlers.api import dashboard_audit_middleware
+from butlers.api.app import create_app
+from butlers.api.routers import home_person_mappings as mapping_router
 from butlers.api.routers.home_person_mappings import (
+    _LOCK_NAMESPACE,
     MappingBatch,
-    _bounded_body,
     _decide_batch,
     _get_db_manager,
     _key_digest,
-    router,
 )
 from butlers.db import register_jsonb_codec
 from butlers.migrations import _build_alembic_config, run_migrations
@@ -32,12 +37,209 @@ from butlers.testing.migration import (
     migration_bootstrap_db_url,
     migration_db_name,
 )
+from tests.api.auth_helpers import _DomainOwnerState, create_authenticated_domain_app
 
 _DOCKER_AVAILABLE = shutil.which("docker") is not None
+_ROUTE = "/api/home/person-mappings"
+_ORIGIN = "https://butlers.example.test"
+_AUDIT_ACTION = "home_assistant_person_mapping_batch"
+_RECEIPT_FIELDS = {
+    "receipt",
+    "complete",
+    "received_count",
+    "created_count",
+    "unchanged_count",
+    "conflict_count",
+    "invalid_reference_count",
+}
+_TOO_LARGE = {
+    "error": {
+        "code": "REQUEST_BODY_TOO_LARGE",
+        "message": "Request body exceeds 32 KiB.",
+        "butler": None,
+        "details": None,
+    }
+}
 
 
 def _key(seed: bytes) -> str:
     return base64.urlsafe_b64encode(hashlib.sha256(seed).digest()).decode().rstrip("=")
+
+
+class _Manager:
+    """Dashboard DB-manager seam that counts pool requests; no pool means unavailable."""
+
+    def __init__(self) -> None:
+        self.serving: asyncpg.Pool | None = None
+        self.calls = 0
+
+    def pool(self, _name: str) -> asyncpg.Pool:
+        self.calls += 1
+        if self.serving is None:
+            raise RuntimeError("synthetic unavailable")
+        return self.serving
+
+
+@pytest.fixture
+def seams(monkeypatch):
+    """Observe actor, decoder, pool and generic-audit interaction without changing decisions."""
+    observed = SimpleNamespace(manager=_Manager(), actor_calls=0, decoder_calls=0, generic=[])
+    actor = mapping_router.authenticated_principal
+
+    def counted_actor() -> str:
+        observed.actor_calls += 1
+        return actor()
+
+    def counted_loads(value, *args, **kwargs):
+        observed.decoder_calls += 1
+        return json.loads(value, *args, **kwargs)
+
+    async def record_generic(_db_manager, **fields) -> None:
+        observed.generic.append(fields)
+
+    monkeypatch.setattr(mapping_router, "authenticated_principal", counted_actor)
+    monkeypatch.setattr(
+        mapping_router,
+        "json",
+        SimpleNamespace(
+            loads=counted_loads, dumps=json.dumps, JSONDecodeError=json.JSONDecodeError
+        ),
+    )
+    monkeypatch.setattr(dashboard_audit_middleware, "get_db_manager", lambda: observed.manager)
+    monkeypatch.setattr(dashboard_audit_middleware, "emit_dashboard_audit", record_generic)
+    return observed
+
+
+def _mounted(seams, app=None):
+    """The production app and owner middleware, wired to the observed DB manager."""
+    app = app if app is not None else create_authenticated_domain_app()
+    app.dependency_overrides[_get_db_manager] = lambda: seams.manager
+    return app
+
+
+async def _raw_post(app, chunks: list[bytes], headers: list[tuple[bytes, bytes]]):
+    """Drive one POST through the full ASGI stack, counting ``receive`` calls."""
+    pending = list(chunks)
+    received = 0
+    sent: list[dict] = []
+
+    async def receive():
+        nonlocal received
+        received += 1
+        if pending:
+            chunk = pending.pop(0)
+            return {"type": "http.request", "body": chunk, "more_body": bool(pending)}
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "https",
+        "path": _ROUTE,
+        "raw_path": _ROUTE.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"host", b"butlers.example.test"), *headers],
+        "client": ("127.0.0.1", 50000),
+        "server": ("butlers.example.test", 443),
+    }
+    await app(scope, receive, send)
+    status = next(m["status"] for m in sent if m["type"] == "http.response.start")
+    body = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
+    return status, json.loads(body), received
+
+
+def _padded_body(spelling: str, size: int) -> bytes:
+    """A valid batch spelled plainly or with every string character escaped, padded to size."""
+
+    def escaped(value: str) -> str:
+        return "".join(f"\\u{ord(char):04x}" for char in value)
+
+    if spelling == "whitespace":
+        body = json.dumps(
+            {"mappings": [{"ha_person_id": "person.bound_fixture", "entity_id": str(uuid4())}]}
+        )
+    else:
+        items: list[str] = []
+        while len(items) < 50:
+            item = (
+                f'{{"ha_person_id":"{escaped(f"person.escaped_{len(items):02d}_" + "a" * 60)}",'
+                f'"entity_id":"{escaped(str(UUID(int=len(items) + 1)))}"}}'
+            )
+            if len('{"mappings":[]}') + len(",".join([*items, item])) > size - 16:
+                break
+            items.append(item)
+        body = '{"mappings":[' + ",".join(items) + "]}"
+    encoded = body.encode()
+    assert len(encoded) <= size
+    return encoded + b" " * (size - len(encoded))
+
+
+async def _await_lock_waiters(pool: asyncpg.Pool, count: int) -> None:
+    """Latch until ``count`` backends in this database are blocked on a lock."""
+    for _ in range(500):
+        waiting = await pool.fetchval(
+            "SELECT count(*) FROM pg_stat_activity "
+            "WHERE datname = current_database() AND wait_event_type = 'Lock'"
+        )
+        if waiting >= count:
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"expected {count} lock waiters")
+
+
+@asynccontextmanager
+async def _held_advisory_lock(db_url: str, name: str):
+    connection = await asyncpg.connect(db_url)
+    try:
+        await connection.execute("SELECT pg_advisory_lock(hashtextextended($1, 0))", name)
+        yield lambda: connection.execute("SELECT pg_advisory_unlock(hashtextextended($1, 0))", name)
+    finally:
+        await connection.close()
+
+
+async def _mapped_count(pool: asyncpg.Pool, *ha_ids: str) -> int:
+    return await pool.fetchval(
+        "SELECT count(*) FROM connectors.home_assistant_persons "
+        "WHERE ha_entity_id = ANY($1::text[])",
+        list(ha_ids),
+    )
+
+
+async def _audits(pool: asyncpg.Pool, receipt: str) -> list[dict]:
+    rows = await pool.fetch(
+        "SELECT metadata FROM public.audit_log WHERE action = $1 "
+        "AND metadata->>'receipt' = $2 ORDER BY id",
+        _AUDIT_ACTION,
+        receipt,
+    )
+    return [row["metadata"] for row in rows]
+
+
+async def _tables_containing(pool: asyncpg.Pool, needle: str) -> set[str]:
+    """Content-blind scan of every readable user table's row text for one synthetic value."""
+    tables = await pool.fetch(
+        "SELECT format('%I.%I', n.nspname, c.relname) AS name FROM pg_class c "
+        "JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind = 'r' "
+        "AND n.nspname NOT IN ('pg_catalog', 'information_schema') "
+        "AND n.nspname NOT LIKE 'pg_toast%' "
+        "AND has_schema_privilege(n.oid, 'USAGE') AND has_table_privilege(c.oid, 'SELECT')"
+    )
+    hits = set()
+    for table in tables:
+        found = await pool.fetchval(
+            f"SELECT EXISTS (SELECT 1 FROM {table['name']} AS row_value "
+            "WHERE strpos(row_value::text, $1) > 0)",
+            needle,
+        )
+        if found:
+            hits.add(table["name"])
+    return hits
 
 
 def _batch(*pairs: tuple[str, str]) -> MappingBatch:
@@ -102,75 +304,86 @@ async def _person(pool: asyncpg.Pool, name: str, *, metadata: dict | None = None
     return str(entity_id)
 
 
-class _ChunkedRequest:
-    def __init__(self, chunks: list[bytes]) -> None:
-        self._chunks = chunks
-        self.read_count = 0
+_DELIVERIES = {
+    "absent": [],
+    "understated": [(b"content-length", b"1")],
+    "overstated": [(b"content-length", b"65536")],
+    "chunked": [(b"transfer-encoding", b"chunked")],
+}
 
-    async def stream(self):
-        for chunk in self._chunks:
-            self.read_count += 1
-            yield chunk
+
+def _headers(extra: list[tuple[bytes, bytes]]) -> list[tuple[bytes, bytes]]:
+    return [
+        (b"content-type", b"application/json"),
+        (b"idempotency-key", _key(b"raw-bound").encode()),
+        *extra,
+    ]
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_bounded_reader_measures_streamed_octets_and_stops_at_the_limit() -> None:
-    accepted = _ChunkedRequest([b"a" * 16_384, b"b" * 16_384])
-    assert len(await _bounded_body(accepted)) == 32_768
+@pytest.mark.parametrize("spelling", ["whitespace", "escaped"])
+@pytest.mark.parametrize("delivery", sorted(_DELIVERIES))
+async def test_mounted_body_bound_is_measured_from_received_octets(
+    seams, spelling: str, delivery: str
+) -> None:
+    """32,768 received octets proceed; octet 32,769 stops before decode whatever headers claim."""
+    app = _mounted(seams)
 
-    oversized = _ChunkedRequest([b"a" * 32_768, b"b", b"private-later-chunk"])
-    assert await _bounded_body(oversized) is None
-    assert oversized.read_count == 2
+    def chunks(body: bytes) -> list[bytes]:
+        if delivery == "chunked":
+            return [body[offset : offset + 4096] for offset in range(0, len(body), 4096)]
+        return [body]
 
-    entity_a = str(uuid4())
-    entity_b = str(uuid4())
-    with pytest.raises(ValueError):
-        _batch(("person.duplicate", entity_a), ("person.duplicate", entity_b))
-    with pytest.raises(ValueError):
-        _batch(("person.first", entity_a), ("person.second", entity_a))
+    exact = chunks(_padded_body(spelling, 32_768))
+    status, body, _ = await _raw_post(app, exact, _headers(_DELIVERIES[delivery]))
+    # Proceeding means decode, actor derivation and one pool request, which is unavailable here.
+    assert (status, body["error"]["code"]) == (503, "MAPPING_DATABASE_UNAVAILABLE")
+    assert (seams.decoder_calls, seams.actor_calls, seams.manager.calls) == (1, 1, 1)
+
+    oversize = [*chunks(_padded_body(spelling, 32_769)), b'"private-later-chunk"']
+    status, body, received = await _raw_post(app, oversize, _headers(_DELIVERIES[delivery]))
+    assert (status, body) == (413, _TOO_LARGE)
+    assert received < len(oversize)
+    assert (seams.decoder_calls, seams.actor_calls, seams.manager.calls) == (1, 1, 1)
+    assert seams.generic == []
 
 
 @pytest.mark.unit
-def test_api_enforces_raw_body_boundary_without_pool_or_private_echo() -> None:
-    class PoolSpy:
-        calls = 0
+@pytest.mark.asyncio
+async def test_mounted_owner_boundary_refuses_before_body_actor_or_pool(seams) -> None:
+    """Owner auth and header ambiguity fail before ASGI receive, actor, pool or any audit."""
+    unavailable = _mounted(seams, create_app(api_key="synthetic-owner-key"))
+    configured = _mounted(seams, create_app(api_key="synthetic-owner-key"))
+    configured.state.owner_auth_service = _DomainOwnerState("synthetic-owner-key")
+    body = [_padded_body("whitespace", 512)]
+    owner_key = [(b"x-api-key", b"synthetic-owner-key")]
+    refusals = [
+        (unavailable, owner_key, 503, "AUTH_UNAVAILABLE"),
+        (configured, [], 401, "UNAUTHORIZED"),
+        (configured, [(b"x-api-key", b"wrong-owner-key")], 401, "UNAUTHORIZED"),
+        (
+            configured,
+            [*owner_key, (b"content-length", b"512"), (b"content-length", b"1")],
+            400,
+            "INVALID_REQUEST",
+        ),
+    ]
+    for app, extra, expected_status, expected_code in refusals:
+        status, response, received = await _raw_post(app, body, _headers(extra))
+        assert (status, response["error"]["code"], received) == (
+            expected_status,
+            expected_code,
+            0,
+        )
+    assert (seams.decoder_calls, seams.actor_calls, seams.manager.calls) == (0, 0, 0)
+    assert seams.generic == []
 
-        def pool(self, _name: str):
-            self.calls += 1
-            raise RuntimeError("synthetic unavailable")
-
-    manager = PoolSpy()
-    app = FastAPI()
-    app.include_router(router)
-    app.dependency_overrides[require_dashboard_owner_control] = lambda: "owner"
-    app.dependency_overrides[_get_db_manager] = lambda: manager
-    client = TestClient(app)
-    private_sentinel = "person.private_oversize_sentinel"
-    body = (
-        '{"mappings":[{"ha_person_id":"'
-        + private_sentinel
-        + '","entity_id":"00000000-0000-4000-8000-000000000001"}]}'
-    ).encode()
-    body = body + b" " * (32_769 - len(body))
-
-    response = client.post(
-        "/api/home/person-mappings",
-        content=body,
-        headers={"Content-Length": "1", "Idempotency-Key": _key(b"oversize")},
-    )
-
-    assert response.status_code == 413
-    assert response.json() == {
-        "error": {
-            "code": "REQUEST_BODY_TOO_LARGE",
-            "message": "Request body exceeds 32 KiB.",
-            "butler": None,
-            "details": None,
-        }
-    }
-    assert manager.calls == 0
-    assert private_sentinel not in response.text
+    # Positive control: the same request with the owner credential reaches the pool seam.
+    status, response, received = await _raw_post(configured, body, _headers(owner_key))
+    assert (status, response["error"]["code"]) == (503, "MAPPING_DATABASE_UNAVAILABLE")
+    assert received >= 1
+    assert seams.manager.calls == 1
 
 
 @pytest.mark.integration
@@ -430,6 +643,14 @@ async def test_real_postgres_batch_is_atomic_idempotent_and_content_blind(mappin
         f"mapping-merged-{uuid4()}",
         metadata={"merged_into": first},
     )
+    # The contract is SQL `metadata->>'…' IS NULL`, so present-but-falsy JSON
+    # values are still lifecycle markers.
+    empty_tombstone = await _person(
+        mapping_pool, f"mapping-empty-tombstone-{uuid4()}", metadata={"deleted_at": ""}
+    )
+    false_merge = await _person(
+        mapping_pool, f"mapping-false-merge-{uuid4()}", metadata={"merged_into": False}
+    )
     invalid, _ = await _decide_batch(
         mapping_pool,
         _batch(
@@ -437,12 +658,14 @@ async def test_real_postgres_batch_is_atomic_idempotent_and_content_blind(mappin
             ("person.wrong_type_fixture", str(wrong_type)),
             ("person.tombstoned_fixture", tombstoned),
             ("person.merged_fixture", merged),
+            ("person.empty_tombstone_fixture", empty_tombstone),
+            ("person.false_merge_fixture", false_merge),
         ),
         _key(b"invalid-references"),
         "owner",
     )
     assert invalid.failure_category == "reference_invalid"
-    assert invalid.receipt.invalid_reference_count == 4
+    assert invalid.receipt.invalid_reference_count == 6
 
     divergent = _batch(("person.other_fixture", second))
     refused, _ = await _decide_batch(mapping_pool, divergent, key, "owner")
@@ -459,12 +682,22 @@ async def test_real_postgres_batch_is_atomic_idempotent_and_content_blind(mappin
 @pytest.mark.integration
 @pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_real_postgres_serializes_competing_batches_and_rolls_back(mapping_pool) -> None:
+async def test_real_postgres_serializes_competing_batches_and_rolls_back(
+    mapping_pool, mapping_db_url: str, seams
+) -> None:
     shared = await _person(mapping_pool, f"mapping-shared-{uuid4()}")
     first = _batch(("person.concurrent_first", shared))
     second = _batch(("person.concurrent_second", shared))
 
-    decisions = await asyncio.gather(
+    async def overlapped(*calls):
+        """Park every call on the mapping advisory lock before any receipt lookup runs."""
+        async with _held_advisory_lock(mapping_db_url, _LOCK_NAMESPACE) as release:
+            tasks = [asyncio.create_task(call) for call in calls]
+            await _await_lock_waiters(mapping_pool, len(tasks))
+            await release()
+        return await asyncio.gather(*tasks)
+
+    decisions = await overlapped(
         _decide_batch(mapping_pool, first, _key(b"concurrent-first"), "owner"),
         _decide_batch(mapping_pool, second, _key(b"concurrent-second"), "owner"),
     )
@@ -480,7 +713,7 @@ async def test_real_postgres_serializes_competing_batches_and_rolls_back(mapping
     identical_entity = await _person(mapping_pool, f"mapping-identical-{uuid4()}")
     identical_batch = _batch(("person.concurrent_identical", identical_entity))
     identical_key = _key(b"concurrent-identical")
-    identical = await asyncio.gather(
+    identical = await overlapped(
         _decide_batch(mapping_pool, identical_batch, identical_key, "owner"),
         _decide_batch(mapping_pool, identical_batch, identical_key, "owner"),
     )
@@ -497,7 +730,7 @@ async def test_real_postgres_serializes_competing_batches_and_rolls_back(mapping
     divergent_a = await _person(mapping_pool, f"mapping-divergent-a-{uuid4()}")
     divergent_b = await _person(mapping_pool, f"mapping-divergent-b-{uuid4()}")
     divergent_key = _key(b"concurrent-divergent")
-    divergent = await asyncio.gather(
+    divergent = await overlapped(
         _decide_batch(
             mapping_pool,
             _batch(("person.concurrent_divergent_a", divergent_a)),
@@ -522,31 +755,397 @@ async def test_real_postgres_serializes_competing_batches_and_rolls_back(mapping
         )
         == 1
     )
+    assert (
+        await _mapped_count(
+            mapping_pool, "person.concurrent_divergent_a", "person.concurrent_divergent_b"
+        )
+        == 1
+    )
 
+    # A failure after the explicit audit insert rolls back mapping, receipt and audit together,
+    # and the mounted route never claims creation.
+    seams.manager.serving = mapping_pool
     rollback_entity = await _person(mapping_pool, f"mapping-rollback-{uuid4()}")
-    await mapping_pool.execute(
-        "CREATE FUNCTION public.reject_mapping_receipt_fixture() RETURNS trigger "
-        "LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic receipt failure'; END $$"
+    rollback_key = _key(b"rollback")
+    audits_before = await mapping_pool.fetchval(
+        "SELECT count(*) FROM public.audit_log WHERE action = $1", _AUDIT_ACTION
     )
     await mapping_pool.execute(
-        "CREATE TRIGGER reject_mapping_receipt_fixture "
-        "BEFORE INSERT ON public.ha_person_mapping_receipts "
-        "FOR EACH ROW EXECUTE FUNCTION public.reject_mapping_receipt_fixture()"
+        "CREATE FUNCTION public.reject_mapping_audit_fixture() RETURNS trigger "
+        "LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic audit failure'; END $$"
+    )
+    await mapping_pool.execute(
+        "CREATE TRIGGER reject_mapping_audit_fixture BEFORE INSERT ON public.audit_log "
+        f"FOR EACH ROW WHEN (NEW.action = '{_AUDIT_ACTION}') "
+        "EXECUTE FUNCTION public.reject_mapping_audit_fixture()"
     )
     try:
-        with pytest.raises(Exception, match="synthetic receipt failure"):
-            await _decide_batch(
-                mapping_pool,
-                _batch(("person.rollback_fixture", rollback_entity)),
-                _key(b"rollback"),
-                "owner",
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=_mounted(seams)), base_url=_ORIGIN
+        ) as client:
+            response = await client.post(
+                _ROUTE,
+                json={
+                    "mappings": [
+                        {"ha_person_id": "person.rollback_fixture", "entity_id": rollback_entity}
+                    ]
+                },
+                headers={"Idempotency-Key": rollback_key},
             )
     finally:
-        await mapping_pool.execute(
-            "DROP TRIGGER reject_mapping_receipt_fixture ON public.ha_person_mapping_receipts"
-        )
-        await mapping_pool.execute("DROP FUNCTION public.reject_mapping_receipt_fixture()")
+        await mapping_pool.execute("DROP TRIGGER reject_mapping_audit_fixture ON public.audit_log")
+        await mapping_pool.execute("DROP FUNCTION public.reject_mapping_audit_fixture()")
+    assert response.status_code == 503
+    error = response.json()["error"]
+    assert error["code"] == "MAPPING_DATABASE_UNAVAILABLE"
+    assert (error["details"]["complete"], error["details"]["created_count"]) == (False, 0)
+    assert await _mapped_count(mapping_pool, "person.rollback_fixture") == 0
     assert not await mapping_pool.fetchval(
-        "SELECT EXISTS (SELECT 1 FROM connectors.home_assistant_persons "
-        "WHERE ha_entity_id = 'person.rollback_fixture')"
+        "SELECT EXISTS (SELECT 1 FROM public.ha_person_mapping_receipts WHERE key_digest = $1)",
+        _key_digest(rollback_key),
     )
+    assert audits_before == await mapping_pool.fetchval(
+        "SELECT count(*) FROM public.audit_log WHERE action = $1", _AUDIT_ACTION
+    )
+
+
+_LIFECYCLE_MUTATIONS = {
+    "merge": (
+        "UPDATE public.entities SET metadata = coalesce(metadata, '{}'::jsonb) "
+        "|| jsonb_build_object('merged_into', $2::text) WHERE id = $1"
+    ),
+    "tombstone": (
+        "UPDATE public.entities SET metadata = coalesce(metadata, '{}'::jsonb) "
+        "|| jsonb_build_object('deleted_at', '2026-09-29T00:00:00Z') "
+        "WHERE id = $1 AND $2::text IS NOT NULL"
+    ),
+    "delete": "DELETE FROM public.entities WHERE id = $1 AND $2::text IS NOT NULL",
+    "retype": (
+        "UPDATE public.entities SET entity_type = 'organization' "
+        "WHERE id = $1 AND $2::text IS NOT NULL"
+    ),
+}
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize("mutation", sorted(_LIFECYCLE_MUTATIONS))
+async def test_real_postgres_entity_lifecycle_races_in_both_orders(
+    mapping_pool, mapping_db_url: str, mutation: str
+) -> None:
+    """Lifecycle-first yields INVALID_REFERENCE; mapping-first makes the mutation wait."""
+    survivor = await _person(mapping_pool, f"mapping-survivor-{uuid4()}")
+
+    async def mutate(connection: asyncpg.Connection, entity: str) -> None:
+        await connection.execute(_LIFECYCLE_MUTATIONS[mutation], UUID(entity), survivor)
+
+    async def ordered_pair() -> tuple[str, str]:
+        pair = [await _person(mapping_pool, f"mapping-lifecycle-{uuid4()}") for _ in range(2)]
+        low, high = sorted(pair, key=UUID)
+        return low, high
+
+    async def receipt_outcomes(key: str) -> list[str]:
+        rows = await mapping_pool.fetch(
+            "SELECT outcome FROM public.ha_person_mapping_receipts WHERE key_digest = $1",
+            _key_digest(key),
+        )
+        return [row["outcome"] for row in rows]
+
+    # Lifecycle first: the uncommitted mutation holds the higher UUID. The batch lists it first,
+    # yet the mapping locks the lower UUID before waiting, so locks are taken in ascending order.
+    low, high = await ordered_pair()
+    lifecycle_ids = (f"person.{mutation}_lifecycle_high", f"person.{mutation}_lifecycle_low")
+    lifecycle_key = _key(f"{mutation}-lifecycle-first".encode())
+    lifecycle = await asyncpg.connect(mapping_db_url)
+    try:
+        transaction = lifecycle.transaction()
+        await transaction.start()
+        await mutate(lifecycle, high)
+        pending = asyncio.create_task(
+            _decide_batch(
+                mapping_pool,
+                _batch((lifecycle_ids[0], high), (lifecycle_ids[1], low)),
+                lifecycle_key,
+                "owner",
+            )
+        )
+        await _await_lock_waiters(mapping_pool, 1)
+        with pytest.raises(asyncpg.LockNotAvailableError):
+            await mapping_pool.execute(
+                "SELECT 1 FROM public.entities WHERE id = $1 FOR UPDATE NOWAIT", UUID(low)
+            )
+        await transaction.commit()
+        refused, _ = await pending
+    finally:
+        await lifecycle.close()
+    assert (refused.failure_category, refused.receipt.invalid_reference_count) == (
+        "reference_invalid",
+        1,
+    )
+    assert await _mapped_count(mapping_pool, *lifecycle_ids) == 0
+    assert await receipt_outcomes(lifecycle_key) == ["refused"]
+
+    # Mapping first: a trigger parks the decision after its row locks and mapping insert,
+    # before the receipt; the mutation must wait until mapping, receipt and audit commit.
+    low, high = await ordered_pair()
+    mapping_ids = (f"person.{mutation}_mapping_high", f"person.{mutation}_mapping_low")
+    mapping_key = _key(f"{mutation}-mapping-first".encode())
+    latch = "butlers:test:ha-person-mapping-lifecycle-latch"
+    await mapping_pool.execute(
+        "CREATE FUNCTION public.latch_mapping_receipt_fixture() RETURNS trigger "
+        "LANGUAGE plpgsql AS $$ BEGIN "
+        f"PERFORM pg_advisory_xact_lock(hashtextextended('{latch}', 0)); RETURN NEW; END $$"
+    )
+    await mapping_pool.execute(
+        "CREATE TRIGGER latch_mapping_receipt_fixture "
+        "BEFORE INSERT ON public.ha_person_mapping_receipts "
+        "FOR EACH ROW EXECUTE FUNCTION public.latch_mapping_receipt_fixture()"
+    )
+    lifecycle = await asyncpg.connect(mapping_db_url)
+    try:
+        async with _held_advisory_lock(mapping_db_url, latch) as release:
+            pending = asyncio.create_task(
+                _decide_batch(
+                    mapping_pool,
+                    _batch((mapping_ids[0], high), (mapping_ids[1], low)),
+                    mapping_key,
+                    "owner",
+                )
+            )
+            await _await_lock_waiters(mapping_pool, 1)
+            mutating = asyncio.create_task(mutate(lifecycle, high))
+            await _await_lock_waiters(mapping_pool, 2)
+            assert not mutating.done()
+            await release()
+            created, _ = await pending
+            await mutating
+    finally:
+        await lifecycle.close()
+        await mapping_pool.execute(
+            "DROP TRIGGER latch_mapping_receipt_fixture ON public.ha_person_mapping_receipts"
+        )
+        await mapping_pool.execute("DROP FUNCTION public.latch_mapping_receipt_fixture()")
+    assert (created.outcome, created.receipt.created_count) == ("success", 2)
+    assert await _mapped_count(mapping_pool, *mapping_ids) == 2
+    assert await receipt_outcomes(mapping_key) == ["success"]
+    assert [audit["outcome"] for audit in await _audits(mapping_pool, created.receipt.receipt)] == [
+        "success"
+    ]
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_mounted_duplicates_and_legacy_null_target_refuse_without_writes(
+    mapping_pool, seams
+) -> None:
+    seams.manager.serving = mapping_pool
+    first = await _person(mapping_pool, f"mapping-duplicate-{uuid4()}")
+    second = await _person(mapping_pool, f"mapping-duplicate-{uuid4()}")
+    await mapping_pool.execute(
+        "INSERT INTO connectors.home_assistant_persons (ha_entity_id, entity_id) "
+        "VALUES ('person.legacy_null_fixture', NULL)"
+    )
+    cases = {
+        "duplicate-ha": (
+            [("person.duplicate_ha_fixture", first), ("person.duplicate_ha_fixture", second)],
+            422,
+            "INVALID_REQUEST",
+            "request_invalid",
+        ),
+        "duplicate-entity": (
+            [("person.duplicate_entity_a", first), ("person.duplicate_entity_b", first)],
+            422,
+            "INVALID_REQUEST",
+            "request_invalid",
+        ),
+        "legacy-null": (
+            [("person.legacy_null_fixture", first), ("person.legacy_null_peer", second)],
+            409,
+            "MAPPING_CONFLICT",
+            "mapping_conflict",
+        ),
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_mounted(seams)), base_url=_ORIGIN
+    ) as client:
+        for name, (pairs, status, code, category) in cases.items():
+            key = _key(name.encode())
+            response = await client.post(
+                _ROUTE,
+                json={"mappings": [{"ha_person_id": h, "entity_id": e} for h, e in pairs]},
+                headers={"Idempotency-Key": key},
+            )
+            assert (response.status_code, response.json()["error"]["code"]) == (status, code)
+            details = response.json()["error"]["details"]
+            assert (details["complete"], details["created_count"]) == (False, 0)
+            assert [
+                (audit["outcome"], audit["failure_category"])
+                for audit in await _audits(mapping_pool, details["receipt"])
+            ] == [("refused", category)]
+            assert not await mapping_pool.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM public.ha_person_mapping_receipts "
+                "WHERE key_digest = $1 AND outcome = 'success')",
+                _key_digest(key),
+            )
+    assert (
+        await _mapped_count(mapping_pool, *(h for pairs, *_ in cases.values() for h, _ in pairs))
+        == 1
+    )
+    assert (
+        await mapping_pool.fetchval(
+            "SELECT entity_id FROM connectors.home_assistant_persons "
+            "WHERE ha_entity_id = 'person.legacy_null_fixture'"
+        )
+        is None
+    )
+
+
+def _metric_samples() -> list[tuple[str, dict[str, str], float]]:
+    return [
+        (sample.name, dict(sample.labels), sample.value)
+        for metric in REGISTRY.collect()
+        for sample in metric.samples
+    ]
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_mounted_outcomes_are_aggregate_replayable_and_sentinel_free(
+    mapping_pool, seams, caplog
+) -> None:
+    """Identifiers never leave the mapping row, across every terminal outcome and capture path.
+
+    The whole-database scan covers receipts, explicit audit, and session/prompt stores; the
+    other capture paths are the response, URL, logs, rendered exceptions, metric labels,
+    spans, and generic audit. Each path is proven live before absence counts.
+    """
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+    from opentelemetry.metrics import NoOpMeterProvider
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    caplog.set_level(logging.DEBUG)
+    seams.manager.serving = mapping_pool
+    app = _mounted(seams)
+    exporter = InMemorySpanExporter()
+    tracer_provider = TracerProvider()
+    tracer_provider.add_span_processor(SimpleSpanProcessor(exporter))
+    FastAPIInstrumentor.instrument_app(
+        app, tracer_provider=tracer_provider, meter_provider=NoOpMeterProvider()
+    )
+
+    token = uuid4().hex[:12]
+    ha_sentinel = f"person.sentinel_{token}"
+    entity_sentinel = await _person(mapping_pool, f"mapping-sentinel-{token}")
+    other_entity = await _person(mapping_pool, f"mapping-sentinel-peer-{token}")
+    refused_ha = f"person.sentinel_refused_{token}"
+    refused_entity = str(uuid4())
+    key = _key(token.encode())
+
+    def batch(ha_id: str, entity_id: str) -> bytes:
+        return json.dumps({"mappings": [{"ha_person_id": ha_id, "entity_id": entity_id}]}).encode()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url=_ORIGIN
+    ) as client:
+
+        async def post(body: bytes, idempotency_key: str) -> httpx.Response:
+            return await client.post(
+                _ROUTE,
+                content=body,
+                headers={"Idempotency-Key": idempotency_key, "Content-Type": "application/json"},
+            )
+
+        created = await post(batch(ha_sentinel, entity_sentinel), key)
+        replayed = await post(batch(ha_sentinel, entity_sentinel), key)
+        refusals = {
+            "IDEMPOTENCY_CONFLICT": await post(batch(refused_ha, other_entity), key),
+            "INVALID_REFERENCE": await post(batch(refused_ha, refused_entity), _key(b"s-ref")),
+            "MAPPING_CONFLICT": await post(batch(ha_sentinel, other_entity), _key(b"s-conflict")),
+        }
+        seams.manager.serving = None
+        refusals["MAPPING_DATABASE_UNAVAILABLE"] = await post(
+            batch(refused_ha, other_entity), _key(b"s-unavailable")
+        )
+        audit_control = await client.post("/api/home/person-mappings-generic-audit-control")
+    responses = [created, replayed, *refusals.values()]
+
+    assert created.status_code == 200
+    assert set(created.json()) == {"data", "meta"}
+    assert set(created.json()["data"]) == _RECEIPT_FIELDS
+    assert (created.json()["data"]["complete"], created.json()["data"]["created_count"]) == (
+        True,
+        1,
+    )
+    assert replayed.content == created.content
+    assert await _mapped_count(mapping_pool, ha_sentinel, refused_ha) == 1
+    assert (
+        await mapping_pool.fetchval(
+            "SELECT count(*) FROM public.ha_person_mapping_receipts WHERE key_digest = $1",
+            _key_digest(key),
+        )
+        == 1
+    )
+    expected_status = {
+        "IDEMPOTENCY_CONFLICT": 409,
+        "INVALID_REFERENCE": 422,
+        "MAPPING_CONFLICT": 409,
+        "MAPPING_DATABASE_UNAVAILABLE": 503,
+    }
+    for code, response in refusals.items():
+        envelope = response.json()
+        assert (response.status_code, envelope["error"]["code"]) == (expected_status[code], code)
+        assert set(envelope) == {"error"}
+        assert set(envelope["error"]) == {"code", "message", "butler", "details"}
+        assert set(envelope["error"]["details"]) == _RECEIPT_FIELDS
+        assert envelope["error"]["details"]["complete"] is False
+
+    audit_fields = _RECEIPT_FIELDS | {"outcome"}
+    created_audits = await _audits(mapping_pool, created.json()["data"]["receipt"])
+    assert [set(audit) for audit in created_audits] == [audit_fields, audit_fields]
+    for code in ("IDEMPOTENCY_CONFLICT", "INVALID_REFERENCE", "MAPPING_CONFLICT"):
+        receipt = refusals[code].json()["error"]["details"]["receipt"]
+        assert [set(audit) for audit in await _audits(mapping_pool, receipt)] == [
+            audit_fields | {"failure_category"}
+        ]
+
+    # Every capture path is live: without these, an empty capture would pass absence checks.
+    spans = exporter.get_finished_spans()
+    assert any((span.attributes or {}).get("http.route") == _ROUTE for span in spans), [
+        dict(span.attributes or {}) for span in spans
+    ]
+    assert "HA person mapping batch outcome=success" in caplog.text
+    mapping_labels = [
+        labels
+        for name, labels, _ in _metric_samples()
+        if name == "dashboard_ha_person_mapping_batch_total"
+    ]
+    assert {"outcome": "success", "failure_category": "none"} in mapping_labels
+    assert all(set(labels) == {"outcome", "failure_category"} for labels in mapping_labels)
+    assert [audit["path"] for audit in seams.generic] == [audit_control.request.url.path]
+    assert await _tables_containing(mapping_pool, ha_sentinel) == {
+        "connectors.home_assistant_persons"
+    }
+    assert await _tables_containing(mapping_pool, entity_sentinel) == {
+        "connectors.home_assistant_persons",
+        "public.entities",
+    }
+
+    captured = [
+        *(response.text for response in responses),
+        *(repr(sorted(response.headers.items())) for response in responses),
+        *(str(response.request.url) for response in responses),
+        caplog.text,
+        *(record.exc_text or "" for record in caplog.records),
+        repr([(span.name, dict(span.attributes or {}), span.events) for span in spans]),
+        repr(_metric_samples()),
+        repr(seams.generic),
+    ]
+    for sentinel in (ha_sentinel, entity_sentinel, refused_ha, refused_entity):
+        assert not [text for text in captured if sentinel in text], sentinel
+    for sentinel in (refused_ha, refused_entity):
+        assert await _tables_containing(mapping_pool, sentinel) == set()
