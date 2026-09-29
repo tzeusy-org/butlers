@@ -105,6 +105,19 @@ def _make_candidate_row(
     return row
 
 
+def _make_locked_row(
+    *,
+    object_val: str = _OLD_EMAIL,
+    validity: str = "active",
+    temporal: bool = False,
+) -> MagicMock:
+    """Build the row the in-transaction ``FOR UPDATE`` relock re-reads."""
+    data = {"object": object_val, "validity": validity, "temporal": temporal}
+    row = MagicMock()
+    row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
+    return row
+
+
 # ---------------------------------------------------------------------------
 # AssertResult helper
 # ---------------------------------------------------------------------------
@@ -133,7 +146,12 @@ def _make_assert_result(
 #   - pool.fetch: candidate rows for value-hash lookup
 #   - pool.execute: retract old fact (UPDATE validity='retracted')
 #   - pool.fetchrow again: fetch new fact row after write
-#   - pool.acquire() → conn.transaction() → conn.execute + relationship_assert_fact(conn=)
+#   - pool.acquire() → conn.transaction() → conn.fetchrow (FOR UPDATE relock of the
+#     hash-selected row) → conn.execute + relationship_assert_fact(conn=)
+#
+# The relock re-reads the selected row under a row lock and 409s unless it is
+# still active and still holds the selected value, so the mock connection serves
+# that re-read as the unchanged candidate by default (``locked_row``).
 #
 # We patch relationship_assert_fact at the module import level so the endpoint
 # uses the mock regardless of which connection/pool it receives.
@@ -148,11 +166,15 @@ def _make_app(
     new_fact_row: MagicMock | None = None,
     fetchrow_side_effect=None,
     fetchval_side_effect=None,
+    locked_row: MagicMock | None = None,
 ) -> tuple[FastAPI, MagicMock]:
     """Wire a FastAPI app with a mocked relationship DB pool."""
     # Mock connection returned by pool.acquire()
     mock_conn = AsyncMock()
     mock_conn.execute = AsyncMock(return_value="UPDATE 1")
+    if locked_row is None and candidate_rows:
+        locked_row = _make_locked_row(object_val=candidate_rows[0]["object"])
+    mock_conn.fetchrow = AsyncMock(return_value=locked_row)
     # transaction() returns an async context manager
     mock_tx = AsyncMock()
     mock_tx.__aenter__ = AsyncMock(return_value=None)
@@ -443,3 +465,32 @@ class TestPutEntityContactOwnerCarveOut:
             assert "active" not in sql.lower(), (
                 "pool.execute should not re-activate the old fact; the rollback handles it"
             )
+
+
+# ===========================================================================
+# PUT — the FOR UPDATE relock refuses a row that changed after selection
+# ===========================================================================
+
+
+class TestPutEntityContactRelockRefusal:
+    """A row retracted between hash selection and the relock is never edited."""
+
+    async def test_retracted_before_relock_returns_409_without_writes(self):
+        candidate = _make_candidate_row(fact_id=_FACT_ID, object_val=_OLD_EMAIL)
+        app, mock_pool = _make_app(
+            candidate_rows=[candidate],
+            locked_row=_make_locked_row(object_val=_OLD_EMAIL, validity="retracted"),
+        )
+        mock_assert = AsyncMock(return_value=_make_assert_result("superseded"))
+        with patch(
+            "butlers.tools.relationship.relationship_assert_fact.relationship_assert_fact",
+            new=mock_assert,
+        ):
+            resp = await _put(app, json_body={"new_value": _NEW_EMAIL})
+
+        assert resp.status_code == 409
+        assert resp.json()["detail"]["code"] == "contact_fact_changed"
+        mock_conn = mock_pool.acquire.return_value.__aenter__.return_value
+        assert "FOR UPDATE" in mock_conn.fetchrow.call_args[0][0]
+        mock_conn.execute.assert_not_called()
+        mock_assert.assert_not_called()
