@@ -3255,7 +3255,6 @@ export interface EntitySummary {
   aliases: string[];
   roles: string[];
   fact_count: number;
-  linked_contact_id: string | null;
   unidentified: boolean;
   source_butler: string | null;
   source_scope: string | null;
@@ -3313,7 +3312,6 @@ export interface EntityDetail extends EntitySummary {
   recent_facts_offset: number;
   recent_facts_limit: number;
   recent_facts_has_more: boolean;
-  linked_contact_name: string | null;
   entity_info: EntityInfoEntry[];
   rebind_receipts?: EntityRebindReceipt[];
 }

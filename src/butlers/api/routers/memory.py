@@ -1883,8 +1883,6 @@ async def list_entities(
                 aliases=list(r["aliases"]) if r["aliases"] else [],
                 roles=list(r["linked_contact_roles"]) if r["linked_contact_roles"] else [],
                 fact_count=fact_counts.get(eid, 0),
-                # public.contacts retired (bu-jnaa3): no contact row to link.
-                linked_contact_id=None,
                 unidentified=r["unidentified"],
                 source_butler=r["source_butler"],
                 source_scope=r["source_scope"],
@@ -2042,9 +2040,6 @@ async def get_entity(
         metadata=_parse_jsonb(row["metadata"]),
         unidentified=row["unidentified"],
         fact_count=fact_count,
-        # public.contacts retired (bu-jnaa3): no contact row to link.
-        linked_contact_id=None,
-        linked_contact_name=None,
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
         recent_facts=recent_facts,

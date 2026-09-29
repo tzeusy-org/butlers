@@ -2643,7 +2643,7 @@ export default function EntityDetailPage() {
 
   const isOwner = entity?.roles?.includes("owner") ?? false;
   // "(action needed)" follows OwnerSetupBanner's own missing-identity predicate
-  // (bu-6m6ou0), never linked_contact_id, which the API always returns null.
+  // (bu-6m6ou0), not the retired linked-contact id (bu-djtcqq).
   const ownerIdentitySetup = useOwnerIdentitySetup(entity);
   const ownerNeedsSetup = isOwner && ownerIdentitySetup.needsSetup;
 
