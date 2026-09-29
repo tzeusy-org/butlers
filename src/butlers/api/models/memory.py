@@ -212,7 +212,6 @@ class EntitySummary(BaseModel):
     aliases: list[str] = []
     roles: list[str] = []
     fact_count: int = 0
-    linked_contact_id: str | None = None
     unidentified: bool = False
     source_butler: str | None = None
     source_scope: str | None = None
@@ -246,7 +245,7 @@ class EntityRebindReceipt(BaseModel):
 
 
 class EntityDetail(EntitySummary):
-    """Full entity detail including recent facts and linked contact info."""
+    """Full entity detail including recent facts, entity info, and rebind receipts."""
 
     metadata: dict = {}
     recent_facts: list[Fact] = []
@@ -254,7 +253,6 @@ class EntityDetail(EntitySummary):
     recent_facts_offset: int = 0
     recent_facts_limit: int = 20
     recent_facts_has_more: bool = False
-    linked_contact_name: str | None = None
     entity_info: list[EntityInfoEntry] = []
     rebind_receipts: list[EntityRebindReceipt] = []
 

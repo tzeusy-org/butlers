@@ -85,8 +85,6 @@ function entityDetail(
       aliases: [],
       roles: [],
       fact_count: recentFacts.length,
-      linked_contact_id: null,
-      linked_contact_name: null,
       unidentified: false,
       source_butler: null,
       source_scope: null,
