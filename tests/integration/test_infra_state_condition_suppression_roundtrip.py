@@ -518,6 +518,34 @@ class TestIndependentFleetCondition:
         assert tuple(resolved) == ("resolved", "complete_receiver_snapshot_healthy")
         assert await InfraStateSource(pool=pool).discover(lookback_minutes=15) == []
 
+    async def test_carry_forward_never_reopens_an_episode_resolved_after_its_read(
+        self, pool: asyncpg.Pool, monkeypatch
+    ) -> None:
+        """QA reads legacy episodes before the ledger lock; the controller may win the race."""
+        from butlers.core.fleet_conditions import reconcile_fleet_condition
+
+        await _configure_healthy_deadman(pool, monkeypatch)
+        monkeypatch.delenv("BUTLERS_BACKUP_DIR", raising=False)
+        monkeypatch.setenv("BUTLERS_FLEET_CONDITION_HANDOFF", "1")
+        finance_fp = await _seed_legacy_liveness(pool, "finance")
+        read_carried = InfraStateSource._carry_forward_legacy_liveness
+
+        async def read_then_controller_resolves(source):
+            carried = await read_carried(source)
+            await reconcile_fleet_condition(pool, _cycle(True, {}, expected=1), {"finance"})
+            return carried
+
+        monkeypatch.setattr(
+            InfraStateSource, "_carry_forward_legacy_liveness", read_then_controller_resolves
+        )
+        await InfraStateSource(pool=pool).discover(lookback_minutes=15)
+
+        states = await pool.fetch(
+            "SELECT state FROM public.infra_conditions WHERE fingerprint = $1 ORDER BY episode",
+            finance_fp,
+        )
+        assert [row["state"] for row in states] == ["resolved"]
+
 
 class TestQaPatrolAssurance:
     @pytest.fixture
@@ -642,15 +670,16 @@ class TestQaPatrolAssurance:
         contract = QaPatrolContract(("infra_state", "log_scanner"), 10)
         reader = DashboardProbeRoleView(pool)
 
-        async def qualifying(age_minutes: int) -> None:
+        async def qualifying(age_minutes: int, status: str = "clean") -> None:
             await pool.execute(
                 "INSERT INTO public.qa_patrols (status, started_at, completed_at, origin, "
                 "enabled_sources_snapshot, enabled_sources_config_digest, discovery_complete) "
-                "VALUES ('clean', now() - make_interval(mins => $1), "
+                "VALUES ($4, now() - make_interval(mins => $1), "
                 "now() - make_interval(mins => $1), 'scheduled', $2, $3, true)",
                 age_minutes,
                 list(contract.enabled_sources),
                 enabled_sources_digest(contract.enabled_sources),
+                status,
             )
 
         # QA is down: its last qualifying patrol is older than twice its cadence.
@@ -663,7 +692,22 @@ class TestQaPatrolAssurance:
         await reconcile_qa_patrol_assurance(pool, reader, contract)
         assert await self._active(pool) == {"stopped"}
 
+        # An unreadable policy cannot tell overdue from stopped: it adds
+        # evidence and resolves neither identity.
+        unreadable = AsyncMock()
+        unreadable.fetchrow.side_effect = asyncpg.InsufficientPrivilegeError("denied")
+        await reconcile_qa_patrol_assurance(pool, unreadable, contract)
+        assert await self._active(pool) == {"overdue", "stopped"}
+        assert (
+            await pool.fetchval(
+                "SELECT metadata->>'policy_known' FROM public.infra_conditions "
+                "WHERE source = 'qa_patrol_assurance' AND state = 'open' "
+                "ORDER BY last_confirmed_at DESC LIMIT 1"
+            )
+            == "false"
+        )
+
         await self._set_policy(pool, "active", "operator")
-        await qualifying(1)
+        await qualifying(1, status="findings_dispatched")
         await reconcile_qa_patrol_assurance(pool, reader, contract)
         assert await self._active(pool) == set()

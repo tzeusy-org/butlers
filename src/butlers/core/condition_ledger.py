@@ -202,6 +202,11 @@ class Observation:
     ``predecessor_fingerprint``. A complete snapshot can then distinguish the
     predecessor's absence from ordinary recovery without reinterpreting or
     rewriting its historical fingerprint.
+
+    ``confirm_only`` marks an identity the producer is carrying forward rather
+    than observing: under the source lock it confirms a still-active episode
+    and is skipped when none exists, so an episode resolved after the producer
+    read it is never reopened.
     """
 
     fingerprint: str
@@ -209,6 +214,7 @@ class Observation:
     metadata: dict[str, Any] | None = None
     identity_version: int | None = None
     predecessor_fingerprint: str | None = None
+    confirm_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -502,6 +508,8 @@ async def _reconcile_source_locked(
 
     for obs in observations:
         existing = active_by_fingerprint.get(obs.fingerprint)
+        if existing is None and obs.confirm_only:
+            continue
         if existing is None:
             results.append(
                 await _open_episode(

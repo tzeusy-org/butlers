@@ -616,12 +616,18 @@ class InfraStateSource:
         ]
 
     async def _carry_forward_legacy_liveness(self) -> list[Observation]:
-        """Keep pre-handoff per-butler episodes open without re-finding them."""
+        """Keep pre-handoff per-butler episodes open without re-finding them.
+
+        The set is read before the ledger lock, so each identity is
+        confirm-only: if the fleet controller resolves it in between, the
+        reconcile skips it instead of reopening a proven-healthy daemon.
+        """
         return [
             Observation(
                 fingerprint=row["fingerprint"],
                 summary=row["summary"],
                 metadata=_json_object(row["metadata"]) or None,
+                confirm_only=True,
             )
             for row in await active_legacy_liveness_conditions(self._pool)
         ]
