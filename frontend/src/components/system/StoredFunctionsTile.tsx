@@ -3,7 +3,12 @@
 //
 // Data source: useStoredFunctionFacts -> GET /api/system/stored-functions
 // Fields used: is_drifted, drifted, not_deployed, matched_count,
-//              stored_function_check_available
+//              stored_function_check_available, unpinned_definers,
+//              definer_check_available
+//
+// The definer search-path check (bu-hefzis) is independent of the body
+// comparison: it renders its own section in every state, and only when there
+// is something to say (unpinned definers, or the check itself failed).
 //
 // `not_deployed` is an ordinary state (the function's bootstrap installer has
 // not run yet), never rendered as an alarm -- only `drifted` (a deployed body
@@ -21,7 +26,47 @@ import {
   TileTitle,
 } from "@/components/ui/Tile"
 import { Skeleton } from "@/components/ui/skeleton"
+import type { StoredFunctionFacts } from "@/api/types"
 import { useStoredFunctionFacts } from "@/hooks/use-system"
+
+const REMEDY_TEXT: Record<"migrations" | "init_db", string> = {
+  migrations: "run migrations to head",
+  init_db: "re-run scripts/init-db.sql as a cluster superuser",
+}
+
+/**
+ * SECURITY DEFINER functions whose search_path is not `pg_catalog, pg_temp`.
+ * Renders nothing when the check ran and found none.
+ */
+function DefinerSearchPathSection({ facts }: { facts: StoredFunctionFacts }) {
+  if (!facts.definer_check_available) {
+    return (
+      <p
+        data-testid="stored-functions-tile-definer-unavailable"
+        className="text-muted-foreground mt-3 text-xs"
+      >
+        Definer search-path check unavailable. This is not a clean bill of health.
+      </p>
+    )
+  }
+  if (facts.unpinned_definers.length === 0) return null
+  const count = facts.unpinned_definers.length
+  return (
+    <div data-testid="stored-functions-tile-unpinned" className="mt-3">
+      <span className="bg-[var(--red)] text-white mb-2 inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium">
+        {count} definer{count === 1 ? "" : "s"} not pinned to pg_catalog, pg_temp
+      </span>
+      <ul className="space-y-1 text-sm">
+        {facts.unpinned_definers.map((entry) => (
+          <li key={entry.function} className="font-mono text-xs">
+            {entry.function} (owner {entry.owner}, search_path{" "}
+            {entry.search_path ?? "unset"}): {REMEDY_TEXT[entry.remedy]}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
 
 // ---------------------------------------------------------------------------
 // Loading / error sub-components
@@ -96,6 +141,7 @@ export function StoredFunctionsTile() {
           <p className="text-muted-foreground mt-1 text-xs">
             The comparison itself failed. This is not a clean bill of health.
           </p>
+          {facts && <DefinerSearchPathSection facts={facts} />}
         </TileContent>
       </Tile>
     )
@@ -117,6 +163,7 @@ export function StoredFunctionsTile() {
           >
             All {facts.matched_count} matched
           </span>
+          <DefinerSearchPathSection facts={facts} />
         </TileContent>
       </Tile>
     )
@@ -171,6 +218,7 @@ export function StoredFunctionsTile() {
             </ul>
           </div>
         )}
+        <DefinerSearchPathSection facts={facts} />
       </TileContent>
     </Tile>
   )

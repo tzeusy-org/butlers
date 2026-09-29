@@ -10,6 +10,7 @@ tests/api/test_conversation_recall_search_db.py
 tests/api/test_optional_schema_lifecycle_db.py
 tests/config/test_runtime_config_policy_migration_integration.py
 tests/config/test_switchboard_connector_operational_role_migration.py
+tests/core/test_definer_search_path_probe.py
 tests/core/test_scheduler_continuity.py
 tests/core/test_task_continuity.py
 tests/integration/test_commitments_entity_graph_edges.py

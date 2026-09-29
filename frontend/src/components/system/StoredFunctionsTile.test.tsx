@@ -12,6 +12,8 @@
 //     line reference(s); no digest or body text reaches the DOM
 //   - not_deployed: distinct (amber, non-red) styling from drifted, never
 //     alarm-shaped on its own
+//   - Unpinned definers (bu-hefzis): owner, path and remedy per function;
+//     an unavailable definer check says so; nothing new when clean
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it, vi } from "vitest"
@@ -51,6 +53,8 @@ function makeStoredFunctionFacts(
       not_deployed: [],
       matched_count: 0,
       stored_function_check_available: true,
+      unpinned_definers: [],
+      definer_check_available: true,
       ...overrides,
     },
     meta: {},
@@ -280,5 +284,59 @@ describe("StoredFunctionsTile -- not_deployed", () => {
     const html = render()
     expect(html).toContain("stored-functions-tile-drifted-badge")
     expect(html).toContain("stored-functions-tile-not-deployed-badge")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Unpinned definer search paths (bu-hefzis)
+// ---------------------------------------------------------------------------
+
+describe("StoredFunctionsTile -- definer search path", () => {
+  it("lists each unpinned definer with its owner, path and remedy", () => {
+    mockResult = {
+      isPending: false,
+      data: makeStoredFunctionFacts({
+        matched_count: 3,
+        unpinned_definers: [
+          {
+            function: "restore_drill_executor.is_due(p_interval_seconds integer)",
+            owner: "restore_drill_executor_owner",
+            search_path: "pg_catalog, public, pg_temp",
+            remedy: "init_db",
+          },
+          {
+            function: "public.dashboard_turn_require_role(p_expected_role text)",
+            owner: "butlers",
+            search_path: null,
+            remedy: "migrations",
+          },
+        ],
+      }),
+    }
+    const html = render()
+    expect(html).toContain("stored-functions-tile-unpinned")
+    expect(html).toContain("2 definers not pinned to pg_catalog, pg_temp")
+    expect(html).toContain("restore_drill_executor.is_due(p_interval_seconds integer)")
+    expect(html).toContain("owner restore_drill_executor_owner")
+    expect(html).toContain("re-run scripts/init-db.sql as a cluster superuser")
+    expect(html).toContain("search_path unset")
+    expect(html).toContain("run migrations to head")
+    // Body drift is a separate verdict: the clean body badge still shows.
+    expect(html).toContain("All 3 matched")
+  })
+
+  it("says the definer check is unavailable and adds nothing when clean", () => {
+    mockResult = {
+      isPending: false,
+      data: makeStoredFunctionFacts({ definer_check_available: false }),
+    }
+    const degraded = render()
+    expect(degraded).toContain("stored-functions-tile-definer-unavailable")
+    expect(degraded).not.toContain("stored-functions-tile-unpinned")
+
+    mockResult = { isPending: false, data: makeStoredFunctionFacts() }
+    const clean = render()
+    expect(clean).not.toContain("stored-functions-tile-definer-unavailable")
+    expect(clean).not.toContain("stored-functions-tile-unpinned")
   })
 })

@@ -7772,6 +7772,27 @@ export interface StoredFunctionFacts {
   not_deployed: string[];
   matched_count: number;
   stored_function_check_available: boolean;
+  /**
+   * SECURITY DEFINER functions whose search_path is not exactly
+   * `pg_catalog, pg_temp` (bu-hefzis). Independent of `is_drifted`.
+   */
+  unpinned_definers: UnpinnedDefinerEntry[];
+  /** `false` means the definer catalog read failed -- never an all-clear. */
+  definer_check_available: boolean;
+}
+
+/**
+ * One SECURITY DEFINER with an unpinned search_path (bu-hefzis).
+ *
+ * `remedy` is `migrations` when the migration login owns the function, and
+ * `init_db` (re-run scripts/init-db.sql as a cluster superuser) otherwise.
+ */
+export interface UnpinnedDefinerEntry {
+  function: string;
+  owner: string;
+  /** Deployed search_path, or null when none is set. */
+  search_path: string | null;
+  remedy: "migrations" | "init_db";
 }
 
 /**

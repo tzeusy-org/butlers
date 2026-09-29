@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
+import logging
+from datetime import UTC, datetime
+
 import pytest
 
-from butlers.core.definer_search_path import is_pinned
+from butlers.core.definer_search_path import (
+    REMEDY_INIT_DB,
+    DefinerSearchPathReport,
+    UnpinnedDefiner,
+    is_pinned,
+    log_unpinned_definers,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -40,3 +49,58 @@ def test_is_pinned_accepts_only_the_exact_catalog_then_temp_path(
     proconfig: list[str] | None, expected: bool
 ) -> None:
     assert is_pinned(proconfig) is expected
+
+
+_NOW = datetime(2026, 9, 29, tzinfo=UTC)
+_UNPINNED = UnpinnedDefiner(
+    signature="restore_drill_executor.is_due(p_interval_seconds integer)",
+    owner="restore_drill_executor_owner",
+    search_path="pg_catalog, public, pg_temp",
+    remedy=REMEDY_INIT_DB,
+)
+
+
+@pytest.mark.parametrize(
+    ("report", "level", "must_contain", "must_not_contain"),
+    [
+        (
+            DefinerSearchPathReport(checked_at=_NOW, entries=(), checked_count=74),
+            logging.INFO,
+            ["all 74 SECURITY DEFINER functions are pinned"],
+            ["unavailable"],
+        ),
+        (
+            DefinerSearchPathReport(checked_at=_NOW, entries=(_UNPINNED,), checked_count=74),
+            logging.WARNING,
+            [
+                "1 of 74 SECURITY DEFINER functions are not pinned",
+                "restore_drill_executor.is_due(p_interval_seconds integer)",
+                "owner=restore_drill_executor_owner",
+                "search_path=pg_catalog, public, pg_temp",
+                "run migrations to head",
+                "re-run scripts/init-db.sql",
+            ],
+            [],
+        ),
+        (
+            DefinerSearchPathReport(
+                checked_at=_NOW, entries=(), check_error="cannot read pg_proc: OSError"
+            ),
+            logging.WARNING,
+            ["check unavailable", "NOT checked", "not a clean result"],
+            ["all 0", "pinned to"],
+        ),
+    ],
+    ids=["clean", "unpinned", "unavailable"],
+)
+def test_log_unpinned_definers_names_the_remedy_and_never_fakes_a_clean_result(
+    caplog, report, level, must_contain, must_not_contain
+) -> None:
+    with caplog.at_level(logging.INFO, logger="butlers.core.definer_search_path"):
+        log_unpinned_definers(report)
+    assert [record.levelno for record in caplog.records] == [level]
+    message = caplog.records[0].getMessage()
+    for text in must_contain:
+        assert text in message
+    for text in must_not_contain:
+        assert text not in message

@@ -102,6 +102,23 @@ database bootstrapped before this rule keeps `public` on the path until the boot
   bootstrap installer has not run yet. The source defaults to `scripts/init-db.sql`; set
   `STORED_FUNCTION_DRIFT_INIT_DB_SQL_PATH` when it is mounted elsewhere. The check only reports.
   It never converges anything.
+- **Definer search path.** The body comparison cannot see `proconfig`, so the same endpoint also
+  lists `unpinned_definers`: every `SECURITY DEFINER` function in the database, from any subsystem,
+  whose `search_path` is not exactly `pg_catalog, pg_temp`. Other settings such as
+  `row_security=on` are ignored. Each entry carries the signature, owner, deployed path and remedy.
+  Dashboard-api startup logs one line (`src/butlers/core/definer_search_path.py`):
+  - `Definer search path: N of M SECURITY DEFINER functions are not pinned` (WARNING).
+  - `Definer search-path check unavailable` (WARNING) when the catalog read failed. The endpoint
+    then sets `definer_check_available: false`. That is not a clean result.
+  - `all M ... are pinned` (INFO).
+
+  The System page Stored Functions tile shows the same list. The remedy depends on the owner:
+  - Owned by the migration login (`remedy: migrations`): run migrations to head.
+  - Owned by any other role (`remedy: init_db`), such as a fenced NOLOGIN owner: follow
+    [Repair drift](#repair-drift).
+
+  If an entry persists after its remedy, someone changed the path by hand. Pin it with
+  `ALTER FUNCTION ... SET search_path = pg_catalog, pg_temp` as the owner or a superuser.
 - **Audit markers.** `public.runtime_attention_plant_legacy_debounce_marker()` plants
   `public.audit_log` rows for runtimes that lack the current recorder ABI marker. Rows carry actor
   `runtime_attention_legacy_debounce_marker`, and older rows carry `runtime_attention_cutover_fence`.

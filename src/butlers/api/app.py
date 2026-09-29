@@ -140,6 +140,10 @@ from butlers.api.routers.timeline_saved_views import router as timeline_saved_vi
 from butlers.api.routers.webhooks import router as webhooks_router
 from butlers.api.routers.whatsapp import router as whatsapp_router
 from butlers.core.approval_callbacks import APPROVAL_CALLBACK_CONNECTOR_TOKEN_KEY
+from butlers.core.definer_search_path import (
+    compute_unpinned_definers,
+    log_unpinned_definers,
+)
 from butlers.core.stored_function_drift import (
     compute_stored_function_drift,
     log_stored_function_drift,
@@ -491,6 +495,19 @@ async def lifespan(app: FastAPI):
             logger.warning(
                 "Stored-function body drift check failed; deployed function bodies were "
                 "NOT compared against the configured stored-function source",
+                exc_info=True,
+            )
+
+        # Definer search paths (bu-hefzis): the body comparison above cannot see
+        # proconfig, so a database never re-bootstrapped after the definer pins
+        # would otherwise look clean. Same shape: one line, never fatal, one-shot.
+        try:
+            log_unpinned_definers(
+                await compute_unpinned_definers(get_db_manager().pool("switchboard"))
+            )
+        except Exception:
+            logger.warning(
+                "Definer search-path check failed; SECURITY DEFINER search paths were NOT checked",
                 exc_info=True,
             )
 
