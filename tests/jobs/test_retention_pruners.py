@@ -387,3 +387,65 @@ class TestRetentionJobRegistry:
         pool.fetchrow.assert_not_called()
         pool.fetch.assert_not_called()
         pool.execute.assert_not_called()
+
+
+# ===========================================================================
+# Schema scoping: the session log pruner only ever touches its own butler
+# ===========================================================================
+
+
+def _session_pruner_butlers() -> dict[str, Any]:
+    from butlers.scheduled_jobs import get_deterministic_schedule_job_registry
+
+    return {
+        butler: jobs["session_process_logs_prune"]
+        for butler, jobs in get_deterministic_schedule_job_registry().items()
+        if "session_process_logs_prune" in jobs
+    }
+
+
+class TestSessionProcessLogsPruneJobScoping:
+    """Each butler's session log pruner is confined to that butler's schema.
+
+    Every role sees only its own schema plus ``public``, so a pruner that
+    defaulted to ``general`` or accepted any ``schema`` job arg would either fail
+    on permissions or, under an over-privileged role, delete another butler's
+    logs.  The schema arg is also interpolated into SQL, so it is refused before
+    any statement is issued.
+    """
+
+    async def test_default_targets_the_running_butlers_own_table(self):
+        handlers = _session_pruner_butlers()
+        assert len(handlers) > 1
+        for butler, handler in handlers.items():
+            pool = _make_pool(fetchrow_result={"n": 3})
+            result = await handler(pool, {"enabled": True})
+            sql = pool.fetchrow.call_args.args[0]
+            assert f"FROM {butler}.session_process_logs " in sql, (butler, sql)
+            # dry-run stays the default: counted, nothing deleted.
+            assert result["dry_run"] is True
+            assert result["deleted"] == 0
+            pool.execute.assert_not_called()
+
+    @pytest.mark.parametrize("enabled", [True, False])
+    async def test_foreign_or_malformed_schema_is_refused_before_any_sql(self, enabled):
+        handler = _session_pruner_butlers()["health"]
+        for schema in ("general", "Health", "health; DROP TABLE x", "", 7):
+            pool = _make_pool(fetchrow_result={"n": 3})
+            with pytest.raises(ValueError, match="own schema"):
+                await handler(pool, {"schema": schema, "enabled": enabled, "dry_run": False})
+            pool.fetchrow.assert_not_called()
+            pool.fetch.assert_not_called()
+            pool.execute.assert_not_called()
+        # The pruner itself also refuses a non-identifier schema for direct callers.
+        for schema in ("Health", "health; DROP TABLE x", ""):
+            pool = _make_pool(fetchrow_result={"n": 3})
+            with pytest.raises(ValueError, match="plain SQL identifier"):
+                await prune_session_process_logs(pool, schema=schema, enabled=enabled)
+            pool.fetchrow.assert_not_called()
+
+    async def test_explicit_own_schema_is_accepted(self):
+        handler = _session_pruner_butlers()["health"]
+        pool = _make_pool(fetchrow_result={"n": 0})
+        await handler(pool, {"schema": "health", "enabled": True})
+        assert "FROM health.session_process_logs " in pool.fetchrow.call_args.args[0]

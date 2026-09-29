@@ -148,9 +148,12 @@ reports what it would delete.  Enable one by adding a scheduled task in
 `roster/general/butler.toml` with the `job_name` and `job_args` below.
 
 **[A] `session_process_logs_prune`** — `prune_session_process_logs()` deletes
-rows where `expires_at < now()` in the schema named by `job_args.schema`
-(default `general`).
-`job_args = {enabled = true, dry_run = false, schema = "<butler_name>"}`.
+rows where `expires_at < now()` in the running butler's own schema.  Unlike the
+other three, it is registered on every butler that has session logs and is
+enabled in that butler's own `butler.toml`.  It never reaches another butler's
+schema: an optional `job_args.schema` must equal the butler's name, and any other
+value is refused before a statement runs.
+`job_args = {enabled = true, dry_run = false}`.
 
 **[B] `filtered_events_partition_prune`** — `prune_filtered_events_partitions()`
 drops monthly partitions older than `keep_months` (default 12); dry-run lists

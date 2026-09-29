@@ -1823,30 +1823,41 @@ async def _run_chronicler_narrate_daily_job(
 # ---------------------------------------------------------------------------
 
 
-async def _run_session_process_logs_prune_job(
-    pool: asyncpg.Pool,
-    job_args: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """Prune expired session_process_logs rows for a butler schema.
+def _session_process_logs_prune_job(butler_name: str) -> _DeterministicScheduleJobHandler:
+    """Return ``butler_name``'s session_process_logs pruner, confined to its own schema.
+
+    Each butler role sees only its own schema plus ``public``, and the schema is
+    interpolated into SQL, so the handler targets ``<butler_name>`` by default
+    and refuses any other ``schema`` job arg before a statement is issued.
 
     Disabled by default.  Enable via ``job_args = {enabled = true, dry_run = false}``.
-    ``schema`` must be supplied in job_args (defaults to the butler name).
     See docs/operations/data-retention.md §[A] and butlers.jobs.retention.
     """
-    from butlers.jobs.retention import prune_session_process_logs
 
-    args = job_args or {}
-    schema: str = args.get("schema", "general")
-    enabled: bool = bool(args.get("enabled", False))
-    dry_run: bool = bool(args.get("dry_run", True))
-    batch_limit: int = int(args.get("batch_limit", 500))
-    return await prune_session_process_logs(
-        pool,
-        schema=schema,
-        enabled=enabled,
-        dry_run=dry_run,
-        batch_limit=batch_limit,
-    )
+    async def _run_session_process_logs_prune_job(
+        pool: asyncpg.Pool,
+        job_args: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        from butlers.jobs.retention import prune_session_process_logs
+
+        args = job_args or {}
+        if args.get("schema", butler_name) != butler_name:
+            raise ValueError(
+                "session_process_logs_prune may only target the running butler's own "
+                f"schema ({butler_name!r})"
+            )
+        enabled: bool = bool(args.get("enabled", False))
+        dry_run: bool = bool(args.get("dry_run", True))
+        batch_limit: int = int(args.get("batch_limit", 500))
+        return await prune_session_process_logs(
+            pool,
+            schema=butler_name,
+            enabled=enabled,
+            dry_run=dry_run,
+            batch_limit=batch_limit,
+        )
+
+    return _run_session_process_logs_prune_job
 
 
 async def _run_filtered_events_partition_prune_job(
@@ -1922,12 +1933,24 @@ async def _run_secret_probe_log_prune_job(
     )
 
 
+# Pruners over shared ``connectors`` / ``public`` tables run from ``general`` only.
 _RETENTION_PRUNER_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = {
-    "session_process_logs_prune": _run_session_process_logs_prune_job,
     "filtered_events_partition_prune": _run_filtered_events_partition_prune_job,
     "insight_candidates_prune": _run_insight_candidates_prune_job,
     "secret_probe_log_prune": _run_secret_probe_log_prune_job,
 }
+
+
+def _retention_pruner_job_handlers(butler_name: str) -> dict[str, _DeterministicScheduleJobHandler]:
+    """Return the retention pruners ``butler_name`` may dispatch (all disabled by default).
+
+    Every butler gets its own schema-scoped session log pruner; ``general`` also
+    owns the shared-table pruners in ``_RETENTION_PRUNER_JOB_HANDLERS``.
+    """
+    handlers = {"session_process_logs_prune": _session_process_logs_prune_job(butler_name)}
+    if butler_name == "general":
+        handlers.update(_RETENTION_PRUNER_JOB_HANDLERS)
+    return handlers
 
 
 # ---------------------------------------------------------------------------
@@ -1951,10 +1974,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "collect_briefing_contributions": _run_collect_briefing_contributions_job,
             "context_producer_calendar": _run_context_producer_calendar_job,
             # Retention pruners (disabled by default — see docs/operations/data-retention.md)
-            "session_process_logs_prune": _run_session_process_logs_prune_job,
-            "filtered_events_partition_prune": _run_filtered_events_partition_prune_job,
-            "insight_candidates_prune": _run_insight_candidates_prune_job,
-            "secret_probe_log_prune": _run_secret_probe_log_prune_job,
+            **_retention_pruner_job_handlers("general"),
         },
         "health": {
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
@@ -1963,8 +1983,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "insight_scan": _run_health_insight_scan_job,
             "atmosphere_advisory": _run_health_atmosphere_advisory_job,
             "context_producer_sleep_window": _run_context_producer_sleep_window_job,
-            # Per-butler session log pruner
-            "session_process_logs_prune": _run_session_process_logs_prune_job,
+            **_retention_pruner_job_handlers("health"),
         },
         "finance": {
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
@@ -1976,7 +1995,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "anomaly_insight_scan": _run_finance_anomaly_insight_scan_job,
             "monthly_finance_digest": _run_finance_monthly_finance_digest_job,
             "simplefin_sync": _run_finance_simplefin_sync_job,
-            "session_process_logs_prune": _run_session_process_logs_prune_job,
+            **_retention_pruner_job_handlers("finance"),
         },
         "relationship": {
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
@@ -1993,7 +2012,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "episodic_predicate_curation": _run_relationship_episodic_predicate_curation_job,
             "email_identity_enrichment": _run_relationship_email_identity_enrichment_job,
             # contact_info_reconciler retired (bu-e2ja9 / core_115): table dropped.
-            "session_process_logs_prune": _run_session_process_logs_prune_job,
+            **_retention_pruner_job_handlers("relationship"),
             "prepared_action_orphan_sweep": _run_prepared_action_orphan_sweep_job,
         },
         "travel": {
@@ -2006,18 +2025,18 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "destination_outlook": _run_travel_destination_outlook_job,
             "context_producer_travel": _run_context_producer_travel_job,
             "context_producer_commuting_eta": _run_context_producer_commuting_eta_job,
-            "session_process_logs_prune": _run_session_process_logs_prune_job,
+            **_retention_pruner_job_handlers("travel"),
         },
         "messenger": {
             "calendar_prep_contribution": _run_messenger_calendar_prep_contribution_job,
-            "session_process_logs_prune": _run_session_process_logs_prune_job,
+            **_retention_pruner_job_handlers("messenger"),
         },
         "education": {
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             "compute_analytics_snapshots": _run_education_compute_analytics_snapshots_job,
             "mind_map_staleness_abandonment": _run_education_mind_map_staleness_job,
             "daily_briefing_contribution": _run_education_briefing_contribution_job,
-            "session_process_logs_prune": _run_session_process_logs_prune_job,
+            **_retention_pruner_job_handlers("education"),
         },
         "chronicler": {
             # Memory maintenance handlers (bu-93y4rt): the chronicler now enables
@@ -2070,13 +2089,13 @@ def _build_deterministic_schedule_job_registry() -> dict[
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             **_HOME_DETERMINISTIC_JOB_HANDLERS,
             "daily_briefing_contribution": _run_home_briefing_contribution_job,
-            "session_process_logs_prune": _run_session_process_logs_prune_job,
+            **_retention_pruner_job_handlers("home"),
         },
         "lifestyle": {
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             "daily_briefing_contribution": _run_lifestyle_briefing_contribution_job,
             "taste_ledger_project": _run_lifestyle_taste_projection_job,
-            "session_process_logs_prune": _run_session_process_logs_prune_job,
+            **_retention_pruner_job_handlers("lifestyle"),
         },
         "switchboard": {
             "eligibility_sweep": _run_switchboard_eligibility_sweep_job,
@@ -2092,13 +2111,13 @@ def _build_deterministic_schedule_job_registry() -> dict[
             ),
             "fleet_case_lapse_sweep": _run_switchboard_fleet_case_lapse_sweep_job,
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
-            "session_process_logs_prune": _run_session_process_logs_prune_job,
+            **_retention_pruner_job_handlers("switchboard"),
         },
         "qa": {
             "qa_patrol": _run_qa_patrol_job,
             "qa_pr_status_check": _run_qa_pr_status_check_job,
             "qa_evidence_cleanup": _run_qa_evidence_cleanup_job,
-            "session_process_logs_prune": _run_session_process_logs_prune_job,
+            **_retention_pruner_job_handlers("qa"),
         },
     }
 

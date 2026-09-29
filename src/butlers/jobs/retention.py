@@ -39,6 +39,7 @@ See docs/operations/data-retention.md for policy rationale.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -51,6 +52,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _SESSION_PROCESS_LOGS_TTL_DAYS = 14
+
+# ``schema`` is interpolated into SQL, so it must be a plain lowercase identifier.
+_SCHEMA_IDENTIFIER_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
 
 
 async def prune_session_process_logs(
@@ -73,7 +77,8 @@ async def prune_session_process_logs(
         asyncpg connection pool.
     schema:
         Butler schema name (e.g. ``"general"``).  The table is per-butler
-        and lives in the butler's own schema.
+        and lives in the butler's own schema; the scheduled job always passes
+        the running butler's schema.
     enabled:
         Must be ``True`` to run.  When ``False`` the function returns
         immediately without touching the DB.
@@ -88,7 +93,14 @@ async def prune_session_process_logs(
     -------
     dict
         ``{"candidates": int, "deleted": int, "dry_run": bool, "enabled": bool}``
+
+    Raises
+    ------
+    ValueError
+        If ``schema`` is not a plain lowercase SQL identifier.
     """
+    if not isinstance(schema, str) or not _SCHEMA_IDENTIFIER_RE.fullmatch(schema):
+        raise ValueError("session_process_logs pruner schema must be a plain SQL identifier")
     if not enabled:
         logger.debug(
             "session_process_logs pruner is disabled (schema=%r); skipping",
