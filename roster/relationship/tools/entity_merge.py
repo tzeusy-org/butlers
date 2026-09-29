@@ -5,6 +5,18 @@ locking, conflict resolution, reference rewiring, tombstoning, and audit history
 cannot drift.  The optional locked guard is the reconciliation seam required by
 ``REQ-entity-identity-002``: it runs after both rows are locked and validated but
 before any merge write occurs.
+
+Effective time (relationship-fact-effective-time): a merge moves fact rows, it
+never re-decides what they assert. Every affected active ``entity_facts`` row is
+locked and planned before the first write. Rows are repointed with their id,
+effective occurrence and packet, evidence and lifecycle intact, and their graph
+projections follow in the same transaction. The legacy SPO-collision and
+single-cardinality collapses apply only among unknown default-occurrence rows --
+the only rows that can exist before the index cutover. A temporal-bearing row is
+never collapsed: if merging would give two active rows one final occurrence key
+and either carries effective time, the merge fails
+``temporal_occurrence_collision`` before any entity, contact, fact, evidence or
+projection write.
 """
 
 from __future__ import annotations
@@ -19,8 +31,10 @@ from uuid import UUID, uuid4
 
 import asyncpg
 
+from butlers.core import entity_graph_edges
 from butlers.entity_rebind import ENTITY_REBOUND_EVENT_TYPE, rebind_entity_references
 from butlers.fleet_events import publish_fleet_event
+from butlers.tools.relationship.fact_temporal import OCCURRENCE_COLLISION, temporal_bearing_sql
 from butlers.tools.relationship.merge_review import compute_merge_evidence, write_merge_review
 
 
@@ -60,6 +74,13 @@ class TargetEntityTombstonedError(EntityMergeError):
 class AuditEntityOrderError(EntityMergeError):
     def __init__(self) -> None:
         super().__init__("audit_entity_order_mismatch")
+
+
+class TemporalOccurrenceCollisionError(EntityMergeError):
+    """Merging would give a temporal-bearing occurrence a duplicate final key."""
+
+    def __init__(self) -> None:
+        super().__init__(OCCURRENCE_COLLISION)
 
 
 _CLASSIFICATION_RE = re.compile(r"[a-z][a-z0-9_]*\Z")
@@ -110,6 +131,53 @@ MEMORY_BEARING_SCHEMAS = (
     "switchboard",
     "travel",
 )
+
+
+#: SQL predicate over aliases ``src``/``tgt``: both rows are unknown defaults.
+_BOTH_UNKNOWN_DEFAULT = f"NOT {temporal_bearing_sql('src')} AND NOT {temporal_bearing_sql('tgt')}"
+
+
+async def _lock_and_plan_facts(
+    conn: asyncpg.Connection,
+    source_entity_id: UUID,
+    target_entity_id: UUID,
+) -> None:
+    """Lock every active fact the merge can touch and refuse temporal collisions.
+
+    Runs before the first merge write. The final occurrence key of a row is its
+    (subject, predicate, object, effective_period_id) after the source entity is
+    rewritten to the target on both the subject and the entity-object side.
+    """
+    source_text = str(source_entity_id)
+    target_text = str(target_entity_id)
+    rows = await conn.fetch(
+        f"""
+        SELECT id, subject, predicate, object, object_kind, effective_period_id,
+               {temporal_bearing_sql("ef")} AS temporal
+        FROM relationship.entity_facts ef
+        WHERE ef.validity = 'active'
+          AND (
+            ef.subject = ANY($1::uuid[])
+            OR (ef.object_kind = 'entity' AND ef.object = ANY($2::text[]))
+          )
+        ORDER BY ef.id
+        FOR UPDATE
+        """,
+        [source_entity_id, target_entity_id],
+        [source_text, target_text],
+    )
+    final_keys: dict[tuple[Any, ...], list[bool]] = {}
+    for row in rows:
+        subject = target_entity_id if row["subject"] == source_entity_id else row["subject"]
+        obj = row["object"]
+        if row["object_kind"] == "entity" and obj == source_text:
+            obj = target_text
+        key = (subject, row["predicate"], obj, row["effective_period_id"])
+        final_keys.setdefault(key, []).append(row["temporal"])
+    # Unknown defaults sharing a key keep the legacy dedup below; any collision
+    # involving effective time would have to choose one occurrence, so refuse.
+    if any(len(group) > 1 and any(group) for group in final_keys.values()):
+        raise TemporalOccurrenceCollisionError
 
 
 def _rowcount(command_tag: Any) -> int:
@@ -182,6 +250,8 @@ async def merge_entity_pair(
             if locked_guard is not None:
                 await locked_guard(conn, locked_pair)
 
+            await _lock_and_plan_facts(conn, source_entity_id, target_entity_id)
+
             merge_evidence = await compute_merge_evidence(
                 conn,
                 audit_entity_order[0],
@@ -220,9 +290,10 @@ async def merge_entity_pair(
             )
 
             # Exact subject-side collisions preserve the target row and supersede
-            # the source row before the remaining active rows are moved.
-            await conn.execute(
-                """
+            # the source row before the remaining active rows are moved. Only
+            # unknown default occurrences collapse (see _lock_and_plan_facts).
+            superseded_ids = await conn.fetch(
+                f"""
                 UPDATE relationship.entity_facts AS src
                 SET validity = 'superseded',
                     updated_at = now()
@@ -234,16 +305,20 @@ async def merge_entity_pair(
                         AND tgt.predicate = src.predicate
                         AND tgt.object = src.object
                         AND tgt.validity = 'active'
+                        AND {_BOTH_UNKNOWN_DEFAULT}
                   )
+                RETURNING id
                 """,
                 source_entity_id,
                 target_entity_id,
             )
 
             # Resolve all active rows for registry-declared single-cardinality
-            # predicates. Higher confidence wins; ties keep the target row.
-            await conn.execute(
-                """
+            # predicates. Higher confidence wins; ties keep the target row. A
+            # predicate with any temporal-bearing row is left for period-aware
+            # policy (bu-4ss0u): its occurrences are repointed, never collapsed.
+            superseded_ids += await conn.fetch(
+                f"""
                 WITH ranked AS (
                     SELECT
                         ef.id,
@@ -260,6 +335,13 @@ async def merge_entity_pair(
                     WHERE ef.subject IN ($1, $2)
                       AND ef.validity = 'active'
                       AND pr.cardinality = 'single'
+                      AND NOT EXISTS (
+                          SELECT 1 FROM relationship.entity_facts t
+                          WHERE t.subject IN ($1, $2)
+                            AND t.predicate = ef.predicate
+                            AND t.validity = 'active'
+                            AND {temporal_bearing_sql("t")}
+                      )
                 )
                 UPDATE relationship.entity_facts AS ef
                 SET validity = 'superseded',
@@ -267,6 +349,7 @@ async def merge_entity_pair(
                 FROM ranked
                 WHERE ef.id = ranked.id
                   AND ranked.rn > 1
+                RETURNING ef.id
                 """,
                 source_entity_id,
                 target_entity_id,
@@ -288,8 +371,8 @@ async def merge_entity_pair(
 
             source_text = str(source_entity_id)
             target_text = str(target_entity_id)
-            await conn.execute(
-                """
+            superseded_ids += await conn.fetch(
+                f"""
                 UPDATE relationship.entity_facts AS src
                 SET validity = 'superseded',
                     updated_at = now()
@@ -303,7 +386,9 @@ async def merge_entity_pair(
                         AND tgt.object = $2
                         AND tgt.object_kind = 'entity'
                         AND tgt.validity = 'active'
+                        AND {_BOTH_UNKNOWN_DEFAULT}
                   )
+                RETURNING id
                 """,
                 source_text,
                 target_text,
@@ -332,7 +417,15 @@ async def merge_entity_pair(
             # RETURNED ids from the rewires above -- never a blanket
             # subject_entity_id/object_entity_id = source_entity_id filter --
             # so a stale edge belonging to a fact that was SUPERSEDED (not
-            # rewired) by the dedup UPDATEs above is left untouched.
+            # rewired) by the dedup UPDATEs above is not repointed -- it is
+            # removed instead, exactly as the central writer removes the edge of
+            # any version it supersedes.
+            await entity_graph_edges.delete_entity_graph_edges(
+                conn,
+                source_schema="relationship",
+                source_table="entity_facts",
+                source_ids=[row["id"] for row in superseded_ids],
+            )
             if subject_rewired_ids:
                 await conn.execute(
                     """

@@ -35,6 +35,27 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPT_PATH = _REPO_ROOT / "scripts" / "reconcile_whatsapp_entities.py"
 
 
+def _apply_evidence_schema():
+    """Load ``roster/relationship/tests/evidence_schema.py`` by path.
+
+    ``roster/`` is not importable from ``tests/`` on its own, and the rel_034 /
+    rel_035 DDL must not be copied here (same loader as
+    ``tests/integration/test_email_identity_enrichment_db.py``).
+    """
+    schema_path = (
+        Path(__file__).resolve().parents[2]
+        / "roster"
+        / "relationship"
+        / "tests"
+        / "evidence_schema.py"
+    )
+    spec = importlib.util.spec_from_file_location("_relationship_evidence_schema", schema_path)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.apply_evidence_schema
+
+
 def _load_script():
     spec = importlib.util.spec_from_file_location(
         "reconcile_whatsapp_entities_under_test", _SCRIPT_PATH
@@ -374,6 +395,8 @@ async def test_pep_723_apply_path_runs_with_only_declared_dependencies(
         await conn.execute(ENTITY_REBIND_LOG.ddl(schema="public"))
         await conn.execute(CONTACT_ENTITY_MAP.ddl(schema="relationship"))
         await conn.execute(PENDING_ACTIONS.ddl(schema="relationship"))
+        # rel_034 stores + rel_035 effective-time columns the merge path reads.
+        await _apply_evidence_schema()(conn)
         source_id = await conn.fetchval(
             """
             INSERT INTO public.entities (canonical_name, metadata)

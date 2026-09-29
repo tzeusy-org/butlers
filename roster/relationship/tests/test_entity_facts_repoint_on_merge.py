@@ -180,9 +180,12 @@ def _make_pool(
     pool = MagicMock()
     pool.fetchrow = AsyncMock(side_effect=[source_row, target_row, target_row])
     pool.fetch = AsyncMock(return_value=[])  # no contact_info rows
+    # The effective-time preflight fence finds only unknown default rows.
+    pool.fetchval = AsyncMock(return_value=False)
 
     conn = AsyncMock()
     conn.execute = AsyncMock(return_value=None)
+    conn.fetchval = AsyncMock(return_value=False)
     conn.transaction = MagicMock(return_value=_AsyncCM(None))
     # conn.fetch is called once per entity_facts block (subject then object).
     conn.fetch = AsyncMock(
