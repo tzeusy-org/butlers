@@ -87,12 +87,34 @@ via one sudoers rule. It invokes a root-owned installed copy of
 test run, quiesce, and removal itself, and signs only what it observed in the same invocation.
 
 That includes test evidence. The wrapper runs the fixed node list (a constant of the installed
-wrapper) from a `git archive` export of the verified target commit, as a dedicated unprivileged
-account, captures the `pytest_gate.py` log through a pipe into a root-owned file, and recomputes the
+wrapper), captures the `pytest_gate.py` log through a pipe into a root-only file, and recomputes the
 verdict. No verb accepts a test receipt, gate log, CI result, or digest as input, so an
-operator-written PASS log has no path to the signer. The tests run against their own
-testcontainers databases while the fleet is still up, after the fence is set and before quiesce, so
-their duration does not lengthen the downtime or consume the 15-minute receipt expiry.
+operator-written PASS log has no path to the signer. The tests run while the fleet is still up,
+after the fence is set and before quiesce, so their duration does not lengthen the downtime or
+consume the 15-minute receipt expiry.
+
+### D1a. Tests run in an isolated runtime, never on the host daemon
+
+The real-PostgreSQL scenarios need a container runtime. Host-daemon access is root-equivalent: it
+could bind-mount `/` to read the signing key, write the captured log, start old or arbitrarily
+labeled containers in the fenced project, and reach the cutover database. Target-commit code and its
+dependencies would then sit one step from a long-lived root key. The contract therefore takes the
+conservative option and specifies isolation rather than a trust statement:
+
+| Property | Enforcement | Probe that must fail |
+| --- | --- | --- |
+| No host daemon | Account `butlers-rtc-test` in no `docker`/`sudo`/`wheel`/`adm`/`systemd-journal` group; its own rootless Docker daemon; `InaccessiblePaths` covers `/var/run/docker.sock` | open host socket |
+| No key, fence, receipt, or log access | Transient systemd service with `NoNewPrivileges`, `ProtectSystem=strict`, `PrivateTmp`, `InaccessiblePaths=/etc/butlers /var/lib/butlers /run/secrets`; key directory `0700` root; log captured by the wrapper through a pipe | read key; write log path |
+| No route to the target | `PrivateNetwork=yes` for the whole service, including the rootless daemon; fixed environment allowlist with no database keys; no readable env file | TCP connect to the cutover database endpoint |
+| Frozen offline inputs | Source from `git archive <sha>` of the verified object store, tree id checked; toolchain is the target image moved by `docker save`/`docker load` and id-checked; test PostgreSQL image pinned by digest and moved the same way; `uv sync --frozen --offline` from a root-prepared read-only cache, hash-checked by `uv.lock` | none needed: no network exists |
+| No residue | Service, rootless daemon, export, and data removed before inventory | residue check |
+
+A disposable VM may replace the rootless daemon only if it satisfies the same properties and probes.
+There is no host-daemon fallback: a host that cannot provide the runtime cannot run the managed
+cutover. The account, rootless daemon, and cache are host preparation outside this change.
+
+Because the run takes minutes, the wrapper re-verifies checkout `HEAD`, roster tree, cleanliness,
+target image, and the resolved Compose row immediately before signing.
 
 Alternatives rejected: an operator-run verifier or test run whose output is signed afterwards (signs
 whatever it is handed); a hosted CI attestation (adds a network trust root and a second signer the
@@ -310,12 +332,13 @@ receipt file, the verifier keyring, and the fence file.
    ordinary launcher. The gate stops the chain at `rel_035`; the fleet runs target code with the
    legacy index present, so temporal intent is still refused.
 3. **Prepare** (`--prepare-v1`): lock; set fence phase `inventory`; verify the checkout; resolve the
-   named row from its launcher and hash the non-interpolated configuration; run the fixed test node
-   list itself from a `git archive` export and write the test receipt; read the image and inventory
+   named row from its launcher and hash the non-interpolated configuration; run the isolation probes
+   and then the fixed test node list in the isolated test runtime (D1a), tear it down, and write the
+   test receipt; read the image and inventory
    digests; read the database target; inventory containers. On any mismatch, abort and clear the
    fence (nothing has been touched yet). Otherwise set restart policy `no` on every credentialed
-   container; stop; prove stopped; remove; prove zero credentialed containers; set phase
-   `quiesced`; sign and write the receipt.
+   container; stop; prove stopped; remove; prove zero credentialed containers; re-verify checkout,
+   image, and Compose row; set phase `quiesced`; sign and write the receipt.
 4. **Migrate** (`--migrate-v1`): run the explicit rel036 path in a fresh target-image `migrations`
    container with the three read-only mounts. On success set phase `migrated`.
 5. **Release** (`--release-v1`): set phase `releasing`; start the row's services through its own
@@ -340,6 +363,9 @@ receipt file, the verifier keyring, and the fence file.
 | `instance_running` / `restart_capable` | wrapper | A container failed to stop, or its policy could not be set to `no`. |
 | `mutator_inventory_mismatch` | wrapper, migration | Inventory digest differs, or the static guard is not clean. |
 | `test_receipt_mismatch` / `test_receipt_not_pass` | wrapper | The wrapper's own test run collected the wrong node set or tree, or its verdict is not `PASS`. |
+| `test_isolation_invalid` | wrapper | A test-runtime isolation property cannot be established, or a negative probe succeeded. |
+| `test_dependencies_unavailable` | wrapper | A locked dependency, the target image, or the pinned test PostgreSQL image is unavailable offline. |
+| `test_runtime_residue` | wrapper | The test service, rootless daemon, export, or data survived teardown. |
 | `compose_invocation_mismatch` | wrapper, release | Launcher resolution differs from the named row, or a container's config-files or env-file label differs. |
 | `receipt_missing` / `receipt_unreadable` / `receipt_schema_invalid` | migration | Receipt absent, unreadable, or malformed. |
 | `receipt_custody_invalid` | migration | Receipt not root-owned, writable, or a symlink. |
@@ -415,6 +441,7 @@ those paths during and after the window.
 | Seam | Source | Tests |
 | --- | --- | --- |
 | Read-only verifier (row resolution, config digest, credential rule, inventory, release check), invoked only by the wrapper | `scripts/verify_relationship_temporal_cutover.py` | `tests/scripts/test_verify_relationship_temporal_cutover.py` |
+| Isolated test runtime (transient service definition, isolation probes, offline cache layout) | `scripts/relationship-temporal-cutover-test-runtime.sh` | `tests/scripts/test_relationship_temporal_cutover_test_runtime.py` |
 | Root wrapper, sudoers, installer | `scripts/relationship-temporal-cutover.sh`, `scripts/relationship-temporal-cutover.sudoers`, `scripts/install_relationship_temporal_cutover_wrapper.sh` | `tests/scripts/test_relationship_temporal_cutover_wrapper.py` |
 | Compose launcher fence, non-mutating row resolution, fence-release mode | `scripts/compose.sh` | `tests/scripts/test_compose_relationship_cutover_fence.py` |
 | Deploy fence, row resolution, fence-release mode | `src/butlers/core/deploy.py` | `tests/core/test_deploy.py` |
@@ -475,6 +502,9 @@ retirement, or automatic advancement past rel036. Implementation MUST NOT pick a
   for as long as the gate lives. No later revision can land "before" the gate in a linear chain; a
   revision authored after rel036 descends from it. This lasting cost is not accepted here; it is the
   open owner decision `bu-ftd491` above.
+- The isolated test runtime needs host preparation (account, rootless daemon, offline cache) and may
+  be unavailable on some hosts: accepted; preparation fails closed with `test_isolation_invalid`
+  rather than falling back to the host daemon.
 - Root wrapper complexity: bounded by fixed verbs, no generic signing, pinned verifier digest, and
   the restore-drill wrapper as precedent.
 

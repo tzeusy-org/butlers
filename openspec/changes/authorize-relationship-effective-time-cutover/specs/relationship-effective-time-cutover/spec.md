@@ -65,7 +65,10 @@ world-writable). Both SHALL reuse the runtime-probe control document shapes (`ve
 `EdDSA`, `kid`, unpadded base64url key, `sign_from`/`sign_until`, `current`/`retiring`) but MUST use
 a distinct `kid` namespace `rtc-*` and a distinct key. Receipts SHALL be written atomically to
 `/var/lib/butlers/relationship-temporal-cutover/receipts/<authorization_id>.json`, `root:root`, mode
-`0444`, in a root-owned directory that is not group- or world-writable.
+`0444`, in a root-owned directory that is not group- or world-writable. The key directory
+`/etc/butlers/relationship-temporal-cutover` SHALL be `root:root` mode `0700`, and no test runtime,
+container, or account other than root SHALL be able to read the signing document (see the isolated
+test runtime in the mutator inventory and test receipt requirement).
 
 The wrapper MUST sign only evidence it collected itself in the same invocation. It MUST NOT sign an
 operator-supplied inventory, test receipt, `pytest_gate.py` log, Compose configuration, or digest,
@@ -245,15 +248,57 @@ without starting the container; `roster/` entries SHALL be read from the verifie
 static inventory guard MUST be clean at the target SHA.
 
 The wrapper SHALL run the required tests itself during preparation, after setting the fence and
-verifying the checkout and before quiescing. It SHALL export the verified commit with `git archive
-<target_sha>` into a fresh root-owned directory, run `scripts/pytest_gate.py run` over the fixed node
-list from that export as a dedicated unprivileged account, capture the log through a pipe into a
-root-owned file the test process cannot write, and recompute the verdict with `pytest_gate.py
-verdict`. `UNKNOWN` or `FAILED` SHALL abort `test_receipt_not_pass`. The node list SHALL be a
+verifying the checkout and before quiescing, in an isolated test runtime. The node list SHALL be a
 constant of the installed wrapper, not an argument, and SHALL include the rel035 and rel036
 migration tests, the static inventory guard, and every real-PostgreSQL scenario named by
-`relationship-fact-effective-time` task 3.5. Tests use their own testcontainers databases and MUST
-NOT connect to the cutover target.
+`relationship-fact-effective-time` task 3.5. `UNKNOWN` or `FAILED` from `pytest_gate.py verdict`
+SHALL abort `test_receipt_not_pass`.
+
+Because the real-PostgreSQL scenarios need a container runtime, and access to the host Docker daemon
+is root-equivalent, the test runtime SHALL satisfy every one of these properties, each checked by
+the wrapper before the run starts:
+
+1. **Own runtime, no host daemon.** Tests run under the dedicated account `butlers-rtc-test`, which
+   is a member of no `docker`, `sudo`, `wheel`, `adm`, or `systemd-journal` group, and they use only
+   that account's rootless Docker daemon, whose socket lives under the account's own runtime
+   directory. The account MUST be unable to open the host daemon socket.
+2. **No key, fence, receipt, or log access.** The run is a transient systemd service with
+   `NoNewPrivileges=yes`, `ProtectSystem=strict`, `PrivateTmp=yes`, and
+   `InaccessiblePaths=/etc/butlers /var/lib/butlers /run/secrets /var/run/docker.sock`. The key and
+   receipt directories are `root:root` mode `0700`. The account MUST be unable to read the signing
+   key and unable to write the fence, receipt, test-receipt, or captured-log paths; the wrapper
+   captures stdout and stderr through a pipe into a root-only file.
+3. **No network route to the target.** The service runs with `PrivateNetwork=yes`, so the test
+   process tree and its rootless daemon have only a private loopback and no route to the cutover
+   database, the project networks, or any external host. Its environment is a fixed allowlist with
+   no `POSTGRES_*`, `PG*`, `DATABASE_URL`, or `RESTORE_DRILL_*` key, and no env file is readable.
+4. **Frozen offline inputs with stated provenance.** The source is `git archive <target_sha>` from the
+   verified checkout's object store, exported into a fresh root-owned directory and mounted
+   read-only; its tree id MUST equal the target commit's tree. The toolchain is the target
+   `butlers-app` image, copied into the rootless daemon from the host daemon by `docker save` and
+   `docker load` and verified to have the target image id. The PostgreSQL test image is the one the
+   target commit pins by digest, copied the same way and digest-verified. Dependencies install only
+   with `uv sync --frozen --offline` against the exported `uv.lock`, which verifies every artifact
+   against the lock's hashes, from a root-prepared read-only cache. Any pull, index, or other network
+   need fails.
+5. **No residue.** After the run, the transient service and its rootless daemon MUST be stopped and
+   the export, cache overlay, and daemon data removed before inventory continues.
+
+The wrapper SHALL prove properties 1 to 3 by running negative probes as the test account inside the
+same service definition before the tests: opening the host daemon socket, reading the signing key,
+writing the log path, and opening a TCP connection to the cutover database endpoint MUST each fail.
+Any probe that succeeds, and any property that cannot be established on the host, SHALL abort
+`test_isolation_invalid`. An unavailable pinned image or dependency SHALL abort
+`test_dependencies_unavailable`, and leftover runtime state SHALL abort `test_runtime_residue`.
+There is no fallback that runs the tests with host-daemon access; a host that cannot provide the
+isolated runtime cannot perform a managed cutover. A disposable VM MAY replace the rootless daemon
+only if it satisfies the same five properties and the same probes.
+
+Immediately before signing, after the test run and after quiesce, the wrapper SHALL re-verify the
+checkout's `HEAD`, roster tree id, and cleanliness, the target image id and projected `GIT_SHA`, and
+the resolved Compose row and configuration digest, and SHALL abort `checkout_mismatch`,
+`checkout_dirty`, `instance_mixed`, or `compose_invocation_mismatch` on any change since the first
+verification.
 
 The resulting test receipt SHALL be JSON with schema tag
 `butlers.relationship-temporal-cutover-tests/v1`, binding the target SHA, the SHA-256 of the sorted
@@ -273,6 +318,32 @@ operator-produced log, receipt, or CI result SHALL be accepted, read, or signed.
   the target commit, or its captured log verdict is not `PASS`
 - **THEN** preparation MUST abort `test_receipt_mismatch` or `test_receipt_not_pass` before
   quiescing or signing
+
+#### Scenario: Test runtime cannot reach the host daemon, key, or target
+
+- **WHEN** the isolation probes run as `butlers-rtc-test` inside the test service
+- **THEN** opening the host Docker socket, reading the signing key, writing the captured-log path,
+  and connecting to the cutover database endpoint MUST each fail
+- **AND** if any of them succeeds, or the account belongs to `docker` or `sudo`, preparation MUST
+  abort `test_isolation_invalid` before any test runs
+
+#### Scenario: Tests cannot fetch or substitute dependencies
+
+- **WHEN** the export's `uv.lock` names an artifact absent from the prepared cache, or the pinned test
+  PostgreSQL image or target image id is not available for `docker load`
+- **THEN** preparation MUST abort `test_dependencies_unavailable` without any network fetch
+
+#### Scenario: Checkout drift during the test run is caught
+
+- **WHEN** the checkout's `HEAD`, roster tree, or cleanliness changes while tests run or during
+  quiesce
+- **THEN** the re-verification immediately before signing MUST abort `checkout_mismatch` or
+  `checkout_dirty`, and no receipt is written
+
+#### Scenario: Test runtime leaves nothing behind
+
+- **WHEN** the test service, its rootless daemon, or its export remains after the run
+- **THEN** preparation MUST abort `test_runtime_residue` before inventory
 
 #### Scenario: Test evidence is wrapper-produced
 
@@ -472,7 +543,9 @@ with `tests/scripts/test_verify_relationship_temporal_cutover.py`; the root wrap
 `scripts/relationship-temporal-cutover.sh`, its sudoers fragment
 `scripts/relationship-temporal-cutover.sudoers`, and installer
 `scripts/install_relationship_temporal_cutover_wrapper.sh` with
-`tests/scripts/test_relationship_temporal_cutover_wrapper.py`; the fence check in
+`tests/scripts/test_relationship_temporal_cutover_wrapper.py`; the isolated test runtime
+`scripts/relationship-temporal-cutover-test-runtime.sh` with
+`tests/scripts/test_relationship_temporal_cutover_test_runtime.py`; the fence check in
 `scripts/compose.sh` with `tests/scripts/test_compose_relationship_cutover_fence.py`; the fence check
 in `src/butlers/core/deploy.py` with `tests/core/test_deploy.py`; the receipt, fence, and inventory
 parser `src/butlers/relationship_temporal_cutover.py` with

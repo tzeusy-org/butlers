@@ -31,7 +31,9 @@ live, so a hotreload stack cannot be proven and is refused. Run dev cutovers wit
 All must hold before anyone runs step 1:
 
 1. The owner has adopted the dedicated signer (design "Owner decisions"), and the key, keyring,
-   wrapper, and sudoers rule are installed by a separate host act.
+   wrapper, and sudoers rule are installed by a separate host act. The same host act prepares the
+   isolated test runtime: account `butlers-rtc-test` in no `docker` or `sudo` group, its own rootless
+   Docker daemon, and a read-only offline dependency cache for the target `uv.lock`.
 2. The owner has recorded the gate lifecycle and non-production and fresh-install decision
    (`bu-ftd491`). It is **open**. Until it is decided, the gate applies to every database: dev,
    fresh installs, CI, and restore-drill scratch databases all stay at `rel_035` and receive no
@@ -70,8 +72,13 @@ Each verb is a fixed wrapper entry point run as
    runs target code with the legacy index still present. Confirm the chain reports
    `temporal_cutover_pending`.
 2. **Prepare** (`--prepare-v1`). The wrapper locks, sets the fence, verifies the checkout, resolves
-   the row and hashes its configuration, and **runs the required tests itself** from a `git archive`
-   export of the target commit (fleet still up; tests use their own throwaway databases). It then
+   the row and hashes its configuration, and **runs the required tests itself** in the isolated test
+   runtime: `butlers-rtc-test`'s own rootless daemon inside a transient service with no network, no
+   access to `/etc/butlers`, `/var/lib/butlers`, or the host Docker socket, the source from a
+   `git archive` export, the target image and pinned test PostgreSQL image loaded by id or digest,
+   and dependencies from `uv sync --frozen --offline`. Negative probes (host socket, signing key, log
+   path, database endpoint) must all fail first. The fleet is still up during the tests. After
+   quiesce, the wrapper re-verifies checkout, image, and row immediately before signing. It then
    reads the image and inventory digests and database target and inventories every credentialed
    container. Any mismatch or a non-`PASS` verdict aborts and clears the fence with nothing touched.
    There is no operator test step: do not run or supply a `pytest_gate.py` log, test receipt, or CI
@@ -118,6 +125,9 @@ window.
 | Extra or missing credentialed service | `instance_extra` / `instance_missing` | Abort at prepare. |
 | Container will not stop or accept restart `no` | `instance_running` / `restart_capable` | Abort; use `--abort-v1`. |
 | Inventory digest or static guard differs | `mutator_inventory_mismatch` | Abort at prepare or migrate. |
+| Test runtime isolation not established, or a probe reached the host socket, key, log, or database | `test_isolation_invalid` | Abort at prepare; no fallback to the host daemon. |
+| Locked dependency or pinned image unavailable offline | `test_dependencies_unavailable` | Abort at prepare. |
+| Test runtime state left after teardown | `test_runtime_residue` | Abort at prepare. |
 | Wrapper's own test run collected the wrong nodes or tree, or verdict not `PASS` | `test_receipt_mismatch` / `test_receipt_not_pass` | Abort at prepare. |
 | Receipt missing, mis-owned, forged, unknown signer, expired, wrong purpose | `receipt_*` | Migrate aborts; no DDL. |
 | Database, OID, or cluster identifier differs or unreadable | `db_target_mismatch` / `db_target_unverifiable` | Abort; no DDL. |

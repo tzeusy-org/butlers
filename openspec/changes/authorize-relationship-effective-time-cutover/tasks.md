@@ -31,8 +31,10 @@
 - [ ] 3.2 Add the gated-revision ceiling and explicit cutover CLI and x-argument plumbing, proving
       every automatic path stops below the gate and a fresh database has no bypass.
 - [ ] 3.3 Add the read-only verifier (row resolution, non-interpolated config digest, credential
-      rule, inventory, release check), the root wrapper with fixed verbs that runs the fixed test
-      node list itself and accepts no test evidence as input, its sudoers fragment and installer,
+      rule, inventory, release check), the isolated test runtime with its negative isolation probes
+      and offline frozen inputs, the root wrapper with fixed verbs that runs the fixed test node list
+      itself in that runtime, re-verifies checkout and target immediately before signing, and accepts
+      no test evidence as input, its sudoers fragment and installer,
       and the `scripts/compose.sh` and `butlers deploy` fence refusals, row resolution, and
       fence-release modes.
 - [ ] 3.4 Add rel036 with every pre-DDL check and the rollback-before-first-temporal-write downgrade,
@@ -42,6 +44,7 @@
 ## 4. Separately authorized live acts
 
 - [ ] 4.1 Owner adopts or declines the dedicated signer; any provisioning and wrapper installation is
-      a separate host act.
+      a separate host act, as is preparing the `butlers-rtc-test` account, its rootless daemon, and
+      the offline dependency cache.
 - [ ] 4.2 After 2.4 is recorded, a separate exact-environment authorization runs the cutover. Source delivery, tests, and CI
       do not authorize or evidence it.
