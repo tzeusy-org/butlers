@@ -19,8 +19,10 @@ marker already stale.  The Switchboard worker gains no marker privilege.
 Downgrade never refuses.  Run with the bootstrap superuser it removes the
 trigger and its function and keeps every marker row; run as the ordinary
 migration login it only restamps and leaves the (truth-preserving) trigger in
-place.  A later re-upgrade needs an ``init-db.sql`` rerun to re-offer the
-upgrader, exactly as the other one-shot runtime-attention upgraders.
+place.  A re-upgrade after a bootstrap downgrade is a plain migration step:
+``runtime_attention_deactivate_condition_marker_v5()`` itself re-offers the
+upgrader to the migration login.  Only a first install on an existing
+database needs ``scripts/init-db.sql`` rerun first, to offer the upgrader.
 """
 
 from __future__ import annotations
