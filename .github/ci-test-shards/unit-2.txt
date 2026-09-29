@@ -106,6 +106,7 @@ tests/contracts/test_contacts_schema_retired.py
 tests/contracts/test_daemon_determinism.py
 tests/contracts/test_dependency_direction.py
 tests/contracts/test_finance_soft_delete.py
+tests/contracts/test_ha_person_mapping_registry_absence.py
 tests/contracts/test_relationship_facts_scope.py
 tests/contracts/test_session_lifecycle.py
 tests/contracts/test_tool_presentation_inventory.py
