@@ -11,14 +11,18 @@
  *  - Overdue panel ranks contacts by owed_days desc
  *  - Watchlist renders T1+T2 contacts sorted by warmth desc
  *  - Thread panel shows interaction direction (in / out / draft)
- *  - Known facts panel shows contact details for selected contact
+ *  - Known facts panel shows entity channels and roles for the selection
  *  - Selecting a watchlist row switches thread and facts panels
+ *
+ * The per-person reads (tracked count, interaction thread, entity detail) run
+ * through the real hooks and client against a stubbed fetch, so the request
+ * URLs themselves are asserted: every read is entity-keyed (bu-lzrpwd).
  *
  * bead: bu-iuol4.21
  */
 
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
-import { render, screen, cleanup, fireEvent } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import ButlerRelationshipContactsTab from "./ButlerRelationshipContactsTab";
@@ -28,17 +32,15 @@ import ButlerRelationshipContactsTab from "./ButlerRelationshipContactsTab";
 // ---------------------------------------------------------------------------
 
 vi.mock("@/hooks/use-contacts", () => ({
-  useContacts: vi.fn(),
-  useContact: vi.fn(),
-  useContactInteractions: vi.fn(),
   useOverdueContacts: vi.fn(),
 }));
 
-vi.mock("@/hooks/use-memory", () => ({
+vi.mock("@/hooks/use-memory", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/hooks/use-memory")>()),
   useDunbarRanking: vi.fn(),
 }));
 
-import { useContacts, useContact, useContactInteractions, useOverdueContacts } from "@/hooks/use-contacts";
+import { useOverdueContacts } from "@/hooks/use-contacts";
 import { useDunbarRanking } from "@/hooks/use-memory";
 
 // ---------------------------------------------------------------------------
@@ -48,7 +50,8 @@ import { useDunbarRanking } from "@/hooks/use-memory";
 const FIXED_NOW_ISO = "2026-05-10T08:00:00.000Z";
 
 beforeAll(() => {
-  vi.useFakeTimers();
+  // Only the clock is faked: the entity reads resolve through real promises and timers.
+  vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date(FIXED_NOW_ISO));
 });
 
@@ -60,34 +63,42 @@ afterAll(() => {
 // Fixture data
 // ---------------------------------------------------------------------------
 
-const CONTACTS_DATA = {
-  contacts: [
-    {
-      id: "c-1",
-      full_name: "Alice Smith",
-      first_name: "Alice",
-      last_name: "Smith",
-      nickname: null,
-      email: "alice@example.com",
-      phone: null,
-      labels: [{ id: "l-1", name: "friend", color: null }],
-      last_interaction_at: "2026-05-01T10:00:00Z",
-      warmth: 0.82,
-    },
-    {
-      id: "c-2",
-      full_name: "Bob Jones",
-      first_name: "Bob",
-      last_name: "Jones",
-      nickname: null,
-      email: null,
-      phone: null,
-      labels: [],
-      last_interaction_at: null,
-      warmth: 0.35,
-    },
-  ],
-  total: 42,
+const TRACKED_COUNT_URL = "/api/relationship/entities?has=contact&limit=1";
+const ALICE_INTERACTIONS_URL = "/api/relationship/entities/e-1/interactions?limit=4";
+const ALICE_DETAIL_URL = "/api/memory/entities/e-1";
+
+const TRACKED_COUNT = { items: [], total: 42, limit: 1, offset: 0 };
+
+const ALICE_DETAIL = {
+  data: {
+    id: "e-1",
+    canonical_name: "Alice Smith",
+    entity_type: "person",
+    aliases: [],
+    roles: ["friend", "neighbour"],
+    fact_count: 3,
+    linked_contact_id: null,
+    unidentified: false,
+    source_butler: null,
+    source_scope: null,
+    archived: false,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-05-10T00:00:00Z",
+    dunbar_tier: 5,
+    dunbar_score: 95,
+    metadata: {},
+    recent_facts: [],
+    recent_facts_total: 0,
+    recent_facts_offset: 0,
+    recent_facts_limit: 20,
+    recent_facts_has_more: false,
+    linked_contact_name: null,
+    entity_info: [
+      { id: "i-1", type: "email", value: "alice@example.com", label: null, is_primary: true, secured: false },
+      { id: "i-2", type: "phone", value: null, label: null, is_primary: false, secured: true },
+    ],
+  },
+  meta: {},
 };
 
 const DUNBAR_DATA = {
@@ -157,26 +168,29 @@ const OVERDUE_DATA = {
   unmeasurable_count: 0,
 };
 
-const INTERACTIONS_DATA = {
-  contact_id: "c-1",
-  interactions: [
-    {
-      ts: "2026-05-01T09:00:00Z",
-      direction: "in" as const,
-      text: "Hey, how are you doing?",
-    },
-    {
-      ts: "2026-05-01T10:00:00Z",
-      direction: "out" as const,
-      text: "Doing great, thanks for checking in!",
-    },
-    {
-      ts: "2026-05-02T08:00:00Z",
-      direction: "drafted" as const,
-      text: "Draft: following up on our conversation.",
-    },
-  ],
-};
+const ALICE_INTERACTIONS = [
+  {
+    id: "ix-1",
+    type: "message",
+    summary: "Hey, how are you doing?",
+    occurred_at: "2026-05-01T09:00:00Z",
+    direction: "in",
+  },
+  {
+    id: "ix-2",
+    type: "message",
+    summary: "Doing great, thanks for checking in!",
+    occurred_at: "2026-05-01T10:00:00Z",
+    direction: "out",
+  },
+  {
+    id: "ix-3",
+    type: "message",
+    summary: "Draft: following up on our conversation.",
+    occurred_at: "2026-05-02T08:00:00Z",
+    direction: "drafted",
+  },
+];
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -195,154 +209,98 @@ function renderTab() {
 }
 
 // ---------------------------------------------------------------------------
+// Client-layer fetch stub for the entity-keyed reads
+// ---------------------------------------------------------------------------
+
+type Route = { status: number; body: unknown } | "pending";
+
+let routes: Record<string, Route> = {};
+let requested: string[] = [];
+
+function jsonResponse(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+beforeEach(() => {
+  requested = [];
+  routes = {
+    [TRACKED_COUNT_URL]: { status: 200, body: TRACKED_COUNT },
+    [ALICE_INTERACTIONS_URL]: { status: 200, body: [] },
+    [ALICE_DETAIL_URL]: { status: 200, body: ALICE_DETAIL },
+  };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string) => {
+      requested.push(url);
+      const route = routes[url];
+      if (route === "pending") return new Promise<Response>(() => {});
+      if (!route) return jsonResponse(404, { detail: "Not Found" });
+      return jsonResponse(route.status, route.body);
+    }),
+  );
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+async function selectAlice() {
+  const rows = await screen.findAllByTestId("watchlist-row");
+  const aliceRow = rows.find((r) => r.textContent?.includes("Alice Smith"));
+  expect(aliceRow).toBeDefined();
+  fireEvent.click(aliceRow!);
+}
+
+// ---------------------------------------------------------------------------
 // Default mock setup: all data loaded
 // ---------------------------------------------------------------------------
 
-function setupWithData() {
-  vi.mocked(useContacts).mockReturnValue({
-    data: CONTACTS_DATA,
-    isLoading: false,
-    isError: false,
-  } as ReturnType<typeof useContacts>);
-
-  vi.mocked(useContact).mockReturnValue({
-    data: {
-      ...CONTACTS_DATA.contacts[0],
-      notes: null,
-      birthday: null,
-      company: null,
-      job_title: null,
-      address: null,
-      metadata: {},
-      created_at: "2026-01-01T00:00:00Z",
-      updated_at: "2026-05-10T00:00:00Z",
-    },
-    isLoading: false,
-    isError: false,
-  } as unknown as ReturnType<typeof useContact>);
-
+function mockRanking(
+  dunbar: Partial<ReturnType<typeof useDunbarRanking>>,
+  overdue: Partial<ReturnType<typeof useOverdueContacts>>,
+) {
   vi.mocked(useDunbarRanking).mockReturnValue({
-    data: DUNBAR_DATA,
-    isLoading: false,
-    isError: false,
-  } as unknown as ReturnType<typeof useDunbarRanking>);
-
-  vi.mocked(useOverdueContacts).mockReturnValue({
-    data: OVERDUE_DATA,
-    isLoading: false,
-    isError: false,
-  } as unknown as ReturnType<typeof useOverdueContacts>);
-
-  vi.mocked(useContactInteractions).mockReturnValue({
     data: undefined,
     isLoading: false,
     isError: false,
-  } as unknown as ReturnType<typeof useContactInteractions>);
+    ...dunbar,
+  } as unknown as ReturnType<typeof useDunbarRanking>);
+  vi.mocked(useOverdueContacts).mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isError: false,
+    ...overdue,
+  } as unknown as ReturnType<typeof useOverdueContacts>);
+}
+
+function setupWithData() {
+  mockRanking({ data: DUNBAR_DATA }, { data: OVERDUE_DATA });
 }
 
 function setupWithInteractions() {
   setupWithData();
-  vi.mocked(useContactInteractions).mockReturnValue({
-    data: INTERACTIONS_DATA,
-    isLoading: false,
-    isError: false,
-  } as unknown as ReturnType<typeof useContactInteractions>);
+  routes[ALICE_INTERACTIONS_URL] = { status: 200, body: ALICE_INTERACTIONS };
 }
 
 function setupEmpty() {
-  vi.mocked(useContacts).mockReturnValue({
-    data: { contacts: [], total: 0 },
-    isLoading: false,
-    isError: false,
-  } as unknown as ReturnType<typeof useContacts>);
-
-  vi.mocked(useContact).mockReturnValue({
-    data: undefined,
-    isLoading: false,
-    isError: false,
-  } as unknown as ReturnType<typeof useContact>);
-
-  vi.mocked(useDunbarRanking).mockReturnValue({
-    data: { entries: [], owner_entity_id: null, cadence_available: true, unmeasurable_count: 0 },
-    isLoading: false,
-    isError: false,
-  } as unknown as ReturnType<typeof useDunbarRanking>);
-
-  vi.mocked(useOverdueContacts).mockReturnValue({
-    data: { contacts: [], cadence_available: true, unmeasurable_count: 0 },
-    isLoading: false,
-    isError: false,
-  } as unknown as ReturnType<typeof useOverdueContacts>);
-
-  vi.mocked(useContactInteractions).mockReturnValue({
-    data: undefined,
-    isLoading: false,
-    isError: false,
-  } as unknown as ReturnType<typeof useContactInteractions>);
+  mockRanking(
+    { data: { entries: [], owner_entity_id: null, cadence_available: true, unmeasurable_count: 0 } },
+    { data: { contacts: [], cadence_available: true, unmeasurable_count: 0 } },
+  );
+  routes[TRACKED_COUNT_URL] = { status: 200, body: { ...TRACKED_COUNT, total: 0 } };
 }
 
 function setupLoading() {
-  vi.mocked(useContacts).mockReturnValue({
-    data: undefined,
-    isLoading: true,
-    isError: false,
-  } as ReturnType<typeof useContacts>);
-
-  vi.mocked(useContact).mockReturnValue({
-    data: undefined,
-    isLoading: true,
-    isError: false,
-  } as unknown as ReturnType<typeof useContact>);
-
-  vi.mocked(useDunbarRanking).mockReturnValue({
-    data: undefined,
-    isLoading: true,
-    isError: false,
-  } as ReturnType<typeof useDunbarRanking>);
-
-  vi.mocked(useOverdueContacts).mockReturnValue({
-    data: undefined,
-    isLoading: true,
-    isError: false,
-  } as ReturnType<typeof useOverdueContacts>);
-
-  vi.mocked(useContactInteractions).mockReturnValue({
-    data: undefined,
-    isLoading: true,
-    isError: false,
-  } as ReturnType<typeof useContactInteractions>);
+  mockRanking({ isLoading: true }, { isLoading: true });
+  routes[TRACKED_COUNT_URL] = "pending";
 }
 
 function setupWithError() {
-  vi.mocked(useContacts).mockReturnValue({
-    data: undefined,
-    isLoading: false,
-    isError: true,
-  } as ReturnType<typeof useContacts>);
-
-  vi.mocked(useContact).mockReturnValue({
-    data: undefined,
-    isLoading: false,
-    isError: true,
-  } as unknown as ReturnType<typeof useContact>);
-
-  vi.mocked(useDunbarRanking).mockReturnValue({
-    data: undefined,
-    isLoading: false,
-    isError: true,
-  } as ReturnType<typeof useDunbarRanking>);
-
-  vi.mocked(useOverdueContacts).mockReturnValue({
-    data: undefined,
-    isLoading: false,
-    isError: true,
-  } as ReturnType<typeof useOverdueContacts>);
-
-  vi.mocked(useContactInteractions).mockReturnValue({
-    data: undefined,
-    isLoading: false,
-    isError: true,
-  } as ReturnType<typeof useContactInteractions>);
+  mockRanking({ isError: true }, { isError: true });
+  routes[TRACKED_COUNT_URL] = { status: 500, body: { detail: "boom" } };
 }
 
 // ---------------------------------------------------------------------------
@@ -410,9 +368,10 @@ describe("ButlerRelationshipContactsTab — KPI strip", () => {
     expect(items.length).toBeGreaterThanOrEqual(4);
   });
 
-  it("renders total tracked contacts count", () => {
+  it("renders the tracked count from the entity index total", async () => {
     renderTab();
-    expect(screen.getByText("42")).toBeDefined();
+    expect(await screen.findByText("42")).toBeDefined();
+    expect(requested).toContain(TRACKED_COUNT_URL);
   });
 
   it("renders overdue count when contacts are overdue", () => {
@@ -610,74 +569,61 @@ describe("ButlerRelationshipContactsTab — selected thread", () => {
     expect(screen.getByTestId("thread-empty-prompt")).toBeDefined();
   });
 
-  it("renders thread items after selecting a contact", () => {
+  it("fetches the thread by the row's entity_id and renders the mapped rows", async () => {
     renderTab();
-    // Click a watchlist row to select Alice
-    const rows = screen.getAllByTestId("watchlist-row");
-    const aliceRow = rows.find((r) => r.textContent?.includes("Alice Smith"));
-    expect(aliceRow).toBeDefined();
-    fireEvent.click(aliceRow!);
-    const items = screen.getAllByTestId("thread-item");
+    await selectAlice();
+    const items = await screen.findAllByTestId("thread-item");
     expect(items.length).toBe(3);
-  });
-
-  it("shows inbound interaction direction label", () => {
-    renderTab();
-    const rows = screen.getAllByTestId("watchlist-row");
-    const aliceRow = rows.find((r) => r.textContent?.includes("Alice Smith"));
-    fireEvent.click(aliceRow!);
-    // "In" direction label should appear
-    expect(screen.getByText("In")).toBeDefined();
-  });
-
-  it("shows outbound interaction direction label", () => {
-    renderTab();
-    const rows = screen.getAllByTestId("watchlist-row");
-    const aliceRow = rows.find((r) => r.textContent?.includes("Alice Smith"));
-    fireEvent.click(aliceRow!);
-    expect(screen.getByText("Out")).toBeDefined();
-  });
-
-  it("shows drafted interaction direction label", () => {
-    renderTab();
-    const rows = screen.getAllByTestId("watchlist-row");
-    const aliceRow = rows.find((r) => r.textContent?.includes("Alice Smith"));
-    fireEvent.click(aliceRow!);
-    expect(screen.getByText("Draft")).toBeDefined();
-  });
-
-  it("shows thread interaction text", () => {
-    renderTab();
-    const rows = screen.getAllByTestId("watchlist-row");
-    const aliceRow = rows.find((r) => r.textContent?.includes("Alice Smith"));
-    fireEvent.click(aliceRow!);
+    expect(requested).toContain(ALICE_INTERACTIONS_URL);
+    expect(requested.filter((url) => url.includes("/relationship/contacts"))).toEqual([]);
     expect(screen.getByText("Hey, how are you doing?")).toBeDefined();
+    for (const label of ["In", "Out", "Draft"]) {
+      expect(screen.getByText(label)).toBeDefined();
+    }
   });
 
-  it("renders interaction dates in the owner timezone", () => {
-    setupWithInteractions();
-    vi.mocked(useContactInteractions).mockReturnValue({
-      data: {
-        ...INTERACTIONS_DATA,
-        interactions: [
-          {
-            ts: "2025-12-31T17:00:00Z",
-            direction: "in" as const,
-            text: "Boundary interaction",
-          },
-        ],
-      },
-      isLoading: false,
-      isError: false,
-    } as unknown as ReturnType<typeof useContactInteractions>);
+  it("keeps rows with unknown or absent direction in a neutral style", async () => {
+    routes[ALICE_INTERACTIONS_URL] = {
+      status: 200,
+      body: [
+        { ...ALICE_INTERACTIONS[0], id: "ix-call", direction: "call", summary: "Phone call" },
+        { ...ALICE_INTERACTIONS[1], id: "ix-null", direction: null, summary: "Met for coffee" },
+      ],
+    };
+    renderTab();
+    await selectAlice();
+    expect(await screen.findByText("Phone call")).toBeDefined();
+    expect(screen.getByText("Met for coffee")).toBeDefined();
+    expect(screen.getByText("call").className).toContain("text-muted-foreground");
+    expect(screen.getByText("Note").className).toContain("text-muted-foreground");
+  });
+
+  it("renders interaction dates in the owner timezone", async () => {
+    routes[ALICE_INTERACTIONS_URL] = {
+      status: 200,
+      body: [
+        {
+          ...ALICE_INTERACTIONS[0],
+          occurred_at: "2025-12-31T17:00:00Z",
+          summary: "Boundary interaction",
+        },
+      ],
+    };
 
     renderTab();
-    const rows = screen.getAllByTestId("watchlist-row");
-    fireEvent.click(rows.find((r) => r.textContent?.includes("Alice Smith"))!);
+    await selectAlice();
 
-    const boundaryDate = screen.getByText(/Jan 1, 2026/);
+    const boundaryDate = await screen.findByText(/Jan 1, 2026/);
     expect(boundaryDate.tagName).toBe("TIME");
     expect(boundaryDate.getAttribute("datetime")).toBe("2025-12-31T17:00:00.000Z");
+  });
+
+  it("clears the selection when the same row is chosen again", async () => {
+    renderTab();
+    await selectAlice();
+    await screen.findAllByTestId("thread-item");
+    await selectAlice();
+    expect(screen.getByTestId("thread-empty-prompt")).toBeDefined();
   });
 });
 
@@ -697,29 +643,15 @@ describe("ButlerRelationshipContactsTab — known facts panel", () => {
     expect(screen.getByTestId("facts-empty-prompt")).toBeDefined();
   });
 
-  it("renders facts list after selecting a contact with email", () => {
+  it("renders entity_info channels, roles and last contact from the entity reads", async () => {
     renderTab();
-    const rows = screen.getAllByTestId("watchlist-row");
-    const aliceRow = rows.find((r) => r.textContent?.includes("Alice Smith"));
-    fireEvent.click(aliceRow!);
-    expect(screen.getByTestId("known-facts-list")).toBeDefined();
-  });
-
-  it("shows email fact for selected contact", () => {
-    renderTab();
-    const rows = screen.getAllByTestId("watchlist-row");
-    const aliceRow = rows.find((r) => r.textContent?.includes("Alice Smith"));
-    fireEvent.click(aliceRow!);
-    // Alice has email alice@example.com
-    expect(screen.getByText("Email: alice@example.com")).toBeDefined();
-  });
-
-  it("shows labels fact for selected contact", () => {
-    renderTab();
-    const rows = screen.getAllByTestId("watchlist-row");
-    const aliceRow = rows.find((r) => r.textContent?.includes("Alice Smith"));
-    fireEvent.click(aliceRow!);
-    expect(screen.getByText("Labels: friend")).toBeDefined();
+    await selectAlice();
+    expect(await screen.findByText("Email: alice@example.com")).toBeDefined();
+    expect(screen.getByText("Roles: friend, neighbour")).toBeDefined();
+    expect(screen.getByText("Last seen: 8d ago")).toBeDefined();
+    // A secured channel with no revealed value is not listed.
+    expect(screen.queryByText(/^Phone:/)).toBeNull();
+    expect(requested).toContain(ALICE_DETAIL_URL);
   });
 });
 
@@ -777,9 +709,9 @@ describe("ButlerRelationshipContactsTab — error states", () => {
   });
   afterEach(() => cleanup());
 
-  it("shows error state for KPI strip when all hooks error", () => {
+  it("shows error state for KPI strip when all reads error", async () => {
     renderTab();
-    expect(screen.getByText("Could not load relationship overview.")).toBeDefined();
+    expect(await screen.findByText("Could not load relationship overview.")).toBeDefined();
   });
 
   it("shows error state for tier distribution when dunbar hook errors", () => {
@@ -797,10 +729,11 @@ describe("ButlerRelationshipContactsTab — error states", () => {
     expect(screen.getByText("Could not load watchlist.")).toBeDefined();
   });
 
-  it("renders error-state-line elements (not empty-state or data)", () => {
+  it("renders error-state-line elements (not empty-state or data)", async () => {
     renderTab();
-    const errorLines = screen.getAllByTestId("error-state-line");
-    expect(errorLines.length).toBeGreaterThanOrEqual(4);
+    await waitFor(() =>
+      expect(screen.getAllByTestId("error-state-line").length).toBeGreaterThanOrEqual(4),
+    );
     expect(screen.queryByTestId("tier-distribution-list")).toBeNull();
     expect(screen.queryByTestId("overdue-list")).toBeNull();
     expect(screen.queryByTestId("watchlist-table")).toBeNull();
@@ -810,47 +743,15 @@ describe("ButlerRelationshipContactsTab — error states", () => {
 describe("ButlerRelationshipContactsTab — thread panel error state", () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    // Use normal data for dunbar (watchlist visible) but error for interactions
-    vi.mocked(useContacts).mockReturnValue({
-      data: CONTACTS_DATA,
-      isLoading: false,
-      isError: false,
-    } as ReturnType<typeof useContacts>);
-
-    vi.mocked(useContact).mockReturnValue({
-      data: undefined,
-      isLoading: false,
-      isError: false,
-    } as unknown as ReturnType<typeof useContact>);
-
-    vi.mocked(useDunbarRanking).mockReturnValue({
-      data: DUNBAR_DATA,
-      isLoading: false,
-      isError: false,
-    } as unknown as ReturnType<typeof useDunbarRanking>);
-
-    vi.mocked(useOverdueContacts).mockReturnValue({
-      data: OVERDUE_DATA,
-      isLoading: false,
-      isError: false,
-    } as unknown as ReturnType<typeof useOverdueContacts>);
-
-    vi.mocked(useContactInteractions).mockReturnValue({
-      data: undefined,
-      isLoading: false,
-      isError: true,
-    } as ReturnType<typeof useContactInteractions>);
+    setupWithData();
   });
   afterEach(() => cleanup());
 
-  it("shows error message in thread panel when interactions hook errors (after contact selected)", () => {
+  it.each([404, 500])("renders the error line when interactions return %i", async (status) => {
+    routes[ALICE_INTERACTIONS_URL] = { status, body: { detail: "unavailable" } };
     renderTab();
-    // Select a contact so the thread panel becomes active
-    const rows = screen.getAllByTestId("watchlist-row");
-    const aliceRow = rows.find((r) => r.textContent?.includes("Alice Smith"));
-    expect(aliceRow).toBeDefined();
-    fireEvent.click(aliceRow!);
-    expect(screen.getByText("Could not load thread.")).toBeDefined();
+    await selectAlice();
+    expect(await screen.findByText("Could not load thread.")).toBeDefined();
   });
 });
 

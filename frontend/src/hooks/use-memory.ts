@@ -25,8 +25,6 @@ import {
   retractFact,
   retryEpisodeConsolidation,
   revealEntitySecret,
-  setEntityLinkedContact,
-  unlinkEntityContact,
   updateEntity,
   updateMemoryRetentionPolicies,
   getDunbarRanking,
@@ -428,36 +426,6 @@ export function useRevealEntitySecret() {
   });
 }
 
-// ---------------------------------------------------------------------------
-// Entity linked-contact mutations
-// ---------------------------------------------------------------------------
-
-/** Link a contact to an entity. */
-export function useSetLinkedContact() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ entityId, contactId }: { entityId: string; contactId: string }) =>
-      setEntityLinkedContact(entityId, contactId),
-    onSuccess: (_, { entityId }) => {
-      void queryClient.invalidateQueries({ queryKey: ["memory-entity", entityId] });
-      void queryClient.invalidateQueries({ queryKey: ["memory-entities"] });
-    },
-  });
-}
-
-/** Unlink the contact from an entity. */
-export function useUnlinkContact() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (entityId: string) => unlinkEntityContact(entityId),
-    onSuccess: (_, entityId) => {
-      void queryClient.invalidateQueries({ queryKey: ["memory-entity", entityId] });
-      void queryClient.invalidateQueries({ queryKey: ["memory-entities"] });
-      void queryClient.invalidateQueries({ queryKey: ["contacts"] });
-      void queryClient.invalidateQueries({ queryKey: ["contact"] });
-    },
-  });
-}
 
 /** Fetch retention policies. */
 export function useMemoryRetentionPolicies() {

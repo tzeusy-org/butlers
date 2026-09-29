@@ -2990,9 +2990,9 @@ async def create_synthetic_finding(
         """
         INSERT INTO public.qa_patrols (
             id, completed_at, status, findings_count, novel_count, dispatched_count,
-            log_lookback_minutes, sources_polled, error_detail
+            log_lookback_minutes, sources_polled, error_detail, origin, discovery_complete
         )
-        VALUES ($1, now(), $2, 0, 0, 0, 0, '{}', $3)
+        VALUES ($1, now(), $2, 0, 0, 0, 0, '{}', $3, 'operator_synthetic', false)
         """,
         patrol_id,
         synthetic_patrol_status,

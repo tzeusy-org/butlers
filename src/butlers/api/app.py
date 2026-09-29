@@ -286,14 +286,21 @@ async def lifespan(app: FastAPI):
         # L2 receiver observation runs independently of QA and of browser
         # requests.  It writes only the separated sw_035 shadow facts; L3 alone
         # may make them route authority.  The same core prober is reused by
-        # Switchboard's later on-demand path without owner credentials.
+        # Switchboard's later on-demand path without owner credentials.  After
+        # each cycle the independent fleet controller records the common-cause
+        # fleet condition and QA patrol age without depending on QA itself.
         from butlers.core.control_plane_identity import run_shadow_observer_loop
+        from butlers.core.fleet_conditions import controller_after_cycle
 
         shadow_observer_task = _track_background_task(
             supervise_lifespan_loop(
                 "fleet_shadow_observer",
                 lambda: run_shadow_observer_loop(
-                    get_db_manager().pool("switchboard"), butler_configs
+                    get_db_manager().pool("switchboard"),
+                    butler_configs,
+                    after_cycle=controller_after_cycle(
+                        get_db_manager().pool("switchboard"), butler_configs
+                    ),
                 ),
             )
         )

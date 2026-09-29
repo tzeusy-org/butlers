@@ -239,6 +239,7 @@ services:
     environment:
       <<: *postgres-env
       BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: ${BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER:-0}
+      BUTLERS_FLEET_CONDITION_HANDOFF: ${BUTLERS_FLEET_CONDITION_HANDOFF:-0}
       GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-http://localhost:41200/api/oauth/google/callback}
       OAUTH_DASHBOARD_URL: ${OAUTH_DASHBOARD_URL:-}
       GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
@@ -642,6 +643,7 @@ services:
       <<: *postgres-env
       BUTLERS_SWITCHBOARD_URL: http://dashboard-api:41200
       BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: ${BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER:-0}
+      BUTLERS_FLEET_CONDITION_HANDOFF: ${BUTLERS_FLEET_CONDITION_HANDOFF:-0}
       # Owner-facing alerts are generated here, not in dashboard-api.  Preserve
       # the configured public frontend origin (including any path prefix) so a
       # Telegram deep link never falls back to the daemon host's localhost.
@@ -794,6 +796,7 @@ services:
       <<: *postgres-env
       BUTLERS_SWITCHBOARD_URL: http://dashboard-api:41200
       BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: ${BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER:-1}
+      BUTLERS_FLEET_CONDITION_HANDOFF: ${BUTLERS_FLEET_CONDITION_HANDOFF:-0}
       DASHBOARD_URL: ${DASHBOARD_URL:-${OAUTH_DASHBOARD_URL:-http://localhost:41200}}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       HOME: /root
@@ -841,6 +844,7 @@ services:
     environment:
       <<: *postgres-env
       BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: ${BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER:-1}
+      BUTLERS_FLEET_CONDITION_HANDOFF: ${BUTLERS_FLEET_CONDITION_HANDOFF:-0}
       GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-http://localhost:41200/api/oauth/google/callback}
       OAUTH_DASHBOARD_URL: ${OAUTH_DASHBOARD_URL:-}
       GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}

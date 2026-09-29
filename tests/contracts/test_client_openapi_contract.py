@@ -54,19 +54,17 @@ concrete case this bug class was fixed for, and the per-literal pins in
 named constants) was completed in bu-5ela3: no production literal exceeded
 its endpoint's ``le``, and every zero-headroom literal is now pinned in
 ``_LIMIT_LITERAL_PINS`` so a future ``le`` tightening (or a bumped literal)
-fails CI instead of 422-ing every load. Two calls to the dead
-``GET /api/relationship/contacts`` path (``FiltersPipeline.tsx``,
-``EntityDetailPage.tsx``) 404 rather than 422 — a different drift class,
-tracked via the dead-path allowlist, not the pins here.
+fails CI instead of 422-ing every load. The priority-sender picker in
+``FiltersPipeline.tsx`` reads ``GET /api/relationship/entities`` at its
+``limit`` ceiling and is pinned here too.
 
 Known, tracked exceptions
 --------------------------
-- The dead ``/relationship/contacts*`` family (11 client.ts functions) —
-  ``public.contacts`` was DROPped (core_134, bu-y6o7q) and its router was
-  fully removed, so these routes 404 live. Excising the client fns / hooks /
-  ``ButlerRelationshipContactsTab`` that still consume them is deferred to
-  the contact-era excision cluster (epic bu-oluyt) — this test documents the
-  drift instead of silently ignoring it (see ``KNOWN_DEAD_PATH_FUNCTIONS``).
+- None. The dead ``/relationship/contacts*`` family (``public.contacts`` was
+  DROPped in core_134, bu-y6o7q) was excised from client.ts in bu-wgniv and
+  bu-lzrpwd; its former consumers read the entity-keyed routes instead. Only
+  ``GET /relationship/contacts/overdue`` remains, and it is live. A future
+  intentionally-dead path must be listed in ``KNOWN_DEAD_PATH_FUNCTIONS``.
 
 The formerly-tracked "extra query param the backend does not declare" cases
 (``getSessions`` / ``getSessionAggregate`` / ``getButlerSessions`` /
@@ -114,17 +112,11 @@ _MIN_RESOLVED_FUNCTIONS = 380
 # Known, tracked contract exceptions
 # ---------------------------------------------------------------------------
 
-# The dead /relationship/contacts* family (bu-oluyt contact-era excision
-# cluster). Keyed by client.ts export name -> the OpenAPI-normalized path
-# template it resolves to (informational; asserted against below).
-KNOWN_DEAD_PATH_FUNCTIONS: dict[str, str] = {
-    # The bu-wgniv dead-export sweep deleted the six unused members of this
-    # dead-path family from client.ts (deleteContact, archiveContact,
-    # unarchiveContact, createContactInfo, deleteContactInfo, patchContactInfo);
-    # only the still-referenced dead-path readers remain listed here.
-    "getContacts": "/relationship/contacts",
-    "getContactInteractions": f"/relationship/contacts/{_WILDCARD}/interactions{_WILDCARD}",
-}
+# Client.ts functions whose path is intentionally dead pending excision, keyed
+# by export name -> the OpenAPI-normalized path template (informational;
+# asserted against below). Empty since bu-lzrpwd removed the last
+# /relationship/contacts* readers.
+KNOWN_DEAD_PATH_FUNCTIONS: dict[str, str] = {}
 
 # Pre-existing "sends a query param the backend does not declare" drift,
 # discovered by this test's first run (not introduced by bu-hmdqz.5).
@@ -819,6 +811,13 @@ _LIMIT_LITERAL_PINS: list[tuple[str, str, str, str, str]] = [
         "components/butler-detail/ButlerGeneralEntitiesTab.tsx",
         r"\bDROPDOWN_FETCH_LIMIT\s*=\s*(\d+)",
         "/api/general/collections",
+        "limit",
+    ),
+    (
+        "priority-sender-candidates",
+        "components/ingestion/filters/FiltersPipeline.tsx",
+        r"\bPRIORITY_CANDIDATE_LIMIT\s*=\s*(\d+)",
+        "/api/relationship/entities",
         "limit",
     ),
     (
