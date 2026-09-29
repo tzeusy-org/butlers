@@ -4166,6 +4166,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/components/system/StoredFunctionsTile.tsx`
 
+- Definer search-path check unavailable. This is not a clean bill of health.
 - Stored Functions
 - Deployed bodies vs. init-db.sql
 - Could not load stored-function drift status.
@@ -4392,4 +4393,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3446*
+*Total strings: 3447*
