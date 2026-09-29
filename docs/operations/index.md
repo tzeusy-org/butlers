@@ -17,4 +17,5 @@
 - [Troubleshooting](troubleshooting.md) — common issues, debugging, health checks
 - [Runtime Attention](runtime-attention.md) — runtime-attention paging path and its stored functions
 - [Image Bump Procedure](image-bump-procedure.md) — updating pinned service image tags
+- [Relationship Effective-Time Cutover](relationship-effective-time-cutover.md) — draft contract: signed receipt, lifecycle fence, and gated rel036 for the legacy-index drop
 - [Receiver-Derived Routing Cutover](receiver-derived-routing-cutover.md) — transitional: flag cutover and rollback boundary until production activation
