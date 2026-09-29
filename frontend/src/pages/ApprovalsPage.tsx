@@ -1114,7 +1114,7 @@ function Dossier({
           </div>
         </div>
 
-        {/* Target contact — resolved from contact_id */}
+        {/* Target contact — resolved from contact_id; the id is a person entity id */}
         {detail.target_contact && (
           <div className="border-t border-border pt-4">
             <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-2">
@@ -1122,7 +1122,7 @@ function Dossier({
             </div>
             <div className="flex items-center gap-2 flex-wrap text-sm">
               <Link
-                to={`/contacts/${encodeURIComponent(detail.target_contact.id)}`}
+                to={`/entities/${encodeURIComponent(detail.target_contact.id)}`}
                 className="font-medium text-foreground hover:underline"
               >
                 {detail.target_contact.name || detail.target_contact.id}

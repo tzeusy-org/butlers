@@ -878,6 +878,27 @@ describe("ApprovalsPage - failed-push indicator + callback-secret banner (bu-p5s
     expect(alertEl?.textContent).not.toContain("never attempted");
   });
 
+  it("links the target contact to its entity page, not the retired contact route", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("a1", "send_email")]) as AnyMock,
+    );
+    vi.mocked(getApprovalDetail).mockReturnValue(
+      makeApiResponse({
+        ...(await makePendingDetail("a1")).data,
+        target_contact: { id: "e-1", name: "Alice", roles: [] },
+      }) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(() => container.textContent?.includes("Alice") ?? false);
+
+    const link = Array.from(container.querySelectorAll("a")).find(
+      (anchor) => anchor.textContent === "Alice",
+    );
+    expect(link?.getAttribute("href")).toBe("/entities/e-1");
+    expect(container.querySelector('a[href^="/contacts/"]')).toBeNull();
+  });
+
   it("renders durable ambiguous delivery as an accessible alert without sensitive fields", async () => {
     vi.mocked(getApprovalsFlat).mockReturnValue(
       makeApiResponse([makeSummary("ambiguous-1")]) as AnyMock,

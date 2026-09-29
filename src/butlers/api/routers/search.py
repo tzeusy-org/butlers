@@ -170,7 +170,7 @@ async def search(
                     type="contact",
                     title=contact_row.name or "Unnamed",
                     snippet=snippet,
-                    url=f"/contacts/{contact_row.id}",
+                    url=f"/entities/{contact_row.id}",
                 )
             )
 
