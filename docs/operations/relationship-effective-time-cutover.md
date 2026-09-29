@@ -30,44 +30,66 @@ live, so a hotreload stack cannot be proven and is refused. Run dev cutovers wit
 
 All must hold before anyone runs step 1:
 
-1. The owner has adopted the dedicated signer (design "Owner decision"), and the key, keyring,
+1. The owner has adopted the dedicated signer (design "Owner decisions"), and the key, keyring,
    wrapper, and sudoers rule are installed by a separate host act.
-2. The target SHA contains the verifier, wrapper, fence checks, rel036, and the
+2. The owner has recorded the gate lifecycle and non-production and fresh-install decision
+   (`bu-ftd491`). It is **open**. Until it is decided, the gate applies to every database: dev,
+   fresh installs, CI, and restore-drill scratch databases all stay at `rel_035` and receive no
+   later Relationship migration until they run this procedure.
+3. The target SHA contains the verifier, wrapper, fence checks, rel036, and the
    `relationship-fact-effective-time` task 3.5 real-PostgreSQL scenarios.
-3. The entity-merge collision wording amendment `bu-ldcp5f` is resolved, so the inventory digest
+4. The entity-merge collision wording amendment `bu-ldcp5f` is resolved, so the inventory digest
    attests behavior that matches the adopted contract.
-4. A live authorization names: authorization id (`rtc-YYYYMMDD-xxxxxxxx`), environment, target SHA,
-   target image id, rollback image id (retained), optional absent services, and maximum window.
+5. A live authorization names: authorization id (`rtc-YYYYMMDD-xxxxxxxx`), environment, one
+   supported invocation row and its flags (below), target SHA, target image id, rollback image id
+   (retained), optional-absent services, and maximum window.
+
+## Supported invocations
+
+The cutover covers exactly the services of one named row. The wrapper resolves the row from its own
+launcher at the target SHA and refuses `compose_invocation_mismatch` on any difference, including a
+container started with another file set or profile.
+
+| Row | Launcher | Files | Project | Env file | Profiles |
+| --- | --- | --- | --- | --- | --- |
+| `prod-deploy` | `butlers deploy` | `docker-compose.yml`, `docker-compose.restore-drill.yml` | `butlers` | `.env.prod` | authorized `DeployConfig.profiles`, default none |
+| `prod-launcher` | `scripts/compose.sh --prod` [`--observability`] [`--audio`] | `docker-compose.yml`, `docker-compose.restore-drill.yml` | `butlers` | `.env.prod` | `dev` (+ `observability`, `audio`) |
+| `dev-launcher` | `scripts/compose.sh --no-hotreload` [`--with-restore-drill`] [`--observability`] [`--audio`] | `docker-compose.yml` (+ `docker-compose.restore-drill.yml`) | `butlers-dev` | `.env.dev` | `dev` (+ `observability`, `audio`) |
+
+Every service the credential rule selects is stopped and removed for the window: any PostgreSQL or
+libpq environment key, any `*_DB_HOST`-style or `RESTORE_DRILL_EXECUTOR_`/`RESTORE_DRILL_PROXY_`
+key, a database-credential secret, the `db` network, or any `env_file`. That includes `backup-cron`
+and, when the row includes it, the restore-drill executor and its proxy.
 
 ## Procedure
 
 Each verb is a fixed wrapper entry point run as
 `sudo -n /usr/local/libexec/butlers-relationship-temporal-cutover <verb> --authorization <id>`.
 
-1. **Deploy the target normally.** `butlers deploy` (prod) or `scripts/compose.sh --no-hotreload`
-   (dev) at the target SHA. The gated ceiling stops the Relationship chain at `rel_035`, so the fleet
+1. **Deploy the target normally** through the named row's launcher at the target SHA. The gated ceiling stops the Relationship chain at `rel_035`, so the fleet
    runs target code with the legacy index still present. Confirm the chain reports
    `temporal_cutover_pending`.
-2. **Produce the test receipt.** In a clean checkout at the target SHA:
-   `scripts/verify_relationship_temporal_cutover.py test-receipt --target-sha <sha>`. It runs the
-   fixed node list through `scripts/pytest_gate.py` and writes the test receipt. Only verdict `PASS`
-   is usable.
-3. **Prepare** (`--prepare-v1`). The wrapper locks, sets the fence, verifies the checkout, reads the
-   image and inventory digests and database target, and inventories every credentialed container.
-   Any mismatch aborts and clears the fence with nothing touched. Otherwise it sets each container's
+2. **Prepare** (`--prepare-v1`). The wrapper locks, sets the fence, verifies the checkout, resolves
+   the row and hashes its configuration, and **runs the required tests itself** from a `git archive`
+   export of the target commit (fleet still up; tests use their own throwaway databases). It then
+   reads the image and inventory digests and database target and inventories every credentialed
+   container. Any mismatch or a non-`PASS` verdict aborts and clears the fence with nothing touched.
+   There is no operator test step: do not run or supply a `pytest_gate.py` log, test receipt, or CI
+   result; no wrapper verb accepts one. Otherwise it sets each container's
    restart policy to `no`, stops it, proves it stopped, removes it, proves none remain, sets the fence
    to `quiesced`, and writes the signed receipt. Expiry is 15 minutes from here.
-4. **Migrate** (`--migrate-v1`). The wrapper runs
+3. **Migrate** (`--migrate-v1`). The wrapper runs
    `butlers db relationship-temporal-cutover --receipt <path>` in a fresh target-image `migrations`
    container with the receipt, keyring, and fence mounted read-only. rel036 takes a `NOWAIT`
    access-exclusive lock, proves no other database session, verifies the receipt and fence, checks
    both indexes, and drops only `uq_ef_spo_active`. Any failure changes nothing.
-5. **Release** (`--release-v1`). The wrapper starts the target image only, verifies every container's
-   image id, `GIT_SHA`, roster mount, and start time after the rel036 commit, proves no extra
-   container, and removes the fence. A mismatch keeps the fence held.
+4. **Release** (`--release-v1`). The wrapper starts the row's services through the row's own launcher
+   in fence-release mode (no build, restore-drill preparation included, `butlers-app` pinned to the
+   target image id), verifies every container against the instance rules and a start time after the
+   rel036 commit, proves no extra container, and removes the fence. A mismatch keeps the fence held.
 
 **Abort** (`--abort-v1`) is allowed only while the Relationship chain is still `rel_035`. It releases
-the same target image through the step 5 checks and clears the fence. After rel036 commits, the only
+the same target image through the step 4 checks and clears the fence. After rel036 commits, the only
 path is forward through release.
 
 ## During the window
@@ -92,10 +114,11 @@ window.
 | Checkout not at target, wrong roster tree, or dirty | `checkout_mismatch` / `checkout_dirty` | Abort at prepare; nothing touched. |
 | Hotreload container present | `hotreload_unverifiable` | Abort at prepare. |
 | Non-target image or roster tree on any container | `instance_unknown_image` / `instance_mixed` | Abort at prepare. |
+| Launcher resolution or container labels differ from the named row | `compose_invocation_mismatch` | Abort at prepare. |
 | Extra or missing credentialed service | `instance_extra` / `instance_missing` | Abort at prepare. |
 | Container will not stop or accept restart `no` | `instance_running` / `restart_capable` | Abort; use `--abort-v1`. |
 | Inventory digest or static guard differs | `mutator_inventory_mismatch` | Abort at prepare or migrate. |
-| Test receipt for another SHA, incomplete, not `PASS` | `test_receipt_mismatch` / `test_receipt_not_pass` | Abort at prepare. |
+| Wrapper's own test run collected the wrong nodes or tree, or verdict not `PASS` | `test_receipt_mismatch` / `test_receipt_not_pass` | Abort at prepare. |
 | Receipt missing, mis-owned, forged, unknown signer, expired, wrong purpose | `receipt_*` | Migrate aborts; no DDL. |
 | Database, OID, or cluster identifier differs or unreadable | `db_target_mismatch` / `db_target_unverifiable` | Abort; no DDL. |
 | Fence absent, mismatched, wrong phase, or mis-owned | `fence_*` | Migrate aborts; no DDL. |
@@ -118,7 +141,7 @@ window.
 
 ## Evidence
 
-Keep only the receipt, the test receipt, the wrapper's exit codes, and its content-blind output:
+Keep only the receipt, the wrapper-produced test receipt, the wrapper's exit codes, and its content-blind output:
 codes, counts, digests, SHAs, tree and image ids, container ids, service names, timestamps, database
 name and OID, cluster identifier, fence and authorization ids. Never record fact, contact, or entity
 content, SQL text, container environments, credentials, or key material.

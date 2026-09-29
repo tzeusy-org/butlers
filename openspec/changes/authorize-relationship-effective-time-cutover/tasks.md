@@ -20,6 +20,9 @@
 - [ ] 2.2 Obtain independent exact-head deployment, PostgreSQL, and security review.
 - [ ] 2.3 Record exact owner acceptance of the contract and the single signer artifact choice. Draft
       authorship, review, and CI do not satisfy this task.
+- [ ] 2.4 Record the owner decision on the gate lifecycle and non-production and fresh-install policy
+      (`bu-ftd491`). It is open; until it is recorded the gate applies to every database and no
+      implementation may choose an option.
 
 ## 3. Future implementation owned by bu-h3b7t
 
@@ -27,8 +30,11 @@
       receipt, fence, and digest parsers, and make the static guard import it.
 - [ ] 3.2 Add the gated-revision ceiling and explicit cutover CLI and x-argument plumbing, proving
       every automatic path stops below the gate and a fresh database has no bypass.
-- [ ] 3.3 Add the read-only verifier, the root wrapper with fixed verbs, its sudoers fragment and
-      installer, and the `scripts/compose.sh` and `butlers deploy` fence refusals.
+- [ ] 3.3 Add the read-only verifier (row resolution, non-interpolated config digest, credential
+      rule, inventory, release check), the root wrapper with fixed verbs that runs the fixed test
+      node list itself and accepts no test evidence as input, its sudoers fragment and installer,
+      and the `scripts/compose.sh` and `butlers deploy` fence refusals, row resolution, and
+      fence-release modes.
 - [ ] 3.4 Add rel036 with every pre-DDL check and the rollback-before-first-temporal-write downgrade,
       proven against real PostgreSQL with test-only keys, fence, and receipts.
 - [ ] 3.5 Complete the operator packet against the merged tooling.
@@ -37,5 +43,5 @@
 
 - [ ] 4.1 Owner adopts or declines the dedicated signer; any provisioning and wrapper installation is
       a separate host act.
-- [ ] 4.2 A separate exact-environment authorization runs the cutover. Source delivery, tests, and CI
+- [ ] 4.2 After 2.4 is recorded, a separate exact-environment authorization runs the cutover. Source delivery, tests, and CI
       do not authorize or evidence it.

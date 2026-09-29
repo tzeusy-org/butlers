@@ -2,10 +2,12 @@
 
 ### Requirement: Signed content-blind cutover receipt
 The Relationship effective-time cutover SHALL be authorized only by a canonical signed receipt that
-binds one authorization id, one purpose, one Compose environment and project, the exact target Git
-SHA, the immutable target image id, the target `roster/` tree id, the complete instance set, the
-mutator-inventory digest, the test-receipt digest, the database target, the active fence identity,
-the issue time, and an expiry at most 15 minutes after issue.
+binds one authorization id, one purpose, one Compose environment and project, the resolved Compose
+invocation and its redacted configuration digest, the exact target Git SHA, the immutable target
+image id, the target `roster/` tree id, the complete instance set, the mutator-inventory digest, the
+digest of the test receipt the signing wrapper produced by running the required tests itself, the
+database target, the active fence identity, the issue time, and an expiry at most 15 minutes after
+issue.
 
 ID: REQ-relationship-effective-time-cutover-001
 
@@ -30,8 +32,9 @@ directories.
 - **THEN** its target Git SHA, mutator-inventory digest, database target, and fence id MUST each
   equal the value the migration recomputes from its own image, mounted files, database session, and
   fence file
-- **AND** its instance-set, image, roster-tree, and test-receipt claims MUST be accepted only
-  because the signing wrapper collected them itself in the same fenced invocation
+- **AND** its Compose-configuration, instance-set, image, roster-tree, and test-receipt claims MUST
+  be accepted only because the signing wrapper collected them itself in the same fenced invocation,
+  including running the required tests itself
 - **AND** any single mismatch MUST abort before DDL with the stable code for that field
 
 #### Scenario: Rollback receipt cannot authorize cutover
@@ -65,7 +68,10 @@ a distinct `kid` namespace `rtc-*` and a distinct key. Receipts SHALL be written
 `0444`, in a root-owned directory that is not group- or world-writable.
 
 The wrapper MUST sign only evidence it collected itself in the same invocation. It MUST NOT sign an
-operator-supplied inventory, and it MUST NOT expose a generic "sign this document" verb. Provisioning
+operator-supplied inventory, test receipt, `pytest_gate.py` log, Compose configuration, or digest,
+it MUST NOT accept any of them as input, and it MUST NOT expose a generic "sign this document" verb.
+Test evidence in particular SHALL come only from the wrapper running the fixed test node list itself
+(see the mutator inventory and test receipt requirement). Provisioning
 the key, installing the wrapper, and adding its sudoers rule are live host acts outside repository
 authority; adopting this signer is an owner decision.
 
@@ -80,6 +86,14 @@ authority; adopting this signer is an owner decision.
   `sign_from`/`sign_until` window
 - **THEN** the migration MUST abort `receipt_signature_invalid` or `receipt_signer_unknown` before DDL
 
+#### Scenario: Operator-produced test evidence is never signed
+
+- **WHEN** an operator supplies, points to, or places a test receipt or `pytest_gate.py` log for the
+  wrapper to use
+- **THEN** the wrapper MUST ignore it, MUST run the fixed node list itself, and MUST bind only the
+  receipt it produced in that invocation
+- **AND** no wrapper verb MAY accept a test receipt, gate log, or digest argument
+
 #### Scenario: Another key cannot stand in
 
 - **WHEN** a receipt is signed with the runtime-probe control key or any key outside the `rtc-*`
@@ -88,46 +102,121 @@ authority; adopting this signer is an owner decision.
 
 ### Requirement: Complete Docker Compose instance proof
 The wrapper SHALL prove, from read-only Docker inspection of the named Compose project, that every
-container which carries database credentials is accounted for, that every such container runs the
-exact target image with the exact target `roster/` tree mounted from the verified checkout, that no
-other image or tree is present, and that the set equals the service set declared by the Compose
-configuration at the target SHA.
+container of every database-credentialed service in the one authorized Compose invocation is
+accounted for, that every such container runs its required image with the exact target `roster/`
+tree mounted from the verified checkout where it mounts one, that no other container, image, or tree
+is present, and that the set equals the service set of that invocation's resolved configuration at
+the target SHA.
 
 ID: REQ-relationship-effective-time-cutover-003
 
 Relationship mutator code runs from two sources: `src/` baked into the `butlers-app` image, and
 `roster/` bind-mounted read-only from the host checkout into `butlers-up`, `dashboard-api`,
 `migrations`, and their hotreload variants. Image identity alone therefore MUST NOT count as code
-identity. The instance proof SHALL require:
+identity.
 
-- the image id (`docker image inspect` `.Id`) of every inventoried container equals the receipt's
-  target image id, and that image's specifically projected `GIT_SHA` equals the target SHA;
+**Supported invocations.** The live authorization SHALL name exactly one row of this table plus its
+optional flags. The wrapper SHALL resolve that row at the target SHA from the launcher itself
+(`DeployConfig` for `butlers deploy`; a non-mutating resolution mode of `scripts/compose.sh`) and
+MUST abort `compose_invocation_mismatch` if the resolution differs from the row. File order is
+significant.
+
+| Row | Launcher | Compose files | Project | Env file | Profiles |
+| --- | --- | --- | --- | --- | --- |
+| `prod-deploy` | `butlers deploy` | `docker-compose.yml`, `docker-compose.restore-drill.yml` | `butlers` | `.env.prod` | exactly the authorized `DeployConfig.profiles`, default none |
+| `prod-launcher` | `scripts/compose.sh --prod` with optional `--observability`, `--audio` | `docker-compose.yml`, `docker-compose.restore-drill.yml` | `butlers` | `.env.prod` | `dev`, plus `observability` and `audio` when flagged |
+| `dev-launcher` | `scripts/compose.sh --no-hotreload` with optional `--with-restore-drill`, `--observability`, `--audio` | `docker-compose.yml`, plus `docker-compose.restore-drill.yml` when flagged | `butlers-dev` | `.env.dev` | `dev`, plus `observability` and `audio` when flagged |
+
+The `hotreload` profile, `docker-compose.observability.yml`, `docker-compose.meeting-prep-evidence.yml`,
+and any file or profile not in the named row are unsupported for a cutover.
+
+**Configuration digest.** The receipt SHALL bind the row, the ordered file list, project, env-file
+name, sorted profiles, and `compose_config_digest`: the SHA-256 of the JCS encoding of
+`docker compose -f <files...> -p <project> --profile <p>... config --no-interpolate --format json`
+run in the verified checkout. `--no-interpolate` keeps every `${...}` reference literal, so the digest
+and the configuration read never contain credential values.
+
+**Credentialed service rule.** A service in that resolved configuration SHALL be database-credentialed
+when any of the following holds, and otherwise SHALL NOT be:
+
+1. its `environment` has a key in `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`,
+   `POSTGRES_PASSWORD`, `POSTGRES_DB`, `DATABASE_URL`, `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`,
+   `PGDATABASE`, `PGPASSFILE`, or `PGSERVICEFILE`;
+2. its `environment` has a key matching `^[A-Z0-9_]*_DB_(HOST|PORT|USER|PASSWORD|PASSWORD_FILE)$`
+   or starting with `RESTORE_DRILL_EXECUTOR_` or `RESTORE_DRILL_PROXY_`;
+3. it mounts a `secrets` entry whose source name matches `(?i)(postgres|password|_db)`;
+4. it attaches to the Compose network `db`; or
+5. it declares any `env_file`, whose keys the non-interpolated configuration cannot show.
+
+**Instance proof.** The proof SHALL require:
+
+- the inventoried set is every container, in any state, whose `com.docker.compose.project` label
+  equals the project, including one-off `compose run` containers;
+- every inventoried container's `com.docker.compose.service` label names a service of the resolved
+  configuration, and its `com.docker.compose.project.config_files` and
+  `com.docker.compose.project.environment_file` labels equal the named row's files and env file;
+- every credentialed service whose configured image reference is `butlers-app` or `butlers-app-*`
+  runs the receipt's target image id (`docker image inspect` `.Id`), whose specifically projected
+  `GIT_SHA` equals the target SHA;
+- every other credentialed service (for example `backup-cron` on `postgres:17-alpine`) runs the image
+  id its configured reference resolves to locally at inventory, recorded in the receipt;
 - every `roster` mount source equals `<working_dir>/roster`, where `working_dir` is the project's
   `com.docker.compose.project.working_dir` label and is the canonical checkout (not a linked
   worktree);
 - that checkout's `HEAD` equals the target SHA, `git rev-parse <sha>:roster` equals the receipt's
   roster tree id, and `git status --porcelain --untracked-files=all -- roster src alembic` is empty;
-- the inventoried set is every container, in any state, whose Compose project label equals the
-  target project and whose service declares database credentials in the target Compose
-  configuration, plus every container of that project created by `compose run`;
-- no hotreload service (`butlers-up-hotreload`, `dashboard-api-hotreload`) exists in any state; and
-- no container of the project uses any other `butlers-app*` image id.
+- every credentialed service with a `restart` policy has exactly its configured replica count of
+  containers unless the authorization lists it as optional-absent; a credentialed service without a
+  `restart` policy (one-shot, such as `migrations`) MAY have no container, and any it has are
+  inventoried like the rest; and
+- no hotreload service (`butlers-up-hotreload`, `dashboard-api-hotreload`) exists in any state.
 
-A process-health check, a heartbeat, a boot ledger row, elapsed rollout time, or a single
-writer-symbol check MUST NOT satisfy this proof.
+Every credentialed container is quiesced and removed by the fence. Non-credentialed containers (for
+example `frontend-dev` on `frontend` only) are recorded but need not stop. A process-health check, a
+heartbeat, a boot ledger row, elapsed rollout time, or a single writer-symbol check MUST NOT satisfy
+this proof.
+
+#### Scenario: Credential rule is mechanical
+
+- **WHEN** the resolved configuration is classified
+- **THEN** `backup-cron` MUST be credentialed by rules 1 and 4 although its image is not
+  `butlers-app`
+- **AND** `restore-drill-executor` MUST be credentialed by rules 2 and 3 although it uses no
+  `x-postgres-env` key, and `restore-drill-postgres-proxy` MUST be credentialed by rule 2
+- **AND** a service that declares an `env_file` MUST be credentialed by rule 5
+
+#### Scenario: Overlay services follow the named row
+
+- **WHEN** the row includes `docker-compose.restore-drill.yml` and no `restore-drill-executor`
+  container exists and the authorization does not list it as optional-absent
+- **THEN** preparation MUST abort `instance_missing`
+- **AND** when the row excludes that file but such a container exists in the project, preparation
+  MUST abort `instance_extra`
+
+#### Scenario: Containers from another invocation abort
+
+- **WHEN** any inventoried container's config-files or env-file label differs from the named row, for
+  example because it was started with `docker-compose.observability.yml` or the `hotreload` profile
+- **THEN** preparation MUST abort `compose_invocation_mismatch`
+
+#### Scenario: Configuration digest is content-blind and exact
+
+- **WHEN** the same row is resolved twice at the same SHA
+- **THEN** `compose_config_digest` MUST be identical
+- **AND** the resolved document hashed MUST contain no interpolated value from any env file
 
 #### Scenario: Mixed fleet aborts
 
-- **WHEN** any inventoried container uses an image id other than the target, or any `roster` mount
+- **WHEN** any credentialed `butlers-app` container uses an image id other than the target, any other
+  credentialed container's image id differs from its resolved reference, or any `roster` mount
   resolves outside the verified checkout
-- **THEN** preparation MUST abort `instance_mixed` or `instance_unknown_image` before setting the
-  fence or signing
+- **THEN** preparation MUST abort `instance_mixed` or `instance_unknown_image` before quiescing or
+  signing
 
 #### Scenario: Extra or missing instance aborts
 
-- **WHEN** a container of the project exists for a service absent from the target Compose
-  configuration, or a declared credentialed service has no container and is not declared optional
-  by the authorization
+- **WHEN** a container of the project names a service absent from the resolved configuration, or a
+  long-lived credentialed service lacks its replica count and is not optional-absent
 - **THEN** preparation MUST abort `instance_extra` or `instance_missing`
 
 #### Scenario: Hotreload cannot be proven
@@ -155,12 +244,22 @@ file bytes. `src/` entries SHALL be read from the target image by `docker create
 without starting the container; `roster/` entries SHALL be read from the verified checkout. The
 static inventory guard MUST be clean at the target SHA.
 
-The test receipt SHALL be JSON with schema tag `butlers.relationship-temporal-cutover-tests/v1`,
-binding the target SHA, the SHA-256 of the fixed sorted node-id list, the SHA-256 of the
-`scripts/pytest_gate.py` log, and verdict `PASS`. The wrapper MUST recompute the verdict with
-`pytest_gate.py verdict` and MUST treat `UNKNOWN` or `FAILED` as `test_receipt_not_pass`. The node
-list SHALL include the rel035 and rel036 migration tests, the static inventory guard, and every
-real-PostgreSQL scenario named by `relationship-fact-effective-time` task 3.5.
+The wrapper SHALL run the required tests itself during preparation, after setting the fence and
+verifying the checkout and before quiescing. It SHALL export the verified commit with `git archive
+<target_sha>` into a fresh root-owned directory, run `scripts/pytest_gate.py run` over the fixed node
+list from that export as a dedicated unprivileged account, capture the log through a pipe into a
+root-owned file the test process cannot write, and recompute the verdict with `pytest_gate.py
+verdict`. `UNKNOWN` or `FAILED` SHALL abort `test_receipt_not_pass`. The node list SHALL be a
+constant of the installed wrapper, not an argument, and SHALL include the rel035 and rel036
+migration tests, the static inventory guard, and every real-PostgreSQL scenario named by
+`relationship-fact-effective-time` task 3.5. Tests use their own testcontainers databases and MUST
+NOT connect to the cutover target.
+
+The resulting test receipt SHALL be JSON with schema tag
+`butlers.relationship-temporal-cutover-tests/v1`, binding the target SHA, the SHA-256 of the sorted
+node-id list, the SHA-256 of the captured log, the verdict `PASS`, and the authorization and fence
+ids. It SHALL be written root-owned beside the receipt, and the receipt SHALL bind its SHA-256. No
+operator-produced log, receipt, or CI result SHALL be accepted, read, or signed.
 
 #### Scenario: Inventory drift blocks cutover
 
@@ -170,9 +269,17 @@ real-PostgreSQL scenario named by `relationship-fact-effective-time` task 3.5.
 
 #### Scenario: Stale or incomplete test evidence blocks cutover
 
-- **WHEN** the test receipt names another SHA, omits a required node, or its log verdict is not
-  `PASS`
-- **THEN** preparation MUST abort `test_receipt_mismatch` or `test_receipt_not_pass`
+- **WHEN** the wrapper's own run collects fewer nodes than the fixed list, runs from a tree other than
+  the target commit, or its captured log verdict is not `PASS`
+- **THEN** preparation MUST abort `test_receipt_mismatch` or `test_receipt_not_pass` before
+  quiescing or signing
+
+#### Scenario: Test evidence is wrapper-produced
+
+- **WHEN** a receipt is signed
+- **THEN** its `test_receipt_digest` MUST be the digest of the test receipt produced by that same
+  wrapper invocation from its own run
+- **AND** an operator-run `pytest_gate.py` log or hosted CI result MUST NOT be substituted
 
 ### Requirement: Enforced managed writer lifecycle fence
 The managed cutover path SHALL hold one root-owned lifecycle fence for the target Compose project from
@@ -194,9 +301,13 @@ containers of the project remain in any state; and only then sign the receipt.
 
 Every supported start path SHALL check the fence before acting and refuse while it is held:
 `scripts/compose.sh` (every invocation, before its `down`), and `butlers deploy` (before build,
-migration, and recreate). The wrapper's release verb SHALL start only the target image, verify each
-started container against the receipt with `StartedAt` after the rel036 commit, prove no extra
-container, and only then remove the fence.
+migration, and recreate). The wrapper's release verb SHALL start the named invocation row's services through that
+row's own launcher in a fence-release mode that performs the launcher's protected restore-drill
+preparation, skips any build, and pins `butlers-app` to the target image id; it SHALL verify each
+started container against the receipt's instance rules with `StartedAt` after the rel036 commit,
+prove no extra container, and only then remove the fence. The launchers SHALL accept fence-release
+mode only while the fence phase is `releasing` and the fence binds the same row and configuration
+digest.
 
 The rel036 upgrade SHALL, in one transaction and before any DDL: acquire
 `LOCK TABLE relationship.entity_facts IN ACCESS EXCLUSIVE MODE NOWAIT`; then prove zero client
@@ -262,7 +373,9 @@ ID: REQ-relationship-effective-time-cutover-006
 Automatic paths (daemon startup, `butlers db migrate`, the Compose `migrations` service, and
 `butlers deploy`) SHALL upgrade that chain to the gate's `down_revision` while the gate is
 unapplied, and to `head` only when the gate is already applied. Later revisions wait behind an
-unapplied gate and are reported as `temporal_cutover_pending`. The revision file stays in the
+unapplied gate and are reported as `temporal_cutover_pending`. Because the chain is linear, every
+later Relationship revision descends from rel036, so any database that has not cut over stays at
+`rel_035` and receives no later Relationship migration. The revision file stays in the
 ordinary directory so every image that knows rel036 can resolve `alembic_version` after cutover; a
 separate directory would leave post-cutover daemons unable to locate the applied revision.
 
@@ -297,6 +410,14 @@ and the occurrence index unchanged.
 - **THEN** automatic advancement MUST still stop below rel036
 - **AND** tests MUST reach rel036 only through the explicit path with test-only keys, fence, and
   receipt fixtures
+
+#### Scenario: Gate lifecycle is an open owner decision
+
+- **WHEN** this contract is read before the owner decides `bu-ftd491`
+- **THEN** the gate MUST apply to every database: production, dev, fresh installs, CI and
+  testcontainers databases, and restore-drill scratch databases
+- **AND** no retirement of the gate, no non-production or fresh-install exemption, and no automatic
+  advancement past rel036 MAY be implemented until the owner records that decision
 
 ### Requirement: Rollback and first temporal write boundary
 The cutover path SHALL preserve the adopted rollback boundary: code and schema rollback are allowed
@@ -366,9 +487,12 @@ generic orchestrator path, and no generic architecture follow-up.
 A live cutover SHALL additionally require: owner adoption of the dedicated signer; the
 `relationship-fact-effective-time` real-PostgreSQL scenarios (task 3.5) merged and in the test
 receipt; the owner-gated resolution of the entity-merge collision wording (`bu-ldcp5f`), because the
-inventory digest attests behavior that must match the adopted contract; and a separate
-exact-environment authorization naming the authorization id, environment, target SHA, target image,
-rollback image, and maximum window.
+inventory digest attests behavior that must match the adopted contract; the owner decision on the
+gate lifecycle and non-production and fresh-install policy (`bu-ftd491`), which is open and whose
+current default is that the gate applies to every database; and a separate
+exact-environment authorization naming the authorization id, environment, supported invocation
+row and flags, optional-absent services, target SHA, target image, rollback image, and maximum
+window.
 
 #### Scenario: Source delivery does not authorize a live act
 

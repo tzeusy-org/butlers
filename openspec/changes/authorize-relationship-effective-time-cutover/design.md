@@ -84,10 +84,19 @@ The wrapper (`/usr/local/libexec/butlers-relationship-temporal-cutover`, install
 `scripts/relationship-temporal-cutover.sh`) is the only holder of the signing key and runs as root
 via one sudoers rule. It invokes a root-owned installed copy of
 `scripts/verify_relationship_temporal_cutover.py` whose SHA-256 it pins, performs the inventory,
-quiesce, and removal itself, and signs only what it observed in the same invocation.
+test run, quiesce, and removal itself, and signs only what it observed in the same invocation.
 
-Alternatives rejected: an operator-run verifier whose output is signed afterwards (signs whatever it
-is handed); an unsigned root-owned file (any root container with a host mount could write one); reuse
+That includes test evidence. The wrapper runs the fixed node list (a constant of the installed
+wrapper) from a `git archive` export of the verified target commit, as a dedicated unprivileged
+account, captures the `pytest_gate.py` log through a pipe into a root-owned file, and recomputes the
+verdict. No verb accepts a test receipt, gate log, CI result, or digest as input, so an
+operator-written PASS log has no path to the signer. The tests run against their own
+testcontainers databases while the fleet is still up, after the fence is set and before quiesce, so
+their duration does not lengthen the downtime or consume the 15-minute receipt expiry.
+
+Alternatives rejected: an operator-run verifier or test run whose output is signed afterwards (signs
+whatever it is handed); a hosted CI attestation (adds a network trust root and a second signer the
+owner has not adopted); an unsigned root-owned file (any root container with a host mount could write one); reuse
 of the runtime-probe key (Dashboard holds that signer, so a container compromise would forge
 receipts).
 
@@ -99,6 +108,29 @@ of the canonical checkout, and that checkout is at the target SHA, has the targe
 and is clean under `roster`, `src`, and `alembic`. The checkout's `src` and `alembic` are included
 because the target image is built from it and a dirty build tree would make `GIT_SHA` a lie.
 Hotreload is refused outright, because live-reloaded source changes without a process start.
+
+### D2a. One named Compose invocation, one mechanical credential rule
+
+The effective service set depends on the launcher and its flags, so the authorization names exactly
+one supported invocation row (spec, instance proof requirement): `prod-deploy` (`butlers deploy`),
+`prod-launcher` (`scripts/compose.sh --prod`), or `dev-launcher`
+(`scripts/compose.sh --no-hotreload`), each with fixed files, project, env file, and profiles. The
+wrapper resolves the row from the launcher itself at the target SHA and hashes
+`docker compose ... config --no-interpolate --format json`. `--no-interpolate` leaves every `${...}`
+literal, so the digest is deterministic per SHA and row and never includes a credential value.
+
+A service is database-credentialed when its non-interpolated configuration shows a PostgreSQL or
+libpq environment key, a `*_DB_(HOST|PORT|USER|PASSWORD|PASSWORD_FILE)` key or a
+`RESTORE_DRILL_EXECUTOR_`/`RESTORE_DRILL_PROXY_` key, a secret whose name looks like a database
+credential, an attachment to the `db` network, or any `env_file`. The rule is deliberately
+over-inclusive: a false positive only stops one more container during the window, while a false
+negative leaves a live session that rel036 would then refuse. On the current files it classifies
+`backup-cron` (rules 1 and 4), `restore-drill-executor` (rules 2 and 3), and
+`restore-drill-postgres-proxy` (rule 2) as credentialed, which a rule keyed on `x-postgres-env`
+alone would miss.
+
+Non-`butlers-app` credentialed services such as `backup-cron` are held to the image id their
+configured reference resolves to at inventory rather than to the target image.
 
 ### D3. The fence is enforced by removal, refusal, and exclusion
 
@@ -149,7 +181,7 @@ The inventory moves from test-only data into `src/butlers/relationship_temporal_
 (`MUTATOR_INVENTORY`), so the image carries the list. The static guard test imports it. The digest
 covers each entry's path, qualname, classification, and file bytes, so a changed fence body changes
 the digest even when the list does not. The test receipt binds the fixed node list and the
-`scripts/pytest_gate.py` log, whose verdict the wrapper recomputes.
+`scripts/pytest_gate.py` log of the wrapper's own run (D1), whose verdict the wrapper recomputes.
 
 ### D6. Rollback is a second purpose, not a flag
 
@@ -181,8 +213,15 @@ replayed as a rollback authority, or the reverse.
     }
   ],
   "instance_set_digest": "<64 hex>",
-  "expected_services": ["butlers-up", "dashboard-api", "migrations"],
-  "optional_services_absent": [],
+  "compose": {
+    "row": "prod-deploy",
+    "files": ["docker-compose.yml", "docker-compose.restore-drill.yml"],
+    "env_file": ".env.prod",
+    "profiles": [],
+    "config_digest": "<64 hex>",
+    "credentialed_services": ["backup-cron", "butlers-up", "dashboard-api", "migrations"],
+    "optional_services_absent": []
+  },
   "mutator_inventory_digest": "<64 hex>",
   "test_receipt_digest": "<64 hex>",
   "db_target": {
@@ -203,9 +242,10 @@ Rules:
 - `authorization_id` matches `rtc-[0-9]{8}-[0-9a-f]{8}` and is supplied by the separate live
   authorization. `environment` is `prod` or `dev` and must agree with `compose_project`.
 - `instances` is sorted by `(service, container_id)`. `instance_set_digest` is the SHA-256 of its JCS
-  encoding. `expected_services` lists every credentialed service in the target Compose configuration
-  with the active profiles; `optional_services_absent` may name only services the live authorization
-  lists as optional (for example `connector-live-listener` without the `audio` profile).
+  encoding. `compose.credentialed_services` lists every service the credential rule selects in the
+  resolved configuration; `compose.optional_services_absent` may name only services the live
+  authorization lists as optional (for example `connector-live-listener` without the `audio`
+  profile).
 - `db_target.system_identifier` comes from `pg_control_system()` and is read by the wrapper through a
   single read-only query in a throwaway target-image container before quiesce. It pins the cluster,
   not just a name.
@@ -222,9 +262,15 @@ The test receipt:
   "node_set_digest": "<64 hex>",
   "gate_log_sha256": "<64 hex>",
   "verdict": "PASS",
-  "finished_at": "2026-09-30T18:00:00Z"
+  "authorization_id": "rtc-20261001-3f9a2c1d",
+  "fence_id": "<uuid>",
+  "finished_at": "2026-10-01T01:58:00Z"
 }
 ```
+
+The wrapper writes it root-owned to
+`/var/lib/butlers/relationship-temporal-cutover/tests/<authorization_id>.json` in the same
+invocation that signs the receipt; it is never an input.
 
 `test_receipt_digest` is the SHA-256 of the test receipt's JCS bytes.
 
@@ -238,6 +284,8 @@ The test receipt:
   "compose_project": "butlers",
   "target_git_sha": "<40 hex>",
   "target_image_id": "sha256:<64 hex>",
+  "compose_row": "prod-deploy",
+  "compose_config_digest": "<64 hex>",
   "generation": 1,
   "phase": "quiesced",
   "set_at": "2026-10-01T02:00:00Z"
@@ -256,24 +304,27 @@ receipt file, the verifier keyring, and the fence file.
 
 ## Sequence
 
-1. **Authorize** (live, separate): authorization id, environment, target SHA, target and rollback
-   image ids, optional services, and maximum window.
-2. **Deploy the target normally.** Build and deploy the target image through the ordinary path. The
-   gate stops the chain at `rel_035`; the fleet runs target code with the legacy index present, so
-   temporal intent is still refused.
-3. **Produce the test receipt** at the target SHA in a clean checkout.
-4. **Prepare** (`--prepare-v1`): lock; set fence phase `inventory`; verify checkout; read the image
-   and inventory digests; read the database target; inventory containers; abort and clear the fence
-   on any mismatch (nothing has been touched yet); set restart policy `no`; stop; prove stopped;
-   remove; prove zero credentialed containers; set phase `quiesced`; sign and write the receipt.
-5. **Migrate** (`--migrate-v1`): run the explicit rel036 path in a fresh target-image `migrations`
+1. **Authorize** (live, separate): authorization id, environment, supported invocation row and
+   flags, target SHA, target and rollback image ids, optional-absent services, and maximum window.
+2. **Deploy the target normally.** Build and deploy the target image through the named row's
+   ordinary launcher. The gate stops the chain at `rel_035`; the fleet runs target code with the
+   legacy index present, so temporal intent is still refused.
+3. **Prepare** (`--prepare-v1`): lock; set fence phase `inventory`; verify the checkout; resolve the
+   named row from its launcher and hash the non-interpolated configuration; run the fixed test node
+   list itself from a `git archive` export and write the test receipt; read the image and inventory
+   digests; read the database target; inventory containers. On any mismatch, abort and clear the
+   fence (nothing has been touched yet). Otherwise set restart policy `no` on every credentialed
+   container; stop; prove stopped; remove; prove zero credentialed containers; set phase
+   `quiesced`; sign and write the receipt.
+4. **Migrate** (`--migrate-v1`): run the explicit rel036 path in a fresh target-image `migrations`
    container with the three read-only mounts. On success set phase `migrated`.
-6. **Release** (`--release-v1`): set phase `releasing`; `compose up -d` with the target image only;
-   verify every started container's image id, `GIT_SHA`, roster mount, and `StartedAt` after the
-   rel036 commit; prove no extra container; remove the fence.
-7. **Abort before migrate** (`--abort-v1`): allowed only while `alembic_version` is `rel_035`; releases
-   the same target image through the step 6 checks and clears the fence. After rel036 commits, the
-   only forward path is release.
+5. **Release** (`--release-v1`): set phase `releasing`; start the row's services through its own
+   launcher in fence-release mode (no build, restore-drill preparation included, `butlers-app`
+   pinned to the target image id); verify every started container against the instance rules with
+   `StartedAt` after the rel036 commit; prove no extra container; remove the fence.
+6. **Abort before migrate** (`--abort-v1`): allowed only while `alembic_version` is `rel_035`;
+   releases the same target image through the step 5 checks and clears the fence. After rel036
+   commits, the only forward path is release.
 
 ## Failure taxonomy
 
@@ -288,7 +339,8 @@ receipt file, the verifier keyring, and the fence file.
 | `instance_extra` / `instance_missing` | wrapper | Set differs from the target Compose configuration. |
 | `instance_running` / `restart_capable` | wrapper | A container failed to stop, or its policy could not be set to `no`. |
 | `mutator_inventory_mismatch` | wrapper, migration | Inventory digest differs, or the static guard is not clean. |
-| `test_receipt_mismatch` / `test_receipt_not_pass` | wrapper | Test receipt bound elsewhere, incomplete, or not `PASS`. |
+| `test_receipt_mismatch` / `test_receipt_not_pass` | wrapper | The wrapper's own test run collected the wrong node set or tree, or its verdict is not `PASS`. |
+| `compose_invocation_mismatch` | wrapper, release | Launcher resolution differs from the named row, or a container's config-files or env-file label differs. |
 | `receipt_missing` / `receipt_unreadable` / `receipt_schema_invalid` | migration | Receipt absent, unreadable, or malformed. |
 | `receipt_custody_invalid` | migration | Receipt not root-owned, writable, or a symlink. |
 | `receipt_signature_invalid` / `receipt_signer_unknown` | migration | Signature fails, or `kid` unknown or outside its window. |
@@ -331,7 +383,7 @@ those paths during and after the window.
 
 ## Rollback
 
-- **Before step 5 commits:** `--abort-v1` releases the same target image. The target code is valid
+- **Before step 4 commits:** `--abort-v1` releases the same target image. The target code is valid
   with the legacy index, so this is not a code rollback at all. Ordinary rollback to an earlier
   transition image remains the existing `rel_035` rule.
 - **After rel036, before the first temporal write:** a new authorization and a
@@ -362,10 +414,10 @@ those paths during and after the window.
 
 | Seam | Source | Tests |
 | --- | --- | --- |
-| Read-only verifier (inventory, test receipt, release check) | `scripts/verify_relationship_temporal_cutover.py` | `tests/scripts/test_verify_relationship_temporal_cutover.py` |
+| Read-only verifier (row resolution, config digest, credential rule, inventory, release check), invoked only by the wrapper | `scripts/verify_relationship_temporal_cutover.py` | `tests/scripts/test_verify_relationship_temporal_cutover.py` |
 | Root wrapper, sudoers, installer | `scripts/relationship-temporal-cutover.sh`, `scripts/relationship-temporal-cutover.sudoers`, `scripts/install_relationship_temporal_cutover_wrapper.sh` | `tests/scripts/test_relationship_temporal_cutover_wrapper.py` |
-| Compose launcher fence | `scripts/compose.sh` | `tests/scripts/test_compose_relationship_cutover_fence.py` |
-| Deploy fence | `src/butlers/core/deploy.py` | `tests/core/test_deploy.py` |
+| Compose launcher fence, non-mutating row resolution, fence-release mode | `scripts/compose.sh` | `tests/scripts/test_compose_relationship_cutover_fence.py` |
+| Deploy fence, row resolution, fence-release mode | `src/butlers/core/deploy.py` | `tests/core/test_deploy.py` |
 | Receipt, fence, inventory parser and digests | `src/butlers/relationship_temporal_cutover.py` | `tests/core/test_relationship_temporal_cutover_receipt.py` |
 | Gated ceiling and x-argument plumbing | `src/butlers/migrations.py`, `src/butlers/cli.py` | `tests/core/test_migration_gated_revision.py`, `tests/config/test_migrations.py` |
 | Static inventory guard (imports shipped inventory) | `tests/contracts/test_entity_facts_mutator_inventory.py` | same |
@@ -376,9 +428,13 @@ New test files are registered in `.github/ci-test-shards` in the same PR that ad
 use test-only keys, a temporary fence directory, and testcontainers PostgreSQL; they never read host
 paths.
 
-## Owner decision
+## Owner decisions
 
-One artifact choice is required before any live cutover:
+Two owner decisions stand before any live cutover. This change chooses neither.
+
+### Signer artifact
+
+One artifact choice:
 
 > Adopt a dedicated host-root Ed25519 signing key, `kid` namespace `rtc-*`, with the private
 > document at `/etc/butlers/relationship-temporal-cutover/signing-key.json` (`root:root`, `0400`)
@@ -388,6 +444,26 @@ One artifact choice is required before any live cutover:
 
 Declining leaves rel036 unrunnable, which is the safe default. This change provisions nothing.
 
+### Gate lifecycle and non-production policy (`bu-ftd491`, open)
+
+The Relationship chain is linear. Once rel036 exists with `down_revision = "rel_035"`, every later
+Relationship revision descends from it, so the gate is permanent unless the owner retires it: any
+database that has not run the managed cutover stays at `rel_035` and receives no later Relationship
+migration. That includes dev stacks, fresh installs, CI and testcontainers databases, and
+restore-drill scratch databases. The only way past the gate is a root-signed receipt plus a
+full-stack fence, or, in tests, the explicit path with test-only keys, fence, and receipt fixtures.
+
+Still open for the owner under `bu-ftd491`:
+
+- whether and when the gate retires (for example, automatic advancement after a release in which
+  every supported deployment has cut over);
+- whether non-production databases (dev, CI, restore-drill scratch) may pass it by a lighter path;
+- how a brand-new install with no old writers passes it; and
+- how CI and fixtures reach revisions after rel036.
+
+**Current default until decided:** the gate applies to every database, with no exemption,
+retirement, or automatic advancement past rel036. Implementation MUST NOT pick an option.
+
 ## Risks / Trade-offs
 
 - Full-application downtime for the window: accepted, because session counting cannot distinguish
@@ -395,12 +471,15 @@ Declining leaves rel036 unrunnable, which is the safe default. This change provi
 - `pg_control_system()` or other sessions' `pg_stat_activity` rows may be invisible to the migration
   role: the migration fails closed (`db_target_unverifiable`, `db_activity_unverifiable`); tests must
   prove visibility under the role Compose uses.
-- A gated revision delays every later Relationship revision on databases that have not cut over:
-  accepted and logged; later revisions that do not depend on the drop should land before the gate.
+- A gated revision blocks every later Relationship revision on every database that has not cut over,
+  for as long as the gate lives. No later revision can land "before" the gate in a linear chain; a
+  revision authored after rel036 descends from it. This lasting cost is not accepted here; it is the
+  open owner decision `bu-ftd491` above.
 - Root wrapper complexity: bounded by fixed verbs, no generic signing, pinned verifier digest, and
   the restore-drill wrapper as precedent.
 
 ## Open Questions
 
-None within the proposal. Every decision is subject to exact owner acceptance, and the signer is the
-single owner artifact choice above.
+Two owner decisions are open, listed in "Owner decisions": the signer artifact, and the gate
+lifecycle and non-production and fresh-install policy (`bu-ftd491`). Both are preconditions for any
+live cutover. Every other decision is subject to exact owner acceptance of this contract.

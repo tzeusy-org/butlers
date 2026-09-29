@@ -27,9 +27,12 @@ The repository cannot produce that proof today:
   enforcement a future rel036 must require:
   - a canonical, signed, content-blind receipt binding authorization id, target Git SHA, immutable
     image id, `roster/` tree id, complete instance set, mutator-inventory digest, test-receipt digest,
-    database target, fence id, and a short expiry;
+    database target, fence id, and a short expiry, where test evidence comes only from the wrapper
+    running the required tests itself;
   - a dedicated root-held Ed25519 signer, used only by a fixed wrapper that collects its own evidence;
-  - a complete Docker Compose instance proof covering image and bind-mounted tree identity;
+  - a complete Docker Compose instance proof covering image and bind-mounted tree identity, bound to
+    one named supported Compose invocation, a content-blind configuration digest, and a mechanical
+    database-credential rule;
   - an enforced writer lifecycle fence that spans inventory, restart disablement, quiesce, container
     removal, PostgreSQL write exclusion, rel036 DDL, and exact-target release, checked by every
     supported start path;
@@ -60,8 +63,14 @@ not restated or overwritten.
   access, or temporal activation occurs in this change.
 - `bu-h3b7t` retains implementation ownership; this change fixes the proof its task 3.3 must satisfy.
 - A live cutover additionally depends on owner adoption of the dedicated signer (see `design.md`,
-  "Owner decision"), the `relationship-fact-effective-time` task 3.5 real-PostgreSQL scenarios, and
-  the owner-gated entity-merge collision wording amendment `bu-ldcp5f`.
+  "Owner decisions"), the open owner decision on the gate lifecycle and non-production and
+  fresh-install policy (`bu-ftd491`), the `relationship-fact-effective-time` task 3.5
+  real-PostgreSQL scenarios, and the owner-gated entity-merge collision wording amendment
+  `bu-ldcp5f`.
+- Gate lifecycle is open (`bu-ftd491`). Because the Relationship chain is linear, every later
+  Relationship revision descends from rel036, so the gate blocks later Relationship migrations on any
+  database that has not cut over. Until the owner decides, the default is that the gate applies to
+  every database, including dev, fresh installs, CI, and restore-drill scratch databases.
 - Temporal writes remain refused `temporal_cutover_pending` until a separately authorized cutover.
 
 ## Acceptance Status
