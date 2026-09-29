@@ -18,8 +18,8 @@ Test scope (subject-side):
       source re-pointed.
   (d) Idempotency: merge called twice → second call is a no-op (no active
       source-subject triples remain after the first pass).
-  (e) Table absent (UndefinedTableError or similar) → warning swallowed; merge
-      still returns target contact dict.
+  (e) A database error in the re-point propagates (the single merge transaction
+      rolls back) and the post-commit entity_merge is skipped.
   (f) Source entity_id is NULL → entity_facts block is skipped entirely.
 
 Test scope (object-side, bu-igcxb):
@@ -370,14 +370,17 @@ class TestEntityFactsRepointOnMerge:
         with _patch_table_columns(), _patch_entity_merge(), _patch_retract_all():
             result = await contact_merge(pool2, _SOURCE_ID, _TARGET_ID)
 
-        # Second call: no UPDATE statements on entity_facts at all
+        # Second call: no UPDATE statements on entity_facts at all (the row-lock
+        # SELECT ... FOR UPDATE is not a write).
         update_calls = [str(c) for c in conn2.execute.call_args_list]
-        ef_updates = [c for c in update_calls if "entity_facts" in c]
+        ef_updates = [c for c in update_calls if "UPDATE relationship.entity_facts" in c]
         assert len(ef_updates) == 0
         assert result["id"] == _TARGET_ID
 
-    async def test_entity_facts_error_swallowed_merge_succeeds(self):
-        """(e) DB error during entity_facts re-point is swallowed; merge still returns target."""
+    async def test_entity_facts_error_propagates_and_skips_entity_merge(self):
+        """(e) A DB error during the entity_facts re-point is no longer swallowed after a
+        partial commit (bu-p2bjsf): it propagates out of the single merge transaction
+        (rolling it back) and the post-commit entity_merge never runs."""
         from butlers.tools.relationship.contacts import contact_merge
 
         src_row = _make_contact_row(_SOURCE_ID, _SRC_ENTITY_ID)
@@ -385,15 +388,17 @@ class TestEntityFactsRepointOnMerge:
 
         pool, conn = _make_pool(src_row, tgt_row)
         # Force the entity_facts SELECT to fail (simulate table absent or DB error).
-        # Must be asyncpg.PostgresError (or subclass) — the guard only swallows
-        # Postgres-level failures, not all exceptions.
         conn.fetch = AsyncMock(side_effect=asyncpg.UndefinedTableError("relation does not exist"))
 
-        with _patch_table_columns(), _patch_entity_merge(), _patch_retract_all():
-            result = await contact_merge(pool, _SOURCE_ID, _TARGET_ID)
+        with (
+            _patch_table_columns(),
+            _patch_entity_merge() as mock_em,
+            _patch_retract_all(),
+            pytest.raises(asyncpg.UndefinedTableError),
+        ):
+            await contact_merge(pool, _SOURCE_ID, _TARGET_ID)
 
-        # Merge must complete and return target contact dict regardless
-        assert result["id"] == _TARGET_ID
+        mock_em.assert_not_awaited()
 
     async def test_null_source_entity_skips_entity_facts_block(self):
         """(f) Source contact has NULL entity_id — entity_facts block is skipped entirely."""
@@ -670,6 +675,6 @@ class TestObjectSideEntityFactsRepointOnMerge:
             result = await contact_merge(pool2, _SOURCE_ID, _TARGET_ID)
 
         update_calls_2 = [str(c) for c in conn2.execute.call_args_list]
-        obj_updates_2 = [c for c in update_calls_2 if "entity_facts" in c]
+        obj_updates_2 = [c for c in update_calls_2 if "UPDATE relationship.entity_facts" in c]
         assert len(obj_updates_2) == 0
         assert result["id"] == _TARGET_ID
