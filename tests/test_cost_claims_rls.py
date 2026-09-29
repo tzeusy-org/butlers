@@ -191,6 +191,16 @@ def test_core_239_replay_reconciles_restore_policies_without_widening_finance_au
     assert migration_owner is not None
     assert bootstrap_owner is not None
 
+    head_engine = create_engine(db_url)
+    try:
+        with head_engine.connect() as conn:
+            assert conn.exec_driver_sql(
+                "SELECT proconfig FROM pg_proc "
+                "WHERE oid = 'public.cost_claim_restore_row(text,jsonb)'::regprocedure"
+            ).scalar_one() == ["search_path=pg_catalog, pg_temp", "row_security=on"]
+    finally:
+        head_engine.dispose()
+
     _replay_core_239(bootstrap_db_url)
     _replay_core_239(bootstrap_db_url)
 
@@ -268,11 +278,13 @@ def test_core_239_replay_reconciles_restore_policies_without_widening_finance_au
                 WHERE p.oid = 'public.cost_claim_restore_row(text,jsonb)'::regprocedure
                 """
             ).one()
-            assert restore_function == (
-                True,
-                migration_owner,
+            assert restore_function[:2] == (True, migration_owner)
+            assert restore_function[3] is True
+            # core_252 pins the definer path; replaying core_239's own body
+            # restores the path it installed.  Either way row_security stays on.
+            assert restore_function[2] in (
+                ["search_path=pg_catalog, pg_temp", "row_security=on"],
                 ["search_path=pg_catalog, public", "row_security=on"],
-                True,
             )
 
             conn.exec_driver_sql("SET ROLE butler_relationship_rw")
