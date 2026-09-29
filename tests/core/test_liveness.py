@@ -25,6 +25,7 @@ from butlers.core.control_plane_identity import (
     ProbeOutcome,
     ShadowCycle,
     SingleFlightProber,
+    UnreadyDaemon,
     _effective_observer_interval_s,
     _next_observer_delay_s,
     probe_once,
@@ -590,6 +591,8 @@ async def test_shadow_cycle_does_not_count_a_superseded_boot_as_healthy():
 
     assert cycle.complete is True and cycle.recorded_count == 1
     assert cycle.healthy_count == 0
+    # The fleet controller receives the daemon as unready evidence, with policy.
+    assert cycle.unready == (UnreadyDaemon("health", "receiver_not_ready", "active"),)
 
 
 def test_observer_startup_retries_are_bounded_then_return_to_ttl_cadence():
@@ -607,10 +610,16 @@ def test_observer_startup_retries_are_bounded_then_return_to_ttl_cadence():
 
 async def test_shadow_observer_runs_first_probe_without_waiting_for_ttl_interval():
     observed = asyncio.Event()
+    cycle = ShadowCycle(True, 1, 1, 0, 1)
+    controlled: list[ShadowCycle] = []
 
     async def observe(*_args):
+        return cycle
+
+    async def after_cycle(_role_view, seen: ShadowCycle) -> None:
+        # The independent fleet controller runs on every completed cycle.
+        controlled.append(seen)
         observed.set()
-        return ShadowCycle(True, 1, 1, 0, 1)
 
     configs = [SimpleNamespace(name="health", port=41103)]
     with (
@@ -620,10 +629,13 @@ async def test_shadow_observer_runs_first_probe_without_waiting_for_ttl_interval
         ),
         patch("butlers.core.control_plane_identity.run_shadow_cycle", side_effect=observe),
     ):
-        task = asyncio.create_task(run_shadow_observer_loop(AsyncMock(), configs))
+        task = asyncio.create_task(
+            run_shadow_observer_loop(AsyncMock(), configs, after_cycle=after_cycle)
+        )
         try:
             await asyncio.wait_for(observed.wait(), timeout=1)
         finally:
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
+    assert controlled == [cycle]

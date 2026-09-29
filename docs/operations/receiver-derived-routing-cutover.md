@@ -56,7 +56,7 @@ Production activation remains a separate exact-environment decision.
 | Direct route, classifier and correction candidates, local scheduler, recovery notification admission | Read separated control-plane facts when the flag is `1`; a policy hold still denies the route. Legacy resolver remains for flag-off rollback. |
 | Fleet board and system heartbeat API | Follow the same cutover flag as the daemon. With `1`, project the receiver's last verified healthy observation and administrative policy; with `0`, retain the legacy projection. The board does not turn a failed probe into a fresh heartbeat. |
 | Generic `list_butlers` | Still reads legacy state and may show stale; it is not route authority under the flag. |
-| QA infra-state heartbeat discovery | With the flag set, reads receiver observations through the QA-only `public.v_qa_butler_receiver_state` view from `sw_037`. Its legacy view remains for flag-off deployments. QA cannot read the control-plane table directly. |
+| QA infra-state heartbeat discovery | With the flag set, reads receiver observations through the QA-only `public.v_qa_butler_receiver_state` view from `sw_037`. Its legacy view remains for flag-off deployments. QA cannot read the control-plane table directly. After `BUTLERS_FLEET_CONDITION_HANDOFF=1` this per-butler check is replaced by one fleet-linked finding; see [Fleet and QA-patrol conditions](fleet-condition-controller.md). |
 | L3 pure resolver and route preflight | Exact-name Switchboard reads of control-plane facts and Git-roster endpoint; no database write. |
 
 ## Activation and rollback

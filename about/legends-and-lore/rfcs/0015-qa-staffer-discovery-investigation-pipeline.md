@@ -453,6 +453,22 @@ owner pages are suppressed. They resolve only when a complete receiver-observed
 snapshot proves recovery for the affected daemon, never merely because the
 fleet condition replaced their producer.
 
+Implementation: the Dashboard receiver observer's controller
+(`butlers.core.fleet_conditions`) writes `control_plane_fleet` and
+`qa_patrol_assurance` episodes to `public.infra_conditions`.
+`public.qa_patrols` (`core_250`) records `origin`, the enabled-source snapshot
+and digest, and `discovery_complete`. Only a completed scheduled `clean`,
+`findings_dispatched`, or `suppressed` row that completed discovery under the
+current configuration digest renews patrol age. Synthetic, legacy,
+stale-configuration, `running`, `error`, and `skipped_overlap` rows do not. An
+overdue patrol while QA is held by owner policy is a distinct
+`patrol_stopped_by_policy` identity. The handoff is gated by
+`BUTLERS_FLEET_CONDITION_HANDOFF`. With it on, `infra_state` records one
+fleet-linked finding that dispatch Gate 5.5 suppresses against the fleet
+episode, and it carries legacy per-butler episodes forward until the
+controller observes each daemon healthy. See
+`docs/operations/fleet-condition-controller.md`.
+
 ## Adopted restricted publisher target
 
 The exact owner-adopted eight-requirement contract is preserved at `openspec/changes/confine-qa-publication-authority/adopted-contract.md` (SHA25690d904ee0e4cb9a8c2b23ca07739bf580d167fa9e2f1d7f0a5b0a59959b2d8e9). Its purpose-bound binding, process isolation, immutable export, closed operations, provider-control evidence and ambiguous-outcome handling are binding target behavior. Implementation remains outstanding; this amendment does not claim existing deployments are confined. Live credentials/provisioning/provider canary/cleanup/deployment/activation remain separately gated.

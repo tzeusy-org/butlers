@@ -76,8 +76,10 @@ class _FakePool:
         self._receiver_rows = receiver_rows or []
         self._deadman_ts = deadman_ts
         self._health_check_error = health_check_error
+        self.executed: list[str] = []
 
     async def execute(self, sql: str, *args):
+        self.executed.append(sql)
         if self._health_check_error is not None:
             raise self._health_check_error
         return None
@@ -807,10 +809,16 @@ async def test_reconciliation_failure_never_breaks_findings_return(monkeypatch, 
     assert "condition-ledger reconciliation failed" in caplog.text
 
 
-async def test_health_check_failure_skips_reconciliation_entirely(monkeypatch):
-    """A total health-check failure must never reach reconcile_snapshot (skip, never resolve)."""
+@pytest.mark.parametrize("handoff", ["0", "1"])
+async def test_health_check_failure_skips_reconciliation_entirely(monkeypatch, handoff):
+    """A total health-check failure must never reach reconcile_snapshot (skip, never resolve).
+
+    After fleet-condition handoff the check targets the condition ledger the
+    fleet-control stage reads, not a per-butler liveness view.
+    """
     monkeypatch.delenv("BUTLERS_BACKUP_DIR", raising=False)
     monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
+    monkeypatch.setenv("BUTLERS_FLEET_CONDITION_HANDOFF", handoff)
 
     pool = _FakePool(health_check_error=asyncpg.PostgresError("permission denied"))
     with (
@@ -822,3 +830,6 @@ async def test_health_check_failure_skips_reconciliation_entirely(monkeypatch):
         await InfraStateSource(pool=pool).discover(lookback_minutes=15)
 
     mock_reconcile.assert_not_awaited()
+    [health_check] = pool.executed
+    assert ("public.infra_conditions" in health_check) is (handoff == "1")
+    assert ("v_qa_butler" in health_check) is (handoff == "0")
