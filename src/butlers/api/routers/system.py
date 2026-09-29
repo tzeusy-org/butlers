@@ -11,7 +11,8 @@ Surfaces seven ownership-fact domains:
     GET /api/system/deployments    -- current + recent deployment ledger entries
     GET /api/system/drift          -- migration-drift sentinel (bu-9r3hd.1)
     GET /api/system/stored-functions -- deployed stored-function bodies vs
-                                       the configured bootstrap source (bu-bi5an)
+                                       the configured bootstrap source (bu-bi5an),
+                                       plus unpinned definer search paths (bu-hefzis)
     GET /api/system/conditions     -- standing condition ledger: infra (bu-27dxl.6.2) or
                                        owner-facing (bu-ep4ks.6), selected via ?ledger=
 
@@ -36,7 +37,12 @@ comparison surfaces as commits_behind_available=False, never a fabricated
 the configured bootstrap source (``scripts/init-db.sql`` by default) and
 compares each committed function body against the body deployed in pg_proc.
 Bodies can carry operator-supplied literals, so the envelope carries function
-names and short digests only -- never a body.
+names and short digests only -- never a body. The same response also reports
+every SECURITY DEFINER whose search_path is not exactly ``pg_catalog, pg_temp``
+(``unpinned_definers``: signature, owner, deployed path, remedy), read from
+pg_proc via butlers.core.definer_search_path. That check is independent of the
+body comparison: ``definer_check_available=False`` with an empty list means the
+catalog read failed, never an all-clear.
 /api/system/drift is also read-only from this router's perspective: it computes
 the comparison live on each request (butlers.jobs.deploy_drift.compute_drift_report)
 and reads (never writes) the first-detected/escalated debounce markers the
@@ -248,6 +254,20 @@ class StoredFunctionEntry(BaseModel):
     deployed_digests: list[str]
 
 
+class UnpinnedDefinerEntry(BaseModel):
+    """One SECURITY DEFINER whose search_path is not exactly ``pg_catalog, pg_temp``.
+
+    ``remedy`` is ``migrations`` when the connecting (migration) login owns the
+    function, otherwise ``init_db`` (re-run ``scripts/init-db.sql`` as a
+    cluster superuser). ``search_path`` is ``None`` when none is set.
+    """
+
+    function: str
+    owner: str
+    search_path: str | None
+    remedy: str
+
+
 class StoredFunctionFacts(BaseModel):
     """Deployed stored-function bodies vs the configured bootstrap source (bu-bi5an).
 
@@ -265,6 +285,10 @@ class StoredFunctionFacts(BaseModel):
     ``stored_function_check_available=False`` means the comparison itself
     failed. Per the fleet-wide degraded-envelope convention that is never
     rendered as a truthful all-clear.
+
+    ``unpinned_definers`` (bu-hefzis) is a separate check: ``is_drifted`` keeps
+    meaning body drift only. ``definer_check_available=False`` means the
+    catalog read failed, independently of ``stored_function_check_available``.
     """
 
     checked_at: str
@@ -273,6 +297,8 @@ class StoredFunctionFacts(BaseModel):
     not_deployed: list[str]
     matched_count: int
     stored_function_check_available: bool
+    unpinned_definers: list[UnpinnedDefinerEntry] = []
+    definer_check_available: bool = False
 
 
 class SchemaSize(BaseModel):
@@ -709,6 +735,7 @@ async def get_stored_function_facts(
     """
     system_stored_functions_reads_total.inc()
 
+    from butlers.core.definer_search_path import compute_unpinned_definers
     from butlers.core.stored_function_drift import compute_stored_function_drift
 
     try:
@@ -716,6 +743,25 @@ async def get_stored_function_facts(
     except Exception:
         logger.warning("stored-function facts: comparison failed", exc_info=True)
         report = None
+
+    try:
+        definer_report = await compute_unpinned_definers(db.pool("switchboard"))
+    except Exception:
+        logger.warning("stored-function facts: definer search-path check failed", exc_info=True)
+        definer_report = None
+    definer_available = definer_report is not None and definer_report.is_available
+    definer_fields = {
+        "unpinned_definers": [
+            UnpinnedDefinerEntry(
+                function=entry.signature,
+                owner=entry.owner,
+                search_path=entry.search_path,
+                remedy=entry.remedy,
+            )
+            for entry in (definer_report.entries if definer_available else ())
+        ],
+        "definer_check_available": definer_available,
+    }
 
     if report is None or not report.is_available:
         return ApiResponse(
@@ -730,6 +776,7 @@ async def get_stored_function_facts(
                 not_deployed=[],
                 matched_count=0,
                 stored_function_check_available=False,
+                **definer_fields,
             )
         )
 
@@ -749,6 +796,7 @@ async def get_stored_function_facts(
             not_deployed=[entry.function for entry in report.not_deployed],
             matched_count=len(report.matched),
             stored_function_check_available=True,
+            **definer_fields,
         )
     )
 

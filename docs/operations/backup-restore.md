@@ -261,6 +261,9 @@ definers that still have a `CREATE`-able schema on their path. Bring a restored
 database to the current bootstrap and migration heads before exposing it. The
 catalog guard `tests/migrations/test_definer_search_path_pins.py` defines the
 end state: every `SECURITY DEFINER` path is exactly `pg_catalog, pg_temp`.
+On a live database, `GET /api/system/stored-functions` (`unpinned_definers`)
+lists any that are not, with the owner and remedy. See the definer search-path
+check in [runtime-attention.md](runtime-attention.md#check).
 
 ## Managed restore drill
 
