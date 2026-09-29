@@ -279,6 +279,8 @@ async def scheduler_loop(
         ``eligibility_state``.  Called lazily per tick so the pool is read after
         startup wiring completes.  When ``None`` (or the callable returns
         ``None``), no eligibility gating is applied and all ticks dispatch.
+        QA ignores it: ``tick()`` gates QA only on its own policy projection
+        read through ``pool``, which is QA's runtime-role pool.
     default_timezone:
         IANA timezone used to interpret cron fields for schedules whose
         ``timezone`` column is the default ``'UTC'`` sentinel (e.g. TOML

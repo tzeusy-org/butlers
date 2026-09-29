@@ -30,9 +30,13 @@ sits in a 320 px left rail; selecting a case opens the full dossier body.
   session records, reactive butler reports, tool-call failures, and
   infrastructure state.
 - **Patrol independence:** Continue local patrols when only remote registry
-  observation of QA is stale. A separately supervised control-plane observer
-  records overdue patrols and fleet-wide expiry even when QA cannot run.
-  Genuine completed `suppressed` patrols with all enabled discovery sources
+  observation of QA is stale. Before each patrol or deadline dispatch, QA
+  reads its own administrative policy again through its runtime role. An
+  explicit owner hold, unresolved legacy review, or an unreadable policy
+  stops new admission, and QA reports each one as a separate reason. QA never
+  falls back to route eligibility or a cached answer. A separately
+  supervised control-plane observer records overdue patrols and fleet-wide
+  expiry even when QA cannot run. Genuine completed `suppressed` patrols with all enabled discovery sources
   successful count as healthy discovery; dashboard-created synthetic
   `suppressed` placeholders and legacy rows without source provenance do not.
 - **Triage:** Deduplicate findings against active investigations, dismissals,

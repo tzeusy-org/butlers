@@ -25,20 +25,20 @@
 
 ## 2. Future QA consumer: Q1 bu-fvw4ap.1
 
-- [ ] 2.1 Replace legacy route-eligibility scheduling admission with a fresh
+- [x] 2.1 Replace legacy route-eligibility scheduling admission with a fresh
   exact projection read through QA's own role-scoped pool; never use the
   audit pool, positive cache, `allow_stale` shortcut, or a caller name.
-- [ ] 2.2 Continue QA cron/deadline patrol through proven TTL staleness;
+- [x] 2.2 Continue QA cron/deadline patrol through proven TTL staleness;
   suppress explicit holds and unresolved/typed-unavailable results with
   distinct diagnostics. Recheck before a later admission after a mid-tick
   owner change, and preserve restart idempotence.
-- [ ] 2.3 Update QA manifesto and RFC 0001 implementation notes only after
+- [x] 2.3 Update QA manifesto and RFC 0001 implementation notes only after
   the producer contract lands; no provider, credential, deployment, or live
   schedule operation is implied.
 
 ## 3. Future verification and completion
 
-- [ ] 3.1 Extend owning migrated-PostgreSQL, bootstrap/RLS, scheduler, and QA
+- [x] 3.1 Extend owning migrated-PostgreSQL, bootstrap/RLS, scheduler, and QA
   pipeline tests named in design.md. Preserve each unique race, role, owner
   stop, rollback, and no-double-dispatch invariant; condense rather than
   silently raise the at-limit integration budget.

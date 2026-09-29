@@ -183,7 +183,11 @@ class TestSchedulerLoopBehavior:
     """Tests for the _scheduler_loop() coroutine behavior."""
 
     async def test_task_lifecycle_and_tick_params(self, tmp_path: Path) -> None:
-        """Task created on start, cleared after shutdown; tick() called with correct stagger_key."""
+        """Task created on start, cleared after shutdown; tick() gets the runtime pool and name.
+
+        QA's policy read uses tick's primary pool, so it must be the daemon's own
+        role-scoped pool rather than the audit pool passed as eligibility_pool.
+        """
         butler_dir = _make_butler_toml(tmp_path)
         patches = _patch_infra()
 
@@ -220,9 +224,12 @@ class TestSchedulerLoopBehavior:
             pool, dispatch_fn, *, stagger_key=None, butler_name=None, **kwargs
         ):
             tick_calls.append((stagger_key, butler_name))
+            tick_pools.append(pool)
             return 0
 
+        tick_pools: list[object] = []
         daemon2 = _make_daemon_with_loop(_make_butler_toml(tmp_path), name="health", interval=1)
+        daemon2._audit_pool = object()
         with (
             patch("butlers.daemon._tick", side_effect=capturing_tick),
             patch("butlers.daemon.asyncio.sleep", side_effect=_fast_sleep),
@@ -240,6 +247,7 @@ class TestSchedulerLoopBehavior:
         assert len(tick_calls) >= 1
         assert all(key == "health" for key, _ in tick_calls)
         assert all(name == "health" for _, name in tick_calls)
+        assert tick_pools and all(p is daemon2.db.pool for p in tick_pools)
 
     async def test_chronicler_scheduler_registers_day_close_hooks(self, tmp_path: Path) -> None:
         """Only Chronicler prepares and completes the owner-local day-close prompt."""

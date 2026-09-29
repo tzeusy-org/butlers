@@ -13,7 +13,9 @@ import json
 import logging
 import re
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -1203,6 +1205,7 @@ async def _tick_deadline_pass(
     max_stagger_seconds: int = _DEFAULT_MAX_STAGGER_SECONDS,
     metrics: ButlerMetrics | None = None,
     active_seasons: list[dict[str, Any]] | None = None,
+    admission_refusal: Callable[[], Awaitable[str | None]] | None = None,
 ) -> tuple[int, int]:
     """Evaluate deadline tasks: fire due thresholds and handle expiry.
 
@@ -1214,6 +1217,9 @@ async def _tick_deadline_pass(
     Args:
         has_task_type_col: Optional pre-computed result from _has_column() check.
             Pass this from tick() to avoid redundant schema round-trips.
+        admission_refusal: Optional fresh policy check awaited immediately
+            before each dispatch; a refusal stops the pass with the threshold
+            left unfired.
 
     Returns:
         (deadlines_evaluated, deadlines_dispatched) counts.
@@ -1338,6 +1344,11 @@ async def _tick_deadline_pass(
         )
         # Prepend seasonal context when active seasons exist (mirrors cron pass behaviour).
         augmented_prompt = _prepend_seasonal_context(augmented_prompt, active_seasons)
+        if admission_refusal is not None:
+            refusal = await admission_refusal()
+            if refusal is not None:
+                logger.info("Scheduler: stopping deadline admission before %r — %s", name, refusal)
+                break
         try:
             await dispatch_fn(
                 prompt=augmented_prompt,
@@ -1975,11 +1986,87 @@ async def _tick_deferred_notification_pass(
     return delivered
 
 
+class QaSchedulePolicy(StrEnum):
+    """Closed admission categories for QA's local scheduler (REQ-staffer-qa-009).
+
+    Only ``ALLOW`` admits new cron/deadline work. The refusals stay distinct so
+    an unreadable policy is never reported as an owner stop, and each value is
+    content-blind: no row, SQL, actor, reason, timestamp, or exception text.
+    """
+
+    ALLOW = "allow"
+    ADMINISTRATIVE_HOLD = "administrative_hold"
+    OWNER_REVIEW_HOLD = "owner_review_hold"
+    LEGACY_AMBIGUOUS = "legacy_ambiguous"
+    MISSING = "missing"
+    MALFORMED = "malformed"
+    DENIED = "denied"
+    UNAVAILABLE = "unavailable"
+
+
+_QA_BUTLER_NAME = "qa"
+# sw_038's fixed projection: no caller-supplied name, and it raises 42501
+# unless the connection's effective role is butler_qa_rw.
+_QA_POLICY_QUERY = "SELECT policy_state, policy_provenance FROM public.qa_local_schedule_policy()"
+_QA_POLICY_PAIRS: dict[tuple[str, str], QaSchedulePolicy] = {
+    ("active", "none"): QaSchedulePolicy.ALLOW,
+    ("active", "legacy_ttl"): QaSchedulePolicy.ALLOW,
+    ("active", "operator"): QaSchedulePolicy.ALLOW,
+    ("paused", "legacy_operator"): QaSchedulePolicy.ADMINISTRATIVE_HOLD,
+    ("paused", "operator"): QaSchedulePolicy.ADMINISTRATIVE_HOLD,
+    ("quarantined", "legacy_operator"): QaSchedulePolicy.ADMINISTRATIVE_HOLD,
+    ("quarantined", "operator"): QaSchedulePolicy.ADMINISTRATIVE_HOLD,
+    ("review_required", "operator"): QaSchedulePolicy.OWNER_REVIEW_HOLD,
+    ("review_required", "legacy_ambiguous"): QaSchedulePolicy.LEGACY_AMBIGUOUS,
+}
+_QA_POLICY_SQLSTATES = {
+    "P0002": QaSchedulePolicy.MISSING,
+    "22023": QaSchedulePolicy.MALFORMED,
+    "42501": QaSchedulePolicy.DENIED,
+}
+
+
+async def read_qa_schedule_policy(pool: asyncpg.Pool | None) -> QaSchedulePolicy:
+    """Read QA's administrative policy freshly through its own runtime-role pool.
+
+    Never cached: every admission boundary calls this again, so an owner hold
+    committed mid-tick blocks the next dispatch. Any failure maps to a refusal
+    category rather than a legacy-eligibility or audit-pool fallback.
+    ``asyncio.CancelledError`` is not a category; it propagates after the pool
+    releases its connection and authorizes nothing.
+    """
+    if pool is None:
+        return QaSchedulePolicy.UNAVAILABLE
+    try:
+        rows = await pool.fetch(_QA_POLICY_QUERY)
+    except asyncpg.PostgresError as exc:
+        return _QA_POLICY_SQLSTATES.get(exc.sqlstate, QaSchedulePolicy.UNAVAILABLE)
+    except Exception:
+        return QaSchedulePolicy.UNAVAILABLE
+    if len(rows) != 1:
+        return QaSchedulePolicy.MALFORMED
+    try:
+        pair = (rows[0]["policy_state"], rows[0]["policy_provenance"])
+        return _QA_POLICY_PAIRS.get(pair, QaSchedulePolicy.MALFORMED)
+    except (KeyError, IndexError, TypeError):
+        return QaSchedulePolicy.MALFORMED
+
+
+async def _qa_admission_refusal(pool: asyncpg.Pool) -> str | None:
+    policy = await read_qa_schedule_policy(pool)
+    if policy is QaSchedulePolicy.ALLOW:
+        return None
+    return f"QA local schedule policy {policy.value}"
+
+
 async def _butler_dispatch_gated(
     eligibility_pool: asyncpg.Pool | None,
     butler_name: str | None,
 ) -> str | None:
-    """Return a gate reason when scheduled dispatch must be suppressed.
+    """Return a gate reason when non-QA scheduled dispatch must be suppressed.
+
+    QA never reaches this gate: ``tick`` admits QA work only through
+    :func:`read_qa_schedule_policy` on its own runtime-role pool.
 
     A butler under an administrative hold must not run scheduled ticks. Under
     receiver-derived routing, remote observation staleness is not an authority
@@ -2133,7 +2220,10 @@ async def tick(
             resume.  ``next_run_at`` is left untouched while gated, so the
             schedule resumes naturally on the next eligible tick.  When ``None``
             (e.g. unit tests, or a context without a registry), no gating is
-            applied and all passes run as before.
+            applied and all passes run as before.  Ignored for QA, which reads
+            ``public.qa_local_schedule_policy()`` through *pool* (its own
+            runtime-role pool) before the passes and again immediately before
+            every deadline or cron dispatch; any refusal fails closed.
 
     Returns:
         The number of tasks successfully dispatched (cron + deadline).
@@ -2185,8 +2275,20 @@ async def tick(
         # untouched so the schedule resumes naturally once the butler is
         # un-paused.  Event-chain bookkeeping (Pass 3) and deferred-notification
         # flush (Pass 4) still run — neither spawns the gated butler.
+        #
+        # QA instead reads its own policy projection through its runtime-role
+        # pool, never the eligibility pool, and re-reads it before each
+        # dispatch so an owner hold committed mid-tick stops later admissions.
         # ------------------------------------------------------------------
-        dispatch_gate_reason = await _butler_dispatch_gated(eligibility_pool, butler_name)
+        admission_refusal: Callable[[], Awaitable[str | None]] | None = None
+        if butler_name == _QA_BUTLER_NAME:
+
+            async def admission_refusal() -> str | None:
+                return await _qa_admission_refusal(pool)
+
+            dispatch_gate_reason = await admission_refusal()
+        else:
+            dispatch_gate_reason = await _butler_dispatch_gated(eligibility_pool, butler_name)
         span.set_attribute("dispatch_gated", dispatch_gate_reason is not None)
 
         if dispatch_gate_reason is not None:
@@ -2210,6 +2312,7 @@ async def tick(
                 max_stagger_seconds=max_stagger_seconds,
                 metrics=metrics,
                 active_seasons=active_seasons,
+                admission_refusal=admission_refusal,
             )
             span.set_attribute("deadlines_evaluated", deadlines_evaluated)
             span.set_attribute("deadline_dispatched", deadline_dispatched)
@@ -2277,6 +2380,14 @@ async def tick(
                 max_stagger_seconds=max_stagger_seconds,
             )
             should_auto_disable = until_at is not None and next_run_at > until_at
+
+            # Recheck before the claim so a refused task keeps its due
+            # next_run_at and resumes exactly once after the hold lifts.
+            if admission_refusal is not None:
+                refusal = await admission_refusal()
+                if refusal is not None:
+                    logger.info("Scheduler: stopping cron admission before %r — %s", name, refusal)
+                    break
 
             # --- Claim this occurrence atomically (idempotency guard) ---
             # Use next_run_at as an optimistic version field.  The UPDATE succeeds

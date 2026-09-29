@@ -195,6 +195,19 @@ deadline, or QA patrol work. An explicit administrative pause or quarantine is
 a distinct policy decision. Loss of the observer or Switchboard must be
 diagnosable without making the daemon itself stop scheduling.
 
+QA implementation: QA's local scheduler admits cron and deadline work only
+after freshly reading the no-argument `public.qa_local_schedule_policy()`
+projection (RFC 0010 QA-only exception) through its own `butler_qa_rw`
+runtime-role pool. It reads again immediately before each dispatch, so an
+owner hold that commits mid-tick stops later admissions without cancelling
+work that is already running. `active` with any valid provenance, including
+TTL-derived `legacy_ttl`, admits work. Explicit holds, the ambiguous legacy
+review state, and missing, malformed, denied or unavailable policy each block
+new admission and are reported as distinct content-blind categories. QA never
+falls back to the audit pool, the legacy route-eligibility resolver, or a
+cached answer. The receiver-cutover flag does not change QA's path. The other
+daemons keep their existing scheduler gate.
+
 ## Alternatives Considered
 
 **Single semaphore instead of two-tier.** Rejected because per-butler serial dispatch is the common case (most butlers set `max_concurrent_sessions = 1`), and a single global semaphore would not enforce this butler-local constraint.
