@@ -43,6 +43,7 @@ from butlers.core.qa.sources.infra_state import (
     InfraStateSource,
 )
 from butlers.core.qa.triage import TriagedFinding
+from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
@@ -379,3 +380,334 @@ class TestExternalDeadmanUnconfiguredIsDurableWithoutAFinding:
         )
         assert condition is not None
         assert condition["state"] == "open"
+
+
+# ---------------------------------------------------------------------------
+# Independent fleet controller and QA patrol assurance (bu-fvw4ap.2)
+# REQ-butler-control-plane-liveness-005, REQ-staffer-qa-007/008
+# ---------------------------------------------------------------------------
+
+
+def _cycle(complete: bool, unready: dict[str, str], *, expected: int = 13, paused=()):
+    from butlers.core.control_plane_identity import ShadowCycle, UnreadyDaemon
+
+    daemons = tuple(
+        UnreadyDaemon(name, category, "paused" if name in paused else "active")
+        for name, category in unready.items()
+    )
+    recorded = expected if complete else expected - 1
+    return ShadowCycle(complete, expected, recorded, 0, expected - len(daemons), daemons)
+
+
+async def _seed_legacy_liveness(pool: asyncpg.Pool, butler: str) -> str:
+    from butlers.core.infra_conditions import Observation, reconcile_snapshot
+
+    fingerprint = uuid.uuid4().hex * 2
+    await reconcile_snapshot(
+        pool,
+        source=SOURCE_NAME,
+        observations=[
+            Observation(
+                fingerprint=fingerprint,
+                summary=f"Butler '{butler}' heartbeat is stale",
+                metadata={
+                    "exception_type": "ButlerHeartbeatStale",
+                    "source_butler": butler,
+                    "call_site": f"butler_heartbeat:{butler}",
+                },
+            )
+        ],
+        snapshot_complete=False,
+        initial_grace_seconds=3600,
+    )
+    return fingerprint
+
+
+class TestIndependentFleetCondition:
+    async def test_common_fault_is_one_condition_and_only_complete_recovery_resolves(
+        self, pool: asyncpg.Pool
+    ) -> None:
+        from butlers.core.fleet_conditions import (
+            FLEET_FINGERPRINT,
+            FLEET_SOURCE,
+            reconcile_fleet_condition,
+        )
+
+        names = [f"butler{i:02d}" for i in range(13)]
+        roster = frozenset([*names, "parked"])
+        stale = {name: "timeout" for name in names}
+        await reconcile_fleet_condition(pool, _cycle(True, stale, expected=14), roster)
+        rows = await pool.fetch(
+            "SELECT metadata FROM public.infra_conditions WHERE source = $1", FLEET_SOURCE
+        )
+        assert len(rows) == 1  # thirteen stale daemons, one common-cause episode
+        condition = await get_active_condition(
+            pool, source=FLEET_SOURCE, fingerprint=FLEET_FINGERPRINT
+        )
+        assert condition["metadata"]["affected_count"] == 13
+
+        # A failed/incomplete scan never infers the missing members healthy.
+        await reconcile_fleet_condition(pool, _cycle(False, {}, expected=14), roster)
+        partial = {names[0]: "connection", "parked": "connection"}
+        await reconcile_fleet_condition(
+            pool, _cycle(True, partial, expected=14, paused={"parked"}), roster
+        )
+        condition = await get_active_condition(
+            pool, source=FLEET_SOURCE, fingerprint=FLEET_FINGERPRINT
+        )
+        assert condition is not None
+        assert [d["name"] for d in condition["metadata"]["affected"]] == [names[0]]
+
+        # An owner-paused daemon is an intentional exclusion, not an outage.
+        await reconcile_fleet_condition(
+            pool, _cycle(True, {"parked": "connection"}, expected=14, paused={"parked"}), roster
+        )
+        assert (
+            await get_active_condition(pool, source=FLEET_SOURCE, fingerprint=FLEET_FINGERPRINT)
+            is None
+        )
+
+    async def test_handoff_links_legacy_episodes_and_suppresses_one_fleet_finding(
+        self, pool: asyncpg.Pool, monkeypatch
+    ) -> None:
+        from butlers.core.fleet_conditions import FLEET_FINGERPRINT, reconcile_fleet_condition
+
+        await _configure_healthy_deadman(pool, monkeypatch)
+        monkeypatch.delenv("BUTLERS_BACKUP_DIR", raising=False)
+        monkeypatch.setenv("BUTLERS_FLEET_CONDITION_HANDOFF", "1")
+        roster = frozenset({"health", "finance", "general"})
+        health_fp = await _seed_legacy_liveness(pool, "health")
+        finance_fp = await _seed_legacy_liveness(pool, "finance")
+
+        # finance is observed healthy by a complete snapshot; health is not.
+        await reconcile_fleet_condition(
+            pool, _cycle(True, {"health": "timeout"}, expected=3), roster
+        )
+        assert await get_active_condition(pool, source=SOURCE_NAME, fingerprint=finance_fp) is None
+        fleet = await get_active_condition(
+            pool, source="control_plane_fleet", fingerprint=FLEET_FINGERPRINT
+        )
+        assert [link["butler"] for link in fleet["metadata"]["linked_legacy_conditions"]] == [
+            "health",
+            "finance",
+        ]
+
+        findings = await InfraStateSource(pool=pool).discover(lookback_minutes=15)
+        assert [f.fingerprint for f in findings] == [FLEET_FINGERPRINT]
+        assert "health" in findings[0].event_summary
+        # QA's own complete snapshot carries the legacy episode instead of
+        # resolving it by omission, and never re-files the fleet under itself.
+        assert await get_active_condition(pool, source=SOURCE_NAME, fingerprint=health_fp)
+        assert (
+            await get_active_condition(pool, source=SOURCE_NAME, fingerprint=FLEET_FINGERPRINT)
+            is None
+        )
+
+        result = await _dispatch(pool, findings[0])
+        assert result.reason == "infra_condition_open"
+        assert await _healing_attempt_count(pool, FLEET_FINGERPRINT) == 0
+
+        await reconcile_fleet_condition(pool, _cycle(False, {}, expected=3), roster)
+        assert await get_active_condition(pool, source=SOURCE_NAME, fingerprint=health_fp)
+        await reconcile_fleet_condition(pool, _cycle(True, {}, expected=3), roster)
+        resolved = await pool.fetchrow(
+            "SELECT state, metadata->>'resolution_reason' AS reason "
+            "FROM public.infra_conditions WHERE fingerprint = $1",
+            health_fp,
+        )
+        assert tuple(resolved) == ("resolved", "complete_receiver_snapshot_healthy")
+        assert await InfraStateSource(pool=pool).discover(lookback_minutes=15) == []
+
+    async def test_carry_forward_never_reopens_an_episode_resolved_after_its_read(
+        self, pool: asyncpg.Pool, monkeypatch
+    ) -> None:
+        """QA reads legacy episodes before the ledger lock; the controller may win the race."""
+        from butlers.core.fleet_conditions import reconcile_fleet_condition
+
+        await _configure_healthy_deadman(pool, monkeypatch)
+        monkeypatch.delenv("BUTLERS_BACKUP_DIR", raising=False)
+        monkeypatch.setenv("BUTLERS_FLEET_CONDITION_HANDOFF", "1")
+        finance_fp = await _seed_legacy_liveness(pool, "finance")
+        read_carried = InfraStateSource._carry_forward_legacy_liveness
+
+        async def read_then_controller_resolves(source):
+            carried = await read_carried(source)
+            await reconcile_fleet_condition(pool, _cycle(True, {}, expected=1), {"finance"})
+            return carried
+
+        monkeypatch.setattr(
+            InfraStateSource, "_carry_forward_legacy_liveness", read_then_controller_resolves
+        )
+        await InfraStateSource(pool=pool).discover(lookback_minutes=15)
+
+        states = await pool.fetch(
+            "SELECT state FROM public.infra_conditions WHERE fingerprint = $1 ORDER BY episode",
+            finance_fp,
+        )
+        assert [row["state"] for row in states] == ["resolved"]
+
+
+class TestQaPatrolAssurance:
+    @pytest.fixture
+    async def qa_pool(self, pool: asyncpg.Pool):
+        await pool.execute("TRUNCATE public.qa_patrols CASCADE")
+        await pool.execute(
+            "INSERT INTO switchboard.butler_registry (name, endpoint_url) "
+            "VALUES ('qa', 'http://qa:41110/mcp') ON CONFLICT (name) DO NOTHING"
+        )
+        await self._set_policy(pool, "active", "none")
+        return pool
+
+    @staticmethod
+    async def _set_policy(pool: asyncpg.Pool, state: str, provenance: str) -> None:
+        await pool.execute(
+            "UPDATE switchboard.butler_registry_control_plane "
+            "SET policy_state = $1, policy_provenance = $2 WHERE name = 'qa'",
+            state,
+            provenance,
+        )
+
+    @staticmethod
+    async def _active(pool: asyncpg.Pool) -> set[str]:
+        from butlers.core.fleet_conditions import (
+            QA_PATROL_OVERDUE_FINGERPRINT,
+            QA_PATROL_SOURCE,
+        )
+
+        rows = await pool.fetch(
+            "SELECT fingerprint FROM public.infra_conditions "
+            "WHERE source = $1 AND state IN ('open', 'aging')",
+            QA_PATROL_SOURCE,
+        )
+        return {
+            "overdue" if row["fingerprint"] == QA_PATROL_OVERDUE_FINGERPRINT else "stopped"
+            for row in rows
+        }
+
+    async def test_only_complete_current_config_scheduled_patrols_renew_age(
+        self, qa_pool: asyncpg.Pool, migrated_db_url: str, monkeypatch
+    ) -> None:
+        from types import SimpleNamespace
+
+        from butlers.api.routers.qa import SyntheticFindingCreate, create_synthetic_finding
+        from butlers.core.control_plane_identity import DashboardProbeRoleView
+        from butlers.core.fleet_conditions import reconcile_qa_patrol_assurance
+        from butlers.core.qa.patrol_provenance import QaPatrolContract
+        from butlers.modules.qa import QaModule
+
+        pool = qa_pool
+        module = QaModule()
+        contract = QaPatrolContract(tuple(sorted(module._config.enabled_sources)), 10)
+        every_source = list(module._config.enabled_sources)
+
+        async def patrol(status: str, polled: list[str], error: str | None = None) -> uuid.UUID:
+            patrol_id = await module._create_patrol_record(pool)
+            await module._complete_patrol_record(pool, patrol_id, status, 1, 1, 0, polled, error)
+            return patrol_id
+
+        # None of these may renew age: error, a missing source, skipped
+        # overlap, a still-running row, a synthetic suppressed placeholder, a
+        # legacy row with no provenance, and a row from another configuration.
+        errored = await patrol("error", every_source, "source infra_state failed: boom")
+        partial = await patrol("suppressed", every_source[:-1])
+        assert not await pool.fetchval(
+            "SELECT bool_or(discovery_complete) FROM public.qa_patrols WHERE id = ANY($1)",
+            [errored, partial],
+        )
+        await module._record_patrol_skip(pool)
+        await module._create_patrol_record(pool)
+        monkeypatch.setenv("QA_ALLOW_SYNTHETIC_FINDINGS", "true")
+        # The dashboard's shared pool registers the JSONB codec.
+        api_pool = await asyncpg.create_pool(
+            migrated_db_url, min_size=1, max_size=1, init=register_jsonb_codec
+        )
+        try:
+            await create_synthetic_finding(
+                body=SyntheticFindingCreate(),
+                db=SimpleNamespace(credential_shared_pool=lambda: api_pool),
+            )
+        finally:
+            await api_pool.close()
+        await pool.execute(
+            "INSERT INTO public.qa_patrols (status, completed_at) VALUES ('clean', now())"
+        )
+        await pool.execute(
+            "INSERT INTO public.qa_patrols (status, completed_at, origin, "
+            "enabled_sources_snapshot, enabled_sources_config_digest, discovery_complete) "
+            "VALUES ('clean', now(), 'scheduled', '{log_scanner}', 'sha256:old', true)"
+        )
+        synthetic = await pool.fetchrow(
+            "SELECT origin, discovery_complete FROM public.qa_patrols WHERE status = 'suppressed' "
+            "AND error_detail LIKE 'Synthetic%'"
+        )
+        assert tuple(synthetic) == ("operator_synthetic", False)
+        with pytest.raises(asyncpg.CheckViolationError):
+            await pool.execute(
+                "INSERT INTO public.qa_patrols (status, origin, discovery_complete) "
+                "VALUES ('clean', 'operator_synthetic', true)"
+            )
+
+        reader = DashboardProbeRoleView(pool)
+        await reconcile_qa_patrol_assurance(pool, reader, contract)
+        assert await self._active(pool) == {"overdue"}
+
+        # A genuine suppressed patrol filtered by cooldown still proved discovery.
+        genuine = await patrol("suppressed", every_source)
+        assert await pool.fetchval(
+            "SELECT discovery_complete FROM public.qa_patrols WHERE id = $1", genuine
+        )
+        await reconcile_qa_patrol_assurance(pool, reader, contract)
+        assert await self._active(pool) == set()
+
+    async def test_absence_is_overdue_or_policy_stopped_until_a_qualifying_patrol(
+        self, qa_pool: asyncpg.Pool
+    ) -> None:
+        from butlers.core.control_plane_identity import DashboardProbeRoleView
+        from butlers.core.fleet_conditions import reconcile_qa_patrol_assurance
+        from butlers.core.qa.patrol_provenance import QaPatrolContract, enabled_sources_digest
+
+        pool = qa_pool
+        contract = QaPatrolContract(("infra_state", "log_scanner"), 10)
+        reader = DashboardProbeRoleView(pool)
+
+        async def qualifying(age_minutes: int, status: str = "clean") -> None:
+            await pool.execute(
+                "INSERT INTO public.qa_patrols (status, started_at, completed_at, origin, "
+                "enabled_sources_snapshot, enabled_sources_config_digest, discovery_complete) "
+                "VALUES ($4, now() - make_interval(mins => $1), "
+                "now() - make_interval(mins => $1), 'scheduled', $2, $3, true)",
+                age_minutes,
+                list(contract.enabled_sources),
+                enabled_sources_digest(contract.enabled_sources),
+                status,
+            )
+
+        # QA is down: its last qualifying patrol is older than twice its cadence.
+        await qualifying(25)
+        await reconcile_qa_patrol_assurance(pool, reader, contract)
+        assert await self._active(pool) == {"overdue"}
+
+        # An owner pause is a distinct, intentional stop.
+        await self._set_policy(pool, "paused", "operator")
+        await reconcile_qa_patrol_assurance(pool, reader, contract)
+        assert await self._active(pool) == {"stopped"}
+
+        # An unreadable policy cannot tell overdue from stopped: it adds
+        # evidence and resolves neither identity.
+        unreadable = AsyncMock()
+        unreadable.fetchrow.side_effect = asyncpg.InsufficientPrivilegeError("denied")
+        await reconcile_qa_patrol_assurance(pool, unreadable, contract)
+        assert await self._active(pool) == {"overdue", "stopped"}
+        assert (
+            await pool.fetchval(
+                "SELECT metadata->>'policy_known' FROM public.infra_conditions "
+                "WHERE source = 'qa_patrol_assurance' AND state = 'open' "
+                "ORDER BY last_confirmed_at DESC LIMIT 1"
+            )
+            == "false"
+        )
+
+        await self._set_policy(pool, "active", "operator")
+        await qualifying(1, status="findings_dispatched")
+        await reconcile_qa_patrol_assurance(pool, reader, contract)
+        assert await self._active(pool) == set()

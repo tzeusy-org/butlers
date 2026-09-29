@@ -17,4 +17,5 @@
 - [Troubleshooting](troubleshooting.md) — common issues, debugging, health checks
 - [Runtime Attention](runtime-attention.md) — runtime-attention paging path and its stored functions
 - [Image Bump Procedure](image-bump-procedure.md) — updating pinned service image tags
+- [Fleet and QA-Patrol Conditions](fleet-condition-controller.md) — independent fleet condition, QA patrol age, and per-butler handoff
 - [Receiver-Derived Routing Cutover](receiver-derived-routing-cutover.md) — transitional: flag cutover and rollback boundary until production activation
