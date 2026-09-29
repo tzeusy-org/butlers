@@ -2,7 +2,7 @@
 // ---------------------------------------------------------------------------
 // PageSystem — Google OAuth app editor + shared-pool read-only behavior.
 //
-// The old /settings/owner page folded into /secrets: the Google app
+// The old owner-settings page folded into /secrets: the Google app
 // credentials (GOOGLE_OAUTH_CLIENT_ID/_SECRET) render an inline editor wired to
 // the oauth PUT endpoint, while other shared-credential-pool rows (read_only)
 // are surfaced read-only because the generic mutate path would target the
