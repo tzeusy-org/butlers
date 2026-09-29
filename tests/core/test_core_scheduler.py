@@ -1259,6 +1259,185 @@ async def test_tick_dispatches_when_no_eligibility_pool(pool):
 
 
 # ---------------------------------------------------------------------------
+# tick — QA local-schedule policy (REQ-staffer-qa-006/009)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def qa_policy_db_url(postgres_container) -> str:
+    """Core plus Switchboard (sw_038 producer) in the deployed schema shape."""
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "switchboard"],
+        schemas={"switchboard": "switchboard"},
+    )
+
+
+@pytest.fixture
+async def qa_pools(qa_policy_db_url: str):
+    """Yield ``(owner, qa)``: the migration login and QA's runtime-role pool."""
+
+    async def as_qa_role(conn: asyncpg.Connection) -> None:
+        # Mirrors butlers.db.Database._setup_connection for the QA daemon.
+        await conn.execute('SET ROLE "butler_qa_rw"')
+
+    owner = await asyncpg.create_pool(
+        qa_policy_db_url, min_size=1, max_size=2, init=register_jsonb_codec
+    )
+    qa = await asyncpg.create_pool(
+        qa_policy_db_url, min_size=1, max_size=2, init=register_jsonb_codec, setup=as_qa_role
+    )
+    await owner.execute("TRUNCATE TABLE scheduled_tasks CASCADE")
+    await owner.execute(
+        "INSERT INTO switchboard.butler_registry (name, endpoint_url) "
+        "VALUES ('qa', 'http://qa:41100/mcp') ON CONFLICT (name) DO NOTHING"
+    )
+    yield owner, qa
+    await qa.close()
+    await owner.close()
+
+
+async def _set_qa_policy(owner: asyncpg.Pool, state: str, provenance: str) -> None:
+    await owner.execute(
+        "UPDATE switchboard.butler_registry_control_plane "
+        "SET policy_state = $1, policy_provenance = $2 WHERE name = 'qa'",
+        state,
+        provenance,
+    )
+
+
+class _PoisonPool:
+    """Any use proves QA consulted the audit/eligibility pool."""
+
+    def __getattr__(self, name: str) -> Any:
+        raise AssertionError(f"QA scheduler touched the eligibility pool via {name!r}")
+
+
+@_asyncio_session
+async def test_qa_policy_read_maps_every_result_to_a_typed_category(qa_pools):
+    """Each valid pair and each failure is one closed, content-blind category."""
+    from butlers.core.scheduler import QaSchedulePolicy, read_qa_schedule_policy
+
+    owner, qa = qa_pools
+    expected = {
+        ("active", "none"): QaSchedulePolicy.ALLOW,
+        ("active", "legacy_ttl"): QaSchedulePolicy.ALLOW,
+        ("active", "operator"): QaSchedulePolicy.ALLOW,
+        ("paused", "legacy_operator"): QaSchedulePolicy.ADMINISTRATIVE_HOLD,
+        ("paused", "operator"): QaSchedulePolicy.ADMINISTRATIVE_HOLD,
+        ("quarantined", "legacy_operator"): QaSchedulePolicy.ADMINISTRATIVE_HOLD,
+        ("quarantined", "operator"): QaSchedulePolicy.ADMINISTRATIVE_HOLD,
+        ("review_required", "operator"): QaSchedulePolicy.OWNER_REVIEW_HOLD,
+        ("review_required", "legacy_ambiguous"): QaSchedulePolicy.LEGACY_AMBIGUOUS,
+    }
+    # Each committed change is visible to the next read: nothing is cached.
+    for (state, provenance), category in expected.items():
+        await _set_qa_policy(owner, state, provenance)
+        assert await read_qa_schedule_policy(qa) is category
+
+    await _set_qa_policy(owner, "paused", "none")
+    assert await read_qa_schedule_policy(qa) is QaSchedulePolicy.MALFORMED
+    # The role-less migration login is not QA's runtime role.
+    assert await read_qa_schedule_policy(owner) is QaSchedulePolicy.DENIED
+    assert await read_qa_schedule_policy(None) is QaSchedulePolicy.UNAVAILABLE
+    await owner.execute("DELETE FROM switchboard.butler_registry_control_plane WHERE name = 'qa'")
+    try:
+        assert await read_qa_schedule_policy(qa) is QaSchedulePolicy.MISSING
+    finally:
+        await owner.execute(
+            "INSERT INTO switchboard.butler_registry_control_plane "
+            "(name, policy_state, policy_provenance) VALUES ('qa', 'active', 'none')"
+        )
+
+    leaky = AsyncMock()
+    leaky.fetch.side_effect = asyncpg.UndefinedFunctionError("qa_local_schedule_policy secret")
+    assert await read_qa_schedule_policy(leaky) is QaSchedulePolicy.UNAVAILABLE
+    leaky.fetch.side_effect = OSError("connection refused to db.internal:5432")
+    assert await read_qa_schedule_policy(leaky) is QaSchedulePolicy.UNAVAILABLE
+    leaky.fetch.side_effect = None
+    leaky.fetch.return_value = [{"policy_state": "active"}]
+    assert await read_qa_schedule_policy(leaky) is QaSchedulePolicy.MALFORMED
+    leaky.fetch.side_effect = asyncio.CancelledError()
+    with pytest.raises(asyncio.CancelledError):
+        await read_qa_schedule_policy(leaky)
+
+
+@_asyncio_session
+@pytest.mark.parametrize("cutover_flag", ["0", "1"])
+async def test_qa_tick_rechecks_own_policy_before_each_dispatch(
+    qa_pools, monkeypatch, caplog, cutover_flag
+):
+    """TTL staleness admits; a mid-tick pause blocks later work, which resumes once."""
+    from butlers.core.scheduler import schedule_create, tick
+
+    monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", cutover_flag)
+    owner, qa = qa_pools
+    await _set_qa_policy(owner, "active", "legacy_ttl")
+    today = datetime.now(UTC).date()
+    for name, days in (("qa-deadline-1", 5), ("qa-deadline-2", 6)):
+        await schedule_create(
+            owner,
+            name,
+            "0 9 * * *",
+            name,
+            task_type="deadline",
+            target_date=today + timedelta(days=days),
+            lead_time_days=10,
+            alert_thresholds=[{"days_before": 7, "severity": "warning"}],
+        )
+    cron_id = await schedule_create(owner, "qa-patrol", "*/1 * * * *", "qa-patrol")
+    await owner.execute(
+        "UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1", cron_id, _past()
+    )
+
+    first = _Dispatch()
+
+    async def dispatch(**kwargs: Any) -> Any:
+        # Barrier: the owner's pause commits while the first job is running.
+        result = await first(**kwargs)
+        if len(first.calls) == 1:
+            await _set_qa_policy(owner, "paused", "operator")
+        return result
+
+    poison = _PoisonPool()
+    with (
+        patch(
+            "butlers.tools.switchboard.registry.registry.resolve_routing_target",
+            side_effect=AssertionError("legacy resolver used"),
+        ),
+        caplog.at_level(logging.INFO, logger="butlers.core.scheduler"),
+    ):
+        assert await tick(qa, dispatch, butler_name="qa", eligibility_pool=poison) == 1
+        assert [c["trigger_source"] for c in first.calls] == ["deadline:qa-deadline-1"]
+        refusals = [r.getMessage() for r in caplog.records if "stopping" in r.getMessage()]
+        assert refusals and all(msg.endswith("administrative_hold") for msg in refusals)
+        assert "paused" not in caplog.text and "operator" not in caplog.text
+
+        rows = {
+            r["name"]: r
+            for r in await owner.fetch(
+                "SELECT name, next_run_at, last_run_at, fired_thresholds FROM scheduled_tasks"
+            )
+        }
+        assert rows["qa-deadline-1"]["fired_thresholds"]  # the launched job is untouched
+        assert rows["qa-deadline-2"]["fired_thresholds"] == []
+        assert rows["qa-patrol"]["last_run_at"] is None
+        assert rows["qa-patrol"]["next_run_at"] <= datetime.now(UTC)  # still due
+
+        await _set_qa_policy(owner, "active", "operator")
+        resumed = _Dispatch()
+        assert await tick(qa, resumed, butler_name="qa", eligibility_pool=poison) == 2
+        assert sorted(c["trigger_source"] for c in resumed.calls) == [
+            "deadline:qa-deadline-2",
+            "schedule:qa-patrol",
+        ]
+        again = _Dispatch()
+        assert await tick(qa, again, butler_name="qa", eligibility_pool=poison) == 0
+        assert again.calls == []
+
+
+# ---------------------------------------------------------------------------
 # schedule_create / update / delete
 # ---------------------------------------------------------------------------
 

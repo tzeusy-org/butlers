@@ -130,7 +130,21 @@ psql -h localhost -U butlers -d butlers -c \
   The migration retains the function and ACL on downgrade because migration
   state cannot prove that all readers were retired. Remove it only after a
   separately reviewed replacement; policy rows and owner holds are unchanged.
-  Installing this producer does not wire or activate the QA consumer.
+- QA's consumer is `read_qa_schedule_policy()` in `src/butlers/core/scheduler.py`. For
+  `butler_name == "qa"`, `tick()` ignores `eligibility_pool`, the receiver-cutover flag and the
+  legacy route resolver. It reads the projection through its primary `pool`, which the daemon wires
+  to QA's own `SET ROLE butler_qa_rw` pool, once before the deadline/cron passes and again
+  immediately before every deadline dispatch and every cron claim. Nothing is cached. Results map to
+  the closed `QaSchedulePolicy` enum: `allow` for `active` with any valid provenance (so TTL-derived
+  `active/legacy_ttl` keeps patrolling); `administrative_hold` for `paused|quarantined`;
+  `owner_review_hold` for `review_required/operator`; `legacy_ambiguous` for
+  `review_required/legacy_ambiguous`; and `missing`, `malformed`, `denied` or `unavailable` for a
+  missing row, a bad shape or pair, a role refusal, or any other failure (including a missing pool).
+  Any value other than `allow` stops new admission. Logs carry only the category, never row, SQL or
+  exception text. A refused cron task is left unclaimed, so it runs exactly once after the hold
+  lifts and does not trigger catch-up. Work that was already launched keeps running.
+  `asyncio.CancelledError` propagates and does not authorize anything. Other butlers keep the
+  `_butler_dispatch_gated()` path.
 
 - `job_args` JSONB can round-trip through asyncpg as a JSON string: serialize dicts explicitly on
   write and normalize back to dicts before diffing, validation merges, list responses or dispatch.
