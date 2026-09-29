@@ -76,7 +76,7 @@
   different requests must create exactly one winning terminal record; the loser
   must return fixed `IDEMPOTENCY_CONFLICT`, create no second terminal record,
   and perform zero mapping writes.
-- [ ] 4.6 API tests prove `503` when central owner-auth state/configuration is
+- [x] 4.6 API tests prove `503` when central owner-auth state/configuration is
   unavailable, `401` for a missing/wrong credential, no pre-auth body/pool
   access, exact size/count/field validation, standard envelopes, aggregate-only
   `200/409/422/503` bodies, and
@@ -88,9 +88,15 @@
   same rule. Assert the fixed `413 REQUEST_BODY_TOO_LARGE` envelope positively and
   zero JSON-decoder, receipt, actor, pool, protected-state, generic-audit, or
   explicit-audit interaction.
-  Open: PR #4255 proves every clause except "exact size/count/field
-  validation"; only the size bound and duplicate members are asserted, not the
-  1..50 count bound, unknown fields, or malformed identifier/key refusals.
+  Evidence (PR #4255, PR #PRNUM): #4255 proves every clause except "exact
+  size/count/field validation"; #PRNUM closes it in
+  `tests/api/test_home_person_mappings.py`:
+  `test_mounted_structural_refusals_are_fixed_422_without_writes` (empty and
+  51-member batches, unknown/missing/mistyped fields, invalid UTF-8/JSON,
+  malformed `ha_person_id`/`entity_id`/`Idempotency-Key`, and query strings are
+  each one audited `422 INVALID_REQUEST` with zero writes) and
+  `test_mounted_count_and_length_edges_pass_structural_validation` (exactly 50
+  members and a 255-byte identifier clear validation).
 - [ ] 4.7 Privacy absence-sentinel tests plant distinct synthetic sentinels in
   both identifiers and assert absence from response body/headers, error details,
   generic and explicit audit rows, captured logs, rendered exception text,
