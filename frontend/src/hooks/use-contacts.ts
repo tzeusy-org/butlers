@@ -6,9 +6,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import {
-  getContact,
-  getContacts,
-  getContactInteractions,
   getGroupMembers,
   getGroups,
   getLabels,
@@ -16,15 +13,12 @@ import {
   assignGroupLabel,
   removeGroupLabel,
   getOverdueContacts,
-  patchContact,
   getUpcomingDates,
 } from "@/api/index.ts";
 import type {
   ApiResponse,
-  ContactPatchRequest,
   Group,
   Label,
-  ContactParams,
   GroupParams,
 } from "@/api/index.ts";
 import {
@@ -34,26 +28,6 @@ import {
   useOptimisticListMutation,
   useOptimisticMutation,
 } from "@/hooks/use-optimistic-mutation.ts";
-
-/** Fetch a paginated list of contacts. */
-export function useContacts(params?: ContactParams) {
-  return useQuery({
-    queryKey: ["contacts", params],
-    queryFn: () => getContacts(params),
-    // Never-blank list (JARVIS audit move 10): keep the previous filter's
-    // rows visible while the new combination fetches.
-    placeholderData: (prev) => prev,
-  });
-}
-
-/** Fetch full detail for a single contact. */
-export function useContact(contactId: string | undefined) {
-  return useQuery({
-    queryKey: ["contact", contactId],
-    queryFn: () => getContact(contactId!),
-    enabled: !!contactId,
-  });
-}
 
 /** Fetch a paginated list of groups. */
 export function useGroups(params?: GroupParams) {
@@ -149,37 +123,6 @@ export function useUpcomingDates(days?: number) {
   return useQuery({
     queryKey: ["upcoming-dates", days],
     queryFn: () => getUpcomingDates(days),
-  });
-}
-
-/** Patch a contact's fields. */
-/** @public knip mis-traces this import (live consumer exists); remove tag when bu-9jvhm fixes the tracing gap. */
-export function usePatchContact() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ contactId, request }: { contactId: string; request: ContactPatchRequest }) =>
-      patchContact(contactId, request),
-    onSuccess: (_, { contactId }) => {
-      void queryClient.invalidateQueries({ queryKey: ["contact", contactId] });
-      void queryClient.invalidateQueries({ queryKey: ["contacts"] });
-    },
-  });
-}
-
-// ---------------------------------------------------------------------------
-// New hooks from bu-iuol4.22 backend endpoints
-// ---------------------------------------------------------------------------
-
-/**
- * Fetch chronological interaction thread for a contact.
- * Wraps GET /api/relationship/contacts/{contact_id}/interactions?limit=N
- */
-export function useContactInteractions(contactId: string | undefined, limit?: number) {
-  return useQuery({
-    queryKey: ["contact-interactions", contactId, limit],
-    queryFn: () => getContactInteractions(contactId!, limit),
-    enabled: !!contactId,
-    staleTime: 60_000,
   });
 }
 

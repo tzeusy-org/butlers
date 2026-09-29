@@ -30,7 +30,6 @@ import { getEntityGloss, DUNBAR_TIER_VALUES, ENTITY_TYPE_VALUES, CURATION_RAIL_G
 import type { DunbarTier, EntityState, EntityType, CurationRailAction } from "@/lib/entity-glosses";
 
 import type {
-  ContactSummary,
   EntityActivityItem,
   EntityFact,
   EntityFactStalenessBand,
@@ -50,14 +49,12 @@ import { OwnerSetupBanner } from "@/components/relationship/OwnerSetupBanner";
 import { PracticalDrawer } from "@/components/relationship/PracticalDrawer";
 import { PulseStrip } from "@/components/relationship/PulseStrip";
 import { TelegramSessionSetup } from "@/components/relationship/TelegramSessionSetup";
-import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { EntityMark } from "@/components/ui/EntityMark";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { usePageSubject } from "@/lib/page-context.tsx";
 import { announce } from "@/lib/shell-announcer";
 import { Row } from "@/components/ui/Row";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
-import { FetchingDim } from "@/components/ui/fetching-dim";
 import { Voice } from "@/components/ui/Voice";
 import { ProvenanceMarks, StalenessBand } from "@/components/ui/Provenance";
 import {
@@ -91,7 +88,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useContacts } from "@/hooks/use-contacts";
 import {
   useArchiveRelationshipEntity,
   useEntityActivity,
@@ -112,8 +108,6 @@ import {
   useEntity,
   useForgetRelationshipEntity,
   usePromoteEntity,
-  useSetLinkedContact,
-  useUnlinkContact,
   useUpdateEntity,
 } from "@/hooks/use-memory";
 
@@ -226,160 +220,6 @@ const FACTS_PAGE_SIZE = 20;
 function sessionDetailHref(sessionId: string, butler: string | null): string {
   const query = butler ? `?butler=${encodeURIComponent(butler)}` : "";
   return `/sessions/${encodeURIComponent(sessionId)}${query}`;
-}
-
-// ---------------------------------------------------------------------------
-// Linked contact section with unlink / link
-// ---------------------------------------------------------------------------
-
-function LinkedContactSection({
-  entityId,
-  entity,
-}: {
-  entityId: string;
-  entity: { linked_contact_id: string | null; linked_contact_name: string | null };
-}) {
-  const unlinkContact = useUnlinkContact();
-  const setLinkedContact = useSetLinkedContact();
-  const [linking, setLinking] = useState(false);
-  const [search, setSearch] = useState("");
-  // bu-ep4ks.11 / bu-3dp0c: ConfirmDialog replaces the bare window.confirm
-  // that used to gate this irreversible unlink.
-  const [unlinkDialogOpen, setUnlinkDialogOpen] = useState(false);
-  const {
-    data: contactsData,
-    isFetching: contactsFetching,
-    isError: contactsError,
-    refetch: refetchContacts,
-  } = useContacts(linking ? { q: search || undefined, limit: 10 } : undefined);
-  const contacts: ContactSummary[] = contactsData?.contacts ?? [];
-
-  function handleUnlink() {
-    setUnlinkDialogOpen(true);
-  }
-
-  function confirmUnlink() {
-    unlinkContact.mutate(entityId, {
-      onSuccess: () => toast.success("Contact unlinked."),
-      onError: (err) =>
-        toast.error(`Failed to unlink: ${err instanceof Error ? err.message : "Unknown"}`),
-      onSettled: () => setUnlinkDialogOpen(false),
-    });
-  }
-
-  function handleLink(contactId: string) {
-    setLinkedContact.mutate(
-      { entityId, contactId },
-      {
-        onSuccess: () => {
-          toast.success("Contact linked.");
-          setLinking(false);
-          setSearch("");
-        },
-        onError: (err) =>
-          toast.error(`Failed to link: ${err instanceof Error ? err.message : "Unknown"}`),
-      },
-    );
-  }
-
-  return (
-    <section className="space-y-3">
-      <Eyebrow as="div">Linked contact</Eyebrow>
-      <div>
-        {entity.linked_contact_id ? (
-          <div className="flex items-center gap-3">
-            <span className="text-sm">
-              {entity.linked_contact_name ?? entity.linked_contact_id}
-            </span>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 text-xs text-destructive hover:text-destructive"
-              onClick={handleUnlink}
-              disabled={unlinkContact.isPending}
-            >
-              <Trash2 className="mr-1 h-3 w-3" />
-              Unlink
-            </Button>
-          </div>
-        ) : linking ? (
-          <div className="space-y-2">
-            <Input
-              placeholder="Search contacts..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              autoFocus
-              className="h-8 text-sm"
-            />
-            {contactsError ? (
-              // A failed contact search must not read as "No contacts found." —
-              // an outage would look like an empty address book (bu-hckjv).
-              <SourceDegradedNote
-                testId="entity-contacts-search-error"
-                label="Contact search"
-                onRetry={() => void refetchContacts()}
-              />
-            ) : contacts.length > 0 ? (
-              <FetchingDim isFetching={contactsFetching}>
-                <div className="max-h-48 overflow-y-auto rounded border">
-                  {contacts.map((c) => (
-                    <button
-                      key={c.id}
-                      type="button"
-                      className="flex w-full items-center gap-2 px-3 py-1.5 text-sm
-                        hover:bg-muted text-left"
-                      onClick={() => handleLink(c.id)}
-                      disabled={setLinkedContact.isPending}
-                    >
-                      <span className="font-medium">{c.full_name}</span>
-                      {c.email && (
-                        <span className="text-muted-foreground text-xs">{c.email}</span>
-                      )}
-                    </button>
-                  ))}
-                </div>
-              </FetchingDim>
-            ) : search ? (
-              <p className="text-muted-foreground text-xs py-2">No contacts found.</p>
-            ) : null}
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 text-xs"
-              onClick={() => { setLinking(false); setSearch(""); }}
-            >
-              Cancel
-            </Button>
-          </div>
-        ) : (
-          <div className="flex items-center gap-3">
-            <p className="text-muted-foreground text-sm">No linked contact.</p>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 text-xs text-muted-foreground"
-              onClick={() => setLinking(true)}
-            >
-              <Plus className="mr-1 h-3 w-3" />
-              Link contact
-            </Button>
-          </div>
-        )}
-      </div>
-      <ConfirmDialog
-        open={unlinkDialogOpen}
-        onOpenChange={setUnlinkDialogOpen}
-        title="Unlink this contact from the entity?"
-        description="The contact record itself is unaffected: you can relink it at any time."
-        confirmLabel="Unlink"
-        pendingLabel="Unlinking…"
-        variant="destructive"
-        pending={unlinkContact.isPending}
-        onConfirm={confirmUnlink}
-        testId="entity-unlink-contact-dialog"
-      />
-    </section>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -2816,9 +2656,6 @@ export default function EntityDetailPage() {
           {/* Full contact channels (email, phone, telegram, …) — the primary
               contact details, expounded inline now that contacts are entities. */}
           <ContactChannelCard entityId={entity.id} />
-
-          {/* Link/unlink management control for the underlying contact record. */}
-          <LinkedContactSection entityId={entity.id} entity={entity} />
 
           {/* Credentials moved to the User tab of /secrets — link only. */}
           <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm">

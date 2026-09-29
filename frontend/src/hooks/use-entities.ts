@@ -31,6 +31,7 @@ import {
   createEntityInteraction,
   createEntityNote,
   getEntityGifts,
+  getEntityInteractions,
   getEntityLinkedContacts,
   getEntityLoans,
   getEntityMessageThreads,
@@ -98,6 +99,16 @@ export function useEntityGifts(entityId: string | undefined) {
     queryKey: ["entity-gifts", entityId],
     queryFn: () => getEntityGifts(entityId!),
     enabled: !!entityId,
+  });
+}
+
+/** Fetch the most recent interactions logged against a relationship entity. */
+export function useEntityInteractions(entityId: string | undefined, limit?: number) {
+  return useQuery({
+    queryKey: ["entity-interactions", entityId, limit],
+    queryFn: () => getEntityInteractions(entityId!, { limit }),
+    enabled: !!entityId,
+    staleTime: 60_000,
   });
 }
 
@@ -1032,6 +1043,7 @@ export function useCreateEntityInteraction() {
       void queryClient.invalidateQueries({ queryKey: ["entity-timeline", entityId] });
       void queryClient.invalidateQueries({ queryKey: ["entity-cadence", entityId] });
       void queryClient.invalidateQueries({ queryKey: ["entity-message-threads", entityId] });
+      void queryClient.invalidateQueries({ queryKey: ["entity-interactions", entityId] });
     },
   });
 }
