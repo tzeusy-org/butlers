@@ -50,6 +50,16 @@ Four checks, one discovery source
    mode this bead exists to close. After receiver cutover, the QA-only
    ``public.v_qa_butler_receiver_state`` view supplies current-boot
    observations. Administrative holds do not imply a failed health probe.
+   **fleet-control** replaces this check after fleet-condition handoff
+   (``BUTLERS_FLEET_CONDITION_HANDOFF=1``). It reads the independently
+   produced ``control_plane_fleet`` condition (``butlers.core.fleet_conditions``)
+   and records one condition-linked finding for the whole affected fleet. That
+   finding's fingerprint is the fleet condition's own, so dispatch Gate 5.5
+   suppresses it against the fleet episode rather than opening one case per
+   daemon, and it is not re-reconciled under this source. Active legacy
+   per-butler ``ButlerHeartbeatStale`` episodes are carried forward in this
+   source's snapshot so the handoff cannot resolve them by omission; only the
+   fleet controller's complete healthy observation of each daemon closes them.
 3. **backup-stale / backup-run-failed** — reuses
    ``butlers.core.backup_facts.read_backup_facts_from_dir`` (the same
    recency/reachability facts ``GET /api/system/backups`` surfaces) against
@@ -120,6 +130,7 @@ openspec/changes/deploy-drift-sentinel/tasks.md (Deferred: bu-9r3hd.4)
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from datetime import UTC, datetime, timedelta
@@ -133,8 +144,15 @@ from butlers.core.backup_facts import (
     BACKUP_STALE_THRESHOLD_HOURS,
     read_backup_facts_from_dir,
 )
+from butlers.core.fleet_conditions import (
+    FLEET_FINGERPRINT,
+    FLEET_SOURCE,
+    LEGACY_LIVENESS_EXCEPTION_TYPE,
+    active_legacy_liveness_conditions,
+    fleet_condition_handoff_enabled,
+)
 from butlers.core.healing.fingerprint import _compute_hash, _sanitize_message
-from butlers.core.infra_conditions import Observation, reconcile_snapshot
+from butlers.core.infra_conditions import Observation, get_active_condition, reconcile_snapshot
 from butlers.core.liveness import CLOCK_SKEW_TOLERANCE, derive_liveness, is_liveness_stale
 from butlers.core.qa.models import QaFinding
 
@@ -157,6 +175,17 @@ _HEALTH_CHECK_SQL = (
 _RECEIVER_HEALTH_CHECK_SQL = (
     f"SELECT 1 FROM {_CONNECTOR_VIEW} LIMIT 0; SELECT 1 FROM {_RECEIVER_VIEW} LIMIT 0"
 )
+_FLEET_HEALTH_CHECK_SQL = (
+    f"SELECT 1 FROM {_CONNECTOR_VIEW} LIMIT 0; SELECT 1 FROM public.infra_conditions LIMIT 0"
+)
+
+#: call_site prefix of the one fleet-linked finding (see module docstring).
+FLEET_CALL_SITE: Final[str] = f"fleet_condition:{FLEET_SOURCE}"
+
+
+def condition_source_for(call_site: str | None) -> str:
+    """Return the ledger source whose episode a finding's fingerprint names."""
+    return FLEET_SOURCE if call_site == FLEET_CALL_SITE else SOURCE_NAME
 
 
 def _receiver_route_cutover_enabled() -> bool:
@@ -275,12 +304,14 @@ class InfraStateSource:
         # Health-check first: validates both views are queryable before any
         # row processing, so a revoked grant or dropped view surfaces as a
         # clear, patrol-logged error rather than a silently empty result.
+        handoff = fleet_condition_handoff_enabled()
         try:
-            health_check_sql = (
-                _RECEIVER_HEALTH_CHECK_SQL
-                if _receiver_route_cutover_enabled()
-                else _HEALTH_CHECK_SQL
-            )
+            if handoff:
+                health_check_sql = _FLEET_HEALTH_CHECK_SQL
+            elif _receiver_route_cutover_enabled():
+                health_check_sql = _RECEIVER_HEALTH_CHECK_SQL
+            else:
+                health_check_sql = _HEALTH_CHECK_SQL
             await self._pool.execute(health_check_sql)
         except asyncpg.PostgresError as exc:
             logger.error("InfraStateSource: health check failed: %s", exc)
@@ -289,7 +320,13 @@ class InfraStateSource:
         now = datetime.now(UTC)
         findings: list[QaFinding] = []
         findings.extend(await self._check_connectors(now))
-        findings.extend(await self._check_butler_heartbeats(now))
+        carried: list[Observation] = []
+        fleet: list[QaFinding] = []
+        if handoff:
+            fleet = await self._check_fleet_condition(now)
+            carried = await self._carry_forward_legacy_liveness()
+        else:
+            findings.extend(await self._check_butler_heartbeats(now))
         findings.extend(self._check_backup(now))
         findings.extend(await self._check_external_deadman(now))
 
@@ -297,14 +334,16 @@ class InfraStateSource:
         # raising -- a degraded/partial tick returns (propagates) before this
         # line, so reconciliation never observes anything but a genuinely
         # complete snapshot (see module docstring).
-        await self._reconcile_conditions(findings, now)
-        return findings
+        await self._reconcile_conditions(findings, now, carried=carried)
+        return findings + fleet
 
     # ------------------------------------------------------------------
     # condition-ledger reconciliation (bu-27dxl.6.4)
     # ------------------------------------------------------------------
 
-    async def _reconcile_conditions(self, findings: list[QaFinding], now: datetime) -> None:
+    async def _reconcile_conditions(
+        self, findings: list[QaFinding], now: datetime, *, carried: list[Observation] = ()
+    ) -> None:
         """Reconcile this tick's complete snapshot into the durable condition ledger.
 
         Reuses each ``QaFinding.fingerprint`` unchanged as the ledger's
@@ -336,6 +375,7 @@ class InfraStateSource:
             )
             for finding in findings
         ]
+        observations.extend(carried)
         if not os.environ.get(_DEADMAN_URL_ENV, "").strip():
             observations.append(
                 Observation(
@@ -469,7 +509,7 @@ class InfraStateSource:
 
             findings.append(
                 self._build_finding(
-                    exception_type="ButlerHeartbeatStale",
+                    exception_type=LEGACY_LIVENESS_EXCEPTION_TYPE,
                     call_site=f"butler_heartbeat:{name}",
                     raw_summary=raw_summary,
                     severity=_SEVERITY_BUTLER_HEARTBEAT_STALE,
@@ -522,7 +562,7 @@ class InfraStateSource:
             )
             findings.append(
                 self._build_finding(
-                    exception_type="ButlerHeartbeatStale",
+                    exception_type=LEGACY_LIVENESS_EXCEPTION_TYPE,
                     call_site=f"butler_heartbeat:{name}",
                     raw_summary=raw_summary,
                     severity=_SEVERITY_BUTLER_HEARTBEAT_STALE,
@@ -532,6 +572,65 @@ class InfraStateSource:
                 )
             )
         return findings
+
+    # ------------------------------------------------------------------
+    # fleet-control (after fleet-condition handoff)
+    # ------------------------------------------------------------------
+
+    async def _check_fleet_condition(self, now: datetime) -> list[QaFinding]:
+        """Return one finding linked to the active fleet condition, if any.
+
+        An absent condition is not proof of health on its own: the controller
+        only resolves it from a complete snapshot, and a read failure raises.
+        """
+        condition = await get_active_condition(
+            self._pool, source=FLEET_SOURCE, fingerprint=FLEET_FINGERPRINT
+        )
+        if condition is None:
+            return []
+        metadata = _json_object(condition.get("metadata"))
+        affected = [
+            str(item.get("name"))
+            for item in metadata.get("affected", [])
+            if isinstance(item, dict) and item.get("name")
+        ]
+        first_detected = _as_aware(condition.get("first_detected_at")) or now
+        summary = (
+            f"Fleet control condition active since {first_detected.isoformat()}: "
+            f"{len(affected)} daemon(s) not receiver-ready ({', '.join(affected) or 'unknown'})"
+        )
+        return [
+            QaFinding(
+                fingerprint=FLEET_FINGERPRINT,
+                source_type=self.name,
+                source_butler="switchboard",
+                severity=_SEVERITY_BUTLER_HEARTBEAT_STALE,
+                exception_type="FleetControlCondition",
+                event_summary=summary[:200],
+                call_site=FLEET_CALL_SITE,
+                occurrence_count=1,
+                first_seen=first_detected,
+                last_seen=now,
+                timestamp=now,
+            )
+        ]
+
+    async def _carry_forward_legacy_liveness(self) -> list[Observation]:
+        """Keep pre-handoff per-butler episodes open without re-finding them.
+
+        The set is read before the ledger lock, so each identity is
+        confirm-only: if the fleet controller resolves it in between, the
+        reconcile skips it instead of reopening a proven-healthy daemon.
+        """
+        return [
+            Observation(
+                fingerprint=row["fingerprint"],
+                summary=row["summary"],
+                metadata=_json_object(row["metadata"]) or None,
+                confirm_only=True,
+            )
+            for row in await active_legacy_liveness_conditions(self._pool)
+        ]
 
     # ------------------------------------------------------------------
     # backup-stale
@@ -707,6 +806,13 @@ class InfraStateSource:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _json_object(value: object) -> dict:
+    """Normalize a JSONB value that may arrive as text without a codec."""
+    if isinstance(value, str):
+        value = json.loads(value)
+    return value if isinstance(value, dict) else {}
 
 
 def _as_aware(value: datetime | None) -> datetime | None:

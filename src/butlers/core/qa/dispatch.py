@@ -102,6 +102,7 @@ from butlers.core.qa.prompts import build_investigation_prompt, build_review_fol
 from butlers.core.qa.repo_whitelist import RepoWhitelist, parse_repo_url
 from butlers.core.qa.severity import failed_with_human_action
 from butlers.core.qa.sources.infra_state import SOURCE_NAME as INFRA_STATE_SOURCE_NAME
+from butlers.core.qa.sources.infra_state import condition_source_for
 from butlers.core.qa.triage import TriagedFinding
 
 logger = logging.getLogger(__name__)
@@ -3382,10 +3383,12 @@ async def dispatch_qa_investigation(
         # Only infra_state findings carry a fingerprint that means anything
         # to the infra_conditions ledger (source="infra_state" reuses the
         # exact same fingerprint — see InfraStateSource's module docstring);
-        # every other discovery source is untouched by this gate.
+        # every other discovery source is untouched by this gate. The one
+        # fleet-linked finding names the controller's fleet episode instead,
+        # so a fleet outage is one suppression decision, not one per daemon.
         if finding.source_type == INFRA_STATE_SOURCE_NAME:
             condition = await get_active_condition(
-                pool, source=INFRA_STATE_SOURCE_NAME, fingerprint=fp
+                pool, source=condition_source_for(finding.call_site), fingerprint=fp
             )
             if condition is not None:
                 logger.debug(

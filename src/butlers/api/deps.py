@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 from butlers.api.db import DatabaseManager
 from butlers.config import ConfigError, load_config
 from butlers.core.pricing import PricingConfig, load_pricing
+from butlers.core.qa.patrol_provenance import QaPatrolContract, contract_from_module_config
 from butlers.credential_store import (
     ensure_secrets_schema,
     shared_db_name_from_env,
@@ -63,6 +64,9 @@ class ButlerConnectionInfo:
     modules: frozenset[str] = field(default_factory=frozenset)
     type: str = "butler"  # "butler" or "staffer"
     memory_schema: str | None = None
+    # The configured coverage a qualifying QA patrol must prove; set only for
+    # a roster butler with an enabled ``[modules.qa]`` table.
+    qa_patrol_contract: QaPatrolContract | None = None
 
     @property
     def sse_url(self) -> str:
@@ -281,6 +285,14 @@ def discover_butlers(
         try:
             config = load_config(entry)
             memory_schema = config.modules.get("memory", {}).get("memory_schema")
+            qa_patrol_contract = None
+            if "qa" in config.modules:
+                try:
+                    qa_patrol_contract = contract_from_module_config(config.modules["qa"])
+                except ValueError as exc:
+                    logger.warning(
+                        "Invalid [modules.qa] patrol contract in %s: %s", entry.name, exc
+                    )
             butlers.append(
                 ButlerConnectionInfo(
                     name=config.name,
@@ -291,6 +303,7 @@ def discover_butlers(
                     memory_schema=memory_schema,
                     modules=frozenset(config.modules.keys()),
                     type=config.type.value,
+                    qa_patrol_contract=qa_patrol_contract,
                 )
             )
         except ConfigError as exc:

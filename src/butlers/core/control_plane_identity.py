@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
@@ -301,12 +302,24 @@ class SingleFlightProber:
 
 
 @dataclass(frozen=True)
+class UnreadyDaemon:
+    """One expected daemon that this cycle could not prove receiver-ready."""
+
+    name: str
+    category: str
+    policy_state: str | None
+
+
+@dataclass(frozen=True)
 class ShadowCycle:
     complete: bool
     expected_count: int
     recorded_count: int
     mismatch_count: int | None
     healthy_count: int
+    # Per-daemon evidence for the fleet condition producer. When the cycle is
+    # incomplete, a daemon absent from this tuple is unknown, not healthy.
+    unready: tuple[UnreadyDaemon, ...] = ()
 
 
 async def run_shadow_cycle(
@@ -325,7 +338,13 @@ async def run_shadow_cycle(
 
     outcomes = await asyncio.gather(*(bounded(target) for target in expected))
     recorded_count = sum(outcome.recorded for outcome in outcomes)
+    probe_failures = {
+        target.name: outcome.category
+        for target, outcome in zip(expected, outcomes, strict=True)
+        if outcome.category != "healthy" or not outcome.recorded
+    }
     healthy_count = 0
+    unready: list[UnreadyDaemon] = []
     try:
         rows = await pool.fetch(
             """
@@ -346,6 +365,7 @@ async def run_shadow_cycle(
             row = by_name.get(target.name)
             if row is None:
                 mismatches += 1
+                unready.append(UnreadyDaemon(target.name, "unregistered", None))
                 continue
             observed_at = row["healthy_observed_at"]
             receiver_ready = (
@@ -358,13 +378,24 @@ async def run_shadow_cycle(
             )
             if receiver_ready:
                 healthy_count += 1
+            else:
+                category = probe_failures.get(target.name, "receiver_not_ready")
+                unready.append(UnreadyDaemon(target.name, category, row["policy_state"]))
             shadow_ready = row["policy_state"] == "active" and receiver_ready
             if shadow_ready != (row["eligibility_state"] == "active"):
                 mismatches += 1
     except Exception:
-        return ShadowCycle(False, len(expected), recorded_count, None, 0)
+        known = tuple(
+            UnreadyDaemon(name, category, None) for name, category in probe_failures.items()
+        )
+        return ShadowCycle(False, len(expected), recorded_count, None, 0, known)
     return ShadowCycle(
-        recorded_count == len(expected), len(expected), recorded_count, mismatches, healthy_count
+        recorded_count == len(expected),
+        len(expected),
+        recorded_count,
+        mismatches,
+        healthy_count,
+        tuple(unready),
     )
 
 
@@ -395,8 +426,17 @@ def _next_observer_delay_s(
     return interval_s
 
 
-async def run_shadow_observer_loop(pool: Any, configs: list[Any]) -> None:
-    """Probe promptly after startup, then use the configured recurring cadence."""
+async def run_shadow_observer_loop(
+    pool: Any,
+    configs: list[Any],
+    *,
+    after_cycle: Callable[[Any, ShadowCycle], Awaitable[None]] | None = None,
+) -> None:
+    """Probe promptly after startup, then use the configured recurring cadence.
+
+    ``after_cycle(role_view, cycle)`` receives each completed cycle, e.g. the
+    independent fleet condition controller. It must not raise.
+    """
     expected = expected_from_roster(configs)
     if not expected:
         raise RuntimeError("no exact Git-roster targets for shadow observer")
@@ -436,5 +476,7 @@ async def run_shadow_observer_loop(pool: Any, configs: list[Any]) -> None:
                     cycle.healthy_count,
                     cycle.mismatch_count if cycle.mismatch_count is not None else "unavailable",
                 )
+                if after_cycle is not None:
+                    await after_cycle(role_view, cycle)
         finally:
             await prober.cancel_all()
