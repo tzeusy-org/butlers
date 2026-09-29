@@ -114,12 +114,12 @@ _WILDCARD = "\x00"
 # would be vacuous. After the bu-wgniv dead-export sweep (which deleted ~48
 # unused api/client.ts functions) 385/385 resolved. A contract counts only
 # when every template carries literal text (bu-tllj5r); 429 resolve on that
-# basis now. Kept close to that count
-# (not a round number like 350) so a single newly-unparseable call site — one
-# function silently dropped by a future authoring pattern — trips this guard
-# instead of hiding inside slack (PR #3173 review: a wide buffer here would let
-# coverage rot without failing).
-_MIN_RESOLVED_FUNCTIONS = 380
+# basis now. Pinned at exactly that count (not a round number like 350) so a
+# single newly-unparseable call site — one function silently dropped by a
+# future authoring pattern — trips this guard instead of hiding inside slack
+# (PR #3173 review: a wide buffer here would let coverage rot without failing).
+# Deleting a client.ts endpoint function lowers it by the same number.
+_MIN_RESOLVED_FUNCTIONS = 429
 
 # ---------------------------------------------------------------------------
 # Known, tracked contract exceptions
@@ -371,8 +371,13 @@ def _split_ternary(expr: str) -> tuple[str, str, str] | None:
 
 
 # Upper bound on the candidate templates one expression may expand into, so a
-# chain of enumerated interpolations cannot blow up combinatorially.
+# chain of enumerated interpolations cannot blow up combinatorially. Exceeding
+# it raises: a truncated candidate set would silently skip a dead branch.
 _MAX_TEMPLATE_CANDIDATES = 16
+
+
+class TemplateExpansionError(ValueError):
+    """A template expands to more candidates than the scanner will check."""
 
 
 def _parse_template_literal(
@@ -403,7 +408,11 @@ def _parse_template_literal(
                 )
                 if resolved:
                     options = resolved
-            candidates = [c + o for c in candidates for o in options][:_MAX_TEMPLATE_CANDIDATES]
+            candidates = [c + o for c in candidates for o in options]
+            if len(candidates) > _MAX_TEMPLATE_CANDIDATES:
+                raise TemplateExpansionError(
+                    f"{expr} expands to more than {_MAX_TEMPLATE_CANDIDATES} path candidates"
+                )
             i = close + 1
             continue
         candidates = [c + inner[i] for c in candidates]
@@ -563,7 +572,10 @@ def _scan_client_ts(text: str) -> dict[str, FunctionContract]:
         if not args:
             continue
         local_consts = _extract_local_consts(body)
-        candidates = _resolve_path_expr(args[0], local_consts)
+        try:
+            candidates = _resolve_path_expr(args[0], local_consts)
+        except TemplateExpansionError as exc:
+            raise TemplateExpansionError(f"{name}: {exc}") from None
         if not candidates:
             continue
         method = "get"
@@ -595,14 +607,15 @@ def _segment_matches(fe_seg: str, api_seg: str) -> bool:
     """One path segment.
 
     An OpenAPI ``{param}`` segment accepts any non-empty FE segment. A FE
-    segment that is exactly the wildcard (``${id}``) matches only a
-    ``{param}`` segment, never a literal sibling such as ``overdue``. A mixed
-    literal+wildcard segment (``devices${qs}``) must fullmatch a literal API
-    segment with the wildcard read as ``[^/]*``. Literal segments are equal.
+    segment with no literal text (``${id}``, or ``${id}${qs}`` with a query
+    suffix) matches only a ``{param}`` segment, never a literal sibling such as
+    ``overdue``. A mixed literal+wildcard segment (``devices${qs}``) must
+    fullmatch a literal API segment with the wildcard read as ``[^/]*``.
+    Literal segments are equal.
     """
     if api_seg.startswith("{") and api_seg.endswith("}"):
         return fe_seg != ""
-    if fe_seg == _WILDCARD:
+    if _WILDCARD in fe_seg and not fe_seg.replace(_WILDCARD, ""):
         return False
     if _WILDCARD in fe_seg:
         pattern = "".join("[^/]*" if ch == _WILDCARD else re.escape(ch) for ch in fe_seg)
@@ -1001,6 +1014,12 @@ def test_cross_summary_backend_payload_shapes_match() -> None:
         (f"/relationship/contacts/{_WILDCARD}", "/api/relationship/contacts", False),
         # A pure `${id}` segment names a parameter, never a literal sibling route.
         (f"/relationship/contacts/{_WILDCARD}", "/api/relationship/contacts/overdue", False),
+        # ...however many wildcards it has, e.g. `${id}${qs}` with a query suffix.
+        (
+            f"/relationship/contacts/{_WILDCARD}{_WILDCARD}",
+            "/api/relationship/contacts/overdue",
+            False,
+        ),
         (
             f"/relationship/contacts/{_WILDCARD}",
             "/api/relationship/contacts/{contact_id}",
@@ -1077,6 +1096,20 @@ def test_scan_substitutes_local_consts_inside_template_literals():
     assert contracts["feedback"].method == "post"
     # A whole-path wildcard names no route, so it is not a resolved contract.
     assert "opaque" not in contracts
+
+
+def test_scan_fails_loudly_when_a_template_exceeds_the_candidate_cap():
+    """Truncating the expansion would drop, and so never check, some branches."""
+    five_way = '"a" : v === 2 ? "b" : v === 3 ? "c" : v === 4 ? "d" : "e"'
+    text = (
+        "export function probe(v: number) {\n"
+        f"  const x = v === 1 ? {five_way};\n"
+        f"  const y = v === 1 ? {five_way};\n"
+        "  return apiFetch<R>(`/probe/${x}/${y}`);\n"
+        "}\n"
+    )
+    with pytest.raises(TemplateExpansionError, match="probe"):
+        _scan_client_ts(text)
 
 
 def test_check_a_reports_param_and_method_mismatches_against_a_literal_sibling():
