@@ -40,7 +40,7 @@ import {
   useAddPriorityContact,
   useRemovePriorityContact,
 } from '@/hooks/use-priority-contacts'
-import { useContacts } from '@/hooks/use-contacts'
+import { useRelationshipEntities } from '@/hooks/use-entities'
 import { useChannelDefault, useUpdateChannelDefault } from '@/hooks/use-channel-defaults'
 import { GATE_DEFS, groupRulesByGate, deriveGateCounts } from './gate-state'
 import type { GateKey } from './gate-state'
@@ -55,6 +55,9 @@ import type { ChannelDefaultPolicy } from '@/api/index.ts'
 import { ApiError } from '@/api/index.ts'
 import { getAvailablePipelineBacklog } from './backlog-state'
 import { SourceDegradedNote } from '@/components/ui/query-boundary'
+
+/** Priority-sender picker size; the relationship entity list caps `limit` at 200. */
+const PRIORITY_CANDIDATE_LIMIT = 200
 
 // ---------------------------------------------------------------------------
 // Rule classification helpers
@@ -223,8 +226,14 @@ export function FiltersPipeline() {
   const addPriorityContact = useAddPriorityContact()
   const removePriorityContact = useRemovePriorityContact()
 
-  // Contact candidates for the add picker.
-  const { data: contactsResp, isLoading: contactsLoading } = useContacts({ limit: 200 })
+  // Contact candidates for the add picker: entities that carry contact facts.
+  // priority_contacts.contact_id is an entity UUID (core_131), so the entity id
+  // is submitted directly. 200 is the entity list endpoint's ceiling.
+  const {
+    data: candidatesResp,
+    isLoading: candidatesLoading,
+    isError: candidatesError,
+  } = useRelationshipEntities({ has: 'contact', limit: PRIORITY_CANDIDATE_LIMIT })
 
   // Channel defaults edit — fetch the current policy only while a channel is
   // actively being edited (the backend 404s for unset channels; that's an
@@ -247,7 +256,7 @@ export function FiltersPipeline() {
   const archivedRules: IngestionRule[] = archivedRulesResp?.data ?? []
 
   const priorityContacts = priorityContactsResp?.data ?? []
-  const contactCandidates = contactsResp?.contacts ?? []
+  const contactCandidates = candidatesResp?.items ?? []
 
   // Split out special-purpose rules before gate bucketing
   const channelDefaultRules = allActiveRules.filter(isChannelDefault)
@@ -484,7 +493,8 @@ export function FiltersPipeline() {
           error={priorityError}
           mutationError={priorityMutationError}
           addCandidates={contactCandidates}
-          candidatesLoading={contactsLoading}
+          candidatesLoading={candidatesLoading}
+          candidatesError={candidatesError}
           onAdd={handleAddPrioritySender}
           onRemove={handleRemovePrioritySender}
         />

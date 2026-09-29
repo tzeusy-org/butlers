@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter, useSearchParams } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -48,8 +48,6 @@ vi.mock("@/hooks/use-memory", () => ({
   useUpdateEntityInfo: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useDeleteEntityInfo: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useRevealEntitySecret: vi.fn(() => ({ mutate: vi.fn() })),
-  useSetLinkedContact: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  useUnlinkContact: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }));
 
 // Relationship-scoped hooks consumed by the consolidated page
@@ -133,13 +131,6 @@ vi.mock("@/hooks/use-entities", () => ({
   useMergeRelationshipEntities: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
 }));
 
-vi.mock("@/hooks/use-contacts", () => ({
-  useContacts: vi.fn(() => ({ data: { contacts: [] } })),
-  useCreateContactInfo: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
-  useDeleteContactInfo: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  usePatchContact: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  usePatchContactInfo: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-}));
 
 vi.mock("@/components/relationship/OwnerSetupBanner", () => ({
   OwnerSetupBanner: () => null,
@@ -1343,50 +1334,35 @@ describe("EntityDetailPage — BreadcrumbStrip", () => {
 });
 
 // ---------------------------------------------------------------------------
-// LinkedContactSection — plain text (no circular self-link) (bu-u0csg)
+// Contact channels are entity-keyed; the retired contact link flow is gone
 // ---------------------------------------------------------------------------
 
-describe("EntityDetailPage — LinkedContactSection plain-text display", () => {
+describe("EntityDetailPage — contact channels without the retired contact link", () => {
   beforeEach(() => {
     vi.resetAllMocks();
   });
 
-  it("linked contact name renders as plain text, not a link to the same entity page", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("renders ContactChannelCard, no Linked contact control, and no contact-route request", () => {
+    const fetchSpy = vi.fn(() => new Promise<Response>(() => {}));
+    vi.stubGlobal("fetch", fetchSpy);
     setEntityState({
       ...BASE_ENTITY,
       linked_contact_id: "contact-xyz",
       linked_contact_name: "Linked Contact Name",
     });
-    const html = renderPage();
-    // Contact name must appear as plain text
-    expect(html).toContain("Linked Contact Name");
-    // Must NOT render a circular self-link to the current entity page
-    expect(html).not.toContain('href="/entities/entity-001"');
-    // Must NOT use the /contacts/ redirect path
-    expect(html).not.toContain('href="/contacts/contact-xyz"');
-  });
 
-  it("falls back to linked_contact_id as text when linked_contact_name is null", () => {
-    setEntityState({
-      ...BASE_ENTITY,
-      linked_contact_id: "contact-xyz",
-      linked_contact_name: null,
-    });
     const html = renderPage();
-    // ID shown as fallback plain text
-    expect(html).toContain("contact-xyz");
-    expect(html).not.toContain('href="/entities/entity-001"');
-  });
 
-  it("linked contact section is not rendered when linked_contact_id is null", () => {
-    setEntityState({
-      ...BASE_ENTITY,
-      linked_contact_id: null,
-      linked_contact_name: null,
-    });
-    const html = renderPage();
-    // No link to a contact page should appear
-    expect(html).not.toContain("/contacts/");
+    expect(html).toContain('data-testid="contact-channel-card');
+    expect(html).not.toContain("Linked contact");
+    expect(html).not.toContain("Link contact");
+    expect(html).not.toContain("Linked Contact Name");
+    const requested = fetchSpy.mock.calls.map((call: unknown[]) => String(call[0]));
+    expect(requested.filter((url) => url.includes("/relationship/contacts"))).toEqual([]);
   });
 });
 

@@ -482,12 +482,6 @@ files under `frontend/src/pages` and `frontend/src/components`.
 ## `frontend/src/pages/EntityDetailPage.tsx`
 
 - Memory rebind
-- Linked contact
-- Unlink
-- No contacts found.
-- Cancel
-- No linked contact.
-- Link contact
 - Profile
 - Activity
 - Activity changed while loading.
@@ -530,11 +524,8 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - First seen
 - Last seen
 - Forget this entity?
+- Cancel
 - Entity rebind receipts
-- Search contacts...
-- Contact search
-- Unlink this contact from the entity?
-- The contact record itself is unaffected: you can relink it at any time.
 - Lives in
 - Works at
 - Family
@@ -570,11 +561,6 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - New alias...
 - Remove role
 - New role...
-- Contact unlinked.
-- Failed to unlink: {}
-- Unknown
-- Contact linked.
-- Failed to link: {}
 - Forgot {}
 - Entity name updated
 - Failed to update name: {}
@@ -2972,6 +2958,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 ## `frontend/src/components/ingestion/filters/PrioritySendersBlock.tsx`
 
 - priority · senders
+- Contacts unavailable. Reload to try again.
 - Mail from these contacts is tagged with a
 - Priority senders unavailable. Check connectivity and reload.
 - No priority senders configured.
@@ -4405,4 +4392,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3459*
+*Total strings: 3446*
