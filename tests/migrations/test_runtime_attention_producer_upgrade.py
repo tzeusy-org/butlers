@@ -723,6 +723,28 @@ def test_core_251_upgrade_requires_the_bootstrap_upgrader_and_then_revokes_it(
         engine.dispose()
 
 
+def test_core_251_upgrade_names_the_bootstrap_when_the_upgrader_was_never_installed(
+    postgres_container,
+) -> None:
+    """A database bootstrapped before v4 gets the guidance, not a raw UndefinedFunction."""
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
+    bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
+    core_config = _build_alembic_config(db_url, chains=["core"])
+    command.upgrade(core_config, "core_250")
+
+    bootstrap = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
+    try:
+        with bootstrap.connect() as connection:
+            connection.execute(
+                text("DROP FUNCTION public.runtime_attention_upgrade_condition_v4()")
+            )
+        with pytest.raises(RuntimeError, match="run scripts/init-db.sql"):
+            command.upgrade(core_config, "core@head")
+    finally:
+        bootstrap.dispose()
+
+
 def test_core_251_downgrade_never_refuses_and_only_bootstrap_disables_the_producer(
     postgres_container,
 ) -> None:
