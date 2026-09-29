@@ -140,6 +140,8 @@ def test_verification_function_cannot_reach_breaker_state() -> None:
     sql = _executed_sql("upgrade")
 
     assert "SECURITY DEFINER" in sql
+    # core_201's own install path; core_252 later pins it to pg_catalog, pg_temp
+    # (tests/migrations/test_core_252_definer_search_path_migration.py).
     assert "SET search_path = pg_catalog, public" in sql
     update = sql[sql.index("UPDATE public.model_catalog") : sql.index("RETURN FOUND")]
     assert "enabled" not in update
