@@ -601,10 +601,17 @@ def test_init_db_projects_restore_results_through_a_purpose_bound_audit_writer()
     assert "OWNER TO restore_drill_executor_audit_writer" in source
     assert "GRANT INSERT ON TABLE public.audit_log TO restore_drill_executor_audit_writer" in source
     assert "GRANT INSERT ON TABLE public.audit_log TO restore_drill_executor_owner" not in source
-    # The two search_path settings are catalog contracts: the migration's
-    # provenance probes compare them literally against ``proconfig``.
+    # The search_path setting is a catalog contract: the migration's
+    # provenance probes compare it literally against ``proconfig``, and every
+    # restore-drill definer is pinned to it (bu-mzm3su.1).
     assert "SET search_path = pg_catalog, pg_temp" in source
-    assert "SET search_path = pg_catalog, public, pg_temp" in source
+    for header in (
+        "CREATE FUNCTION restore_drill_executor.is_due(",
+        "CREATE FUNCTION restore_drill_executor.record_result(",
+    ):
+        start = source.index(header)
+        definition_header = source[start : source.index("    AS $", start)]
+        assert "SET search_path = pg_catalog, pg_temp\n" in definition_header, header
 
     # Operator-facing RAISE messages.  The text is what an operator reads when the
     # bootstrap refuses, so the string is the contract.
