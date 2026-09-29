@@ -1802,7 +1802,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Skills available to this butler
 - No skills registered
 - View
-- Trigger
+- Use skill
 
 ## `frontend/src/components/butler-detail/ButlerSpendTab.tsx`
 

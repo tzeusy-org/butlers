@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { useSearchParams } from "react-router";
 
+import { useCommandBarPrefill } from "@/components/butler-detail/command-bar-prefill";
 import { CardSkeleton } from "@/components/skeletons";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -100,7 +100,7 @@ export default function ButlerSkillsTab({ butlerName }: ButlerSkillsTabProps) {
   const { data: skillsResponse, isLoading, isError, error } = useButlerSkills(butlerName);
   const [selectedSkill, setSelectedSkill] = useState<ButlerSkill | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [, setSearchParams] = useSearchParams();
+  const { request: requestPrefill } = useCommandBarPrefill();
 
   if (isLoading) {
     return <SkillsSkeleton />;
@@ -142,8 +142,10 @@ export default function ButlerSkillsTab({ butlerName }: ButlerSkillsTabProps) {
     setDialogOpen(true);
   }
 
-  function handleTriggerSkill(skillName: string) {
-    setSearchParams({ tab: "trigger", skill: skillName }, { replace: true });
+  // Prefill the header command bar instead of navigating: the old Trigger tab
+  // is folded into that bar, and nothing runs until the operator presses Run.
+  function handleUseSkill(skillName: string) {
+    requestPrefill(`Use the ${skillName} skill to `);
   }
 
   return (
@@ -171,9 +173,9 @@ export default function ButlerSkillsTab({ butlerName }: ButlerSkillsTabProps) {
                 </Button>
                 <Button
                   size="sm"
-                  onClick={() => handleTriggerSkill(skill.name)}
+                  onClick={() => handleUseSkill(skill.name)}
                 >
-                  Trigger
+                  Use skill
                 </Button>
               </div>
             </SectionContent>
