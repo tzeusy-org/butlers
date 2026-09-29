@@ -996,7 +996,9 @@ describe("ButlerDetailPage — Use skill prefills the command bar", () => {
     } as unknown as ReturnType<typeof useButlerSkills>);
     renderPageLive();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Use skill" }));
+    // The Skills section is lazy-loaded; allow for a slow import under full-suite load.
+    const useSkill = await screen.findByRole("button", { name: "Use skill" }, { timeout: 10_000 });
+    fireEvent.click(useSkill);
 
     const input = screen.getByTestId("butler-command-input") as HTMLInputElement;
     expect(input.value).toBe("Use the foo skill to ");
