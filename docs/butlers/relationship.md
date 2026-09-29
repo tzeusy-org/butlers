@@ -61,7 +61,9 @@ change; the wire rules live in `roster/relationship/tools/fact_temporal.py`.
   occurrences or refuses first. Until then, rollback is: drain the transition writer, restore
   the old one, optionally downgrade `rel_035` (facts and rel_034 evidence, coverage and approval
   context survive). The downgrade refuses once the legacy index is gone or any temporal value
-  exists; after cutover, recovery rolls forward.
+  exists; after cutover, recovery rolls forward. The proof and enforcement that cutover must
+  require (signed receipt, lifecycle fence, gated rel036) are drafted in the
+  [effective-time cutover packet](../operations/relationship-effective-time-cutover.md).
 - **Mutator fences.** Entity merge locks and plans every affected fact first, repoints rows with
   their packets and evidence intact, and refuses `temporal_occurrence_collision` before any write
   rather than collapse an occurrence that carries effective time. Legacy `contact_merge`,
