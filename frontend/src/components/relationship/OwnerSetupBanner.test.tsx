@@ -18,6 +18,7 @@ vi.mock("@/hooks/use-memory", () => ({
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 
 import { OwnerSetupBanner } from "./OwnerSetupBanner";
+import { ownerIdentityMissing } from "./owner-identity";
 import { useEntityLinkedContacts } from "@/hooks/use-entities";
 
 const OWNER: EntityDetail = {
@@ -182,5 +183,25 @@ describe("OwnerSetupBanner", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(refetch).toHaveBeenCalledOnce();
+  });
+});
+
+describe("ownerIdentityMissing (bu-6m6ou0)", () => {
+  const only = (value: string): LinkedContactSummary[] => [
+    {
+      ...TELEGRAM_CONTACT,
+      contact_info: TELEGRAM_CONTACT.contact_info.filter((entry) => entry.value === value),
+    },
+  ];
+
+  it.each<[string, Pick<EntityDetail, "canonical_name">, LinkedContactSummary[] | undefined, string[] | null]>([
+    ["unknown contacts", CONFIGURED_OWNER, undefined, null],
+    ["empty name", { canonical_name: "" }, [TELEGRAM_CONTACT], ["name"]],
+    ["placeholder name", { canonical_name: " Owner " }, [TELEGRAM_CONTACT], ["name"]],
+    ["only a numeric telegram value", CONFIGURED_OWNER, only("123456789"), ["Telegram handle"]],
+    ["only a non-numeric telegram value", CONFIGURED_OWNER, only("tze"), ["Telegram chat ID"]],
+    ["everything configured", CONFIGURED_OWNER, [TELEGRAM_CONTACT], []],
+  ])("%s", (_label, entity, contacts, expected) => {
+    expect(ownerIdentityMissing(entity, contacts)).toEqual(expected);
   });
 });

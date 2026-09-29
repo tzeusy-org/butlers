@@ -6,7 +6,8 @@
  * provenance, and any other owner-specific setup.
  *
  * Open by default; `forceOpen` drives the "action needed" affordance when the
- * owner entity still needs setup (no linked contact).
+ * owner entity still needs identity setup (OwnerSetupBanner's missing-identity
+ * predicate, `ownerIdentityMissing`).
  */
 
 import { useId, useState } from "react";
