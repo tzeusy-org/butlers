@@ -469,6 +469,18 @@ episode, and it carries legacy per-butler episodes forward until the
 controller observes each daemon healthy. See
 `docs/operations/fleet-condition-controller.md`.
 
+Owner attention (`core_251`): each controller pass calls the fixed
+`public.append_runtime_attention_condition` producer as Switchboard's role.
+The producer appends one content-blind `control_plane_condition` outbox
+episode per active fleet or `patrol_overdue` condition episode after a
+five-minute attention grace, and returns the same episode on every later call.
+A condition-side marker keeps that identity after outbox retention. The
+existing fenced at-most-once Switchboard worker delivers it, and the owner sees
+the linked `pending`, `worker_unavailable`, `sending`, `sent`, `failed`, or
+`uncertain` status on `GET /api/system/conditions`. An uncertain delivery is
+never resent automatically. `patrol_stopped_by_policy` does not page. See
+`docs/operations/runtime-attention.md`.
+
 ## Adopted restricted publisher target
 
 The exact owner-adopted eight-requirement contract is preserved at `openspec/changes/confine-qa-publication-authority/adopted-contract.md` (SHA25690d904ee0e4cb9a8c2b23ca07739bf580d167fa9e2f1d7f0a5b0a59959b2d8e9). Its purpose-bound binding, process isolation, immutable export, closed operations, provider-control evidence and ambiguous-outcome handling are binding target behavior. Implementation remains outstanding; this amendment does not claim existing deployments are confined. Live credentials/provisioning/provider canary/cleanup/deployment/activation remain separately gated.

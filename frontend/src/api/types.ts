@@ -7803,6 +7803,23 @@ export interface ConditionEntry {
   recovered_after_s: number | null;
   summary: string | null;
   metadata: Record<string, unknown> | null;
+  /** Linked owner attention; only fleet-control and overdue-QA conditions carry it. */
+  attention?: ConditionAttention | null;
+}
+
+/**
+ * Linked runtime-attention delivery for a fleet or overdue-QA condition
+ * (REQ-butler-control-plane-liveness-007). Only "sent" means delivered;
+ * "sending" and "uncertain" never do, and nothing here can resend.
+ */
+export interface ConditionAttention {
+  /** "pending" | "worker_unavailable" | "sending" | "sent" | "failed" | "uncertain" | "unavailable" */
+  status: string;
+  episode_id: string | null;
+  created_at: string | null;
+  delivered_at: string | null;
+  safe_reason: string | null;
+  outbox_retained: boolean | null;
 }
 
 /**

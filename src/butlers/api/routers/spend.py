@@ -70,6 +70,7 @@ from butlers.api.models import (
 )
 from butlers.api.owner_control import require_dashboard_owner_control
 from butlers.api.routers.audit import append as audit_append
+from butlers.api.runtime_attention_status import ATTENTION_REASON_COPY
 from butlers.core.model_routing import (
     LedgerSpend,
     price_ledger_usage_rows,
@@ -798,17 +799,7 @@ class FleetHaltAttentionObservation(BaseModel):
     episode: FleetHaltAttentionEpisode | None = None
 
 
-_FLEET_ATTENTION_REASON_COPY = {
-    ("pre_transport", "recipient_unavailable"): "Recipient unavailable before delivery",
-    ("pre_transport", "policy_denied"): "Delivery policy denied the alert",
-    ("transport_rejected", "provider_rejected"): "Transport rejected the alert",
-    ("transport_uncertain", "transport_timeout"): "Delivery timed out; outcome is uncertain",
-    (
-        "transport_uncertain",
-        "transport_connection_lost",
-    ): "Delivery connection was lost; outcome is uncertain",
-    ("transport_uncertain", "worker_recovery"): "A dead delivery claim was fenced as uncertain",
-}
+_FLEET_ATTENTION_REASON_COPY = ATTENTION_REASON_COPY
 
 
 @router.get(

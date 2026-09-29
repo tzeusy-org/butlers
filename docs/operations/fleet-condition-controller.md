@@ -6,8 +6,10 @@ This runbook covers the independent controller for
 after each cycle of the supervised receiver observer
 (`fleet_shadow_observer`). It does not depend on QA's scheduler or a routable
 QA registry row. It writes durable episodes to `public.infra_conditions`.
-Owner attention for these episodes belongs to the runtime-attention work and
-is not produced here.
+After both checks, each cycle also asks the runtime-attention producer for one
+owner-attention episode per active fleet or `patrol_overdue` condition. See
+[Runtime Attention](runtime-attention.md#fleet-and-qa-condition-attention).
+`patrol_stopped_by_policy` is an intentional hold and never pages.
 
 ## Conditions
 

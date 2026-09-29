@@ -78,11 +78,18 @@ from butlers.api.db import DatabaseManager
 from butlers.api.deps import ButlerConnectionInfo, get_butler_configs
 from butlers.api.models import ApiResponse
 from butlers.api.read_models.insights_v1 import query_insight_delivery_state
+from butlers.api.runtime_attention_status import condition_attention_status, safe_reason
 from butlers.core.backup_facts import (
     BACKUP_DIR_ENV,
     BackupFacts,
     RestoreDrillFacts,
     read_backup_facts_from_dir,
+)
+from butlers.core.fleet_conditions import (
+    FLEET_FINGERPRINT,
+    FLEET_SOURCE,
+    QA_PATROL_OVERDUE_FINGERPRINT,
+    QA_PATROL_SOURCE,
 )
 
 logger = logging.getLogger(__name__)
@@ -355,6 +362,22 @@ class InsightDeliveryState(BaseModel):
     last_delivery_at: str | None
 
 
+class ConditionAttention(BaseModel):
+    """Linked owner-attention delivery for a fleet or overdue-QA condition.
+
+    ``status`` is one of ``butlers.api.runtime_attention_status``'s fixed
+    statuses. Only ``sent`` means delivered; ``sending`` and ``uncertain`` never
+    do, and nothing on this surface can trigger a resend.
+    """
+
+    status: str
+    episode_id: str | None = None
+    created_at: str | None = None
+    delivered_at: str | None = None
+    safe_reason: str | None = None
+    outbox_retained: bool | None = None
+
+
 class ConditionEntry(BaseModel):
     """One episode row from public.infra_conditions or public.owner_conditions.
 
@@ -385,6 +408,9 @@ class ConditionEntry(BaseModel):
     recovered_after_s: float | None
     summary: str | None
     metadata: dict | None
+    # Only for the fleet-control and QA-patrol-overdue identities; ``None``
+    # elsewhere and before the condition's first attention append.
+    attention: ConditionAttention | None = None
 
 
 class ConditionsFacts(BaseModel):
@@ -1300,10 +1326,53 @@ async def get_insight_delivery_state(
 
 
 VALID_LEDGERS = frozenset({"infra", "owner"})
+_ATTENTION_IDENTITIES = frozenset(
+    {
+        (FLEET_SOURCE, FLEET_FINGERPRINT),
+        (QA_PATROL_SOURCE, QA_PATROL_OVERDUE_FINGERPRINT),
+    }
+)
 
 
-def _condition_row_to_entry(row: dict, *, ledger: str) -> ConditionEntry:
+async def _condition_attention_by_id(
+    db: DatabaseManager,
+) -> dict[str, ConditionAttention] | None:
+    """Read linked attention through the content-blind projection; ``None`` if unreadable."""
+    try:
+        rows = await db.credential_shared_pool().fetch(
+            "SELECT * FROM public.observe_runtime_attention_conditions()"
+        )
+    except Exception as exc:  # noqa: BLE001 - reduced to a typed degraded status
+        logger.warning("Condition attention observation unavailable (%s)", type(exc).__name__)
+        return None
+    return {
+        str(row["condition_id"]): ConditionAttention(
+            status=condition_attention_status(row),
+            episode_id=str(row["episode_id"]),
+            created_at=row["created_at"].isoformat(),
+            delivered_at=row["delivered_at"].isoformat() if row["delivered_at"] else None,
+            safe_reason=safe_reason(row["delivery_error_class"], row["delivery_error_detail"]),
+            outbox_retained=row["outbox_retained"],
+        )
+        for row in rows
+    }
+
+
+def _attention_for(
+    row: dict, attention: dict[str, ConditionAttention] | None
+) -> ConditionAttention | None:
+    if (row["source"], row["fingerprint"]) not in _ATTENTION_IDENTITIES:
+        return None
+    if attention is None:
+        return ConditionAttention(status="unavailable")
+    return attention.get(str(row["id"]))
+
+
+def _condition_row_to_entry(
+    row: dict, *, ledger: str, attention: ConditionAttention | None = None
+) -> ConditionEntry:
     return ConditionEntry(
+        attention=attention,
         ledger=ledger,
         id=str(row["id"]),
         source=row["source"],
@@ -1389,9 +1458,22 @@ async def get_conditions(
         logger.warning("%s_conditions query failed (degraded state returned): %s", ledger, exc)
         return ApiResponse(data=ConditionsFacts(conditions=[], total=0, conditions_available=False))
 
+    attention = None
+    if ledger == "infra" and any(
+        (r["source"], r["fingerprint"]) in _ATTENTION_IDENTITIES for r in rows
+    ):
+        attention = await _condition_attention_by_id(db)
+
     return ApiResponse(
         data=ConditionsFacts(
-            conditions=[_condition_row_to_entry(r, ledger=ledger) for r in rows],
+            conditions=[
+                _condition_row_to_entry(
+                    r,
+                    ledger=ledger,
+                    attention=_attention_for(r, attention) if ledger == "infra" else None,
+                )
+                for r in rows
+            ],
             total=total,
             conditions_available=True,
         )

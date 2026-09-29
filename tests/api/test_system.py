@@ -733,6 +733,92 @@ async def test_conditions_switchboard_pool_unavailable_returns_503():
     assert resp.status_code == 503
 
 
+def _paging_condition_rows() -> list[dict]:
+    from butlers.core.fleet_conditions import (
+        FLEET_FINGERPRINT,
+        FLEET_SOURCE,
+        QA_PATROL_OVERDUE_FINGERPRINT,
+        QA_PATROL_SOURCE,
+    )
+
+    fleet = {**_make_condition_row(source=FLEET_SOURCE), "fingerprint": FLEET_FINGERPRINT}
+    qa = {
+        **_make_condition_row(source=QA_PATROL_SOURCE),
+        "id": "22222222-2222-2222-2222-222222222222",
+        "fingerprint": QA_PATROL_OVERDUE_FINGERPRINT,
+    }
+    return [fleet, qa, _make_condition_row()]
+
+
+async def test_conditions_link_attention_status_for_paging_identities():
+    """REQ-butler-control-plane-liveness-007: linked delivery truth, safe copy only."""
+    rows = _paging_condition_rows()
+    attention_pool = AsyncMock()
+    attention_pool.fetch = AsyncMock(
+        return_value=[
+            {
+                "condition_id": rows[0]["id"],
+                "condition_kind": "fleet_control",
+                "episode_id": "33333333-3333-3333-3333-333333333333",
+                "lifecycle_state": "uncertain",
+                "outbox_retained": True,
+                "created_at": _NOW,
+                "updated_at": _NOW,
+                "delivered_at": None,
+                "delivery_error_class": "transport_uncertain",
+                "delivery_error_detail": "worker_recovery",
+                "delivery_worker_live": True,
+            },
+            {
+                "condition_id": rows[1]["id"],
+                "condition_kind": "qa_patrol_overdue",
+                "episode_id": "44444444-4444-4444-4444-444444444444",
+                "lifecycle_state": "pending",
+                "outbox_retained": True,
+                "created_at": _NOW,
+                "updated_at": _NOW,
+                "delivered_at": None,
+                "delivery_error_class": None,
+                "delivery_error_detail": None,
+                "delivery_worker_live": False,
+            },
+        ]
+    )
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = _make_conditions_pool_mock(rows=rows)
+    mock_db.credential_shared_pool.return_value = attention_pool
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/conditions")
+    assert resp.status_code == 200
+    fleet, qa, other = resp.json()["data"]["conditions"]
+    assert fleet["attention"]["status"] == "uncertain"
+    assert fleet["attention"]["delivered_at"] is None
+    assert fleet["attention"]["safe_reason"] == "A dead delivery claim was fenced as uncertain"
+    assert qa["attention"]["status"] == "worker_unavailable"
+    assert other["attention"] is None
+
+
+async def test_conditions_attention_unreadable_is_unavailable_not_silent():
+    rows = _paging_condition_rows()
+    attention_pool = AsyncMock()
+    attention_pool.fetch = AsyncMock(side_effect=RuntimeError("permission denied"))
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = _make_conditions_pool_mock(rows=rows)
+    mock_db.credential_shared_pool.return_value = attention_pool
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/conditions")
+    data = resp.json()["data"]
+    assert data["conditions_available"] is True
+    fleet, qa, other = data["conditions"]
+    assert fleet["attention"] == qa["attention"]
+    assert fleet["attention"]["status"] == "unavailable"
+    assert other["attention"] is None
+
+
 async def test_conditions_rejects_invalid_state():
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = _make_conditions_pool_mock(rows=[])
