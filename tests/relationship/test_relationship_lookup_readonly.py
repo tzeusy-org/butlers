@@ -22,9 +22,11 @@ helper assigns.
 
 from __future__ import annotations
 
+import importlib.util
 import shutil
 import uuid
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import asyncpg
 import pytest
@@ -35,7 +37,6 @@ from butlers.tools.relationship.staleness import (
     FRESH_MAX_DAYS,
     staleness_band,
 )
-from roster.relationship.tests.evidence_schema import apply_evidence_schema
 
 pytestmark = [
     pytest.mark.integration,
@@ -47,6 +48,27 @@ pytestmark = [
 # ---------------------------------------------------------------------------
 # Schema provisioning — the three tables the lookup reads.
 # ---------------------------------------------------------------------------
+
+
+def _apply_evidence_schema():
+    """Load ``roster/relationship/tests/evidence_schema.py`` by path.
+
+    ``roster/`` is not importable from ``tests/`` on its own, and the rel_034 /
+    rel_035 DDL must not be copied here (same loader as
+    ``tests/integration/test_email_identity_enrichment_db.py``).
+    """
+    schema_path = (
+        Path(__file__).resolve().parents[2]
+        / "roster"
+        / "relationship"
+        / "tests"
+        / "evidence_schema.py"
+    )
+    spec = importlib.util.spec_from_file_location("_relationship_evidence_schema", schema_path)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.apply_evidence_schema
 
 
 async def _provision_lookup_schema(p: asyncpg.Pool) -> None:
@@ -91,7 +113,7 @@ async def _provision_lookup_schema(p: asyncpg.Pool) -> None:
         )
     """)
     # rel_034/rel_035 stores: the identity fact below carries effective time.
-    await apply_evidence_schema(p)
+    await _apply_evidence_schema()(p)
     # Minimal narrative facts table — only the columns the lookup SELECTs touch.
     await p.execute("""
         CREATE TABLE IF NOT EXISTS facts (
