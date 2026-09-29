@@ -9,7 +9,7 @@ import userEvent from "@testing-library/user-event";
 import ButlerDetailPage from "@/pages/ButlerDetailPage";
 import SystemPage from "@/pages/SystemPage";
 import { getAllTabs, isValidTab } from "@/pages/butler-detail-tabs";
-import { useButler, useButlers, useRuntimeConfig } from "@/hooks/use-butlers";
+import { useButler, useButlerSkills, useButlers, useRuntimeConfig } from "@/hooks/use-butlers";
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board";
 import { useButlerHeartbeats } from "@/hooks/use-system";
 import type { ButlerSummary } from "@/api/types";
@@ -974,5 +974,33 @@ describe("Spec scenario -- responsive tab rail", () => {
       await user.keyboard("{ArrowRight}");
       expect(document.activeElement).toBe(triggers[i]);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Skills "Use skill" prefill (bu-9ppi0z)
+// ---------------------------------------------------------------------------
+
+describe("ButlerDetailPage — Use skill prefills the command bar", () => {
+  it("stays on System/Skills and prefills the command input (no Overview fallback)", async () => {
+    const setSearchParams = vi.fn();
+    vi.mocked(useSearchParams).mockReturnValue([
+      new URLSearchParams("tab=system&section=skills"),
+      setSearchParams,
+    ]);
+    vi.mocked(useButlerSkills).mockReturnValue({
+      data: { data: [{ name: "foo", content: "Does foo things." }], meta: {} },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useButlerSkills>);
+    renderPageLive();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Use skill" }));
+
+    const input = screen.getByTestId("butler-command-input") as HTMLInputElement;
+    expect(input.value).toBe("Use the foo skill to ");
+    expect(setSearchParams).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Use skill" })).toBeDefined();
   });
 });

@@ -43,7 +43,12 @@ vi.mock("@/components/chat/ChatPanel", () => ({
 }));
 
 import { ButlerDetailActions } from "./ButlerDetailActions";
+import {
+  ButlerCommandBarPrefillProvider,
+  useCommandBarPrefill,
+} from "./command-bar-prefill";
 import { triggerButler } from "@/api/index.ts";
+import { toast } from "sonner";
 import { useRegistry } from "@/hooks/use-general";
 import type { RegistryEntry } from "@/api/types";
 
@@ -83,6 +88,30 @@ function renderActions(butlerName = "general") {
     <QueryClientProvider client={client}>
       <MemoryRouter>
         <ButlerDetailActions butlerName={butlerName} />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+/** Stands in for the Skills section: asks the command bar for a prefill. */
+function PrefillRequester({ text }: { text: string }) {
+  const { request } = useCommandBarPrefill();
+  return (
+    <button type="button" data-testid="request-prefill" onClick={() => request(text)}>
+      request
+    </button>
+  );
+}
+
+function renderActionsWithPrefill(text = "Use the foo skill to ") {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter>
+        <ButlerCommandBarPrefillProvider>
+          <ButlerDetailActions butlerName="general" />
+          <PrefillRequester text={text} />
+        </ButlerCommandBarPrefillProvider>
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -235,5 +264,68 @@ describe("ButlerDetailActions — quarantine reason/timestamp at the restore dec
     renderActions();
 
     expect(screen.queryByTestId("butler-quarantine-info")).toBeNull();
+  });
+});
+
+describe("ButlerDetailActions — skill prefill (bu-9ppi0z)", () => {
+  beforeEach(() => vi.clearAllMocks());
+  afterEach(() => cleanup());
+
+  it("prefills and focuses the command input without running anything", async () => {
+    renderActionsWithPrefill();
+    fireEvent.click(screen.getByTestId("request-prefill"));
+
+    const input = screen.getByTestId("butler-command-input") as HTMLInputElement;
+    await waitFor(() => expect(input.value).toBe("Use the foo skill to "));
+    await waitFor(() => expect(document.activeElement).toBe(input));
+    expect(input.selectionStart).toBe("Use the foo skill to ".length);
+    expect(triggerButler).not.toHaveBeenCalled();
+  });
+
+  it("submits the prefilled prompt on Run at the selected complexity", async () => {
+    vi.mocked(triggerButler).mockResolvedValue({ success: true, session_id: "", output: "" });
+
+    renderActionsWithPrefill();
+    fireEvent.click(screen.getByTestId("request-prefill"));
+    const input = screen.getByTestId("butler-command-input") as HTMLInputElement;
+    await waitFor(() => expect(input.value).toBe("Use the foo skill to "));
+    fireEvent.change(input, { target: { value: "Use the foo skill to plan the week" } });
+    fireEvent.click(screen.getByTestId("butler-force-run"));
+
+    await waitFor(() =>
+      expect(triggerButler).toHaveBeenCalledWith(
+        "general",
+        "Use the foo skill to plan the week",
+        "workhorse",
+      ),
+    );
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith("Prompt sent"));
+  });
+
+  it("drops a prefill requested mid-run and applies the next one after completion", async () => {
+    let finishRun: (value: { success: boolean; session_id: string; output: string }) => void =
+      () => {};
+    vi.mocked(triggerButler).mockReturnValue(
+      new Promise((resolve) => {
+        finishRun = resolve;
+      }),
+    );
+
+    renderActionsWithPrefill();
+    const input = screen.getByTestId("butler-command-input") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "draft prompt" } });
+    fireEvent.click(screen.getByTestId("butler-force-run"));
+    await waitFor(() => expect(input.disabled).toBe(true));
+
+    fireEvent.click(screen.getByTestId("request-prefill"));
+    expect(input.value).toBe("draft prompt");
+
+    finishRun({ success: true, session_id: "", output: "" });
+    await waitFor(() => expect(input.disabled).toBe(false));
+    expect(input.value).toBe("");
+
+    fireEvent.click(screen.getByTestId("request-prefill"));
+    await waitFor(() => expect(input.value).toBe("Use the foo skill to "));
+    expect(triggerButler).toHaveBeenCalledTimes(1);
   });
 });
