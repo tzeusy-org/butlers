@@ -157,4 +157,25 @@ describe("importCalendarIcs", () => {
     expect(error.status).toBe(400);
     expect(error.message).toBe("Uploaded .ics file is empty");
   });
+
+  it("maps a structured dict detail through the shared apiFetch error parser", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      statusText: "Conflict",
+      json: async () => ({
+        detail: { code: "calendar_busy", message: "Another import is running." },
+      }),
+    });
+    const error = await importCalendarIcs({
+      file: icsFile(),
+      butlerName: "general",
+    }).catch((e) => e);
+    expect(error).toBeInstanceOf(ApiError);
+    expect([error.code, error.message, error.status]).toEqual([
+      "calendar_busy",
+      "Another import is running.",
+      409,
+    ]);
+  });
 });
