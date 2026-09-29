@@ -523,7 +523,7 @@ def test_inventory_surfaces_shared_pool_system_secrets_as_editable():
     family tagged butler='shared-public' and flagged read_only=false.
 
     These are the shared application credentials (Google OAuth app keys, etc.)
-    that the consolidated /secrets page surfaces after /settings/owner was
+    that the consolidated /secrets page surfaces after the owner-settings page was
     removed.  They are now fully editable via target='shared-public' which
     routes mutations to the correct public pool.  The passport no longer needs
     to block editing these rows.

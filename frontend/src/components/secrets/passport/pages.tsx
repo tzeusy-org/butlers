@@ -2285,7 +2285,7 @@ export function PageSystem({
           the shared GOOGLE_OAUTH_CLIENT_ID / _SECRET keys. Writes via the
           oauth PUT endpoint (the correct public credential-pool location) and
           carries the (re-)authorize action that formerly lived on
-          /settings/owner. */}
+          the retired owner-settings page. */}
       {isGoogleApp && (
         <div className="pt-3.5" style={{ borderTop: "1px solid var(--border)" }}>
           <GoogleAppCredentials />

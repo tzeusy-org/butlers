@@ -173,11 +173,6 @@ def test_build_success_redirect_ingestion():
     assert url == "/ingestion/connectors"
 
 
-def test_build_success_redirect_settings_owner():
-    url = _build_success_redirect_url("google", "settings_owner")
-    assert url == "/settings/owner?toast=connected&provider=google"
-
-
 def test_build_success_redirect_for_synthetic_provider():
     url = _build_success_redirect_url(_SYNTHETIC_PROVIDER, "secrets")
     assert url == "/secrets?focus=u:test-provider&toast=connected"
@@ -611,12 +606,18 @@ async def test_callback_page_of_origin_ingestion_redirects_to_ingestion(
     assert location == "/ingestion/connectors"
 
 
-async def test_callback_success_with_dashboard_base_url(app, monkeypatch, synthetic_oauth_provider):
-    """OAUTH_DASHBOARD_URL is the frontend base URL prefixed onto the built path [bu-e6k2h]."""
+@pytest.mark.parametrize("page_of_origin", ["secrets", "settings_owner"])
+async def test_callback_success_with_dashboard_base_url(
+    app, monkeypatch, synthetic_oauth_provider, page_of_origin
+):
+    """OAUTH_DASHBOARD_URL is the frontend base URL prefixed onto the built path [bu-e6k2h].
+
+    A pre-deploy state token carrying the retired ``settings_owner`` origin lands on /secrets.
+    """
     monkeypatch.setenv("OAUTH_DASHBOARD_URL", "https://example.test/butlers-dev")
     _make_app(app)
     state = _generate_state()
-    _store_state(state, page_of_origin="secrets", provider=_SYNTHETIC_PROVIDER)
+    _store_state(state, page_of_origin=page_of_origin, provider=_SYNTHETIC_PROVIDER)
 
     mock_cred_store = AsyncMock()
     mock_cred_store.store = AsyncMock()
@@ -642,14 +643,18 @@ async def test_callback_success_with_dashboard_base_url(app, monkeypatch, synthe
     )
 
 
+@pytest.mark.parametrize("page_of_origin", ["secrets", "settings_owner"])
 async def test_callback_provider_error_with_dashboard_base_url(
-    app, monkeypatch, synthetic_oauth_provider
+    app, monkeypatch, synthetic_oauth_provider, page_of_origin
 ):
-    """Provider error with OAUTH_DASHBOARD_URL set redirects to base + built error path."""
+    """Provider error with OAUTH_DASHBOARD_URL set redirects to base + built error path.
+
+    A pre-deploy state token carrying the retired ``settings_owner`` origin lands on /secrets.
+    """
     monkeypatch.setenv("OAUTH_DASHBOARD_URL", "https://example.test/butlers-dev")
     _make_app(app)
     state = _generate_state()
-    _store_state(state, page_of_origin="secrets", provider=_SYNTHETIC_PROVIDER)
+    _store_state(state, page_of_origin=page_of_origin, provider=_SYNTHETIC_PROVIDER)
 
     with patch(_EMIT_AUDIT_PATCH, AsyncMock()):
         async with httpx.AsyncClient(
@@ -1064,9 +1069,23 @@ def test_build_error_redirect_no_connector_detail_path_unchanged():
     )
 
 
-def test_build_error_redirect_settings_owner():
-    url = _build_error_redirect_url("google", "settings_owner", "provider_error")
-    assert url == "/settings/owner?oauth_error=provider_error&provider=google"
+@pytest.mark.parametrize(
+    ("build", "expected"),
+    [
+        (
+            lambda: _build_success_redirect_url("google", "settings_owner"),
+            "/secrets?focus=u:google&toast=connected",
+        ),
+        (
+            lambda: _build_error_redirect_url("google", "settings_owner", "provider_error"),
+            "/secrets?focus=u:google&oauth_error=provider_error",
+        ),
+    ],
+    ids=["success", "error"],
+)
+def test_retired_settings_owner_origin_falls_back_to_secrets(build, expected):
+    """The removed /settings/owner route is never a target; the /secrets default applies."""
+    assert build() == expected
 
 
 # --- State store round-trip test ---
