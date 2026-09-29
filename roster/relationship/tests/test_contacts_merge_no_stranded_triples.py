@@ -30,7 +30,7 @@ from __future__ import annotations
 import importlib
 import shutil
 import uuid
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import asyncpg
 import pytest
@@ -681,6 +681,307 @@ class TestEffectiveTimeMutatorFences:
                 "SELECT count(*) FROM public.entity_graph_edges "
                 "WHERE subject_entity_id = $1 OR object_entity_id = $1",
                 companion,
+            )
+            == 0
+        )
+
+    # -- Post-cutover race windows (bu-p2bjsf) --------------------------------
+
+    @staticmethod
+    async def _linked_contacts(
+        pool: asyncpg.Pool, target_entity: uuid.UUID, source_entity: uuid.UUID
+    ) -> tuple[uuid.UUID, uuid.UUID]:
+        """(target contact, source contact), each bridged and carrying one note."""
+        contacts = []
+        for name, entity in (("Target", target_entity), ("Source", source_entity)):
+            contact = await pool.fetchval(
+                "INSERT INTO contacts (name, entity_id) VALUES ($1, $2) RETURNING id", name, entity
+            )
+            await pool.execute(
+                "INSERT INTO contact_entity_map (contact_id, entity_id) VALUES ($1, $2)",
+                contact,
+                entity,
+            )
+            await pool.execute("INSERT INTO notes (contact_id) VALUES ($1)", contact)
+            contacts.append(contact)
+        return contacts[0], contacts[1]
+
+    @pytest.mark.parametrize("side", ["subject", "object"])
+    async def test_contact_merge_refuses_a_row_turned_temporal_after_its_preflight(
+        self, pool, monkeypatch, side
+    ):
+        """A row that gains effective time between the unlocked preflight and the
+        locked re-check refuses the whole merge: no contact, entity or fact write,
+        and the memory entity merge never runs."""
+        from butlers.modules.memory.tools import entities as memory_entities
+        from butlers.tools.relationship import contacts as contacts_mod
+
+        await simulate_temporal_cutover(pool)
+        target_entity = await _insert_entity(pool, name="Erin", roles=[])
+        source_entity = await _insert_entity(pool, name="Erin dup", roles=[])
+        await pool.execute(
+            'UPDATE public.entities SET metadata = \'{"profile": {"city": "Oslo"}}\' WHERE id = $1',
+            source_entity,
+        )
+        if side == "subject":
+            await _add_channel_fact(pool, source_entity, "has-email", "erin@example.test")
+            raced = await pool.fetchval(
+                "SELECT id FROM relationship.entity_facts WHERE subject = $1", source_entity
+            )
+        else:
+            other = await _insert_entity(pool, name="Frank", roles=[])
+            raced = await pool.fetchval(
+                """
+                INSERT INTO relationship.entity_facts (subject, predicate, object, object_kind, src)
+                VALUES ($1, 'knows', $2, 'entity', 'test')
+                RETURNING id
+                """,
+                other,
+                str(source_entity),
+            )
+        target_contact, source_contact = await self._linked_contacts(
+            pool, target_entity, source_entity
+        )
+
+        real_fence = contacts_mod._fence_legacy_fact_repoint
+        calls = []
+        injected = {}
+
+        async def racing_fence(conn, source_id, target_id):
+            calls.append(conn)
+            await real_fence(conn, source_id, target_id)
+            if len(calls) == 1:
+                # Another session commits an effective-time packet onto an
+                # affected row after the unlocked preflight passed.
+                await pool.execute(
+                    "UPDATE relationship.entity_facts SET effective_period_id = $2, "
+                    "effective_from = '2021-01-01Z', effective_from_precision = 'year' "
+                    "WHERE id = $1",
+                    raced,
+                    uuid.uuid4(),
+                )
+                injected["state"] = await _merge_state(pool)
+                injected["notes"] = await pool.fetch("SELECT id, contact_id FROM notes ORDER BY id")
+
+        memory_merges = []
+
+        async def spy_entity_merge(*args, **kwargs):
+            memory_merges.append(args)
+
+        monkeypatch.setattr(contacts_mod, "_fence_legacy_fact_repoint", racing_fence)
+        monkeypatch.setattr(memory_entities, "entity_merge", spy_entity_merge)
+
+        with pytest.raises(TemporalError) as caught:
+            await contacts_mod.contact_merge(
+                pool, source_id=source_contact, target_id=target_contact
+            )
+
+        assert caught.value.code == MUTATOR_UNSUPPORTED
+        assert len(calls) == 2  # the preflight, then the re-check under locks
+        assert await _merge_state(pool) == injected["state"]
+        assert await pool.fetch("SELECT id, contact_id FROM notes ORDER BY id") == injected["notes"]
+        assert memory_merges == []
+
+    async def test_contact_merge_locks_affected_rows_against_a_concurrent_correction(
+        self, pool, monkeypatch
+    ):
+        """A correction started after the merge takes its locks waits for the
+        commit, then applies once. A correction naming a row the merge moved fails
+        visibly instead of silently landing on the merged-away subject."""
+        import asyncio
+
+        from butlers.modules.memory.tools import entities as memory_entities
+        from butlers.tools.relationship import contacts as contacts_mod
+        from butlers.tools.relationship.relationship_assert_fact import (
+            AssertOutcome,
+            relationship_assert_fact,
+        )
+
+        await simulate_temporal_cutover(pool)
+        target_entity = await _insert_entity(pool, name="Gale", roles=[])
+        source_entity = await _insert_entity(pool, name="Gale dup", roles=[])
+        await _add_channel_fact(pool, target_entity, "has-email", "gale@work.test")
+        await _add_channel_fact(pool, source_entity, "has-email", "gale@home.test")
+        kept_id, moved_id = [
+            await pool.fetchval(
+                "SELECT id FROM relationship.entity_facts WHERE subject = $1", entity
+            )
+            for entity in (target_entity, source_entity)
+        ]
+        target_contact, source_contact = await self._linked_contacts(
+            pool, target_entity, source_entity
+        )
+
+        def correct(subject, value, fact_id):
+            return relationship_assert_fact(
+                pool,
+                subject,
+                "has-email",
+                value,
+                src="test",
+                corrects_fact_id=fact_id,
+                effective_from="2019",
+                effective_from_precision="year",
+            )
+
+        real_fence = contacts_mod._fence_legacy_fact_repoint
+        corrections = []
+
+        async def fence_then_race(conn, source_id, target_id):
+            await real_fence(conn, source_id, target_id)
+            if isinstance(conn, asyncpg.Connection) and not corrections:
+                # The merge now holds its row locks: start both corrections and
+                # wait until they are blocked on them.
+                corrections.append(
+                    asyncio.create_task(correct(target_entity, "gale@work.test", kept_id))
+                )
+                corrections.append(
+                    asyncio.create_task(correct(source_entity, "gale@home.test", moved_id))
+                )
+                for _ in range(500):
+                    waiting = await pool.fetchval(
+                        "SELECT count(*) FROM pg_stat_activity "
+                        "WHERE datname = current_database() AND wait_event_type = 'Lock'"
+                    )
+                    if waiting >= 2:
+                        break
+                    await asyncio.sleep(0.01)
+                else:
+                    raise AssertionError("corrections did not block on the merge locks")
+                assert not any(task.done() for task in corrections)
+
+        monkeypatch.setattr(contacts_mod, "_fence_legacy_fact_repoint", fence_then_race)
+        # Isolate the relationship transaction's own locks: the post-commit
+        # merge_entity_pair locks entity-then-fact while a correction's replacement
+        # insert takes fact-then-entity (FK), which Postgres may resolve as a
+        # detected deadlock; that pair is not what this test measures.
+        monkeypatch.setattr(memory_entities, "entity_merge", AsyncMock())
+
+        await contacts_mod.contact_merge(pool, source_id=source_contact, target_id=target_contact)
+        kept_result, moved_result = await asyncio.gather(*corrections, return_exceptions=True)
+
+        # The locked, unmoved target row: corrected exactly once after the commit.
+        assert kept_result.outcome == AssertOutcome.superseded
+        active = await pool.fetch(
+            "SELECT id, effective_from_precision FROM relationship.entity_facts "
+            "WHERE subject = $1 AND object = 'gale@work.test' AND validity = 'active'",
+            target_entity,
+        )
+        assert [(r["id"], r["effective_from_precision"]) for r in active] == [
+            (kept_result.fact_id, "year")
+        ]
+        # The moved row: repointed with its packet, and the stale correction
+        # naming its old subject is refused rather than lost or duplicated.
+        assert isinstance(moved_result, TemporalError)
+        moved = await pool.fetchrow(
+            "SELECT subject, validity, effective_from FROM relationship.entity_facts WHERE id = $1",
+            moved_id,
+        )
+        assert (moved["subject"], moved["validity"], moved["effective_from"]) == (
+            target_entity,
+            "active",
+            None,
+        )
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM relationship.entity_facts "
+                "WHERE object = 'gale@home.test' AND validity = 'active'"
+            )
+            == 1
+        )
+
+    async def test_contact_merge_skips_a_missing_optional_child_table(self, pool):
+        """A missing optional child table no longer aborts the merge transaction."""
+        from butlers.tools.relationship.contacts import contact_merge
+
+        await pool.execute("DROP TABLE stay_in_touch")
+        target_entity = await _insert_entity(pool, name="Hana", roles=[])
+        source_entity = await _insert_entity(pool, name="Hana dup", roles=[])
+        await _add_channel_fact(pool, source_entity, "has-email", "hana@example.test")
+        target_contact, source_contact = await self._linked_contacts(
+            pool, target_entity, source_entity
+        )
+
+        await contact_merge(pool, source_id=source_contact, target_id=target_contact)
+
+        assert (
+            await pool.fetchval("SELECT count(*) FROM notes WHERE contact_id = $1", target_contact)
+            == 2
+        )
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM contact_entity_map WHERE contact_id = $1", source_contact
+            )
+            == 0
+        )
+        assert (
+            await pool.fetchval(
+                "SELECT subject FROM relationship.entity_facts WHERE object = 'hana@example.test' "
+                "AND validity = 'active'"
+            )
+            == target_entity
+        )
+
+    @pytest.mark.parametrize(
+        ("race", "code"),
+        [
+            ("temporal", "temporal_mutator_unsupported"),
+            ("retracted", "contact_fact_changed"),
+            ("revalued", "contact_fact_changed"),
+        ],
+    )
+    async def test_contact_value_edit_rechecks_its_row_under_lock(
+        self, pool, monkeypatch, race, code
+    ):
+        """A row changed between hash selection and the edit transaction is refused
+        with 409 before its retraction, and nothing is written."""
+        from fastapi import HTTPException, Response
+
+        from butlers.api.router_discovery import discover_butler_routers
+
+        router = next(m for name, m in discover_butler_routers() if name == "relationship")
+        await simulate_temporal_cutover(pool)
+        await _insert_entity(pool, name="Owner", roles=["owner"])
+        subject = await _insert_entity(pool, name="Ivy", roles=[])
+        value = "ivy@example.test"
+        await _add_channel_fact(pool, subject, "has-email", value)
+        fact_id = await pool.fetchval(
+            "SELECT id FROM relationship.entity_facts WHERE subject = $1", subject
+        )
+        mutation = {
+            "temporal": (
+                "UPDATE relationship.entity_facts SET effective_period_id = gen_random_uuid(), "
+                "effective_from = '2021-01-01Z', effective_from_precision = 'year' WHERE id = $1"
+            ),
+            "retracted": "UPDATE relationship.entity_facts SET validity = 'retracted' WHERE id = $1",
+            "revalued": "UPDATE relationship.entity_facts SET object = 'ivy@new.test' WHERE id = $1",
+        }[race]
+        real_resolve = router._resolve_contact_fact_by_hash
+        injected = {}
+
+        async def resolve_then_race(*args):
+            row = await real_resolve(*args)
+            await pool.execute(mutation, fact_id)
+            injected["state"] = await _merge_state(pool)
+            return row
+
+        monkeypatch.setattr(router, "_resolve_contact_fact_by_hash", resolve_then_race)
+
+        with pytest.raises(HTTPException) as caught:
+            await router.update_entity_contact(
+                subject,
+                "has-email",
+                router._contact_value_hash(value),
+                router.UpdateContactRequest(new_value="ivy@edited.test"),
+                Response(),
+                db=_db_with_pool(pool),
+            )
+
+        assert (caught.value.status_code, caught.value.detail["code"]) == (409, code)
+        assert await _merge_state(pool) == injected["state"]
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM relationship.entity_facts WHERE object = 'ivy@edited.test'"
             )
             == 0
         )

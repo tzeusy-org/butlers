@@ -57,12 +57,14 @@ _INVENTORY: dict[tuple[str, str], str] = {
     ("roster/relationship/tools/entity_merge.py", "merge_entity_pair"): (
         "entity merge: lock+plan, repoint intact, collision refused"
     ),
-    ("roster/relationship/tools/contacts.py", "contact_merge"): (
-        "legacy contact merge: preflight fence before first write"
+    ("roster/relationship/tools/contacts.py", "_repoint_entity_facts"): (
+        "legacy contact merge: fence re-run under locks, one all-or-nothing transaction"
     ),
     (_ROUTER, "delete_entity_contact"): "hash selector: one occurrence or 409, exact-id retract",
     (_ROUTER, "verify_entity_contact"): "hash selector: one occurrence or 409, exact-id verify",
-    (_ROUTER, "update_entity_contact"): "hash selector; temporal value edit refused",
+    (_ROUTER, "update_entity_contact"): (
+        "hash selector; row re-locked before retract, temporal value edit refused"
+    ),
     (_ROUTER, "forget_entity"): "intentional all-occurrence retraction with projections",
     ("src/butlers/google_account_registry.py", "disconnect_account"): (
         "companion hard delete: destructive all-version FK cascade"
