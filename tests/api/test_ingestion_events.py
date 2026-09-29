@@ -693,12 +693,9 @@ async def test_sender_contact_resolved(app):
     # resolve_contact_by_channel returns None (default) — we'll patch it
     _app_with_mock_db(app, shared_pool=pool)
 
-    from uuid import uuid4 as _uuid4
-
     from butlers.identity import ResolvedContact
 
     resolved = ResolvedContact(
-        contact_id=_uuid4(),
         name="Alice Smith",
         roles=[],
         entity_id=None,
