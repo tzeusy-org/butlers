@@ -97,15 +97,21 @@
   each one audited `422 INVALID_REQUEST` with zero writes) and
   `test_mounted_count_and_length_edges_pass_structural_validation` (exactly 50
   members and a 255-byte identifier clear validation).
-- [ ] 4.7 Privacy absence-sentinel tests plant distinct synthetic sentinels in
+- [x] 4.7 Privacy absence-sentinel tests plant distinct synthetic sentinels in
   both identifiers and assert absence from response body/headers, error details,
   generic and explicit audit rows, captured logs, rendered exception text,
   metric labels, span attributes/events/baggage, request URLs, session/prompt
   stores, browser persistence/query state, and mounted MCP/runtime tool
   registries. Assert the explicit audit field set positively so an empty-audit
   bug cannot make the absence test pass.
-  Open: PR #4255 proves every clause except span baggage; exported span
-  attributes and events are scanned, but OpenTelemetry baggage is not asserted.
+  Evidence (PR #4255, bu-3d7y8d): #4255 proves every clause except span
+  baggage; bu-3d7y8d extends
+  `test_mounted_outcomes_are_aggregate_replayable_and_sentinel_free` to capture
+  OpenTelemetry baggage at span start (recording `SpanProcessor`) and at
+  mapping-router log emission (`logging.Filter`). An inbound `mapping_probe`
+  baggage entry must be observed in both captures (liveness). Every capture must
+  equal exactly that probe, no sentinel may appear, and no response may carry a
+  `baggage` header. A route that attaches an identifier to baggage fails the test.
 - [x] 4.8 Run targeted API/real-PostgreSQL/frontend tests, repo guards, strict
   OpenSpec and overwrite checks, fresh independent exact-head privacy/security
   review, and terminal hosted CI. Report the implementation PR's actual test
