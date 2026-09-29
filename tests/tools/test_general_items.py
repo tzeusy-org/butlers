@@ -3,67 +3,111 @@
 from __future__ import annotations
 
 import uuid
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from contextlib import asynccontextmanager
 
 import pytest
 
 
+class _ScriptedConnection:
+    """An acquired-connection stand-in: records SQL, answers from a script.
+
+    It has no ``acquire``, so the ordinary transaction helper uses it directly
+    as the caller's connection, exactly as the capture service will.
+    """
+
+    def __init__(self, collection_id: uuid.UUID | None, item_id: uuid.UUID) -> None:
+        self.statements: list[str] = []
+        self._collection_id = collection_id
+        self._created_id = uuid.uuid4()
+        self._item_id = item_id
+
+    @asynccontextmanager
+    async def transaction(self):
+        yield
+
+    async def fetchrow(self, sql: str, *args):
+        self.statements.append(sql)
+        if "has_flag" in sql:
+            return {"has_flag": True, "has_ordinary_index": True, "has_global_unique": True}
+        if "FOR SHARE OF c" in sql:
+            return {"id": args[0], "name": "episodes", "eligibility_generation": 0}
+        if "SELECT collection_id, data, tags" in sql:
+            return {"collection_id": args[0], "data": {}, "tags": []}
+        raise AssertionError(f"unscripted fetchrow: {sql}")
+
+    async def fetchval(self, sql: str, *args):
+        self.statements.append(sql)
+        if "WHERE custody_private)" in sql:
+            return False
+        if "AS candidate" in sql:
+            return self._collection_id
+        if "INSERT INTO collections" in sql:
+            return self._created_id
+        if "INSERT INTO collection_items" in sql:
+            return self._item_id
+        if "INSERT INTO source_versions" in sql:
+            return 1
+        raise AssertionError(f"unscripted fetchval: {sql}")
+
+
 @pytest.mark.asyncio
 async def test_item_create_auto_creates_collection_before_insert() -> None:
-    """item_create resolves-or-creates the collection, then inserts the item.
+    """A new ordinary name is created with the targetless writer, then the item.
 
-    The common path is a lightweight SELECT; a new collection name falls back
-    to an ON CONFLICT upsert before the item insert. This exercises the
-    new-collection path (SELECT misses, upsert creates, item inserts).
+    The namespace gate runs before any name lookup; the collection writer is
+    ``ON CONFLICT DO NOTHING`` (valid with or without legacy global uniqueness,
+    never ``ON CONFLICT (name)``); the created parent is share-locked before
+    the item insert; and the item's first source version is recorded last.
     """
-    from butlers.tools.general.items import item_create
+    from butlers.tools.general.items import item_create_versioned
 
-    collection_id = uuid.uuid4()
     expected_id = uuid.uuid4()
-    fetchval_mock = AsyncMock(side_effect=[None, collection_id, expected_id])
-    pool = SimpleNamespace(fetchval=fetchval_mock)
+    conn = _ScriptedConnection(collection_id=None, item_id=expected_id)
 
-    item_id = await item_create(
-        pool,
-        "episodes",
-        {"summary": "Captured note"},
-        tags=["auto-created"],
+    item_id, version = await item_create_versioned(
+        conn, "episodes", {"summary": "Captured note"}, tags=["auto-created"]
     )
 
     assert item_id == expected_id
-    assert fetchval_mock.await_count == 3
-
-    select_call = fetchval_mock.await_args_list[0].args
-    assert "SELECT id FROM collections" in select_call[0]
-    assert select_call[1] == "episodes"
-
-    coll_insert_call = fetchval_mock.await_args_list[1].args
-    assert "INSERT INTO collections" in coll_insert_call[0]
-    assert "ON CONFLICT (name) DO UPDATE" in coll_insert_call[0]
-    assert coll_insert_call[1] == "episodes"
-
-    item_insert_call = fetchval_mock.await_args_list[2].args
-    assert "INSERT INTO collection_items" in item_insert_call[0]
-    assert item_insert_call[1] == collection_id
-    assert item_insert_call[2] == {"summary": "Captured note"}
-    assert item_insert_call[3] == ["auto-created"]
+    assert (version.operation, version.version) == ("create", 1)
+    steps = [
+        "has_flag",
+        "WHERE custody_private)",
+        "AS candidate",
+        "INSERT INTO collections",
+        "FOR SHARE OF c",
+        "INSERT INTO collection_items",
+        "SELECT collection_id, data, tags",
+        "INSERT INTO source_versions",
+    ]
+    assert [next(s for s in steps if s in sql) for sql in conn.statements] == steps
+    collection_insert = next(sql for sql in conn.statements if "INSERT INTO collections" in sql)
+    assert "ON CONFLICT DO NOTHING" in collection_insert
+    assert "ON CONFLICT (name)" not in collection_insert
 
 
 @pytest.mark.asyncio
 async def test_item_create_reuses_existing_collection_without_upsert() -> None:
-    """When the collection exists, item_create skips the collections upsert."""
-    from butlers.tools.general.items import item_create
+    """When the ordinary collection exists, item_create never writes collections."""
+    from butlers.tools.general.items import item_create_versioned
 
-    collection_id = uuid.uuid4()
-    expected_id = uuid.uuid4()
-    fetchval_mock = AsyncMock(side_effect=[collection_id, expected_id])
-    pool = SimpleNamespace(fetchval=fetchval_mock)
+    conn = _ScriptedConnection(collection_id=uuid.uuid4(), item_id=uuid.uuid4())
 
-    item_id = await item_create(pool, "episodes", {"summary": "note"})
+    await item_create_versioned(conn, "episodes", {"summary": "note"})
 
-    assert item_id == expected_id
-    # Only the SELECT + the item insert run — no write to the collections row.
-    assert fetchval_mock.await_count == 2
-    assert "SELECT id FROM collections" in fetchval_mock.await_args_list[0].args[0]
-    assert "INSERT INTO collection_items" in fetchval_mock.await_args_list[1].args[0]
+    assert not any("INSERT INTO collections" in sql for sql in conn.statements)
+    assert any("INSERT INTO collection_items" in sql for sql in conn.statements)
+
+
+@pytest.mark.asyncio
+async def test_generic_item_writes_refuse_reserved_custody_fields_before_any_query() -> None:
+    """Generic input can never introduce or replace a custody profile."""
+    from butlers.tools.general.items import item_create_versioned, item_update
+
+    conn = _ScriptedConnection(collection_id=uuid.uuid4(), item_id=uuid.uuid4())
+
+    with pytest.raises(ValueError, match="reserved"):
+        await item_create_versioned(conn, "episodes", {"possession_profile": {}})
+    with pytest.raises(ValueError, match="reserved"):
+        await item_update(conn, uuid.uuid4(), {"possession_profile": None})
+    assert conn.statements == []
