@@ -4,6 +4,7 @@ import { useParams, useSearchParams } from "react-router";
 
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
 import { ButlerDetailActions } from "@/components/butler-detail/ButlerDetailActions";
+import { ButlerCommandBarPrefillProvider } from "@/components/butler-detail/command-bar-prefill";
 import { ButlerDetailHeader } from "@/components/butler-detail/ButlerDetailHeader";
 import ButlerOverviewTab from "@/components/butler-detail/ButlerOverviewTab";
 import ButlerActivitySection from "@/components/butler-detail/ButlerActivitySection";
@@ -229,6 +230,7 @@ export default function ButlerDetailPage() {
   const description = butlerResponse?.data?.description ?? undefined;
 
   return (
+    <ButlerCommandBarPrefillProvider>
     <Page
       archetype="status-board"
       title={titleize(name)}
@@ -414,5 +416,6 @@ export default function ButlerDetailPage() {
           </TabsContent>
         </Tabs>
     </Page>
+    </ButlerCommandBarPrefillProvider>
   );
 }

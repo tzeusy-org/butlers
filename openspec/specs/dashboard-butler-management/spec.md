@@ -1156,6 +1156,14 @@ with drill-down into each skill's SKILL.md.
 - **THEN** a dialog SHALL open showing the skill name as title and the full
   SKILL.md content in a scrollable monospace block
 
+#### Scenario: Use a skill from the command bar
+
+- **WHEN** the operator clicks "Use skill" on a skill card
+- **THEN** the header command bar prompt SHALL be prefilled with
+  `Use the <skill> skill to ` and focused with the caret at the end
+- **AND** the active tab and System sub-section SHALL NOT change
+- **AND** no session SHALL start until the operator presses Run
+
 ### Requirement: Butler Memory Tab Surface
 
 The butler detail Memory tab SHALL surface the butler's memory state as a KPI
