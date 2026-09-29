@@ -47,22 +47,29 @@
   a mixed new/identical batch, a fresh-key identical no-op, same-key exact
   replay, and same-key/different-body conflict against the actual mapping and
   receipt tables.
-- [ ] 4.2 Real PostgreSQL tests cover duplicate Home Assistant IDs, duplicate
+- [x] 4.2 Real PostgreSQL tests cover duplicate Home Assistant IDs, duplicate
   entity UUIDs, missing/tombstoned/merged/wrong-type entities, a legacy null
   target, conflicts in both mapping directions, and a database failure after an
   attempted insert; every refusal and injected failure leaves zero partial
   mapping writes and no false success receipt.
+  Evidence (PR #4255): `tests/api/test_home_person_mappings.py` nodes
+  `test_mounted_duplicates_and_legacy_null_target_refuse_without_writes`,
+  `test_real_postgres_batch_is_atomic_idempotent_and_content_blind`,
+  `test_real_postgres_entity_lifecycle_races_in_both_orders`, and
+  `test_real_postgres_serializes_competing_batches_and_rolls_back`.
 - [x] 4.3 Real PostgreSQL concurrency tests force two competing batches through
   the fixed advisory lock and prove that at most one complete non-conflicting
   mapping set commits, the loser is a content-blind `409`, and no partial or
   crossed mapping survives.
-- [ ] 4.4 Real PostgreSQL entity-lifecycle races force both orders for merge,
+- [x] 4.4 Real PostgreSQL entity-lifecycle races force both orders for merge,
   `metadata.deleted_at` tombstone, physical delete, and `entity_type` change.
   When the entity mutation commits first, the mapping waits and returns
   `INVALID_REFERENCE`; when mapping validation locks first, the mutation waits
   until mapping/receipt/audit commit. Assert the actual
   `metadata->>'merged_into'` / `metadata->>'deleted_at'` predicates, deterministic
   UUID lock order, zero partial writes, and no false success receipt.
+  Evidence (PR #4255): `tests/api/test_home_person_mappings.py::test_real_postgres_entity_lifecycle_races_in_both_orders`;
+  falsy-marker predicates in `test_real_postgres_batch_is_atomic_idempotent_and_content_blind`.
 - [x] 4.5 Real PostgreSQL idempotency races force overlap before lookup/insert.
   Same key plus the same canonical request must create one durable terminal
   record and return identical receipt/counts to both callers. Same key plus
@@ -81,6 +88,9 @@
   same rule. Assert the fixed `413 REQUEST_BODY_TOO_LARGE` envelope positively and
   zero JSON-decoder, receipt, actor, pool, protected-state, generic-audit, or
   explicit-audit interaction.
+  Open: PR #4255 proves every clause except "exact size/count/field
+  validation"; only the size bound and duplicate members are asserted, not the
+  1..50 count bound, unknown fields, or malformed identifier/key refusals.
 - [ ] 4.7 Privacy absence-sentinel tests plant distinct synthetic sentinels in
   both identifiers and assert absence from response body/headers, error details,
   generic and explicit audit rows, captured logs, rendered exception text,
@@ -88,6 +98,8 @@
   stores, browser persistence/query state, and mounted MCP/runtime tool
   registries. Assert the explicit audit field set positively so an empty-audit
   bug cannot make the absence test pass.
+  Open: PR #4255 proves every clause except span baggage; exported span
+  attributes and events are scanned, but OpenTelemetry baggage is not asserted.
 - [x] 4.8 Run targeted API/real-PostgreSQL/frontend tests, repo guards, strict
   OpenSpec and overwrite checks, fresh independent exact-head privacy/security
   review, and terminal hosted CI. Report the implementation PR's actual test
@@ -95,6 +107,8 @@
 
 ## 5. Archive only after implementation
 
-- [x] 5.1 After the separately approved implementation is merged, sync the new
+- [ ] 5.1 After the separately approved implementation is merged, sync the new
   capability to `openspec/specs/home-assistant-person-mapping/spec.md` and
   archive this change. Archival does not authorize deployment or mapping use.
+  Not yet done: the capability is not synced and the change is not archived.
+  Archive once 4.6 and 4.7 are complete.
