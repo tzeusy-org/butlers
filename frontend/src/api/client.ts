@@ -77,9 +77,6 @@ import type {
   QuickAddParseResponse,
   SetPrimaryCalendarRequest,
   SetPrimaryCalendarResponse,
-  ContactDetail,
-  ContactListResponse,
-  ContactParams,
   SpendSummary,
   DailySpendResponse,
   TopSessionsResponse,
@@ -186,7 +183,6 @@ import type {
   ReembedRunResult,
   UpdateRetentionPoliciesRequest,
   RuleParams,
-  ContactPatchRequest,
   OwnerSetupStatus,
   IngestionEventSummary,
   IngestionEventSession,
@@ -411,7 +407,6 @@ import type {
   HomeEnergyDataPoint,
   HomeTopConsumer,
   HomeCommandLogEntry,
-  ContactInteractionsResponse,
   OverdueContactsResponse,
   ButlerLogsParams,
   ButlerLogsResponse,
@@ -1979,58 +1974,9 @@ export function getCalendarWorkspaceAudit(
 // Relationship / CRM
 // ---------------------------------------------------------------------------
 
-/** Build URLSearchParams from contact query parameters. */
-function contactSearchParams(params?: ContactParams): URLSearchParams {
-  const sp = new URLSearchParams();
-  if (params?.q != null && params.q !== "") sp.set("q", params.q);
-  if (params?.label != null && params.label !== "") sp.set("label", params.label);
-  if (params?.archived) sp.set("archived", "true");
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  return sp;
-}
-
-/** Fetch a paginated list of contacts. */
-export function getContacts(params?: ContactParams): Promise<ContactListResponse> {
-  const qs = contactSearchParams(params).toString();
-  const path = qs ? `/relationship/contacts?${qs}` : "/relationship/contacts";
-  return apiFetch<ContactListResponse>(path);
-}
-
-/** Fetch a single contact by ID. */
-export function getContact(contactId: string): Promise<ContactDetail> {
-  return apiFetch<ContactDetail>(
-    `/relationship/contacts/${encodeURIComponent(contactId)}`,
-  );
-}
-
-/** Update a contact's fields (full_name, nickname, company, job_title, roles). */
-export function patchContact(
-  contactId: string,
-  request: ContactPatchRequest,
-): Promise<ContactDetail> {
-  return apiFetch<ContactDetail>(
-    `/relationship/contacts/${encodeURIComponent(contactId)}`,
-    { method: "PATCH", body: JSON.stringify(request) },
-  );
-}
-
 /** Get owner identity setup status. */
 export function getOwnerSetupStatus(): Promise<OwnerSetupStatus> {
   return apiFetch<OwnerSetupStatus>("/relationship/owner/setup-status");
-}
-
-/** Fetch chronological interaction thread for a contact (bu-iuol4.22). */
-export function getContactInteractions(
-  contactId: string,
-  limit?: number,
-): Promise<ContactInteractionsResponse> {
-  const sp = new URLSearchParams();
-  if (limit != null) sp.set("limit", String(limit));
-  const qs = sp.toString();
-  return apiFetch<ContactInteractionsResponse>(
-    `/relationship/contacts/${encodeURIComponent(contactId)}/interactions${qs ? `?${qs}` : ""}`,
-  );
 }
 
 /** Fetch contacts that are overdue on their Dunbar tier cadence (bu-iuol4.22). */
@@ -3167,6 +3113,20 @@ export function getEntityGifts(
   return apiFetch<EntityGift[]>(path);
 }
 
+/** Fetch interaction facts for a relationship entity, newest first. */
+export function getEntityInteractions(
+  entityId: string,
+  params?: { limit?: number; offset?: number },
+): Promise<EntityInteraction[]> {
+  const qs = new URLSearchParams();
+  if (params?.limit != null) qs.set("limit", String(params.limit));
+  if (params?.offset != null) qs.set("offset", String(params.offset));
+  const path = qs.size
+    ? `/relationship/entities/${encodeURIComponent(entityId)}/interactions?${qs}`
+    : `/relationship/entities/${encodeURIComponent(entityId)}/interactions`;
+  return apiFetch<EntityInteraction[]>(path);
+}
+
 // ---------------------------------------------------------------------------
 // Relationship butler: entity-level tab writes — the log-interaction and
 // gift-idea operator verbs (bu-6t8ix.4). A third verb, draft-reach-out
@@ -3622,27 +3582,6 @@ export function getEntityFacts(
 export function getEntityConcentration(pred?: string): Promise<ConcentrationResponse> {
   const qs = pred ? `?pred=${encodeURIComponent(pred)}` : "";
   return apiFetch<ConcentrationResponse>(`/relationship/entities/concentration${qs}`);
-}
-
-/** Link a contact to an entity. */
-export function setEntityLinkedContact(
-  entityId: string,
-  contactId: string,
-): Promise<{ entity_id: string; contact_id: string }> {
-  return apiFetch<{ entity_id: string; contact_id: string }>(
-    `/memory/entities/${encodeURIComponent(entityId)}/linked-contact`,
-    { method: "PUT", body: JSON.stringify({ contact_id: contactId }) },
-  );
-}
-
-/** Unlink the contact from an entity. */
-export function unlinkEntityContact(
-  entityId: string,
-): Promise<void> {
-  return apiFetch<void>(
-    `/memory/entities/${encodeURIComponent(entityId)}/linked-contact`,
-    { method: "DELETE" },
-  );
 }
 
 // ---------------------------------------------------------------------------

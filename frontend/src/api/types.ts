@@ -2244,24 +2244,6 @@ export interface Label {
   color: string | null;
 }
 
-/** Lightweight contact representation for list views. */
-export interface ContactSummary {
-  id: string;
-  full_name: string;
-  first_name: string | null;
-  last_name: string | null;
-  nickname: string | null;
-  email: string | null;
-  phone: string | null;
-  labels: Label[];
-  last_interaction_at: string | null;
-  warmth?: number | null;
-  /** Linked memory-graph entity; null for legacy/unlinked contacts.
-   * Surfaced so contacts-merge surfaces can route through the audited
-   * entity-merge compare view (bu-f0i4w). */
-  entity_id: string | null;
-}
-
 /** A single contact_info entry (phone, email, address, etc.).
  * When secured=true and value is null, the value is masked.
  * Use GET /relationship/entities/{entityId}/secrets/{infoId} to retrieve the real value.
@@ -2288,37 +2270,6 @@ export interface ContactInfoEntry {
    * POST /entities/{id}/contacts/{predicate}/{value_hash}/verify.
    * Drives the amber unverified-dot in ContactChannelCard. */
   verified?: boolean;
-}
-
-/** Full contact detail with all fields including identity fields. */
-export interface ContactDetail extends ContactSummary {
-  notes: string | null;
-  birthday: string | null;
-  company: string | null;
-  job_title: string | null;
-  address: string | null;
-  metadata: Record<string, unknown>;
-  created_at: string;
-  updated_at: string;
-  // Identity fields (entity_id is inherited from ContactSummary)
-  roles: string[];
-  contact_info: ContactInfoEntry[];
-}
-
-/** Request body for PATCH /contacts/{id}.
- *
- * `preferred_channel` is NOT writable here — it is an entity-level preference
- * written via PUT/DELETE /entities/{id}/preferred-channel (the entity-keyed
- * `prefers-channel` fact), see setEntityPreferredChannel / clearEntityPreferredChannel.
- */
-export interface ContactPatchRequest {
-  full_name?: string | null;
-  first_name?: string | null;
-  last_name?: string | null;
-  nickname?: string | null;
-  company?: string | null;
-  job_title?: string | null;
-  roles?: string[] | null;
 }
 
 /** Response for GET /owner/setup-status. */
@@ -2385,25 +2336,10 @@ export interface UpcomingDate {
   days_until: number;
 }
 
-/** Paginated contact list response. */
-export interface ContactListResponse {
-  contacts: ContactSummary[];
-  total: number;
-}
-
 /** Paginated group list response. */
 export interface GroupListResponse {
   groups: Group[];
   total: number;
-}
-
-/** Query parameters for the contacts list endpoint. */
-export interface ContactParams {
-  q?: string;
-  label?: string;
-  archived?: boolean;
-  offset?: number;
-  limit?: number;
 }
 
 /** Query parameters for the groups list endpoint. */
@@ -5665,23 +5601,6 @@ export interface DunbarRankingResponse {
   owner_entity_id: string | null;
   cadence_available?: boolean;
   unmeasurable_count?: number;
-}
-
-// ---------------------------------------------------------------------------
-// Contact interactions (bu-iuol4.22)
-// ---------------------------------------------------------------------------
-
-/** A single interaction event for a contact (GET /contacts/{id}/interactions). */
-export interface ContactInteraction {
-  ts: string;
-  direction: "in" | "out" | "drafted";
-  text: string;
-}
-
-/** Response from GET /api/relationship/contacts/{contact_id}/interactions?limit=N */
-export interface ContactInteractionsResponse {
-  contact_id: string;
-  interactions: ContactInteraction[];
 }
 
 // ---------------------------------------------------------------------------
