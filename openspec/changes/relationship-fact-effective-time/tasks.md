@@ -20,10 +20,10 @@
 
 ## 3. Future implementation owned by bu-h3b7t
 
-- [ ] 3.1 Add a then-free expand migration with nullable temporal columns, checks, and the occurrence
+- [x] 3.1 Add a then-free expand migration with nullable temporal columns, checks, and the occurrence
       index while retaining `uq_ef_spo_active`; prove the deployed old-writer SQL still prepares and
       writes against that real PostgreSQL schema.
-- [ ] 3.2 Deploy a transition writer using targetless conflict handling that canonicalizes the full
+- [x] 3.2 Deploy a transition writer using targetless conflict handling that canonicalizes the full
       presence/null matrix, preserves known packets on ordinary reassertion, freezes approval mode
       and base identity, and rejects temporal intent while the legacy index exists; prove omitted and
       explicit-null writes and approvals replay identically.
@@ -31,7 +31,7 @@
       removes the legacy index and enables temporal/repeated-period behavior only after the complete
       production mutator inventory is compatible or fenced, with the specified rollback refusal once
       temporal data exists.
-- [ ] 3.4 Add the static production-DML inventory guard and implement the specified behavior/fence for
+- [x] 3.4 Add the static production-DML inventory guard and implement the specified behavior/fence for
       owner bootstrap, entity merge, contact merge, SPO/hash lifecycle and verification, contact
       value edit, preferred-channel, entity forget, and explicit companion-entity cascades.
 - [ ] 3.5 Add real-PostgreSQL scenarios for the actual old/new SQL transition; legacy rows;

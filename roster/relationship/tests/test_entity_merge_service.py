@@ -35,6 +35,7 @@ from butlers.tools.relationship.entity_merge import (
     TargetEntityTombstonedError,
     merge_entity_pair,
 )
+from roster.relationship.tests.evidence_schema import apply_evidence_schema
 
 
 def _locked_row(entity_id: UUID, *, tombstoned: bool = False) -> dict:
@@ -233,6 +234,7 @@ async def merge_pool(provisioned_postgres_pool):
             ON relationship.entity_facts (subject, predicate, object)
             WHERE validity = 'active'
         """)
+        await apply_evidence_schema(pool)
         await pool.execute("""
             CREATE TABLE facts (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -833,10 +835,10 @@ async def _insert_fact_with_edge(
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_merge_repoints_projected_edges_for_rewired_facts_only(merge_pool) -> None:
     """bu-8478w: rewiring entity_facts.subject/object must repoint their live
-    entity_graph_edges rows in the same transaction, but a fact that is
-    SUPERSEDED (not rewired) by the merge's dedup step must keep its stale
-    edge untouched -- it is retired by the next backfill sweep, not by the
-    merge itself.
+    entity_graph_edges rows in the same transaction, and a fact that is
+    SUPERSEDED (not rewired) by the merge's dedup step loses its edge in that
+    same transaction (relationship-fact-effective-time: every projection is
+    reconciled with the merge) instead of being repointed onto the target.
     """
     pool = merge_pool
     target_id = await _insert_entity(pool, "Target")
@@ -896,16 +898,15 @@ async def test_merge_repoints_projected_edges_for_rewired_facts_only(merge_pool)
     assert object_edge["subject_entity_id"] == second_other_id
     assert object_edge["object_entity_id"] == target_id
 
-    # The superseded (not rewired) fact's edge must be left exactly as it was
-    # -- still pointing at source_id -- not touched by the rewire's edge update.
+    # The superseded (not rewired) fact is no longer current, so its edge is
+    # removed with it -- never repointed onto the surviving entity.
     superseded_edge = await pool.fetchrow(
-        "SELECT subject_entity_id, object_entity_id FROM public.entity_graph_edges"
+        "SELECT 1 FROM public.entity_graph_edges"
         " WHERE source_schema = 'relationship' AND source_table = 'entity_facts'"
         " AND source_id = $1",
         superseded_fact_id,
     )
-    assert superseded_edge["subject_entity_id"] == other_id
-    assert superseded_edge["object_entity_id"] == source_id
+    assert superseded_edge is None
 
     superseded_fact_validity = await pool.fetchval(
         "SELECT validity FROM relationship.entity_facts WHERE id = $1",

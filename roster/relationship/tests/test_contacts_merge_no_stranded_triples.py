@@ -17,10 +17,17 @@ This test exercises the audited path end-to-end over a real Postgres pool — th
 exact path the contacts surfaces now funnel through — and asserts that every
 channel triple is active on the survivor (no stranding) and that an audit row
 exists.
+
+``TestEffectiveTimeMutatorFences`` reuses this schema (the widest real
+Relationship mutation surface among the fixtures) for the effective-time
+mutator inventory (relationship-fact-effective-time): merges, value-selector
+lifecycle routes, entity forget and companion hard-delete cascades either keep
+every occurrence's packet or refuse before their first write.
 """
 
 from __future__ import annotations
 
+import importlib
 import shutil
 import uuid
 from unittest.mock import MagicMock
@@ -34,7 +41,15 @@ from butlers.testing.schema_standins import (
     ENTITY_PREDICATE_REGISTRY,
     ENTITY_REBIND_LOG,
 )
-from roster.relationship.tests.evidence_schema import apply_evidence_schema
+from butlers.tools.relationship.fact_temporal import (
+    MUTATOR_UNSUPPORTED,
+    PACKET_COLUMNS,
+    TemporalError,
+)
+from roster.relationship.tests.evidence_schema import (
+    apply_evidence_schema,
+    simulate_temporal_cutover,
+)
 
 pytestmark = [
     pytest.mark.integration,
@@ -352,3 +367,320 @@ class TestContactsMergeNoStrandedTriples:
         shared = _json.loads(review["shared_facts"])
         assert len(shared) == 2, f"expected the shared has-email pair in evidence, got {shared}"
         assert {f["object"] for f in shared} == {"bob@work.com"}
+
+
+# ---------------------------------------------------------------------------
+# Effective-time merge fences (relationship-fact-effective-time, bu-h3b7t.1)
+# ---------------------------------------------------------------------------
+
+
+async def _merge_state(pool: asyncpg.Pool) -> tuple:
+    """Everything a merge could write, for "nothing changed" assertions."""
+    return (
+        await pool.fetch(
+            f"SELECT id, subject, object, validity, {PACKET_COLUMNS} "
+            "FROM relationship.entity_facts ORDER BY id"
+        ),
+        await pool.fetch("SELECT id, metadata, aliases FROM public.entities ORDER BY id"),
+        await pool.fetch("SELECT * FROM contact_entity_map ORDER BY contact_id"),
+        await pool.fetchval("SELECT count(*) FROM relationship.merge_reviews"),
+        await pool.fetchval("SELECT count(*) FROM public.entity_rebind_log"),
+    )
+
+
+async def _add_temporal_fact(
+    pool: asyncpg.Pool, subject: uuid.UUID, value: str, period: uuid.UUID | None
+) -> uuid.UUID:
+    return await pool.fetchval(
+        """
+        INSERT INTO relationship.entity_facts
+            (subject, predicate, object, object_kind, src, effective_period_id,
+             effective_from, effective_from_precision)
+        VALUES ($1, 'has-email', $2, 'literal', 'test', $3, '2021-01-01Z', 'year')
+        RETURNING id
+        """,
+        subject,
+        value,
+        period,
+    )
+
+
+class TestEffectiveTimeMutatorFences:
+    async def test_entity_merge_moves_occurrences_intact_or_writes_nothing(self, pool):
+        from butlers.tools.relationship.entity_merge import (
+            TemporalOccurrenceCollisionError,
+            merge_entity_pair,
+        )
+
+        await simulate_temporal_cutover(pool)
+        target_id = await _insert_entity(pool, name="Target", roles=[])
+        source_id = await _insert_entity(pool, name="Source", roles=[])
+        # Same triple, different occurrences: the default unknown row on the
+        # target and a repeated period on the source. No collision, no collapse.
+        await _add_channel_fact(pool, target_id, "has-email", "shared@example.test")
+        moved_id = await _add_temporal_fact(pool, source_id, "shared@example.test", uuid.uuid4())
+        await pool.execute(
+            "INSERT INTO relationship.fact_evidence (fact_id, seq, kind, ref, note, src, origin) "
+            "VALUES ($1, 1, 'url', 'https://example.test/e', '', 'test', 'direct')",
+            moved_id,
+        )
+        before = await pool.fetchrow(
+            f"SELECT {PACKET_COLUMNS} FROM relationship.entity_facts WHERE id = $1", moved_id
+        )
+
+        await merge_entity_pair(pool, source_entity_id=source_id, target_entity_id=target_id)
+
+        moved = await pool.fetchrow(
+            f"SELECT subject, validity, {PACKET_COLUMNS} FROM relationship.entity_facts "
+            "WHERE id = $1",
+            moved_id,
+        )
+        assert (moved["subject"], moved["validity"]) == (target_id, "active")
+        assert {k: moved[k] for k in before.keys()} == dict(before)
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM relationship.fact_evidence WHERE fact_id = $1", moved_id
+            )
+            == 1
+        )
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM relationship.entity_facts "
+                "WHERE subject = $1 AND object = 'shared@example.test' AND validity = 'active'",
+                target_id,
+            )
+            == 2
+        )
+
+        # A temporal row colliding on its final occurrence key refuses the whole merge.
+        second_target = await _insert_entity(pool, name="Target 2", roles=[])
+        second_source = await _insert_entity(pool, name="Source 2", roles=[])
+        await _add_channel_fact(pool, second_target, "has-email", "clash@example.test")
+        await _add_temporal_fact(pool, second_source, "clash@example.test", None)
+        state = await _merge_state(pool)
+        with pytest.raises(TemporalOccurrenceCollisionError):
+            await merge_entity_pair(
+                pool, source_entity_id=second_source, target_entity_id=second_target
+            )
+        assert await _merge_state(pool) == state
+
+    async def test_legacy_contact_merge_is_fenced_before_its_first_write(self, pool):
+        from butlers.tools.relationship.contacts import contact_merge
+
+        await simulate_temporal_cutover(pool)
+        target_entity = await _insert_entity(pool, name="Carol (canonical)", roles=[])
+        source_entity = await _insert_entity(pool, name="Carol (duplicate)", roles=[])
+        await _add_temporal_fact(pool, source_entity, "carol@example.test", uuid.uuid4())
+        contacts = []
+        for name, entity in (("Carol", target_entity), ("Carol dup", source_entity)):
+            contact = await pool.fetchval(
+                "INSERT INTO contacts (name, entity_id) VALUES ($1, $2) RETURNING id", name, entity
+            )
+            await pool.execute(
+                "INSERT INTO contact_entity_map (contact_id, entity_id) VALUES ($1, $2)",
+                contact,
+                entity,
+            )
+            await pool.execute("INSERT INTO notes (contact_id) VALUES ($1)", contact)
+            contacts.append(contact)
+        state = await _merge_state(pool)
+        notes = await pool.fetch("SELECT id, contact_id FROM notes ORDER BY id")
+
+        with pytest.raises(TemporalError) as caught:
+            await contact_merge(pool, source_id=contacts[1], target_id=contacts[0])
+
+        assert caught.value.code == MUTATOR_UNSUPPORTED
+        assert await _merge_state(pool) == state
+        assert await pool.fetch("SELECT id, contact_id FROM notes ORDER BY id") == notes
+
+    @pytest.mark.parametrize(
+        ("occurrences", "operation", "refusal"),
+        [
+            ("repeated", "retract-helper", "temporal_occurrence_ambiguous"),
+            ("repeated", "delete", "temporal_occurrence_ambiguous"),
+            ("repeated", "verify", "temporal_occurrence_ambiguous"),
+            ("repeated", "edit-same-value", "temporal_occurrence_ambiguous"),
+            ("temporal", "edit-value", "temporal_mutator_unsupported"),
+            ("temporal", "verify", None),
+        ],
+    )
+    async def test_value_selectors_act_on_exactly_one_occurrence(
+        self, pool, occurrences, operation, refusal
+    ):
+        from fastapi import HTTPException, Response
+
+        from butlers.api.router_discovery import discover_butler_routers
+        from butlers.tools.relationship.relationship_assert_fact import (
+            retract_contact_info_fact,
+        )
+
+        router = next(m for name, m in discover_butler_routers() if name == "relationship")
+        await simulate_temporal_cutover(pool)
+        await _insert_entity(pool, name="Owner", roles=["owner"])
+        subject = await _insert_entity(pool, name="Dana", roles=[])
+        value = "dana@example.test"
+        fact_id = await _add_temporal_fact(pool, subject, value, uuid.uuid4())
+        if occurrences == "repeated":
+            await _add_channel_fact(pool, subject, "has-email", value)
+        value_hash = router._contact_value_hash(value)
+        db = _db_with_pool(pool)
+        state = await _merge_state(pool)
+
+        async def run():
+            if operation == "retract-helper":
+                return await retract_contact_info_fact(pool, subject, "email", value)
+            if operation == "delete":
+                return await router.delete_entity_contact(subject, "has-email", value_hash, db=db)
+            if operation == "verify":
+                return await router.verify_entity_contact(subject, "has-email", value_hash, db=db)
+            new_value = value if operation == "edit-same-value" else "new@example.test"
+            return await router.update_entity_contact(
+                subject,
+                "has-email",
+                value_hash,
+                router.UpdateContactRequest(new_value=new_value),
+                Response(),
+                db=db,
+            )
+
+        if refusal is None:
+            await run()
+            verified = await pool.fetchrow(
+                f"SELECT verified, validity, {PACKET_COLUMNS} FROM relationship.entity_facts "
+                "WHERE id = $1",
+                fact_id,
+            )
+            before = next(row for row in state[0] if row["id"] == fact_id)
+            assert (verified["verified"], verified["validity"]) == (True, "active")
+            assert all(verified[k] == before[k] for k in verified.keys() if k.startswith("eff"))
+            return
+
+        with pytest.raises((TemporalError, HTTPException)) as caught:
+            await run()
+        code = getattr(caught.value, "code", None) or caught.value.detail["code"]
+        assert code == refusal
+        if isinstance(caught.value, HTTPException):
+            assert caught.value.status_code == 409
+        assert await _merge_state(pool) == state
+
+    @pytest.mark.parametrize("path", ["forget", "google", "steam"])
+    async def test_all_occurrence_lifecycle_paths_keep_history_and_projections_atomic(
+        self, pool, path
+    ):
+        from butlers.api.router_discovery import discover_butler_routers
+
+        await simulate_temporal_cutover(pool)
+        await pool.execute("""
+            ALTER TABLE public.entity_graph_edges
+                ADD FOREIGN KEY (subject_entity_id) REFERENCES public.entities(id)
+                    ON DELETE CASCADE,
+                ADD FOREIGN KEY (object_entity_id) REFERENCES public.entities(id)
+                    ON DELETE CASCADE
+        """)
+        await _insert_entity(pool, name="Owner", roles=["owner"])
+        companion = await _insert_entity(pool, name="Companion", roles=[])
+        other = await _insert_entity(pool, name="Other", roles=[])
+        superseded = await _add_temporal_fact(pool, companion, "c@example.test", None)
+        await pool.execute(
+            "UPDATE relationship.entity_facts SET validity = 'superseded' WHERE id = $1",
+            superseded,
+        )
+        await _add_channel_fact(pool, companion, "has-email", "c@example.test")
+        await _add_temporal_fact(pool, companion, "c@example.test", uuid.uuid4())
+        for subject, obj in ((companion, other), (other, companion)):
+            edge_fact = await pool.fetchval(
+                """
+                INSERT INTO relationship.entity_facts
+                    (subject, predicate, object, object_kind, src, effective_period_id)
+                VALUES ($1, 'knows', $2, 'entity', 'test', $3)
+                RETURNING id
+                """,
+                subject,
+                str(obj),
+                uuid.uuid4(),
+            )
+            await pool.execute(
+                """
+                INSERT INTO public.entity_graph_edges
+                    (source_schema, source_table, source_id, subject_entity_id,
+                     predicate, object_entity_id)
+                VALUES ('relationship', 'entity_facts', $1, $2, 'knows', $3)
+                """,
+                edge_fact,
+                subject,
+                obj,
+            )
+        await pool.execute(
+            "INSERT INTO relationship.fact_evidence (fact_id, seq, kind, ref, note, src, origin) "
+            "SELECT id, 1, 'url', 'https://example.test/' || id, '', 'test', 'direct' "
+            "FROM relationship.entity_facts"
+        )
+        involved = f"""
+            SELECT id, validity, {PACKET_COLUMNS} FROM relationship.entity_facts
+            WHERE subject = $1 OR (object_kind = 'entity' AND object = $1::text)
+            ORDER BY id
+        """
+        before = await pool.fetch(involved, companion)
+        evidence_before = await pool.fetchval("SELECT count(*) FROM relationship.fact_evidence")
+
+        if path == "forget":
+            router = next(m for name, m in discover_butler_routers() if name == "relationship")
+            await router.forget_entity(companion, db=_db_with_pool(pool))
+            after = await pool.fetch(involved, companion)
+            # Every occurrence is retracted as-is; history stays superseded.
+            assert [r["id"] for r in after] == [r["id"] for r in before]
+            for old, new in zip(before, after, strict=True):
+                expected = "superseded" if old["validity"] == "superseded" else "retracted"
+                assert new["validity"] == expected
+                assert {k: new[k] for k in new.keys() if k != "validity"} == {
+                    k: old[k] for k in old.keys() if k != "validity"
+                }
+            assert (
+                await pool.fetchval("SELECT count(*) FROM relationship.fact_evidence")
+                == evidence_before
+            )
+        else:
+            registry = importlib.import_module(f"butlers.{path}_account_registry")
+            table = f"public.{path}_accounts"
+            await pool.execute(f"""
+                CREATE TABLE {table} (
+                    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    entity_id    UUID NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
+                    is_primary   BOOLEAN NOT NULL DEFAULT false,
+                    status       TEXT NOT NULL DEFAULT 'active',
+                    connected_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    revoked_at   TIMESTAMPTZ
+                )
+            """)
+            await pool.execute("""
+                CREATE TABLE IF NOT EXISTS public.entity_info (
+                    entity_id UUID, type TEXT, value TEXT
+                )
+            """)
+            account = await pool.fetchval(
+                f"INSERT INTO {table} (entity_id) VALUES ($1) RETURNING id",  # noqa: S608
+                companion,
+            )
+            await registry.disconnect_account(pool, account, hard_delete=True)
+            # Every version the companion subjects is gone, with its evidence.
+            assert (
+                await pool.fetchval(
+                    "SELECT count(*) FROM relationship.entity_facts WHERE subject = $1", companion
+                )
+                == 0
+            )
+            assert (
+                await pool.fetchval(
+                    "SELECT count(*) FROM relationship.fact_evidence e "
+                    "WHERE NOT EXISTS (SELECT 1 FROM relationship.entity_facts f WHERE f.id = e.fact_id)"
+                )
+                == 0
+            )
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM public.entity_graph_edges "
+                "WHERE subject_entity_id = $1 OR object_entity_id = $1",
+                companion,
+            )
+            == 0
+        )

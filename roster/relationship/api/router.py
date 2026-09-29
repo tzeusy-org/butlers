@@ -30,6 +30,7 @@ from butlers.api.deps import (
     MCPClientManager,
     get_mcp_manager,
 )
+from butlers.core import entity_graph_edges
 from butlers.credential_store import assert_entity_info_secured
 from butlers.identity import channel_value_for_storage
 from butlers.spotify_credentials import SPOTIFY_MANAGED_ENTITY_INFO_TYPES
@@ -51,7 +52,17 @@ from butlers.tools.relationship.entity_merge import (
     SourceEntityTombstonedError,
     TargetEntityNotFoundError,
     TargetEntityTombstonedError,
+    TemporalOccurrenceCollisionError,
     merge_entity_pair,
+)
+from butlers.tools.relationship.fact_temporal import (
+    MUTATOR_UNSUPPORTED as _TEMPORAL_MUTATOR_UNSUPPORTED,
+)
+from butlers.tools.relationship.fact_temporal import (
+    OCCURRENCE_AMBIGUOUS as _TEMPORAL_OCCURRENCE_AMBIGUOUS,
+)
+from butlers.tools.relationship.fact_temporal import (
+    temporal_bearing_sql as _temporal_bearing_sql,
 )
 from butlers.tools.relationship.merge_review import (
     derive_shared_and_divergent_rows as _derive_shared_and_divergent_rows_shared,
@@ -4460,6 +4471,59 @@ def _contact_value_hash(object_value: str) -> str:
     return hashlib.sha256(object_value.encode("utf-8")).hexdigest()[:16]
 
 
+async def _resolve_contact_fact_by_hash(
+    pool: asyncpg.Pool,
+    entity_id: UUID,
+    predicate: str,
+    value_hash: str,
+) -> asyncpg.Record:
+    """Resolve a hash-addressed contact selector to exactly one active fact row.
+
+    The selector names a value, not an effective occurrence, so it must match
+    exactly one active row: 404 when none does, and 409
+    ``temporal_occurrence_ambiguous`` before any write when several effective
+    occurrences share the value. The row carries a ``temporal`` flag (any
+    effective-time value stored) for callers that must fence on it.
+    """
+    # Fetch all active rows for (subject, predicate) and filter by hash in
+    # Python to avoid a full-table scan on the object column.
+    candidate_rows = await pool.fetch(
+        f"""
+        SELECT f.id, f.object, {_temporal_bearing_sql("f")} AS temporal
+        FROM relationship.entity_facts f
+        WHERE f.subject   = $1
+          AND f.predicate = $2
+          AND f.validity  = 'active'
+        """,
+        entity_id,
+        predicate,
+    )
+    matches = [row for row in candidate_rows if _contact_value_hash(row["object"]) == value_hash]
+    if not matches:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "contact_fact_not_found",
+                "message": (
+                    f"No active contact fact found for entity {entity_id}, "
+                    f"predicate {predicate!r}, value_hash {value_hash!r}."
+                ),
+            },
+        )
+    if len(matches) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": _TEMPORAL_OCCURRENCE_AMBIGUOUS,
+                "message": (
+                    f"{len(matches)} active effective occurrences share this contact value; "
+                    "the value hash cannot select one."
+                ),
+            },
+        )
+    return matches[0]
+
+
 def _row_to_contact_fact(r: Any) -> Any:
     """Convert an asyncpg row from ``relationship.entity_facts`` to a ContactFact.
 
@@ -4733,41 +4797,11 @@ async def delete_entity_contact(
     # Entity existence check.
     await _assert_entity_exists(pool, entity_id)
 
-    # Find the active fact matching (subject, predicate, value_hash).
-    # We fetch all active rows for (subject, predicate) and filter by hash
-    # in Python to avoid a full-table scan on the object column.
-    candidate_rows = await pool.fetch(
-        """
-        SELECT f.id, f.object
-        FROM relationship.entity_facts f
-        WHERE f.subject   = $1
-          AND f.predicate = $2
-          AND f.validity  = 'active'
-        """,
-        entity_id,
-        predicate,
-    )
-
-    target_row = None
-    for row in candidate_rows:
-        if _contact_value_hash(row["object"]) == value_hash:
-            target_row = row
-            break
-
-    if target_row is None:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "code": "contact_fact_not_found",
-                "message": (
-                    f"No active contact fact found for entity {entity_id}, "
-                    f"predicate {predicate!r}, value_hash {value_hash!r}."
-                ),
-            },
-        )
-
+    # Find the one active fact matching (subject, predicate, value_hash).
+    target_row = await _resolve_contact_fact_by_hash(pool, entity_id, predicate, value_hash)
     fact_id: UUID = target_row["id"]
 
+    # Exact-id lifecycle change: the row's effective packet is left as stored.
     await pool.execute(
         """
         UPDATE relationship.entity_facts
@@ -4828,40 +4862,11 @@ async def verify_entity_contact(
     # Entity existence check.
     await _assert_entity_exists(pool, entity_id)
 
-    # Find the active fact matching (subject, predicate, value_hash).
-    # Fetch all active rows for (subject, predicate) and filter by hash in Python.
-    candidate_rows = await pool.fetch(
-        """
-        SELECT f.id, f.object
-        FROM relationship.entity_facts f
-        WHERE f.subject   = $1
-          AND f.predicate = $2
-          AND f.validity  = 'active'
-        """,
-        entity_id,
-        predicate,
-    )
-
-    target_row = None
-    for row in candidate_rows:
-        if _contact_value_hash(row["object"]) == value_hash:
-            target_row = row
-            break
-
-    if target_row is None:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "code": "contact_fact_not_found",
-                "message": (
-                    f"No active contact fact found for entity {entity_id}, "
-                    f"predicate {predicate!r}, value_hash {value_hash!r}."
-                ),
-            },
-        )
-
+    # Find the one active fact matching (subject, predicate, value_hash).
+    target_row = await _resolve_contact_fact_by_hash(pool, entity_id, predicate, value_hash)
     fact_id: UUID = target_row["id"]
 
+    # Exact-id verification: the row's effective packet is left as stored.
     await pool.execute(
         """
         UPDATE relationship.entity_facts
@@ -4951,42 +4956,14 @@ async def update_entity_contact(
     # Entity existence check.
     await _assert_entity_exists(pool, entity_id)
 
-    # Find the active fact matching (subject, predicate, value_hash).
-    candidate_rows = await pool.fetch(
-        """
-        SELECT f.id, f.object
-        FROM relationship.entity_facts f
-        WHERE f.subject   = $1
-          AND f.predicate = $2
-          AND f.validity  = 'active'
-        """,
-        entity_id,
-        predicate,
-    )
-
-    target_row = None
-    for row in candidate_rows:
-        if _contact_value_hash(row["object"]) == value_hash:
-            target_row = row
-            break
-
-    if target_row is None:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "code": "contact_fact_not_found",
-                "message": (
-                    f"No active contact fact found for entity {entity_id}, "
-                    f"predicate {predicate!r}, value_hash {value_hash!r}."
-                ),
-            },
-        )
-
+    # Find the one active fact matching (subject, predicate, value_hash).
+    target_row = await _resolve_contact_fact_by_hash(pool, entity_id, predicate, value_hash)
     old_fact_id: UUID = target_row["id"]
     old_value: str = target_row["object"]
 
     # If the new value is the same as the old, just update provenance fields
-    # via the central writer — retraction is not needed.
+    # via the central writer — retraction is not needed. An ordinary
+    # reassertion preserves the occurrence's stored effective packet.
     if new_value == old_value:
         result = await relationship_assert_fact(
             pool,
@@ -5021,6 +4998,21 @@ async def update_entity_contact(
             outcome=result.outcome.value,
             retracted_fact_id=None,
             fact=_row_to_contact_fact(fact_row),
+        )
+
+    # A value edit would move an effective occurrence onto a different triple;
+    # there is no occurrence-preserving meaning for that yet, so refuse it before
+    # retraction or approval parking rather than silently dropping the packet.
+    if target_row["temporal"]:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": _TEMPORAL_MUTATOR_UNSUPPORTED,
+                "message": (
+                    "This contact value carries effective time; retract it and assert "
+                    "the new value instead of editing it in place."
+                ),
+            },
         )
 
     # New value differs from old: retract old fact + assert new fact atomically.
@@ -5620,8 +5612,10 @@ async def forget_entity(
 
     async with pool.acquire() as conn:
         async with conn.transaction():
-            # Retract all active facts where this entity is subject or object.
-            await conn.execute(
+            # Retract every active occurrence where this entity is subject or
+            # object -- deliberately all of them, each keeping its effective
+            # packet -- and drop their graph projections in the same transaction.
+            retracted = await conn.fetch(
                 """
                 UPDATE relationship.entity_facts
                 SET validity   = 'retracted',
@@ -5631,8 +5625,15 @@ async def forget_entity(
                     subject = $1
                     OR (object_kind = 'entity' AND object = $1::text)
                   )
+                RETURNING id
                 """,
                 entity_id,
+            )
+            await entity_graph_edges.delete_entity_graph_edges(
+                conn,
+                source_schema="relationship",
+                source_table="entity_facts",
+                source_ids=[row["id"] for row in retracted],
             )
             # Retract the memory-module ``facts`` rows (gifts/loans/interactions/
             # notes/life-events keyed by ``entity_id``; edge-facts referencing the
@@ -5967,6 +5968,17 @@ async def merge_entities(
         raise HTTPException(status_code=404, detail="Entity not found")
     except TargetEntityTombstonedError:
         raise HTTPException(status_code=404, detail="Entity not found")
+    except TemporalOccurrenceCollisionError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": exc.classification,
+                "message": (
+                    "Merging would give two effective occurrences of one fact the same "
+                    "identity; nothing was changed."
+                ),
+            },
+        )
 
     return MergeEntitiesResponse(
         kept_entity_id=result.kept_entity_id,

@@ -117,6 +117,7 @@ def _make_delete_candidate_row(
     data = {
         "id": fact_id or _FACT_ID,
         "object": object_val,
+        "temporal": False,  # no effective-time value stored
     }
     row = MagicMock()
     row.__getitem__ = MagicMock(side_effect=lambda key: data[key])

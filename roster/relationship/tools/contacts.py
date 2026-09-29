@@ -26,6 +26,12 @@ from typing import Any
 
 import asyncpg
 
+from butlers.tools.relationship.fact_temporal import (
+    MUTATOR_UNSUPPORTED,
+    TemporalError,
+    temporal_bearing_sql,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -772,6 +778,54 @@ async def contact_archive(pool: asyncpg.Pool, contact_id: uuid.UUID) -> dict[str
     return _parse_contact(refreshed if refreshed is not None else row)
 
 
+async def _fence_legacy_fact_repoint(
+    conn: asyncpg.Pool | asyncpg.Connection,
+    source_entity_id: uuid.UUID,
+    target_entity_id: uuid.UUID,
+) -> None:
+    """Refuse a legacy merge whose entity_facts re-pointing could lose an occurrence.
+
+    ``contact_merge``'s best-effort blocks below collapse SPO collisions by
+    confidence and swallow database errors, which is only safe for unknown
+    default-occurrence rows. Before any contact, entity or fact write, fail
+    ``temporal_mutator_unsupported`` if an affected row -- an active fact either
+    entity is the subject or entity-object of -- carries effective time, or if
+    one triple already has several active occurrences. The audited merge service
+    (``entity_merge.merge_entity_pair``) is the occurrence-preserving path.
+    """
+    source_text = str(source_entity_id)
+    target_text = str(target_entity_id)
+    unsafe = await conn.fetchval(
+        f"""
+        WITH affected AS (
+            SELECT ef.subject, ef.predicate, ef.object,
+                   {temporal_bearing_sql("ef")} AS temporal
+            FROM relationship.entity_facts ef
+            WHERE ef.validity = 'active'
+              AND (
+                ef.subject = ANY($1::uuid[])
+                OR (ef.object_kind = 'entity' AND ef.object = ANY($2::text[]))
+              )
+        )
+        SELECT EXISTS (SELECT 1 FROM affected WHERE temporal)
+            OR EXISTS (
+                SELECT 1 FROM affected
+                GROUP BY subject, predicate, object
+                HAVING count(*) > 1
+            )
+        """,
+        [source_entity_id, target_entity_id],
+        [source_text, target_text],
+    )
+    if unsafe:
+        raise TemporalError(
+            MUTATOR_UNSUPPORTED,
+            "these entities carry effective-time or repeated fact occurrences that the "
+            "legacy contact merge cannot move safely; merge the entities through the "
+            "entity merge service instead.",
+        )
+
+
 async def contact_merge(
     pool: asyncpg.Pool,
     source_id: uuid.UUID,
@@ -799,6 +853,9 @@ async def contact_merge(
 
     Raises:
         ValueError: If source or target contact not found, or IDs are identical.
+        TemporalError: ``temporal_mutator_unsupported`` -- raised before the
+            first write -- when the linked entities' facts are not the plain
+            unknown-default singleton set its legacy re-pointing can move.
     """
     if source_id == target_id:
         raise ValueError("source_id and target_id must be different.")
@@ -820,6 +877,11 @@ async def contact_merge(
     tgt_entity_id = dict(target).get("entity_id")
     src_profile = _parse_json_field(dict(source).get("entity_metadata")).get("profile")
     src_profile = src_profile if isinstance(src_profile, dict) else {}
+
+    if src_entity_id is not None and tgt_entity_id is not None:
+        await _fence_legacy_fact_repoint(
+            pool, uuid.UUID(str(src_entity_id)), uuid.UUID(str(tgt_entity_id))
+        )
 
     # Tables that reference contacts — re-point source -> target
     _child_tables = [
@@ -968,6 +1030,11 @@ async def contact_merge(
             tgt_uuid = _uuid.UUID(str(tgt_entity_id))
             async with pool.acquire() as _conn:
                 async with _conn.transaction():
+                    # Re-check under this transaction: a row that became
+                    # temporal-bearing since the preflight must not be collapsed.
+                    # TemporalError is not a PostgresError, so it is never
+                    # swallowed by the best-effort handler below.
+                    await _fence_legacy_fact_repoint(_conn, src_uuid, tgt_uuid)
                     src_ef_rows = await _conn.fetch(
                         "SELECT id, predicate, object, conf FROM relationship.entity_facts "
                         "WHERE subject = $1 AND validity = 'active'",

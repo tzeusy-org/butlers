@@ -98,7 +98,8 @@ def _make_candidate_row(
     object_val: str = _OLD_EMAIL,
 ) -> MagicMock:
     """Build a candidate row for the value-hash lookup."""
-    data = {"id": fact_id or _FACT_ID, "object": object_val}
+    # ``temporal``: the router fences value edits of effective-time rows.
+    data = {"id": fact_id or _FACT_ID, "object": object_val, "temporal": False}
     row = MagicMock()
     row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
     return row

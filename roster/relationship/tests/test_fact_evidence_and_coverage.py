@@ -805,6 +805,13 @@ class TestMcpSurface:
             "conf": 1.0,
             "verified": False,
             "approval_action_id": str(action_id),
+            # The canonical effective-time keys every parked action now carries.
+            "effective_period_id": str(uuid.uuid4()),
+            "effective_from": "2024-03-01T00:00:00+00:00",
+            "effective_from_precision": "month",
+            "effective_to": None,
+            "effective_to_precision": None,
+            "corrects_fact_id": None,
         }
         await tool.fn(**stored_args)
 
@@ -814,6 +821,9 @@ class TestMcpSurface:
         # then replaces it with the source recorded when the action was parked.
         assert kwargs["src"] == "relationship"
         assert kwargs["approval_action_id"] == action_id
+        # Parked temporal values reach the writer verbatim for exact comparison.
+        for key in ("effective_period_id", "effective_from", "effective_from_precision"):
+            assert kwargs[key] == stored_args[key]
 
 
 if __name__ == "__main__":  # pragma: no cover

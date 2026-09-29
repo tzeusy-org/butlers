@@ -1084,6 +1084,12 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         primary: bool | None = None,
         evidence: list[dict[str, str]] | None = None,
         approval_action_id: uuid.UUID | None = None,
+        effective_period_id: uuid.UUID | None = None,
+        effective_from: str | None = None,
+        effective_from_precision: str | None = None,
+        effective_to: str | None = None,
+        effective_to_precision: str | None = None,
+        corrects_fact_id: uuid.UUID | None = None,
     ) -> dict[str, Any]:
         """Assert a fact triple in relationship.entity_facts (central writer).
 
@@ -1111,6 +1117,25 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
                 rejects copied source content.
             approval_action_id: Set only by approval dispatch, which replays the
                 stored tool_args of an approved pending_actions row.
+            effective_period_id: Optional stable non-zero UUID naming a repeated
+                occurrence of the same triple; omit for the default occurrence.
+            effective_from: When the relationship started holding (inclusive).
+                'instant' needs an ISO timestamp with 'Z' or an offset; 'day',
+                'month', 'year' take 'YYYY-MM-DD', 'YYYY-MM', 'YYYY'.
+            effective_from_precision: instant | day | month | year | unbounded
+                (unbounded = explicitly no start; omit both for unknown).
+            effective_to: When it stopped holding (exclusive; a coarse value
+                covers its whole unit). Same forms as effective_from.
+            effective_to_precision: instant | day | month | year | unbounded.
+            corrects_fact_id: Id of the ACTIVE fact version whose effective time
+                this call replaces with the complete packet given here (all
+                omitted = unknown). Omit for an ordinary assertion, which keeps
+                any effective time already stored.
+
+        Effective time is when the relationship held in the world -- never the
+        assertion, observation or confidence time. Until the entity_facts index
+        cutover lands, every effective-time argument is refused with
+        ``temporal_cutover_pending``; omit them all.
 
         Returns:
             Dict with keys: outcome ('inserted' | 'unchanged' | 'superseded' |
@@ -1157,6 +1182,12 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
             primary=primary,
             evidence=evidence,
             approval_action_id=approval_action_id,
+            effective_period_id=effective_period_id,
+            effective_from=effective_from,
+            effective_from_precision=effective_from_precision,
+            effective_to=effective_to,
+            effective_to_precision=effective_to_precision,
+            corrects_fact_id=corrects_fact_id,
         )
         return result.as_dict()
 

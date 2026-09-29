@@ -20,6 +20,7 @@ Spec anchor: openspec/changes/archive/2026-05-20-relationship-tabs-to-entities/s
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import uuid
 from datetime import UTC, datetime
@@ -33,13 +34,25 @@ from butlers.testing.schema_standins import (
     PENDING_ACTIONS,
 )
 from butlers.tools.relationship.fact_evidence import EvidencePacket
+from butlers.tools.relationship.fact_temporal import (
+    CORRECTION_REQUIRED,
+    CORRECTION_STALE,
+    CUTOVER_PENDING,
+    PACKET_COLUMNS,
+    WIRE_KEYS,
+    TemporalError,
+    TemporalPacket,
+)
 from butlers.tools.relationship.relationship_assert_fact import (
     _PREDICATE_ALIAS_MAP,
     AssertOutcome,
     _insert_active_fact,
     relationship_assert_fact,
 )
-from roster.relationship.tests.evidence_schema import apply_evidence_schema
+from roster.relationship.tests.evidence_schema import (
+    apply_evidence_schema,
+    simulate_temporal_cutover,
+)
 
 # ---------------------------------------------------------------------------
 # Test markers
@@ -1231,6 +1244,401 @@ class TestConcurrentWriterRace:
             active = next(r for r in rows if r["validity"] == "active")
             expected_active_conf = 0.9 if active["observed_at"] == obs_a else 0.4
             assert abs(float(active["conf"]) - expected_active_conf) < 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Effective time (relationship-fact-effective-time, bu-h3b7t.1)
+# ---------------------------------------------------------------------------
+
+_ALICE = "alice@example.com"
+_EFFECT_TABLES = (
+    "relationship.entity_facts",
+    "relationship.fact_evidence",
+    "relationship.fact_coverage",
+    "relationship.fact_approval_context",
+    "pending_actions",
+    "public.entity_graph_edges",
+)
+
+
+async def _effect_counts(p: asyncpg.Pool) -> dict[str, int]:
+    """Row counts of every store a fact write (or park) can touch."""
+    return {t: await p.fetchval(f"SELECT count(*) FROM {t}") for t in _EFFECT_TABLES}  # noqa: S608
+
+
+async def _packet(p: asyncpg.Pool, fact_id: uuid.UUID) -> tuple[str, TemporalPacket]:
+    row = await p.fetchrow(
+        f"SELECT validity, {PACKET_COLUMNS} FROM relationship.entity_facts WHERE id = $1",
+        fact_id,
+    )
+    return row["validity"], TemporalPacket.from_row(row)
+
+
+async def _parked(p: asyncpg.Pool, action_id: uuid.UUID) -> tuple[dict, asyncpg.Record]:
+    args = await p.fetchval("SELECT tool_args FROM pending_actions WHERE id = $1", action_id)
+    args = json.loads(args) if isinstance(args, str) else args
+    ctx = await p.fetchrow(
+        "SELECT temporal_request_mode, temporal_base_fact_id "
+        "FROM relationship.fact_approval_context WHERE action_id = $1",
+        action_id,
+    )
+    return {k: args[k] for k in WIRE_KEYS}, ctx
+
+
+def _utc(*args: int) -> datetime:
+    return datetime(*args, tzinfo=UTC)
+
+
+_MARCH_TO_MAY = dict(
+    effective_from="2024-03",
+    effective_from_precision="month",
+    effective_to="2024-05",
+    effective_to_precision="month",
+)
+
+
+class TestEffectiveTimeTransition:
+    """While uq_ef_spo_active exists the transition writer refuses temporal intent."""
+
+    @pytest.mark.parametrize(
+        ("subject_kind", "temporal"),
+        [
+            ("entity", _MARCH_TO_MAY),
+            ("entity", {"effective_period_id": uuid.uuid4()}),
+            ("entity", {"effective_to_precision": "unbounded"}),
+            ("entity", {"corrects_fact_id": "existing"}),
+            ("owner", _MARCH_TO_MAY),
+        ],
+        ids=["bounds", "period-id", "unbounded-only", "correction", "owner-before-parking"],
+    )
+    async def test_temporal_intent_fails_before_parking_or_any_write(
+        self, pool, entity, owner_entity, subject_kind, temporal
+    ):
+        subject = owner_entity if subject_kind == "owner" else entity
+        existing = await relationship_assert_fact(
+            pool, subject, _PRED_HAS_EMAIL, _ALICE, src="owner-self"
+        )
+        if temporal.get("corrects_fact_id") == "existing":
+            temporal = {"corrects_fact_id": existing.fact_id}
+        before = await _effect_counts(pool)
+
+        with pytest.raises(TemporalError) as caught:
+            await relationship_assert_fact(
+                pool, subject, _PRED_HAS_EMAIL, _ALICE, src="relationship", **temporal
+            )
+
+        assert caught.value.code == CUTOVER_PENDING
+        assert await _effect_counts(pool) == before
+
+    async def test_omitted_and_explicit_null_are_one_request(self, pool, entity, owner_entity):
+        """Same idempotency, park, dedup and canonical parked shape for both spellings."""
+        nulls = dict.fromkeys(WIRE_KEYS)
+        first = await relationship_assert_fact(pool, entity, _PRED_HAS_EMAIL, _ALICE, src="t")
+        second = await relationship_assert_fact(
+            pool, entity, _PRED_HAS_EMAIL, _ALICE, src="t", **nulls
+        )
+        assert second.outcome == AssertOutcome.unchanged
+        assert second.fact_id == first.fact_id
+        assert await _packet(pool, first.fact_id) == ("active", TemporalPacket())
+
+        parked = await relationship_assert_fact(
+            pool, owner_entity, _PRED_HAS_EMAIL, _ALICE, src="relationship"
+        )
+        parked_again = await relationship_assert_fact(
+            pool, owner_entity, _PRED_HAS_EMAIL, _ALICE, src="relationship", **nulls
+        )
+        assert parked_again.action_id == parked.action_id
+        wire, ctx = await _parked(pool, parked.action_id)
+        assert wire == nulls
+        assert (ctx["temporal_request_mode"], ctx["temporal_base_fact_id"]) == ("ordinary", None)
+
+
+class TestEffectiveTimeAfterCutover:
+    """The same transition code, on a disposable schema with the legacy index gone.
+
+    No repository migration drops ``uq_ef_spo_active`` yet; these tests prove the
+    post-cutover paths are ready without shipping that cutover.
+    """
+
+    async def test_occurrences_replay_and_compare_and_swap_corrections(self, pool, entity):
+        await simulate_temporal_cutover(pool)
+        period = uuid.uuid4()
+        cited = [{"type": "url", "ref": "https://example.test/cv", "note": "CV"}]
+
+        async def assert_(**kwargs):
+            return await relationship_assert_fact(
+                pool, entity, _PRED_HAS_EMAIL, _ALICE, **{"src": "t", **kwargs}
+            )
+
+        default = await assert_()
+        explicit = await assert_(effective_period_id=period, evidence=cited, **_MARCH_TO_MAY)
+        assert explicit.outcome == AssertOutcome.inserted
+        assert explicit.fact_id != default.fact_id  # a repeated occurrence beside the default
+        replay = await assert_(effective_period_id=period, **_MARCH_TO_MAY)
+        assert (replay.outcome, replay.fact_id) == (AssertOutcome.unchanged, explicit.fact_id)
+
+        # A different packet for an occupied occurrence is never a silent correction.
+        before = await _effect_counts(pool)
+        with pytest.raises(TemporalError) as caught:
+            await assert_(
+                effective_period_id=period,
+                effective_from="2024",
+                **{"effective_from_precision": "year"},
+            )
+        assert caught.value.code == CORRECTION_REQUIRED
+        assert await _effect_counts(pool) == before
+
+        # CAS correction: the old version keeps its packet, evidence is carried,
+        # and a closed interval in the past stays assertion-current.
+        to_mid_april = dict(effective_to="2024-04-15", effective_to_precision="day")
+        correction = dict(
+            corrects_fact_id=explicit.fact_id,
+            effective_from="2024-03",
+            effective_from_precision="month",
+            **to_mid_april,
+        )
+        corrected = await assert_(**correction)
+        assert corrected.outcome == AssertOutcome.superseded
+        assert await _packet(pool, explicit.fact_id) == (
+            "superseded",
+            TemporalPacket(period, _utc(2024, 3, 1), "month", _utc(2024, 6, 1), "month"),
+        )
+        assert await _packet(pool, corrected.fact_id) == (
+            "active",
+            TemporalPacket(period, _utc(2024, 3, 1), "month", _utc(2024, 4, 16), "day"),
+        )
+        assert (
+            await pool.fetchval(
+                "SELECT carried_from FROM relationship.fact_evidence WHERE fact_id = $1",
+                corrected.fact_id,
+            )
+            == explicit.fact_id
+        )
+
+        # An exact retry finds its own successor; a different one is stale.
+        retry = await assert_(**correction)
+        assert (retry.outcome, retry.fact_id) == (AssertOutcome.unchanged, corrected.fact_id)
+        with pytest.raises(TemporalError) as caught:
+            await assert_(**{**correction, "effective_to": "2024-04-20"})
+        assert caught.value.code == CORRECTION_STALE
+
+        # corrects_fact_id alone replaces the bounds with unknown, same occurrence.
+        to_unknown = await assert_(corrects_fact_id=corrected.fact_id)
+        assert await _packet(pool, to_unknown.fact_id) == ("active", TemporalPacket(period))
+
+        # An ordinary provenance change preserves a known default packet.
+        known = await assert_(
+            corrects_fact_id=default.fact_id,
+            effective_from="2019",
+            effective_from_precision="year",
+        )
+        bumped = await assert_(src="another-source")
+        assert bumped.outcome == AssertOutcome.superseded
+        _, known_packet = await _packet(pool, known.fact_id)
+        assert await _packet(pool, bumped.fact_id) == ("active", known_packet)
+        assert known_packet.effective_from == _utc(2019, 1, 1)
+        again = await assert_(src="another-source")
+        assert (again.outcome, again.fact_id) == (AssertOutcome.unchanged, bumped.fact_id)
+
+    async def test_owner_approval_freezes_the_resolved_temporal_request(self, pool, owner_entity):
+        await simulate_temporal_cutover(pool)
+        value = "owner@example.test"
+
+        async def propose(**kwargs):
+            result = await relationship_assert_fact(
+                pool, owner_entity, _PRED_HAS_EMAIL, value, src="relationship", **kwargs
+            )
+            assert result.outcome == AssertOutcome.pending_approval
+            await pool.execute(
+                "UPDATE pending_actions SET status = 'approved' WHERE id = $1", result.action_id
+            )
+            return result.action_id
+
+        async def replay(action_id, wire, **overrides):
+            return await relationship_assert_fact(
+                pool,
+                owner_entity,
+                _PRED_HAS_EMAIL,
+                value,
+                src="relationship",
+                approval_action_id=action_id,
+                **{**wire, **overrides},
+            )
+
+        # An explicit packet parks in canonical form with its frozen mode.
+        explicit_id = await propose(effective_from="2024-03", effective_from_precision="month")
+        wire, ctx = await _parked(pool, explicit_id)
+        assert wire == {
+            **dict.fromkeys(WIRE_KEYS),
+            "effective_from": "2024-03-01T00:00:00+00:00",
+            "effective_from_precision": "month",
+        }
+        assert (ctx["temporal_request_mode"], ctx["temporal_base_fact_id"]) == ("explicit", None)
+
+        # A dispatch that alters the reviewed packet writes nothing at all.
+        before = await _effect_counts(pool)
+        with pytest.raises(ValueError, match="effective-time packet"):
+            await replay(explicit_id, wire, effective_to_precision="unbounded")
+        assert await _effect_counts(pool) == before
+        landed = await replay(explicit_id, wire)
+        assert landed.outcome == AssertOutcome.inserted
+        _, landed_packet = await _packet(pool, landed.fact_id)
+        assert landed_packet.effective_from == _utc(2024, 3, 1)
+
+        # An ordinary reassertion parks the STORED packet against its base ...
+        preserve_id = await propose(conf=0.9)
+        wire, ctx = await _parked(pool, preserve_id)
+        assert wire["effective_from"] == "2024-03-01T00:00:00+00:00"
+        assert (ctx["temporal_request_mode"], ctx["temporal_base_fact_id"]) == (
+            "ordinary",
+            landed.fact_id,
+        )
+        # ... so once that base is corrected underneath it, replay is stale and atomic.
+        await relationship_assert_fact(
+            pool,
+            owner_entity,
+            _PRED_HAS_EMAIL,
+            value,
+            src="owner-self",
+            corrects_fact_id=landed.fact_id,
+            effective_from="2024-02",
+            effective_from_precision="month",
+        )
+        before = await _effect_counts(pool)
+        with pytest.raises(TemporalError) as caught:
+            await replay(preserve_id, wire)
+        assert caught.value.code == CORRECTION_STALE
+        assert await _effect_counts(pool) == before
+
+        # A fresh ordinary approval preserves the corrected packet on replay.
+        fresh_id = await propose(conf=0.8)
+        fresh_wire, _ = await _parked(pool, fresh_id)
+        replaced = await replay(fresh_id, fresh_wire)
+        assert replaced.outcome == AssertOutcome.superseded
+        _, replaced_packet = await _packet(pool, replaced.fact_id)
+        assert replaced_packet.effective_from == _utc(2024, 2, 1)
+
+    async def test_owner_bootstrap_seed_never_adds_a_default_sibling(self, pool, owner_entity):
+        from butlers.owner_bootstrap import _seed_owner_telegram_handle
+
+        await simulate_temporal_cutover(pool)
+        await pool.execute(
+            "CREATE TABLE public.entity_info (entity_id UUID, type TEXT, value TEXT)"
+        )
+        await pool.execute(
+            "INSERT INTO public.entity_info VALUES ($1, 'telegram_chat_id', '4242')", owner_entity
+        )
+        explicit = await pool.fetchval(
+            """
+            INSERT INTO relationship.entity_facts
+                (subject, predicate, object, object_kind, src, effective_period_id)
+            VALUES ($1, 'has-handle', 'telegram:4242', 'literal', 'owner-self', $2)
+            RETURNING id
+            """,
+            owner_entity,
+            uuid.uuid4(),
+        )
+
+        async def seed_and_list():
+            async with pool.acquire() as conn:
+                await conn.execute("SET search_path TO relationship, public")
+                await _seed_owner_telegram_handle(conn, owner_entity)
+                await conn.execute("RESET search_path")
+            return await pool.fetch(
+                f"SELECT id, {PACKET_COLUMNS} FROM relationship.entity_facts "
+                "WHERE subject = $1 AND validity = 'active'",
+                owner_entity,
+            )
+
+        assert [r["id"] for r in await seed_and_list()] == [explicit]
+        await pool.execute(
+            "UPDATE relationship.entity_facts SET validity = 'retracted' WHERE id = $1", explicit
+        )
+        seeded = await seed_and_list()
+        assert [TemporalPacket.from_row(r) for r in seeded] == [TemporalPacket()]
+        assert await seed_and_list() == seeded
+
+    async def test_concurrent_corrections_have_one_winner_and_a_clean_loser(
+        self, provisioned_postgres_pool
+    ):
+        async with _bigger_pool(provisioned_postgres_pool) as p:
+            await _provision_schema(p)
+            await simulate_temporal_cutover(p)
+            entity = await p.fetchval(
+                "INSERT INTO public.entities (canonical_name) VALUES ('Alice') RETURNING id"
+            )
+            period = uuid.uuid4()
+            target = await relationship_assert_fact(
+                p,
+                entity,
+                _PRED_HAS_EMAIL,
+                _ALICE,
+                src="t",
+                effective_period_id=period,
+                effective_from="2024",
+                effective_from_precision="year",
+            )
+
+            async def correct(conn, src, year, evidence=None):
+                return await relationship_assert_fact(
+                    p,
+                    entity,
+                    _PRED_HAS_EMAIL,
+                    _ALICE,
+                    src=src,
+                    corrects_fact_id=target.fact_id,
+                    effective_from=year,
+                    effective_from_precision="year",
+                    evidence=evidence,
+                    conn=conn,
+                )
+
+            async with p.acquire() as winner_conn, p.acquire() as loser_conn:
+                winner_tx = winner_conn.transaction()
+                await winner_tx.start()
+                won = await correct(winner_conn, "winner", "2023")
+
+                async def lose():
+                    async with loser_conn.transaction():
+                        return await correct(
+                            loser_conn,
+                            "loser",
+                            "2022",
+                            [{"type": "text", "ref": "loser-ref", "note": ""}],
+                        )
+
+                loser = asyncio.create_task(lose())
+                # Commit the winner only once the loser is blocked on the row lock.
+                for _ in range(200):
+                    if await p.fetchval(
+                        "SELECT count(*) FROM pg_stat_activity "
+                        "WHERE datname = current_database() AND wait_event_type = 'Lock'"
+                    ):
+                        break
+                    await asyncio.sleep(0.02)
+                else:
+                    pytest.fail("the losing correction never waited on the row lock")
+                await winner_tx.commit()
+                with pytest.raises(TemporalError) as caught:
+                    await loser
+
+            assert caught.value.code == CORRECTION_STALE
+            active = await p.fetch(
+                "SELECT id FROM relationship.entity_facts "
+                "WHERE subject = $1 AND validity = 'active' AND effective_period_id = $2",
+                entity,
+                period,
+            )
+            assert [r["id"] for r in active] == [won.fact_id]
+            assert await _packet(p, target.fact_id) == (
+                "superseded",
+                TemporalPacket(period, _utc(2024, 1, 1), "year"),
+            )
+            for table in ("relationship.fact_evidence", "relationship.fact_coverage"):
+                assert (
+                    await p.fetchval(f"SELECT count(*) FROM {table} WHERE src = 'loser'")  # noqa: S608
+                    == 0
+                )
 
 
 # ---------------------------------------------------------------------------

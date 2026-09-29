@@ -159,8 +159,11 @@ async def test_contact_merge_and_entity_merge_validation():
             _asyncpg_record(dict(tgt)),
         ]
     )
+    # Effective-time preflight fence: only unknown default facts, safe to move.
+    pool.fetchval = AsyncMock(return_value=False)
     mock_conn = AsyncMock()
     mock_conn.execute = AsyncMock()
+    mock_conn.fetchval = AsyncMock(return_value=False)
     mock_conn.transaction = MagicMock()
     mock_conn.transaction.return_value.__aenter__ = AsyncMock(return_value=None)
     mock_conn.transaction.return_value.__aexit__ = AsyncMock(return_value=False)

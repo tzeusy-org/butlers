@@ -14,6 +14,12 @@ import pytest
 
 from butlers.testing.approval_parking_fake import record_pending_action
 from butlers.tools.relationship.fact_evidence import EvidencePacket
+from butlers.tools.relationship.fact_temporal import (
+    ORDINARY,
+    RequestMode,
+    TemporalPacket,
+    wire_values,
+)
 from butlers.tools.relationship.relationship_assert_fact import (
     AssertOutcome,
     _assert_on_conn,
@@ -68,13 +74,20 @@ def _registered_approval_hooks(pool: AsyncMock):
 
 
 async def _assert_on_conn_with_approval_hooks(conn: AsyncMock, **kwargs):
-    """Call the assertion boundary with real hooks scoped to its exact pool."""
+    """Call the assertion boundary with real hooks scoped to its exact pool.
+
+    Defaults to an ordinary request (no effective-time arguments).
+    """
+    kwargs.setdefault("temporal", ORDINARY)
+    kwargs.setdefault("temporal_wire", wire_values())
     with _registered_approval_hooks(conn):
         return await _assert_on_conn(conn, conn, **kwargs)
 
 
 async def _create_pending_action_with_approval_hooks(conn: AsyncMock, *args, **kwargs):
     """Call the parking boundary with real hooks scoped to its exact pool."""
+    kwargs.setdefault("temporal_mode", RequestMode.ordinary)
+    kwargs.setdefault("temporal_base_fact_id", None)
     with _registered_approval_hooks(conn):
         return await _create_pending_action(conn, *args, **kwargs)
 
@@ -145,6 +158,7 @@ async def test_supersession_insert_is_conflict_safe() -> None:
             "conf": 1.0,
             "verified": False,
             "last_seen": None,
+            **TemporalPacket().wire(),
         }
     )
     # The supersession UPDATE reports one row flipped active -> superseded.
@@ -169,9 +183,9 @@ async def test_supersession_insert_is_conflict_safe() -> None:
 
     insert_sql = conn.fetchval.call_args.args[0]
     assert result.outcome == AssertOutcome.superseded
-    assert "ON CONFLICT (subject, predicate, object)" in insert_sql
-    assert "WHERE validity = 'active'" in insert_sql
-    assert "DO NOTHING" in insert_sql
+    # Targetless, so the same statement stays valid across the effective-time
+    # index transition (legacy SPO index, both indexes, occurrence index only).
+    assert "ON CONFLICT DO NOTHING" in insert_sql
     assert "DO UPDATE" not in insert_sql
 
     # The supersession UPDATE must be guarded on the row id AND validity='active'
@@ -213,7 +227,7 @@ async def test_create_pending_action_reuses_existing_pending_row() -> None:
     assert returned == existing_id
     # The dedup probe ran, but no INSERT followed.
     probe_sql = conn.fetchval.call_args.args[0]
-    assert "SELECT id FROM pending_actions" in probe_sql
+    assert "FROM pending_actions" in probe_sql
     assert "tool_args @> $2::jsonb" in probe_sql
     conn.execute.assert_not_called()
 
@@ -263,9 +277,12 @@ async def test_owner_carveout_passes_dedup_match_and_rationale() -> None:
     # Sequence of fetchrow/fetchval calls in _assert_on_conn (owner branch):
     #  1. _validate_predicate: fetchval -> True (predicate is registered)
     #  2. _is_owner_entity:    fetchrow -> {"roles": ["owner"]}
+    #     _resolve_for_parking: fetchrow -> None (empty default occurrence)
     #  3. _create_pending_action dedup probe: fetchval -> existing_action_id (dedup HIT)
     conn.fetchval = AsyncMock(side_effect=[True, existing_action_id])
-    conn.fetchrow = AsyncMock(return_value={"roles": ["owner"]})
+    # Owner lookup, then the default-occurrence read that resolves the parked
+    # effective-time packet (empty slot: nothing to preserve).
+    conn.fetchrow = AsyncMock(side_effect=[{"roles": ["owner"]}, None])
     conn.execute = AsyncMock()
 
     result = await _assert_on_conn_with_approval_hooks(
@@ -313,7 +330,9 @@ async def test_owner_carveout_inserts_with_caller_supplied_why() -> None:
     conn = AsyncMock()
     # fetchval sequence: predicate-registered=True, dedup probe miss=None.
     conn.fetchval = AsyncMock(side_effect=[True, None])
-    conn.fetchrow = AsyncMock(return_value={"roles": ["owner"]})
+    # Owner lookup, then the default-occurrence read that resolves the parked
+    # effective-time packet (empty slot: nothing to preserve).
+    conn.fetchrow = AsyncMock(side_effect=[{"roles": ["owner"]}, None])
     conn.execute = AsyncMock()
 
     caller_why = "The contact-info reconciler found a missing has-email triple."
@@ -508,7 +527,9 @@ async def test_owner_entity_with_non_trusted_src_parks_to_pending() -> None:
     conn = AsyncMock()
     # fetchval sequence: predicate-registered=True, dedup-probe-miss=None.
     conn.fetchval = AsyncMock(side_effect=[True, None])
-    conn.fetchrow = AsyncMock(return_value={"roles": ["owner"]})
+    # Owner lookup, then the default-occurrence read that resolves the parked
+    # effective-time packet (empty slot: nothing to preserve).
+    conn.fetchrow = AsyncMock(side_effect=[{"roles": ["owner"]}, None])
     conn.execute = AsyncMock()
 
     result = await _assert_on_conn_with_approval_hooks(

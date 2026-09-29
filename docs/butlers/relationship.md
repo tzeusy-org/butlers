@@ -27,6 +27,49 @@ The channel-to-producer mapping lives in the `butler-relationship` spec and
 triage, check the contact's expected-signal state and exact producer, then that same connector
 endpoint's heartbeat.
 
+## Effective time on structural facts
+
+`relationship.entity_facts` rows can say *when* a relationship held, separately from when the
+assertion was made (`created_at`), observed (`observed_at`, `last_seen`), how certain it is
+(`conf`), and whether the assertion version is current (`validity`). None of those ever defaults
+or derives an effective bound. The contract is the
+[`relationship-fact-effective-time`](../../openspec/changes/relationship-fact-effective-time/design.md)
+change; the wire rules live in `roster/relationship/tools/fact_temporal.py`.
+
+- **Packet.** `effective_period_id` names one occurrence of a triple (NULL is the default
+  occurrence every legacy row uses). The interval is half-open `[effective_from, effective_to)`
+  with a precision per bound: `instant`, `day`, `month`, `year` or `unbounded`. A NULL bound with
+  NULL precision is **unknown**; a NULL bound with `unbounded` is an explicit open end. Unknown
+  never means "for all time". Coarse bounds normalize to UTC unit starts, and an upper bound to
+  the first instant after its unit (`2024-05`/`month` stores `2024-06-01T00:00:00Z`).
+- **Writer modes.** With no temporal argument (omitted and `null` are identical) a write is
+  *ordinary*: it targets the default occurrence and copies whatever packet that row already has
+  into any provenance replacement. Any non-null bound, precision or period id is an *explicit*
+  packet; a different packet for an occupied occurrence is refused, never silently corrected.
+  `corrects_fact_id` is a compare-and-swap correction of one exact active version; a stale
+  target fails without writing. Parked owner approvals carry all six temporal keys canonically
+  and freeze the resolved mode and base version in `fact_approval_context`.
+- **Readers stay assertion-current.** Existing queries select `validity = 'active'` only; an
+  active row whose interval closed in the past is still returned. As-of reads belong to a
+  separate change.
+- **Transition stage, no live cutover.** Migration `rel_035` adds the columns, checks and the
+  occurrence index but keeps `uq_ef_spo_active`, the deployed writer's conflict target. While
+  that index exists every temporal argument fails `temporal_cutover_pending` before approval
+  parking or any write, so only unknown default rows can exist. Dropping it is a later cutover
+  migration that is not in the chain; it needs proof that no old writer is live and that every
+  production mutator in `tests/contracts/test_entity_facts_mutator_inventory.py` preserves
+  occurrences or refuses first. Until then, rollback is: drain the transition writer, restore
+  the old one, optionally downgrade `rel_035` (facts and rel_034 evidence, coverage and approval
+  context survive). The downgrade refuses once the legacy index is gone or any temporal value
+  exists; after cutover, recovery rolls forward.
+- **Mutator fences.** Entity merge locks and plans every affected fact first, repoints rows with
+  their packets and evidence intact, and refuses `temporal_occurrence_collision` before any write
+  rather than collapse an occurrence that carries effective time. Legacy `contact_merge`,
+  hash-addressed contact routes, SPO retraction and `prefers-channel` refuse
+  (`temporal_mutator_unsupported` / `temporal_occurrence_ambiguous`) whenever they would have to
+  choose between occurrences or drop a packet. Entity forget retracts every occurrence as-is and
+  removes their graph edges; Google/Steam hard deletes keep their all-version cascade.
+
 ## Implementation Notes
 
 - `relationship.facts` is a multi-valued log store: `activity` and `interaction_*` carry many
