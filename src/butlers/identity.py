@@ -10,7 +10,7 @@ Migration bead 7 (bu-akads): reads from ``relationship.entity_facts`` triples
 
 Used by:
 - Switchboard ingestion path (before routing) to inject sender identity preambles.
-- notify() to resolve outbound recipients from contact_id.
+- notify() to resolve outbound recipients from entity_id.
 - Approval gate to replace name-heuristic with role-based target resolution.
 """
 
@@ -407,10 +407,6 @@ class ResolvedContact:
 
     Attributes
     ----------
-    contact_id:
-        UUID of the resolved contact in public.contacts.  May be ``None``
-        after the bead-7 cut-over when resolution goes through
-        ``relationship.entity_facts`` (entity_id is the authoritative key).
     name:
         Display name of the contact (may be ``None`` if not set).
     roles:
@@ -421,9 +417,11 @@ class ResolvedContact:
     is_unidentified:
         ``True`` when ``public.entities.metadata.unidentified`` explicitly marks
         this as a transitory entity awaiting disambiguation.
+
+    ``entity_id`` is the routing key. The shape carries no contact identifier
+    (relationship-facts spec).
     """
 
-    contact_id: UUID | None
     name: str | None
     roles: list[str]
     entity_id: UUID | None
@@ -575,9 +573,8 @@ async def resolve_contact_by_channel(
 
     Notes
     -----
-    - ``entity_id`` is the authoritative key post bead 7.  ``contact_id`` on
-      the returned dataclass will be ``None`` since we no longer query
-      ``public.contacts``.
+    - ``entity_id`` is the authoritative key post bead 7; ``public.contacts`` is
+      no longer queried.
     - This function is safe to call if the migration has not yet run —
       it returns ``None`` gracefully.
     """
@@ -695,7 +692,6 @@ async def resolve_contact_by_channel(
         roles = []
 
     return ResolvedContact(
-        contact_id=None,  # entity_id is now the authoritative key (bead 7)
         name=row["name"] or None,
         roles=roles,
         entity_id=entity_id,
@@ -905,7 +901,6 @@ async def resolve_contacts_by_channel_bulk(
             raw_roles = row["roles"]
             roles = [str(r) for r in raw_roles] if isinstance(raw_roles, (list, tuple)) else []
             result[pair] = ResolvedContact(
-                contact_id=None,
                 name=row["name"] or None,
                 roles=roles,
                 entity_id=entity_id,
@@ -968,7 +963,6 @@ async def resolve_owner_channel_via_definer(
             return None
 
     owner_contact = ResolvedContact(
-        contact_id=None,
         name=None,
         roles=["owner"],
         entity_id=entity_id,
@@ -1015,8 +1009,8 @@ async def create_temp_contact(
 
     Creates a ``public.entities`` entry with ``metadata.unidentified = true``.
     Phase 7 (bu-jnaa3): it no longer writes a ``public.contacts`` row — the
-    returned ``ResolvedContact.contact_id`` is always ``None`` and ``entity_id``
-    is the authoritative identity. It does NOT write the sender's channel triple
+    returned ``ResolvedContact`` carries ``entity_id`` as the authoritative
+    identity. It does NOT write the sender's channel triple
     to ``relationship.entity_facts``.
 
     entity-v3 (bu-hvrt1): the channel-triple assertion — the existing-sender
@@ -1172,7 +1166,6 @@ async def create_temp_contact(
                         if reserved_entity is not None:
                             raw_roles = reserved_entity["roles"]
                             return ResolvedContact(
-                                contact_id=None,
                                 name=reserved_entity["canonical_name"] or None,
                                 roles=(
                                     [str(role) for role in raw_roles]
@@ -1235,8 +1228,7 @@ async def create_temp_contact(
 
         # Phase 7 (bu-jnaa3): create_temp_contact NO LONGER writes a
         # public.contacts row — the contact object is being retired and
-        # ``entity_id`` is the authoritative identity. ``contact_id`` is always
-        # ``None`` for freshly-minted senders; callers key off ``entity_id``.
+        # ``entity_id`` is the authoritative identity; callers key off it.
         #
         # entity-v3 (bu-hvrt1): it also does NOT write the sender's channel
         # triple to relationship.entity_facts. Switchboard ingress must not write
@@ -1246,7 +1238,6 @@ async def create_temp_contact(
         # ``relationship.tools.relationship_assert_fact.assert_sender_channel_fact``.
 
         return ResolvedContact(
-            contact_id=None,
             name=name,
             roles=[],
             entity_id=entity_id,
@@ -1415,13 +1406,12 @@ async def resolve_outbound_channel(
 def build_identity_preamble(
     resolved: ResolvedContact | None,
     channel: str,
-    temp_contact_id: UUID | None = None,
     temp_entity_id: UUID | None = None,
 ) -> str:
     """Build the structured identity preamble for a routed prompt.
 
-    Migration bead 7 (bu-akads): ``contact_id`` is no longer included in the
-    preamble output.  ``entity_id`` is the canonical identifier.
+    Migration bead 7 (bu-akads): the preamble carries no contact identifier;
+    ``entity_id`` is the canonical identifier.
 
     Parameters
     ----------
@@ -1429,11 +1419,6 @@ def build_identity_preamble(
         A ``ResolvedContact`` for a known sender, or ``None`` for unknown.
     channel:
         The source channel (e.g., ``"telegram"``).
-    temp_contact_id:
-        contact_id of the temporary contact (may be ``None``). Used as a
-        fallback identifier in the preamble for unknown senders when
-        ``temp_entity_id`` is not available (``create_temp_contact`` always
-        returns a contact_id), emitted as ``(contact_id: <uuid>)``.
     temp_entity_id:
         entity_id of the temporary contact (may be ``None``).
 
@@ -1464,13 +1449,6 @@ def build_identity_preamble(
             f"[Source: Unknown sender (entity_id: {temp_entity_id}), "
             f"via {channel} -- pending disambiguation]"
         )
-    if temp_contact_id is not None:
-        # Fallback for create_temp_contact which always returns a contact_id
-        return (
-            f"[Source: Unknown sender (contact_id: {temp_contact_id}), "
-            f"via {channel} -- pending disambiguation]"
-        )
-
     return f"[Source: Unknown sender, via {channel} -- pending disambiguation]"
 
 
