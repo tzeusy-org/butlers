@@ -46,6 +46,7 @@ import { DeltaSinceLastVisitBanner } from "@/components/relationship/DeltaSinceL
 import { EntityVerbRail } from "@/components/relationship/EntityVerbRail";
 import { LatestInteractionsBlock } from "@/components/relationship/LatestInteractionsBlock";
 import { OwnerSetupBanner } from "@/components/relationship/OwnerSetupBanner";
+import { useOwnerIdentitySetup } from "@/components/relationship/owner-identity";
 import { PracticalDrawer } from "@/components/relationship/PracticalDrawer";
 import { PulseStrip } from "@/components/relationship/PulseStrip";
 import { TelegramSessionSetup } from "@/components/relationship/TelegramSessionSetup";
@@ -2641,7 +2642,10 @@ export default function EntityDetailPage() {
   }, []);
 
   const isOwner = entity?.roles?.includes("owner") ?? false;
-  const ownerNeedsSetup = isOwner && entity ? !entity.linked_contact_id : false;
+  // "(action needed)" follows OwnerSetupBanner's own missing-identity predicate
+  // (bu-6m6ou0), never linked_contact_id, which the API always returns null.
+  const ownerIdentitySetup = useOwnerIdentitySetup(entity);
+  const ownerNeedsSetup = isOwner && ownerIdentitySetup.needsSetup;
 
   // Practical drawer — collapsed by default, owner setup forces it open.
   // Defined once and rendered near the top of whichever view mode is active
