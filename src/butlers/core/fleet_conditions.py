@@ -87,6 +87,10 @@ _ACTIVE_ATTENTION_CONDITIONS_SQL: Final[str] = """
 _DIGEST_FIRST_SEEN_SQL: Final[str] = """
     SELECT min(started_at) FROM public.qa_patrols WHERE enabled_sources_config_digest = $1
 """
+_ACTIVE_EPISODE_FIRST_DETECTED_SQL: Final[str] = """
+    SELECT first_detected_at FROM public.infra_conditions
+    WHERE source = $1 AND fingerprint = $2 AND state IN ('open', 'aging')
+"""
 _APPEND_ATTENTION_SQL: Final[str] = "SELECT public.append_runtime_attention_condition($1)"
 
 _ACTIVE_LEGACY_LIVENESS_SQL: Final[str] = """
@@ -184,31 +188,66 @@ def _policy_stops_qa(policy: Any) -> bool:
     )
 
 
+def qa_patrol_unproven_fingerprint(digest: str) -> str:
+    """The non-paging identity that dates an enabled-source digest's first observation."""
+    return compute_fingerprint(
+        QA_PATROL_SOURCE,
+        IDENTITY_VERSION,
+        {"condition": "patrol_config_unproven", "enabled_sources_config_digest": digest},
+    )
+
+
 async def reconcile_qa_patrol_assurance(
-    pool: Any,
-    policy_reader: Any,
-    contract: QaPatrolContract,
-    *,
-    controller_started_at: datetime,
+    pool: Any, policy_reader: Any, contract: QaPatrolContract
 ) -> list[ConditionTransition]:
     """Check qualifying QA patrol age against twice its cadence, independently of QA.
 
     With no qualifying patrol under the current enabled-source digest (a first
     deploy or a source change), the overdue clock starts at the digest's first
-    observation: the earlier of its first recorded patrol and
-    ``controller_started_at``. Until twice the cadence has passed from there
-    nothing is proven either way, so the pass writes nothing: a healthy QA is
-    not paged and an existing episode is not resolved.
+    durable observation: the earlier of its first recorded patrol and the
+    ``patrol_config_unproven`` ledger episode this controller opens for it. That
+    episode stays active until a qualifying patrol resolves it, so a controller
+    or process restart cannot reset the clock. It never pages. Until twice the
+    cadence has passed, only that episode is written: a healthy QA is not
+    paged and an existing overdue episode is not resolved.
     """
     last: datetime | None = await pool.fetchval(
         LAST_QUALIFYING_PATROL_SQL, list(QUALIFYING_PATROL_STATUSES), contract.digest
     )
     now: datetime = await pool.fetchval("SELECT clock_timestamp()")
+    unproven: Observation | None = None
     if last is None:
-        first_seen: datetime | None = await pool.fetchval(_DIGEST_FIRST_SEEN_SQL, contract.digest)
-        baseline = min(filter(None, (first_seen, controller_started_at)))
-        if (now - baseline).total_seconds() <= contract.overdue_after_s:
-            return []
+        unproven_fingerprint = qa_patrol_unproven_fingerprint(contract.digest)
+        unproven = Observation(
+            fingerprint=unproven_fingerprint,
+            summary=(
+                "No qualifying QA patrol yet under the current enabled-source configuration "
+                f"(overdue after {int(contract.overdue_after_s // 60)}m)"
+            ),
+            metadata={
+                "enabled_sources_config_digest": contract.digest,
+                "overdue_after_s": contract.overdue_after_s,
+            },
+            identity_version=IDENTITY_VERSION,
+        )
+        first_seen = [
+            seen
+            for seen in (
+                await pool.fetchval(_DIGEST_FIRST_SEEN_SQL, contract.digest),
+                await pool.fetchval(
+                    _ACTIVE_EPISODE_FIRST_DETECTED_SQL, QA_PATROL_SOURCE, unproven_fingerprint
+                ),
+            )
+            if seen is not None
+        ]
+        if not first_seen or (now - min(first_seen)).total_seconds() <= contract.overdue_after_s:
+            return await reconcile_snapshot(
+                pool,
+                source=QA_PATROL_SOURCE,
+                observations=[unproven],
+                snapshot_complete=False,
+                initial_grace_seconds=_CONDITION_INITIAL_GRACE_S,
+            )
     if last is not None and (now - last).total_seconds() <= contract.overdue_after_s:
         return await reconcile_snapshot(
             pool,
@@ -246,11 +285,12 @@ async def reconcile_qa_patrol_assurance(
         identity_version=IDENTITY_VERSION,
     )
     # Without a readable policy the overdue/stopped split is unproven, so the
-    # observation adds evidence without resolving the other identity.
+    # observation adds evidence without resolving the other identity.  The
+    # unproven-configuration episode stays active beside it.
     return await reconcile_snapshot(
         pool,
         source=QA_PATROL_SOURCE,
-        observations=[observation],
+        observations=[observation] if unproven is None else [observation, unproven],
         snapshot_complete=policy_known,
         initial_grace_seconds=_CONDITION_INITIAL_GRACE_S,
     )
@@ -289,8 +329,6 @@ async def run_controller_pass(
     cycle: ShadowCycle,
     expected_names: frozenset[str],
     qa_contract: QaPatrolContract | None,
-    *,
-    controller_started_at: datetime,
 ) -> None:
     """Run both independent checks, then attention; no step blocks another."""
     try:
@@ -299,9 +337,7 @@ async def run_controller_pass(
         logger.exception("Fleet condition controller: fleet reconciliation failed")
     if qa_contract is not None:
         try:
-            await reconcile_qa_patrol_assurance(
-                pool, policy_reader, qa_contract, controller_started_at=controller_started_at
-            )
+            await reconcile_qa_patrol_assurance(pool, policy_reader, qa_contract)
         except Exception:
             logger.exception("Fleet condition controller: QA patrol assurance failed")
     try:
@@ -325,19 +361,7 @@ def controller_after_cycle(
         None,
     )
 
-    started: list[datetime] = []
-
     async def after_cycle(policy_reader: Any, cycle: ShadowCycle) -> None:
-        if not started:
-            # The database clock, like every other age this controller compares.
-            started.append(await pool.fetchval("SELECT clock_timestamp()"))
-        await run_controller_pass(
-            pool,
-            policy_reader,
-            cycle,
-            expected_names,
-            qa_contract,
-            controller_started_at=started[0],
-        )
+        await run_controller_pass(pool, policy_reader, cycle, expected_names, qa_contract)
 
     return after_cycle
