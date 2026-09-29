@@ -27,9 +27,7 @@ Scope and design
 -----------------
 The scanner in this file is a small, self-contained, defensive TypeScript
 *fragment* parser — NOT a general TS/JS parser. It understands exactly the
-patterns ``client.ts`` actually uses (verified empirically: it resolves
-443/443 functions that call ``apiFetch`` with zero unresolved call sites at
-the time this test was written):
+patterns ``client.ts`` actually uses:
 
 - string / template-literal literal first arguments to ``apiFetch<T>(...)``,
   including ``${...}`` interpolation. An interpolated local ``const`` that
@@ -42,6 +40,16 @@ the time this test was written):
 - query-parameter names set via ``.set("name", ...)`` on a
   ``URLSearchParams``, either inline or via a shared ``*SearchParams(...)``
   helper (``client.ts``'s own naming convention — 13 such helpers exist).
+
+Scanner coverage is itself checked with zero slack (bu-i8q4iu). A whole-file
+census attributes every ``apiFetch`` call to its enclosing function,
+independently of body extraction. The set of census functions the scanner did
+not resolve (or that call ``apiFetch`` more than once, since only the first
+call is read) must equal ``UNRESOLVED_APIFETCH_FUNCTIONS``, which is empty. A
+new unparseable pattern fails with the function's name, and deleting a
+client.ts function needs no edit. The census found 21 functions that a
+count-only floor had hidden: an inline object return type
+(``Promise<{ status: string }>``) was mistaken for the body.
 
 Matching is segment-wise and method-aware (bu-tllj5r). An OpenAPI ``{param}``
 segment accepts any FE segment. A FE segment that is exactly a wildcard
@@ -109,17 +117,13 @@ _CROSS_SUMMARY_HANDLER = "get_cross_connector_summary_with_aggregates"
 # Wildcard marker substituted for each `${...}` template interpolation.
 _WILDCARD = "\x00"
 
-# Guards the scanner itself: if fewer than this many apiFetch call sites
-# resolve, the parser has regressed (silently) and every assertion below
-# would be vacuous. After the bu-wgniv dead-export sweep (which deleted ~48
-# unused api/client.ts functions) 385/385 resolved. A contract counts only
-# when every template carries literal text (bu-tllj5r); 429 resolve on that
-# basis now. Pinned at exactly that count (not a round number like 350) so a
-# single newly-unparseable call site — one function silently dropped by a
-# future authoring pattern — trips this guard instead of hiding inside slack
-# (PR #3173 review: a wide buffer here would let coverage rot without failing).
-# Deleting a client.ts endpoint function lowers it by the same number.
-_MIN_RESOLVED_FUNCTIONS = 429
+# client.ts functions that call apiFetch but whose call the scanner cannot
+# resolve (or that call it more than once). Compared for exact set equality
+# against the whole-file census, so there is zero slack in either direction:
+# a new unparseable pattern fails with its function name, and a stale entry
+# fails too. Deleting a client.ts function needs no edit here. Any entry needs
+# a reason and a tracking bead id.
+UNRESOLVED_APIFETCH_FUNCTIONS: frozenset[str] = frozenset()
 
 # ---------------------------------------------------------------------------
 # Known, tracked contract exceptions
@@ -259,7 +263,69 @@ def _cross_summary_payload_shapes() -> list[set[str]]:
     return list(shapes.values())
 
 
-_FUNC_START_RE = re.compile(r"(?:export (?:async )?|async )?\bfunction (\w+)\s*\(")
+# An optional generic parameter list may sit between the name and `(`
+# (`function apiFetch<T>(`), so a generic endpoint function is never invisible.
+_FUNC_START_RE = re.compile(r"(?:export (?:async )?|async )?\bfunction (\w+)\s*(?:<[^()]*>)?\s*\(")
+
+# After these, a depth-0 `{` in a return annotation opens a type literal, not
+# the body: `): { a: string } {`, `): A | { b: B } {`, `): () => { c: C } {`.
+_TYPE_LITERAL_PRECEDERS = frozenset(":|&=,")
+
+
+def _find_body_open(text: str, paren_close: int) -> int | None:
+    """Return the index of the function body's `{`, or None when bodyless.
+
+    Skips a return-type annotation by balanced scanning over `<>`, `()`,
+    `[]` and `{}`. An inline object type (`Promise<{ status: string }>`, or a
+    bare `{ a: string }`) is part of the annotation, never the body: taking
+    the first `{` after the parameter list misattributed the body to the type
+    literal and silently dropped the function (bu-i8q4iu).
+    """
+    i = paren_close + 1
+    n = len(text)
+    depth = 0
+    prev = ")"
+    while i < n:
+        c = text[i]
+        if c.isspace():
+            i += 1
+        elif text.startswith("//", i):
+            nl = text.find("\n", i)
+            i = nl if nl != -1 else n
+        elif text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            i = end + 2 if end != -1 else n
+        elif c in "\"'":
+            i = _skip_string(text, i, c)
+            prev = c
+        elif c == "`":
+            i = _skip_template(text, i)
+            prev = c
+        elif text.startswith("=>", i):
+            i += 2
+            prev = "="
+        elif c in "<([":
+            depth += 1
+            i += 1
+        elif c in ">)]}":
+            depth -= 1
+            i += 1
+            if depth == 0:
+                prev = c
+        elif c == "{":
+            if depth == 0 and prev not in _TYPE_LITERAL_PRECEDERS:
+                return i
+            depth += 1
+            i += 1
+        elif c == ";" and depth == 0:
+            # A bodyless declaration (TS overload signature / ambient `declare
+            # function`): the next `{` belongs to a *later* declaration.
+            return None
+        else:
+            if depth == 0:
+                prev = c
+            i += 1
+    return None
 
 
 def _extract_functions(text: str) -> dict[str, str]:
@@ -270,14 +336,10 @@ def _extract_functions(text: str) -> dict[str, str]:
         paren_open = m.end() - 1
         try:
             paren_close = _find_matching(text, paren_open, "(", ")")
-            brace_open = text.index("{", paren_close + 1)
-        except (ValueError, IndexError):
+        except ValueError:
             continue
-        # A bodyless declaration (TS overload signature / ambient `declare
-        # function`) ends in `;` before any `{` of its own — the next `{`
-        # `text.index` finds belongs to a *later* declaration. Skip rather
-        # than misattribute that unrelated body to this name.
-        if ";" in text[paren_close + 1 : brace_open]:
+        brace_open = _find_body_open(text, paren_close)
+        if brace_open is None:
             continue
         try:
             brace_close = _find_matching(text, brace_open, "{", "}")
@@ -544,6 +606,31 @@ def _find_apifetch_call_args(body: str) -> list[str]:
     return out
 
 
+#: The client's own fetch wrapper; its definition is not a call site.
+_APIFETCH_DEFINITION = "apiFetch"
+
+
+def _apifetch_call_sites(text: str) -> dict[str, int]:
+    """Whole-file census: enclosing function name -> number of apiFetch calls.
+
+    Independent of body extraction on purpose: each call is attributed to the
+    nearest preceding top-level function declaration (client.ts has no nested
+    named functions), so a function whose body extraction fails still counts.
+    """
+    starts = [(m.start(), m.group(1)) for m in _FUNC_START_RE.finditer(text)]
+    census: dict[str, int] = {}
+    for m in _APIFETCH_CALL_RE.finditer(text):
+        owner = None
+        for start, name in starts:
+            if start > m.start():
+                break
+            owner = name
+        if owner is None or text[: m.start()].endswith("function "):
+            continue
+        census[owner] = census.get(owner, 0) + 1
+    return census
+
+
 class FunctionContract:
     """A resolved client.ts endpoint function: its path template(s), HTTP
     method, and the query-param names it sends."""
@@ -596,6 +683,17 @@ def _scan_client_ts(text: str) -> dict[str, FunctionContract]:
         query_names = _extract_query_param_names(body, helper_bodies)
         contracts[name] = FunctionContract(name, paths, method, query_names)
     return contracts
+
+
+def _unresolved_apifetch_functions(text: str) -> set[str]:
+    """Census functions the scanner did not resolve, or that call apiFetch twice.
+
+    ``_scan_client_ts`` reads only a function's first call, so a second call
+    site would otherwise go unchecked.
+    """
+    census = _apifetch_call_sites(text)
+    resolved = _scan_client_ts(text)
+    return (set(census) - set(resolved)) | {name for name, count in census.items() if count > 1}
 
 
 def _has_literal_segment(fe_template: str) -> bool:
@@ -706,16 +804,39 @@ def test_legacy_switchboard_connector_namespace_is_absent(
 
 
 # ---------------------------------------------------------------------------
-# Sanity: the scanner itself resolves the vast majority of call sites.
+# Sanity: the scanner resolves every apiFetch call site, or it is tracked.
 # ---------------------------------------------------------------------------
 
 
-def test_scanner_resolves_most_apifetch_call_sites(fe_contracts: dict[str, FunctionContract]):
-    assert len(fe_contracts) >= _MIN_RESOLVED_FUNCTIONS, (
-        f"Only resolved {len(fe_contracts)} apiFetch call sites "
-        f"(expected >= {_MIN_RESOLVED_FUNCTIONS}). The client.ts scanner may "
-        "have regressed — check for new authoring patterns it doesn't "
-        "understand yet before trusting the assertions below."
+def test_every_apifetch_call_site_resolves_or_is_tracked(client_ts_text: str):
+    unresolved = _unresolved_apifetch_functions(client_ts_text)
+    new = sorted(unresolved - UNRESOLVED_APIFETCH_FUNCTIONS)
+    stale = sorted(UNRESOLVED_APIFETCH_FUNCTIONS - unresolved)
+    assert not new, (
+        f"client.ts functions call apiFetch but the scanner did not resolve them (or they "
+        f"call it more than once): {new}. Teach the scanner the new pattern, or add each "
+        "to UNRESOLVED_APIFETCH_FUNCTIONS with a reason and a tracking bead."
+    )
+    assert not stale, (
+        f"UNRESOLVED_APIFETCH_FUNCTIONS lists functions that now resolve or no longer "
+        f"exist: {stale}. Remove them."
+    )
+
+
+def test_census_counts_every_apifetch_call(client_ts_text: str):
+    """Anti-vacuity: the census sees every call, and each lands in its function's body."""
+    census = _apifetch_call_sites(client_ts_text)
+    occurrences = len(_APIFETCH_CALL_RE.findall(client_ts_text))
+    assert census
+    assert sum(census.values()) == occurrences - 1  # minus the definition
+    functions = _extract_functions(client_ts_text)
+    misattributed = sorted(
+        name
+        for name, count in census.items()
+        if len(_APIFETCH_CALL_RE.findall(functions.get(name, ""))) != count
+    )
+    assert misattributed == [], (
+        f"body extraction lost these functions' apiFetch calls: {misattributed}"
     )
 
 
@@ -1168,3 +1289,45 @@ def test_extract_local_consts_stops_at_statement_semicolon_not_body_end():
     body = 'const path = someCond ? "/a" : "/b"; apiFetch(path);'
     consts = _extract_local_consts(body)
     assert consts["path"] == 'someCond ? "/a" : "/b"'
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        "",
+        ": Promise<{ status: string }>",
+        ": { a: string }",
+        ": Promise<ApiResponse<{ id: string; tags: { t: string }[] }>>",
+        ": Promise<A | { b: () => { c: C } }>",
+    ],
+    ids=["none", "promise-object", "bare-object", "nested-generic", "union-arrow"],
+)
+def test_extract_functions_skips_inline_object_return_types(annotation: str):
+    """bu-i8q4iu: an inline object type in the return annotation is not the body."""
+    text = (
+        f"export async function probe(id: string){annotation} {{\n"
+        '  return apiFetch<R>(`/probe/${id}`, { method: "DELETE" });\n'
+        "}\n"
+    )
+    contracts = _scan_client_ts(text)
+    assert contracts["probe"].paths == [f"/probe/{_WILDCARD}"]
+    assert contracts["probe"].method == "delete"
+
+
+def test_census_attributes_generic_unparseable_and_repeated_calls_by_name():
+    """Generic declarations are seen; unresolvable or second calls are named."""
+    text = (
+        "export function generic<T>(id: string): Promise<{ id: T }> {\n"
+        "  return apiFetch<T>(`/generic/${id}`);\n"
+        "}\n"
+        "export function opaque() {\n"
+        "  return apiFetch<R>(buildPath());\n"
+        "}\n"
+        "export async function twice(id: string) {\n"
+        "  await apiFetch<R>(`/twice/${id}`);\n"
+        "  return apiFetch<R>(`/twice/${id}/again`);\n"
+        "}\n"
+    )
+    assert _apifetch_call_sites(text) == {"generic": 1, "opaque": 1, "twice": 2}
+    assert "generic" in _scan_client_ts(text)
+    assert _unresolved_apifetch_functions(text) == {"opaque", "twice"}
