@@ -88,8 +88,8 @@
   same rule. Assert the fixed `413 REQUEST_BODY_TOO_LARGE` envelope positively and
   zero JSON-decoder, receipt, actor, pool, protected-state, generic-audit, or
   explicit-audit interaction.
-  Evidence (PR #4255, PR #PRNUM): #4255 proves every clause except "exact
-  size/count/field validation"; #PRNUM closes it in
+  Evidence (PR #4255, PR #4273): #4255 proves every clause except "exact
+  size/count/field validation"; #4273 closes it in
   `tests/api/test_home_person_mappings.py`:
   `test_mounted_structural_refusals_are_fixed_422_without_writes` (empty and
   51-member batches, unknown/missing/mistyped fields, invalid UTF-8/JSON,
