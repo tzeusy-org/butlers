@@ -683,7 +683,8 @@ async def test_the_fleet_halt_month_is_named_once_and_only_by_the_producer(
         # v_month is only a faithful single name for the month while every use
         # reads that variable.  Prove each from the installed body.
         assert (
-            "hashtextextended('" + _FLEET_HALT_LOCK_PREFIX + "' || v_month::text, 0)" in definition
+            "hashtextextended('" + _FLEET_HALT_LOCK_PREFIX + "' || v_month::text, 0::bigint)"
+            in definition
         ), "the producer no longer keys its own advisory lock on v_month"
         assert re.search(r"'fleet_halt',\s*v_month\s*,", definition), (
             "the producer no longer writes v_month into fleet_halt_month"
