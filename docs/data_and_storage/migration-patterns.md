@@ -137,6 +137,31 @@ membership-free NOLOGIN definer role, pin the function search path, revoke
 The bootstrap must also run a post-baseline ACL finalizer on each init-db rerun:
 the repository's legacy broad public-table/default grants otherwise reappear.
 
+### SECURITY DEFINER search path
+
+Every `SECURITY DEFINER` function sets `search_path = pg_catalog, pg_temp`,
+exactly. Any other value is a hijack surface:
+
+- A schema on the path that a less-privileged role can `CREATE` in lets that
+  role plant a better-matching overload. `public` is `CREATE`-able by the
+  migration login, and a butler schema is `CREATE`-able by its runtime role. An
+  exact `format(text, text)` beats the catalog's variadic `format`, and it then
+  runs as the definer's owner.
+- Leaving `pg_temp` implicit, as in `pg_catalog` alone, is no better. An
+  implicit `pg_temp` is searched first for relation and type names.
+
+The body must therefore schema-qualify every relation and every non-catalog
+function. A body that needs its own schema resolves it once, at migration time,
+and bakes it in as a literal. `current_schema()` inside a pinned definer
+returns `pg_catalog`. See `roster/switchboard/migrations/039_pin_definer_search_paths.py`.
+Other `proconfig` entries, such as `row_security=on`, are fine.
+
+`butlers.core.definer_search_path.is_pinned()` is the one predicate for this
+rule. `tests/migrations/test_definer_search_path_pins.py` applies it to every
+definer in `pg_proc` after the bootstrap and every definer-bearing chain, with
+an empty allowlist. A chain that gains its first definer must be added to that
+guard's bootstrap, and the guard fails until it is.
+
 Durable evidence is not a disposable fixture. A downgrade may remove a
 protected boundary only when it is empty and has no active consumer; a nonempty
 outbox must refuse rollback with forward-remediation guidance. Avoid foreign
