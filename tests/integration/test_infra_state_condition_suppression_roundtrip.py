@@ -547,6 +547,11 @@ class TestIndependentFleetCondition:
         assert [row["state"] for row in states] == ["resolved"]
 
 
+#: A controller that has watched the current configuration for a day: the
+#: never-qualified baseline (REQ-butler-control-plane-liveness-007) is long past.
+_CONTROLLER_LONG_RUNNING = datetime.now(UTC) - timedelta(days=1)
+
+
 class TestQaPatrolAssurance:
     @pytest.fixture
     async def qa_pool(self, pool: asyncpg.Pool):
@@ -648,7 +653,9 @@ class TestQaPatrolAssurance:
             )
 
         reader = DashboardProbeRoleView(pool)
-        await reconcile_qa_patrol_assurance(pool, reader, contract)
+        await reconcile_qa_patrol_assurance(
+            pool, reader, contract, controller_started_at=_CONTROLLER_LONG_RUNNING
+        )
         assert await self._active(pool) == {"overdue"}
 
         # A genuine suppressed patrol filtered by cooldown still proved discovery.
@@ -656,7 +663,9 @@ class TestQaPatrolAssurance:
         assert await pool.fetchval(
             "SELECT discovery_complete FROM public.qa_patrols WHERE id = $1", genuine
         )
-        await reconcile_qa_patrol_assurance(pool, reader, contract)
+        await reconcile_qa_patrol_assurance(
+            pool, reader, contract, controller_started_at=_CONTROLLER_LONG_RUNNING
+        )
         assert await self._active(pool) == set()
 
     async def test_absence_is_overdue_or_policy_stopped_until_a_qualifying_patrol(
@@ -684,19 +693,25 @@ class TestQaPatrolAssurance:
 
         # QA is down: its last qualifying patrol is older than twice its cadence.
         await qualifying(25)
-        await reconcile_qa_patrol_assurance(pool, reader, contract)
+        await reconcile_qa_patrol_assurance(
+            pool, reader, contract, controller_started_at=_CONTROLLER_LONG_RUNNING
+        )
         assert await self._active(pool) == {"overdue"}
 
         # An owner pause is a distinct, intentional stop.
         await self._set_policy(pool, "paused", "operator")
-        await reconcile_qa_patrol_assurance(pool, reader, contract)
+        await reconcile_qa_patrol_assurance(
+            pool, reader, contract, controller_started_at=_CONTROLLER_LONG_RUNNING
+        )
         assert await self._active(pool) == {"stopped"}
 
         # An unreadable policy cannot tell overdue from stopped: it adds
         # evidence and resolves neither identity.
         unreadable = AsyncMock()
         unreadable.fetchrow.side_effect = asyncpg.InsufficientPrivilegeError("denied")
-        await reconcile_qa_patrol_assurance(pool, unreadable, contract)
+        await reconcile_qa_patrol_assurance(
+            pool, unreadable, contract, controller_started_at=_CONTROLLER_LONG_RUNNING
+        )
         assert await self._active(pool) == {"overdue", "stopped"}
         assert (
             await pool.fetchval(
@@ -709,5 +724,67 @@ class TestQaPatrolAssurance:
 
         await self._set_policy(pool, "active", "operator")
         await qualifying(1, status="findings_dispatched")
-        await reconcile_qa_patrol_assurance(pool, reader, contract)
+        await reconcile_qa_patrol_assurance(
+            pool, reader, contract, controller_started_at=_CONTROLLER_LONG_RUNNING
+        )
         assert await self._active(pool) == set()
+
+    async def test_never_qualified_digest_waits_two_cadences_before_overdue(
+        self, qa_pool: asyncpg.Pool
+    ) -> None:
+        """A first deploy or source change must not page a healthy QA at once.
+
+        With no qualifying patrol under the current digest, the overdue clock
+        starts at the digest's first observation (its first patrol row, or the
+        controller's start) rather than at the epoch.
+        """
+        from butlers.core.control_plane_identity import DashboardProbeRoleView
+        from butlers.core.fleet_conditions import reconcile_qa_patrol_assurance
+        from butlers.core.qa.patrol_provenance import QaPatrolContract, enabled_sources_digest
+
+        pool = qa_pool
+        contract = QaPatrolContract(("infra_state", "log_scanner"), 10)
+        reader = DashboardProbeRoleView(pool)
+        now = await pool.fetchval("SELECT clock_timestamp()")
+
+        # The old configuration qualified recently; the new one never has.
+        await pool.execute(
+            "INSERT INTO public.qa_patrols (status, started_at, completed_at, origin, "
+            "enabled_sources_snapshot, enabled_sources_config_digest, discovery_complete) "
+            "VALUES ('clean', now() - interval '2 minutes', now() - interval '1 minute', "
+            "'scheduled', '{log_scanner}', 'sha256:old', true)"
+        )
+        just_started = now - timedelta(minutes=5)
+        assert (
+            await reconcile_qa_patrol_assurance(
+                pool, reader, contract, controller_started_at=just_started
+            )
+            == []
+        )
+        assert await self._active(pool) == set()
+
+        # Past twice the cadence from controller start, absence is overdue.
+        await reconcile_qa_patrol_assurance(
+            pool, reader, contract, controller_started_at=now - timedelta(minutes=21)
+        )
+        assert await self._active(pool) == {"overdue"}
+
+        # Within the window again (a controller restart) nothing resolves it.
+        await reconcile_qa_patrol_assurance(pool, reader, contract, controller_started_at=now)
+        assert await self._active(pool) == {"overdue"}
+
+        # The digest's own first patrol, long before a restart, starts the clock.
+        await pool.execute(
+            "UPDATE public.infra_conditions SET state = 'resolved', "
+            "resolved_at = now(), recovered_after_s = 0 "
+            "WHERE source = 'qa_patrol_assurance' AND state <> 'resolved'"
+        )
+        await pool.execute(
+            "INSERT INTO public.qa_patrols (status, started_at, origin, "
+            "enabled_sources_snapshot, enabled_sources_config_digest) "
+            "VALUES ('error', now() - interval '25 minutes', 'scheduled', $1, $2)",
+            list(contract.enabled_sources),
+            enabled_sources_digest(contract.enabled_sources),
+        )
+        await reconcile_qa_patrol_assurance(pool, reader, contract, controller_started_at=now)
+        assert await self._active(pool) == {"overdue"}

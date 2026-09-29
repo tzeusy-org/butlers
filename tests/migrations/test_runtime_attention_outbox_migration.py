@@ -2851,12 +2851,36 @@ def test_condition_producer_appends_one_safe_episode_per_condition_even_after_re
             )
             unrelated = await _insert_condition(admin, "infra_state", "not-a-paging-identity")
 
+            # The migration login can CREATE in public.  A better-matching
+            # overload planted there must never run inside the v4 definers,
+            # which execute as runtime_attention_outbox_owner.
+            await pool.execute(
+                """
+                CREATE FUNCTION public.hashtextextended(text, integer) RETURNS bigint
+                LANGUAGE plpgsql AS $hijack$
+                BEGIN
+                    RAISE EXCEPTION 'hijacked as %', current_user;
+                END;
+                $hijack$
+                """
+            )
             # Concurrent controller scans converge on one episode.
             ids = await asyncio.gather(
                 *(_call_as_role(pool, _SWITCHBOARD, _APPEND_CONDITION, fleet) for _ in range(8))
             )
             assert len(set(ids)) == 1 and ids[0] is not None
             fleet_episode = ids[0]
+            assert await admin.fetchval(
+                """
+                SELECT bool_and(proconfig = ARRAY['search_path=pg_catalog, pg_temp']::text[])
+                FROM pg_proc
+                WHERE oid IN (
+                    'public.append_runtime_attention_condition(uuid)'::regprocedure,
+                    'public.observe_runtime_attention_conditions()'::regprocedure
+                )
+                """
+            )
+
             assert await _call_as_role(pool, _SWITCHBOARD, _APPEND_CONDITION, fleet) == (
                 fleet_episode
             )

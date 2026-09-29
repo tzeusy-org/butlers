@@ -3291,11 +3291,16 @@ BEGIN
         ON public.runtime_attention_outbox ((source_snapshot->>'condition_id'))
         WHERE source = 'control_plane_condition' AND manual_reissue_of IS NULL;
 
+    -- Both v4 definers resolve names with pg_catalog and pg_temp only, and
+    -- every relation below is schema-qualified.  The migration login can
+    -- CREATE in public, so a public search_path would let it plant a better
+    -- overload (e.g. public.hashtextextended(text, integer)) that then runs as
+    -- runtime_attention_outbox_owner.
     CREATE OR REPLACE FUNCTION public.append_runtime_attention_condition(p_condition_id UUID)
     RETURNS UUID
     LANGUAGE plpgsql
     SECURITY DEFINER
-    SET search_path = pg_catalog, public, pg_temp
+    SET search_path = pg_catalog, pg_temp
     AS $append_runtime_attention_condition$
     DECLARE
         -- The producer-owned initial attention grace.  The observer cycles
@@ -3320,7 +3325,7 @@ BEGIN
         END IF;
 
         PERFORM pg_advisory_xact_lock(
-            hashtextextended('runtime_attention_condition:' || p_condition_id::text, 0)
+            hashtextextended('runtime_attention_condition:' || p_condition_id::text, 0::bigint)
         );
         -- Emitted once, forever.  Only refresh the retained delivery category
         -- while the outbox row still exists; never mint a successor.
@@ -3416,7 +3421,7 @@ BEGIN
     )
     LANGUAGE plpgsql
     SECURITY DEFINER
-    SET search_path = pg_catalog, public, pg_temp
+    SET search_path = pg_catalog, pg_temp
     AS $observe_runtime_attention_conditions$
     BEGIN
         IF COALESCE(current_setting('role', true), 'none') <> 'none' THEN
@@ -3979,8 +3984,8 @@ BEGIN
     EXECUTE 'ALTER FUNCTION public.append_runtime_attention_condition(uuid) OWNER TO runtime_attention_outbox_owner';
     EXECUTE 'ALTER FUNCTION public.observe_runtime_attention_conditions() OWNER TO runtime_attention_outbox_owner';
     EXECUTE 'ALTER FUNCTION public.runtime_attention_upgrade_condition_v4() OWNER TO runtime_attention_outbox_owner';
-    EXECUTE 'ALTER FUNCTION public.append_runtime_attention_condition(uuid) SET search_path = pg_catalog, public, pg_temp';
-    EXECUTE 'ALTER FUNCTION public.observe_runtime_attention_conditions() SET search_path = pg_catalog, public, pg_temp';
+    EXECUTE 'ALTER FUNCTION public.append_runtime_attention_condition(uuid) SET search_path = pg_catalog, pg_temp';
+    EXECUTE 'ALTER FUNCTION public.observe_runtime_attention_conditions() SET search_path = pg_catalog, pg_temp';
 
     EXECUTE 'ALTER TABLE public.runtime_attention_condition_episodes ENABLE ROW LEVEL SECURITY';
     EXECUTE 'ALTER TABLE public.runtime_attention_condition_episodes FORCE ROW LEVEL SECURITY';

@@ -26,6 +26,11 @@ owner-attention episode per active fleet or `patrol_overdue` condition. See
   A daemon it could not observe is unknown, not healthy.
 - A daemon whose owner policy is `paused` is an intentional exclusion.
   Quarantine and review holds still count as affected.
+- With no qualifying patrol under the current enabled-source digest (first
+  deploy or a source change), the overdue clock starts at the digest's first
+  observation: the earlier of its first recorded patrol and the controller's
+  start. Until twice the cadence has passed from there the check writes
+  nothing, so a healthy QA is not paged and an open episode is not resolved.
 - If QA's owner policy cannot be read, an overdue patrol is recorded with
   `policy_known=false` and neither QA identity is resolved.
 
