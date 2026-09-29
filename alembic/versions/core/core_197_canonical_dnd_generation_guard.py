@@ -176,9 +176,13 @@ _TRUSTED_FINALIZED_INTERFACE_SQL = """
           ]::text[]
           AND private_mutation.proowner = dnd_owner.oid
           AND private_mutation.prosecdef
-          AND private_mutation.proconfig = ARRAY[
-              'search_path=pg_catalog, public, pg_temp'
-          ]::text[]
+          -- bu-mzm3su.1: the finalizer re-adopts the sha256 body and pins
+          -- pg_catalog, pg_temp on every init-db rerun; a database not yet
+          -- rebootstrapped still carries the old path.
+          AND private_mutation.proconfig::text[] IN (
+              ARRAY['search_path=pg_catalog, pg_temp'],
+              ARRAY['search_path=pg_catalog, public, pg_temp']
+          )
           AND canonical_json.proowner = dnd_owner.oid
           AND NOT canonical_json.prosecdef
           AND canonical_json.proconfig = ARRAY[

@@ -339,6 +339,15 @@ before calling the installer. The shared login gets neither protected-schema
 `CREATE` nor ownership-finalizer execution. A clean first install or retry, and
 a privileged rerun retaining that trusted admin owner, complete normally.
 
+`is_due()` and `record_result()` run with `search_path = pg_catalog, pg_temp`.
+The shared login can `CREATE` in `public`, and an unqualified catalog call
+such as `make_interval(secs => ...)` resolves to a better-matching `public`
+overload whenever `public` is on the definer's path. Today the owner's missing
+`public` USAGE also hides such a decoy, but the pin must not depend on that
+ACL. The finalizer re-applies the pin on every privileged rerun, so a database
+bootstrapped before this rule keeps `public` on the path until
+`scripts/init-db.sql` runs again.
+
 The fixed public audit projection uses a separate
 `restore_drill_executor_audit_writer` `NOLOGIN` security-definer rather than
 allowing the private ledger owner to insert into `public.audit_log`. Its only

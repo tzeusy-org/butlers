@@ -178,6 +178,15 @@ psql -h localhost -U butlers -d butlers -c \
   `dnd_generation_owner` (NOLOGIN, NOINHERIT, NOBYPASSRLS) under forced RLS, reached through a
   SECURITY INVOKER gateway plus a private SECURITY DEFINER `SET ROLE` recheck. Never restore generic
   DND upserts or migration-role authority.
+- `dnd_generation_private.mutate` runs with `search_path = pg_catalog, pg_temp`. The migration login
+  can `CREATE` in `public`, where a `convert_to(text, text)` decoy would otherwise beat the catalog
+  function and run as `dnd_generation_owner`. Its hashes use the built-in `sha256()`, not pgcrypto's
+  `digest()` (installed in `public`); the hex output is byte-identical, so existing replay receipts
+  stay valid. `dnd_generation_admin.install_private_mutation()` is the single body source, and the
+  finalizer re-adopts it on every privileged rerun. An Alembic deploy does not: a database
+  bootstrapped before this change keeps the `digest()` body until `scripts/init-db.sql` runs again as
+  a cluster superuser. Until then `GET /api/system/stored-functions` reports `mutate` and
+  `install_interface` as `drifted` and `install_private_mutation` as `not_deployed`.
 - One `permission denied` in `pg_dump`'s lock sweep aborts the whole dump, so derive the exclusion
   list from all three fences as the dump role (no schema `USAGE`, no table `SELECT`, forced RLS or
   RLS on a table it does not own), not from the last error. Never use `--enable-row-security`: it
