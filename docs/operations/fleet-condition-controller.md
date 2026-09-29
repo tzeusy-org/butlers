@@ -89,6 +89,26 @@ retained, and the ordinary complete-snapshot lifecycle continues. Do not
 delete `control_plane_fleet` or `qa_patrol_assurance` rows to clear a page.
 Let a complete, healthy snapshot resolve them.
 
+### Detect a split
+
+A flag set in only one process is visible. With QA at `1` and the Dashboard at
+`0`, QA hands legacy episodes to a controller that is not taking them, and they
+stay open forever. Each scheduled QA patrol records the mode it ran with in
+`qa_patrols.fleet_condition_handoff`. When the newest recorded mode differs from
+the Dashboard's, the controller opens one `qa_patrol_assurance` condition.
+
+- Its summary reads `Fleet-condition handoff differs: Dashboard=<0|1>, QA=<0|1>`.
+- Its metadata holds `dashboard_handoff`, `qa_handoff` and `patrol_id`.
+- It is also logged as a WARNING.
+- It never pages, and it never resolves a legacy episode. It shows on the System
+  page Standing Conditions tile, and the diagnosis query below lists it.
+- Rows with no recorded mode (legacy, or operator-synthetic) are no evidence.
+  They neither open nor resolve it.
+
+To fix it, set the flag identically in both processes and restart them. The
+condition resolves on the controller pass after the next scheduled patrol
+records the matching mode.
+
 ## Diagnosis
 
 ```sql

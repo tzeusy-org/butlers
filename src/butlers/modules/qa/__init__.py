@@ -33,6 +33,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from butlers.core.fleet_conditions import fleet_condition_handoff_enabled
 from butlers.core.healing import reap_stale_worktrees, recover_stale_attempts
 from butlers.core.healing.fingerprint import compute_fingerprint_from_report
 from butlers.core.qa.dispatch import (
@@ -1573,7 +1574,9 @@ class QaModule(Module):
         """Insert a new 'running' scheduled patrol record and return its UUID.
 
         Records the enabled-source snapshot and digest up front; completion
-        alone decides ``discovery_complete``.
+        alone decides ``discovery_complete``. Also records the fleet-condition
+        handoff mode this process runs with, so the Dashboard's controller can
+        detect a split configuration (bu-vfobja).
         """
         initial_status = require_patrol_status("running")
         snapshot = self._enabled_sources_snapshot()
@@ -1581,9 +1584,10 @@ class QaModule(Module):
             """
             INSERT INTO public.qa_patrols (
                 status, log_lookback_minutes, sources_polled, origin,
-                enabled_sources_snapshot, enabled_sources_config_digest, discovery_complete
+                enabled_sources_snapshot, enabled_sources_config_digest, discovery_complete,
+                fleet_condition_handoff
             )
-            VALUES ($1, $2, $3, 'scheduled', $4, $5, false)
+            VALUES ($1, $2, $3, 'scheduled', $4, $5, false, $6)
             RETURNING id
             """,
             initial_status,
@@ -1591,6 +1595,7 @@ class QaModule(Module):
             [],
             snapshot,
             enabled_sources_digest(snapshot),
+            fleet_condition_handoff_enabled(),
         )
         return patrol_id
 
@@ -1645,14 +1650,15 @@ class QaModule(Module):
                 INSERT INTO public.qa_patrols (
                     status, completed_at, log_lookback_minutes, sources_polled, origin,
                     enabled_sources_snapshot, enabled_sources_config_digest,
-                    discovery_complete
+                    discovery_complete, fleet_condition_handoff
                 )
-                VALUES ($1, now(), $2, '{}', 'scheduled', $3, $4, false)
+                VALUES ($1, now(), $2, '{}', 'scheduled', $3, $4, false, $5)
                 """,
                 skipped_status,
                 self._config.log_lookback_minutes,
                 self._enabled_sources_snapshot(),
                 enabled_sources_digest(self._enabled_sources_snapshot()),
+                fleet_condition_handoff_enabled(),
             )
         except Exception:
             logger.debug("QaModule: failed to record skipped_overlap patrol", exc_info=True)
