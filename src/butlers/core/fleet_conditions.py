@@ -32,6 +32,13 @@ Fleet-condition handoff (``BUTLERS_FLEET_CONDITION_HANDOFF=1``): QA's
 findings and records one fleet-linked finding instead. Pre-existing per-butler
 episodes stay open and linked here; this controller resolves each only after a
 complete snapshot observes that daemon healthy. Cutover alone is not recovery.
+
+The flag must match in both processes (bu-vfobja). Each scheduled QA patrol
+records the mode it ran with, and QA patrol assurance compares the newest
+recorded mode with this process's. A difference is the non-paging
+``fleet_handoff_mismatch`` identity. It resolves only when a newer scheduled
+patrol records a matching mode; with no recorded mode (legacy or synthetic
+rows, or an unreadable read) it is neither opened nor resolved.
 """
 
 from __future__ import annotations
@@ -47,11 +54,13 @@ from butlers.core.infra_conditions import (
     ConditionTransition,
     Observation,
     compute_fingerprint,
+    get_active_condition,
     reconcile_snapshot,
     resolve_condition,
 )
 from butlers.core.qa.patrol_provenance import (
     LAST_QUALIFYING_PATROL_SQL,
+    LATEST_SCHEDULED_HANDOFF_SQL,
     QUALIFYING_PATROL_STATUSES,
     QaPatrolContract,
 )
@@ -69,6 +78,11 @@ QA_PATROL_OVERDUE_FINGERPRINT: Final[str] = compute_fingerprint(
 )
 QA_PATROL_STOPPED_FINGERPRINT: Final[str] = compute_fingerprint(
     QA_PATROL_SOURCE, IDENTITY_VERSION, {"condition": "patrol_stopped_by_policy"}
+)
+#: QA and this controller run with different ``BUTLERS_FLEET_CONDITION_HANDOFF``
+#: values. A configuration fault, not an outage: it is never paged.
+QA_HANDOFF_MISMATCH_FINGERPRINT: Final[str] = compute_fingerprint(
+    QA_PATROL_SOURCE, IDENTITY_VERSION, {"condition": "fleet_handoff_mismatch"}
 )
 
 #: ``infra_state``'s per-butler liveness finding type, the legacy predecessor.
@@ -197,8 +211,104 @@ def qa_patrol_unproven_fingerprint(digest: str) -> str:
     )
 
 
+def _flag(value: bool) -> str:
+    return "1" if value else "0"
+
+
+async def _handoff_evidence(pool: Any) -> list[Observation] | None:
+    """Observations every QA-source snapshot must carry for the handoff check.
+
+    Returns ``None`` when QA's newest recorded mode matches this process's: the
+    caller resolves any active mismatch. Otherwise returns the mismatch
+    observation, or, with no recorded mode, the active mismatch carried forward
+    unchanged (possibly none) so that a complete snapshot cannot resolve it on
+    unknown evidence.
+    """
+    try:
+        row = await pool.fetchrow(LATEST_SCHEDULED_HANDOFF_SQL)
+    except Exception as exc:  # noqa: BLE001 - unreadable evidence is unknown, never agreement
+        logger.warning(
+            "QA patrol assurance: QA handoff mode unreadable (category=%s)", type(exc).__name__
+        )
+        row = None
+    dashboard = fleet_condition_handoff_enabled()
+    if row is None:
+        active = await get_active_condition(
+            pool, source=QA_PATROL_SOURCE, fingerprint=QA_HANDOFF_MISMATCH_FINGERPRINT
+        )
+        if active is None:
+            return []
+        return [
+            Observation(
+                fingerprint=QA_HANDOFF_MISMATCH_FINGERPRINT,
+                summary=active["summary"],
+                metadata={
+                    key: value
+                    for key, value in (active["metadata"] or {}).items()
+                    if key != "identity_payload"
+                },
+                identity_version=IDENTITY_VERSION,
+            )
+        ]
+    qa = bool(row["fleet_condition_handoff"])
+    if qa == dashboard:
+        return None
+    return [
+        Observation(
+            fingerprint=QA_HANDOFF_MISMATCH_FINGERPRINT,
+            summary=(
+                f"Fleet-condition handoff differs: Dashboard={_flag(dashboard)}, "
+                f"QA={_flag(qa)}. Set {_HANDOFF_ENV} identically in both processes."
+            ),
+            metadata={
+                "dashboard_handoff": dashboard,
+                "qa_handoff": qa,
+                "patrol_id": str(row["id"]),
+            },
+            identity_version=IDENTITY_VERSION,
+        )
+    ]
+
+
+def _log_handoff_transitions(transitions: list[ConditionTransition]) -> None:
+    for transition in transitions:
+        if transition.fingerprint != QA_HANDOFF_MISMATCH_FINGERPRINT:
+            continue
+        if transition.transition in ("opened", "reopened"):
+            logger.warning(
+                "Fleet condition controller: %s differs between the Dashboard and QA; "
+                "set it identically in both processes (condition=fleet_handoff_mismatch)",
+                _HANDOFF_ENV,
+            )
+        elif transition.transition == "resolved":
+            logger.warning(
+                "Fleet condition controller: %s now agrees between the Dashboard and QA "
+                "(condition=fleet_handoff_mismatch resolved)",
+                _HANDOFF_ENV,
+            )
+
+
 async def reconcile_qa_patrol_assurance(
     pool: Any, policy_reader: Any, contract: QaPatrolContract
+) -> list[ConditionTransition]:
+    """Run the patrol-age and handoff-mode checks for one controller pass."""
+    handoff = await _handoff_evidence(pool)
+    transitions: list[ConditionTransition] = []
+    if handoff is None:
+        resolved = await resolve_condition(
+            pool,
+            source=QA_PATROL_SOURCE,
+            fingerprint=QA_HANDOFF_MISMATCH_FINGERPRINT,
+            resolution_metadata={"resolution_reason": "handoff_modes_agree"},
+        )
+        transitions.extend([resolved] if resolved is not None else [])
+    transitions.extend(await _reconcile_patrol_age(pool, policy_reader, contract, handoff or []))
+    _log_handoff_transitions(transitions)
+    return transitions
+
+
+async def _reconcile_patrol_age(
+    pool: Any, policy_reader: Any, contract: QaPatrolContract, handoff: list[Observation]
 ) -> list[ConditionTransition]:
     """Check qualifying QA patrol age against twice its cadence, independently of QA.
 
@@ -244,7 +354,7 @@ async def reconcile_qa_patrol_assurance(
             return await reconcile_snapshot(
                 pool,
                 source=QA_PATROL_SOURCE,
-                observations=[unproven],
+                observations=[unproven, *handoff],
                 snapshot_complete=False,
                 initial_grace_seconds=_CONDITION_INITIAL_GRACE_S,
             )
@@ -252,7 +362,7 @@ async def reconcile_qa_patrol_assurance(
         return await reconcile_snapshot(
             pool,
             source=QA_PATROL_SOURCE,
-            observations=[],
+            observations=handoff,
             snapshot_complete=True,
             initial_grace_seconds=_CONDITION_INITIAL_GRACE_S,
         )
@@ -290,7 +400,9 @@ async def reconcile_qa_patrol_assurance(
     return await reconcile_snapshot(
         pool,
         source=QA_PATROL_SOURCE,
-        observations=[observation] if unproven is None else [observation, unproven],
+        observations=[observation, *handoff]
+        if unproven is None
+        else [observation, unproven, *handoff],
         snapshot_complete=policy_known,
         initial_grace_seconds=_CONDITION_INITIAL_GRACE_S,
     )
