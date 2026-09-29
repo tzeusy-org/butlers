@@ -32,14 +32,25 @@ patterns ``client.ts`` actually uses (verified empirically: it resolves
 the time this test was written):
 
 - string / template-literal literal first arguments to ``apiFetch<T>(...)``,
-  including ``${...}`` interpolation (each interpolation collapses to one
-  path-segment wildcard — we cannot know the *value*, only that a dynamic
-  segment exists there);
+  including ``${...}`` interpolation. An interpolated local ``const`` that
+  fully resolves (a template literal such as ``${base}``, or a ternary of
+  string literals such as ``${action}``) is substituted in place, expanding to
+  every candidate; any other interpolation collapses to one wildcard (we
+  cannot know the *value*, only that a dynamic part exists there);
 - a first argument that is a local ``const`` (resolved via simple textual
-  lookup within the same function body, including one level of ternary);
+  lookup within the same function body, including nested ternaries);
 - query-parameter names set via ``.set("name", ...)`` on a
   ``URLSearchParams``, either inline or via a shared ``*SearchParams(...)``
   helper (``client.ts``'s own naming convention — 13 such helpers exist).
+
+Matching is segment-wise and method-aware (bu-tllj5r). An OpenAPI ``{param}``
+segment accepts any FE segment. A FE segment that is exactly a wildcard
+(``${id}``) matches only a ``{param}`` segment, so ``/contacts/${id}`` never
+passes on a literal sibling such as ``/contacts/overdue``. A mixed segment
+(``devices${qs}``) must fullmatch a literal segment with the wildcard read as
+``[^/]*``. A template with no literal text (an unresolved ``${path}``) names no
+route and is not counted as resolved. Check A accepts a template only when a
+matching path declares the function's HTTP method.
 
 What this test does NOT do: resolve arbitrary caller-supplied numeric
 *values* (e.g. a page component's own ``limit: 500`` literal) back through
@@ -101,7 +112,9 @@ _WILDCARD = "\x00"
 # Guards the scanner itself: if fewer than this many apiFetch call sites
 # resolve, the parser has regressed (silently) and every assertion below
 # would be vacuous. After the bu-wgniv dead-export sweep (which deleted ~48
-# unused api/client.ts functions) 385/385 resolve. Kept close to that count
+# unused api/client.ts functions) 385/385 resolved. A contract counts only
+# when every template carries literal text (bu-tllj5r); 429 resolve on that
+# basis now. Kept close to that count
 # (not a round number like 350) so a single newly-unparseable call site — one
 # function silently dropped by a future authoring pattern — trips this guard
 # instead of hiding inside slack (PR #3173 review: a wide buffer here would let
@@ -357,32 +370,57 @@ def _split_ternary(expr: str) -> tuple[str, str, str] | None:
     return expr[:qmark_idx], expr[qmark_idx + 1 : colon_idx], expr[colon_idx + 1 :]
 
 
-def _parse_template_literal(expr: str) -> str:
+# Upper bound on the candidate templates one expression may expand into, so a
+# chain of enumerated interpolations cannot blow up combinatorially.
+_MAX_TEMPLATE_CANDIDATES = 16
+
+
+def _parse_template_literal(
+    expr: str, local_consts: dict[str, str] | None = None, depth: int = 0
+) -> list[str]:
+    """Expand a template literal into candidate templates.
+
+    An interpolation of a local ``const`` that fully resolves (a nested template
+    literal, or a ternary whose every leaf is a string literal) is substituted
+    in place; anything else collapses to one ``_WILDCARD``.
+    """
     inner = expr[1:-1]
-    out: list[str] = []
+    candidates = [""]
     i = 0
     n = len(inner)
     while i < n:
         if inner[i] == "\\":
-            out.append(inner[i : i + 2])
+            candidates = [c + inner[i : i + 2] for c in candidates]
             i += 2
             continue
         if inner[i] == "$" and i + 1 < n and inner[i + 1] == "{":
             close = _find_matching(inner, i + 1, "{", "}")
-            out.append(_WILDCARD)
+            name = inner[i + 2 : close].strip()
+            options = [_WILDCARD]
+            if local_consts and re.fullmatch(r"\w+", name) and name in local_consts:
+                resolved = _resolve_path_expr(
+                    local_consts[name], local_consts, depth + 1, strict=True
+                )
+                if resolved:
+                    options = resolved
+            candidates = [c + o for c in candidates for o in options][:_MAX_TEMPLATE_CANDIDATES]
             i = close + 1
             continue
-        out.append(inner[i])
+        candidates = [c + inner[i] for c in candidates]
         i += 1
-    return "".join(out)
+    return candidates
 
 
-def _resolve_path_expr(expr: str, local_consts: dict[str, str], depth: int = 0) -> list[str]:
+def _resolve_path_expr(
+    expr: str, local_consts: dict[str, str], depth: int = 0, *, strict: bool = False
+) -> list[str]:
     """Resolve a first-argument expression to candidate path templates.
 
-    Handles string/template literals, one level of ternary (both branches
-    are returned as candidates), and bare identifiers resolved against
-    ``local_consts`` (this function's own ``const`` assignments).
+    Handles string/template literals, nested ternaries (every branch is
+    returned as a candidate), and bare identifiers resolved against
+    ``local_consts`` (this function's own ``const`` assignments). With
+    ``strict``, a ternary resolves only when every branch does, so a partially
+    understood expression is never passed off as its resolvable branches.
     """
     expr = expr.strip()
     while expr.startswith("(") and expr.endswith(")"):
@@ -398,16 +436,18 @@ def _resolve_path_expr(expr: str, local_consts: dict[str, str], depth: int = 0) 
     ternary = _split_ternary(expr)
     if ternary:
         _, a, b = ternary
-        return _resolve_path_expr(a, local_consts, depth + 1) + _resolve_path_expr(
-            b, local_consts, depth + 1
-        )
+        left = _resolve_path_expr(a, local_consts, depth + 1, strict=strict)
+        right = _resolve_path_expr(b, local_consts, depth + 1, strict=strict)
+        if strict and not (left and right):
+            return []
+        return left + right
     if expr[0] in "\"'" and expr[-1] == expr[0]:
         return [expr[1:-1]]
     if expr[0] == "`" and expr[-1] == "`":
-        return [_parse_template_literal(expr)]
+        return _parse_template_literal(expr, local_consts, depth)
     if re.fullmatch(r"\w+", expr):
         if expr in local_consts:
-            return _resolve_path_expr(local_consts[expr], local_consts, depth + 1)
+            return _resolve_path_expr(local_consts[expr], local_consts, depth + 1, strict=strict)
         return []
     return []
 
@@ -531,30 +571,74 @@ def _scan_client_ts(text: str) -> dict[str, FunctionContract]:
             m = _METHOD_RE.search(args[1])
             if m:
                 method = m.group(1).lower()
-        # Path portion only (strip any literal query-string suffix).
-        paths = list(dict.fromkeys(c.split("?")[0] for c in candidates))
+        # Path portion only (strip any literal query-string suffix). A template
+        # with no literal segment (e.g. an unresolved whole-path `${path}`)
+        # names no route, so it is not a resolved contract.
+        paths = [
+            path
+            for path in dict.fromkeys(c.split("?")[0] for c in candidates)
+            if _has_literal_segment(path)
+        ]
+        if not paths:
+            continue
         query_names = _extract_query_param_names(body, helper_bodies)
         contracts[name] = FunctionContract(name, paths, method, query_names)
     return contracts
 
 
-def _path_matches(fe_template: str, api_path: str) -> bool:
-    """Segment-wise match: a FE wildcard segment matches anything; an
-    OpenAPI ``{param}`` segment matches anything; otherwise segments must be
-    literally equal."""
-    fe_full = "/api" + fe_template
-    fe_segs = fe_full.split("/")
-    api_segs = api_path.split("/")
-    if len(fe_segs) != len(api_segs):
+def _has_literal_segment(fe_template: str) -> bool:
+    """Whether any segment carries literal text (``issues${qs}`` does; ``${path}`` does not)."""
+    return any(seg.replace(_WILDCARD, "") for seg in fe_template.split("/"))
+
+
+def _segment_matches(fe_seg: str, api_seg: str) -> bool:
+    """One path segment.
+
+    An OpenAPI ``{param}`` segment accepts any non-empty FE segment. A FE
+    segment that is exactly the wildcard (``${id}``) matches only a
+    ``{param}`` segment, never a literal sibling such as ``overdue``. A mixed
+    literal+wildcard segment (``devices${qs}``) must fullmatch a literal API
+    segment with the wildcard read as ``[^/]*``. Literal segments are equal.
+    """
+    if api_seg.startswith("{") and api_seg.endswith("}"):
+        return fe_seg != ""
+    if fe_seg == _WILDCARD:
         return False
-    for f, a in zip(fe_segs, api_segs):
-        if _WILDCARD in f:
-            continue
-        if a.startswith("{") and a.endswith("}"):
-            continue
-        if f != a:
-            return False
-    return True
+    if _WILDCARD in fe_seg:
+        pattern = "".join("[^/]*" if ch == _WILDCARD else re.escape(ch) for ch in fe_seg)
+        return re.fullmatch(pattern, api_seg) is not None
+    return fe_seg == api_seg
+
+
+def _path_matches(fe_template: str, api_path: str) -> bool:
+    """Segment-wise match of a FE template against one OpenAPI path."""
+    fe_segs = ("/api" + fe_template).split("/")
+    api_segs = api_path.split("/")
+    return len(fe_segs) == len(api_segs) and all(
+        _segment_matches(f, a) for f, a in zip(fe_segs, api_segs)
+    )
+
+
+def _matching_operations(template: str, method: str, openapi_paths: dict[str, dict]) -> list[dict]:
+    """The OpenAPI operations for *method* on every live path *template* matches."""
+    return [
+        operations[method]
+        for api_path, operations in openapi_paths.items()
+        if method in operations and _path_matches(template, api_path)
+    ]
+
+
+def _check_a_offenders(
+    fe_contracts: dict[str, FunctionContract], openapi_paths: dict[str, dict]
+) -> list[str]:
+    """Templates with no live route for the contract's HTTP method, minus tracked-dead ones."""
+    return [
+        f"{name}: {contract.method.upper()} {template!r}"
+        for name, contract in fe_contracts.items()
+        if name not in KNOWN_DEAD_PATH_FUNCTIONS
+        for template in contract.paths
+        if not _matching_operations(template, contract.method, openapi_paths)
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -638,16 +722,7 @@ def test_openapi_schema_is_non_trivial(openapi_paths: dict[str, dict]):
 def test_every_client_ts_path_matches_a_live_route_or_is_tracked_dead(
     fe_contracts: dict[str, FunctionContract], openapi_paths: dict[str, dict]
 ):
-    api_path_list = list(openapi_paths.keys())
-    offenders: list[str] = []
-    for name, contract in fe_contracts.items():
-        for template in contract.paths:
-            if any(_path_matches(template, p) for p in api_path_list):
-                continue
-            if name in KNOWN_DEAD_PATH_FUNCTIONS:
-                continue
-            offenders.append(f"{name}: {template!r}")
-
+    offenders = _check_a_offenders(fe_contracts, openapi_paths)
     assert offenders == [], (
         "client.ts calls a path that does not exist in the live FastAPI "
         "OpenAPI schema (would 404 at runtime). If this is intentionally "
@@ -662,7 +737,6 @@ def test_known_dead_paths_are_still_actually_dead(
 ):
     """Anti-rot: if a tracked-dead route is ever re-mounted, the allowlist
     entry must be removed (not left stale, silently hiding a live route)."""
-    api_path_list = list(openapi_paths.keys())
     still_alive = []
     for name in KNOWN_DEAD_PATH_FUNCTIONS:
         contract = fe_contracts.get(name)
@@ -671,7 +745,7 @@ def test_known_dead_paths_are_still_actually_dead(
             "longer finds it in client.ts — remove the stale allowlist entry."
         )
         for template in contract.paths:
-            if any(_path_matches(template, p) for p in api_path_list):
+            if _matching_operations(template, contract.method, openapi_paths):
                 still_alive.append(name)
     assert still_alive == [], (
         "The following functions are allowlisted as dead but now match a "
@@ -694,12 +768,7 @@ def _declared_query_params(
     declared: set[str] = set()
     matched_any = False
     for template in contract.paths:
-        for api_path, operations in openapi_paths.items():
-            if not _path_matches(template, api_path):
-                continue
-            op = operations.get(contract.method)
-            if op is None:
-                continue
+        for op in _matching_operations(template, contract.method, openapi_paths):
             matched_any = True
             for param in op.get("parameters", []):
                 if param.get("in") == "query":
@@ -930,6 +999,16 @@ def test_cross_summary_backend_payload_shapes_match() -> None:
         ),
         ("/relationship/contacts", "/api/relationship/groups", False),
         (f"/relationship/contacts/{_WILDCARD}", "/api/relationship/contacts", False),
+        # A pure `${id}` segment names a parameter, never a literal sibling route.
+        (f"/relationship/contacts/{_WILDCARD}", "/api/relationship/contacts/overdue", False),
+        (
+            f"/relationship/contacts/{_WILDCARD}",
+            "/api/relationship/contacts/{contact_id}",
+            True,
+        ),
+        # A literal+wildcard segment (`devices${qs}`) keeps its literal prefix.
+        (f"/home/devices{_WILDCARD}", "/api/home/entities", False),
+        (f"/home/devices{_WILDCARD}", "/api/home/devices", True),
     ],
 )
 def test_path_matches_examples(fe_template: str, api_path: str, expected: bool):
@@ -941,6 +1020,90 @@ def test_scan_finds_the_circles_groups_call(client_ts_text: str):
     assert "getGroups" in contracts
     assert contracts["getGroups"].paths == ["/relationship/groups"]
     assert contracts["getGroups"].query_names >= {"offset", "limit"}
+
+
+# The 12 functions that built their path as `${base}?${qs}` from a local const
+# and so used to resolve to a bare whole-path wildcard (silently unchecked).
+_LOCAL_CONST_PATH_FUNCTIONS = (
+    "getButlerSessions",
+    "getButlerHourlyActivity",
+    "getButlerDailyActivity",
+    "getButlerSessionKinds",
+    "getButlerLatencyStats",
+    "getButlerFrictionSummary",
+    "getButlerActivityFeed",
+    "getButlerNotifications",
+    "getIssueOccurrences",
+    "getAuditIssueGroup",
+    "getMedicationDoses",
+    "getMedicationAdherence",
+)
+
+
+def test_every_resolved_template_names_a_route(fe_contracts: dict[str, FunctionContract]):
+    """No contract counts as resolved unless each template carries literal text."""
+    assert [
+        (name, template)
+        for name, contract in fe_contracts.items()
+        for template in contract.paths
+        if not _has_literal_segment(template)
+    ] == []
+    assert set(_LOCAL_CONST_PATH_FUNCTIONS) <= set(fe_contracts)
+
+
+def test_scan_substitutes_local_consts_inside_template_literals():
+    text = (
+        "export function listSessions(name: string, params?: P) {\n"
+        "  const qs = sp.toString();\n"
+        "  const base = `/butlers/${encodeURIComponent(name)}/sessions`;\n"
+        "  const path = qs ? `${base}?${qs}` : base;\n"
+        "  return apiFetch<R>(path);\n"
+        "}\n"
+        "export function feedback(id: string, verdict: V) {\n"
+        '  const action = verdict === "a" ? "snooze" : verdict === "b" ? "mute" : "useful";\n'
+        '  return apiFetch<R>(`/insights/${id}/${action}`, { method: "POST" });\n'
+        "}\n"
+        "export function opaque(path: string) {\n"
+        "  return apiFetch<R>(`${path}`);\n"
+        "}\n"
+    )
+    contracts = _scan_client_ts(text)
+    assert contracts["listSessions"].paths == [f"/butlers/{_WILDCARD}/sessions"]
+    assert contracts["feedback"].paths == [
+        f"/insights/{_WILDCARD}/snooze",
+        f"/insights/{_WILDCARD}/mute",
+        f"/insights/{_WILDCARD}/useful",
+    ]
+    assert contracts["feedback"].method == "post"
+    # A whole-path wildcard names no route, so it is not a resolved contract.
+    assert "opaque" not in contracts
+
+
+def test_check_a_reports_param_and_method_mismatches_against_a_literal_sibling():
+    """The bu-tllj5r false negative: GET/PATCH `/contacts/${id}` against only GET `/contacts/overdue`."""
+    text = (
+        "export function getContact(id: string) {\n"
+        "  return apiFetch<C>(`/relationship/contacts/${encodeURIComponent(id)}`);\n"
+        "}\n"
+        "export function patchContact(id: string, body: B) {\n"
+        "  return apiFetch<C>(`/relationship/contacts/${encodeURIComponent(id)}`, {\n"
+        '    method: "PATCH", body: JSON.stringify(body),\n'
+        "  });\n"
+        "}\n"
+        "export function getOverdueContacts() {\n"
+        '  return apiFetch<O>("/relationship/contacts/overdue");\n'
+        "}\n"
+    )
+    only_overdue = {"/api/relationship/contacts/overdue": {"get": {"parameters": []}}}
+    offenders = _check_a_offenders(_scan_client_ts(text), only_overdue)
+    assert sorted(offender.split(":")[0] for offender in offenders) == [
+        "getContact",
+        "patchContact",
+    ]
+    # Method-aware: a GET-only route never satisfies a PATCH caller.
+    get_only_param = {"/api/relationship/contacts/{contact_id}": {"get": {"parameters": []}}}
+    offenders = _check_a_offenders(_scan_client_ts(text), {**only_overdue, **get_only_param})
+    assert [offender.split(":")[0] for offender in offenders] == ["patchContact"]
 
 
 def test_extract_functions_skips_bodyless_overload_signature():
