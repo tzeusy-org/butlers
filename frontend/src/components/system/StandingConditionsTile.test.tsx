@@ -841,3 +841,104 @@ describe("StandingConditionsTile -- class filter", () => {
     expect(screen.queryByTestId("standing-conditions-filter")).toBeNull()
   })
 })
+
+// ---------------------------------------------------------------------------
+// bu-py5jgj: linked owner-alert status (REQ-butler-control-plane-liveness-007)
+// ---------------------------------------------------------------------------
+
+describe("StandingConditionsTile -- linked owner-alert status", () => {
+  afterEach(resetCommitmentMocks)
+
+  const fleetCondition = {
+    ledger: "infra",
+    id: "33333333-3333-3333-3333-333333333333",
+    source: "fleet_control",
+    fingerprint: "f".repeat(64),
+    episode: 1,
+    state: "open",
+    first_detected_at: "2026-09-29T09:00:00Z",
+    last_confirmed_at: "2026-09-29T09:05:00Z",
+    last_escalated_at: null,
+    next_reescalate_at: null,
+    escalation_level: "L2",
+    resolved_at: null,
+    recovered_after_s: null,
+    summary: "fleet halted",
+    metadata: null,
+  }
+  const CREATED_AT = "2026-09-29T09:01:00Z"
+  const DELIVERED_AT = "2026-09-29T09:02:00Z"
+
+  function attention(overrides: Record<string, unknown>) {
+    return {
+      status: "pending",
+      episode_id: "episode-1",
+      created_at: CREATED_AT,
+      delivered_at: null,
+      safe_reason: null,
+      outbox_retained: true,
+      ...overrides,
+    }
+  }
+
+  /** Render the tile with one fleet row and return the tile root and attention element. */
+  function renderWith(conditionAttention: unknown) {
+    resetCommitmentMocks()
+    showConditions([{ ...fleetCondition, attention: conditionAttention }])
+    const root = new DOMParser().parseFromString(render(), "text/html").body
+    return { root, line: root.querySelector<HTMLElement>('[data-testid="condition-attention"]') }
+  }
+
+  it.each([undefined, null])("renders nothing for a row whose attention is %s", (value) => {
+    const { root, line } = renderWith(value)
+    expect(root.textContent).toContain("fleet_control")
+    expect(line).toBeNull()
+  })
+
+  it.each([
+    ["pending", "Owner alert queued", CREATED_AT],
+    ["worker_unavailable", "Owner alert queued; no delivery worker is running", CREATED_AT],
+    ["sending", "Owner alert sending; delivery not confirmed", CREATED_AT],
+    ["sent", "Owner alert delivered", DELIVERED_AT],
+    ["failed", "Owner alert not delivered", CREATED_AT],
+    ["uncertain", "Owner alert may not have arrived; it is not resent automatically", CREATED_AT],
+    ["unavailable", "Owner alert status unknown", null],
+  ])("renders %s with its fixed label and only sent reads as delivered", (status, label, time) => {
+    const unavailable = status === "unavailable"
+    const { root, line } = renderWith(
+      unavailable
+        ? attention({ status, episode_id: null, created_at: null, outbox_retained: null })
+        : attention({ status, delivered_at: status === "sent" ? DELIVERED_AT : null }),
+    )
+    expect(line?.dataset.status).toBe(status)
+    expect(line?.textContent?.startsWith(label)).toBe(true)
+    const claimsDelivery = /\bdelivered\b/.test(line?.textContent ?? "") && !/not delivered/.test(line?.textContent ?? "")
+    expect(claimsDelivery).toBe(status === "sent")
+    expect(line?.querySelector("time")?.getAttribute("datetime") ?? null).toBe(time)
+    expect(line?.querySelector("button, a, [onclick]")).toBeNull()
+    const tile = root.querySelector("[data-degraded]")
+    expect(tile !== null).toBe(unavailable)
+  })
+
+  it("appends safe_reason verbatim and nothing when it is null", () => {
+    const withReason = renderWith(attention({ status: "failed", safe_reason: "Telegram rejected the message." }))
+    expect(withReason.line?.textContent).toContain(" · Telegram rejected the message.")
+    const withoutReason = renderWith(attention({ status: "failed" }))
+    expect(withoutReason.line?.textContent).toBe(`Owner alert not delivered · raised ${CREATED_AT}`)
+  })
+
+  it("shows an unrecognized status as-is, never as delivered", () => {
+    const { line } = renderWith(attention({ status: "rerouted" }))
+    expect(line?.textContent?.startsWith("Owner alert status: rerouted")).toBe(true)
+    expect(line?.textContent).not.toContain("delivered")
+  })
+
+  it.each([
+    [false, true],
+    [true, false],
+    [null, false],
+  ])("outbox_retained=%s appends last recorded state: %s", (retained, expected) => {
+    const { line } = renderWith(attention({ status: "sent", delivered_at: DELIVERED_AT, outbox_retained: retained }))
+    expect(line?.textContent?.includes("last recorded state")).toBe(expected)
+  })
+})
