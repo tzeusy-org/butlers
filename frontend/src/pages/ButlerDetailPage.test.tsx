@@ -997,6 +997,7 @@ describe("ButlerDetailPage — Use skill prefills the command bar", () => {
     renderPageLive();
 
     // The Skills section is lazy-loaded; allow for a slow import under full-suite load.
+    // The per-test timeout below must exceed this wait, or vitest's 5s default wins.
     const useSkill = await screen.findByRole("button", { name: "Use skill" }, { timeout: 10_000 });
     fireEvent.click(useSkill);
 
@@ -1004,5 +1005,5 @@ describe("ButlerDetailPage — Use skill prefills the command bar", () => {
     expect(input.value).toBe("Use the foo skill to ");
     expect(setSearchParams).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Use skill" })).toBeDefined();
-  });
+  }, 15_000);
 });
