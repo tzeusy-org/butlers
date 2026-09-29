@@ -2271,6 +2271,43 @@ async def test_entity_detail_returns_rebind_receipt_cohort(app) -> None:
     ]
 
 
+async def test_entity_responses_and_schemas_omit_retired_linked_contact_fields(app) -> None:
+    """The linked-contact id/name fields were always null once public.contacts was dropped.
+
+    Retired in bu-djtcqq; spelled from parts so the retirement grep stays empty.
+    """
+    retired = {f"linked_contact_{suffix}" for suffix in ("id", "name")}
+    entity_id = uuid.uuid4()
+    list_db = _MemoryFanOutDB({"atlas": _EntityListPool(entity_id)})
+    detail_db = _MemoryFanOutDB({"atlas": _EntityMemoryPool(entity=_make_entity_row(entity_id))})
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        app.dependency_overrides[_get_db_manager] = lambda: list_db
+        listed = await client.get("/api/memory/entities")
+        app.dependency_overrides[_get_db_manager] = lambda: detail_db
+        detail = await client.get(f"/api/memory/entities/{entity_id}")
+
+    assert (listed.status_code, detail.status_code) == (200, 200)
+    assert listed.json()["data"] and not retired & listed.json()["data"][0].keys()
+    assert not retired & detail.json()["data"].keys()
+    # Resolve the models these two routes actually serve (component names are
+    # namespaced because roster/relationship defines same-named models).
+    schemas = app.openapi()["components"]["schemas"]
+    paths = app.openapi()["paths"]
+
+    def served_model(path: str) -> dict:
+        envelope = paths[path]["get"]["responses"]["200"]["content"]["application/json"]
+        data = schemas[envelope["schema"]["$ref"].rsplit("/", 1)[1]]["properties"]["data"]
+        return schemas[data.get("items", data)["$ref"].rsplit("/", 1)[1]]
+
+    for path in ("/api/memory/entities", "/api/memory/entities/{entity_id}"):
+        model = served_model(path)
+        assert model["title"] in {"EntitySummary", "EntityDetail"}, path
+        assert not retired & model["properties"].keys(), path
+
+
 async def test_entity_detail_skips_absent_fact_schema_without_degraded_flag(app) -> None:
     """A legitimate non-memory schema does not taint an otherwise complete entity view."""
     entity_id = uuid.uuid4()

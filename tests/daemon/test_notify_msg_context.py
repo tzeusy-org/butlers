@@ -290,7 +290,6 @@ class TestCheckEmailRecipientMsgContextPassthrough:
         from butlers.modules.approvals.email_guard import check_email_recipient
 
         contact = ResolvedContact(
-            contact_id=uuid.uuid4(),
             entity_id=uuid.uuid4(),
             name="Friend",
             roles=["contact"],
@@ -329,7 +328,6 @@ class TestCheckEmailRecipientMsgContextPassthrough:
         from butlers.modules.approvals.email_guard import check_email_recipient
 
         contact = ResolvedContact(
-            contact_id=uuid.uuid4(),
             entity_id=uuid.uuid4(),
             name="Friend",
             roles=["contact"],

@@ -25,7 +25,6 @@ from butlers.tools.switchboard.identity.inject import (
 
 pytestmark = pytest.mark.unit
 
-_OWNER_ID = uuid.uuid4()
 _CONTACT_ID = uuid.uuid4()
 _ENTITY_ID = uuid.uuid4()
 _TEMP_ENTITY_ID = uuid.uuid4()
@@ -33,7 +32,6 @@ _TEMP_ENTITY_ID = uuid.uuid4()
 
 def _resolved_owner() -> ResolvedContact:
     return ResolvedContact(
-        contact_id=_OWNER_ID,
         name="Owner",
         roles=["owner"],
         entity_id=None,
@@ -42,7 +40,6 @@ def _resolved_owner() -> ResolvedContact:
 
 def _resolved_known() -> ResolvedContact:
     return ResolvedContact(
-        contact_id=_CONTACT_ID,
         name="Chloe",
         roles=[],
         entity_id=_ENTITY_ID,
@@ -52,7 +49,6 @@ def _resolved_known() -> ResolvedContact:
 def _temp_entity(*, name: str = "Unknown (telegram 12345)") -> ResolvedContact:
     """Model the post-entity-migration temporary result: no contact ID."""
     return ResolvedContact(
-        contact_id=None,
         name=name,
         roles=[],
         entity_id=_TEMP_ENTITY_ID,
@@ -99,7 +95,8 @@ async def test_owner_message_gets_owner_preamble():
     assert result.is_owner is True
     assert result.is_known is True
     assert result.is_unknown is False
-    assert result.contact_id == _OWNER_ID
+    # IdentityResolutionResult.contact_id is a compatibility field (bu-60pwv6.39).
+    assert result.contact_id is None
     assert result.sender_roles == ["owner"]
 
 
@@ -608,7 +605,6 @@ async def test_second_batch_reuses_transitory_entity_without_displaying_identifi
     """REQ-switchboard-identity-002: reserved entities stay neutral across batches."""
     sentinel = "15551234567@s.whatsapp.net"
     transitory = MagicMock(
-        contact_id=None,
         roles=[],
         entity_id=_TEMP_ENTITY_ID,
         is_unidentified=True,

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -76,3 +78,34 @@ def test_main_writes_full_mode_with_empty_test_paths_on_escalation(
     assert lines[0] == "mode=full"
     assert json.loads(lines[1].removeprefix("test_paths=")) == []
     assert "[CI DECISION] mode=full" in capsys.readouterr().out
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_TESTS_IMPORT_RE = re.compile(r"^\s*(?:from|import) tests\.", re.MULTILINE)
+
+
+def test_scoped_roster_only_run_collects_roster_tests_that_import_tests(tmp_path: Path) -> None:
+    """bu-3fdzpf: the check-affected lane runs ``uv run pytest <roster paths>``.
+
+    Roster tests import shared helpers from ``tests.*``. Invoke the installed
+    ``pytest`` console script, as ``uv run pytest`` does, so the working
+    directory is not put on ``sys.path`` the way ``python -m pytest`` would.
+    Without ``pythonpath = ["."]`` in the pytest config this fails collection
+    with ``ModuleNotFoundError: No module named 'tests'``.
+    """
+    roster_files = sorted(
+        str(path.relative_to(_REPO_ROOT))
+        for path in (_REPO_ROOT / "roster").glob("*/tests/**/test_*.py")
+        if _TESTS_IMPORT_RE.search(path.read_text(encoding="utf-8"))
+    )
+    assert roster_files, "expected roster tests that import tests.* helpers"
+    pytest_script = Path(sys.executable).with_name("pytest")
+    result = subprocess.run(
+        [str(pytest_script), *roster_files, "--co", "-q", "-n", "0", "-p", "no:cacheprovider"],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert result.returncode == 0, result.stdout[-3000:] + result.stderr[-2000:]
+    assert " error" not in result.stdout.splitlines()[-1]

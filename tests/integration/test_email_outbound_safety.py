@@ -71,7 +71,7 @@ _ROUTE_NON_OWNER_DOSSIER = {
 
 def _owner_contact() -> ResolvedContact:
     return ResolvedContact(
-        contact_id=None,  # bead 7: entity_id is the authoritative key
+        # bead 7: entity_id is the authoritative key
         name="Owner",
         roles=["owner"],
         entity_id=OWNER_ENTITY_ID,
@@ -80,7 +80,7 @@ def _owner_contact() -> ResolvedContact:
 
 def _non_owner_contact() -> ResolvedContact:
     return ResolvedContact(
-        contact_id=None,  # bead 7: entity_id is the authoritative key
+        # bead 7: entity_id is the authoritative key
         name="Friend",
         roles=["friend"],
         entity_id=KNOWN_NON_OWNER_ENTITY_ID,
@@ -100,14 +100,11 @@ class _MockPool:
         self.approval_rules: list[dict[str, Any]] = []
         self.approval_events: list[dict[str, Any]] = []
         self._contact_info: dict[tuple[str, str], ResolvedContact] = {}
-        self._contacts_by_id: dict[uuid.UUID, ResolvedContact] = {}
 
     def register_contact(
         self, channel_type: str, channel_value: str, contact: ResolvedContact
     ) -> None:
         self._contact_info[(channel_type, channel_value)] = contact
-        if contact.contact_id is not None:
-            self._contacts_by_id[contact.contact_id] = contact
 
     async def execute(self, query: str, *args: Any) -> None:
         if "INSERT INTO pending_actions" in query:
@@ -169,31 +166,16 @@ class _MockPool:
                 }
 
         if "public.contact_info" in query and args:
-            # Channel-resolution query: SELECT contact_id, name... WHERE type=$1 AND value=$2
+            # Legacy channel-resolution query: SELECT name... WHERE type=$1 AND value=$2
             if len(args) >= 2:
                 contact = self._contact_info.get((str(args[0]), str(args[1])))
                 if contact is None:
                     return None
                 return {
-                    "contact_id": contact.contact_id,
                     "name": contact.name,
                     "roles": contact.roles,
                     "entity_id": contact.entity_id,
                 }
-        if "public.contacts" in query and "WHERE id" in query and args:
-            try:
-                cid = uuid.UUID(str(args[0]))
-            except (ValueError, AttributeError):
-                return None
-            contact = self._contacts_by_id.get(cid)
-            if contact is None:
-                return None
-            return {
-                "contact_id": contact.contact_id,
-                "name": contact.name,
-                "roles": contact.roles,
-                "entity_id": contact.entity_id,
-            }
         return None
 
     async def fetchval(self, query: str, *args: Any) -> Any:
@@ -1267,7 +1249,6 @@ TEMP_ENTITY_ID = uuid.UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")
 def _temp_contact() -> ResolvedContact:
     """Temp contact created during email ingestion (no owner role)."""
     return ResolvedContact(
-        contact_id=None,
         name="Unknown (email ibanking.alert@dbs.com)",
         roles=[],
         entity_id=TEMP_ENTITY_ID,

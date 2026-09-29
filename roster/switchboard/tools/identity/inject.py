@@ -225,13 +225,11 @@ async def _inject_unknown_identity(
     preamble = build_identity_preamble(
         None,
         source_channel_type,
-        temp_contact_id=temp_contact.contact_id if temp_contact else None,
         temp_entity_id=temp_contact.entity_id if temp_contact else None,
     )
 
     result = IdentityResolutionResult(
         preamble=preamble,
-        contact_id=temp_contact.contact_id if temp_contact else None,
         entity_id=temp_contact.entity_id if temp_contact else None,
         sender_roles=None,
         is_owner=False,
@@ -277,10 +275,8 @@ def _result_from_resolved_contact(
             preamble=build_identity_preamble(
                 None,
                 channel_type,
-                temp_contact_id=resolved.contact_id,
                 temp_entity_id=resolved.entity_id,
             ),
-            contact_id=resolved.contact_id,
             entity_id=resolved.entity_id,
             sender_roles=None,
             is_owner=False,
@@ -292,7 +288,6 @@ def _result_from_resolved_contact(
     is_owner = "owner" in resolved.roles
     return IdentityResolutionResult(
         preamble=build_identity_preamble(resolved, channel_type),
-        contact_id=resolved.contact_id,
         entity_id=resolved.entity_id,
         sender_roles=resolved.roles or None,
         is_owner=is_owner,

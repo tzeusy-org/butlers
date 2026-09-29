@@ -151,7 +151,6 @@ async def test_dead_attested_endpoint_is_unmeasurable_with_healthy_sibling(
             AsyncMock(
                 return_value={
                     (source_channel, source_identity): ResolvedContact(
-                        contact_id=None,
                         name="Friend",
                         roles=[],
                         entity_id=entity_id,
@@ -280,7 +279,6 @@ async def test_all_active_mapped_identities_make_mixed_contact_unmeasurable(
             AsyncMock(
                 return_value={
                     (channel, source_identity): ResolvedContact(
-                        contact_id=None,
                         name="Friend",
                         roles=[],
                         entity_id=entity_id,
