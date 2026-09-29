@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * ContactChannelCard tests
  *
@@ -27,6 +28,8 @@
  */
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { toast } from "sonner";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -34,6 +37,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ContactChannelCard, ExpandedContactInfoRow } from "@/components/relationship/ContactChannelCard";
 import { sortChannelsPrimaryFirst } from "@/components/relationship/contact-channel-utils";
 import { useEntityLinkedContacts, useAddEntityContact, useDeleteEntityContact, useMarkEntityContactVerified, useUpdateEntityContact, useRevealEntityContactSecret } from "@/hooks/use-entities";
+import { apiFetch } from "@/api/client";
 import type { LinkedContactSummary, ContactInfoEntry } from "@/api/types";
 
 // ---------------------------------------------------------------------------
@@ -1027,5 +1031,53 @@ describe("ExpandedContactInfoRow — amber unverified-dot (bu-e90i6)", () => {
     const entry: ContactInfoEntry = { ...CI_ENTITY_FACTS_TELEGRAM, verified: false };
     renderExpandedRow(entry, "entity-001");
     expect(vi.mocked(useMarkEntityContactVerified)).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Structured 409 detail surfaces as a sentence, not JSON (bu-mia49k)
+// ---------------------------------------------------------------------------
+
+describe("ExpandedContactInfoRow — structured 409 error toast", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(useUpdateEntityContact).mockReturnValue({ mutateAsync: vi.fn(), isPending: false } as unknown as ReturnType<typeof useUpdateEntityContact>);
+    vi.mocked(useMarkEntityContactVerified).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof useMarkEntityContactVerified>);
+    vi.mocked(useRevealEntityContactSecret).mockReturnValue({ mutate: vi.fn() } as unknown as ReturnType<typeof useRevealEntityContactSecret>);
+  });
+
+  it("toasts the detail message of a contact_fact_changed 409 on delete", async () => {
+    const sentence =
+      "The contact value changed while it was being edited; re-read the contact and retry.";
+    // Produce the error through the real client so the card sees exactly what
+    // apiFetch throws for a FastAPI dict detail.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: false,
+        status: 409,
+        statusText: "Conflict",
+        json: async () => ({ detail: { code: "contact_fact_changed", message: sentence } }),
+      })),
+    );
+    const apiError = await apiFetch("/relationship/entities/e/contacts/has-handle/h", {
+      method: "DELETE",
+    }).catch((caught: unknown) => caught);
+    vi.unstubAllGlobals();
+
+    vi.mocked(useDeleteEntityContact).mockReturnValue({
+      mutate: vi.fn((_vars: unknown, options: { onError: (err: unknown) => void }) =>
+        options.onError(apiError),
+      ),
+      isPending: false,
+    } as unknown as ReturnType<typeof useDeleteEntityContact>);
+
+    render(<ExpandedContactInfoRow entry={CI_ENTITY_FACTS_TELEGRAM} entityId="entity-001" />);
+    fireEvent.click(screen.getByTitle("Delete"));
+
+    const [[shown]] = vi.mocked(toast.error).mock.calls;
+    expect(shown).toContain(sentence);
+    expect(shown).not.toContain("{");
+    cleanup();
   });
 });
