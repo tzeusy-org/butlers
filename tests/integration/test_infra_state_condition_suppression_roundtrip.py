@@ -572,15 +572,20 @@ class TestQaPatrolAssurance:
         from butlers.core.fleet_conditions import (
             QA_PATROL_OVERDUE_FINGERPRINT,
             QA_PATROL_SOURCE,
+            qa_patrol_unproven_fingerprint,
         )
 
         rows = await pool.fetch(
-            "SELECT fingerprint FROM public.infra_conditions "
-            "WHERE source = $1 AND state IN ('open', 'aging')",
+            "SELECT fingerprint, metadata->>'enabled_sources_config_digest' AS digest "
+            "FROM public.infra_conditions WHERE source = $1 AND state IN ('open', 'aging')",
             QA_PATROL_SOURCE,
         )
         return {
-            "overdue" if row["fingerprint"] == QA_PATROL_OVERDUE_FINGERPRINT else "stopped"
+            "overdue"
+            if row["fingerprint"] == QA_PATROL_OVERDUE_FINGERPRINT
+            else "unproven"
+            if row["fingerprint"] == qa_patrol_unproven_fingerprint(row["digest"] or "")
+            else "stopped"
             for row in rows
         }
 
@@ -647,9 +652,14 @@ class TestQaPatrolAssurance:
                 "VALUES ('clean', 'operator_synthetic', true)"
             )
 
+        # The current digest was first observed long ago, so its absence of a
+        # qualifying patrol is overdue now, not after a fresh baseline.
+        await pool.execute(
+            "UPDATE public.qa_patrols SET started_at = started_at - interval '1 day'"
+        )
         reader = DashboardProbeRoleView(pool)
         await reconcile_qa_patrol_assurance(pool, reader, contract)
-        assert await self._active(pool) == {"overdue"}
+        assert await self._active(pool) == {"overdue", "unproven"}
 
         # A genuine suppressed patrol filtered by cooldown still proved discovery.
         genuine = await patrol("suppressed", every_source)
@@ -710,4 +720,87 @@ class TestQaPatrolAssurance:
         await self._set_policy(pool, "active", "operator")
         await qualifying(1, status="findings_dispatched")
         await reconcile_qa_patrol_assurance(pool, reader, contract)
+        assert await self._active(pool) == set()
+
+    async def test_never_qualified_digest_baseline_survives_controller_restarts(
+        self, qa_pool: asyncpg.Pool
+    ) -> None:
+        """A first deploy must not page a healthy QA; a restart must not hide an overdue one.
+
+        With no qualifying patrol under the current digest, the overdue clock
+        starts at the digest's first durable observation. Each "restart" below
+        is a brand-new controller from ``controller_after_cycle``, exactly as
+        the observer's supervisor and a Dashboard redeploy build it.
+        """
+        from types import SimpleNamespace
+
+        from butlers.core.control_plane_identity import DashboardProbeRoleView, ShadowCycle
+        from butlers.core.fleet_conditions import (
+            QA_PATROL_SOURCE,
+            controller_after_cycle,
+            qa_patrol_unproven_fingerprint,
+        )
+        from butlers.core.qa.patrol_provenance import QaPatrolContract
+
+        pool = qa_pool
+        contract = QaPatrolContract(("infra_state", "log_scanner"), 10)
+        configs = [SimpleNamespace(name="qa", qa_patrol_contract=contract)]
+        cycle = ShadowCycle(
+            complete=True, expected_count=1, recorded_count=1, mismatch_count=0, healthy_count=1
+        )
+        reader = DashboardProbeRoleView(pool)
+        unproven = qa_patrol_unproven_fingerprint(contract.digest)
+
+        async def restarted_controller_pass() -> None:
+            await controller_after_cycle(pool, configs)(reader, cycle)
+
+        async def baseline() -> datetime:
+            return await pool.fetchval(
+                "SELECT first_detected_at FROM public.infra_conditions "
+                "WHERE source = $1 AND fingerprint = $2 AND state IN ('open', 'aging')",
+                QA_PATROL_SOURCE,
+                unproven,
+            )
+
+        # The old configuration qualified moments ago; the new one never has.
+        await pool.execute(
+            "INSERT INTO public.qa_patrols (status, started_at, completed_at, origin, "
+            "enabled_sources_snapshot, enabled_sources_config_digest, discovery_complete) "
+            "VALUES ('clean', now() - interval '2 minutes', now() - interval '1 minute', "
+            "'scheduled', '{log_scanner}', 'sha256:old', true)"
+        )
+
+        # Just after deploy, and across restarts inside the window: a healthy QA
+        # is not paged, and the digest's first observation is recorded once.
+        await restarted_controller_pass()
+        first_observed = await baseline()
+        assert first_observed is not None
+        for _ in range(3):
+            await restarted_controller_pass()
+        assert await self._active(pool) == {"unproven"}
+        assert await baseline() == first_observed
+
+        # Twice the cadence after that first durable observation, a freshly
+        # restarted controller opens overdue even though it has run for seconds.
+        await pool.execute(
+            "UPDATE public.infra_conditions "
+            "SET first_detected_at = first_detected_at - interval '21 minutes' "
+            "WHERE source = $1 AND fingerprint = $2",
+            QA_PATROL_SOURCE,
+            unproven,
+        )
+        await restarted_controller_pass()
+        assert await self._active(pool) == {"overdue", "unproven"}
+        await restarted_controller_pass()
+        assert await self._active(pool) == {"overdue", "unproven"}
+
+        # A qualifying patrol under the current digest resolves both.
+        await pool.execute(
+            "INSERT INTO public.qa_patrols (status, started_at, completed_at, origin, "
+            "enabled_sources_snapshot, enabled_sources_config_digest, discovery_complete) "
+            "VALUES ('clean', now(), now(), 'scheduled', $1, $2, true)",
+            list(contract.enabled_sources),
+            contract.digest,
+        )
+        await restarted_controller_pass()
         assert await self._active(pool) == set()

@@ -625,3 +625,131 @@ def test_runtime_attention_downgrade_functions_refuse_an_executable_nonsuperuser
                 assert str(refusal.value.orig).splitlines()[0] == expected_message
     finally:
         engine.dispose()
+
+
+def test_core_251_condition_producer_pins_the_controller_identities() -> None:
+    """REQ-butler-control-plane-liveness-007: SQL and Python name one identity.
+
+    The producer recomputes nothing: it pages only the fixed fleet and
+    overdue-QA fingerprints written into init-db.  If the controller's identity
+    version moved without the SQL, conditions would open and never page.
+    """
+    from butlers.core.fleet_conditions import (
+        FLEET_FINGERPRINT,
+        QA_PATROL_OVERDUE_FINGERPRINT,
+        QA_PATROL_STOPPED_FINGERPRINT,
+    )
+
+    root = Path(__file__).resolve().parents[2]
+    migration_path = root / "alembic/versions/core/core_251_runtime_attention_condition.py"
+    spec = importlib.util.spec_from_file_location("core_251", migration_path)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    assert (migration.revision, migration.down_revision) == ("core_251", "core_250")
+
+    init_db = (root / "scripts/init-db.sql").read_text()
+    start = init_db.index("CREATE OR REPLACE FUNCTION public.append_runtime_attention_condition")
+    body = init_db[start : init_db.index("$append_runtime_attention_condition$;", start)]
+    assert f"'{FLEET_FINGERPRINT}'" in body
+    assert f"'{QA_PATROL_OVERDUE_FINGERPRINT}'" in body
+    assert QA_PATROL_STOPPED_FINGERPRINT not in body
+
+
+def test_core_251_upgrade_requires_the_bootstrap_upgrader_and_then_revokes_it(
+    postgres_container,
+) -> None:
+    """The migration login installs v4 only through the bootstrap handoff, once."""
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
+    bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
+    core_config = _build_alembic_config(db_url, chains=["core"])
+    command.upgrade(core_config, "core_250")
+
+    migration_login = create_engine(db_url).url.username
+    bootstrap = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
+    upgrader = "public.runtime_attention_upgrade_condition_v4()"
+    try:
+        with bootstrap.connect() as connection:
+            connection.execute(
+                text(f'REVOKE EXECUTE ON FUNCTION {upgrader} FROM "{migration_login}"')
+            )
+        with pytest.raises(RuntimeError, match="upgrader is unavailable"):
+            command.upgrade(core_config, "core@head")
+        with bootstrap.connect() as connection:
+            assert (
+                connection.execute(
+                    text("SELECT to_regclass('public.runtime_attention_condition_control')")
+                ).scalar_one()
+                is None
+            )
+            connection.execute(text(f'GRANT EXECUTE ON FUNCTION {upgrader} TO "{migration_login}"'))
+        command.upgrade(core_config, "core@head")
+    finally:
+        bootstrap.dispose()
+
+    engine = create_engine(db_url)
+    try:
+        with engine.connect() as connection:
+            assert_at_chain_head(connection)
+            proof = connection.execute(
+                text(
+                    f"""
+                    SELECT
+                        NOT has_function_privilege(current_user, '{upgrader}', 'EXECUTE'),
+                        -- Only Switchboard's role is granted the producer; the
+                        -- shared login reaches it solely through that SET ROLE.
+                        NOT EXISTS (
+                            SELECT 1
+                            FROM pg_proc AS producer
+                            CROSS JOIN LATERAL aclexplode(producer.proacl) AS acl
+                            WHERE producer.oid
+                                  = 'public.append_runtime_attention_condition(uuid)'::regprocedure
+                              AND acl.grantee <> producer.proowner
+                              AND acl.grantee <> 'butler_switchboard_rw'::regrole
+                        ),
+                        has_function_privilege(
+                            current_user,
+                            'public.observe_runtime_attention_conditions()',
+                            'EXECUTE'
+                        ),
+                        (SELECT producer_enabled
+                         FROM public.runtime_attention_condition_control WHERE singleton)
+                    """
+                )
+            ).one()
+            assert all(proof)
+    finally:
+        engine.dispose()
+
+
+def test_core_251_downgrade_never_refuses_and_only_bootstrap_disables_the_producer(
+    postgres_container,
+) -> None:
+    """Rollback keeps evidence; it is not a trusted-bootstrap downgrade boundary."""
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
+    bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
+    command.upgrade(_build_alembic_config(db_url, chains=["core"]), "core@head")
+    enabled_sql = text(
+        "SELECT producer_enabled FROM public.runtime_attention_condition_control WHERE singleton"
+    )
+
+    bootstrap = create_engine(bootstrap_url)
+    try:
+        command.downgrade(_build_alembic_config(db_url, chains=["core"]), "core_250")
+        with bootstrap.connect() as connection:
+            assert connection.execute(enabled_sql).scalar_one() is True
+        command.upgrade(_build_alembic_config(db_url, chains=["core"]), "core@head")
+
+        command.downgrade(_build_alembic_config(bootstrap_url, chains=["core"]), "core_250")
+        with bootstrap.connect() as connection:
+            assert connection.execute(enabled_sql).scalar_one() is False
+            assert (
+                connection.execute(
+                    text("SELECT to_regclass('public.runtime_attention_condition_episodes')")
+                ).scalar_one()
+                is not None
+            )
+    finally:
+        bootstrap.dispose()

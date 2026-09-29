@@ -2761,6 +2761,393 @@ def test_init_db_rerun_converges_the_fleet_halt_month_clock(postgres_container) 
 
 
 # ---------------------------------------------------------------------------
+# REQ-butler-control-plane-liveness-007: fleet and overdue-QA condition attention
+# ---------------------------------------------------------------------------
+
+_APPEND_CONDITION = "SELECT public.append_runtime_attention_condition($1)"
+_CONDITION_OUTBOX_COUNT = (
+    "SELECT count(*) FROM public.runtime_attention_outbox WHERE source = 'control_plane_condition'"
+)
+
+
+def _asyncpg_url(url: str) -> str:
+    return url.replace("postgresql+psycopg2://", "postgresql://", 1)
+
+
+def _fresh_condition_database(postgres_container) -> tuple[str, str]:
+    """A fresh core-head database with the v4 condition interface installed."""
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
+    _upgrade_to_core_head(db_url)
+    return db_url, migration_bootstrap_db_url(postgres_container, db_name)
+
+
+async def _insert_condition(
+    admin: asyncpg.Pool,
+    source: str,
+    fingerprint: str,
+    *,
+    age: timedelta = timedelta(minutes=10),
+    state: str = "open",
+    episode: int = 1,
+) -> uuid.UUID:
+    resolved = state == "resolved"
+    return await admin.fetchval(
+        """
+        INSERT INTO public.infra_conditions (
+            source, fingerprint, episode, state, first_detected_at, last_confirmed_at,
+            resolved_at, recovered_after_s, summary, metadata
+        ) VALUES (
+            $1, $2, $3, $4, now() - $5::interval, now(),
+            CASE WHEN $6 THEN now() END, CASE WHEN $6 THEN 1.0 END,
+            'general, health: 127.0.0.1:41101 refused', '{"affected": [{"name": "general"}]}'
+        ) RETURNING id
+        """,
+        source,
+        fingerprint,
+        episode,
+        state,
+        age,
+        resolved,
+    )
+
+
+def test_condition_producer_appends_one_safe_episode_per_condition_even_after_retention(
+    postgres_container,
+) -> None:
+    """REQ-butler-control-plane-liveness-007: one idempotent, content-blind episode.
+
+    Grace, concurrent producers, the fixed identity allowlist, the Switchboard-only
+    producer grant, the CHECK/unique backstops against a forged row, and the
+    condition-side marker that outlives outbox retention -- all on real PostgreSQL.
+    """
+    from butlers.core.fleet_conditions import (
+        FLEET_FINGERPRINT,
+        FLEET_SOURCE,
+        QA_PATROL_OVERDUE_FINGERPRINT,
+        QA_PATROL_SOURCE,
+        QA_PATROL_STOPPED_FINGERPRINT,
+    )
+
+    db_url, bootstrap_url = _fresh_condition_database(postgres_container)
+
+    async def scenario() -> None:
+        admin = await asyncpg.create_pool(
+            _asyncpg_url(bootstrap_url), min_size=1, max_size=2, init=_decode_jsonb
+        )
+        pool = await asyncpg.create_pool(
+            _asyncpg_url(db_url), min_size=1, max_size=8, init=_decode_jsonb
+        )
+        try:
+            fleet = await _insert_condition(admin, FLEET_SOURCE, FLEET_FINGERPRINT)
+            qa = await _insert_condition(
+                admin, QA_PATROL_SOURCE, QA_PATROL_OVERDUE_FINGERPRINT, age=timedelta(0)
+            )
+            stopped = await _insert_condition(
+                admin, QA_PATROL_SOURCE, QA_PATROL_STOPPED_FINGERPRINT
+            )
+            resolved = await _insert_condition(
+                admin, FLEET_SOURCE, FLEET_FINGERPRINT, state="resolved", episode=2
+            )
+            unrelated = await _insert_condition(admin, "infra_state", "not-a-paging-identity")
+
+            # The migration login can CREATE in public.  A better-matching
+            # overload planted there must never run inside the v4 definers,
+            # which execute as runtime_attention_outbox_owner.
+            await pool.execute(
+                """
+                CREATE FUNCTION public.hashtextextended(text, integer) RETURNS bigint
+                LANGUAGE plpgsql AS $hijack$
+                BEGIN
+                    RAISE EXCEPTION 'hijacked as %', current_user;
+                END;
+                $hijack$
+                """
+            )
+            # Concurrent controller scans converge on one episode.
+            ids = await asyncio.gather(
+                *(_call_as_role(pool, _SWITCHBOARD, _APPEND_CONDITION, fleet) for _ in range(8))
+            )
+            assert len(set(ids)) == 1 and ids[0] is not None
+            fleet_episode = ids[0]
+            assert await admin.fetchval(
+                """
+                SELECT bool_and(proconfig = ARRAY['search_path=pg_catalog, pg_temp']::text[])
+                FROM pg_proc
+                WHERE oid IN (
+                    'public.append_runtime_attention_condition(uuid)'::regprocedure,
+                    'public.observe_runtime_attention_conditions()'::regprocedure
+                )
+                """
+            )
+
+            assert await _call_as_role(pool, _SWITCHBOARD, _APPEND_CONDITION, fleet) == (
+                fleet_episode
+            )
+
+            # Inside its attention grace, and once resolved, nothing is due.
+            assert await _call_as_role(pool, _SWITCHBOARD, _APPEND_CONDITION, qa) is None
+            assert await _call_as_role(pool, _SWITCHBOARD, _APPEND_CONDITION, resolved) is None
+            await admin.execute(
+                "UPDATE public.infra_conditions "
+                "SET first_detected_at = now() - interval '6 minutes', state = 'aging' "
+                "WHERE id = $1",
+                qa,
+            )
+            qa_episode = await _call_as_role(pool, _SWITCHBOARD, _APPEND_CONDITION, qa)
+            assert qa_episode is not None and qa_episode != fleet_episode
+
+            # Only the fixed fleet and overdue-QA identities page.
+            for not_paging in (stopped, unrelated):
+                with pytest.raises(asyncpg.InvalidParameterValueError):
+                    await _call_as_role(pool, _SWITCHBOARD, _APPEND_CONDITION, not_paging)
+            with pytest.raises(asyncpg.NoDataFoundError):
+                await _call_as_role(pool, _SWITCHBOARD, _APPEND_CONDITION, uuid.uuid4())
+
+            rows = {
+                row["id"]: row
+                for row in await admin.fetch(
+                    "SELECT id, lifecycle_state, source_snapshot, payload "
+                    "FROM public.runtime_attention_outbox WHERE source = 'control_plane_condition'"
+                )
+            }
+            assert set(rows) == {fleet_episode, qa_episode}
+            assert rows[fleet_episode]["lifecycle_state"] == "pending"
+            assert rows[fleet_episode]["payload"] == {
+                "classification": "fleet_control_unhealthy",
+                "door": "/system",
+            }
+            assert rows[qa_episode]["payload"] == {
+                "classification": "qa_patrol_overdue",
+                "door": "/system",
+            }
+            snapshot = rows[fleet_episode]["source_snapshot"]
+            assert set(snapshot) == {"condition_id", "condition_kind", "first_detected_at"}
+            assert snapshot["condition_id"] == str(fleet)
+            assert snapshot["condition_kind"] == "fleet_control"
+            stored = json.dumps([dict(row) for row in rows.values()], default=str)
+            for leaked in ("general", "127.0.0.1", "refused", "affected"):
+                assert leaked not in stored
+
+            # Only Switchboard's active role may produce; no other principal.
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await pool.fetchval(_APPEND_CONDITION, fleet)
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await _call_as_role(pool, _MODEL_PRODUCER, _APPEND_CONDITION, fleet)
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await _call_as_role(
+                    pool,
+                    _SWITCHBOARD,
+                    "SELECT count(*) FROM public.runtime_attention_condition_episodes",
+                )
+
+            # Even bootstrap cannot forge a second episode or an unsafe payload.
+            forged = {
+                "condition_id": str(fleet),
+                "condition_kind": "fleet_control",
+                "first_detected_at": "2026-09-29T00:00:00+00:00",
+            }
+            with pytest.raises(asyncpg.UniqueViolationError):
+                await admin.execute(
+                    "INSERT INTO public.runtime_attention_outbox (source, source_snapshot, payload) "
+                    "VALUES ('control_plane_condition', $1, $2)",
+                    forged,
+                    {"classification": "fleet_control_unhealthy", "door": "/system"},
+                )
+            for snapshot_extra, payload in (
+                ({}, {"classification": "fleet_control_unhealthy", "door": "/elsewhere"}),
+                ({}, {"classification": "general is down", "door": "/system"}),
+                (
+                    {"summary": "general"},
+                    {"classification": "qa_patrol_overdue", "door": "/system"},
+                ),
+                (
+                    {"condition_kind": "qa_patrol_stopped"},
+                    {"classification": "qa_patrol_overdue", "door": "/system"},
+                ),
+            ):
+                with pytest.raises(asyncpg.CheckViolationError):
+                    await admin.execute(
+                        "INSERT INTO public.runtime_attention_outbox (source, source_snapshot, payload) "
+                        "VALUES ('control_plane_condition', $1, $2)",
+                        {**forged, "condition_id": str(uuid.uuid4()), **snapshot_extra},
+                        payload,
+                    )
+
+            # Retention: the outbox row ages out; the active condition keeps its
+            # episode identity and last delivery category and never re-pages.
+            await admin.execute(
+                "DELETE FROM public.runtime_attention_outbox WHERE id = $1", fleet_episode
+            )
+            assert await _call_as_role(pool, _SWITCHBOARD, _APPEND_CONDITION, fleet) == (
+                fleet_episode
+            )
+            assert await admin.fetchval(_CONDITION_OUTBOX_COUNT) == 1
+            observed = {
+                row["condition_id"]: row
+                for row in await pool.fetch(
+                    "SELECT * FROM public.observe_runtime_attention_conditions()"
+                )
+            }
+            assert observed[fleet]["episode_id"] == fleet_episode
+            assert observed[fleet]["outbox_retained"] is False
+            assert observed[fleet]["lifecycle_state"] == "pending"
+            assert observed[qa]["outbox_retained"] is True
+            assert observed[qa]["condition_kind"] == "qa_patrol_overdue"
+            # The projection is the migration login's alone and forbids SET ROLE.
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await _call_as_role(
+                    pool,
+                    _SWITCHBOARD,
+                    "SELECT count(*) FROM public.observe_runtime_attention_conditions()",
+                )
+        finally:
+            await pool.close()
+            await admin.close()
+
+    asyncio.run(scenario())
+
+
+def test_condition_attention_survives_bootstrap_replay_and_rollback_keeps_evidence(
+    postgres_container,
+) -> None:
+    """REQ-butler-control-plane-liveness-007 AC3: grants, RLS, and rollback on replay.
+
+    A rerun of the real bootstrap strips planted grants and restores the one
+    owner policy without disturbing emitted evidence, and the core_198 finalized
+    proof still holds.  Rollback stops new appends only; a re-enable never
+    re-pages a condition that already has its marker.
+    """
+    from butlers.core.fleet_conditions import (
+        FLEET_FINGERPRINT,
+        FLEET_SOURCE,
+        QA_PATROL_OVERDUE_FINGERPRINT,
+        QA_PATROL_SOURCE,
+    )
+
+    db_url, bootstrap_url = _fresh_condition_database(postgres_container)
+    migration_role = unquote(urlparse(db_url).username or "")
+
+    async def append(pool: asyncpg.Pool, condition_id: uuid.UUID) -> object:
+        return await _call_as_role(pool, _SWITCHBOARD, _APPEND_CONDITION, condition_id)
+
+    async def open_pools() -> tuple[asyncpg.Pool, asyncpg.Pool]:
+        admin = await asyncpg.create_pool(_asyncpg_url(bootstrap_url), min_size=1, max_size=2)
+        pool = await asyncpg.create_pool(_asyncpg_url(db_url), min_size=1, max_size=2)
+        return admin, pool
+
+    async def before_replay() -> tuple[uuid.UUID, uuid.UUID]:
+        admin, pool = await open_pools()
+        try:
+            fleet = await _insert_condition(admin, FLEET_SOURCE, FLEET_FINGERPRINT)
+            episode = await append(pool, fleet)
+            assert episode is not None
+            # Plant the broad grants an ad-hoc repair might leave behind.
+            await admin.execute(
+                f"GRANT SELECT, UPDATE ON public.runtime_attention_condition_episodes "
+                f"TO {_MODEL_PRODUCER}"
+            )
+            await admin.execute(
+                f"GRANT EXECUTE ON FUNCTION public.append_runtime_attention_condition(uuid) "
+                f"TO {_MODEL_PRODUCER}, {_quote_ident(migration_role)}"
+            )
+            await admin.execute(
+                "CREATE POLICY stray_open ON public.runtime_attention_condition_episodes "
+                "FOR ALL TO PUBLIC USING (true)"
+            )
+            return fleet, episode
+        finally:
+            await pool.close()
+            await admin.close()
+
+    fleet, episode = asyncio.run(before_replay())
+    _rerun_actual_init_db(bootstrap_url, db_url)
+    assert _has_exact_finalized_runtime_attention_interface(db_url)
+
+    async def after_replay() -> None:
+        admin, pool = await open_pools()
+        try:
+            shape = await admin.fetchrow(
+                f"""
+                SELECT
+                    marker.relrowsecurity AND marker.relforcerowsecurity AS forced_rls,
+                    pg_get_userbyid(marker.relowner) AS marker_owner,
+                    ARRAY(
+                        SELECT polname::text FROM pg_policy WHERE polrelid = marker.oid
+                    ) AS policies,
+                    has_table_privilege('{_MODEL_PRODUCER}', marker.oid, 'SELECT') AS producer_reads,
+                    has_function_privilege(
+                        '{_MODEL_PRODUCER}',
+                        'public.append_runtime_attention_condition(uuid)'::regprocedure,
+                        'EXECUTE'
+                    ) AS producer_appends,
+                    has_function_privilege(
+                        '{_SWITCHBOARD}',
+                        'public.append_runtime_attention_condition(uuid)'::regprocedure,
+                        'EXECUTE'
+                    ) AS switchboard_appends,
+                    has_function_privilege(
+                        $1::name,
+                        'public.runtime_attention_upgrade_condition_v4()'::regprocedure,
+                        'EXECUTE'
+                    ) AS migration_upgrades,
+                    has_function_privilege(
+                        $1::name,
+                        'public.observe_runtime_attention_conditions()'::regprocedure,
+                        'EXECUTE'
+                    ) AS migration_observes,
+                    pg_get_userbyid(upgrader.proowner) AS upgrader_owner
+                FROM pg_class AS marker
+                JOIN pg_proc AS upgrader
+                  ON upgrader.oid = 'public.runtime_attention_upgrade_condition_v4()'::regprocedure
+                WHERE marker.oid = 'public.runtime_attention_condition_episodes'::regclass
+                """,
+                migration_role,
+            )
+            assert dict(shape) == {
+                "forced_rls": True,
+                "marker_owner": "runtime_attention_outbox_owner",
+                "policies": ["runtime_attention_condition_episodes_owner"],
+                "producer_reads": False,
+                "producer_appends": False,
+                "switchboard_appends": True,
+                "migration_upgrades": False,
+                "migration_observes": True,
+                "upgrader_owner": "runtime_attention_outbox_owner",
+            }
+            assert await append(pool, fleet) == episode
+
+            # Rollback: no new appends, every emitted row and marker kept.
+            await admin.execute("SELECT public.runtime_attention_deactivate_condition_v4()")
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await pool.execute("SELECT public.runtime_attention_deactivate_condition_v4()")
+            qa = await _insert_condition(admin, QA_PATROL_SOURCE, QA_PATROL_OVERDUE_FINGERPRINT)
+            assert await append(pool, qa) is None
+            assert await append(pool, fleet) is None
+            assert await admin.fetchval(_CONDITION_OUTBOX_COUNT) == 1
+            assert (
+                await admin.fetchval(
+                    "SELECT episode_id FROM public.runtime_attention_condition_episodes "
+                    "WHERE condition_id = $1",
+                    fleet,
+                )
+                == episode
+            )
+
+            # Re-enable: the due QA condition pages once; the fleet one does not re-page.
+            await admin.execute(
+                "UPDATE public.runtime_attention_condition_control SET producer_enabled = true"
+            )
+            assert await append(pool, fleet) == episode
+            assert await append(pool, qa) is not None
+            assert await admin.fetchval(_CONDITION_OUTBOX_COUNT) == 2
+        finally:
+            await pool.close()
+            await admin.close()
+
+    asyncio.run(after_replay())
+
+
 # bu-mms5xl: no runtime-attention definer resolves names through public
 # ---------------------------------------------------------------------------
 
@@ -2812,6 +3199,8 @@ def test_runtime_attention_definers_never_run_a_public_decoy(postgres_container)
                 "append_runtime_attention_fleet_halt()",
                 "append_runtime_attention_model_breaker(bigint)",
                 "reissue_runtime_attention_episode(uuid)",
+                "append_runtime_attention_condition(uuid)",
+                "observe_runtime_attention_conditions()",
             } <= set(fresh)
             assert all(config == [_PINNED_SEARCH_PATH] for config in fresh.values()), fresh
 

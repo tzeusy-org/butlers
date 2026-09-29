@@ -266,6 +266,20 @@ def _episode_payload(episode: OutboxEpisode) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+# Fixed owner-facing copy for the control-plane condition classifications
+# (REQ-butler-control-plane-liveness-007). The text names the failure class
+# only: never a daemon, endpoint, count, or condition summary.
+_CLASSIFICATION_COPY: dict[str, str] = {
+    "fleet_control_unhealthy": (
+        "Runtime attention: butler fleet control is unhealthy; "
+        "expected daemons are not receiver-ready."
+    ),
+    "qa_patrol_overdue": (
+        "Runtime attention: no qualifying QA patrol has completed within its expected window."
+    ),
+}
+
+
 def _episode_message(episode: OutboxEpisode) -> str:
     """Build operator-facing text from allowlisted payload fields only.
 
@@ -276,7 +290,7 @@ def _episode_message(episode: OutboxEpisode) -> str:
     payload = _episode_payload(episode)
     classification = str(payload.get("classification", episode.source))
     door = payload.get("door")
-    text = f"Runtime attention: {classification}."
+    text = _CLASSIFICATION_COPY.get(classification, f"Runtime attention: {classification}.")
     if isinstance(door, str) and door:
         text = f"{text} Open {door} to review."
     return text
