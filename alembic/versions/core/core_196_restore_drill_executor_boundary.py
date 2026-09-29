@@ -84,8 +84,16 @@ _TRUSTED_FINALIZED_INTERFACE_SQL = """
           AND is_due.prosecdef
           AND record_result.prosecdef
           AND latest_result.prosecdef
-          AND is_due.proconfig = ARRAY['search_path=pg_catalog, public, pg_temp']::text[]
-          AND record_result.proconfig = ARRAY['search_path=pg_catalog, public, pg_temp']::text[]
+          -- bu-mzm3su.1: the finalizer pins pg_catalog, pg_temp on every init-db
+          -- rerun; a database not yet rebootstrapped still carries the old path.
+          AND is_due.proconfig::text[] IN (
+              ARRAY['search_path=pg_catalog, pg_temp'],
+              ARRAY['search_path=pg_catalog, public, pg_temp']
+          )
+          AND record_result.proconfig::text[] IN (
+              ARRAY['search_path=pg_catalog, pg_temp'],
+              ARRAY['search_path=pg_catalog, public, pg_temp']
+          )
           AND latest_result.proconfig = ARRAY['search_path=pg_catalog, pg_temp']::text[]
           AND bootstrap_owner.rolsuper
           AND installer.prosecdef

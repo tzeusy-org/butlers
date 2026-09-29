@@ -998,9 +998,9 @@ BEGIN
     -- privileged bootstrap reruns repair legacy search paths without accepting
     -- arbitrary caller-controlled objects.
     EXECUTE 'ALTER FUNCTION restore_drill_executor.is_due(integer) '
-        || 'SET search_path = pg_catalog, public, pg_temp';
+        || 'SET search_path = pg_catalog, pg_temp';
     EXECUTE 'ALTER FUNCTION restore_drill_executor.record_result(text, text, text, integer) '
-        || 'SET search_path = pg_catalog, public, pg_temp';
+        || 'SET search_path = pg_catalog, pg_temp';
     EXECUTE 'ALTER FUNCTION restore_drill_executor.latest_result() '
         || 'SET search_path = pg_catalog, pg_temp';
 
@@ -1149,7 +1149,7 @@ BEGIN
     RETURNS BOOLEAN
     LANGUAGE plpgsql
     SECURITY DEFINER
-    SET search_path = pg_catalog, public, pg_temp
+    SET search_path = pg_catalog, pg_temp
     AS $is_due$
     DECLARE
         v_last_recorded_at TIMESTAMPTZ;
@@ -1177,7 +1177,7 @@ BEGIN
     RETURNS BIGINT
     LANGUAGE plpgsql
     SECURITY DEFINER
-    SET search_path = pg_catalog, public, pg_temp
+    SET search_path = pg_catalog, pg_temp
     AS $record_result$
     DECLARE
         v_result_id BIGINT;
@@ -1361,6 +1361,7 @@ BEGIN
           AND admin_function.proname IN (
               'finalize_interface',
               'install_interface',
+              'install_private_mutation',
               'rollback_interface'
           )
           AND admin_function.pronargs = 0
@@ -1465,6 +1466,270 @@ VALUES (
 ON CONFLICT (singleton) DO UPDATE SET
     migration_role = EXCLUDED.migration_role,
     bootstrap_role = EXCLUDED.bootstrap_role;
+
+-- Single source of truth for dnd_generation_private.mutate's body.
+--
+-- mutate is created once by install_interface, which never re-runs on an
+-- installed database, so finalize_interface adopts this definition on every
+-- init-db rerun (the bu-jxelx runtime-attention precedent).  A fresh bootstrap
+-- and an already-installed database therefore cannot drift apart, and the
+-- definer's pinned search_path always meets a body that needs nothing outside
+-- pg_catalog: the built-in sha256(bytea) replaces pgcrypto's digest(), which
+-- lives in public (bu-mzm3su.1).  encode(sha256(x), 'hex') is byte-identical
+-- to encode(digest(x, 'sha256'), 'hex'), so stored replay fingerprints stay
+-- valid.  CREATE OR REPLACE preserves the function's OID, owner, and ACL.
+CREATE OR REPLACE FUNCTION dnd_generation_admin.install_private_mutation()
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $dnd_install_private_mutation$
+BEGIN
+    CREATE OR REPLACE FUNCTION dnd_generation_private.mutate(
+        p_mutation_id UUID,
+        p_writer TEXT,
+        p_operation TEXT,
+        p_requested_expires_at TIMESTAMPTZ,
+        p_value TEXT,
+        p_confidence REAL,
+        p_metadata JSONB
+    )
+    RETURNS TABLE (
+        mutation_id UUID,
+        generation BIGINT,
+        writer TEXT,
+        operation TEXT,
+        correlation TEXT,
+        requested_expires_at TIMESTAMPTZ,
+        effective_expires_at TIMESTAMPTZ,
+        committed_at TIMESTAMPTZ
+    )
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = pg_catalog, pg_temp
+    AS $dnd_private$
+    DECLARE
+        v_active_role TEXT := NULLIF(current_setting('role', true), 'none');
+        v_effective_writer TEXT;
+        v_now TIMESTAMPTZ;
+        v_effective_expires_at TIMESTAMPTZ;
+        v_guard_generation BIGINT;
+        v_existing public.dnd_generation_mutations%ROWTYPE;
+        v_has_existing BOOLEAN := false;
+        v_correlation TEXT;
+        v_requested_expiry_canonical TEXT;
+        v_effective_expiry_canonical TEXT;
+        v_confidence_canonical TEXT;
+        v_value_normalized TEXT;
+        v_value_digest TEXT;
+        v_metadata_digest TEXT;
+        v_fingerprint TEXT;
+    BEGIN
+        IF v_active_role = 'butler_general_rw' THEN
+            v_effective_writer := 'general';
+        ELSIF v_active_role = 'butler_switchboard_rw' THEN
+            v_effective_writer := 'switchboard';
+        ELSE
+            RAISE EXCEPTION 'DND mutation requires an active canonical runtime role';
+        END IF;
+        IF p_writer IS DISTINCT FROM v_effective_writer THEN
+            RAISE EXCEPTION 'DND writer does not match the active runtime role';
+        END IF;
+        IF p_mutation_id IS NULL THEN
+            RAISE EXCEPTION 'DND mutation requires stable mutation_id';
+        END IF;
+        v_correlation := 'dnd-action:' || p_mutation_id::text;
+        IF p_operation NOT IN ('set', 'clear') THEN
+            RAISE EXCEPTION 'DND operation must be set or clear';
+        END IF;
+        IF p_operation = 'clear'
+           AND (p_requested_expires_at IS NOT NULL OR p_value IS NOT NULL
+                OR p_confidence IS NOT NULL OR p_metadata IS NOT NULL) THEN
+            RAISE EXCEPTION 'DND clear cannot carry set payload fields';
+        END IF;
+        IF p_operation = 'set'
+           AND (p_confidence IS NULL OR p_confidence < 0.0 OR p_confidence > 1.0) THEN
+            RAISE EXCEPTION 'DND confidence must be in [0, 1]';
+        END IF;
+
+        SELECT guard.generation INTO v_guard_generation
+        FROM public.dnd_generation_guard AS guard
+        WHERE guard.guard_id = 1
+        FOR UPDATE;
+        IF v_guard_generation IS NULL OR v_guard_generation < 0 THEN
+            RAISE EXCEPTION 'DND generation guard is missing or invalid';
+        END IF;
+
+        SELECT * INTO v_existing
+        FROM public.dnd_generation_mutations AS receipt
+        WHERE receipt.mutation_id = p_mutation_id;
+        v_has_existing := FOUND;
+
+        IF v_has_existing THEN
+            IF v_existing.semantic_fingerprint_version <> 1
+               OR v_existing.semantic_fingerprint IS NULL
+               OR (v_existing.operation = 'set' AND v_existing.effective_expires_at IS NULL)
+               OR (v_existing.operation = 'clear'
+                   AND (v_existing.requested_expires_at IS NOT NULL
+                        OR v_existing.effective_expires_at IS NOT NULL)) THEN
+                RAISE EXCEPTION 'replay_identity_unprovable';
+            END IF;
+            v_effective_expires_at := v_existing.effective_expires_at;
+        ELSE
+            v_now := clock_timestamp();
+            IF p_operation = 'set' THEN
+                v_effective_expires_at := LEAST(
+                    COALESCE(p_requested_expires_at, v_now + interval '2 hours'),
+                    v_now + interval '24 hours'
+                );
+            ELSE
+                v_effective_expires_at := NULL;
+            END IF;
+        END IF;
+
+        v_requested_expiry_canonical := CASE
+            WHEN p_requested_expires_at IS NULL THEN NULL
+            ELSE to_char(
+                p_requested_expires_at AT TIME ZONE 'UTC',
+                'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+            )
+        END;
+        v_effective_expiry_canonical := CASE
+            WHEN v_effective_expires_at IS NULL THEN NULL
+            ELSE to_char(
+                v_effective_expires_at AT TIME ZONE 'UTC',
+                'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+            )
+        END;
+        v_confidence_canonical := CASE
+            WHEN p_confidence IS NULL THEN NULL
+            ELSE encode(float4send(p_confidence), 'hex')
+        END;
+        v_value_normalized := CASE
+            WHEN p_value IS NULL THEN NULL
+            ELSE "normalize"(p_value, 'NFC')
+        END;
+        v_value_digest := CASE
+            WHEN v_value_normalized IS NULL THEN encode(
+                sha256(convert_to('dnd-value:null', 'UTF8')), 'hex'
+            )
+            ELSE encode(
+                sha256(
+                    convert_to('dnd-value:string:' || v_value_normalized, 'UTF8')
+                ),
+                'hex'
+            )
+        END;
+        v_metadata_digest := encode(
+            sha256(
+                convert_to(
+                    CASE
+                        WHEN p_metadata IS NULL THEN 'dnd-metadata:absent'
+                        ELSE 'dnd-metadata:json:'
+                            || dnd_generation_private.canonical_json(p_metadata)
+                    END,
+                    'UTF8'
+                )
+            ),
+            'hex'
+        );
+        v_fingerprint := encode(
+            sha256(
+                convert_to(
+                    dnd_generation_private.canonical_json(
+                        jsonb_build_object(
+                            'protocol', 'context.dnd.mutate.v1',
+                            'signal_type', 'dnd',
+                            'writer', v_effective_writer,
+                            'set_by_butler', v_effective_writer,
+                            'operation', p_operation,
+                            'correlation', v_correlation,
+                            'requested_expires_at', v_requested_expiry_canonical,
+                            'effective_expires_at', v_effective_expiry_canonical,
+                            'confidence_float4', v_confidence_canonical,
+                            'value_digest', v_value_digest,
+                            'metadata_digest', v_metadata_digest
+                        )
+                    ),
+                    'UTF8'
+                )
+            ),
+            'hex'
+        );
+
+        IF v_has_existing THEN
+            IF v_existing.writer IS DISTINCT FROM v_effective_writer
+               OR v_existing.operation IS DISTINCT FROM p_operation
+               OR v_existing.correlation IS DISTINCT FROM v_correlation
+               OR v_existing.semantic_fingerprint IS DISTINCT FROM v_fingerprint THEN
+                RAISE EXCEPTION 'idempotency_conflict';
+            END IF;
+            RETURN QUERY
+            SELECT v_existing.mutation_id, v_existing.generation, v_existing.writer,
+                   v_existing.operation, v_existing.correlation,
+                   v_existing.requested_expires_at, v_existing.effective_expires_at,
+                   v_existing.committed_at;
+            RETURN;
+        END IF;
+
+        IF v_guard_generation = 9223372036854775807 THEN
+            RAISE EXCEPTION 'DND generation is exhausted';
+        END IF;
+        IF v_now IS NULL THEN
+            v_now := clock_timestamp();
+        END IF;
+
+        IF p_operation = 'set' THEN
+            INSERT INTO public.user_context (
+                id, signal_type, value, set_by_butler, set_at, expires_at, confidence,
+                metadata, superseded_at
+            )
+            VALUES (
+                gen_random_uuid(), 'dnd', p_value, v_effective_writer, v_now, v_effective_expires_at,
+                p_confidence, p_metadata, NULL
+            )
+            ON CONFLICT (signal_type, set_by_butler) DO UPDATE
+                SET value = EXCLUDED.value,
+                    set_at = EXCLUDED.set_at,
+                    expires_at = EXCLUDED.expires_at,
+                    confidence = EXCLUDED.confidence,
+                    metadata = EXCLUDED.metadata,
+                    superseded_at = NULL;
+        ELSE
+            UPDATE public.user_context
+            SET superseded_at = v_now
+            WHERE signal_type = 'dnd'
+              AND set_by_butler = v_effective_writer
+              AND superseded_at IS NULL;
+        END IF;
+
+        UPDATE public.dnd_generation_guard AS guard
+        SET generation = guard.generation + 1,
+            updated_at = v_now
+        WHERE guard.guard_id = 1
+        RETURNING guard.generation INTO v_guard_generation;
+
+        INSERT INTO public.dnd_generation_mutations (
+            mutation_id, generation, writer, operation, correlation,
+            requested_expires_at, effective_expires_at,
+            semantic_fingerprint_version, semantic_fingerprint, committed_at
+        )
+        VALUES (
+            p_mutation_id, v_guard_generation, v_effective_writer, p_operation,
+            v_correlation, p_requested_expires_at, v_effective_expires_at,
+            1, v_fingerprint, v_now
+        );
+
+        RETURN QUERY
+        SELECT p_mutation_id, v_guard_generation, v_effective_writer, p_operation,
+               v_correlation, p_requested_expires_at, v_effective_expires_at,
+               v_now;
+    END;
+    $dnd_private$;
+END;
+$dnd_install_private_mutation$;
+
+REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_admin.install_private_mutation() FROM PUBLIC;
 
 CREATE OR REPLACE FUNCTION dnd_generation_admin.finalize_interface()
 RETURNS void
@@ -1693,8 +1958,12 @@ BEGIN
         || 'SET search_path = pg_catalog, public, dnd_generation_private, pg_temp';
     EXECUTE 'ALTER FUNCTION dnd_generation_private.canonical_json(jsonb) '
         || 'SET search_path = pg_catalog, pg_temp';
+    -- Adopt the current private body first: an installed database may still
+    -- carry the pgcrypto digest() body, which cannot resolve once public is
+    -- off the definer's search_path.
+    PERFORM dnd_generation_admin.install_private_mutation();
     EXECUTE 'ALTER FUNCTION dnd_generation_private.mutate(uuid, text, text, timestamptz, text, real, jsonb) '
-        || 'SET search_path = pg_catalog, public, pg_temp';
+        || 'SET search_path = pg_catalog, pg_temp';
 
     IF v_is_bootstrap_staged THEN
         EXECUTE 'ALTER TABLE public.user_context OWNER TO dnd_generation_owner';
@@ -1720,6 +1989,7 @@ BEGIN
     EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_private.mutate(uuid, text, text, timestamptz, text, real, jsonb) FROM PUBLIC';
     EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_admin.finalize_interface() FROM PUBLIC';
     EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_admin.install_interface() FROM PUBLIC';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_admin.install_private_mutation() FROM PUBLIC';
     EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_admin.rollback_interface() FROM PUBLIC';
     EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE public.user_context FROM PUBLIC';
 
@@ -1764,6 +2034,10 @@ BEGIN
     );
     EXECUTE format(
         'REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_admin.install_interface() FROM %I',
+        v_migration_role
+    );
+    EXECUTE format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_admin.install_private_mutation() FROM %I',
         v_migration_role
     );
     EXECUTE format(
@@ -1814,6 +2088,10 @@ BEGIN
             );
             EXECUTE format(
                 'REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_admin.install_interface() FROM %I',
+                v_runtime_role
+            );
+            EXECUTE format(
+                'REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_admin.install_private_mutation() FROM %I',
                 v_runtime_role
             );
             EXECUTE format(
@@ -1981,6 +2259,7 @@ BEGIN
         WHERE admin_function.oid IN (
             'dnd_generation_admin.install_interface()'::regprocedure,
             'dnd_generation_admin.finalize_interface()'::regprocedure,
+            'dnd_generation_admin.install_private_mutation()'::regprocedure,
             'dnd_generation_admin.rollback_interface()'::regprocedure
         )
           AND acl.privilege_type = 'EXECUTE'
@@ -2366,250 +2645,10 @@ BEGIN
     END;
     $dnd_canonical_json$;
 
-    CREATE FUNCTION dnd_generation_private.mutate(
-        p_mutation_id UUID,
-        p_writer TEXT,
-        p_operation TEXT,
-        p_requested_expires_at TIMESTAMPTZ,
-        p_value TEXT,
-        p_confidence REAL,
-        p_metadata JSONB
-    )
-    RETURNS TABLE (
-        mutation_id UUID,
-        generation BIGINT,
-        writer TEXT,
-        operation TEXT,
-        correlation TEXT,
-        requested_expires_at TIMESTAMPTZ,
-        effective_expires_at TIMESTAMPTZ,
-        committed_at TIMESTAMPTZ
-    )
-    LANGUAGE plpgsql
-    SECURITY DEFINER
-    SET search_path = pg_catalog, public, pg_temp
-    AS $dnd_private$
-    DECLARE
-        v_active_role TEXT := NULLIF(current_setting('role', true), 'none');
-        v_effective_writer TEXT;
-        v_now TIMESTAMPTZ;
-        v_effective_expires_at TIMESTAMPTZ;
-        v_guard_generation BIGINT;
-        v_existing public.dnd_generation_mutations%ROWTYPE;
-        v_has_existing BOOLEAN := false;
-        v_correlation TEXT;
-        v_requested_expiry_canonical TEXT;
-        v_effective_expiry_canonical TEXT;
-        v_confidence_canonical TEXT;
-        v_value_normalized TEXT;
-        v_value_digest TEXT;
-        v_metadata_digest TEXT;
-        v_fingerprint TEXT;
-    BEGIN
-        IF v_active_role = 'butler_general_rw' THEN
-            v_effective_writer := 'general';
-        ELSIF v_active_role = 'butler_switchboard_rw' THEN
-            v_effective_writer := 'switchboard';
-        ELSE
-            RAISE EXCEPTION 'DND mutation requires an active canonical runtime role';
-        END IF;
-        IF p_writer IS DISTINCT FROM v_effective_writer THEN
-            RAISE EXCEPTION 'DND writer does not match the active runtime role';
-        END IF;
-        IF p_mutation_id IS NULL THEN
-            RAISE EXCEPTION 'DND mutation requires stable mutation_id';
-        END IF;
-        v_correlation := 'dnd-action:' || p_mutation_id::text;
-        IF p_operation NOT IN ('set', 'clear') THEN
-            RAISE EXCEPTION 'DND operation must be set or clear';
-        END IF;
-        IF p_operation = 'clear'
-           AND (p_requested_expires_at IS NOT NULL OR p_value IS NOT NULL
-                OR p_confidence IS NOT NULL OR p_metadata IS NOT NULL) THEN
-            RAISE EXCEPTION 'DND clear cannot carry set payload fields';
-        END IF;
-        IF p_operation = 'set'
-           AND (p_confidence IS NULL OR p_confidence < 0.0 OR p_confidence > 1.0) THEN
-            RAISE EXCEPTION 'DND confidence must be in [0, 1]';
-        END IF;
-
-        SELECT guard.generation INTO v_guard_generation
-        FROM public.dnd_generation_guard AS guard
-        WHERE guard.guard_id = 1
-        FOR UPDATE;
-        IF v_guard_generation IS NULL OR v_guard_generation < 0 THEN
-            RAISE EXCEPTION 'DND generation guard is missing or invalid';
-        END IF;
-
-        SELECT * INTO v_existing
-        FROM public.dnd_generation_mutations AS receipt
-        WHERE receipt.mutation_id = p_mutation_id;
-        v_has_existing := FOUND;
-
-        IF v_has_existing THEN
-            IF v_existing.semantic_fingerprint_version <> 1
-               OR v_existing.semantic_fingerprint IS NULL
-               OR (v_existing.operation = 'set' AND v_existing.effective_expires_at IS NULL)
-               OR (v_existing.operation = 'clear'
-                   AND (v_existing.requested_expires_at IS NOT NULL
-                        OR v_existing.effective_expires_at IS NOT NULL)) THEN
-                RAISE EXCEPTION 'replay_identity_unprovable';
-            END IF;
-            v_effective_expires_at := v_existing.effective_expires_at;
-        ELSE
-            v_now := clock_timestamp();
-            IF p_operation = 'set' THEN
-                v_effective_expires_at := LEAST(
-                    COALESCE(p_requested_expires_at, v_now + interval '2 hours'),
-                    v_now + interval '24 hours'
-                );
-            ELSE
-                v_effective_expires_at := NULL;
-            END IF;
-        END IF;
-
-        v_requested_expiry_canonical := CASE
-            WHEN p_requested_expires_at IS NULL THEN NULL
-            ELSE to_char(
-                p_requested_expires_at AT TIME ZONE 'UTC',
-                'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
-            )
-        END;
-        v_effective_expiry_canonical := CASE
-            WHEN v_effective_expires_at IS NULL THEN NULL
-            ELSE to_char(
-                v_effective_expires_at AT TIME ZONE 'UTC',
-                'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
-            )
-        END;
-        v_confidence_canonical := CASE
-            WHEN p_confidence IS NULL THEN NULL
-            ELSE encode(float4send(p_confidence), 'hex')
-        END;
-        v_value_normalized := CASE
-            WHEN p_value IS NULL THEN NULL
-            ELSE "normalize"(p_value, 'NFC')
-        END;
-        v_value_digest := CASE
-            WHEN v_value_normalized IS NULL THEN encode(
-                digest(convert_to('dnd-value:null', 'UTF8'), 'sha256'), 'hex'
-            )
-            ELSE encode(
-                digest(
-                    convert_to('dnd-value:string:' || v_value_normalized, 'UTF8'),
-                    'sha256'
-                ),
-                'hex'
-            )
-        END;
-        v_metadata_digest := encode(
-            digest(
-                convert_to(
-                    CASE
-                        WHEN p_metadata IS NULL THEN 'dnd-metadata:absent'
-                        ELSE 'dnd-metadata:json:'
-                            || dnd_generation_private.canonical_json(p_metadata)
-                    END,
-                    'UTF8'
-                ),
-                'sha256'
-            ),
-            'hex'
-        );
-        v_fingerprint := encode(
-            digest(
-                convert_to(
-                    dnd_generation_private.canonical_json(
-                        jsonb_build_object(
-                            'protocol', 'context.dnd.mutate.v1',
-                            'signal_type', 'dnd',
-                            'writer', v_effective_writer,
-                            'set_by_butler', v_effective_writer,
-                            'operation', p_operation,
-                            'correlation', v_correlation,
-                            'requested_expires_at', v_requested_expiry_canonical,
-                            'effective_expires_at', v_effective_expiry_canonical,
-                            'confidence_float4', v_confidence_canonical,
-                            'value_digest', v_value_digest,
-                            'metadata_digest', v_metadata_digest
-                        )
-                    ),
-                    'UTF8'
-                ),
-                'sha256'
-            ),
-            'hex'
-        );
-
-        IF v_has_existing THEN
-            IF v_existing.writer IS DISTINCT FROM v_effective_writer
-               OR v_existing.operation IS DISTINCT FROM p_operation
-               OR v_existing.correlation IS DISTINCT FROM v_correlation
-               OR v_existing.semantic_fingerprint IS DISTINCT FROM v_fingerprint THEN
-                RAISE EXCEPTION 'idempotency_conflict';
-            END IF;
-            RETURN QUERY
-            SELECT v_existing.mutation_id, v_existing.generation, v_existing.writer,
-                   v_existing.operation, v_existing.correlation,
-                   v_existing.requested_expires_at, v_existing.effective_expires_at,
-                   v_existing.committed_at;
-            RETURN;
-        END IF;
-
-        IF v_guard_generation = 9223372036854775807 THEN
-            RAISE EXCEPTION 'DND generation is exhausted';
-        END IF;
-        IF v_now IS NULL THEN
-            v_now := clock_timestamp();
-        END IF;
-
-        IF p_operation = 'set' THEN
-            INSERT INTO public.user_context (
-                id, signal_type, value, set_by_butler, set_at, expires_at, confidence,
-                metadata, superseded_at
-            )
-            VALUES (
-                gen_random_uuid(), 'dnd', p_value, v_effective_writer, v_now, v_effective_expires_at,
-                p_confidence, p_metadata, NULL
-            )
-            ON CONFLICT (signal_type, set_by_butler) DO UPDATE
-                SET value = EXCLUDED.value,
-                    set_at = EXCLUDED.set_at,
-                    expires_at = EXCLUDED.expires_at,
-                    confidence = EXCLUDED.confidence,
-                    metadata = EXCLUDED.metadata,
-                    superseded_at = NULL;
-        ELSE
-            UPDATE public.user_context
-            SET superseded_at = v_now
-            WHERE signal_type = 'dnd'
-              AND set_by_butler = v_effective_writer
-              AND superseded_at IS NULL;
-        END IF;
-
-        UPDATE public.dnd_generation_guard AS guard
-        SET generation = guard.generation + 1,
-            updated_at = v_now
-        WHERE guard.guard_id = 1
-        RETURNING guard.generation INTO v_guard_generation;
-
-        INSERT INTO public.dnd_generation_mutations (
-            mutation_id, generation, writer, operation, correlation,
-            requested_expires_at, effective_expires_at,
-            semantic_fingerprint_version, semantic_fingerprint, committed_at
-        )
-        VALUES (
-            p_mutation_id, v_guard_generation, v_effective_writer, p_operation,
-            v_correlation, p_requested_expires_at, v_effective_expires_at,
-            1, v_fingerprint, v_now
-        );
-
-        RETURN QUERY
-        SELECT p_mutation_id, v_guard_generation, v_effective_writer, p_operation,
-               v_correlation, p_requested_expires_at, v_effective_expires_at,
-               v_now;
-    END;
-    $dnd_private$;
+    -- The private mutation body is defined once, in
+    -- dnd_generation_admin.install_private_mutation, which finalize_interface
+    -- re-adopts on every init-db rerun.
+    PERFORM dnd_generation_admin.install_private_mutation();
 
     CREATE FUNCTION public.context_dnd_mutate(
         p_mutation_id UUID,
@@ -2782,6 +2821,10 @@ BEGIN
     );
     EXECUTE format(
         'REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_admin.install_interface() FROM %I',
+        v_migration_role
+    );
+    EXECUTE format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_admin.install_private_mutation() FROM %I',
         v_migration_role
     );
     EXECUTE format(

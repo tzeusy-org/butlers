@@ -14,6 +14,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from threading import Barrier
+from urllib.parse import unquote, urlparse
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -24,6 +25,8 @@ from butlers.migrations import _build_alembic_config, run_migrations
 from butlers.testing.migration import (
     create_migrated_test_db,
     create_migration_db,
+    init_db_sql_for_dbapi,
+    migration_bootstrap_db_url,
     migration_db_name,
 )
 
@@ -791,3 +794,162 @@ def test_dnd_concurrent_identical_retry_advances_generation_once(migrated_db_url
     finally:
         engine.dispose()
     assert generation == first.generation
+
+
+_MUTATE_SIGNATURE = "dnd_generation_private.mutate(uuid,text,text,timestamptz,text,real,jsonb)"
+
+
+def _legacy_digest_definition(definition: str) -> str:
+    """Rewrite the current mutate body into the pre-bu-mzm3su.1 pgcrypto form.
+
+    Every ``sha256(x)`` becomes ``digest(x, 'sha256')``, exactly the shape an
+    installed database still carries until the init-db rerun re-adopts it.
+    """
+    out: list[str] = []
+    cursor = 0
+    while (start := definition.find("sha256(", cursor)) != -1:
+        depth = 0
+        for end in range(start + len("sha256"), len(definition)):
+            if definition[end] == "(":
+                depth += 1
+            elif definition[end] == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+        inner = definition[start + len("sha256(") : end]
+        out.append(definition[cursor:start])
+        out.append(f"digest({inner}, 'sha256')")
+        cursor = end + 1
+    out.append(definition[cursor:])
+    return "".join(out)
+
+
+def _rerun_actual_init_db(bootstrap_url: str, migration_url: str) -> None:
+    """Execute the checked-in bootstrap source again, as production does."""
+    migration_role = unquote(urlparse(migration_url).username or "")
+    assert migration_role
+    engine = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
+    raw_connection = engine.raw_connection()
+    try:
+        raw_connection.autocommit = True
+        with raw_connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT set_config('butlers.connecting_user', %s, false)",
+                (migration_role,),
+            )
+            cursor.execute(init_db_sql_for_dbapi())
+    finally:
+        raw_connection.close()
+        engine.dispose()
+
+
+def test_dnd_mutate_rerun_readopts_pinned_body_with_identical_hashes(
+    postgres_container,
+) -> None:
+    """bu-mzm3su.1: mutate ignores public decoys and keeps its replay identity.
+
+    The installed database is regressed to the legacy pgcrypto ``digest()``
+    body with ``public`` on its path, which is what every database bootstrapped
+    before this change carries.  A receipt written by that body must replay
+    cleanly after the real init-db rerun re-adopts the pinned ``sha256()``
+    body, proving the semantic fingerprint is byte-identical.  A
+    ``convert_to(text, text)`` decoy planted by the migration login beats the
+    catalog ``(text, name)`` form for the unknown ``'UTF8'`` literal, so it
+    runs as the private owner until the path is pinned.
+    """
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
+    bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
+    config = _build_alembic_config(db_url, chains=["core"])
+    command.upgrade(config, "core_122")
+    asyncio.run(run_migrations(db_url, chain="relationship", schema="relationship"))
+    asyncio.run(run_migrations(db_url, chain="core"))
+
+    def mutate_state(conn) -> tuple[list[str], str]:
+        row = conn.execute(
+            text("SELECT proconfig, prosrc FROM pg_proc WHERE oid = CAST(:sig AS regprocedure)"),
+            {"sig": _MUTATE_SIGNATURE},
+        ).one()
+        return list(row.proconfig or []), row.prosrc
+
+    admin = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
+    try:
+        with admin.connect() as conn:
+            proconfig, prosrc = mutate_state(conn)
+            assert proconfig == ["search_path=pg_catalog, pg_temp"]
+            assert "sha256(" in prosrc and "digest(" not in prosrc
+            definition = conn.execute(
+                text("SELECT pg_get_functiondef(CAST(:sig AS regprocedure))"),
+                {"sig": _MUTATE_SIGNATURE},
+            ).scalar_one()
+            # Raw DBAPI: the body's to_char format would parse as ':MI:SS' binds.
+            with conn.connection.cursor() as cursor:
+                cursor.execute(_legacy_digest_definition(definition))
+            conn.execute(
+                text(
+                    f"ALTER FUNCTION {_MUTATE_SIGNATURE} SET search_path = pg_catalog, public, pg_temp"
+                )
+            )
+            proconfig, prosrc = mutate_state(conn)
+            assert proconfig == ["search_path=pg_catalog, public, pg_temp"]
+            assert "sha256(" not in prosrc and "digest(" in prosrc
+    finally:
+        admin.dispose()
+
+    legacy_parameters = {
+        "mutation_id": str(uuid.uuid4()),
+        "expires_at": datetime.now(UTC) + timedelta(hours=1),
+        "value": "Caf\u00e9 written by the legacy digest body",
+        "confidence": 0.5,
+        "metadata": '{"proof":"hash-parity","nested":{"b":2,"a":1}}',
+    }
+    legacy_receipt = _execute_as_role(
+        db_url, "butler_general_rw", _dnd_set_statement(), legacy_parameters, fetch_one=True
+    )
+
+    migration = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with migration.connect() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE FUNCTION public.convert_to(text, text)
+                    RETURNS bytea
+                    LANGUAGE plpgsql
+                    AS $$
+                    BEGIN
+                        RAISE EXCEPTION 'hijacked as %', current_user;
+                    END;
+                    $$
+                    """
+                )
+            )
+    finally:
+        migration.dispose()
+
+    fresh_parameters = {**legacy_parameters, "mutation_id": str(uuid.uuid4())}
+    with pytest.raises(DBAPIError, match="hijacked as dnd_generation_owner"):
+        _execute_as_role(db_url, "butler_general_rw", _dnd_set_statement(), fresh_parameters)
+
+    _rerun_actual_init_db(bootstrap_url, db_url)
+    _rerun_actual_init_db(bootstrap_url, db_url)
+
+    admin = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
+    try:
+        with admin.connect() as conn:
+            proconfig, prosrc = mutate_state(conn)
+    finally:
+        admin.dispose()
+    assert proconfig == ["search_path=pg_catalog, pg_temp"]
+    assert "sha256(" in prosrc and "digest(" not in prosrc
+
+    # Same mutation ID, same payload: any fingerprint drift between the two
+    # bodies would raise idempotency_conflict instead of replaying the receipt.
+    replay = _execute_as_role(
+        db_url, "butler_general_rw", _dnd_set_statement(), legacy_parameters, fetch_one=True
+    )
+    assert replay == legacy_receipt
+    fresh = _execute_as_role(
+        db_url, "butler_general_rw", _dnd_set_statement(), fresh_parameters, fetch_one=True
+    )
+    assert fresh.generation == legacy_receipt.generation + 1
