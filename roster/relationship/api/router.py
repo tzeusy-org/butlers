@@ -4460,6 +4460,8 @@ async def list_entity_neighbours(
 # ---------------------------------------------------------------------------
 
 _CONTACT_PREDICATE_PREFIX = "has-"
+#: 409 code when a hash-selected contact row changed before a value edit locked it.
+_CONTACT_FACT_CHANGED = "contact_fact_changed"
 
 
 def _contact_value_hash(object_value: str) -> str:
@@ -4522,6 +4524,48 @@ async def _resolve_contact_fact_by_hash(
             },
         )
     return matches[0]
+
+
+async def _relock_contact_fact_for_edit(
+    conn: asyncpg.Connection, fact_id: UUID, expected_object: str
+) -> None:
+    """Lock the hash-selected row and re-check it before a value edit retracts it.
+
+    409 ``contact_fact_changed`` when it is no longer active or no longer holds
+    the selected value; 409 ``temporal_mutator_unsupported`` when it has become
+    temporal-bearing. Either refusal happens before any write.
+    """
+    row = await conn.fetchrow(
+        f"""
+        SELECT f.object, f.validity, {_temporal_bearing_sql("f")} AS temporal
+        FROM relationship.entity_facts f
+        WHERE f.id = $1
+        FOR UPDATE
+        """,
+        fact_id,
+    )
+    if row is None or row["validity"] != "active" or row["object"] != expected_object:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": _CONTACT_FACT_CHANGED,
+                "message": (
+                    "This contact value changed while it was being edited; "
+                    "re-read the contact and retry."
+                ),
+            },
+        )
+    if row["temporal"]:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": _TEMPORAL_MUTATOR_UNSUPPORTED,
+                "message": (
+                    "This contact value carries effective time; retract it and assert "
+                    "the new value instead of editing it in place."
+                ),
+            },
+        )
 
 
 def _row_to_contact_fact(r: Any) -> Any:
@@ -5033,7 +5077,12 @@ async def update_entity_contact(
     try:
         async with pool.acquire() as conn:
             async with conn.transaction():
-                # 1. Retract old row.
+                # 1. Re-read the selected row under a lock (bu-p2bjsf): the hash
+                # resolution above ran outside this transaction, so the row may
+                # have been retracted, re-valued or given effective time since.
+                await _relock_contact_fact_for_edit(conn, old_fact_id, old_value)
+
+                # 2. Retract old row.
                 await conn.execute(
                     """
                     UPDATE relationship.entity_facts
@@ -5044,7 +5093,7 @@ async def update_entity_contact(
                     old_fact_id,
                 )
 
-                # 2. Assert new row via central writer (pass conn= to avoid nested tx).
+                # 3. Assert new row via central writer (pass conn= to avoid nested tx).
                 result = await relationship_assert_fact(
                     pool,
                     subject=entity_id,
