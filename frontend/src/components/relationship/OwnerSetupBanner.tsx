@@ -51,8 +51,8 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
   const updateEntity = useUpdateEntity();
   const addEntityContact = useAddEntityContact();
   // Telegram handles now live as has-handle contact facts (entity_facts), not
-  // entity_info, so presence is detected from the entity's linked-contact
-  // channels rather than entity.entity_info.
+  // entity_info, so presence is detected from the entity's linked contacts
+  // (GET .../linked-contacts) rather than entity.entity_info.
   const linkedContacts = useEntityLinkedContacts(entity.id);
 
   const [open, setOpen] = useState(false);

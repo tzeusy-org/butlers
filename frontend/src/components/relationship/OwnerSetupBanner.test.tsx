@@ -148,7 +148,7 @@ describe("OwnerSetupBanner", () => {
     expect(refetch).toHaveBeenCalledOnce();
   });
 
-  it("keeps the setup CTA for a confirmed successful empty linked-contact response", () => {
+  it("keeps the setup CTA for a confirmed successful empty linked-contacts response", () => {
     mockLinkedContacts({ data: [] });
 
     render(<OwnerSetupBanner entity={OWNER} />);
