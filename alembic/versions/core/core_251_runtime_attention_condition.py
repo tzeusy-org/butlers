@@ -62,8 +62,10 @@ def _may_execute(bind: sa.Connection, signature: str) -> bool:
         bind.execute(
             sa.text(
                 """
+                -- to_regprocedure yields NULL for a function the bootstrap never
+                -- installed; a bare regprocedure cast would raise instead.
                 SELECT COALESCE(
-                    has_function_privilege(current_user, CAST(:signature AS regprocedure),
+                    has_function_privilege(current_user, to_regprocedure(:signature),
                                            'EXECUTE'),
                     false
                 )
