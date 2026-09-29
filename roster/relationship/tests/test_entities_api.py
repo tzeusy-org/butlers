@@ -1209,7 +1209,7 @@ class TestMergeEntities:
         # entity rows; the facts scans return [] so the per-row repoint loops do
         # not run against the lock MagicMocks (which lack a ``valid_at`` key).
         async def _conn_fetch(query, *args):
-            return lock_rows if "FOR UPDATE" in query else []
+            return lock_rows if "FOR UPDATE" in query and "public.entities" in query else []
 
         mock_conn.fetch = AsyncMock(side_effect=_conn_fetch)
         mock_conn.execute = AsyncMock(return_value="UPDATE 1")
@@ -2979,7 +2979,7 @@ class TestMergeWritesAuditRow:
         # ``facts`` repoint scans (bu-j820n.1); only the lock returns entity rows,
         # the facts scans return [] (no narrative facts in this audit-row test).
         async def _conn_fetch(query, *args):
-            return lock_rows if "FOR UPDATE" in query else []
+            return lock_rows if "FOR UPDATE" in query and "public.entities" in query else []
 
         mock_conn.fetch = AsyncMock(side_effect=_conn_fetch)
         mock_conn.execute = AsyncMock(return_value="UPDATE 1")

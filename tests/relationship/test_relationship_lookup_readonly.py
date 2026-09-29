@@ -35,6 +35,7 @@ from butlers.tools.relationship.staleness import (
     FRESH_MAX_DAYS,
     staleness_band,
 )
+from roster.relationship.tests.evidence_schema import apply_evidence_schema
 
 pytestmark = [
     pytest.mark.integration,
@@ -89,6 +90,8 @@ async def _provision_lookup_schema(p: asyncpg.Pool) -> None:
             updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
         )
     """)
+    # rel_034/rel_035 stores: the identity fact below carries effective time.
+    await apply_evidence_schema(p)
     # Minimal narrative facts table — only the columns the lookup SELECTs touch.
     await p.execute("""
         CREATE TABLE IF NOT EXISTS facts (
@@ -126,11 +129,16 @@ async def seeded_entity(pool: asyncpg.Pool) -> uuid.UUID:
         RETURNING id
         """
     )
+    # The identity fact's effective interval closed years ago; it is still the
+    # current assertion, so assertion-current readers must keep returning it
+    # (relationship-fact-effective-time adds no implicit effective-now filter).
     await pool.execute(
         """
         INSERT INTO relationship.entity_facts
-            (subject, predicate, object, object_kind, src, conf, observed_at, validity)
-        VALUES ($1, 'has-email', 'ops@northwind.test', 'literal', 'relationship', 1.0, now(), 'active')
+            (subject, predicate, object, object_kind, src, conf, observed_at, validity,
+             effective_from, effective_from_precision, effective_to, effective_to_precision)
+        VALUES ($1, 'has-email', 'ops@northwind.test', 'literal', 'relationship', 1.0, now(),
+                'active', '2019-01-01Z', 'year', '2021-01-01Z', 'year')
         """,
         eid,
     )

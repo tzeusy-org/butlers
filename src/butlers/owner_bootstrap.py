@@ -102,9 +102,9 @@ async def _seed_owner_telegram_handle(
     This seeds the canonical ``telegram:<chat_id>`` handle (primary) into
     ``entity_facts`` directly, bypassing the RFC-0017 owner carve-out (which would
     otherwise park this write for human approval and leave the owner unresolvable
-    indefinitely).  Idempotent: skipped when the triple already exists (partial
-    unique index ``uq_ef_spo_active``) or when the prerequisite tables / chat-id
-    row are absent.
+    indefinitely).  Idempotent: skipped when any active occurrence of the triple
+    already exists (effective-time occurrences included, so no default sibling
+    is ever added) or when the prerequisite tables / chat-id row are absent.
 
     The seed is relationship-schema-only: under SET ROLE isolation, only the
     relationship daemon may write ``relationship.entity_facts``.  The current
@@ -161,11 +161,21 @@ async def _seed_owner_telegram_handle(
             return
 
         handle = f"telegram:{str(chat_id).strip()}"
+        # Insert-only, unknown-default: any active occurrence of this triple
+        # (default or an explicit effective period) already satisfies the seed,
+        # so never add a default sibling beside it or replace its packet.
         await conn.execute(
             """
             INSERT INTO relationship.entity_facts
                 (subject, predicate, object, object_kind, src, "primary", verified, validity)
-            VALUES ($1, 'has-handle', $2, 'literal', 'owner-bootstrap', true, true, 'active')
+            SELECT $1, 'has-handle', $2, 'literal', 'owner-bootstrap', true, true, 'active'
+            WHERE NOT EXISTS (
+                SELECT 1 FROM relationship.entity_facts
+                WHERE subject = $1
+                  AND predicate = 'has-handle'
+                  AND object = $2
+                  AND validity = 'active'
+            )
             ON CONFLICT DO NOTHING
             """,
             owner_entity_id,

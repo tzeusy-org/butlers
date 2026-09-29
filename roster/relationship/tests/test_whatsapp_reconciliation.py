@@ -34,6 +34,7 @@ from butlers.tools.relationship.whatsapp_reconciliation import (
     build_whatsapp_reconciliation_plan,
     validate_empty_shell_locked,
 )
+from roster.relationship.tests.evidence_schema import apply_evidence_schema
 
 pytestmark = [
     pytest.mark.integration,
@@ -120,6 +121,7 @@ async def reconciliation_pool(provisioned_postgres_pool):
             WHERE validity = 'active'
             """
         )
+        await apply_evidence_schema(pool)
         await pool.execute(
             """
             CREATE TABLE relationship.facts (

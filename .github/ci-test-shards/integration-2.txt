@@ -13,6 +13,7 @@ roster/messenger/tests/test_delivery_tracking_retirement.py
 roster/relationship/tests/test_dedup_contacts_drop_fks_migration.py
 roster/relationship/tests/test_merge_review_no_llm.py
 roster/relationship/tests/test_rel_034_migration.py
+roster/relationship/tests/test_rel_035_migration.py
 roster/switchboard/tests/test_conformance.py
 roster/switchboard/tests/test_connector_stats_prometheus.py
 roster/switchboard/tests/test_identity_mint_concurrency_integration.py
