@@ -162,8 +162,6 @@ const BASE_ENTITY: EntityDetail = {
   aliases: [],
   roles: ["owner"],
   fact_count: 0,
-  linked_contact_id: null,
-  linked_contact_name: null,
   unidentified: false,
   source_butler: null,
   source_scope: null,
@@ -372,7 +370,6 @@ describe("EntityDetailPage — credentials moved to /secrets", () => {
     setEntityState({
       ...BASE_ENTITY,
       roles: ["owner"],
-      linked_contact_id: null,
       entity_info: [],
     });
 
@@ -386,7 +383,6 @@ describe("EntityDetailPage — credentials moved to /secrets", () => {
     setEntityState({
       ...BASE_ENTITY,
       roles: ["owner"],
-      linked_contact_id: null,
       entity_info: [
         {
           id: "info-1",
@@ -1364,11 +1360,7 @@ describe("EntityDetailPage — contact channels without the retired contact link
   it("renders ContactChannelCard, no Linked contact control, and no contact-route request", () => {
     const fetchSpy = vi.fn(() => new Promise<Response>(() => {}));
     vi.stubGlobal("fetch", fetchSpy);
-    setEntityState({
-      ...BASE_ENTITY,
-      linked_contact_id: "contact-xyz",
-      linked_contact_name: "Linked Contact Name",
-    });
+    setEntityState(BASE_ENTITY);
 
     const html = renderPage();
 
@@ -1470,14 +1462,14 @@ describe("EntityDetailPage — owner setup drives \"(action needed)\" (bu-6m6ou0
   beforeEach(() => {
     vi.resetAllMocks();
     ownerBanner.real = true;
-    setEntityState({ ...BASE_ENTITY, roles: ["owner"], linked_contact_id: null });
+    setEntityState({ ...BASE_ENTITY, roles: ["owner"] });
   });
 
   afterEach(() => {
     ownerBanner.real = false;
   });
 
-  it("does not flag a fully configured owner even though linked_contact_id is null", () => {
+  it("does not flag a fully configured owner (no linked-contact field needed)", () => {
     setLinkedContacts({ data: ownerContacts("owner_handle", "123456789"), isError: false });
 
     const html = renderPage();
