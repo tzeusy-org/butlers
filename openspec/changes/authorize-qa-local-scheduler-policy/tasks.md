@@ -1,15 +1,21 @@
 ## 0. Authority and adoption gates
 
-- [ ] 0.1 Independently review this exact proposed RFC/OpenSpec text against
+- [x] 0.1 Independently review this exact proposed RFC/OpenSpec text against
   Rule 3, RFCs 0001/0003/0006/0010, `sw_035`, QA's runtime-role and audit
   pools, and the active liveness delta.
-- [ ] 0.2 Obtain the owner's explicit choice on the paired proposed Rule 3
+  Evidence: independent review bead `bu-g0jsht` (closed), plus the review of
+  PR #4241, which integrated the adopted text into canonical documentation.
+- [x] 0.2 Obtain the owner's explicit choice on the paired proposed Rule 3
   doctrine text, narrow QA-only RFC exception, and the typed unknown-policy clarification to
   `REQ-staffer-qa-006`. Unanswered or declined means no projection grant, Q1 scheduler
   shortcut, implementation, archive, or live activation.
-- [ ] 0.3 Recheck the current Switchboard migration head and open file
+  Evidence: owner adoption `bu-1y0xvh`, option A, on exact source PR #4218 at
+  `98870b24`; recorded in `canonical-application.md`.
+- [x] 0.3 Recheck the current Switchboard migration head and open file
   ownership before allocating a revision; keep `bu-ch4p1v` and Q1 serialized
   until this authority text is adopted.
+  Evidence: PR #4243 (`bu-ch4p1v`) allocated Switchboard migration `sw_038`;
+  Q1 followed in PR #4253 (`bu-fvw4ap.1`), serialized after adoption.
 
 ## 1. Future Switchboard producer: bu-ch4p1v
 
