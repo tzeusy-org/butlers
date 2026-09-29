@@ -131,6 +131,12 @@ Scope: v1-mandatory
 - **THEN** the controller links their impact to the fleet condition and stops duplicate per-butler paging or investigation
 - **AND** it does not mark any predecessor recovered until a complete observation proves that specific daemon healthy
 
+#### Scenario: Split handoff configuration is visible
+- **WHEN** QA's newest scheduled patrol recorded a fleet-condition handoff mode different from the controller's own
+- **THEN** the controller records one `fleet_handoff_mismatch` condition naming both modes
+- **AND** it resolves only after a newer scheduled patrol records a matching mode, while a patrol with no recorded mode neither opens nor resolves it
+- **AND** it neither pages nor resolves any legacy per-butler episode
+
 ### Requirement: [TARGET-STATE] Heartbeat POST retirement
 After receiver-derived observation is authoritative, the dashboard SHALL reject or remove the old daemon `POST /api/switchboard/heartbeat` mutation and daemons SHALL cease sending it. It SHALL never become anonymous, accept the dashboard owner key from a daemon, or reuse unrelated approval or runtime-probe credentials.
 
