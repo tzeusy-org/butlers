@@ -569,15 +569,15 @@ async def test_core_only_database_has_guarded_outbox_without_specialist_schema(
                 AND owner_role.rolbypassrls = false AS constrained_owner,
             model_breaker.prosecdef
                 AND model_breaker.proconfig = ARRAY[
-                    'search_path=pg_catalog, public, pg_temp'
+                    'search_path=pg_catalog, pg_temp'
                 ]::text[] AS fixed_definer_path,
             fleet_halt.prosecdef
                 AND fleet_halt.proconfig = ARRAY[
-                    'search_path=pg_catalog, public, pg_temp'
+                    'search_path=pg_catalog, pg_temp'
                 ]::text[] AS fixed_fleet_path,
             lease_guard.prosecdef
                 AND lease_guard.proconfig = ARRAY[
-                    'search_path=pg_catalog, public, pg_temp'
+                    'search_path=pg_catalog, pg_temp'
                 ]::text[] AS fixed_lease_guard_path,
             operator_upgrade.prosecdef
                 AND pg_get_userbyid(operator_upgrade.proowner)
@@ -3146,3 +3146,157 @@ def test_condition_attention_survives_bootstrap_replay_and_rollback_keeps_eviden
             await admin.close()
 
     asyncio.run(after_replay())
+
+
+# bu-mms5xl: no runtime-attention definer resolves names through public
+# ---------------------------------------------------------------------------
+
+_PINNED_SEARCH_PATH = "search_path=pg_catalog, pg_temp"
+_RUNTIME_ATTENTION_DEFINERS_SQL = """
+    SELECT p.oid::regprocedure::text AS signature, p.proconfig
+    FROM pg_proc AS p
+    JOIN pg_namespace AS n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public' AND p.prosecdef AND p.proname LIKE '%runtime_attention%'
+    ORDER BY 1
+"""
+# The migration login can CREATE in public; an int4 overload beats the
+# catalog's hashtextextended(text, bigint) for a bare ``0`` seed.
+_DECOY_SQL = """
+    CREATE FUNCTION public.hashtextextended(text, integer) RETURNS bigint
+    LANGUAGE plpgsql AS $decoy$
+    BEGIN
+        RAISE EXCEPTION 'hijacked as %', current_user;
+    END;
+    $decoy$
+"""
+
+
+def test_runtime_attention_definers_never_run_a_public_decoy(postgres_container) -> None:
+    """bu-mms5xl: fleet-halt, model-breaker, and reissue definers ignore public.
+
+    The same database is first regressed to the pre-fix search_path (the shape
+    of every database bootstrapped before this change) to prove the decoy is
+    live, then converged by the real init-db rerun, which must pin every
+    runtime-attention definer idempotently.
+    """
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
+    bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
+    _upgrade_to_core_head(db_url)
+
+    def definers(conn) -> dict[str, list[str]]:
+        return {
+            row.signature: list(row.proconfig or [])
+            for row in conn.execute(text(_RUNTIME_ATTENTION_DEFINERS_SQL))
+        }
+
+    admin = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
+    migration = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with admin.connect() as conn:
+            fresh = definers(conn)
+            assert {
+                "append_runtime_attention_fleet_halt()",
+                "append_runtime_attention_model_breaker(bigint)",
+                "reissue_runtime_attention_episode(uuid)",
+                "append_runtime_attention_condition(uuid)",
+                "observe_runtime_attention_conditions()",
+            } <= set(fresh)
+            assert all(config == [_PINNED_SEARCH_PATH] for config in fresh.values()), fresh
+
+        entry_id, trigger_id = _seed_legacy_breaker_edge(db_url)
+        uncertain_id = uuid.uuid4()
+        with admin.connect() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO public.model_dispatch_attempts "
+                    "(catalog_entry_id, butler, outcome, failure_reason) VALUES "
+                    "(:entry, 'general', 'quota_skip', 'Monthly spend ceiling reached: test')"
+                ),
+                {"entry": entry_id},
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO public.runtime_attention_outbox (
+                        id, source, lifecycle_state, triggering_attempt_id, source_snapshot,
+                        payload, claim_token, claim_epoch, delivery_lease_epoch,
+                        claimed_by_instance, claimed_at, claim_expires_at,
+                        delivery_error_class, delivery_error_detail
+                    ) VALUES (
+                        :id, 'model_breaker', 'uncertain', -1,
+                        jsonb_build_object(
+                            'catalog_entry_id', CAST(:entry AS text), 'alias', 'decoy',
+                            'model_id', 'decoy', 'triggering_attempt_id', -1,
+                            'consecutive_failures', 5
+                        ),
+                        jsonb_build_object(
+                            'classification', 'model_breaker_open',
+                            'consecutive_failures', 5, 'door', '/settings/models'
+                        ),
+                        gen_random_uuid(), 1, 1, 'dead-worker', now() - interval '2 minutes',
+                        now() - interval '1 minute', 'transport_uncertain', 'worker_recovery'
+                    )
+                    """
+                ),
+                {"id": uncertain_id, "entry": str(entry_id)},
+            )
+            # Regress to the pre-fix path an older bootstrap left behind.
+            for signature in fresh:
+                conn.execute(
+                    text(
+                        f"ALTER FUNCTION public.{signature} "
+                        "SET search_path = pg_catalog, public, pg_temp"
+                    )
+                )
+        with migration.connect() as conn:
+            conn.execute(text(_DECOY_SQL))
+
+        calls = {
+            "model_breaker": (
+                "butler_general_rw",
+                "SELECT public.append_runtime_attention_model_breaker(:trigger)",
+            ),
+            "fleet_halt": (
+                "butler_general_rw",
+                "SELECT public.append_runtime_attention_fleet_halt()",
+            ),
+            "reissue": (
+                None,
+                "SELECT successor_episode_id "
+                "FROM public.reissue_runtime_attention_episode(:uncertain)",
+            ),
+        }
+
+        def call(name: str):
+            role, statement = calls[name]
+            with migration.connect() as conn:
+                if role is not None:
+                    conn.execute(text(f"SET ROLE {_quote_ident(role)}"))
+                try:
+                    return conn.execute(
+                        text(statement), {"trigger": trigger_id, "uncertain": uncertain_id}
+                    ).scalar_one()
+                finally:
+                    if role is not None:
+                        conn.execute(text("RESET ROLE"))
+
+        # The decoy is live against the regressed path: this is the hole.  The
+        # fleet-halt body is re-adopted on every rerun and already casts its
+        # seed to bigint, so only the path guards the two one-shot bodies.
+        for name in ("model_breaker", "reissue"):
+            with pytest.raises(DBAPIError, match="hijacked as runtime_attention_outbox_owner"):
+                call(name)
+
+        # The real bootstrap rerun converges it, idempotently.
+        _rerun_actual_init_db(bootstrap_url, db_url)
+        _rerun_actual_init_db(bootstrap_url, db_url)
+        with admin.connect() as conn:
+            assert definers(conn) == fresh
+        assert _has_exact_finalized_runtime_attention_interface(db_url)
+
+        for name in calls:
+            assert call(name) is not None, name
+    finally:
+        migration.dispose()
+        admin.dispose()
