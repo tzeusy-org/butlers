@@ -886,3 +886,144 @@ async def test_condition_delivery_outcomes_stay_distinct_without_resend(
             )
             == 2
         )
+
+
+async def _as_outbox_owner(
+    pool: asyncpg.Pool, postgres_container: Any, statement: str, *args: Any
+) -> str:
+    """Run one statement as the no-login outbox owner (the marker's sole principal)."""
+    from butlers.testing.migration import migration_bootstrap_db_url
+
+    db_name = await pool.fetchval("SELECT current_database()")
+    url = migration_bootstrap_db_url(postgres_container, db_name)
+    connection = await asyncpg.connect(url.replace("postgresql+psycopg2://", "postgresql://"))
+    try:
+        await connection.execute('SET ROLE "runtime_attention_outbox_owner"')
+        if statement.lstrip().upper().startswith("SELECT"):
+            return await connection.fetchval(statement, *args)
+        return await connection.execute(statement, *args)
+    finally:
+        await connection.close()
+
+
+async def _remove_outbox_row_as_owner(
+    pool: asyncpg.Pool, postgres_container: Any, episode_id: uuid.UUID
+) -> None:
+    """Age one episode out of the outbox the way a future retention purge would."""
+    assert (
+        await _as_outbox_owner(
+            pool,
+            postgres_container,
+            "DELETE FROM public.runtime_attention_outbox WHERE id = $1",
+            episode_id,
+        )
+        == "DELETE 1"
+    )
+
+
+async def _marker_state(
+    pool: asyncpg.Pool, postgres_container: Any, condition_id: uuid.UUID
+) -> str:
+    return await _as_outbox_owner(
+        pool,
+        postgres_container,
+        "SELECT last_delivery_state FROM public.runtime_attention_condition_episodes "
+        "WHERE condition_id = $1",
+        condition_id,
+    )
+
+
+async def _resolve_condition(pool: asyncpg.Pool, condition_id: uuid.UUID) -> None:
+    await pool.execute(
+        """
+        UPDATE public.infra_conditions
+        SET state = 'resolved', resolved_at = now(), recovered_after_s = 1
+        WHERE id = $1
+        """,
+        condition_id,
+    )
+
+
+async def _marker_view(pool: asyncpg.Pool, condition_id: uuid.UUID) -> tuple[str, bool]:
+    row = await pool.fetchrow(
+        """
+        SELECT lifecycle_state, outbox_retained
+        FROM public.observe_runtime_attention_conditions()
+        WHERE condition_id = $1
+        """,
+        condition_id,
+    )
+    return row["lifecycle_state"], row["outbox_retained"]
+
+
+@pytest.mark.parametrize("terminal", ["sent", "failed", "uncertain"])
+async def test_resolved_condition_marker_keeps_terminal_delivery_after_outbox_removal(
+    migrated_core_postgres_pool, postgres_container, terminal: str
+) -> None:
+    """bu-giazn6: the marker follows delivery even after its condition resolves.
+
+    The controller only re-appends active conditions, so nothing but the
+    delivery transitions themselves can carry the terminal category into the
+    marker once the condition has resolved and the outbox row is gone.
+    """
+    async with migrated_core_postgres_pool(min_pool_size=3, max_pool_size=6) as pool:
+        condition = await _seed_due_condition(pool)
+        [episode] = await _controller_append(pool)
+        await _resolve_condition(pool, condition)
+
+        repository = RuntimeAttentionOutbox(pool, instance_id="worker-a")
+        if terminal == "sent":
+            await _worker(repository, _Spy(CONFIRMED)).run_once()
+        elif terminal == "failed":
+            await _worker(repository, _Spy(RECIPIENT_UNAVAILABLE), []).run_once()
+        else:
+            lease = await repository.acquire_service_lease()
+            assert lease is not None
+            assert (await repository.claim_next_pending(lease)).id == episode
+            await repository.release_service_lease(lease)
+            recovery = RuntimeAttentionOutbox(pool, instance_id="worker-b")
+            lease_b = await recovery.acquire_service_lease()
+            assert lease_b is not None
+            [claim] = await recovery.list_recoverable(lease_b, stale_after_seconds=0.0)
+            assert await recovery.fence_stale_claim(claim, lease_b) is True
+            await recovery.release_service_lease(lease_b)
+        assert (await _row(pool, episode))["lifecycle_state"] == terminal
+
+        await _remove_outbox_row_as_owner(pool, postgres_container, episode)
+        assert await _marker_view(pool, condition) == (terminal, False)
+
+
+async def test_rolled_back_transition_leaves_the_condition_marker_unchanged(
+    migrated_core_postgres_pool, postgres_container
+) -> None:
+    """The marker moves in the worker's own transaction, so a rollback undoes both."""
+    from contextlib import asynccontextmanager
+
+    class _Abort(Exception):
+        pass
+
+    async with migrated_core_postgres_pool(min_pool_size=3, max_pool_size=6) as pool:
+        condition = await _seed_due_condition(pool)
+        [episode] = await _controller_append(pool)
+        repository = RuntimeAttentionOutbox(pool, instance_id="worker-a")
+        lease = await repository.acquire_service_lease()
+        assert lease is not None
+        committed_tx = repository._switchboard_tx
+
+        @asynccontextmanager
+        async def rolled_back_tx():
+            async with committed_tx() as connection:
+                yield connection
+                raise _Abort
+
+        with patch.object(repository, "_switchboard_tx", rolled_back_tx):
+            with pytest.raises(_Abort):
+                await repository.claim_next_pending(lease)
+        assert (await _row(pool, episode))["lifecycle_state"] == "pending"
+        assert await _marker_state(pool, postgres_container, condition) == "pending"
+
+        # The same transition, committed, moves the marker with it.
+        claimed = await repository.claim_next_pending(lease)
+        assert claimed is not None and claimed.id == episode
+        assert await _marker_state(pool, postgres_container, condition) == "sending"
+        await repository.release_service_lease(lease)

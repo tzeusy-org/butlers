@@ -3117,6 +3117,93 @@ def test_condition_attention_survives_bootstrap_replay_and_rollback_keeps_eviden
             }
             assert await append(pool, fleet) == episode
 
+            # bu-giazn6: the v5 marker sync survives the replay re-fenced.
+            marker_sync = await admin.fetchrow(
+                f"""
+                SELECT
+                    pg_get_userbyid(sync.proowner) AS sync_owner,
+                    sync.prosecdef AS sync_definer,
+                    sync.proconfig AS sync_config,
+                    has_function_privilege('public', sync.oid, 'EXECUTE') AS public_executes,
+                    has_function_privilege($1::name, sync.oid, 'EXECUTE') AS migration_executes,
+                    has_function_privilege('{_SWITCHBOARD}', sync.oid, 'EXECUTE')
+                        AS switchboard_executes,
+                    has_function_privilege(
+                        $1::name,
+                        'public.runtime_attention_upgrade_condition_marker_v5()'::regprocedure,
+                        'EXECUTE'
+                    ) AS migration_upgrades,
+                    ARRAY(
+                        SELECT trigger_row.tgname::text
+                        FROM pg_trigger AS trigger_row
+                        WHERE trigger_row.tgrelid = 'public.runtime_attention_outbox'::regclass
+                          AND trigger_row.tgfoid = sync.oid
+                          AND NOT trigger_row.tgisinternal
+                    ) AS sync_triggers
+                FROM pg_proc AS sync
+                WHERE sync.oid = 'public.runtime_attention_sync_condition_marker()'::regprocedure
+                """,
+                migration_role,
+            )
+            assert dict(marker_sync) == {
+                "sync_owner": "runtime_attention_outbox_owner",
+                "sync_definer": True,
+                "sync_config": ["search_path=pg_catalog, pg_temp"],
+                "public_executes": False,
+                "migration_executes": False,
+                "switchboard_executes": False,
+                "migration_upgrades": False,
+                "sync_triggers": ["runtime_attention_condition_marker_sync_trigger"],
+            }
+
+            # v5 rollback: trigger and function go, the marker stays; only the
+            # bootstrap superuser may run it.
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await pool.execute(
+                    "SELECT public.runtime_attention_deactivate_condition_marker_v5()"
+                )
+            await admin.execute("SELECT public.runtime_attention_deactivate_condition_marker_v5()")
+            assert (
+                await admin.fetchval(
+                    "SELECT to_regprocedure('public.runtime_attention_sync_condition_marker()')"
+                )
+                is None
+            )
+            assert (
+                await admin.fetchval(
+                    "SELECT count(*) FROM pg_trigger "
+                    "WHERE tgname = 'runtime_attention_condition_marker_sync_trigger'"
+                )
+                == 0
+            )
+            assert (
+                await admin.fetchval(
+                    "SELECT episode_id FROM public.runtime_attention_condition_episodes "
+                    "WHERE condition_id = $1",
+                    fleet,
+                )
+                == episode
+            )
+            # A marker left stale while the trigger was absent is backfilled by
+            # the re-offered upgrader, which the migration login may run again.
+            await admin.execute(
+                "UPDATE public.runtime_attention_condition_episodes "
+                "SET last_delivery_state = 'failed' WHERE condition_id = $1",
+                fleet,
+            )
+            await pool.execute("SELECT public.runtime_attention_upgrade_condition_marker_v5()")
+            assert (
+                await admin.fetchval(
+                    "SELECT last_delivery_state FROM public.runtime_attention_condition_episodes "
+                    "WHERE condition_id = $1",
+                    fleet,
+                )
+                == "pending"
+            )
+            assert await admin.fetchval(_CONDITION_OUTBOX_COUNT) == 1
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await pool.execute("SELECT public.runtime_attention_upgrade_condition_marker_v5()")
+
             # Rollback: no new appends, every emitted row and marker kept.
             await admin.execute("SELECT public.runtime_attention_deactivate_condition_v4()")
             with pytest.raises(asyncpg.InsufficientPrivilegeError):
@@ -3201,6 +3288,7 @@ def test_runtime_attention_definers_never_run_a_public_decoy(postgres_container)
                 "reissue_runtime_attention_episode(uuid)",
                 "append_runtime_attention_condition(uuid)",
                 "observe_runtime_attention_conditions()",
+                "runtime_attention_sync_condition_marker()",
             } <= set(fresh)
             assert all(config == [_PINNED_SEARCH_PATH] for config in fresh.values()), fresh
 

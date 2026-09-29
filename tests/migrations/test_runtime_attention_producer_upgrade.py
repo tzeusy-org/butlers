@@ -753,3 +753,80 @@ def test_core_251_downgrade_never_refuses_and_only_bootstrap_disables_the_produc
             )
     finally:
         bootstrap.dispose()
+
+
+def test_core_253_marker_sync_upgrade_is_one_shot_and_downgrade_keeps_markers(
+    postgres_container,
+) -> None:
+    """bu-giazn6: the marker sync installs once through the bootstrap handoff.
+
+    Downgrade as the migration login restamps and leaves the truth-preserving
+    trigger; as the bootstrap it removes trigger and function, keeps every
+    marker, and re-offers the upgrader so a later upgrade is a plain step.
+    """
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
+    bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
+    core_config = _build_alembic_config(db_url, chains=["core"])
+    command.upgrade(core_config, "core_252")
+
+    migration_login = create_engine(db_url).url.username
+    upgrader = "public.runtime_attention_upgrade_condition_marker_v5()"
+    installed_sql = text(
+        """
+        SELECT to_regprocedure('public.runtime_attention_sync_condition_marker()') IS NOT NULL
+           AND EXISTS (
+               SELECT 1 FROM pg_trigger
+               WHERE tgrelid = 'public.runtime_attention_outbox'::regclass
+                 AND tgname = 'runtime_attention_condition_marker_sync_trigger'
+           )
+        """
+    )
+    marker_count_sql = text("SELECT count(*) FROM public.runtime_attention_condition_episodes")
+    bootstrap = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
+    try:
+        with bootstrap.connect() as connection:
+            connection.execute(
+                text(f'REVOKE EXECUTE ON FUNCTION {upgrader} FROM "{migration_login}"')
+            )
+        with pytest.raises(RuntimeError, match="marker upgrader is unavailable"):
+            command.upgrade(core_config, "core@head")
+        with bootstrap.connect() as connection:
+            assert connection.execute(installed_sql).scalar_one() is False
+            connection.execute(text(f'GRANT EXECUTE ON FUNCTION {upgrader} TO "{migration_login}"'))
+            # One pre-existing marker proves the rollback keeps evidence.
+            connection.execute(
+                text(
+                    "INSERT INTO public.runtime_attention_condition_episodes "
+                    "(condition_id, condition_kind, episode_id, last_delivery_state) "
+                    "VALUES (gen_random_uuid(), 'fleet_control', gen_random_uuid(), 'sent')"
+                )
+            )
+        command.upgrade(core_config, "core@head")
+        with bootstrap.connect() as connection:
+            assert connection.execute(installed_sql).scalar_one() is True
+            assert (
+                connection.execute(
+                    text(
+                        f"SELECT has_function_privilege('{migration_login}', "
+                        f"'{upgrader}', 'EXECUTE')"
+                    )
+                ).scalar_one()
+                is False
+            )
+
+        command.downgrade(core_config, "core_252")
+        with bootstrap.connect() as connection:
+            assert connection.execute(installed_sql).scalar_one() is True
+        command.upgrade(core_config, "core@head")
+
+        command.downgrade(_build_alembic_config(bootstrap_url, chains=["core"]), "core_252")
+        with bootstrap.connect() as connection:
+            assert connection.execute(installed_sql).scalar_one() is False
+            assert connection.execute(marker_count_sql).scalar_one() == 1
+        command.upgrade(core_config, "core@head")
+        with bootstrap.connect() as connection:
+            assert connection.execute(installed_sql).scalar_one() is True
+            assert connection.execute(marker_count_sql).scalar_one() == 1
+    finally:
+        bootstrap.dispose()
