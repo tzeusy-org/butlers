@@ -419,7 +419,6 @@ async def _resolve_target_contact(
                 return None
 
         return ResolvedContact(
-            contact_id=None,  # entity_id is authoritative post bead 7
             name=row["name"] or None,
             roles=roles,
             entity_id=entity_id,

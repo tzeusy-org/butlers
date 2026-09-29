@@ -84,7 +84,6 @@ def _make_contact(roles=None):
     from butlers.identity import ResolvedContact
 
     return ResolvedContact(
-        contact_id=uuid.uuid4(),
         entity_id=uuid.uuid4(),
         name="Test",
         roles=roles or ["contact"],
