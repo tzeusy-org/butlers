@@ -91,4 +91,4 @@ None.
 - [Module System](module-system.md)
 - [Approvals Module](approvals.md) -- telegram send tools should be listed in `gated_tools`
 - [Pipeline Module](pipeline.md) -- telegram ingestion flows through the pipeline
-- [Contacts Module](contacts.md) -- Telegram contact sync and chat ID enrichment
+- [Contacts Module](contacts.md) -- Telegram contact sync
