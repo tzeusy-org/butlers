@@ -5,7 +5,7 @@
 
 ## Summary
 
-The finance butler stores transactions in a dedicated `finance.transactions` table with typed columns, B-tree indexes, and tiered deduplication -- not in the SPO fact layer. The SPO fact layer (`public.facts`) receives a fire-and-forget mirror write for memory/recall compatibility but is never the primary query target for financial analytics. Eight supporting tables (`accounts`, `categories`, `merchant_mappings`, `recurring_groups`, `import_batches`, `balance_snapshots`, `budgets`, `transaction_corrections`) and a materialized `spending_summaries` view provide the infrastructure for intelligence features. The phased move from SPO-primary storage is specified in `openspec/specs/finance-data-migration/spec.md`.
+The finance butler stores transactions in a dedicated `finance.transactions` table with typed columns, B-tree indexes, and tiered deduplication -- not in the SPO fact layer. The SPO fact layer (`public.facts`) receives a fire-and-forget mirror write for memory/recall compatibility but is never the primary query target for financial analytics. Seven supporting tables (`accounts`, `categories`, `merchant_mappings`, `recurring_groups`, `balance_snapshots`, `budgets`, `transaction_corrections`) and a materialized `spending_summaries` view provide the infrastructure for intelligence features. The phased move from SPO-primary storage is specified in `openspec/specs/finance-data-migration/spec.md`.
 
 ## Motivation
 
@@ -53,7 +53,6 @@ finance schema
   +-- categories            (new: hierarchical taxonomy with tax-relevance)
   +-- merchant_mappings     (new: learned pattern-to-category lookup)
   +-- recurring_groups      (new: detected subscription patterns)
-  +-- import_batches        (new: import audit trail)
   +-- balance_snapshots     (new: net worth tracking)
   +-- budgets               (new: category-level budget targets)
   +-- transaction_corrections (new: edit audit trail)
@@ -127,7 +126,7 @@ CREATE TABLE IF NOT EXISTS finance.transactions (
     receipt_url         TEXT,
     external_ref        TEXT,
     source_message_id   TEXT,                          -- Email/message ID (dedup Priority 2)
-    import_batch_id     UUID REFERENCES finance.import_batches(id) ON DELETE SET NULL,
+    import_batch_id     UUID,                          -- FK dropped with import_batches in finance_007; unpopulated
     source              TEXT DEFAULT 'manual'
                         CHECK (source IN ('manual', 'email', 'csv_import', 'api', 'bulk')),
     raw_data            JSONB DEFAULT '{}'::jsonb,     -- Original import row for audit
@@ -164,7 +163,7 @@ Eighteen indexes cover five primary query patterns plus deduplication.
 | Account scoping | `idx_txn_account_id` | `(account_id) WHERE account_id IS NOT NULL` |
 | Direction filter | `idx_txn_direction_posted` | `(direction, posted_at DESC)` |
 | Recurring group | `idx_txn_recurring_group` | `(recurring_group_id) WHERE recurring_group_id IS NOT NULL` |
-| Import batch | `idx_txn_import_batch` | `(import_batch_id) WHERE import_batch_id IS NOT NULL` |
+| Import batch | `idx_txn_import_batch` | `(import_batch_id) WHERE import_batch_id IS NOT NULL` (retained after finance_007; the column is no longer populated) |
 | Tags | `idx_txn_tags_gin` | `GIN (tags)` |
 | Metadata | `idx_txn_metadata_gin` | `GIN (metadata)` |
 
@@ -331,31 +330,13 @@ not this fact writer's rows, so it is outside current recurrence inputs. Any fut
 consumer of those facts must treat them as unmeasurable until the same reserved server attestation
 and endpoint rules apply.
 
-#### `finance.import_batches` (New)
+#### `finance.import_batches` (Dropped in finance_007)
 
-Audit trail for each data import operation.
-
-| Column | Type | Purpose |
-|--------|------|---------|
-| `id` | `UUID PK` | Primary key |
-| `source` | `TEXT NOT NULL` | Format identifier (e.g., `'chase_csv'`, `'amex_csv'`, `'generic_csv'`) |
-| `filename` | `TEXT` | Original filename |
-| `account_id` | `UUID FK -> accounts(id)` | Target account |
-| `row_count` | `INTEGER DEFAULT 0` | Total rows in source |
-| `imported_count` | `INTEGER DEFAULT 0` | Successfully imported |
-| `skipped_count` | `INTEGER DEFAULT 0` | Duplicates skipped |
-| `error_count` | `INTEGER DEFAULT 0` | Failed rows |
-| `date_range_start` | `DATE` | Earliest transaction in batch |
-| `date_range_end` | `DATE` | Latest transaction in batch |
-| `detected_format` | `TEXT` | Auto-detected format name |
-| `column_mapping` | `JSONB` | Column mapping used |
-| `status` | `TEXT DEFAULT 'pending'` | `'pending'`, `'processing'`, `'completed'`, `'completed_with_errors'`, `'failed'` |
-| `error_details` | `JSONB DEFAULT '[]'` | Array of `{row, reason}` objects |
-| `baselines_computed` | `BOOLEAN DEFAULT false` | Whether baselines were recomputed |
-| `categories_learned` | `INTEGER DEFAULT 0` | New merchant-category mappings learned |
-| `metadata` | `JSONB DEFAULT '{}'` | Extensible fields |
-| `created_at` | `TIMESTAMPTZ DEFAULT now()` | Creation time |
-| `completed_at` | `TIMESTAMPTZ` | When processing finished |
+Originally specified as an audit trail for each data import operation. It had no runtime
+readers or writers and was dropped in `finance_007` together with the
+`transactions.import_batch_id` foreign key; the column and `idx_txn_import_batch` remain. Bulk
+import now returns a generated `import_batch_id` to the caller and records it in each imported
+row's `metadata` instead.
 
 #### `finance.balance_snapshots` (New)
 
@@ -456,11 +437,11 @@ Refresh triggers:
 7. Mirror to SPO fact layer (fire-and-forget, for memory/recall).
 
 **Bulk import** (`import_transactions`):
-1. Create `import_batches` row with `status = 'processing'`.
+1. Generate an `import_batch_id` (UUID), returned to the caller and recorded in each imported row's `metadata`.
 2. Detect format, parse CSV, normalize dates/amounts/merchant names.
 3. Process in batches of 500.
 4. Per row: dedup check, merchant mapping lookup, INSERT.
-5. Update `import_batches` with final counts and status.
+5. Return the final counts (`total`, `imported`, `skipped`, `errors`) with the `import_batch_id`.
 6. If 50+ imported: trigger `compute_baselines()`.
 7. `REFRESH MATERIALIZED VIEW CONCURRENTLY finance.spending_summaries`.
 
