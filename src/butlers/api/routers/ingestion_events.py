@@ -142,14 +142,7 @@ async def list_ingestion_events(
     ),
     channels: str | None = Query(
         None,
-        description=(
-            "Comma-separated source_channel values (e.g. 'email,telegram'). "
-            "When set, overrides source_channel."
-        ),
-    ),
-    source_channel: str | None = Query(
-        None,
-        description="DEPRECATED: use channels instead. Filter by single source channel.",
+        description="Comma-separated source_channel values (e.g. 'email,telegram').",
     ),
     status: Literal[
         "ingested",
@@ -237,12 +230,11 @@ async def list_ingestion_events(
 
     Merges ``public.ingestion_events`` (status=ingested/skipped, filter_reason=null)
     with ``connectors.filtered_events`` (status/filter_reason from their own columns).
-    Supports optional filtering by ``channels`` (CSV), ``source_channel`` (deprecated),
-    ``statuses`` (CSV), ``status`` (single), freetext ``q``, ``from``/``to``
+    Supports optional filtering by ``channels`` (CSV), ``statuses`` (CSV),
+    ``status`` (single), freetext ``q``, ``from``/``to``
     (ISO-8601 time bounds on received_at), and ``trace_id`` (drill-down spine —
     resolved via a cross-butler session fan-out, then pushed into SQL).
 
-    Channel filter precedence: ``channels`` wins over ``source_channel``.
     Status filter precedence: ``statuses`` wins over ``status``.
 
     Each item is enriched (bu-4utdw.3) with ``tokens_in``, ``tokens_out``,
@@ -269,14 +261,10 @@ async def list_ingestion_events(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=f"Invalid cursor: {exc}") from exc
 
-    # Resolve channel filter: channels CSV wins; fall back to legacy source_channel.
+    # Resolve channel filter; an empty channels= is treated as no filter.
+    channel_list: list[str] | None = None
     if channels is not None:
-        channel_list: list[str] | None = [c.strip() for c in channels.split(",") if c.strip()]
-        channel_list = channel_list or None  # treat empty string as no filter
-    elif source_channel is not None:
-        channel_list = [source_channel]
-    else:
-        channel_list = None
+        channel_list = [c.strip() for c in channels.split(",") if c.strip()] or None
 
     # Resolve status filter: statuses CSV wins; fall back to single status.
     status_list = [s.strip() for s in statuses.split(",") if s.strip()] if statuses else None
