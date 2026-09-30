@@ -203,8 +203,8 @@ Per-mode host ports and project names (both can run at once):
 - `scripts/compose.sh` rebuilds `butlers-base:latest` when the `butlers.base.dockerfile_sha` label
   differs from `Dockerfile.base`; bump pinned runtime CLIs in `Dockerfile.base`, since an app-image
   rebuild alone does not pick up base-layer tools.
-- Butler MCP ports `41100-41111` sit inside Linux's default ephemeral range, so `butlers-up` and
-  `butlers-up-hotreload` set `net.ipv4.ip_local_reserved_ports=41100-41111`; without it an outbound
+- Butler MCP ports `41100-41112` sit inside Linux's default ephemeral range, so `butlers-up` and
+  `butlers-up-hotreload` set `net.ipv4.ip_local_reserved_ports=41100-41112`; without it an outbound
   DB connection can claim a listener port before startup.
 - The dev Postgres is capped at `max_connections=200`; keep the `BUTLERS_DB_POOL_*` and
   `BUTLERS_API_DB_POOL_*` defaults conservative or late-starting butlers fail to connect.
