@@ -4932,6 +4932,7 @@ async def update_entity_contact(
     """
     from butlers.tools.relationship.relationship_assert_fact import (
         AssertOutcome,
+        _lock_fact_entities,
         relationship_assert_fact,
     )
 
@@ -5045,6 +5046,10 @@ async def update_entity_contact(
     try:
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # 0. Entity row before any fact row (bu-ab0zys lock order): the
+                # relock below takes a fact lock and the writer then inserts.
+                await _lock_fact_entities(conn, entity_id)
+
                 # 1. Re-read the selected row under a lock (bu-p2bjsf): the hash
                 # resolution above ran outside this transaction, so the row may
                 # have been retracted, re-valued or given effective time since.
