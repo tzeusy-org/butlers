@@ -756,7 +756,7 @@ downgrade reopens the race
 Repository labels are not sensitivity classifications. The deployment guide
 records that `.env.dev` currently selects the database described as the live
 system, while `.env.prod` selects the other target
-([Docker Deployment](docker-deployment.md), “Environment Variables”). Therefore:
+([Docker Deployment](../operations/docker-deployment.md), “Environment Variables”). Therefore:
 
 - authorize the actual host/database/project identity, not the filename;
 - never infer that `dev` is disposable, test-only, or free of personal data;
@@ -799,5 +799,5 @@ separate authorities. Partial or failed evidence permits none of those steps.
 - [Canonical dashboard conversations](../../openspec/specs/dashboard-conversations/spec.md).
 - [RFC 0003: Switchboard Routing and Ingestion](../../about/legends-and-lore/rfcs/0003-switchboard-routing-and-ingestion.md).
 - [Deployment and drift specification](../../openspec/specs/deployment-and-drift/spec.md).
-- [Docker deployment](docker-deployment.md): topology and mode warning.
+- [Docker deployment](../operations/docker-deployment.md): topology and mode warning.
 - [Security and Secrets](../../about/craft-and-care/security-and-secrets.md) and [Observability and Operations](../../about/craft-and-care/observability-and-operations.md): evidence bar.

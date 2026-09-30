@@ -34,9 +34,8 @@ A diagram exists only because a living doc embeds it. Each one is a pair:
 
 - **Render:** `docs/<topic>/<name>.svg`, embedded by a page in the same topic dir
   (e.g. `docs/runtime/spawner-flow.svg` in `docs/runtime/spawner.md`).
-- **Source:** `docs/diagrams/<category>/<source>.excalidraw`. Some sources keep
-  older numbered names (e.g. `runtime/06a-spawner-runtime.excalidraw` renders
-  `runtime/spawner-flow.svg`); name new sources after their render.
+- **Source:** `docs/diagrams/<category>/<name>.excalidraw`, named after its render
+  (e.g. `runtime/spawner-flow.excalidraw` renders `runtime/spawner-flow.svg`).
 
 Do not export `_dark.svg` variants or renders no page embeds; unreferenced renders
 are deleted in docs cleanups. Removing a diagram means deleting its render, its

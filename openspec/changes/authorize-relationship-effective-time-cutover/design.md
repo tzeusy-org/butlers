@@ -52,7 +52,7 @@ Repository facts this design relies on:
 
 ## Why existing patterns are insufficient
 
-**Core 208 rollout packet** (`docs/operations/2026-09-05-core-208-conversation-anchor-fleet-rollout.md`).
+**Core 208 rollout packet** (`docs/plans/2026-09-05-core-208-conversation-anchor-fleet-rollout.md`).
 It is a strong content-blind evidence template: immutable prerequisite SHA, image id plus projected
 `GIT_SHA`, per-instance before/after identity, an abort matrix, and rollback order. It is
 insufficient here for four reasons:
