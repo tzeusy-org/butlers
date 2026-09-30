@@ -6,7 +6,7 @@
 
 ## Overview
 
-Butlers uses OpenTelemetry (OTel) for distributed tracing and metrics, with a Grafana LGTM stack (Loki, Grafana, Tempo, Mimir) as the observability backend. When `OTEL_EXPORTER_OTLP_ENDPOINT` is configured, all butler daemons and the dashboard API emit traces via OTLP HTTP to a Grafana Alloy collector (port 4318), which forwards them to Grafana Tempo. When unset, telemetry falls back to no-op providers with zero overhead.
+Butlers uses OpenTelemetry (OTel) for distributed tracing and metrics, with Tempo, Prometheus and Grafana as the observability backend. When `OTEL_EXPORTER_OTLP_ENDPOINT` is configured, all butler daemons and the dashboard API emit traces and metrics via OTLP HTTP to an OpenTelemetry Collector (`otel-collector`, port 4318), which forwards traces to Grafana Tempo and metrics to Prometheus via `remote_write`. When unset, telemetry falls back to no-op providers with zero overhead.
 
 ## Local Development Observability Stack
 
@@ -175,7 +175,7 @@ When `OTEL_EXPORTER_OTLP_ENDPOINT` is set, the dashboard API automatically instr
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | -- | OTLP HTTP endpoint (e.g., `http://alloy:4318`). When unset, all telemetry is no-op. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | -- | OTLP HTTP endpoint (e.g., `http://otel-collector:4318`). When unset, all telemetry is no-op. |
 
 In Docker Compose, butler services use:
 ```yaml

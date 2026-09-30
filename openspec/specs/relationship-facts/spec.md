@@ -138,8 +138,9 @@ verified, lastSeen)` differ across calls.
 
 **Owner-gate carry-forward (RFC 0017, binding):** when `subject` resolves to the owner
 entity, `relationship_assert_fact()` MUST NOT write the triple directly; instead it MUST
-emit a `pending_action` for owner approval, mirroring the existing pattern in
-`roster/relationship/tools/contact_info.py::contact_info_add` per RFC 0017 §2.3. The owner
+emit a `pending_action` for owner approval through the central writer's owner carve-out
+(`roster/relationship/tools/relationship_assert_fact.py::_create_pending_action`, inherited by
+`roster/relationship/tools/channel.py::channel_add`) per RFC 0017 §2.3. The owner
 approves the pending action via the existing approval ceremony; only after approval does
 the triple land as `validity='active'`. Non-owner subjects are written directly without
 the approval hop.
