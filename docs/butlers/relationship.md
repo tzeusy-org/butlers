@@ -80,9 +80,12 @@ change; the wire rules live in `roster/relationship/tools/fact_temporal.py`.
   each set in ascending id order. Both merges take their entities `FOR UPDATE` first; the central
   writer (and the contact value edit that calls it) takes the subject and any entity object
   `FOR KEY SHARE` (`_lock_fact_entities`) before its first fact lock, so a correction racing a
-  merge waits instead of deadlocking. Retract/verify-only paths write no FK column and take no
-  entity lock. A write that waits out a merge still lands on the tombstoned source; whether the
-  writer refuses or follows `merged_into` is open (bu-gm93xc).
+  merge waits instead of deadlocking. A caller that makes several writer calls in one transaction
+  (`promote_entity`'s `initial_facts`) takes all of their entities in one ascending batch
+  (`_lock_fact_entities_batch`) before the first, so the order holds across calls too.
+  Retract/verify-only paths write no FK column and take no entity lock. A write that waits out
+  a merge still lands on the tombstoned source; whether the writer refuses or follows
+  `merged_into` is open (bu-gm93xc).
 
 ## Implementation Notes
 

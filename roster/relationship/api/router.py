@@ -1561,6 +1561,7 @@ async def promote_entity(
     - ``422`` — unregistered predicate in ``initial_facts``, or validation failure.
     """
     from butlers.tools.relationship.relationship_assert_fact import (
+        _lock_fact_entities_batch,
         relationship_assert_fact,
         validate_fact_fields_or_raise,
     )
@@ -1594,8 +1595,27 @@ async def promote_entity(
                 detail={"code": "invalid_predicate", "message": str(exc)},
             )
 
+    # Every existing entity row this request writes against: the promoted
+    # subject and every entity object. A freshly created subject is uncommitted,
+    # so no concurrent merge can reach it.
+    batch_entity_ids = {body.entity_id} if body.entity_id is not None else set()
+    for fact in body.initial_facts:
+        if fact.object_kind == "entity":
+            try:
+                batch_entity_ids.add(UUID(fact.object))
+            except ValueError:
+                pass  # the writer's own validation reports a malformed object id
+
     async with pool.acquire() as conn:
         async with conn.transaction():
+            # Lock order (bu-ab0zys, bu-7s41je): entity rows before fact rows, in
+            # ascending id order ACROSS the whole request. Each writer call below
+            # locks only its own subject and object, and the promote UPDATE locks
+            # the subject, so without this one batch lock the entities would be
+            # taken in body order and a concurrent merge of two of them could
+            # deadlock against this transaction.
+            await _lock_fact_entities_batch(conn, batch_entity_ids)
+
             if body.entity_id is not None:
                 # --- Promote path: update the existing unidentified entity ---
                 row = await conn.fetchrow(

@@ -1291,3 +1291,83 @@ class TestFactEntityLockOrder:
                     == target
                 ), i
             assert await _active_on(pool, source) == 0, i
+
+    async def test_initial_facts_lock_their_entities_in_one_ordered_batch(self, pool, monkeypatch):
+        """bu-7s41je: ``promote_entity`` makes one writer call per initial fact in
+        ONE transaction. Locked per call, entity objects X > Y are taken in body
+        order (X, then Y) while a merge of (X, Y) takes Y, then X: a deadlock. The
+        request now locks every entity it writes against once, ascending, before
+        its first writer call, so the merge queues on ``public.entities`` behind
+        it instead. 20 latched races, zero deadlocks."""
+        import asyncio
+
+        from butlers.api.router_discovery import discover_butler_routers
+        from butlers.tools.relationship.entity_merge import merge_entity_pair
+
+        router = next(m for name, m in discover_butler_routers() if name == "relationship")
+        writer = importlib.import_module("butlers.tools.relationship.relationship_assert_fact")
+        await pool.execute(
+            "INSERT INTO relationship.entity_predicate_registry "
+            "(predicate, kind, object_kind, cardinality, description) "
+            "VALUES ('knows', 'relational', 'entity', 'multi', 'Knows.') "
+            "ON CONFLICT (predicate) DO NOTHING"
+        )
+        await _insert_entity(pool, name="Owner", roles=["owner"])
+
+        real_assert = writer.relationship_assert_fact
+        writer_calls: list[int] = []
+
+        async def assert_then_latch(*args, **kwargs):
+            result = await real_assert(*args, **kwargs)
+            writer_calls.append(1)
+            if len(writer_calls) == 1:
+                # Pause between the first and second initial fact, inside the
+                # request's transaction and holding whatever it has locked.
+                await _latch_on(kwargs["conn"])
+            return result
+
+        monkeypatch.setattr(writer, "relationship_assert_fact", assert_then_latch)
+
+        for i in range(20):
+            writer_calls.clear()
+            first, second = (
+                await _insert_entity(pool, name=f"batch-{i}-a", roles=[]),
+                await _insert_entity(pool, name=f"batch-{i}-b", roles=[]),
+            )
+            high, low = max(first, second), min(first, second)
+            body = router.PromoteEntityRequest(
+                canonical_name=f"Newcomer {i}",
+                initial_facts=[
+                    {"predicate": "knows", "object": str(high), "object_kind": "entity"},
+                    {"predicate": "knows", "object": str(low), "object_kind": "entity"},
+                ],
+            )
+
+            async with pool.acquire() as latch:
+                await latch.execute("SELECT pg_advisory_lock($1)", _LATCH_KEY)
+                create = asyncio.create_task(router.promote_entity(body, db=_db_with_pool(pool)))
+                await _wait_on_latch(pool)
+                merge = asyncio.create_task(
+                    merge_entity_pair(pool, source_entity_id=high, target_entity_id=low)
+                )
+                await _poll(
+                    pool,
+                    _ROW_LOCK_WAITERS_SQL,
+                    "public.entities",
+                    "%FROM public.entities%FOR UPDATE%",
+                    what="the merge to queue on public.entities",
+                )
+                await latch.execute("SELECT pg_advisory_unlock($1)", _LATCH_KEY)
+                created, merged = await asyncio.gather(create, merge, return_exceptions=True)
+
+            assert not isinstance(created, BaseException), (i, created)
+            assert not isinstance(merged, BaseException), (i, merged)
+            assert len(writer_calls) == 2, i
+            # Both edges committed before the merge, which then repointed the one
+            # naming the merged-away source onto its survivor.
+            objects = await pool.fetch(
+                "SELECT object FROM relationship.entity_facts "
+                "WHERE subject = $1 AND predicate = 'knows' AND validity = 'active'",
+                created.id,
+            )
+            assert {r["object"] for r in objects} == {str(low)}, i
