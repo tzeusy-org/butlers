@@ -214,7 +214,8 @@ curl -s http://localhost:41200/api/butlers/general/status | python3 -m json.tool
   text, tool calls, token usage or stderr with the same classifier-eligible posture.
 - Runtime args come only from `public.model_catalog.extra_args` (no `butler.toml` fallback);
   `CodexAdapter` appends them to `codex exec` before the `--` prompt delimiter.
-- `RuntimeConfigAccessor.invalidate_cache()` sets `_cache_time` to `float("-inf")`, not `0.0`, which
+- `RuntimeConfigAccessor.invalidate_cache()` sets `RuntimeConfigAccessor._cache_time` to
+  `float("-inf")`, not `0.0`, which
   only expires once process uptime exceeds the TTL.
 - The deterministic `memory_consolidation` handler takes the daemon's live `Spawner` but resolves
   its pool and embedding engine through the active MemoryModule hook (private memory schemas such
@@ -253,7 +254,8 @@ curl -s http://localhost:41200/api/butlers/general/status | python3 -m json.tool
 - `CodexAdapter.invoke` raises on a non-zero CLI exit so the session records `success=false`.
 - The spawned CLI's environment is host `PATH` plus declared credentials only, so shebangs such as
   `/usr/bin/env node` resolve without hardcoded paths.
-- `_compose_system_prompt` is the one composition path: the raw system prompt, plus memory context
+- `src/butlers/core/spawner_context.py::_compose_system_prompt` is the one composition path: the
+  raw system prompt, plus memory context
   as a double-newline suffix when available.
 - `core.memory_hooks` dispatch is keyed by the invoking butler/schema, never a process-global
   closure, and registration is identity-safe, so stopping one daemon cannot remove another's

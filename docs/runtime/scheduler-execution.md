@@ -144,7 +144,7 @@ psql -h localhost -U butlers -d butlers -c \
   exception text. A refused cron task is left unclaimed, so it runs exactly once after the hold
   lifts and does not trigger catch-up. Work that was already launched keeps running.
   `asyncio.CancelledError` propagates and does not authorize anything. Other butlers keep the
-  `_butler_dispatch_gated()` path.
+  `src/butlers/core/scheduler.py::_butler_dispatch_gated()` path.
 
 - `job_args` JSONB can round-trip through asyncpg as a JSON string: serialize dicts explicitly on
   write and normalize back to dicts before diffing, validation merges, list responses or dispatch.

@@ -100,10 +100,12 @@ existing module (for example `src/butlers/modules/metrics/`) rather than a templ
 
 ## Implementation Notes
 
-- `ButlerDaemon` filters `load_all()` through `_select_startup_modules`: a module with required
+- `ButlerDaemon` filters `load_all()` through `ButlerDaemon._select_startup_modules`
+  (`src/butlers/daemon.py`): a module with required
   `config_schema` fields and no `[modules.<name>]` section is skipped (info log), keeping
   intentionally omitted modules out of migrations, startup and tool registration.
-- Module configs pass through `_validate_module_configs`, which rejects extra and missing fields.
+- Module configs pass through `ButlerDaemon._validate_module_configs`, which rejects extra and
+  missing fields.
 - Egress audit: every outbound call emits one `dashboard_audit_log` operation at its call site
   (`llm_api_call` from the spawner, `telegram_send`, `google_calendar_write`, `gmail_send`) via
   `write_audit_entry` or `emit_dashboard_audit`; `GET /api/system/egress` reads them. Modules get

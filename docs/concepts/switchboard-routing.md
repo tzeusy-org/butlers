@@ -225,14 +225,16 @@ psql -h localhost -U butlers -d butlers -c \
   existing `request_id` and short-circuits routing.
 - A heartbeat from a butler missing from `butler_registry` triggers roster-driven
   self-registration; a name with no roster config still gets `404`.
-- The ingestion prompt (`_build_routing_prompt`) stays minimal and delegates to the
+- The ingestion prompt (`src/butlers/modules/pipeline.py::_build_routing_prompt`) stays minimal
+  and delegates to the
   `/message-triage` skill, whose Execution Contract owns untrusted-input handling, `<user_message>`
   wrapping, the `general` fallback and the mandatory `route_to_butler` call. Routed-content context
-  (`_build_route_runtime_context`) references the `/routed-message-safety` and
+  (`src/butlers/routing_guidance.py::_build_route_runtime_context`, mirrored in
+  `src/butlers/core_tools/_routing.py`) references the `/routed-message-safety` and
   `/butler-notifications` skills instead of inlining preambles; the shared skills are symlinked into
   every `roster/*/.agents/skills/`.
 - Route sessions carry `ingestion_event_id`: the switchboard writes one UUID7 as both `request_id`
-  and `public.ingestion_events.id`, so `_routing.py` handlers pass
+  and `public.ingestion_events.id`, so the `src/butlers/core_tools/_routing.py` handlers pass
   `ingestion_event_id=route_request_id` into `Spawner.trigger`.
 - Rule-promotion verdict identity is the email sender for `email` and the exact endpoint
   (`source_endpoint`, `{"endpoint_identity": ...}`) for opaque channels; legacy opaque
