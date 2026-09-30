@@ -28,6 +28,7 @@ import asyncpg
 from butlers.tools.general.items import resolve_ordinary_collection
 from butlers.tools.general.source_authority import (
     ORDINARY_PARENT,
+    lock_ordinary_parent,
     ordinary_transaction,
     require_ordinary_namespace,
 )
@@ -127,8 +128,15 @@ async def _declare_once(
         await require_ordinary_namespace(conn)
         existing = await conn.fetchrow(_DECLARED_BY_KEY, name)
         if existing is not None:
-            await _add_aliases(conn, existing["collection_id"], aliases)
-            return {**await _declaration(conn, existing["collection_id"]), "declared": False}
+            # Lock the parent before touching its key rows (parent-then-key
+            # order).  A parent classified private while we waited is treated
+            # exactly like an absent name -- after re-checking the namespace,
+            # which now refuses ALL names if legacy global uniqueness holds --
+            # so its declaration is never returned or extended.
+            if await lock_ordinary_parent(conn, existing["collection_id"]):
+                await _add_aliases(conn, existing["collection_id"], aliases)
+                return {**await _declaration(conn, existing["collection_id"]), "declared": False}
+            await require_ordinary_namespace(conn)
 
         parent = await resolve_ordinary_collection(conn, name, create=True)
         await conn.execute(
@@ -187,6 +195,11 @@ async def collection_declare(
             return await _declare_once(pool, spelling, shape, alias_list)
         except _Converged:
             continue
+        except asyncpg.CheckViolationError:
+            # A spelling with no letters or digits has an empty normalized key.
+            raise ValueError(
+                "collection_declare names and aliases need at least one letter or digit."
+            ) from None
     raise RuntimeError("collection_declare could not converge; retry the request.")
 
 

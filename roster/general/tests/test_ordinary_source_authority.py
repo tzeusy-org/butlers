@@ -540,3 +540,49 @@ async def test_concurrent_writers_serialize_with_classification(pool, stage: str
         )
         == 0
     )
+
+
+@pytest.mark.parametrize("stage", ["legacy-global", "cut-over"])
+async def test_declare_racing_classification_never_returns_or_extends_a_private_parent(
+    pool, stage: str
+) -> None:
+    """A variant declare that found a declaration just before it became private
+    re-resolves as an absent name: no private shape, alias or id is returned or added."""
+    from butlers.tools.general import GeneralSourceUnavailable, collection_declare
+
+    if stage == "cut-over":
+        await _cut_over(pool)
+    books = await collection_declare(pool, "books", SENTINEL, aliases=["tomes"])
+    with pytest.raises(ValueError, match="letter or digit"):
+        await collection_declare(pool, "!!!", "punctuation only")
+
+    async with pool.acquire() as enrolling:
+        tx = enrolling.transaction()
+        await tx.start()
+        await enrolling.execute(
+            "UPDATE collections SET custody_private = true WHERE id = $1", books["collection_id"]
+        )
+        declare = asyncio.create_task(
+            collection_declare(pool, "Books", "ordinary shelf", aliases=["volumes"])
+        )
+        await _blocked_on_lock(pool)
+        await tx.commit()
+    outcome = (await asyncio.gather(declare, return_exceptions=True))[0]
+
+    assert not _leaks(outcome if not isinstance(outcome, Exception) else str(outcome))
+    assert await pool.fetchval(
+        "SELECT array_agg(spelling ORDER BY spelling) FROM collection_vocabulary_keys "
+        "WHERE collection_id = $1",
+        books["collection_id"],
+    ) == ["books", "tomes"]
+    if stage == "legacy-global":
+        # A private row now meets legacy global uniqueness: refuse uniformly.
+        assert isinstance(outcome, GeneralSourceUnavailable)
+    else:
+        assert outcome["declared"] is True
+        assert outcome["collection_id"] != books["collection_id"]
+        assert (outcome["name"], outcome["shape_description"], outcome["aliases"]) == (
+            "Books",
+            "ordinary shelf",
+            ["volumes"],
+        )
