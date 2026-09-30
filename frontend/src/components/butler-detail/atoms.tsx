@@ -13,8 +13,8 @@
 //   <EmptyLine>       — standard italic empty-state text
 //
 // Doctrine (non-negotiable):
-//   - No raw oklch in JSX. No hex. No inline style except typed-primitive
-//     exemption (§2.b in about/heart-and-soul/design-language.md).
+//   - No raw oklch in JSX. No hex. No inline style except the typed-primitive
+//     exemption (Non-negotiable rule 1 in about/heart-and-soul/design-language.md).
 //   - Dispatch state tokens only: text-[var(--amber-text)], text-destructive,
 //     etc. — see toneClass() in atoms-utils.ts (bu-86c4c.6).
 //   - All numeric values use the .tnum utility (font-variant-numeric).

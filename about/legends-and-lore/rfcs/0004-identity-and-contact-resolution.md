@@ -111,11 +111,12 @@ WHERE f.predicate = CONCAT('has-', $1) AND f.object = $2
 Returns a `ResolvedContact` dataclass:
 
 ```python
-@dataclass
+@dataclass(frozen=True)
 class ResolvedContact:
-    name: str
-    roles: list[str]  # Sourced from entity
-    entity_id: UUID
+    name: str | None
+    roles: list[str]  # Sourced from public.entities.roles
+    entity_id: UUID | None  # The routing key; the shape carries no contact identifier
+    is_unidentified: bool = False  # public.entities.metadata.unidentified
 ```
 
 **Resilience contract:** The function catches all database exceptions and returns `None` gracefully. It is safe to call before migrations have run, during partial startup, or when the database is temporarily unavailable.

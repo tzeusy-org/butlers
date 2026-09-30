@@ -6,7 +6,7 @@
 
 ## Overview
 
-Butlers uses OpenTelemetry (OTel) for distributed tracing and metrics. Traces and metrics are exported via OTLP HTTP to a Grafana Alloy instance, which forwards them to Grafana Tempo (traces) and Prometheus-compatible storage (metrics). When the `OTEL_EXPORTER_OTLP_ENDPOINT` environment variable is not set, both tracing and metrics fall back to no-op providers — all recording calls become silent, so butlers run correctly without any observability backend.
+Butlers uses OpenTelemetry (OTel) for distributed tracing and metrics. Traces and metrics are exported via OTLP HTTP to an OpenTelemetry Collector (`otel-collector`), which forwards them to Grafana Tempo (traces) and Prometheus via `remote_write` (metrics). When the `OTEL_EXPORTER_OTLP_ENDPOINT` environment variable is not set, both tracing and metrics fall back to no-op providers — all recording calls become silent, so butlers run correctly without any observability backend.
 
 ## Initialization
 
@@ -143,7 +143,7 @@ On startup, `ButlerMetrics.ensure_registered()` emits zero-value adds on key UpD
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | No | (unset) | OTLP HTTP base endpoint (e.g., `http://alloy:4318`). When unset, tracing and metrics are no-op. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | No | (unset) | OTLP HTTP base endpoint (e.g., `http://otel-collector:4318`). When unset, tracing and metrics are no-op. |
 | `ENV` | No | (unset) | Sets `deployment.environment` resource attribute for environment-scoped dashboards. |
 
 ## Verification
