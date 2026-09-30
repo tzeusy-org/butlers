@@ -582,8 +582,9 @@ class ContactBackfillWriter:
         Write-path cut-over (bu-k9ylx): channel facts are asserted as triples in
         ``relationship.entity_facts`` via the central writer
         ``relationship_assert_fact()``.  Connector identifier types with no triple
-        predicate (e.g. ``telegram_chat_id``) are skipped — they have no home in
-        the triple model.
+        predicate are skipped.  ``telegram_chat_id`` is not skipped for lack of a
+        home: it maps to ``has-handle`` in the central writer (RFC 0004
+        Amendment 3); contacts sync simply does not collect chat ids.
         """
         entity_id = local_id  # local_id IS the entity_id after bu-tzyuh
         if entity_id is None:

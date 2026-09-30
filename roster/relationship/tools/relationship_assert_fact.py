@@ -1933,9 +1933,10 @@ async def retract_contact_info_fact(
 
     Notes
     -----
-    - Types that have no registered predicate mapping (e.g.
-      ``'telegram_chat_id'``, ``'address'``) are silently skipped — the
-      function returns ``None`` without touching the DB.
+    - Types that have no registered predicate mapping (e.g. ``'address'``)
+      are silently skipped — the function returns ``None`` without touching
+      the DB.  ``'telegram_chat_id'`` is mapped (to ``has-handle``; RFC 0004
+      Amendment 3) and retracts like any other handle.
     - The caller is responsible for supplying the correct ``ci_value``; the
       retraction is keyed on the exact string stored in ``object``.
     - The selector names an SPO, not an effective occurrence. It retracts the
