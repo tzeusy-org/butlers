@@ -1371,3 +1371,89 @@ class TestFactEntityLockOrder:
                 created.id,
             )
             assert {r["object"] for r in objects} == {str(low)}, i
+
+    async def test_correction_waits_on_the_object_entity_while_a_merge_holds_it(self, pool):
+        """The writer itself locks a fact's OBJECT entity before any fact row.
+
+        Driven through ``relationship_assert_fact`` directly, not
+        ``promote_entity``: the router's batch lock (bu-7s41je) would take the
+        object first and mask a writer that stopped locking it. A merge of the
+        object X, paused after its entity lock, makes a correction of the edge
+        naming X queue on ``public.entities`` holding no fact lock; without the
+        object lock it would hold the fact row and wait on X against the merge's
+        wait for that row: a deadlock."""
+        import asyncio
+
+        from butlers.tools.relationship.entity_merge import merge_entity_pair
+        from butlers.tools.relationship.relationship_assert_fact import relationship_assert_fact
+
+        await simulate_temporal_cutover(pool)
+        await pool.execute(
+            "INSERT INTO relationship.entity_predicate_registry "
+            "(predicate, kind, object_kind, cardinality, description) "
+            "VALUES ('knows', 'relational', 'entity', 'multi', 'Knows.') "
+            "ON CONFLICT (predicate) DO NOTHING"
+        )
+        subject = await _insert_entity(pool, name="obj-lock subject", roles=[])
+        merged_object = await _insert_entity(pool, name="obj-lock object", roles=[])
+        target = await _insert_entity(pool, name="obj-lock target", roles=[])
+        fact_id = await pool.fetchval(
+            "INSERT INTO relationship.entity_facts "
+            "(subject, predicate, object, object_kind, src) "
+            "VALUES ($1, 'knows', $2, 'entity', 'test') RETURNING id",
+            subject,
+            str(merged_object),
+        )
+
+        async with pool.acquire() as latch:
+            await latch.execute("SELECT pg_advisory_lock($1)", _LATCH_KEY)
+            merge = asyncio.create_task(
+                merge_entity_pair(
+                    pool,
+                    source_entity_id=merged_object,
+                    target_entity_id=target,
+                    locked_guard=lambda conn, _pair: _latch_on(conn),
+                )
+            )
+            await _wait_on_latch(pool)
+            correction = asyncio.create_task(
+                relationship_assert_fact(
+                    pool,
+                    subject,
+                    "knows",
+                    str(merged_object),
+                    object_kind="entity",
+                    src="test",
+                    corrects_fact_id=fact_id,
+                    effective_from="2019",
+                    effective_from_precision="year",
+                )
+            )
+            pid = await _poll(
+                pool,
+                _ROW_LOCK_WAITERS_SQL,
+                "public.entities",
+                "%FOR KEY SHARE%",
+                what="the correction to queue on its object entity",
+            )
+            fact_locks = await pool.fetchval(
+                "SELECT count(*) FROM pg_locks WHERE pid = $1 AND relation = "
+                "'relationship.entity_facts'::regclass "
+                "AND (locktype = 'tuple' OR mode IN ('RowShareLock', 'RowExclusiveLock'))",
+                pid,
+            )
+            assert fact_locks == 0, "the correction locked a fact row before its object entity"
+            await latch.execute("SELECT pg_advisory_unlock($1)", _LATCH_KEY)
+            merged, corrected = await asyncio.gather(merge, correction, return_exceptions=True)
+
+        assert not isinstance(merged, BaseException), merged
+        # The merge repointed the edge's object in place, so a correction naming
+        # the old object is a typed refusal with no write.
+        assert isinstance(corrected, TemporalError), corrected
+        rows = await pool.fetch(
+            "SELECT id, object, validity FROM relationship.entity_facts WHERE subject = $1",
+            subject,
+        )
+        assert [(r["id"], r["object"], r["validity"]) for r in rows] == [
+            (fact_id, str(target), "active")
+        ]
