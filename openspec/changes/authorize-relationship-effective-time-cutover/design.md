@@ -189,7 +189,9 @@ resolver used by `_upgrade_chain`:
 
 `get_chain_head` keeps returning the true head; a new `get_automatic_ceiling(chain, applied)` is what
 automatic callers and tests of automatic behavior use. rel036's own `upgrade()` refuses without the
-x-argument, so a raw `alembic upgrade relationship@head` also fails closed.
+receipt x-argument, so a raw `alembic upgrade relationship@head` also fails closed, except for the
+fresh-from-base case under owner answer A' (see "Gate lifecycle and non-production policy"), where
+the resolver's no-stamp read is handed to rel036 as a fresh signal.
 
 The explicit path is `butlers db relationship-temporal-cutover --receipt <path>` (future CLI in
 `src/butlers/cli.py`), which builds the Alembic config with `cmd_opts.x =
@@ -471,7 +473,7 @@ One artifact choice:
 
 Declining leaves rel036 unrunnable, which is the safe default. This change provisions nothing.
 
-### Gate lifecycle and non-production policy (`bu-ftd491`, open)
+### Gate lifecycle and non-production policy (`bu-ftd491`, partly open)
 
 The Relationship chain is linear. Once rel036 exists with `down_revision = "rel_035"`, every later
 Relationship revision descends from it, so the gate is permanent unless the owner retires it: any
@@ -480,16 +482,46 @@ migration. That includes dev stacks, fresh installs, CI and testcontainers datab
 restore-drill scratch databases. The only way past the gate is a root-signed receipt plus a
 full-stack fence, or, in tests, the explicit path with test-only keys, fence, and receipt fixtures.
 
-Still open for the owner under `bu-ftd491`:
+**Owner answer A' (recorded 2026-09-30, `bu-ftd491`; fresh-from-base pass rule only).** A database
+that applies the Relationship chain from base in one invocation MAY pass rel036 without a receipt
+only when both conditions hold:
+
+1. **No version stamp at invocation start.** Before any revision runs, the runner captures whether
+   the Relationship branch had a version stamp: the intersection of the schema's applied
+   `alembic_version` rows with `get_chain_revision_ids(chain)` is empty, and a missing schema or
+   missing `alembic_version` table counts as fresh, not as an error. This is the same read D4's
+   resolver already performs before `command.upgrade`. Because a from-base run executes the whole
+   chain in one Alembic transaction, rel036 cannot observe the absent stamp itself (the stamp reads
+   `rel_035` by then), so the runner passes an explicit fresh signal (an x-argument or config
+   option) to rel036. An in-DB predicate MAY replace the signal only if review proves it reliable.
+2. **Empty `entity_facts` under the migration lock.** rel036 verifies, after taking its lock, that
+   `relationship.entity_facts` has no rows. This is the backstop for the signal, which any Alembic
+   invoker can set: a raw `alembic -x <fresh signal> upgrade` against a wiped but stamped database
+   would satisfy condition 1 by assertion, so condition 2 is the only guard on that path, on top of
+   trust in the DB owner and root.
+
+Every stamped database stays gated on the runner and CLI paths, including dev databases with data and
+restore-drill scratch databases (a restored dump carries `alembic_version`). A fresh run under A'
+does not lift the ceiling for any stamped database and does not alter the receipt path.
+
+**Fallback.** If the signal channel and any in-DB predicate are rejected in review or prove
+unreliable, this rule falls back to option F (defer to the first post-rel036 revision, with the
+gate applying to every database as before). It MUST NOT fall back to an empty-`entity_facts`-only
+test: seeded owner facts and the rel_028 backfill make that test wrong for dev, and it cannot
+distinguish a restored scratch database.
+
+**Still owner-gated and unresolved under `bu-ftd491`** (this answer does not decide them):
 
 - whether and when the gate retires (for example, automatic advancement after a release in which
   every supported deployment has cut over);
-- whether non-production databases (dev, CI, restore-drill scratch) may pass it by a lighter path;
-- how a brand-new install with no old writers passes it; and
-- how CI and fixtures reach revisions after rel036.
+- how dev databases with data and restore-drill scratch databases pass the gate (a disposable
+  marker versus recreating the database);
+- the remaining non-production lighter-path question; and
+- how CI and fixtures reach revisions after rel036 beyond the from-base case.
 
-**Current default until decided:** the gate applies to every database, with no exemption,
-retirement, or automatic advancement past rel036. Implementation MUST NOT pick an option.
+Implementation MUST NOT pick an option for these. The fresh-from-base rule is contract text only: it
+implements nothing, signs nothing, and does not license the rel036 implementation, a signer artifact,
+or any live cutover.
 
 ## Risks / Trade-offs
 
@@ -498,10 +530,11 @@ retirement, or automatic advancement past rel036. Implementation MUST NOT pick a
 - `pg_control_system()` or other sessions' `pg_stat_activity` rows may be invisible to the migration
   role: the migration fails closed (`db_target_unverifiable`, `db_activity_unverifiable`); tests must
   prove visibility under the role Compose uses.
-- A gated revision blocks every later Relationship revision on every database that has not cut over,
-  for as long as the gate lives. No later revision can land "before" the gate in a linear chain; a
-  revision authored after rel036 descends from it. This lasting cost is not accepted here; it is the
-  open owner decision `bu-ftd491` above.
+- A gated revision blocks every later Relationship revision on every database that has not cut over
+  (other than the fresh-from-base case under owner answer A'), for as long as the gate lives. No
+  later revision can land "before" the gate in a linear chain; a revision authored after rel036
+  descends from it. This lasting cost is not accepted here; retirement and the remaining
+  non-production paths are the open owner decisions under `bu-ftd491` above.
 - The isolated test runtime needs host preparation (account, rootless daemon, offline cache) and may
   be unavailable on some hosts: accepted; preparation fails closed with `test_isolation_invalid`
   rather than falling back to the host daemon.
@@ -510,6 +543,6 @@ retirement, or automatic advancement past rel036. Implementation MUST NOT pick a
 
 ## Open Questions
 
-Two owner decisions are open, listed in "Owner decisions": the signer artifact, and the gate
-lifecycle and non-production and fresh-install policy (`bu-ftd491`). Both are preconditions for any
-live cutover. Every other decision is subject to exact owner acceptance of this contract.
+Two owner decisions remain open, listed in "Owner decisions": the signer artifact, and the rest of
+the gate lifecycle and non-production policy (`bu-ftd491`; only the fresh-from-base pass rule is
+answered, as A'). Both are preconditions for any live cutover. Every other decision is subject to exact owner acceptance of this contract.
