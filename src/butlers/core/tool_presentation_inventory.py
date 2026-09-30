@@ -390,7 +390,8 @@ TOOL_PRESENTATION_INVENTORY = (
     *_declare(
         "general",
         "collections",
-        "collection_create collection_delete collection_export collection_list",
+        "collection_create collection_declare collection_delete collection_export "
+        "collection_list collection_resolve",
     ),
     *_declare("general", "items", "item_create item_delete item_get item_search item_update"),
     *_declare(

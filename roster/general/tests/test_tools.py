@@ -19,42 +19,20 @@ pytestmark = [
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """Provision a fresh database with general tables and return a pool."""
-    async with provisioned_postgres_pool() as p:
-        # Create the general tables (mirrors Alembic general migrations)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS collections (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                name TEXT NOT NULL UNIQUE,
-                description TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS collection_items (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                collection_id UUID NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
-                data JSONB NOT NULL DEFAULT '{}',
-                tags JSONB NOT NULL DEFAULT '[]',
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute(
-            "CREATE INDEX IF NOT EXISTS idx_collection_items_data_gin"
-            " ON collection_items USING GIN (data)"
-        )
-        await p.execute(
-            "CREATE INDEX IF NOT EXISTS idx_collection_items_collection_id"
-            " ON collection_items (collection_id)"
-        )
-        await p.execute(
-            "CREATE INDEX IF NOT EXISTS idx_collection_items_tags_gin"
-            " ON collection_items USING GIN (tags)"
-        )
+async def pool(postgres_container):
+    """A fresh database migrated through the real General chain."""
+    from butlers.testing.migration import create_migrated_test_pool
 
+    p = await create_migrated_test_pool(
+        postgres_container,
+        chains=["general"],
+        schemas={"general": "general"},
+        pool_schema="general",
+    )
+    try:
         yield p
+    finally:
+        await p.close()
 
 
 # ------------------------------------------------------------------
