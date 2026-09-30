@@ -157,7 +157,8 @@ Tests can use this to skip gracefully when Docker is not installed.
 - DB tests use `testcontainers.postgres.PostgresContainer` with `asyncpg.create_pool()`.
 - The guarded core integration modules (`tests/core/test_core_{state,sessions,scheduler}.py`) apply
   session loop scope per async test (`@pytest.mark.asyncio(loop_scope="session")` or the local
-  `_asyncio_session` alias), never to a whole module or class, because synchronous guards may be
+  `tests/core/test_core_{state,sessions,scheduler}.py::_asyncio_session` alias), never to a whole
+  module or class, because synchronous guards may be
   collected there.
 - Root `conftest.py` is the only global registration layer for `shared_fixtures`; nested conftests
   must not re-register them but may define tree-scoped fixtures and hooks.

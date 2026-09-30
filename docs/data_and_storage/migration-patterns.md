@@ -253,7 +253,9 @@ uv run pytest tests/test_migrations.py -q --tb=short 2>&1 | tail -20
   base after seeding current values.
 - Table rewrites (rename old, create new) keep the old index names on the backup table; new index
   names must not collide.
-- `_build_alembic_config` escapes `%` as `%%` in `sqlalchemy.url`; percent-encoded libpq options
+- `run_migrations` builds its Alembic config through
+  `src/butlers/migrations.py::_build_alembic_config`, which escapes `%` as `%%` in
+  `sqlalchemy.url`; percent-encoded libpq options
   otherwise raise `configparser` interpolation errors.
 - Compare `timestamptz` with a `DATE` UTC-explicitly: `ts >= (v_month::timestamp AT TIME ZONE
   'UTC')`. A bare `ts >= v_month` promotes through the session `TimeZone`.

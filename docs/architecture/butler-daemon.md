@@ -181,7 +181,8 @@ kill -TERM $(pgrep -f "butlers run --config roster/general")
 - The dashboard's per-butler MCP debug tab calls `GET /api/butlers/{name}/mcp/tools` and
   `POST /api/butlers/{name}/mcp/call`.
 - `butlers up` runs every daemon in one process, so `public.deployments` is written once per boot in
-  `cli.py::_start_all` (`_record_deployment_boot`), never in per-butler startup. Its
+  the `butlers up` launcher (`src/butlers/cli.py::_start_all` via
+  `src/butlers/cli.py::_record_deployment_boot`), never in per-butler startup. Its
   `migration_head` is one schema's snapshot, not a drift proof. `GIT_SHA` is a Docker build arg
   baked into the image.
 - Diagnose tool drift through the daemon status snapshot and the Butler Management three-way diff

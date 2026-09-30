@@ -132,7 +132,8 @@ None. The calendar module is a leaf module. When the approvals module is co-load
   OpenSpec specs must list the mutation endpoints (`/api/calendar/workspace/user-events`, `/butler-events`), the v1
   recurrence scope (`series` only for provider recurring updates/deletes), and `projection_freshness`
   / `request_id`.
-- `_normalize_recurrence()` rejects any rule containing `\n` or `\r` (iCalendar injection) and
+- `src/butlers/modules/calendar.py::_normalize_recurrence()` rejects any rule containing `\n` or
+  `\r` (iCalendar injection) and
   checks `FREQ` / `DTSTART` / `DTEND` case-insensitively. `CalendarEventCreate` and
   `CalendarEventUpdate` normalise `recurrence_rule` before any provider call.
 - Recurring writes with naive datetime boundaries require an explicit `timezone`, and
@@ -158,7 +159,8 @@ None. The calendar module is a leaf module. When the approvals module is co-load
   `{butler_name, action, request_id?, payload}`) proxy to MCP tools and return projection freshness
   (from the tool, else `calendar_sync_status`). A repeat `request_id` replays the stored
   `calendar_action_log` result instead of re-executing; approval-queued replays of butler-event
-  delete/toggle set `_approval_bypass=True`.
+  delete/toggle call `calendar_delete_butler_event(..., _approval_bypass=True)` /
+  `calendar_toggle_butler_event(..., _approval_bypass=True)` (`src/butlers/modules/calendar.py`).
 - `POST /api/calendar/workspace/sync` keeps the raw `query_calendar_sources` fan-out, picks one
   canonical owner per calendar (enabled, `core` capability, freshest) and sends it a single
   `calendar_force_sync(queue=true)`, answering `202`. The module persists and serialises the command

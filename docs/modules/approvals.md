@@ -122,7 +122,8 @@ None. The approvals module is a leaf module. Other modules interact with it indi
   (`roster/relationship/tools/relationship_assert_fact.py`): owner self-registration plus
   `_TRUSTED_INTERNAL_SOURCES` (structured derivation such as `interaction_sync`). Prose-extraction
   jobs are deliberately untrusted (RFC 0017). The dashboard API rejects any auto-apply `src`
-  (`_reject_trusted_internal_src`), and the MCP wrapper hardcodes `src="relationship"`.
+  (`roster/relationship/api/models.py::_reject_trusted_internal_src`), and the MCP wrapper hardcodes
+  `src="relationship"`.
 - Butlers that cannot read `relationship.entity_facts` recognise the owner through
   `public.resolve_owner_triple` (SECURITY DEFINER), called by
   `identity.resolve_owner_channel_via_definer()` when normal resolution returns None.
@@ -130,13 +131,17 @@ None. The approvals module is a leaf module. Other modules interact with it indi
   which tests ambiguity across all live matching entities before filtering to the owner. The bypass
   goes only to exactly one active identifier on one live, non-merged, non-deleted owner entity;
   every other case, including lookup errors, fails closed.
-- Decision paths (`_approve_action`, `_reject_action`, `_expire_stale_actions`) use compare-and-set
+- Decision paths (the `approve_action`, `reject_action` and `expire_stale_actions` MCP tools, backed
+  by `ApprovalsModule._approve_action`, `ApprovalsModule._reject_action` and
+  `ApprovalsModule._expire_stale_actions` in `src/butlers/modules/approvals/module.py`) use
+  compare-and-set
   writes (`... WHERE status='pending'`). Expiry is a decision boundary: approve and defer paths
   expire a still-pending action whose `expires_at` has passed instead of acting on it.
 - `execute_approved_action` is idempotent per `action_id`: a per-action lock serialises it, an
   `executed` action replays its stored `execution_result`, and the terminal write happens only
   from `approved`.
-- `_apply_approval_gates()` falls back to registered MCP tool handlers when an approved action's
+- `ButlerDaemon._apply_approval_gates()` (`src/butlers/daemon.py`) falls back to registered MCP
+  tool handlers when an approved action's
   `tool_name` is not a gated original, so module-queued actions for non-gated tools can execute.
 - A producer calling `park_pending_action()` outside the MCP gate persists a declared owner, a
   registered tool name and exact kwargs, and the owning daemon validates that handler signature at
