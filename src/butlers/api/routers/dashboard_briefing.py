@@ -84,41 +84,10 @@ from butlers.core.general_settings import load_general_settings
 from butlers.core.pricing import PricingConfig
 from butlers.core.qa.patrol_status import is_valid_patrol_status
 from butlers.credential_store import CredentialStore
-from butlers.metrics_registry import get_or_create_counter
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard-briefing"])
-
-
-# ---------------------------------------------------------------------------
-# Prometheus counters
-# ---------------------------------------------------------------------------
-
-briefing_cache_hits_total = get_or_create_counter(
-    "briefing_cache_hits_total",
-    "Number of GET /api/dashboard/briefing requests served from cache.",
-)
-
-briefing_elaboration_llm_total = get_or_create_counter(
-    "briefing_elaboration_llm_total",
-    "Number of briefing elaborations produced by the LLM.",
-)
-
-briefing_elaboration_fallback_total = get_or_create_counter(
-    "briefing_elaboration_fallback_total",
-    "Number of briefing elaborations served from the templated fallback.",
-)
-
-briefing_elaboration_rejected_total = get_or_create_counter(
-    "briefing_elaboration_rejected_total",
-    "Number of LLM elaborations rejected by the voice lint.",
-)
-
-briefing_classification_error_total = get_or_create_counter(
-    "briefing_classification_error_total",
-    "Number of classification exceptions caught and downgraded to degraded.",
-)
 
 
 # ---------------------------------------------------------------------------
@@ -785,7 +754,6 @@ async def _compose_briefing(
         state_class = classify(state)
     except Exception as exc:
         logger.error("Classification failed, defaulting to degraded: %s", exc)
-        briefing_classification_error_total.inc()
         state_class = "degraded"
 
     # Step 2: greet and headline.
@@ -831,18 +799,15 @@ async def _compose_briefing(
                 if voice_lint_passes(llm_text):
                     elaboration = llm_text
                     source = "llm"
-                    briefing_elaboration_llm_total.inc()
                 else:
                     violation = first_violation(llm_text)
                     logger.info("LLM elaboration rejected by voice lint (violation=%s)", violation)
-                    briefing_elaboration_rejected_total.inc()
         except Exception as exc:
             logger.warning("LLM elaboration raised unexpectedly: %s", exc)
 
     # Step 5: fallback if LLM path did not produce a passing response.
     if elaboration is None:
         elaboration = elaborate_fallback(state, state_class)
-        briefing_elaboration_fallback_total.inc()
 
     # Step 6: generated_at records wall-clock composition time, set once.
     generated_at = datetime.now(UTC).isoformat()
@@ -911,7 +876,6 @@ async def get_dashboard_briefing(
     # Cache check.
     cached = cache.get(owner_id)
     if cached is not None:
-        briefing_cache_hits_total.inc()
         return ApiResponse(data=Briefing(**cached))
 
     # Capture before asynchronous composition so any state mutation that
