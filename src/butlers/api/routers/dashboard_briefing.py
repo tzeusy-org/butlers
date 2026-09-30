@@ -95,11 +95,6 @@ router = APIRouter(prefix="/api/dashboard", tags=["dashboard-briefing"])
 # Prometheus counters
 # ---------------------------------------------------------------------------
 
-briefing_reads_total = get_or_create_counter(
-    "briefing_reads_total",
-    "Number of GET /api/dashboard/briefing requests.",
-)
-
 briefing_cache_hits_total = get_or_create_counter(
     "briefing_cache_hits_total",
     "Number of GET /api/dashboard/briefing requests served from cache.",
@@ -893,8 +888,6 @@ async def get_dashboard_briefing(
     - Classification exception falls through to the degraded paragraph.
     - Never raises HTTP 500 in normal operation.
     """
-    briefing_reads_total.inc()
-
     try:
         sw_pool = db.pool("switchboard")
     except KeyError:
