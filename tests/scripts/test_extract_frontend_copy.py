@@ -222,6 +222,18 @@ def test_generated_header_declares_what_the_inventory_does_not_cover(tmp_path: P
     assert "{}" in header
 
 
+def test_report_skips_story_and_test_files(tmp_path: Path) -> None:
+    """Storybook `title: "ui/Foo"` and test fixtures are not production UI copy."""
+    module = _extractor()
+    page = tmp_path / "Page.tsx"
+    page.write_text("<span>Hello there</span>", encoding="utf-8")
+    story = tmp_path / "Page.stories.tsx"
+    story.write_text('export default { title: "Design System Kit" };', encoding="utf-8")
+    report, _ = module.generate_report([page, story])
+    assert "Hello there" in report
+    assert "Design System Kit" not in report
+
+
 def test_report_is_a_pure_function_of_the_sources(tmp_path: Path) -> None:
     """The CI guard diffs the regenerated file; any nondeterminism would flap it."""
     module = _extractor()

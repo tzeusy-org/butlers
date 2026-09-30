@@ -387,8 +387,8 @@ def generate_report(files: list[Path]) -> tuple[str, int]:
     total = 0
 
     for path in files:
-        # Skip test files — they don't contain production UI copy
-        if path.stem.endswith(".test") or path.stem.endswith(".spec"):
+        # Skip test and Storybook files -- they do not contain production UI copy
+        if path.stem.endswith((".test", ".spec", ".stories")):
             continue
 
         strings = extract_strings_from_file(path)

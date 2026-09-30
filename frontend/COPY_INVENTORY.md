@@ -162,18 +162,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Bead not found
 - This Bead is not present in the current readable snapshot.
 
-## `frontend/src/pages/ButlerDetailPage.stories.tsx`
-
-- Chat
-- Loading butler…
-- Something went wrong: Failed to fetch butler data.
-- Force run butler
-- Resume butler
-- Pause butler
-- Open chat panel for general
-- Butler detail: general
-- Loading butler data
-
 ## `frontend/src/pages/ButlerDetailPage.tsx`
 
 - Overview
@@ -4704,20 +4692,6 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Secrets
 
-## `frontend/src/components/ui/EntityPrimitives.stories.tsx`
-
-- has-email · alice@example.com
-- EntityMark · neutral
-- EntityMark · fill (active)
-- EntityMark · ownership / state borders
-- TierBadge · Dunbar ramp
-- StateDot · curation states
-- Row · the canonical list primitive
-- StalenessBand · staleness axis
-- ProvenanceMarks · src + verified
-- Staleness + provenance marks (stale fact)
-- ui/EntityPrimitives
-
 ## `frontend/src/components/ui/Eyebrow.tsx`
 
 - Overview · Wed, 7 May 2026 · 14:21
@@ -4842,4 +4816,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3853*
+*Total strings: 3833*
