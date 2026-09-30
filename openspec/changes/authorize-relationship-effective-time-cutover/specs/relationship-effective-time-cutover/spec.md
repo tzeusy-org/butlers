@@ -475,20 +475,33 @@ and the occurrence index unchanged.
 - **THEN** the upgrade MUST abort with the matching stable code
 - **AND** `uq_ef_spo_active` MUST still exist and `alembic_version` MUST be unchanged
 
-#### Scenario: Fresh database has no bypass
+#### Scenario: Fresh-from-base run passes without a receipt
 
-- **WHEN** the chain is applied to an empty or freshly created database
+- **WHEN** the runner starts an invocation in which the Relationship branch has no version stamp (the
+  applied `alembic_version` rows do not intersect the chain's revision ids; a missing schema or
+  missing `alembic_version` table counts as none), captured before any revision runs, and the runner
+  hands rel036 an explicit fresh signal
+- **AND** `relationship.entity_facts` is empty when rel036 checks it under its migration lock
+- **THEN** rel036 MAY apply without a receipt
+- **AND** if either condition is absent, or the signal channel is unreliable, the gate MUST apply as
+  for any other database (fallback option F; an empty-`entity_facts`-only test MUST NOT be used)
+
+#### Scenario: Stamped database has no bypass
+
+- **WHEN** the chain is applied to a database whose Relationship branch already carries a version
+  stamp, including a dev database with data or a restore-drill scratch database
 - **THEN** automatic advancement MUST still stop below rel036
-- **AND** tests MUST reach rel036 only through the explicit path with test-only keys, fence, and
-  receipt fixtures
+- **AND** it MUST reach rel036 only through the explicit path with a receipt, fence, and (in tests)
+  test-only keys and fixtures
 
-#### Scenario: Gate lifecycle is an open owner decision
+#### Scenario: Remaining gate lifecycle questions are open owner decisions
 
-- **WHEN** this contract is read before the owner decides `bu-ftd491`
-- **THEN** the gate MUST apply to every database: production, dev, fresh installs, CI and
-  testcontainers databases, and restore-drill scratch databases
-- **AND** no retirement of the gate, no non-production or fresh-install exemption, and no automatic
-  advancement past rel036 MAY be implemented until the owner records that decision
+- **WHEN** this contract is read
+- **THEN** the gate MUST apply to every stamped database: production, dev with data, and
+  restore-drill scratch databases; only the fresh-from-base pass rule (owner answer A' on
+  `bu-ftd491`) is answered
+- **AND** no retirement of the gate, no dev-with-data or restore-drill lighter path, and no
+  automatic advancement past rel036 MAY be implemented until the owner records that decision
 
 ### Requirement: Rollback and first temporal write boundary
 The cutover path SHALL preserve the adopted rollback boundary: code and schema rollback are allowed
@@ -561,8 +574,9 @@ A live cutover SHALL additionally require: owner adoption of the dedicated signe
 `relationship-fact-effective-time` real-PostgreSQL scenarios (task 3.5) merged and in the test
 receipt; the owner-gated resolution of the entity-merge collision wording (`bu-ldcp5f`), because the
 inventory digest attests behavior that must match the adopted contract; the owner decision on the
-gate lifecycle and non-production and fresh-install policy (`bu-ftd491`), which is open and whose
-current default is that the gate applies to every database; and a separate
+remaining gate lifecycle and non-production policy (`bu-ftd491`; the fresh-from-base pass rule is
+answered as A', while gate retirement, dev-with-data, and restore-drill handling remain open and the
+gate applies to every stamped database); and a separate
 exact-environment authorization naming the authorization id, environment, supported invocation
 row and flags, optional-absent services, target SHA, target image, rollback image, and maximum
 window.
