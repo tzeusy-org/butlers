@@ -261,7 +261,7 @@ async def test_list_returns_cursor_paginated_and_503_fallback(app):
 
 
 # ---------------------------------------------------------------------------
-# Channel filter — channels CSV, source_channel compat, precedence
+# Channel filter — channels CSV
 # ---------------------------------------------------------------------------
 
 
@@ -269,27 +269,22 @@ async def test_list_returns_cursor_paginated_and_503_fallback(app):
     "query,expected_channels",
     [
         ("?channels=email,telegram", ["email", "telegram"]),
-        ("?source_channel=email", ["email"]),
-        # channels wins over deprecated source_channel when both are set
-        ("?channels=email&source_channel=telegram", ["email"]),
         # empty channels= is treated as no filter
         ("?channels=", None),
         # unknown channel forwarded verbatim (200, empty result — not an error)
         ("?channels=nonexistent_channel", ["nonexistent_channel"]),
-        # neither param → None
+        # no channels param → None
         ("", None),
     ],
     ids=[
         "channels-csv",
-        "source_channel-compat",
-        "channels-wins",
         "empty-no-filter",
         "unknown-forwarded",
         "absent-none",
     ],
 )
 async def test_channels_filter_forwarding(app, query, expected_channels):
-    """channels/source_channel resolve to the `channels` kwarg forwarded to core."""
+    """channels resolves to the `channels` kwarg forwarded to core."""
     _app_with_mock_db(app)
 
     with patch(
