@@ -1196,13 +1196,27 @@ async def test_mounted_outcomes_are_aggregate_replayable_and_sentinel_free(
 
     The whole-database scan covers receipts, explicit audit, and session/prompt stores; the
     other capture paths are the response, URL, logs, rendered exceptions, metric labels,
-    spans, and generic audit. Each path is proven live before absence counts.
+    spans, baggage (at span start and at mapping-router log emission), and generic audit.
+    Each path is proven live before absence counts.
     """
+    from opentelemetry import baggage, context
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
     from opentelemetry.metrics import NoOpMeterProvider
-    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace import SpanProcessor, TracerProvider
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    span_baggage: list[dict[str, object]] = []
+    log_baggage: list[dict[str, object]] = []
+
+    class _BaggageAtSpanStart(SpanProcessor):
+        def on_start(self, span, parent_context=None) -> None:
+            span_baggage.append(dict(baggage.get_all(parent_context or context.get_current())))
+
+    class _BaggageAtLog(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            log_baggage.append(dict(baggage.get_all()))
+            return True
 
     caplog.set_level(logging.DEBUG)
     seams.manager.serving = mapping_pool
@@ -1210,11 +1224,16 @@ async def test_mounted_outcomes_are_aggregate_replayable_and_sentinel_free(
     exporter = InMemorySpanExporter()
     tracer_provider = TracerProvider()
     tracer_provider.add_span_processor(SimpleSpanProcessor(exporter))
+    tracer_provider.add_span_processor(_BaggageAtSpanStart())
     FastAPIInstrumentor.instrument_app(
         app, tracer_provider=tracer_provider, meter_provider=NoOpMeterProvider()
     )
+    mapping_logger = logging.getLogger(mapping_router.__name__)
+    log_filter = _BaggageAtLog()
 
     token = uuid4().hex[:12]
+    probe = {"mapping_probe": f"live-{token}"}
+    probe_header = {"baggage": f"mapping_probe=live-{token}"}
     ha_sentinel = f"person.sentinel_{token}"
     entity_sentinel = await _person(mapping_pool, f"mapping-sentinel-{token}")
     other_entity = await _person(mapping_pool, f"mapping-sentinel-peer-{token}")
@@ -1225,29 +1244,41 @@ async def test_mounted_outcomes_are_aggregate_replayable_and_sentinel_free(
     def batch(ha_id: str, entity_id: str) -> bytes:
         return json.dumps({"mappings": [{"ha_person_id": ha_id, "entity_id": entity_id}]}).encode()
 
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url=_ORIGIN
-    ) as client:
+    mapping_logger.addFilter(log_filter)
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url=_ORIGIN
+        ) as client:
 
-        async def post(body: bytes, idempotency_key: str) -> httpx.Response:
-            return await client.post(
-                _ROUTE,
-                content=body,
-                headers={"Idempotency-Key": idempotency_key, "Content-Type": "application/json"},
+            async def post(body: bytes, idempotency_key: str) -> httpx.Response:
+                return await client.post(
+                    _ROUTE,
+                    content=body,
+                    headers={
+                        "Idempotency-Key": idempotency_key,
+                        "Content-Type": "application/json",
+                        **probe_header,
+                    },
+                )
+
+            created = await post(batch(ha_sentinel, entity_sentinel), key)
+            replayed = await post(batch(ha_sentinel, entity_sentinel), key)
+            refusals = {
+                "IDEMPOTENCY_CONFLICT": await post(batch(refused_ha, other_entity), key),
+                "INVALID_REFERENCE": await post(batch(refused_ha, refused_entity), _key(b"s-ref")),
+                "MAPPING_CONFLICT": await post(
+                    batch(ha_sentinel, other_entity), _key(b"s-conflict")
+                ),
+            }
+            seams.manager.serving = None
+            refusals["MAPPING_DATABASE_UNAVAILABLE"] = await post(
+                batch(refused_ha, other_entity), _key(b"s-unavailable")
             )
-
-        created = await post(batch(ha_sentinel, entity_sentinel), key)
-        replayed = await post(batch(ha_sentinel, entity_sentinel), key)
-        refusals = {
-            "IDEMPOTENCY_CONFLICT": await post(batch(refused_ha, other_entity), key),
-            "INVALID_REFERENCE": await post(batch(refused_ha, refused_entity), _key(b"s-ref")),
-            "MAPPING_CONFLICT": await post(batch(ha_sentinel, other_entity), _key(b"s-conflict")),
-        }
-        seams.manager.serving = None
-        refusals["MAPPING_DATABASE_UNAVAILABLE"] = await post(
-            batch(refused_ha, other_entity), _key(b"s-unavailable")
-        )
-        audit_control = await client.post("/api/home/person-mappings-generic-audit-control")
+            audit_control = await client.post(
+                "/api/home/person-mappings-generic-audit-control", headers=probe_header
+            )
+    finally:
+        mapping_logger.removeFilter(log_filter)
     responses = [created, replayed, *refusals.values()]
 
     assert created.status_code == 200
@@ -1295,6 +1326,15 @@ async def test_mounted_outcomes_are_aggregate_replayable_and_sentinel_free(
         dict(span.attributes or {}) for span in spans
     ]
     assert "HA person mapping batch outcome=success" in caplog.text
+    # Baggage is context-propagated, not exported on spans: the inbound probe proves both
+    # captures see the request's baggage, and the route adds no entry of its own.
+    assert span_baggage and log_baggage
+    assert probe in span_baggage and probe in log_baggage
+    assert all(captured_baggage == probe for captured_baggage in span_baggage + log_baggage), (
+        span_baggage,
+        log_baggage,
+    )
+    assert all("baggage" not in response.headers for response in [*responses, audit_control])
     mapping_labels = [
         labels
         for name, labels, _ in _metric_samples()
@@ -1318,6 +1358,8 @@ async def test_mounted_outcomes_are_aggregate_replayable_and_sentinel_free(
         caplog.text,
         *(record.exc_text or "" for record in caplog.records),
         repr([(span.name, dict(span.attributes or {}), span.events) for span in spans]),
+        repr(span_baggage),
+        repr(log_baggage),
         repr(_metric_samples()),
         repr(seams.generic),
     ]

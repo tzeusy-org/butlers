@@ -172,7 +172,6 @@ async def test_owner_definer_resolution_keeps_tally_entity_linked(pool, monkeypa
         assert (channel_type, channel_value) == ("telegram", "123456")
         return (
             ResolvedContact(
-                contact_id=None,
                 name="Owner Example",
                 roles=["owner"],
                 entity_id=entity_id,

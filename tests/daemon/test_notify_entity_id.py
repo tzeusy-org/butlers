@@ -209,7 +209,6 @@ def _known_contact_patch(email: str = "user@example.com") -> Any:
     guard auto-approves without a real DB hit.
     """
     contact = ResolvedContact(
-        contact_id=None,
         name="Test Contact",
         roles=["owner"],
         entity_id=uuid.UUID("00000000-0000-0000-0000-eeeeeeeeeeee"),
@@ -231,7 +230,6 @@ def _known_contact_patch(email: str = "user@example.com") -> Any:
 def _non_owner_contact() -> ResolvedContact:
     """Return a resolved non-owner target for notify approval-boundary tests."""
     return ResolvedContact(
-        contact_id=None,
         name="Test Contact",
         roles=["contact"],
         entity_id=uuid.UUID("00000000-0000-0000-0000-dddddddddddd"),

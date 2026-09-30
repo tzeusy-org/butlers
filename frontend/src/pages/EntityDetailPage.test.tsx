@@ -9,9 +9,15 @@ import {
   useEntityActivity,
   useEntityDeltaFacts,
   useEntityFacts,
+  useEntityLinkedContacts,
   useRelationshipEntitiesByIds,
 } from "@/hooks/use-entities";
-import type { EntityDetail, EntityFact } from "@/api/types";
+import type {
+  ContactInfoEntry,
+  EntityDetail,
+  EntityFact,
+  LinkedContactSummary,
+} from "@/api/types";
 import { makeLocalStorageMock } from "@/test-utils/entity-detail-page";
 
 // Mock react-router's useParams and useSearchParams so we can control both
@@ -106,6 +112,7 @@ vi.mock("@/hooks/use-entities", () => ({
   useEntityLoans: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityMessageThreads: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityLinkedContacts: vi.fn(() => ({ data: [], isLoading: false })),
+  useAddEntityContact: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useEntityDates: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityActivityBins: vi.fn(() => ({ data: { bins: [] }, isLoading: false, isError: false })),
   useEntityDeltaFacts: vi.fn(() => ({ data: { marked_at: null, items: [] }, isSuccess: true })),
@@ -132,9 +139,17 @@ vi.mock("@/hooks/use-entities", () => ({
 }));
 
 
-vi.mock("@/components/relationship/OwnerSetupBanner", () => ({
-  OwnerSetupBanner: () => null,
-}));
+// Stubbed out by default; the owner-setup suite renders the real banner so the
+// drawer's "(action needed)" state is checked against the banner's own output.
+const ownerBanner = vi.hoisted(() => ({ real: false }));
+vi.mock("@/components/relationship/OwnerSetupBanner", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/components/relationship/OwnerSetupBanner")>();
+  return {
+    OwnerSetupBanner: (props: Parameters<typeof actual.OwnerSetupBanner>[0]) =>
+      ownerBanner.real ? actual.OwnerSetupBanner(props) : null,
+  };
+});
 
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 
@@ -147,8 +162,6 @@ const BASE_ENTITY: EntityDetail = {
   aliases: [],
   roles: ["owner"],
   fact_count: 0,
-  linked_contact_id: null,
-  linked_contact_name: null,
   unidentified: false,
   source_butler: null,
   source_scope: null,
@@ -353,11 +366,10 @@ describe("EntityDetailPage — credentials moved to /secrets", () => {
 
   // Credentials & Info management has moved to the User tab of /secrets.
   // The entity page only carries a link to that surface.
-  it("renders a link to /secrets in the practical drawer for owners with no linked contact", () => {
+  it("renders a link to /secrets in the practical drawer for owners", () => {
     setEntityState({
       ...BASE_ENTITY,
       roles: ["owner"],
-      linked_contact_id: null,
       entity_info: [],
     });
 
@@ -371,7 +383,6 @@ describe("EntityDetailPage — credentials moved to /secrets", () => {
     setEntityState({
       ...BASE_ENTITY,
       roles: ["owner"],
-      linked_contact_id: null,
       entity_info: [
         {
           id: "info-1",
@@ -1349,11 +1360,7 @@ describe("EntityDetailPage — contact channels without the retired contact link
   it("renders ContactChannelCard, no Linked contact control, and no contact-route request", () => {
     const fetchSpy = vi.fn(() => new Promise<Response>(() => {}));
     vi.stubGlobal("fetch", fetchSpy);
-    setEntityState({
-      ...BASE_ENTITY,
-      linked_contact_id: "contact-xyz",
-      linked_contact_name: "Linked Contact Name",
-    });
+    setEntityState(BASE_ENTITY);
 
     const html = renderPage();
 
@@ -1418,5 +1425,82 @@ describe("EntityDetailPage — editorial hero first-seen / last-seen line", () =
     expect(html).toContain("Last seen");
     // The "—" character should appear at least once (first seen + possibly last seen too)
     expect(html).toContain("—");
+  });
+});
+
+describe("EntityDetailPage — owner setup drives \"(action needed)\" (bu-6m6ou0)", () => {
+  const telegramFact = (id: string, value: string): ContactInfoEntry => ({
+    id,
+    type: "telegram_user_id",
+    value,
+    is_primary: true,
+    secured: false,
+    parent_id: null,
+    context: null,
+    source: "entity_facts",
+    predicate: "has-handle",
+    value_hash: `${id}-hash`,
+    verified: true,
+  });
+  const ownerContacts = (...values: string[]): LinkedContactSummary[] => [
+    {
+      id: "contact-1",
+      full_name: "Test Owner",
+      email: null,
+      phone: null,
+      contact_info: values.map((value, index) => telegramFact(`fact-${index}`, value)),
+      labels: [],
+      preferred_channel: null,
+      reachable_channels: [],
+    },
+  ];
+  const setLinkedContacts = (state: Record<string, unknown>) =>
+    vi.mocked(useEntityLinkedContacts).mockReturnValue(
+      state as unknown as ReturnType<typeof useEntityLinkedContacts>,
+    );
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    ownerBanner.real = true;
+    setEntityState({ ...BASE_ENTITY, roles: ["owner"] });
+  });
+
+  afterEach(() => {
+    ownerBanner.real = false;
+  });
+
+  it("does not flag a fully configured owner (no linked-contact field needed)", () => {
+    setLinkedContacts({ data: ownerContacts("owner_handle", "123456789"), isError: false });
+
+    const html = renderPage();
+
+    expect(html).not.toContain("(action needed)");
+    expect(html).not.toContain("Missing:");
+  });
+
+  it("flags an owner missing a Telegram chat ID, matching the banner's missing list", () => {
+    setLinkedContacts({ data: ownerContacts("owner_handle"), isError: false });
+
+    const html = renderPage();
+
+    expect(html).toContain("(action needed)");
+    expect(html).toContain("Missing: Telegram chat ID.");
+  });
+
+  it("does not flag the owner while contact facts are loading or unavailable", () => {
+    setLinkedContacts({ data: undefined, isLoading: true, isError: false });
+    expect(renderPage()).not.toContain("(action needed)");
+
+    setLinkedContacts({ data: undefined, isLoading: false, isError: true, refetch: vi.fn() });
+    const html = renderPage();
+    expect(html).not.toContain("(action needed)");
+    expect(html).toContain("Owner contact facts");
+  });
+
+  it("never flags a non-owner entity, whatever its facts", () => {
+    setEntityState({ ...BASE_ENTITY, canonical_name: "Owner", roles: [] });
+    setLinkedContacts({ data: [], isError: false });
+
+    expect(renderPage()).not.toContain("(action needed)");
   });
 });

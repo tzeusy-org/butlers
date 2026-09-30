@@ -37,6 +37,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
+import { ownerIdentityMissing } from "@/components/relationship/owner-identity";
 import {
   useCreateEntityInfo,
   useUpdateEntity,
@@ -84,37 +85,18 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
   ) : null;
 
   // A missing query result is unknown, not proof that Telegram facts are
-  // absent. Avoid inviting a duplicate identity setup while the facts load.
-  if (contacts === undefined) return contactFactsDegradedNote;
-
-  // Check what's missing
-  const nameIsPlaceholder =
-    !entity.canonical_name?.trim() ||
-    entity.canonical_name.trim().toLowerCase() === "owner";
-  // Telegram has-handle facts surface as type "telegram_user_id" with the
-  // "telegram:" prefix stripped from the display value. The deliverable chat ID
-  // is numeric; a username handle is non-numeric — distinguish on that.
-  const telegramValues = contacts
-    .flatMap((c) => c.contact_info)
-    .filter((e) => e.type === "telegram_user_id" && e.value)
-    .map((e) => e.value!.trim());
-  const hasTelegramChatId = telegramValues.some((v) => /^\d+$/.test(v));
-  const hasTelegram = telegramValues.some((v) => !/^\d+$/.test(v));
-
-  // Don't render if all core identity fields are configured
-  if (!nameIsPlaceholder && hasTelegram && hasTelegramChatId) {
-    return contactFactsDegradedNote;
-  }
+  // absent (null). Avoid inviting a duplicate identity setup while the facts
+  // load, and don't render the prompt once every identity field is configured.
+  // The same predicate drives the Practical drawer's "(action needed)" state.
+  const missing = ownerIdentityMissing(entity, contacts);
+  if (missing === null || missing.length === 0) return contactFactsDegradedNote;
+  const nameIsPlaceholder = missing.includes("name");
+  const hasTelegram = !missing.includes("Telegram handle");
+  const hasTelegramChatId = !missing.includes("Telegram chat ID");
 
   const entityId = entity.id;
   const isSaving =
     createInfo.isPending || updateEntity.isPending || addEntityContact.isPending;
-
-  // Build a human-readable list of what's missing
-  const missing: string[] = [];
-  if (nameIsPlaceholder) missing.push("name");
-  if (!hasTelegram) missing.push("Telegram handle");
-  if (!hasTelegramChatId) missing.push("Telegram chat ID");
 
   async function handleSave() {
     const trimmedName = canonicalName.trim();

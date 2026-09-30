@@ -110,6 +110,12 @@ known-first-party = ["butlers"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 testpaths = ["tests", "roster"]
+# Make the repo root importable for every invocation shape. Roster tests import
+# shared helpers from ``tests.*`` (e.g. tests.api.auth_helpers); under
+# importlib mode that package is only registered when a tests/ file happens to
+# be collected in the same run, so a roster-only scoped run (CI check-affected)
+# failed collection with ModuleNotFoundError (bu-3fdzpf).
+pythonpath = ["."]
 # importlib mode avoids module-name collisions when multiple butler test
 # directories contain identically-named files (e.g. test_tools.py).
 # -n 3: xdist parallel execution capped at 3 workers to avoid OOM when

@@ -2,7 +2,7 @@
 
 Migration bead 7 (bu-akads): resolve_contact_by_channel now queries
 relationship.entity_facts instead of public.contact_info / public.contacts.
-contact_id is no longer returned (set to None); entity_id is the primary key.
+ResolvedContact carries no contact_id (bu-60pwv6.41); entity_id is the primary key.
 build_identity_preamble no longer includes contact_id in its output string.
 
 entity-v3 (bu-hvrt1): create_temp_contact NO LONGER asserts the sender's channel
@@ -12,7 +12,7 @@ deterministic post-resolution hook in the routing pipeline
 (relationship.tools.relationship_assert_fact.assert_sender_channel_fact).
 
 Phase 7 (bu-jnaa3): create_temp_contact now mints ONLY the public.entities row —
-no public.contacts row — and returns contact_id=None.
+no public.contacts row — and returns a ResolvedContact keyed by entity_id.
 
 Covers:
 - resolve_contact_by_channel: owner, non-owner, unknown→None, DB error→None
@@ -74,9 +74,9 @@ def _make_pool_with_row(row: dict[str, Any] | None) -> Any:
 
 
 async def test_resolve_contact_by_channel():
-    """Bead 7 cut-over: queries entity_facts triples; entity_id is primary key; contact_id=None.
+    """Bead 7 cut-over: queries entity_facts triples; entity_id is the primary key.
 
-    - Owner entity: roles=['owner'], contact_id is None post-bead-7
+    - Owner entity: roles=['owner'], keyed by entity_id
     - Known non-owner entity: entity_id returned
     - Unknown → None
     - DB error → None
@@ -85,17 +85,12 @@ async def test_resolve_contact_by_channel():
     # Owner entity — rows from entity_facts query: entity_id, name (canonical_name), roles
     pool = _make_pool_with_row({"entity_id": _OWNER_ID, "name": "Owner", "roles": ["owner"]})
     r = await resolve_contact_by_channel(pool, "telegram", "12345")
-    assert (
-        r is not None
-        and r.contact_id is None  # bead 7: no contact_id returned
-        and r.entity_id == _OWNER_ID
-        and r.roles == ["owner"]
-    )
+    assert r is not None and r.entity_id == _OWNER_ID and r.roles == ["owner"]
 
     # Known non-owner entity
     pool2 = _make_pool_with_row({"entity_id": _ENTITY_ID, "name": "Chloe", "roles": []})
     r2 = await resolve_contact_by_channel(pool2, "telegram", "99999")
-    assert r2 is not None and r2.contact_id is None and r2.entity_id == _ENTITY_ID
+    assert r2 is not None and r2.entity_id == _ENTITY_ID
 
     # Unknown → None
     pool3 = AsyncMock()
@@ -188,7 +183,6 @@ async def test_resolve_via_entity_facts_triple(channel, value, predicate, roles)
     result = await resolve_contact_by_channel(pool, channel, value)
 
     assert result is not None
-    assert result.contact_id is None  # entity_id is authoritative post bead 7
     assert result.entity_id == _ENTITY_ID
 
     # The resolution queries entity_facts with the channel-specific predicate + value.
@@ -211,7 +205,6 @@ async def test_resolve_contact_by_channel_maps_telegram_user_client_id():
     result = await resolve_contact_by_channel(pool, "telegram_user_client", "86807245")
 
     assert result is not None
-    assert result.contact_id is None  # bead 7: entity_id is primary
     assert result.entity_id == _ENTITY_ID
     # Second call uses telegram: prefix for the fallback
     assert pool.fetchrow.await_args_list[1].args[2] == "telegram:86807245"
@@ -267,7 +260,6 @@ async def test_resolve_contacts_by_channel_bulk_one_query_multiple_pairs():
 
     pool.fetch.assert_awaited_once()
     assert result[("email", "alice@example.com")].entity_id == _ENTITY_ID
-    assert result[("email", "alice@example.com")].contact_id is None
     assert result[("telegram", "telegram:12345")].entity_id == _OWNER_ID
     assert result[("telegram", "telegram:12345")].roles == ["owner"]
     assert result[("email", "unknown@example.com")] is None
@@ -294,7 +286,6 @@ async def test_resolve_contacts_by_channel_bulk_telegram_prefix_fallback_candida
     resolved = result[("telegram_user_client", "86807245")]
     assert resolved is not None
     assert resolved.entity_id == _ENTITY_ID
-    assert resolved.contact_id is None
 
     # The prefixed candidate must be present among the batched query objects.
     call = pool.fetch.await_args
@@ -649,6 +640,16 @@ async def test_strict_bulk_query_failure_is_typed_and_content_blind(
 # ---------------------------------------------------------------------------
 
 
+def test_resolved_contact_has_no_contact_id_field():
+    """relationship-facts spec: entity_id replaces the retired contact_id, and the
+    ResolvedContact shape MUST NOT include a contact_id field (bu-60pwv6.41)."""
+    import dataclasses
+
+    assert "contact_id" not in {f.name for f in dataclasses.fields(ResolvedContact)}
+    with pytest.raises(TypeError):
+        ResolvedContact(contact_id=None, name="X", roles=[], entity_id=_ENTITY_ID)  # type: ignore[call-arg]
+
+
 def test_build_identity_preamble():
     """Bead 7: preamble uses entity_id only (contact_id dropped from output string).
 
@@ -656,48 +657,39 @@ def test_build_identity_preamble():
     - Owner without entity_id: minimal form, no contact_id
     - Known contact with entity_id: entity_id only
     - Unknown with temp_entity_id: entity_id shown
-    - Unknown with temp_contact_id only (create_temp_contact fallback): contact_id shown
     - Unknown without any temp ID: minimal form
     - Null name fallback: 'Unknown Contact'
     """
     # Owner without entity_id — no contact_id in output (bead 7)
-    r = ResolvedContact(contact_id=None, name="Owner", roles=["owner"], entity_id=None)
+    r = ResolvedContact(name="Owner", roles=["owner"], entity_id=None)
     p = build_identity_preamble(r, "telegram")
     assert "[Source: Owner" in p and "via telegram" in p
     assert "contact_id" not in p
 
     # Owner with entity_id — entity_id shown, no contact_id
-    r_eid = ResolvedContact(contact_id=None, name="Owner", roles=["owner"], entity_id=_ENTITY_ID)
+    r_eid = ResolvedContact(name="Owner", roles=["owner"], entity_id=_ENTITY_ID)
     p_eid = build_identity_preamble(r_eid, "telegram")
     assert f"entity_id: {_ENTITY_ID}" in p_eid
     assert "contact_id" not in p_eid
 
     # Known contact with entity_id — entity_id only
-    r2 = ResolvedContact(contact_id=None, name="Chloe", roles=[], entity_id=_ENTITY_ID)
+    r2 = ResolvedContact(name="Chloe", roles=[], entity_id=_ENTITY_ID)
     p2 = build_identity_preamble(r2, "telegram")
     assert f"entity_id: {_ENTITY_ID}" in p2
     assert "contact_id" not in p2
 
-    # Unknown with temp_entity_id — entity_id shown (preferred over contact_id)
+    # Unknown with temp_entity_id — entity_id shown
     temp_eid = uuid.uuid4()
-    temp_cid = uuid.uuid4()
-    p4 = build_identity_preamble(
-        None, "telegram", temp_contact_id=temp_cid, temp_entity_id=temp_eid
-    )
+    p4 = build_identity_preamble(None, "telegram", temp_entity_id=temp_eid)
     assert f"entity_id: {temp_eid}" in p4
     assert "pending disambiguation" in p4
-
-    # Unknown with only temp_contact_id (create_temp_contact fallback)
-    temp_id = uuid.uuid4()
-    p3 = build_identity_preamble(None, "telegram", temp_contact_id=temp_id)
-    assert f"contact_id: {temp_id}" in p3 and "pending disambiguation" in p3
 
     # Unknown without any temp ID
     p5 = build_identity_preamble(None, "telegram")
     assert "Unknown sender" in p5 and "pending disambiguation" in p5
 
     # Null name fallback
-    r6 = ResolvedContact(contact_id=None, name=None, roles=[], entity_id=None)
+    r6 = ResolvedContact(name=None, roles=[], entity_id=None)
     assert "Unknown Contact" in build_identity_preamble(r6, "email")
 
 
@@ -752,7 +744,6 @@ async def test_create_temp_contact():
     result = await create_temp_contact(pool, "telegram", "555")
 
     assert result is not None
-    assert result.contact_id is None  # no contacts row minted (entity_id is identity)
     assert result.entity_id == entity_id
     assert result.name == "Unknown (telegram 555)"
     assert result.roles == []
@@ -923,7 +914,6 @@ async def test_create_temp_contact_returns_existing_on_conflict():
     result = await create_temp_contact(pool, "telegram", "existing-chat")
 
     assert result is not None
-    assert result.contact_id is None  # entity_id is the authoritative key post bead 7
     assert result.entity_id == existing_entity_id
     assert result.name == "Existing Person"
     assert result.roles == ["owner"]
@@ -961,7 +951,6 @@ class TestCreateTempContactCentralWriter:
         # The public entity is still minted and returned; no contacts row (bu-jnaa3).
         assert result is not None
         assert result.entity_id == entity_id
-        assert result.contact_id is None
 
     async def test_no_contact_info_insert_anywhere(self):
         """No INSERT/UPDATE/DELETE against public.contact_info is ever issued."""
@@ -1397,7 +1386,6 @@ class TestTelegramUsernameResolutionNormalization:
         assert result is not None, "@-prefixed username must resolve to stored bare form"
         assert result.entity_id == eid
         assert result.roles == ["owner"]
-        assert result.contact_id is None
 
     async def test_at_prefixed_uppercase_resolves_case_insensitively(self) -> None:
         """'@TZEUSY' resolves when stored as 'Tzeusy' (case-insensitive)."""

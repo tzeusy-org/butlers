@@ -41,7 +41,6 @@ The bootstrap flow:
          connector_detail_path present → /ingestion/connectors/<type>/<identity>
          "secrets"   → /secrets?focus=u:<provider>&toast=connected
          "ingestion" → /ingestion/connectors
-         "settings_owner" → /settings/owner?toast=connected&provider=<provider>
          (default)   → /secrets?focus=u:<provider>&toast=connected
 
 Provider registry
@@ -84,7 +83,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlencode
+from urllib.parse import urlencode
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -637,7 +636,6 @@ def _build_success_redirect_url(
       connector_detail_path present → /ingestion/connectors/<type>/<identity>
       "secrets"    → /secrets?focus=u:<provider>&toast=connected
       "ingestion"  → /ingestion/connectors
-      "settings_owner" → /settings/owner?toast=connected&provider=<provider>
       (None / any) → /secrets?focus=u:<provider>&toast=connected  (default)
 
     ``connector_detail_path`` takes priority over ``page_of_origin`` when set,
@@ -650,8 +648,6 @@ def _build_success_redirect_url(
     resolved_page = page_of_origin or _PAGE_OF_ORIGIN_DEFAULT
     if resolved_page == "ingestion":
         return "/ingestion/connectors"
-    if resolved_page == "settings_owner":
-        return f"/settings/owner?toast=connected&provider={quote(provider, safe='')}"
     cred_key = normalize_credential_key("user", provider)
     return f"/secrets?focus={cred_key}&toast=connected"
 
@@ -672,11 +668,6 @@ def _build_error_redirect_url(
     resolved_page = page_of_origin or _PAGE_OF_ORIGIN_DEFAULT
     if resolved_page == "ingestion":
         return f"/ingestion/connectors?oauth_error={error_code}"
-    if resolved_page == "settings_owner":
-        return (
-            f"/settings/owner?oauth_error={quote(error_code, safe='')}"
-            f"&provider={quote(provider, safe='')}"
-        )
     cred_key = normalize_credential_key("user", provider)
     return f"/secrets?focus={cred_key}&oauth_error={error_code}"
 
@@ -775,9 +766,8 @@ class _StateEntry:
     """Page that initiated the OAuth dance; used by callback to route the redirect.
 
     Known values: ``"secrets"`` → /secrets page,
-    ``"ingestion"`` → /ingestion/connectors,
-    ``"settings_owner"`` → /settings/owner.
-    Absent/None defaults to the ``"secrets"`` return path.
+    ``"ingestion"`` → /ingestion/connectors.
+    Absent/None or any other value defaults to the ``"secrets"`` return path.
     """
 
     provider: str = field(default="google")
@@ -1200,7 +1190,7 @@ async def oauth_google_start(
     page_of_origin: str | None = Query(
         default=None,
         description="Optional page that initiated the OAuth flow. "
-        "Known values: 'secrets', 'ingestion', and 'settings_owner'. "
+        "Known values: 'secrets' and 'ingestion'. "
         "When present, the value is carried in the CSRF state token so the callback "
         "can route the user back to the originating page. "
         "Missing or empty is treated as the 'secrets' default at callback time.",
@@ -3099,7 +3089,7 @@ async def oauth_provider_start(
     page_of_origin: str | None = Query(
         default=None,
         description="Page that initiated the OAuth dance. "
-        "Known values: 'secrets' (default), 'ingestion', 'settings_owner'. "
+        "Known values: 'secrets' (default) and 'ingestion'. "
         "Threaded through state token; callback uses it for return routing.",
     ),
     connector_detail_path: str | None = Query(

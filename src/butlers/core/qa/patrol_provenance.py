@@ -54,6 +54,18 @@ LAST_QUALIFYING_PATROL_SQL: Final[str] = """
 """
 
 
+#: The fleet-condition handoff mode QA's newest scheduled patrol ran with
+#: (bu-vfobja). Legacy and synthetic rows carry NULL and are skipped: they are
+#: no evidence of QA's mode.
+LATEST_SCHEDULED_HANDOFF_SQL: Final[str] = """
+    SELECT id, fleet_condition_handoff
+    FROM public.qa_patrols
+    WHERE origin = 'scheduled' AND fleet_condition_handoff IS NOT NULL
+    ORDER BY started_at DESC, id DESC
+    LIMIT 1
+"""
+
+
 def enabled_sources_snapshot(sources: Iterable[str]) -> list[str]:
     """Return the canonical, order-independent enabled-source set."""
     return sorted(set(sources))

@@ -47,7 +47,6 @@ def _owner_contact(contact_id: uuid.UUID | None = None):
     from butlers.identity import ResolvedContact
 
     return ResolvedContact(
-        contact_id=contact_id or uuid.uuid4(),
         entity_id=uuid.uuid4(),
         name="Owner",
         roles=["owner"],
@@ -58,7 +57,6 @@ def _non_owner_contact():
     from butlers.identity import ResolvedContact
 
     return ResolvedContact(
-        contact_id=uuid.uuid4(),
         entity_id=uuid.uuid4(),
         name="Friend",
         roles=["contact"],

@@ -10,8 +10,10 @@ Per ``about/craft-and-care/performance-discipline.md``:
 - Measure before optimising.
 - Preserve diagnosability while improving speed.
 
-This test spins up a real PostgreSQL container (testcontainers), applies
-chronicler schema migrations, inserts ~1050 synthetic episodes, and
+This test spins up a real PostgreSQL container (testcontainers), runs the
+real core and chronicler migration chains, inserts ~1050 synthetic episodes
+(the session and listening sources on the counted ``activity`` layer, the
+calendar source on ``intent`` as in production), and
 drives the handlers via ``httpx.AsyncClient``.  The aggregation path is
 almost entirely Python-side (after a single ``pool.fetch()``), so the
 relevant bottleneck is Python in-memory aggregation over the fetched rows
@@ -73,128 +75,17 @@ pytestmark = [
 
 
 # ---------------------------------------------------------------------------
-# Schema setup helpers — apply chronicler DDL without Alembic runner
+# Seed helpers (schema comes from the real core + chronicler migration chains)
 # ---------------------------------------------------------------------------
 
-_DDL_SOURCE_ADAPTER_STATE = """
-CREATE TABLE IF NOT EXISTS source_adapter_state (
-    source_name TEXT PRIMARY KEY,
-    chronicler_compatibility TEXT NOT NULL
-        CHECK (chronicler_compatibility IN (
-            'supported', 'deferred', 'not_time_bearing', 'planned'
-        )),
-    read_surface TEXT,
-    boundary_semantics TEXT,
-    optional_schema BOOLEAN NOT NULL DEFAULT false,
-    active BOOLEAN NOT NULL DEFAULT false,
-    inactive_reason TEXT,
-    schema_version INTEGER NOT NULL DEFAULT 1,
-    registered_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
-_DDL_EPISODES = """
-CREATE TABLE IF NOT EXISTS episodes (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    source_name TEXT NOT NULL REFERENCES source_adapter_state(source_name),
-    source_ref TEXT NOT NULL,
-    episode_type TEXT NOT NULL,
-    start_at TIMESTAMPTZ NOT NULL,
-    end_at TIMESTAMPTZ,
-    precision TEXT NOT NULL DEFAULT 'exact'
-        CHECK (precision IN ('exact', 'minute', 'hour', 'day', 'unknown')),
-    title TEXT,
-    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-    privacy TEXT NOT NULL DEFAULT 'normal'
-        CHECK (privacy IN ('normal', 'sensitive', 'restricted')),
-    retention_days INTEGER,
-    tombstone_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (source_name, source_ref),
-    CHECK (end_at IS NULL OR end_at >= start_at)
-)
-"""
-
-_DDL_OVERRIDES = """
-CREATE TABLE IF NOT EXISTS overrides (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    target_kind TEXT NOT NULL CHECK (target_kind IN ('episode', 'point_event')),
-    target_id UUID NOT NULL,
-    corrected_start_at TIMESTAMPTZ,
-    corrected_end_at TIMESTAMPTZ,
-    corrected_title TEXT,
-    corrected_privacy TEXT
-        CHECK (corrected_privacy IS NULL OR
-               corrected_privacy IN ('normal', 'sensitive', 'restricted')),
-    corrected_tombstone_at TIMESTAMPTZ,
-    note TEXT,
-    submitted_by TEXT NOT NULL DEFAULT 'user',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CHECK (
-        corrected_start_at IS NOT NULL OR
-        corrected_end_at IS NOT NULL OR
-        corrected_title IS NOT NULL OR
-        corrected_privacy IS NOT NULL OR
-        corrected_tombstone_at IS NOT NULL OR
-        note IS NOT NULL
-    )
-)
-"""
-
-_DDL_V_LATEST_OVERRIDES = """
-CREATE OR REPLACE VIEW v_latest_overrides AS
-SELECT DISTINCT ON (target_kind, target_id)
-    target_kind,
-    target_id,
-    corrected_start_at,
-    corrected_end_at,
-    corrected_title,
-    corrected_privacy,
-    corrected_tombstone_at,
-    note,
-    created_at AS corrected_at
-FROM overrides
-ORDER BY target_kind, target_id, created_at DESC
-"""
-
-_DDL_V_EPISODES_CORRECTED = """
-CREATE OR REPLACE VIEW v_episodes_corrected AS
-SELECT
-    e.id,
-    e.source_name,
-    e.source_ref,
-    e.episode_type,
-    COALESCE(o.corrected_start_at, e.start_at) AS start_at,
-    COALESCE(o.corrected_end_at, e.end_at) AS end_at,
-    e.precision,
-    COALESCE(o.corrected_title, e.title) AS title,
-    e.payload,
-    COALESCE(o.corrected_privacy, e.privacy) AS privacy,
-    e.retention_days,
-    COALESCE(o.corrected_tombstone_at, e.tombstone_at) AS tombstone_at,
-    e.start_at AS canonical_start_at,
-    e.end_at AS canonical_end_at,
-    e.title AS canonical_title,
-    e.privacy AS canonical_privacy,
-    o.corrected_at,
-    o.note AS correction_note,
-    e.created_at,
-    e.updated_at
-FROM episodes e
-LEFT JOIN v_latest_overrides o
-    ON o.target_kind = 'episode' AND o.target_id = e.id
-"""
-
-
-async def _apply_chronicler_schema(pool: Any) -> None:
-    """Apply the minimal chronicler DDL needed for aggregate endpoint tests."""
-    await pool.execute(_DDL_SOURCE_ADAPTER_STATE)
-    await pool.execute(_DDL_EPISODES)
-    await pool.execute(_DDL_OVERRIDES)
-    await pool.execute(_DDL_V_LATEST_OVERRIDES)
-    await pool.execute(_DDL_V_EPISODES_CORRECTED)
+# Production layer per synthetic source: calendar is ``intent`` (never counted
+# on its own); the session and listening sources project ``activity`` rows,
+# which is the layer the aggregation counts (``lane_for_activity``).
+_SOURCE_LAYER = {
+    "core.sessions": "activity",
+    "spotify.session_summary": "activity",
+    "google_calendar.completed": "intent",
+}
 
 
 async def _insert_source_adapters(pool: Any) -> None:
@@ -243,6 +134,7 @@ async def _insert_synthetic_episodes(pool: Any) -> int:
                         end,
                         "exact",
                         "normal",
+                        _SOURCE_LAYER[source_name],
                     )
                 )
 
@@ -250,8 +142,8 @@ async def _insert_synthetic_episodes(pool: Any) -> int:
     await pool.executemany(
         """
         INSERT INTO episodes
-            (source_name, source_ref, episode_type, start_at, end_at, precision, privacy)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+            (source_name, source_ref, episode_type, start_at, end_at, precision, privacy, layer)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         ON CONFLICT (source_name, source_ref) DO NOTHING
         """,
         rows,
@@ -268,33 +160,32 @@ async def _insert_synthetic_episodes(pool: Any) -> int:
 async def chronicler_pool(postgres_container):
     """Session-scoped chronicler database with ~1050 synthetic episodes.
 
+    The schema is the real one: a fresh database is bootstrapped and migrated
+    through the core chain and then the chronicler chain, so the benchmark
+    queries exactly the columns and views production has (a hand-copied DDL
+    drifted behind migration 017's ``layer``/``confidence`` and made both
+    aggregate endpoints 500).
+
     Shares the session-scoped postgres_container to avoid repeated Docker
     container startups across test workers.
-
-    We provision the pool here directly (not via provisioned_postgres_pool which
-    is function-scoped) so that the pool outlives individual test functions.
     """
-    from butlers.db import Database
+    from butlers.testing.migration import create_migrated_test_pool
 
-    db = Database(
-        db_name=f"test_{uuid.uuid4().hex[:12]}",
-        host=postgres_container.get_container_host_ip(),
-        port=int(postgres_container.get_exposed_port(5432)),
-        user=postgres_container.username,
-        password=postgres_container.password,
+    pool = await create_migrated_test_pool(
+        postgres_container,
+        chains=["core", "chronicler"],
+        schemas={"chronicler": "chronicler"},
+        pool_schema="chronicler",
         min_pool_size=2,
         max_pool_size=5,
     )
-    await db.provision()
-    pool = await db.connect()
     try:
-        await _apply_chronicler_schema(pool)
         await _insert_source_adapters(pool)
         n = await _insert_synthetic_episodes(pool)
         assert n == _TOTAL_EPISODES, f"Expected {_TOTAL_EPISODES} rows, got {n}"
         yield pool
     finally:
-        await db.close()
+        await pool.close()
 
 
 @pytest.fixture(scope="session")
@@ -366,6 +257,11 @@ async def test_aggregate_by_category_p95_latency(chronicler_app):
             assert resp.status_code == 200
             latencies_ns.append(elapsed)
 
+    # The timed path must aggregate real rows, not time an empty result.
+    buckets = resp.json()["data"]["buckets"]
+    assert sum(b["episode_count"] for b in buckets) > 0, buckets
+    assert sum(b["total_seconds"] for b in buckets) > 0, buckets
+
     p50, p95, p99 = _calculate_metrics(latencies_ns)
 
     # Record measurements for visibility (printed on failure and captured in CI output)
@@ -418,6 +314,11 @@ async def test_aggregate_by_day_p95_latency(chronicler_app):
             elapsed = time.perf_counter_ns() - t0
             assert resp.status_code == 200
             latencies_ns.append(elapsed)
+
+    # The timed path must aggregate real rows, not time an empty result.
+    rows = resp.json()
+    assert sum(r["episode_count"] for r in rows) > 0, rows
+    assert sum(r["total_seconds"] for r in rows) > 0, rows
 
     p50, p95, p99 = _calculate_metrics(latencies_ns)
 

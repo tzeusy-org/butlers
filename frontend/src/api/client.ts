@@ -514,6 +514,60 @@ export class ApiError extends Error {
 export const API_REQUEST_TIMEOUT_MS = 15_000;
 
 /**
+ * Map a failed response body onto ApiError fields -- the one mapping every
+ * client call shares (bu-mia49k).
+ *
+ * - ErrorResponse envelope `{ error: { code, message, details } }`.
+ * - FastAPI string detail `{ detail: "..." }`.
+ * - Pydantic validation list `{ detail: [{ msg }, ...] }`.
+ * - Structured dict detail `{ detail: { code?, message?, error?, ... } }`
+ *   (e.g. 409 temporal_mutator_unsupported, contact_fact_changed, the
+ *   unsafe-channel rejection): message is `detail.message`, else
+ *   `detail.error`, else the JSON of the dict; code is `detail.code`. The
+ *   raw dict stays on `detail` for callers that need structured fields
+ *   (e.g. bulk-retry's `unsafe_events`).
+ *
+ * A non-JSON body keeps the status-derived defaults.
+ */
+async function parseErrorBody(
+  response: Response,
+  fallbackMessage: string,
+): Promise<{ code: string; message: string; detail: unknown }> {
+  let code = "UNKNOWN_ERROR";
+  let message = response.statusText || fallbackMessage;
+  let detail: unknown;
+
+  try {
+    const body = await response.json();
+    if (body.error) {
+      code = (body as ErrorResponse).error.code;
+      message = (body as ErrorResponse).error.message;
+      detail = (body as ErrorResponse).error.details ?? undefined;
+    } else if (typeof body.detail === "string") {
+      message = body.detail;
+    } else if (Array.isArray(body.detail) && body.detail.length > 0) {
+      message = body.detail
+        .map((d: Record<string, unknown>) => String(d.msg ?? d.message ?? JSON.stringify(d)))
+        .join("; ");
+    } else if (body.detail !== null && typeof body.detail === "object") {
+      const det = body.detail as Record<string, unknown>;
+      message =
+        typeof det.message === "string"
+          ? det.message
+          : typeof det.error === "string"
+            ? det.error
+            : JSON.stringify(det);
+      if (typeof det.code === "string") code = det.code;
+      detail = det;
+    }
+  } catch {
+    // Response body is not valid JSON -- keep the status-derived defaults.
+  }
+
+  return { code, message, detail };
+}
+
+/**
  * Typed fetch wrapper that prepends `API_BASE_URL`, sets JSON headers,
  * aborts after {@link API_REQUEST_TIMEOUT_MS}, and throws {@link ApiError}
  * on non-ok responses (or on timeout).
@@ -581,38 +635,7 @@ export async function apiFetch<T>(
   }
 
   if (!response.ok) {
-    let code = "UNKNOWN_ERROR";
-    let message = response.statusText || "Request failed";
-    let detail: unknown;
-
-    try {
-      const body = await response.json();
-      if (body.error) {
-        code = (body as ErrorResponse).error.code;
-        message = (body as ErrorResponse).error.message;
-        detail = (body as ErrorResponse).error.details ?? undefined;
-      } else if (typeof body.detail === "string") {
-        // FastAPI HTTPException format: { "detail": "..." }
-        message = body.detail;
-      } else if (Array.isArray(body.detail) && body.detail.length > 0) {
-        // Pydantic ValidationError format: { "detail": [{ "msg": "..." }, ...] }
-        message = body.detail
-          .map((d: Record<string, unknown>) => String(d.msg ?? d.message ?? JSON.stringify(d)))
-          .join("; ");
-      } else if (body.detail !== null && typeof body.detail === "object") {
-        // FastAPI HTTPException with a dict detail (e.g. 409 unsafe-channel rejection).
-        // Surface the "error" field if present, otherwise JSON-stringify the whole detail.
-        // Keep the raw dict on `detail` too, so callers that need structured
-        // fields (e.g. bulk-retry's `unsafe_events`) don't have to re-parse
-        // the message string.
-        const det = body.detail as Record<string, unknown>;
-        message = typeof det.error === "string" ? det.error : JSON.stringify(det);
-        detail = det;
-      }
-    } catch {
-      // Response body is not valid JSON — fall through to defaults.
-    }
-
+    const { code, message, detail } = await parseErrorBody(response, "Request failed");
     throw new ApiError(code, message, response.status, detail);
   }
 
@@ -1777,24 +1800,8 @@ export async function importCalendarIcs(args: {
   });
 
   if (!response.ok) {
-    let code = "UNKNOWN_ERROR";
-    let message = response.statusText || "Import failed";
-    try {
-      const body = await response.json();
-      if (body.error) {
-        code = (body as ErrorResponse).error.code;
-        message = (body as ErrorResponse).error.message;
-      } else if (typeof body.detail === "string") {
-        message = body.detail;
-      } else if (Array.isArray(body.detail) && body.detail.length > 0) {
-        message = body.detail
-          .map((d: Record<string, unknown>) => String(d.msg ?? d.message ?? JSON.stringify(d)))
-          .join("; ");
-      }
-    } catch {
-      // Body is not JSON — keep the status-derived default.
-    }
-    throw new ApiError(code, message, response.status);
+    const { code, message, detail } = await parseErrorBody(response, "Import failed");
+    throw new ApiError(code, message, response.status, detail);
   }
 
   return (await response.json()) as ApiResponse<CalendarIcsImportResponse>;
