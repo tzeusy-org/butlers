@@ -199,9 +199,9 @@ psql -h localhost -U butlers -d butlers -c \
   are audited in `butler_registry_eligibility_log`; the `eligibility_sweep` schedule is a job
   dispatch, not a prompt.
 - Tool-call ground truth: Switchboard MCP URLs carry `runtime_session_id`, so
-  `_McpRuntimeSessionGuard` binds each tool invocation to its session and `tool_call_capture`
-  records outcomes. The spawner merges those with adapter-parsed calls and keeps identical
-  retried attempts in order (no signature-only dedupe).
+  `src/butlers/guards.py::_McpRuntimeSessionGuard` binds each tool invocation to its session and
+  `tool_call_capture` records outcomes. The spawner merges those with adapter-parsed calls and
+  keeps identical retried attempts in order (no signature-only dedupe).
 - `route.process` continues the incoming `trace_context`, keeps `request_id` on both the accept
   and process spans, and links the process span to the accept span.
 - `roster/switchboard/tools/routing/telemetry.py` is the only `butlers.switchboard.*` metrics

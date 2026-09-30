@@ -147,8 +147,8 @@ None. The calendar module is a leaf module. When the approvals module is co-load
   `approved` for the same tool. With approvals unavailable it returns `approval_unavailable` and
   never writes.
 - Malformed provider payloads raise `ValueError`; `CalendarAuthError` is reserved for auth and
-  transport failures. `_GoogleProvider` validates credentials before creating its owned
-  `httpx.AsyncClient`, so a credential error cannot leak a client.
+  transport failures. `src/butlers/modules/calendar.py::_GoogleProvider` validates credentials
+  before creating its owned `httpx.AsyncClient`, so a credential error cannot leak a client.
 - Read tools (`calendar_list_events`, `calendar_get_event`) go through the active
   `CalendarProvider`, and a per-call `calendar_id` override never mutates the configured default.
 - Projection tables (`calendar_sources`, `calendar_events`, `calendar_event_instances`,
