@@ -2268,7 +2268,7 @@ The API SHALL publish its complete route inventory through the FastAPI-generated
 - **WHEN** `GET /api/ingestion/events` is called with `limit` and an optional opaque `cursor` taken from the preceding response
 - **THEN** the response uses the cursor envelope `{ "data": T[], "meta": { "next_cursor": string | null, "has_more": boolean } }` and returns no `total` or `offset`
 - **AND** `channels` is the primary comma-separated source-channel filter
-- **AND** the single-value `source_channel` parameter is accepted only as server-side compatibility, is not exposed by the frontend client, and is ignored when `channels` is also present
+- **AND** there is no single-value channel alias; an empty `channels=` applies no channel filter
 
 #### Scenario: Schedule Execution Semantics
 - **WHEN** the dashboard displays or interprets schedule data
