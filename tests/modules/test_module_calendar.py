@@ -1334,6 +1334,35 @@ class TestProjectionPersistence:
 
         assert _calendar_events_fetchrow_args(pool)[-2] == "health"
 
+    async def test_project_provider_changes_persists_butler_generated_events(self):
+        """Provider sync has no butler-generated filter: a butler-generated
+        event (including a pushed internal item a user edited on Google) is
+        persisted, with its butler metadata kept for UI differentiation."""
+        mod = CalendarModule()
+        mod._upsert_projection_event = AsyncMock(return_value=uuid.uuid4())
+        mod._upsert_projection_instance = AsyncMock(return_value=uuid.uuid4())
+
+        await mod._project_provider_changes(
+            source_id=uuid.uuid4(),
+            provider_name="google",
+            calendar_id="butlers-calendar",
+            updated_events=[
+                _make_event(
+                    event_id="gcal-task-1",
+                    title="Edited on Google",
+                    butler_generated=True,
+                    butler_name="general",
+                )
+            ],
+            cancelled_ids=[],
+        )
+
+        mod._upsert_projection_event.assert_awaited_once()
+        kwargs = mod._upsert_projection_event.await_args.kwargs
+        assert (kwargs["origin_ref"], kwargs["title"]) == ("gcal-task-1", "Edited on Google")
+        assert kwargs["metadata"]["butler_generated"] is True
+        assert kwargs["metadata"]["butler_name"] == "general"
+
     async def test_project_provider_changes_applies_explicit_empty_clear(self):
         """Only an explicit signal lets a zero-length set reach the link helper."""
         mod = CalendarModule()
@@ -1356,6 +1385,62 @@ class TestProjectionPersistence:
             entity_ids=[],
             clear_entity_ids=True,
         )
+
+
+class TestPushOverwritesExternalEdits:
+    async def test_push_restores_local_state_over_a_google_edit(self):
+        """A pushed scheduled task edited directly on Google is overwritten by
+        the next push: the butler's scheduled_tasks row is authoritative."""
+
+        class _EditedMirror:
+            def __init__(self):
+                # The Google copy the user moved and renamed by hand.
+                self.events = {
+                    "gcal-task-1": {
+                        "title": "Moved by hand",
+                        "start_at": datetime(2026, 3, 2, 18, 0, tzinfo=UTC),
+                    }
+                }
+
+            async def update_event(self, *, calendar_id, event_id, patch):
+                self.events[event_id] = {"title": patch.title, "start_at": patch.start_at}
+
+            async def create_event(self, *, calendar_id, payload):
+                raise AssertionError("an already-pushed task must be updated, not recreated")
+
+            async def delete_event(self, *, calendar_id, event_id):
+                raise AssertionError("an enabled task must not be deleted")
+
+        local_start = datetime(2026, 3, 2, 9, 0, tzinfo=UTC)
+        task = {
+            "id": uuid.uuid4(),
+            "name": "weekly-review",
+            "cron": None,
+            "timezone": "UTC",
+            "start_at": local_start,
+            "end_at": local_start + timedelta(minutes=30),
+            "until_at": None,
+            "display_title": "Weekly review",
+            "description": None,
+            "location": None,
+            "calendar_event_id": "gcal-task-1",
+            "enabled": True,
+            "updated_at": local_start,
+        }
+        pool = MagicMock()
+        # First fetch: stale job tasks to clean up (none); second: prompt tasks.
+        pool.fetch = AsyncMock(side_effect=[[], [task]])
+        pool.execute = AsyncMock()
+        mod = CalendarModule()
+        mod._db = SimpleNamespace(pool=pool)
+        mirror = _EditedMirror()
+        mod._provider = mirror
+        mod._resolved_calendar_id = "butlers-calendar"
+        mod._table_exists = AsyncMock(side_effect=lambda table: table == "scheduled_tasks")
+
+        await mod._push_internal_events_to_provider()
+
+        assert mirror.events["gcal-task-1"] == {"title": "Weekly review", "start_at": local_start}
 
 
 # ---------------------------------------------------------------------------

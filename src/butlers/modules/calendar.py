@@ -8119,13 +8119,14 @@ class CalendarModule(Module):
         cancelled_ids: list[str],
         clear_entity_ids: bool = False,
     ) -> None:
-        # NOTE: butler-generated events pulled back from Google were created
-        # via calendar_create_event (workspace mutations), NOT via the
-        # internal scheduler.  Internal scheduler events never touch Google —
-        # they are projected locally under their own lane='butler' source.
-        # Therefore we persist all provider events regardless of the
-        # butler_generated flag; the metadata still records butler_generated
-        # and butler_name for UI differentiation.
+        # NOTE: butler-generated events pulled back from Google come from two
+        # places: workspace events created via calendar_create_event, and
+        # internal scheduled tasks / reminders that _push_internal_events_to_provider
+        # mirrors onto the Butlers calendar. Both are persisted here regardless
+        # of the butler_generated flag, and the metadata records butler_generated
+        # and butler_name for UI differentiation. For pushed internal items the
+        # local rows stay authoritative: the next push overwrites any edit made
+        # on Google, and a later sync converges the projection.
 
         for event in updated_events:
             status_value = (
