@@ -401,22 +401,6 @@ def upgrade() -> None:
         FOR EACH STATEMENT EXECUTE FUNCTION {schema}.source_versions_immutable()
         """
     )
-    # Re-adopted history keeps its generations reachable after a downgrade
-    # dropped (and this upgrade re-added) the counter at 0.
-    op.execute(
-        """
-        UPDATE collections AS parent
-        SET eligibility_generation = history.generation
-        FROM (
-            SELECT collection_id, max(eligibility_generation) AS generation
-            FROM source_versions
-            GROUP BY collection_id
-        ) AS history
-        WHERE history.collection_id = parent.id
-          AND parent.custody_private = false
-          AND parent.eligibility_generation < history.generation
-        """
-    )
 
 
 def downgrade() -> None:

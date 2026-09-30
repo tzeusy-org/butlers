@@ -70,7 +70,9 @@ async def resolve_ordinary_collection(
             parent = await lock_ordinary_parent(conn, collection_id)
             if parent is not None:
                 return parent
-            # Classified while we waited: re-resolve in the ordinary namespace.
+            # Classified while we waited: the namespace gate may now refuse ALL
+            # names; otherwise re-resolve in the ordinary namespace.
+            await require_ordinary_namespace(conn)
             continue
         if not create:
             return None
