@@ -228,6 +228,12 @@ An envelope's `control.pinned_target`, when present, SHALL take precedence over 
 - **WHEN** an email message is ingested with a thread_id and no `pinned_target`
 - **THEN** Switchboard checks thread affinity BEFORE evaluating global ingestion rules
 
+#### Scenario: Thread-affinity settings are API-only
+
+- **WHEN** an operator needs to tune thread affinity (enable/disable, TTL) or manage per-thread overrides
+- **THEN** they use the Switchboard thread-affinity settings and overrides API routes (`roster/switchboard/api/router.py`); the dashboard has no thread-affinity settings surface and none is required
+- **AND** this is a deliberate direction, not an omission (operational tuning lives in the DB per vision rule 5, which does not require a dashboard control for every knob)
+
 #### Scenario: Deterministic rule evaluation
 - **WHEN** a message passes connector-scoped evaluation and is accepted by the Switchboard, and no `pinned_target` was set
 - **THEN** global ingestion rules are evaluated in priority order; the first match determines routing/action
