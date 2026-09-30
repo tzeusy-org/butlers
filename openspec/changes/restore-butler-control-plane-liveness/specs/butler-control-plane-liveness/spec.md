@@ -129,7 +129,24 @@ Scope: v1-mandatory
 #### Scenario: Legacy per-butler condition remains truthful through cutover
 - **WHEN** one or more active per-butler heartbeat-stale conditions predate the fleet-condition cutover
 - **THEN** the controller links their impact to the fleet condition and stops duplicate per-butler paging or investigation
-- **AND** it does not mark any predecessor recovered until a complete observation proves that specific daemon healthy
+- **AND** it does not mark any predecessor recovered until a complete observation proves that specific daemon healthy, except for a retired butler under the next scenario
+
+#### Scenario: Legacy episode for a retired butler resolves only on a positive retirement signal
+- **WHEN** a legacy `ButlerHeartbeatStale` episode exists for a butler that is absent from the current expected set, the observation cycle is complete, `BUTLERS_FLEET_CONDITION_HANDOFF` is on, and the episode's `source_butler` is non-null
+- **AND** a positive retirement signal holds: the butler's `roster/<name>/` directory is absent from the Dashboard's startup discovery pass, and discovery diagnostics report no skipped or failed butler configs in that pass
+- **THEN** the controller resolves that episode with reason `butler_retired_from_roster`
+- **AND** absence from the expected set alone is NOT a retirement signal: a butler whose `butler.toml` failed to parse or whose directory lacks `butler.toml` is skipped by discovery, and its episode stays open and linked
+- **AND** an incomplete cycle, handoff off (omission-based resolution already applies), or a null `source_butler` never resolves by retirement
+- **AND** this scenario does not delete condition rows, edit any other live episode, or change escalation
+
+#### Scenario: Skipped invalid config does not retire a live butler
+- **WHEN** a live butler's `butler.toml` fails to parse and discovery therefore omits it from the expected set while reporting a skipped config
+- **THEN** its legacy episode is not resolved with `butler_retired_from_roster`
+- **AND** a test SHALL cover this skipped-invalid-config case
+
+#### Scenario: Retirement signal boundary
+- **NOTE** `discover_butlers` currently returns only the list of loaded configs and logs skipped ones, so the diagnostics used by the retirement signal (skipped and failed config counts or names) require a new diagnostics channel from discovery
+- **NOTE** the roster is discovered once at Dashboard startup and the frozen list is passed on, so "roster" here means that startup discovery pass, not live Git state
 
 #### Scenario: Split handoff configuration is visible
 - **WHEN** QA's newest scheduled patrol recorded a fleet-condition handoff mode different from the controller's own
