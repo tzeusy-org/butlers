@@ -249,33 +249,6 @@ class TelegramContactsProvider(ContactsProvider):
                 logger.debug("Error disconnecting Telegram client", exc_info=True)
             self._client = None
 
-    async def enrich_chat_ids(self, pool: Any) -> dict[int, int]:
-        """Post-sync enrichment: resolve private chat IDs from dialogs.
-
-        Iterates the user's dialogs and matches by user_id to find the
-        private chat_id for each contact. Returns a mapping of
-        {user_id: chat_id} for contacts that have private chats.
-
-        This should be called after sync to populate telegram_chat_id entries
-        via ``relationship_assert_fact()`` (has-handle triples in ``relationship.entity_facts``).
-        """
-        client = await self._ensure_client()
-        user_to_chat: dict[int, int] = {}
-
-        async for dialog in client.iter_dialogs():
-            entity = dialog.entity
-            if entity is None:
-                continue
-            # Only match private user chats (not groups/channels)
-            if not getattr(entity, "is_self", False) and hasattr(entity, "id"):
-                is_user = not getattr(entity, "megagroup", False) and not getattr(
-                    entity, "broadcast", False
-                )
-                if is_user and not getattr(entity, "bot", False):
-                    user_to_chat[entity.id] = dialog.id
-
-        return user_to_chat
-
 
 def _compute_contacts_hash(contacts: list[CanonicalContact]) -> str:
     """Compute a stable hash over the sorted contact list.
