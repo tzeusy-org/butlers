@@ -182,7 +182,8 @@ curl -s "http://localhost:9090/api/v1/query?query=connector_ingest_submissions_t
   `WhatsAppUserClientConnector._sse_event_loop` checks `is_awaiting_pairing` before its generic
   degraded-stop branch, so a bridge mid-QR-scan is never torn down. Only terminal reasons
   (pairing timeout, invalidated session, unreachable) break the loop.
-  `_maybe_resolve_pending_endpoint_identity()` is re-run on each healthy pass so the
+  `WhatsAppUserClientConnector._maybe_resolve_pending_endpoint_identity()`
+  (`src/butlers/connectors/whatsapp_user_client.py`) is re-run on each healthy pass so the
   `"whatsapp:pending"` placeholder resolves once the bridge reports `connected`.
 - Discretion's small-group bypass (`group_size_bypass_max`) must gate on an allow-list
   `chat_type in {"group", "supergroup"}` as well as `participant_count`: DMs report
@@ -199,7 +200,9 @@ curl -s "http://localhost:9090/api/v1/query?query=connector_ingest_submissions_t
 - An optional connector whose credentials arrive at runtime through the dashboard must park, not
   crashloop: keep a sentinel endpoint identity plus a degraded heartbeat
   (`google_health:degraded`, `steam:no_accounts`, `spotify:unconfigured`, the Google managers' idle
-  mode). Keep `_endpoint_identity` empty while parked; only metrics, policy and heartbeat labels use
+  mode). Keep the connector's own endpoint identity (`self._endpoint_identity`, e.g. in
+  `src/butlers/connectors/google_health.py`) empty while parked; only metrics, policy and heartbeat
+  labels use
   the sentinel. Only "never connected" is non-fatal, via its own exception subclass
   (`SpotifyCredentialsUnconfiguredError`); every post-configuration fault stays loud. Env-var
   connectors (telegram, discord, whatsapp, activitywatch) that fail `Config.from_env()` are a
