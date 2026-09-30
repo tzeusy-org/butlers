@@ -1448,7 +1448,11 @@ class TestFactEntityLockOrder:
 
         assert not isinstance(merged, BaseException), merged
         # The merge repointed the edge's object in place, so a correction naming
-        # the old object is a typed refusal with no write.
+        # the old object is a typed refusal with no write. This is CURRENT
+        # behavior, an accident of the writer's subject/predicate/object match on
+        # ``corrects_fact_id``. Whether a write against a merged-away entity
+        # should refuse or follow ``metadata.merged_into`` is bu-gm93xc; if that
+        # changes this outcome, update this assertion deliberately.
         assert isinstance(corrected, TemporalError), corrected
         rows = await pool.fetch(
             "SELECT id, object, validity FROM relationship.entity_facts WHERE subject = $1",
