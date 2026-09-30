@@ -1,6 +1,8 @@
 ## 1. Canonical source
 - [x] 1.1 Preserve exact adopted artifact and integrate its durable RFC/manifesto/spec target without unrelated baseline loss.
-- [ ] 1.2 Complete independent exact-head source/packet review and protected landing under bu-2jtfw.9.1.
+- [x] 1.2 Complete independent exact-head source/packet review and protected landing under bu-2jtfw.9.1.
+  Evidence: PR #4252 (d6c45cf72, an ancestor of main) landed under the closed bead
+  bu-2jtfw.9.1.
 
 ## 2. Repository implementation after source landing
 - [x] 2.1 Implement passive ordinary-source classification, vocabulary/privacy/query/mutation gates and immutable General source versions; no private enrollment.
