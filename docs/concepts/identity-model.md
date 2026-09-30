@@ -166,10 +166,12 @@ psql -h localhost -U butlers -d butlers -c \
 
 ## Implementation Notes
 
-- `_ensure_owner_entity` (`src/butlers/owner_bootstrap.py`) resolves an existing owner via
+- Owner bootstrap at daemon startup (`src/butlers/owner_bootstrap.py::_ensure_owner_entity`,
+  called from `src/butlers/lifecycle.py`) resolves an existing owner via
   `'owner' = ANY(roles)` before inserting, and inserts with a target-less `ON CONFLICT DO NOTHING`
   so `ix_entities_owner_singleton` cannot raise during startup.
-- Owner Telegram handle seeding is relationship-only: `_seed_owner_telegram_handle` checks
+- Owner Telegram handle seeding is relationship-only:
+  `src/butlers/owner_bootstrap.py::_seed_owner_telegram_handle` checks
   `current_schema() = 'relationship'` before probing `relationship.entity_facts`.
 
 ## Related Pages
