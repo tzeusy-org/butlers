@@ -77,7 +77,6 @@ from pathlib import Path
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from opentelemetry import trace
-from prometheus_client import Counter
 from pydantic import BaseModel
 
 from butlers.api.db import DatabaseManager
@@ -101,64 +100,6 @@ from butlers.core.fleet_conditions import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/system", tags=["system"])
-
-
-# ---------------------------------------------------------------------------
-# Prometheus counters — one per endpoint so Grafana can track request load
-# per system tile. Module-scoped so the registry stays consistent across
-# hot-reloads in dev. Counter names follow the pattern:
-# system_<domain>_reads_total (e.g. system_instance_reads_total).
-# ---------------------------------------------------------------------------
-
-system_instance_reads_total = Counter(
-    "system_instance_reads_total",
-    "Number of GET /api/system/instance requests.",
-)
-
-system_database_reads_total = Counter(
-    "system_database_reads_total",
-    "Number of GET /api/system/database requests.",
-)
-
-system_backups_reads_total = Counter(
-    "system_backups_reads_total",
-    "Number of GET /api/system/backups requests.",
-)
-
-system_egress_reads_total = Counter(
-    "system_egress_reads_total",
-    "Number of GET /api/system/egress requests.",
-)
-
-system_butlers_heartbeat_reads_total = Counter(
-    "system_butlers_heartbeat_reads_total",
-    "Number of GET /api/system/butlers/heartbeat requests.",
-)
-
-system_insight_delivery_reads_total = Counter(
-    "system_insight_delivery_reads_total",
-    "Number of GET /api/system/insights/delivery-state requests.",
-)
-
-system_deployments_reads_total = Counter(
-    "system_deployments_reads_total",
-    "Number of GET /api/system/deployments requests.",
-)
-
-system_drift_reads_total = Counter(
-    "system_drift_reads_total",
-    "Number of GET /api/system/drift requests.",
-)
-
-system_stored_functions_reads_total = Counter(
-    "system_stored_functions_reads_total",
-    "Number of GET /api/system/stored-functions requests.",
-)
-
-system_conditions_reads_total = Counter(
-    "system_conditions_reads_total",
-    "Number of GET /api/system/conditions requests.",
-)
 
 
 # Module-level start time recorded when this module is first imported.
@@ -500,7 +441,6 @@ async def get_instance_facts() -> ApiResponse[InstanceFacts]:
     Version is read from importlib.metadata or the package __version__
     constant. Falls back to 'unknown' rather than raising a 500.
     """
-    system_instance_reads_total.inc()
     try:
         version = importlib.metadata.version("butlers")
     except importlib.metadata.PackageNotFoundError:
@@ -610,7 +550,6 @@ async def get_deployment_facts(
     `current: null` / `recent: []`, not an error. HTTP 503 is reserved for an
     actual query failure (permission denied, connection error).
     """
-    system_deployments_reads_total.inc()
     try:
         pool = db.pool("switchboard")
     except KeyError:
@@ -662,8 +601,6 @@ async def get_drift_facts(
     a failed comparison sets drift_check_available=False with every other
     field zeroed, rather than a fabricated all-clear or a 503.
     """
-    system_drift_reads_total.inc()
-
     from butlers.jobs.deploy_drift import (
         compute_drift_report,
         get_drift_escalation_state,
@@ -733,8 +670,6 @@ async def get_stored_function_facts(
     a failed comparison sets stored_function_check_available=False with every
     other field zeroed, rather than a fabricated all-clear or a 503.
     """
-    system_stored_functions_reads_total.inc()
-
     from butlers.core.definer_search_path import compute_unpinned_definers
     from butlers.core.stored_function_drift import compute_stored_function_drift
 
@@ -819,7 +754,6 @@ async def get_database_facts(
 
     Returns HTTP 503 on any catalog query failure.
     """
-    system_database_reads_total.inc()
     try:
         # Use the switchboard pool (it has pg catalog read access from the
         # shared database; all butlers share one PostgreSQL database).
@@ -949,8 +883,6 @@ async def get_backup_facts(
 
     Graceful degradation: always returns HTTP 200, never HTTP 503.
     """
-    system_backups_reads_total.inc()
-
     backup_dir_env = os.environ.get(BACKUP_DIR_ENV, "").strip()
     facts = read_backup_facts_from_dir(Path(backup_dir_env) if backup_dir_env else None)
 
@@ -1069,7 +1001,6 @@ async def get_egress_catalog(
     Only the owner contact may view the egress catalog. Non-owner callers
     receive HTTP 403. See _assert_owner_contact() for the assertion logic.
     """
-    system_egress_reads_total.inc()
     try:
         sw_pool = db.pool("switchboard")
     except KeyError:
@@ -1204,7 +1135,6 @@ async def get_butlers_heartbeat(
     If a butler's schema is unreachable, its session fields are null/0 and
     the entry is included with error='schema_unreachable'.
     """
-    system_butlers_heartbeat_reads_total.inc()
     try:
         sw_pool = db.pool("switchboard")
     except KeyError:
@@ -1335,7 +1265,6 @@ async def get_insight_delivery_state(
     Returns HTTP 200 with zero counts when the insight_candidates table does not
     yet exist (pre-migration deployment); no error is raised.
     """
-    system_insight_delivery_reads_total.inc()
     try:
         pool = db.pool("switchboard")
     except KeyError:
@@ -1472,8 +1401,6 @@ async def get_conditions(
     ``conditions_available=False`` with an empty list, never a fabricated
     all-clear.
     """
-    system_conditions_reads_total.inc()
-
     if ledger not in VALID_LEDGERS:
         allowed = ", ".join(sorted(VALID_LEDGERS))
         raise HTTPException(
