@@ -2275,10 +2275,6 @@ export interface ContactInfoEntry {
 /** Response for GET /owner/setup-status. */
 export interface OwnerSetupStatus {
   entity_id: string | null;
-  has_name: boolean;
-  has_telegram: boolean;
-  has_telegram_chat_id: boolean;
-  has_email: boolean;
 }
 
 /** A contact group. */
