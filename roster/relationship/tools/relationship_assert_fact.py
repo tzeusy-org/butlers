@@ -60,6 +60,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -734,6 +735,23 @@ async def _lock_fact_entities(
             ids.add(uuid.UUID(object))
         except ValueError:
             pass  # the insert's own validation reports a malformed object id
+    await _lock_fact_entities_batch(conn, ids)
+
+
+async def _lock_fact_entities_batch(conn: asyncpg.Connection, ids: Iterable[uuid.UUID]) -> None:
+    """``FOR KEY SHARE`` every entity row in *ids* at once, in ascending id order.
+
+    One writer call locks only its own subject and object, so a caller that
+    makes several writer calls in ONE transaction (``promote_entity``'s
+    ``initial_facts`` loop) would otherwise lock their entities in body order
+    across calls, which a concurrent merge of two of them can deadlock against
+    (bu-7s41je). Such a caller takes every entity it will write against here,
+    once, before its first entity or fact lock; each per-call
+    :func:`_lock_fact_entities` then re-takes rows it already holds.
+    """
+    ordered = sorted(set(ids))
+    if not ordered:
+        return
     await conn.execute(
         """
         SELECT id FROM public.entities
@@ -741,7 +759,7 @@ async def _lock_fact_entities(
         ORDER BY id
         FOR KEY SHARE
         """,
-        sorted(ids),
+        ordered,
     )
 
 

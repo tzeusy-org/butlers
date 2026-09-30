@@ -256,6 +256,13 @@ def test_every_writer_insert_path_locks_entities_before_facts() -> None:
         assert lock_at < fact_at, (
             f"{entry} touches a fact row before {_LOCK_HELPER} (bu-ab0zys lock order)"
         )
+        if entry == "_upsert_fact":
+            # bu-cbpakv: the writer's lock must cover the entity object too, or an
+            # object-side insert is left unlocked against a merge.
+            passed = [a.id for a in body[lock_at].value.value.args if isinstance(a, ast.Name)]
+            assert passed[1:] == ["subject", "object", "object_kind"], (
+                f"_upsert_fact must lock subject, object and object_kind, not {passed[1:]}"
+            )
 
     callers: dict[str, set[str]] = {name: set() for name in functions}
     for name, function in functions.items():
