@@ -168,8 +168,8 @@ kill -TERM $(pgrep -f "butlers run --config roster/general")
 - `sessions_summary` must stay advertised (dashboard cost fan-out relies on the tool metadata) and
   raises `ValueError("Invalid period ...")` for an unsupported period.
 - The liveness reporter treats a heartbeat `404` as misconfiguration: one warning, then it stops.
-- `_McpSseDisconnectGuard` suppresses `ClientDisconnect` only for `POST .../messages`; every other
-  disconnect or exception still propagates.
+- `src/butlers/guards.py::_McpSseDisconnectGuard` suppresses `ClientDisconnect` only for
+  `POST .../messages`; every other disconnect or exception still propagates.
 - `notify` normalises an omitted `message` to `""`, so `intent="react"` passes `notify.v1`
   validation.
 - The core `trigger` tool awaits the spawned session and returns

@@ -226,8 +226,8 @@ curl -s http://localhost:41200/api/butlers/general/status | python3 -m json.tool
   the dashboard summary, `/api/qa/circuit-breaker[/reset]`, and
   `core/qa/dispatch.py::_is_circuit_breaker_tripped`.
 - Adding a QA discovery source is a persisted vocabulary change: align `QaConfig.enabled_sources`,
-  `_KNOWN_SOURCES`, `QaFinding.source_type`, and `ck_qa_findings_source_type` in one change, with a
-  migrated-DB test inserting the new value.
+  `src/butlers/modules/qa/__init__.py::_KNOWN_SOURCES`, `QaFinding.source_type`, and
+  `ck_qa_findings_source_type` in one change, with a migrated-DB test inserting the new value.
 - QA and self-healing dispatch add GitHub labels `self-healing` and `automated`
   (`_DEFAULT_PR_LABELS`, `src/butlers/core/qa/dispatch.py`). If the repo lacks them, PR creation
   fails with `gh_pr_create_failed: could not add label` and the attempt records `failed` despite a
