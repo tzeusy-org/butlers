@@ -85,7 +85,9 @@ enabled = true
 # ---------------------------------------------------------------------------
 # Codex GPT-6 routing: Luna max for trivial (cheap) work, Sol low for
 # sub-medium work (workhorse), Sol high for medium/high work (reasoning), and
-# Sol xhigh for planning/scoping/design (specialty).
+# Sol xhigh for planning/scoping/design (specialty). Luna max and Sol xhigh
+# rank below the direct-API rows so classification and discretion keep routing
+# onto them by default.
 # ---------------------------------------------------------------------------
 
 [[models]]
@@ -94,7 +96,7 @@ runtime_type = "codex"
 model_id = "gpt-6-luna"
 extra_args = ["--config", "model_reasoning_effort=\"max\""]
 complexity_tier = "cheap"
-priority = 31
+priority = 26
 enabled = true
 
 [[models]]
@@ -121,7 +123,7 @@ runtime_type = "codex"
 model_id = "gpt-6-sol"
 extra_args = ["--config", "model_reasoning_effort=\"xhigh\""]
 complexity_tier = "specialty"
-priority = 30
+priority = 5
 enabled = true
 
 [[models]]
