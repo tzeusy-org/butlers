@@ -389,21 +389,50 @@ ever** — including empty states.
 - **THEN** it is stroke-only, single-weight, `currentColor`, 16×16 — and not an emoji
 
 ### Requirement: Motion Vocabulary
-The motion vocabulary SHALL be almost none. Only these animations exist:
+Motion SHALL convey state change only and stay almost none. Transitions SHALL use the doctrine
+duration tiers — `--duration-fast` (150ms), `--duration-base` (200ms), `--duration-slow` (250ms),
+defined in `frontend/src/index.css` — and no other raw duration. Easing for state changes is owned
+by doctrine (`about/heart-and-soul/design-language.md` § Motion: `--ease-out-quart`, no bounce, no
+elastic, no ease-in-out) and is not guarded by this requirement.
 
-| Where                              | Duration | Easing                       |
-|------------------------------------|----------|------------------------------|
-| Briefing paragraph cross-fade      | 200ms    | `cubic-bezier(0.22, 1, 0.36, 1)` |
-| Sidebar chevron rotation           | 120ms    | linear                       |
-| Theme toggle background fade       | 200ms    | ease                         |
-| Tooltip appear/disappear           | 0ms      | (none — instant)             |
+Allowed transition properties are colour (`color`, `background-color`, `border-color`, `fill`,
+`stroke`), `opacity`, border, `box-shadow`, and `transform` limited to rotate and translate.
+Layout-affecting properties (`width`, `height`, `max-height`, position offsets, `margin`,
+`padding`) are forbidden, per doctrine.
 
-Forbidden: spring physics, bounce, parallax, scale-in, scale-on-hover, shimmer, skeleton-pulse,
-count-up animations, "delight" of any kind. Calm is the feature.
+Named exceptions, exhaustive:
+
+| Exception                                   | Detail                                        |
+|---------------------------------------------|-----------------------------------------------|
+| Sidebar chevron rotation                    | 120ms, linear (the one off-tier duration)     |
+| Radix primitive enter/exit (`animate-in`, `animate-out`) | Radix-owned; tokens govern the rest |
+| Spinners (`animate-spin`)                   | Loading indicator only                        |
+
+Forbidden: `transition-all` (and bare `transition`, which expands to a property list including
+layout-adjacent properties), `animate-bounce`, `animate-pulse`, spring physics, parallax, scale-in,
+scale-on-hover, shimmer, skeleton-pulse, count-up animations, layout-property transitions
+(including `max-height` reveals), the `transition-fast`, `transition-base` and `transition-slow`
+utilities (they expand to `transition: all` and SHALL be deleted from `frontend/src/index.css`),
+and "delight" of any kind. Calm is the feature. A height-reveal exception would require a separate
+doctrine amendment.
 
 #### Scenario: No decorative motion
 - **WHEN** a diff introduces an animation or transition
-- **THEN** it is one of the four vocabulary entries above (or an explicit spec change adds it here first)
+- **THEN** it communicates a state change, uses only allowed properties and the duration tiers,
+  and is not on the forbidden list — or it is one of the named exceptions
+
+#### Scenario: ESLint guard enforces the vocabulary
+- **WHEN** frontend lint runs
+- **THEN** `frontend/eslint.config.js` bans, via `no-restricted-syntax` selectors over both string
+  `Literal` and `TemplateElement` nodes (the pattern of the existing `animate-pulse` guard):
+  `transition-all`, bare `transition` as a class token, `animate-bounce`, `transition-fast|base|slow`,
+  and `transition-[...]` arbitrary values naming a layout property (`width`, `height`,
+  `max-height`, `margin`, `padding`, `top`, `left`, `right`, `bottom`, `inset`)
+- **AND** the guard flags arbitrary `duration-[Nms]` values outside the tiers, with the sidebar
+  chevron's 120ms as the sole allowlisted exception
+- **AND** easing is not guarded
+- **AND** the exceptions above are not flagged; any other exemption is a line-level
+  `eslint-disable-next-line` with a one-line reason
 
 ### Requirement: Interaction Affordances
 Links SHALL be underlined with `text-underline-offset: 4px` and `text-decoration-color:

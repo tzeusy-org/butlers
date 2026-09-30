@@ -105,11 +105,11 @@ The Secrets page (`/secrets`) SHALL be the operator's primary surface for provis
 
 ### Requirement: Google OAuth Bootstrap Flow
 
-The Owner Config section under Settings SHALL provide the primary mechanism to configure Google OAuth app credentials and bootstrap or refresh Google OAuth tokens. The Secrets page SHALL remain the credential inventory and audit surface, not the only setup surface. The flow SHALL require browser interaction (redirect to Google's consent screen) and cannot be performed through MCP tools or CLI. The frontend SHALL drive a two-leg authorization code flow: it initiates the redirect to Google, the backend handles the callback, exchanges the code for tokens, and persists credentials to the database.
+The Secrets passport pages (`frontend/src/components/secrets/passport/`, with the Google app credentials form in `GoogleAppCredentials.tsx`) SHALL provide the primary mechanism to configure Google OAuth app credentials and bootstrap or refresh Google OAuth tokens. The passport pages are both the credential inventory/audit surface and the setup surface. The flow SHALL require browser interaction (redirect to Google's consent screen) and cannot be performed through MCP tools or CLI. The frontend SHALL drive a two-leg authorization code flow: it initiates the redirect to Google, the backend handles the callback, exchanges the code for tokens, and persists credentials to the database.
 
 #### Scenario: OAuth credential status display
 
-- **WHEN** the Google OAuth owner-config section loads
+- **WHEN** the Google OAuth passport section loads
 - **THEN** the credential status card displays presence indicators (boolean, never raw values) for: client_id configured, client_secret configured, refresh_token present
 - **AND** an OAuth health badge shows the current connection state using color-coded variants: `connected` (default/green), `not_configured` (outline), `expired` (destructive), `missing_scope` (destructive), `redirect_uri_mismatch` (destructive), `unapproved_tester` (destructive), `unknown_error` (destructive)
 - **AND** granted scopes are displayed when available
@@ -125,7 +125,7 @@ The Owner Config section under Settings SHALL provide the primary mechanism to c
 - **WHEN** the operator clicks "Connect Google" (or "Re-connect Google" if already connected)
 - **THEN** the browser navigates to the backend's `/api/oauth/google/start` endpoint
 - **AND** the backend generates a cryptographically random CSRF state token, stores it in an in-memory store with 10-minute TTL, and redirects to Google's authorization URL with parameters: client_id (from DB), redirect_uri (from env or default `http://localhost:41200/api/oauth/google/callback`), response_type=code, scope (gmail.readonly, gmail.modify, calendar, contacts, contacts.readonly, contacts.other.readonly, directory.readonly), access_type=offline, prompt=consent, state
-- **AND** the "Connect Google" button is disabled until both client_id and client_secret are configured in the owner-config Google OAuth app form
+- **AND** the "Connect Google" button is disabled until both client_id and client_secret are configured in the Google app credentials form on the passport page
 
 #### Scenario: OAuth callback processing
 
@@ -155,12 +155,18 @@ The Owner Config section under Settings SHALL provide the primary mechanism to c
 - **AND** returns a structured `OAuthCredentialStatus` with state, remediation text, and detail
 - **AND** if the refresh token is valid but scope field is absent from Google's response, the token is treated as connected (not incorrectly flagged as missing_scope)
 
-#### Scenario: Delete Google credentials with confirmation
+#### Scenario: Delete Google credentials (API-only)
 
-- **WHEN** the operator clicks "Delete credentials" in the Danger Zone section
-- **THEN** a confirmation dialog warns that all Google OAuth credentials will be permanently removed
-- **AND** confirming calls `DELETE /api/oauth/google/credentials` which removes client_id, client_secret, refresh_token, and scope from the database
+- **WHEN** a client calls `DELETE /api/oauth/google/credentials`
+- **THEN** it removes client_id, client_secret, refresh_token, and scope from the database
 - **AND** the butler loses access to all Google services until credentials are re-configured and the OAuth flow is re-run
+- **AND** this delete-all operation is an API-only capability: the dashboard SHALL NOT expose a delete-all-Google-credentials control (no "Danger Zone" section or "Delete credentials" button)
+
+#### Scenario: Disconnect a single Google account from the UI
+
+- **WHEN** the operator disconnects a Google account on the passport page
+- **THEN** the UI calls `DELETE /api/oauth/google/accounts/{account_id}` to revoke that one account
+- **AND** other Google accounts and the shared app credentials are unaffected
 
 #### Scenario: CSRF protection guarantees
 
