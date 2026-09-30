@@ -77,7 +77,6 @@ const ALICE_DETAIL = {
     aliases: [],
     roles: ["friend", "neighbour"],
     fact_count: 3,
-    linked_contact_id: null,
     unidentified: false,
     source_butler: null,
     source_scope: null,
@@ -92,7 +91,6 @@ const ALICE_DETAIL = {
     recent_facts_offset: 0,
     recent_facts_limit: 20,
     recent_facts_has_more: false,
-    linked_contact_name: null,
     entity_info: [
       { id: "i-1", type: "email", value: "alice@example.com", label: null, is_primary: true, secured: false },
       { id: "i-2", type: "phone", value: null, label: null, is_primary: false, secured: true },

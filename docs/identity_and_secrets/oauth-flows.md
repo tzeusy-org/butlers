@@ -69,15 +69,16 @@ A soft limit of 10 active accounts (configurable via `GOOGLE_MAX_ACCOUNTS` env v
 
 ## OAuth Bootstrap Flow
 
-The dashboard provides a web-based OAuth bootstrap from `/settings/owner`:
+The dashboard provides a web-based OAuth bootstrap from `/secrets` (Passport):
 
-1. User opens Settings → Owner Config and navigates to `GET /api/oauth/google/start` in the dashboard.
+1. User opens the Google credential on `/secrets` (Passport, User tab) and starts `GET /api/oauth/google/start` with `page_of_origin=secrets`.
 2. The dashboard initiates the OAuth authorization code flow with Google.
 3. User authorizes in the browser and Google redirects back with an authorization code.
 4. The callback endpoint exchanges the code for tokens.
 5. App credentials (client_id, client_secret) are stored in `butler_secrets` via the shared credential store.
 6. The refresh token is stored in `public.entity_info` on the companion entity.
 7. A `public.google_accounts` row is created (or updated) with the granted scopes.
+8. The callback redirects back to `/secrets?focus=u:google&toast=connected` (or `&oauth_error=<code>` on failure). `page_of_origin=ingestion` returns to `/ingestion/connectors`; any other value falls back to the `/secrets` default.
 
 ### Scope Grants
 

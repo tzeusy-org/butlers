@@ -169,7 +169,6 @@ class TestOwnerEmailAssociation:
         from butlers.modules.approvals.email_guard import check_email_recipient
 
         owner = ResolvedContact(
-            contact_id=OWNER_CONTACT_ID,
             entity_id=OWNER_ENTITY_ID,
             name="Tze How Lee",
             roles=["owner"],
@@ -216,7 +215,6 @@ class TestOwnerEmailAssociation:
         from butlers.modules.approvals.email_guard import check_email_recipient
 
         owner = ResolvedContact(
-            contact_id=OWNER_CONTACT_ID,
             entity_id=OWNER_ENTITY_ID,
             name="Tze How Lee",
             roles=["owner"],
@@ -326,7 +324,6 @@ class TestAC2ContextAwareRouting:
         from butlers.modules.approvals.email_guard import check_email_recipient
 
         non_owner = ResolvedContact(
-            contact_id=uuid.uuid4(),
             entity_id=uuid.uuid4(),
             name="Work contact",
             roles=["contact"],

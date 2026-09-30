@@ -9,7 +9,7 @@ Scope: v1-mandatory
 
 #### Scenario: Patrol record structure
 - **WHEN** a patrol cycle starts
-- **THEN** a row is inserted with: `id` (UUIDv7), `started_at` (timestamptz), `completed_at` (nullable timestamptz), `status` (text: running, clean, findings_dispatched, suppressed, error, skipped_overlap), `findings_count` (int), `novel_count` (int), `dispatched_count` (int), `log_lookback_minutes` (int), `sources_polled` (text[], successful source names), `error_detail` (nullable text), plus `origin` (`scheduled` or `operator_synthetic`), `enabled_sources_snapshot` (text[]), `enabled_sources_config_digest` (bounded stable digest), and `discovery_complete` (boolean)
+- **THEN** a row is inserted with: `id` (UUIDv7), `started_at` (timestamptz), `completed_at` (nullable timestamptz), `status` (text: running, clean, findings_dispatched, suppressed, error, skipped_overlap), `findings_count` (int), `novel_count` (int), `dispatched_count` (int), `log_lookback_minutes` (int), `sources_polled` (text[], successful source names), `error_detail` (nullable text), plus `origin` (`scheduled` or `operator_synthetic`), `enabled_sources_snapshot` (text[]), `enabled_sources_config_digest` (bounded stable digest), `discovery_complete` (boolean), and `fleet_condition_handoff` (nullable boolean: the `BUTLERS_FLEET_CONDITION_HANDOFF` mode a scheduled cycle ran with; null for operator-synthetic and legacy rows)
 - **AND** migrated legacy rows with no reliable origin/source-completion evidence retain null provenance rather than being backfilled as completed
 
 #### Scenario: Patrol record is updated on completion

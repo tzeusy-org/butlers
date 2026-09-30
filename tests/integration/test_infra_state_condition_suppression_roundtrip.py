@@ -804,3 +804,149 @@ class TestQaPatrolAssurance:
         )
         await restarted_controller_pass()
         assert await self._active(pool) == set()
+
+    # -- Fleet-condition handoff split-brain (bu-vfobja) -------------------
+
+    @pytest.mark.parametrize(("env", "recorded"), [("1", True), ("0", False), (None, False)])
+    async def test_scheduled_patrol_records_the_handoff_mode_it_ran_with(
+        self, qa_pool: asyncpg.Pool, monkeypatch, env: str | None, recorded: bool
+    ) -> None:
+        from butlers.modules.qa import QaModule
+
+        if env is None:
+            monkeypatch.delenv("BUTLERS_FLEET_CONDITION_HANDOFF", raising=False)
+        else:
+            monkeypatch.setenv("BUTLERS_FLEET_CONDITION_HANDOFF", env)
+        module = QaModule()
+        patrol_id = await module._create_patrol_record(qa_pool)
+        await module._record_patrol_skip(qa_pool)
+        rows = await qa_pool.fetch(
+            "SELECT id, status, fleet_condition_handoff FROM public.qa_patrols ORDER BY started_at"
+        )
+        assert {row["status"] for row in rows} == {"running", "skipped_overlap"}
+        assert {row["fleet_condition_handoff"] for row in rows} == {recorded}
+        assert patrol_id in {row["id"] for row in rows}
+
+    async def test_operator_synthetic_patrol_records_no_handoff_mode(
+        self, qa_pool: asyncpg.Pool, migrated_db_url: str, monkeypatch
+    ) -> None:
+        from types import SimpleNamespace
+
+        from butlers.api.routers.qa import SyntheticFindingCreate, create_synthetic_finding
+
+        monkeypatch.setenv("BUTLERS_FLEET_CONDITION_HANDOFF", "1")
+        monkeypatch.setenv("QA_ALLOW_SYNTHETIC_FINDINGS", "true")
+        api_pool = await asyncpg.create_pool(
+            migrated_db_url, min_size=1, max_size=1, init=register_jsonb_codec
+        )
+        try:
+            await create_synthetic_finding(
+                body=SyntheticFindingCreate(),
+                db=SimpleNamespace(credential_shared_pool=lambda: api_pool),
+            )
+        finally:
+            await api_pool.close()
+        row = await qa_pool.fetchrow(
+            "SELECT origin, fleet_condition_handoff FROM public.qa_patrols"
+        )
+        assert tuple(row) == ("operator_synthetic", None)
+
+    @staticmethod
+    async def _mismatch_rows(pool: asyncpg.Pool) -> list[asyncpg.Record]:
+        from butlers.core.fleet_conditions import (
+            QA_HANDOFF_MISMATCH_FINGERPRINT,
+            QA_PATROL_SOURCE,
+        )
+
+        return await pool.fetch(
+            "SELECT state, summary, metadata FROM public.infra_conditions "
+            "WHERE source = $1 AND fingerprint = $2 ORDER BY episode",
+            QA_PATROL_SOURCE,
+            QA_HANDOFF_MISMATCH_FINGERPRINT,
+        )
+
+    @staticmethod
+    async def _controller_pass(pool: asyncpg.Pool, monkeypatch, dashboard: str) -> None:
+        from butlers.core.control_plane_identity import DashboardProbeRoleView
+        from butlers.core.fleet_conditions import run_controller_pass
+        from butlers.core.qa.patrol_provenance import QaPatrolContract
+
+        monkeypatch.setenv("BUTLERS_FLEET_CONDITION_HANDOFF", dashboard)
+        await run_controller_pass(
+            pool,
+            DashboardProbeRoleView(pool),
+            _cycle(True, {}, expected=1),
+            frozenset({"qa"}),
+            QaPatrolContract(("infra_state", "log_scanner"), 10),
+        )
+
+    @staticmethod
+    async def _qa_patrol(pool: asyncpg.Pool, monkeypatch, qa: str) -> uuid.UUID:
+        from butlers.modules.qa import QaModule
+
+        monkeypatch.setenv("BUTLERS_FLEET_CONDITION_HANDOFF", qa)
+        return await QaModule()._create_patrol_record(pool)
+
+    async def test_split_handoff_opens_one_mismatch_until_qa_records_a_matching_mode(
+        self, qa_pool: asyncpg.Pool, monkeypatch
+    ) -> None:
+        import json
+
+        pool = qa_pool
+        legacy = await _seed_legacy_liveness(pool, "qa")
+        patrol_id = await self._qa_patrol(pool, monkeypatch, "1")
+
+        await self._controller_pass(pool, monkeypatch, "0")
+        await self._controller_pass(pool, monkeypatch, "0")
+        rows = await self._mismatch_rows(pool)
+        assert [row["state"] for row in rows] == ["open"]  # one episode, not two
+        metadata = rows[0]["metadata"]
+        metadata = json.loads(metadata) if isinstance(metadata, str) else metadata
+        assert {k: v for k, v in metadata.items() if k != "identity_payload"} == {
+            "dashboard_handoff": False,
+            "qa_handoff": True,
+            "patrol_id": str(patrol_id),
+        }
+        assert "Dashboard=0, QA=1" in rows[0]["summary"]
+
+        # QA restarts with the matching mode; the next pass resolves the split.
+        await pool.execute("UPDATE public.qa_patrols SET started_at = started_at - interval '1m'")
+        await self._qa_patrol(pool, monkeypatch, "0")
+        await self._controller_pass(pool, monkeypatch, "0")
+        assert [row["state"] for row in await self._mismatch_rows(pool)] == ["resolved"]
+        # Agreement is configuration evidence, never liveness recovery.
+        assert await get_active_condition(pool, source=SOURCE_NAME, fingerprint=legacy)
+        # A configuration fault is never paged.
+        assert await pool.fetchval("SELECT count(*) FROM public.runtime_attention_outbox") == 0
+
+    async def test_qa_off_with_controller_on_also_opens_the_mismatch(
+        self, qa_pool: asyncpg.Pool, monkeypatch
+    ) -> None:
+        await self._qa_patrol(qa_pool, monkeypatch, "0")
+        await self._controller_pass(qa_pool, monkeypatch, "1")
+        rows = await self._mismatch_rows(qa_pool)
+        assert [row["state"] for row in rows] == ["open"]
+        assert "Dashboard=1, QA=0" in rows[0]["summary"]
+
+    async def test_unknown_handoff_mode_neither_opens_nor_resolves_the_mismatch(
+        self, qa_pool: asyncpg.Pool, monkeypatch
+    ) -> None:
+        pool = qa_pool
+        # Legacy and synthetic rows carry no mode: no evidence, no condition.
+        await pool.execute(
+            "INSERT INTO public.qa_patrols (status, completed_at) VALUES ('clean', now())"
+        )
+        await pool.execute(
+            "INSERT INTO public.qa_patrols (status, completed_at, origin, discovery_complete) "
+            "VALUES ('suppressed', now(), 'operator_synthetic', false)"
+        )
+        await self._controller_pass(pool, monkeypatch, "0")
+        assert await self._mismatch_rows(pool) == []
+
+        # An open mismatch survives passes whose newest evidence is unknown.
+        await self._qa_patrol(pool, monkeypatch, "1")
+        await self._controller_pass(pool, monkeypatch, "0")
+        await pool.execute("UPDATE public.qa_patrols SET fleet_condition_handoff = NULL")
+        await self._controller_pass(pool, monkeypatch, "0")
+        await self._controller_pass(pool, monkeypatch, "1")
+        assert [row["state"] for row in await self._mismatch_rows(pool)] == ["open"]

@@ -401,7 +401,7 @@
    * transitions. See about/heart-and-soul/design-language.md § Motion.
    *
    * --duration-fast   150ms  Micro-interactions: hover, focus rings, button press.
-   * --duration-base   200ms  Layout-affecting: sidebar collapse, drawer open.
+   * --duration-base   200ms  Layout-affecting: dialog and drawer open.
    * --duration-slow   250ms  Transitions spanning >200 px of travel.
    *
    * --ease-out-quart  cubic-bezier(0.22, 1, 0.36, 1)

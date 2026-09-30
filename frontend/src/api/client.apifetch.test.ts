@@ -125,6 +125,51 @@ describe("apiFetch — standard error envelope details", () => {
       detail: { reason: "export_stale", export_as_of: "2026-07-29T12:00:00Z" },
     });
   });
+
+  it("maps a structured dict detail's code and message instead of stringifying it", async () => {
+    const detail = {
+      code: "temporal_mutator_unsupported",
+      message:
+        "This contact value carries effective time; retract it and assert the new value instead of editing it in place.",
+    };
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      statusText: "Conflict",
+      json: async () => ({ detail }),
+    });
+
+    const error = (await apiFetch("/relationship/entities/e/contacts/has-email/h", {
+      method: "PUT",
+    }).catch((caught) => caught)) as ApiError;
+
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error.code).toBe("temporal_mutator_unsupported");
+    expect(error.message).toBe(detail.message);
+    expect(error.status).toBe(409);
+    expect(error.detail).toEqual(detail);
+  });
+
+  it("keeps the error-field and JSON fallbacks for other dict details", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      statusText: "Conflict",
+      json: async () => ({ detail: { error: "wipe_disabled" } }),
+    });
+    const wipe = (await apiFetch("/wipe").catch((caught) => caught)) as ApiError;
+    expect([wipe.code, wipe.message]).toEqual(["UNKNOWN_ERROR", "wipe_disabled"]);
+
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      statusText: "Conflict",
+      json: async () => ({ detail: { foo: 1 } }),
+    });
+    const unknown = (await apiFetch("/unknown").catch((caught) => caught)) as ApiError;
+    expect([unknown.code, unknown.message]).toEqual(["UNKNOWN_ERROR", '{"foo":1}']);
+    expect(unknown.detail).toEqual({ foo: 1 });
+  });
 });
 
 describe("apiFetch — caller-provided AbortSignal", () => {

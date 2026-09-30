@@ -26,14 +26,20 @@
 //                 (bu-86c4c.15) rather than firing on click, since this is
 //                 the same eligibility flip.
 //
+// Skill prefill (bu-9ppi0z): the Skills section's "Use skill" button asks,
+// through useCommandBarPrefill, for this bar's prompt to read
+// "Use the <skill> skill to ". The bar applies it once, focused with the caret
+// at the end; it never runs anything on its own.
+//
 // NO Tier-2 hero block is added — identity stays in the Overview tab card.
 // ---------------------------------------------------------------------------
 
-import { type KeyboardEvent, useMemo, useState } from "react";
+import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { toast } from "sonner";
 
 import { triggerButler } from "@/api/index.ts";
+import { useCommandBarPrefill } from "@/components/butler-detail/command-bar-prefill";
 import { ChatPanel } from "@/components/chat/ChatPanel";
 import { COMPLEXITY_TIERS, complexityLabel } from "@/components/general/ComplexityBadge.tsx";
 import { Button } from "@/components/ui/button";
@@ -102,6 +108,29 @@ export function ButlerDetailActions({ butlerName }: ButlerDetailActionsProps) {
   const [prompt, setPrompt] = useState("");
   const [complexity, setComplexity] = useState(DEFAULT_COMPLEXITY);
   const [isRunning, setIsRunning] = useState(false);
+  const [focusRequest, setFocusRequest] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const { pending: pendingPrefill, consume: consumePrefill } = useCommandBarPrefill();
+
+  // Apply a pending prefill exactly once. It deliberately overwrites any draft
+  // prompt (the operator just asked for this text) and is dropped, not
+  // deferred, while a run is in flight so it cannot land after the run.
+  useEffect(() => {
+    if (pendingPrefill === null) return;
+    if (!isRunning) {
+      setPrompt(pendingPrefill);
+      setFocusRequest((count) => count + 1);
+    }
+    consumePrefill();
+  }, [pendingPrefill, isRunning, consumePrefill]);
+
+  // Focus after the prefilled value has rendered so the caret lands at its end.
+  useEffect(() => {
+    const input = inputRef.current;
+    if (focusRequest === 0 || input === null) return;
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+  }, [focusRequest]);
 
   // Find the registry entry to determine current eligibility / paused state.
   // registryEntry is undefined while loading or when the butler is not in the
@@ -198,6 +227,7 @@ export function ButlerDetailActions({ butlerName }: ButlerDetailActionsProps) {
       {/* Unified prompt-first command bar (replaces Force Run + Trigger tab) */}
       <div className="flex items-center gap-1.5" data-testid="butler-command-bar">
         <input
+          ref={inputRef}
           type="text"
           value={prompt}
           onChange={(event) => setPrompt(event.target.value)}

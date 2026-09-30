@@ -27,10 +27,10 @@ class TestResolvedContact:
         assert ResolvedContact.__dataclass_params__.frozen
 
         fields = set(inspect.signature(ResolvedContact.__init__).parameters.keys()) - {"self"}
-        assert {"contact_id", "name", "roles", "entity_id"}.issubset(fields)
+        assert {"name", "roles", "entity_id"}.issubset(fields)
+        assert "contact_id" not in fields  # entity_id replaces the retired contact_id
 
         owner = ResolvedContact(
-            contact_id=uuid.uuid4(),
             name="Owner",
             roles=["owner"],
             entity_id=uuid.uuid4(),
@@ -38,7 +38,6 @@ class TestResolvedContact:
         assert "owner" in owner.roles
 
         no_entity = ResolvedContact(
-            contact_id=uuid.uuid4(),
             name="Linked",
             roles=[],
             entity_id=None,
@@ -53,20 +52,20 @@ class TestIdentityPreambleFormat:
         """Owner, known contact, and unknown sender preambles are bracket-enclosed with channel."""
         from butlers.identity import ResolvedContact, build_identity_preamble
 
-        cid, eid = uuid.uuid4(), uuid.uuid4()
-        owner = ResolvedContact(contact_id=cid, name="Owner", roles=["owner"], entity_id=eid)
+        eid = uuid.uuid4()
+        owner = ResolvedContact(name="Owner", roles=["owner"], entity_id=eid)
         p = build_identity_preamble(owner, "telegram")
         assert p.startswith("[Source: Owner") and p.endswith("]")
         assert f"entity_id: {eid}" in p and "via telegram" in p
 
         # Known contact
-        contact = ResolvedContact(contact_id=cid, name="Chloe", roles=[], entity_id=eid)
+        contact = ResolvedContact(name="Chloe", roles=[], entity_id=eid)
         pc = build_identity_preamble(contact, "email")
         assert "Chloe" in pc and "pending disambiguation" not in pc
 
         # Unknown sender
-        tcid, teid = uuid.uuid4(), uuid.uuid4()
-        pu = build_identity_preamble(None, "telegram", temp_contact_id=tcid, temp_entity_id=teid)
+        teid = uuid.uuid4()
+        pu = build_identity_preamble(None, "telegram", temp_entity_id=teid)
         assert "Unknown sender" in pu and "pending disambiguation" in pu
 
         # Minimal unknown sender
@@ -74,15 +73,13 @@ class TestIdentityPreambleFormat:
         assert "Unknown sender" in pm and "via discord" in pm
 
         # Owner without entity_id
-        owner_no_eid = ResolvedContact(
-            contact_id=cid, name="Owner", roles=["owner"], entity_id=None
-        )
+        owner_no_eid = ResolvedContact(name="Owner", roles=["owner"], entity_id=None)
         pne = build_identity_preamble(owner_no_eid, "telegram")
         assert "entity_id" not in pne
 
         # Channel via keyword across multiple channels
         for ch in ["telegram", "email", "discord", "whatsapp"]:
-            c = ResolvedContact(contact_id=uuid.uuid4(), name="T", roles=[], entity_id=None)
+            c = ResolvedContact(name="T", roles=[], entity_id=None)
             assert f"via {ch}" in build_identity_preamble(c, ch)
 
 
@@ -188,7 +185,6 @@ class TestOwnerBootstrap:
         from butlers.identity import ResolvedContact, build_identity_preamble
 
         owner_contact = ResolvedContact(
-            contact_id=uuid.uuid4(),
             name="Owner",
             roles=["owner"],
             entity_id=uuid.uuid4(),
@@ -310,7 +306,6 @@ class TestOwnerCorroborationPolicy:
         )
 
         direct = ResolvedContact(
-            contact_id=None,
             name="External contact",
             roles=["contact"],
             entity_id=uuid.uuid4(),
@@ -342,7 +337,6 @@ class TestOwnerCorroborationPolicy:
         )
 
         direct = ResolvedContact(
-            contact_id=None,
             name="Owner-looking",
             roles=["owner"],
             entity_id=uuid.uuid4(),
@@ -372,7 +366,6 @@ class TestOwnerCorroborationPolicy:
         )
 
         verified_owner = ResolvedContact(
-            contact_id=None,
             name=None,
             roles=["owner"],
             entity_id=uuid.uuid4(),

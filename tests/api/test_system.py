@@ -881,6 +881,31 @@ async def test_conditions_link_attention_status_for_paging_identities():
     assert other["attention"] is None
 
 
+async def test_conditions_handoff_mismatch_is_listed_but_never_paged():
+    """bu-vfobja: the split-handoff condition shows on the infra ledger with no attention."""
+    from butlers.core.fleet_conditions import QA_HANDOFF_MISMATCH_FINGERPRINT, QA_PATROL_SOURCE
+
+    mismatch = {
+        **_make_condition_row(source=QA_PATROL_SOURCE),
+        "fingerprint": QA_HANDOFF_MISMATCH_FINGERPRINT,
+        "summary": "Fleet-condition handoff differs: Dashboard=0, QA=1.",
+    }
+    attention_pool = AsyncMock()
+    attention_pool.fetch = AsyncMock(side_effect=AssertionError("must not read attention"))
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = _make_conditions_pool_mock(rows=[mismatch])
+    mock_db.credential_shared_pool.return_value = attention_pool
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/conditions")
+    assert resp.status_code == 200
+    [condition] = resp.json()["data"]["conditions"]
+    assert condition["source"] == QA_PATROL_SOURCE
+    assert condition["attention"] is None
+    attention_pool.fetch.assert_not_called()
+
+
 async def test_conditions_attention_unreadable_is_unavailable_not_silent():
     rows = _paging_condition_rows()
     attention_pool = AsyncMock()

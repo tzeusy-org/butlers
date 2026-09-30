@@ -90,7 +90,7 @@ Respond with a JSON block:
 
 Facts should be anchored to resolved entities whenever possible. Look for entity UUIDs in:
 
-1. **Identity preambles** in episode content: `[Source: Owner (contact_id: ..., entity_id: <uuid>)]` — use the `entity_id` as the subject entity.
+1. **Identity preambles** in episode content: `[Source: Owner (entity_id: <uuid>), via telegram]` — use the `entity_id` as the subject entity.
 2. **Existing facts** in the dedup section: facts shown with `(entity_id=<uuid>)`
    are already entity-anchored. Use their `target_id` when updating them; the
    executor preserves their stored entity identity automatically.
