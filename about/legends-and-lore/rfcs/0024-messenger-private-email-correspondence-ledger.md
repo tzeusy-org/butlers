@@ -371,7 +371,7 @@ entity IDs and returns no more than one fixed-shape row per requested ID:
 It returns no address, account, provider, message/thread ID, raw ledger row,
 raw inbound row, content, audit text, or any enumeration capability.  The
 migration-admin activation routine creates it with `SECURITY DEFINER`,
-`SET search_path = pg_catalog`, explicitly schema-qualified table names,
+`SET search_path = pg_catalog, pg_temp`, explicitly schema-qualified table names,
 `REVOKE ALL ... FROM PUBLIC`, and `GRANT EXECUTE` only to
 `butler_relationship_rw`.  Relationship gets no direct table select,
 connector/dashboard/public roles get no execute, and the function does not
@@ -451,7 +451,7 @@ epoch ID, once-captured server receipt time, and opaque account-scoped
 deduplication token.  It returns only the fixed categorical value `recorded` or
 `duplicate`; no principal, source-event ID, provider event time, content, or
 other caller-controlled context is an argument.  The migration-admin installer
-assigns an explicit designated definer owner, `SET search_path = pg_catalog`, and
+assigns an explicit designated definer owner, `SET search_path = pg_catalog, pg_temp`, and
 explicitly schema-qualified object references; it revokes all function execution
 from `PUBLIC`, grants `USAGE ON SCHEMA messenger` and `EXECUTE ON FUNCTION
 messenger.record_qualified_email_ingress(text, text, text, uuid, timestamptz,

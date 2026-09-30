@@ -5,7 +5,7 @@
 
 ## Summary
 
-Butlers runs in Docker Compose with four named networks (`db`, `backend`, `frontend`, `egress`) that enforce least-privilege connectivity. Three internal networks isolate services that have no business reaching the internet. One egress network provides outbound access for services that call external APIs. An iptables-based firewall on the egress network blocks access to private subnets (LAN, Tailscale) except for explicitly allowed tailnet hosts. All host port bindings use `127.0.0.1` to prevent LAN exposure.
+Butlers runs in Docker Compose with four named bridge networks (`db`, `backend`, `frontend`, `egress`). None of them is declared `internal: true`: Docker's isolation rules for multiple internal networks interfere with normal inter-container communication, so the application stack deliberately omits it (see the note above `networks:` in `docker-compose.yml`). Least-privilege connectivity is therefore a convention plus one firewall, not a topological guarantee: services join the `egress` network only when they call external APIs, and an iptables-based firewall scoped to the egress bridge blocks access to private subnets (LAN, Tailscale) except for explicitly allowed tailnet hosts. All host port bindings use `127.0.0.1` to prevent LAN exposure.
 
 ## Motivation
 
@@ -15,7 +15,7 @@ Butlers manages personal data (contacts, health records, email content, OAuth to
 
 ### Network Topology
 
-Four Docker Compose networks with explicit isolation boundaries:
+Four Docker Compose networks. Only the `egress` bridge is firewalled; the other three are separation-by-membership, not internet-isolated:
 
 ```
                      ┌──────────────────────────────────────┐
@@ -42,10 +42,12 @@ Four Docker Compose networks with explicit isolation boundaries:
                     ╚════════════════════════════════╝
 
   ┌─────────────────────────────────────────────────────────┐
-  │            INTERNAL ONLY (no internet)                   │
+  │   NON-EGRESS NETWORKS (not `internal`, not firewalled)   │
   │  db:       postgres, minio, migrations, oauth-gate      │
   │  backend:  (shared with egress services for inter-svc)  │
   │  frontend: frontend-dev ↔ dashboard-api only            │
+  │  Services here that are not also on egress have no      │
+  │  intended internet role; nothing enforces that.         │
   └─────────────────────────────────────────────────────────┘
 ```
 
@@ -53,12 +55,19 @@ Four Docker Compose networks with explicit isolation boundaries:
 
 | Network | Driver | `internal` | Services |
 |---------|--------|-----------|----------|
-| `db` | bridge | `true` | postgres, minio, migrations, oauth-gate, all butlers, all connectors, dashboard-api |
-| `backend` | bridge | `true` | switchboard, butlers, connectors, dashboard-api, butlers-up |
-| `frontend` | bridge | `true` | frontend-dev, dashboard-api |
-| `egress` | bridge | `false` | butlers-up, all connectors, dashboard-api, switchboard, general, relationship, health |
+| `db` | bridge | not set | postgres, minio, migrations, oauth-gate, all butlers, all connectors, dashboard-api |
+| `backend` | bridge | not set | switchboard, butlers, connectors, dashboard-api, butlers-up |
+| `frontend` | bridge | not set | frontend-dev, dashboard-api |
+| `egress` | bridge | not set | butlers-up, all connectors, dashboard-api, switchboard, general, relationship, health |
 
-A service on an `internal: true` network cannot reach any address outside Docker's bridge networks. A service MUST also join the `egress` network to reach the internet.
+No network is `internal: true`, so Docker does not itself block outbound traffic from any of them. Deployed posture:
+
+- **Enforced by the firewall:** traffic entering the `egress` bridge is filtered by the `DOCKER-USER` rules below (private, Tailscale and link-local ranges dropped except the allowlist).
+- **Convention only:** a service should join `egress` only if it calls external APIs (see `security.md`, principle 2). Compose membership documents intent; it is not an enforcement mechanism.
+- **Not covered by the firewall (inferred, not verified against live iptables or Docker state):** the firewall rules match only `-i <egress bridge>`. Services that are not on `egress` (for example postgres, minio, migrations, oauth-gate, frontend-dev) are attached to plain NAT bridges with no `internal` flag and no matching DROP rule, so they are plausibly able to reach the public internet and private or tailnet ranges. This RFC does not claim otherwise.
+- **Compose comments:** labels reading "(internal)" on the networks in `docker-compose.yml` are stale and do not describe enforced behavior.
+
+Network isolation of non-egress services is not a guarantee of this RFC. The earlier target (three `internal: true` networks) is dropped, not deferred.
 
 ### Per-Service Network Assignment
 
@@ -163,7 +172,7 @@ persistent auth tokens used by the container-level `codex` binary.
 
 ## Invariants
 
-1. Services on internal-only networks (`db`, `backend`, `frontend`) MUST NOT have outbound internet access.
+1. A service SHOULD join the `egress` network only if it calls external APIs. This is a compose convention; it is not enforced by `internal: true` and the firewall does not cover services outside `egress`.
 2. The `egress` network MUST have iptables rules blocking all RFC1918 and Tailscale CGNAT subnets except explicitly allowed hosts.
 3. All `ports:` mappings MUST bind to `127.0.0.1`.
 4. No compose service MUST use `privileged: true`, mount the Docker socket, or use `cap_add`.
