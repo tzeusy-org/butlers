@@ -30,7 +30,7 @@ from __future__ import annotations
 import importlib
 import shutil
 import uuid
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import asyncpg
 import pytest
@@ -790,7 +790,6 @@ class TestEffectiveTimeMutatorFences:
         visibly instead of silently landing on the merged-away subject."""
         import asyncio
 
-        from butlers.modules.memory.tools import entities as memory_entities
         from butlers.tools.relationship import contacts as contacts_mod
         from butlers.tools.relationship.relationship_assert_fact import (
             AssertOutcome,
@@ -851,11 +850,9 @@ class TestEffectiveTimeMutatorFences:
                 assert not any(task.done() for task in corrections)
 
         monkeypatch.setattr(contacts_mod, "_fence_legacy_fact_repoint", fence_then_race)
-        # Isolate the relationship transaction's own locks: the post-commit
-        # merge_entity_pair locks entity-then-fact while a correction's replacement
-        # insert takes fact-then-entity (FK), which Postgres may resolve as a
-        # detected deadlock; that pair is not what this test measures.
-        monkeypatch.setattr(memory_entities, "entity_merge", AsyncMock())
+        # The post-commit merge_entity_pair runs for real: the writer takes its
+        # entity rows before any fact row (bu-ab0zys), the same order the merge
+        # uses, so the correction can no longer deadlock against it.
 
         await contacts_mod.contact_merge(pool, source_id=source_contact, target_id=target_contact)
         kept_result, moved_result = await asyncio.gather(*corrections, return_exceptions=True)
@@ -889,6 +886,10 @@ class TestEffectiveTimeMutatorFences:
             )
             == 1
         )
+        # The unstubbed post-commit entity merge ran and tombstoned the source.
+        assert await pool.fetchval(
+            "SELECT metadata->>'merged_into' FROM public.entities WHERE id = $1", source_entity
+        ) == str(target_entity)
 
     async def test_contact_merge_skips_a_missing_optional_child_table(self, pool):
         """A missing optional child table no longer aborts the merge transaction."""
@@ -985,3 +986,308 @@ class TestEffectiveTimeMutatorFences:
             )
             == 0
         )
+
+
+# ---------------------------------------------------------------------------
+# Lock order: entity rows before fact rows (bu-ab0zys)
+# ---------------------------------------------------------------------------
+
+#: Advisory-lock key the latch tests hold to pause one side mid-transaction.
+_LATCH_KEY = 0x0AB0_2E75
+
+#: A backend blocked on a row lock of *relation* whose query matches *pattern*.
+#: A row-lock waiter holds the tuple lock on the row while it waits for the
+#: holder's transaction, so the tuple lock names the table it is queued on.
+_ROW_LOCK_WAITERS_SQL = """
+    SELECT a.pid
+    FROM pg_stat_activity a
+    JOIN pg_locks l ON l.pid = a.pid
+    WHERE a.datname = current_database()
+      AND a.wait_event_type = 'Lock'
+      AND a.query ILIKE $2
+      AND l.locktype = 'tuple'
+      AND l.relation = $1::regclass
+"""
+
+
+async def _poll(pool: asyncpg.Pool, sql: str, *args, what: str):
+    import asyncio
+
+    for _ in range(1000):
+        value = await pool.fetchval(sql, *args)
+        if value:
+            return value
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"timed out waiting for {what}")
+
+
+async def _wait_on_latch(pool: asyncpg.Pool) -> None:
+    await _poll(
+        pool,
+        "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted",
+        what="a transaction to block on the latch",
+    )
+
+
+async def _latch_on(conn: asyncpg.Connection) -> None:
+    """Block *conn*'s transaction until the test releases the latch."""
+    await conn.execute("SELECT pg_advisory_xact_lock($1)", _LATCH_KEY)
+
+
+def _correct(pool: asyncpg.Pool, subject: uuid.UUID, value: str, fact_id: uuid.UUID):
+    from butlers.tools.relationship.relationship_assert_fact import relationship_assert_fact
+
+    return relationship_assert_fact(
+        pool,
+        subject,
+        "has-email",
+        value,
+        src="test",
+        corrects_fact_id=fact_id,
+        effective_from="2019",
+        effective_from_precision="year",
+    )
+
+
+async def _merge_pair_with_fact(pool: asyncpg.Pool, tag: str) -> tuple:
+    target = await _insert_entity(pool, name=f"{tag} target", roles=[])
+    source = await _insert_entity(pool, name=f"{tag} source", roles=[])
+    value = f"{tag}@source.test"
+    await _add_channel_fact(pool, source, "has-email", value)
+    fact_id = await pool.fetchval(
+        "SELECT id FROM relationship.entity_facts WHERE subject = $1", source
+    )
+    return target, source, value, fact_id
+
+
+async def _active_on(pool: asyncpg.Pool, subject: uuid.UUID) -> int:
+    return await pool.fetchval(
+        "SELECT count(*) FROM relationship.entity_facts WHERE subject = $1 AND validity = 'active'",
+        subject,
+    )
+
+
+class TestFactEntityLockOrder:
+    """The central writer locks entity rows before fact rows, like both merges.
+
+    Before bu-ab0zys a correction locked its fact row and then, through the
+    replacement insert's FK, the subject entity; merge_entity_pair locks the
+    entities and then the facts. Run together they formed a cycle Postgres broke
+    with ``DeadlockDetectedError``.
+    """
+
+    async def test_correction_waits_on_the_entity_while_a_merge_holds_it(self, pool):
+        """AC1a: a merge paused after its entity lock makes a correction of a
+        source fact queue on ``public.entities`` without touching the fact row;
+        on release the merge completes and the stale correction is refused."""
+        import asyncio
+
+        from butlers.tools.relationship.entity_merge import merge_entity_pair
+
+        await simulate_temporal_cutover(pool)
+        target, source, value, fact_id = await _merge_pair_with_fact(pool, "ac1a")
+
+        async with pool.acquire() as latch:
+            await latch.execute("SELECT pg_advisory_lock($1)", _LATCH_KEY)
+            merge = asyncio.create_task(
+                merge_entity_pair(
+                    pool,
+                    source_entity_id=source,
+                    target_entity_id=target,
+                    locked_guard=lambda conn, _pair: _latch_on(conn),
+                )
+            )
+            await _wait_on_latch(pool)
+            correction = asyncio.create_task(_correct(pool, source, value, fact_id))
+            pid = await _poll(
+                pool,
+                _ROW_LOCK_WAITERS_SQL,
+                "public.entities",
+                "%FOR KEY SHARE%",
+                what="the correction to queue on public.entities",
+            )
+            fact_locks = await pool.fetchval(
+                "SELECT count(*) FROM pg_locks WHERE pid = $1 AND relation = "
+                "'relationship.entity_facts'::regclass "
+                "AND (locktype = 'tuple' OR mode IN ('RowShareLock', 'RowExclusiveLock'))",
+                pid,
+            )
+            assert fact_locks == 0, "the correction locked a fact row before the entity"
+            await latch.execute("SELECT pg_advisory_unlock($1)", _LATCH_KEY)
+            merged, corrected = await asyncio.gather(merge, correction, return_exceptions=True)
+
+        assert not isinstance(merged, BaseException), merged
+        # The merge repointed the row in place, so a correction naming the old
+        # subject is a typed refusal with no write.
+        assert isinstance(corrected, TemporalError), corrected
+        row = await pool.fetchrow(
+            "SELECT subject, validity, effective_from FROM relationship.entity_facts WHERE id = $1",
+            fact_id,
+        )
+        assert (row["subject"], row["validity"], row["effective_from"]) == (
+            target,
+            "active",
+            None,
+        )
+        assert await _active_on(pool, source) == 0
+
+    async def test_ordinary_supersede_waits_on_the_entity_while_a_merge_holds_it(self, pool):
+        """AC1a for the ordinary supersede path: a re-assertion with new
+        provenance queues on ``public.entities`` without locking the fact row it
+        would supersede, so the merge that holds the entity cannot deadlock."""
+        import asyncio
+
+        from butlers.tools.relationship.entity_merge import merge_entity_pair
+        from butlers.tools.relationship.relationship_assert_fact import (
+            AssertOutcome,
+            relationship_assert_fact,
+        )
+
+        await simulate_temporal_cutover(pool)
+        target, source, value, fact_id = await _merge_pair_with_fact(pool, "ac1a-sup")
+
+        async with pool.acquire() as latch:
+            await latch.execute("SELECT pg_advisory_lock($1)", _LATCH_KEY)
+            merge = asyncio.create_task(
+                merge_entity_pair(
+                    pool,
+                    source_entity_id=source,
+                    target_entity_id=target,
+                    locked_guard=lambda conn, _pair: _latch_on(conn),
+                )
+            )
+            await _wait_on_latch(pool)
+            # Same triple, different src: the writer's supersede path.
+            reassert = asyncio.create_task(
+                relationship_assert_fact(pool, source, "has-email", value, src="test-reassert")
+            )
+            pid = await _poll(
+                pool,
+                _ROW_LOCK_WAITERS_SQL,
+                "public.entities",
+                "%",
+                what="the re-assertion to queue on public.entities",
+            )
+            fact_locks = await pool.fetchval(
+                "SELECT count(*) FROM pg_locks WHERE pid = $1 AND relation = "
+                "'relationship.entity_facts'::regclass "
+                "AND (locktype = 'tuple' OR mode IN ('RowShareLock', 'RowExclusiveLock'))",
+                pid,
+            )
+            assert fact_locks == 0, "the supersede path locked a fact row before the entity"
+            await latch.execute("SELECT pg_advisory_unlock($1)", _LATCH_KEY)
+            merged, reasserted = await asyncio.gather(merge, reassert, return_exceptions=True)
+
+        assert not isinstance(merged, BaseException), merged
+        assert not isinstance(reasserted, BaseException), reasserted
+        # The merge moved the original row intact before the writer re-read.
+        row = await pool.fetchrow(
+            "SELECT subject, validity, src FROM relationship.entity_facts WHERE id = $1",
+            fact_id,
+        )
+        assert (row["subject"], row["validity"], row["src"]) == (target, "active", "test")
+        # Known gap, pinned so its fix is visible: finding nothing left on the
+        # source, the writer inserts there, onto the tombstoned entity. Whether
+        # it should refuse or follow merged_into instead is bu-gm93xc.
+        assert reasserted.outcome == AssertOutcome.inserted
+        assert (
+            await pool.fetchval(
+                "SELECT subject FROM relationship.entity_facts WHERE id = $1", reasserted.fact_id
+            )
+            == source
+        )
+
+    async def test_merge_waits_on_a_correction_holding_the_entity(self, pool, monkeypatch):
+        """AC1b: a correction paused after its entity lock makes the merge queue
+        on ``public.entities``; the correction commits, then the merge repoints
+        the new replacement row."""
+        import asyncio
+
+        from butlers.tools.relationship.entity_merge import merge_entity_pair
+        from butlers.tools.relationship.relationship_assert_fact import AssertOutcome
+
+        await simulate_temporal_cutover(pool)
+        target, source, value, fact_id = await _merge_pair_with_fact(pool, "ac1b")
+
+        # The package re-exports the function under the submodule's name.
+        writer = importlib.import_module("butlers.tools.relationship.relationship_assert_fact")
+        real_lock = writer._lock_fact_entities
+
+        async def lock_then_latch(conn, *args, **kwargs):
+            await real_lock(conn, *args, **kwargs)
+            await _latch_on(conn)
+
+        monkeypatch.setattr(writer, "_lock_fact_entities", lock_then_latch)
+
+        async with pool.acquire() as latch:
+            await latch.execute("SELECT pg_advisory_lock($1)", _LATCH_KEY)
+            correction = asyncio.create_task(_correct(pool, source, value, fact_id))
+            await _wait_on_latch(pool)
+            merge = asyncio.create_task(
+                merge_entity_pair(pool, source_entity_id=source, target_entity_id=target)
+            )
+            await _poll(
+                pool,
+                _ROW_LOCK_WAITERS_SQL,
+                "public.entities",
+                "%FROM public.entities%FOR UPDATE%",
+                what="the merge to queue on public.entities",
+            )
+            await latch.execute("SELECT pg_advisory_unlock($1)", _LATCH_KEY)
+            corrected, merged = await asyncio.gather(correction, merge, return_exceptions=True)
+
+        assert not isinstance(merged, BaseException), merged
+        assert corrected.outcome == AssertOutcome.superseded
+        replacement = await pool.fetchrow(
+            "SELECT subject, validity, effective_from_precision "
+            "FROM relationship.entity_facts WHERE id = $1",
+            corrected.fact_id,
+        )
+        assert (
+            replacement["subject"],
+            replacement["validity"],
+            replacement["effective_from_precision"],
+        ) == (target, "active", "year")
+        assert (
+            await pool.fetchval(
+                "SELECT validity FROM relationship.entity_facts WHERE id = $1", fact_id
+            )
+            == "superseded"
+        )
+        assert await _active_on(pool, source) == 0
+
+    async def test_concurrent_correction_and_merge_never_deadlock(self, pool):
+        """AC1d: 20 unlatched correction + merge races, zero deadlocks.
+
+        A stress loop, not a timing assertion: either side may win, but every
+        race ends with the merge applied, the correction applied-then-repointed
+        or refused with a typed error, and nothing active on the source.
+        """
+        import asyncio
+
+        from butlers.tools.relationship.entity_merge import merge_entity_pair
+        from butlers.tools.relationship.relationship_assert_fact import AssertOutcome
+
+        await simulate_temporal_cutover(pool)
+        for i in range(20):
+            target, source, value, fact_id = await _merge_pair_with_fact(pool, f"ac1d-{i}")
+            merged, corrected = await asyncio.gather(
+                merge_entity_pair(pool, source_entity_id=source, target_entity_id=target),
+                _correct(pool, source, value, fact_id),
+                return_exceptions=True,
+            )
+            assert not isinstance(merged, asyncpg.exceptions.DeadlockDetectedError), i
+            assert not isinstance(corrected, asyncpg.exceptions.DeadlockDetectedError), i
+            assert not isinstance(merged, BaseException), (i, merged)
+            if isinstance(corrected, BaseException):
+                assert isinstance(corrected, TemporalError), (i, corrected)
+            else:
+                assert corrected.outcome == AssertOutcome.superseded, i
+                assert (
+                    await pool.fetchval(
+                        "SELECT subject FROM relationship.entity_facts WHERE id = $1",
+                        corrected.fact_id,
+                    )
+                    == target
+                ), i
+            assert await _active_on(pool, source) == 0, i

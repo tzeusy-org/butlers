@@ -700,6 +700,51 @@ def _as_json_object(value: Any) -> dict[str, Any]:
 _MAX_UPSERT_ATTEMPTS = 5
 
 
+async def _lock_fact_entities(
+    conn: asyncpg.Connection,
+    subject: uuid.UUID,
+    object: str | None = None,
+    object_kind: str = "literal",
+) -> None:
+    """Lock the entity rows a fact write references, before any fact-row lock.
+
+    Lock order (bu-ab0zys): every ``relationship.entity_facts`` insert or
+    replacement takes ``public.entities`` rows first, in ascending id order,
+    and only then fact rows -- the order ``merge_entity_pair`` and
+    ``contact_merge`` already use (entities ``FOR UPDATE``, then facts). Without
+    it a replacement insert took the fact row first and the entity second (the
+    FK's implicit ``FOR KEY SHARE``), so a concurrent merge could deadlock
+    against it.
+
+    ``FOR KEY SHARE`` is the FK's own lock: it waits for a merge holding the
+    rows ``FOR UPDATE`` and blocks a merge from starting, but never conflicts
+    with another writer. The subject and, for ``object_kind='entity'``, the
+    object entity are locked; a missing entity row simply locks nothing.
+
+    Locking is all this does. A write that waits for a merge still proceeds
+    against the tombstoned source afterwards (``metadata.merged_into``); whether
+    the writer should refuse or follow the merge is bu-gm93xc.
+
+    Retract/verify-only paths write no FK column and take no entity lock, so
+    they cannot join the cycle. Must run inside the caller's transaction.
+    """
+    ids = {subject}
+    if object_kind == "entity" and object is not None:
+        try:
+            ids.add(uuid.UUID(object))
+        except ValueError:
+            pass  # the insert's own validation reports a malformed object id
+    await conn.execute(
+        """
+        SELECT id FROM public.entities
+        WHERE id = ANY($1::uuid[])
+        ORDER BY id
+        FOR KEY SHARE
+        """,
+        sorted(ids),
+    )
+
+
 async def _insert_active_fact(
     conn: asyncpg.Connection,
     *,
@@ -934,6 +979,9 @@ async def _upsert_fact(
     *correction* is delegated to :func:`_correct_fact`. *frozen* is set for an
     approved ordinary replay and must still hold (see :class:`_FrozenResolution`).
     """
+    # Entity rows before any fact row (see _lock_fact_entities).
+    await _lock_fact_entities(conn, subject, object, object_kind)
+
     write: dict[str, Any] = dict(
         subject=subject,
         predicate=predicate,
@@ -2172,6 +2220,8 @@ async def assert_prefers_channel(
                 f"family). Add the channel identity first, then set the preference."
             )
 
+        # Entity rows before the fence's fact-row locks (see _lock_fact_entities).
+        await _lock_fact_entities(c, subject)
         await _fence_prefers_channel(c, subject)
 
         # 2. Idempotency — same active channel already set → no write.

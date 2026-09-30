@@ -46,11 +46,19 @@ _MIGRATIONS = "roster/relationship/migrations"
 
 #: (repo-relative path, enclosing function qualname) -> owned behaviour.
 _INVENTORY: dict[tuple[str, str], str] = {
-    (_WRITER, "_insert_active_fact"): "central writer: occurrence-scoped targetless insert",
-    (_WRITER, "_supersede_and_replace"): "central writer: exact-row version replacement",
-    (_WRITER, "retract_contact_info_fact._retract"): "SPO retraction: one occurrence or refuse",
+    (_WRITER, "_insert_active_fact"): (
+        "central writer: occurrence-scoped targetless insert, entity rows locked first"
+    ),
+    (_WRITER, "_supersede_and_replace"): (
+        "central writer: exact-row version replacement, entity rows locked first"
+    ),
+    (_WRITER, "retract_contact_info_fact._retract"): (
+        "SPO retraction: one occurrence or refuse; no FK column write, no entity lock"
+    ),
     (_WRITER, "_supersede_active_prefers_channel"): "prefers-channel: fenced singleton only",
-    (_WRITER, "assert_prefers_channel._do"): "prefers-channel: fenced singleton only",
+    (_WRITER, "assert_prefers_channel._do"): (
+        "prefers-channel: fenced singleton only, entity row locked before the fence"
+    ),
     ("src/butlers/owner_bootstrap.py", "_seed_owner_telegram_handle"): (
         "owner bootstrap: insert-only unknown default, no sibling"
     ),
@@ -63,7 +71,7 @@ _INVENTORY: dict[tuple[str, str], str] = {
     (_ROUTER, "delete_entity_contact"): "hash selector: one occurrence or 409, exact-id retract",
     (_ROUTER, "verify_entity_contact"): "hash selector: one occurrence or 409, exact-id verify",
     (_ROUTER, "update_entity_contact"): (
-        "hash selector; row re-locked before retract, temporal value edit refused"
+        "hash selector; entity then row locked before retract, temporal value edit refused"
     ),
     (_ROUTER, "forget_entity"): "intentional all-occurrence retraction with projections",
     ("src/butlers/google_account_registry.py", "disconnect_account"): (
@@ -151,3 +159,141 @@ def test_every_entity_facts_mutator_is_inventoried() -> None:
         f"cutover; classify them in _INVENTORY with a real-seam proof: {unclassified}"
     )
     assert not stale, f"Inventory entries no longer mutate entity_facts: {stale}"
+
+
+# ---------------------------------------------------------------------------
+# Lock order (bu-ab0zys): entity rows before fact rows on every insert path
+# ---------------------------------------------------------------------------
+
+_LOCK_HELPER = "_lock_fact_entities"
+#: Writer functions that open an insert/replace path and must take the entity
+#: lock before anything that reads-to-write or locks a fact row.
+_LOCKED_ENTRIES = {"_upsert_fact", "assert_prefers_channel._do"}
+#: Calls that lock or write fact rows (the helpers below the entries).
+_FACT_TOUCHING_CALLS = {
+    "_active_occurrence",
+    "_correct_fact",
+    "_supersede_and_replace",
+    "_insert_active_fact",
+    "_fence_prefers_channel",
+    "_supersede_active_prefers_channel",
+}
+_INSERT_RE = re.compile(r"\bINSERT\s+INTO\s+relationship\.entity_facts\b", re.IGNORECASE)
+
+
+def _writer_functions() -> dict[str, ast.AsyncFunctionDef | ast.FunctionDef]:
+    tree = ast.parse((_REPO_ROOT / _WRITER).read_text(encoding="utf-8"))
+    functions: dict[str, ast.AsyncFunctionDef | ast.FunctionDef] = {}
+
+    def visit(node: ast.AST, prefix: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef):
+                functions[f"{prefix}{child.name}"] = child
+                visit(child, f"{prefix}{child.name}.")
+            else:
+                visit(child, prefix)
+
+    visit(tree, "")
+    return functions
+
+
+def _own_calls(function: ast.AST) -> list[ast.Call]:
+    """Calls in *function*'s own body, excluding nested function definitions."""
+    calls: list[ast.Call] = []
+
+    def visit(node: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            if isinstance(child, ast.Call) and isinstance(child.func, ast.Name):
+                calls.append(child)
+            visit(child)
+
+    visit(function)
+    return calls
+
+
+def _is_bare_lock_statement(stmt: ast.stmt) -> bool:
+    """``await _lock_fact_entities(...)`` as a statement of its own."""
+    return (
+        isinstance(stmt, ast.Expr)
+        and isinstance(stmt.value, ast.Await)
+        and isinstance(stmt.value.value, ast.Call)
+        and isinstance(stmt.value.value.func, ast.Name)
+        and stmt.value.value.func.id == _LOCK_HELPER
+    )
+
+
+def test_every_writer_insert_path_locks_entities_before_facts() -> None:
+    """Each entry locks entities first, and every insert is reached only via an entry.
+
+    The first half pins the order inside each entry; the second walks the
+    writer's call graph up from every ``INSERT INTO relationship.entity_facts``
+    so a new insert path that bypasses the entries fails here.
+    """
+    functions = _writer_functions()
+
+    for entry in sorted(_LOCKED_ENTRIES):
+        # Statement-level, not line-level: the lock must be an unconditional
+        # top-level ``await _lock_fact_entities(...)`` statement that precedes
+        # the first top-level statement touching a fact. A lock nested in one
+        # branch (say, only the correction path) leaves the others unlocked
+        # while still sitting on an earlier line.
+        body = functions[entry].body
+        lock_at = next((i for i, stmt in enumerate(body) if _is_bare_lock_statement(stmt)), None)
+        fact_at = next(
+            (
+                i
+                for i, stmt in enumerate(body)
+                if any(c.func.id in _FACT_TOUCHING_CALLS for c in _own_calls(stmt))
+            ),
+            None,
+        )
+        assert lock_at is not None, (
+            f"{entry} has no unconditional top-level `await {_LOCK_HELPER}(...)` statement"
+        )
+        assert fact_at is not None, f"{entry} no longer touches fact rows; update _LOCKED_ENTRIES"
+        assert lock_at < fact_at, (
+            f"{entry} touches a fact row before {_LOCK_HELPER} (bu-ab0zys lock order)"
+        )
+
+    callers: dict[str, set[str]] = {name: set() for name in functions}
+    for name, function in functions.items():
+        for call in _own_calls(function):
+            if call.func.id in functions:
+                callers[call.func.id].add(name)
+
+    inserts = {
+        name
+        for name, function in functions.items()
+        if any(
+            _INSERT_RE.search(text)
+            for node, text in _string_nodes(function)
+            if _qualnames_of(functions, node) == name
+        )
+    }
+    assert inserts, "found no entity_facts INSERT in the writer; the guard is blind"
+    unguarded: list[str] = []
+    seen: set[str] = set()
+    frontier = list(inserts)
+    while frontier:
+        name = frontier.pop()
+        if name in seen or name in _LOCKED_ENTRIES:
+            continue
+        seen.add(name)
+        if not callers[name]:
+            unguarded.append(name)
+        frontier.extend(callers[name])
+    assert not unguarded, (
+        f"entity_facts insert paths reachable without {_LOCK_HELPER}: {sorted(unguarded)}"
+    )
+
+
+def _qualnames_of(functions: dict[str, ast.AST], node: ast.AST) -> str | None:
+    """The innermost writer function whose line span contains *node*."""
+    best: tuple[int, str] | None = None
+    for name, function in functions.items():
+        start, end = function.lineno, function.end_lineno or function.lineno
+        if start <= node.lineno <= end and (best is None or end - start < best[0]):
+            best = (end - start, name)
+    return best[1] if best else None

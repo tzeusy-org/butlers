@@ -492,5 +492,7 @@ class TestPutEntityContactRelockRefusal:
         assert resp.json()["detail"]["code"] == "contact_fact_changed"
         mock_conn = mock_pool.acquire.return_value.__aenter__.return_value
         assert "FOR UPDATE" in mock_conn.fetchrow.call_args[0][0]
-        mock_conn.execute.assert_not_called()
+        # Only the entity lock ran (bu-ab0zys lock order); no fact was written.
+        executed = [c.args[0] for c in mock_conn.execute.call_args_list]
+        assert len(executed) == 1 and "FOR KEY SHARE" in executed[0], executed
         mock_assert.assert_not_called()
