@@ -161,6 +161,10 @@ export function GoogleAppCredentials() {
 
   const canSave =
     clientId.trim().length > 0 && clientSecret.trim().length > 0 && !saveMutation.isPending;
+  // The OAuth start endpoint needs the app credentials; keep the spec guarantee
+  // that authorize is unavailable until both halves are configured.
+  const credentialsConfigured =
+    status?.client_id_configured === true && status?.client_secret_configured === true;
   const authLabel = status?.oauth_health === "connected" ? "re-authorize google" : "connect google";
 
   return (
@@ -214,7 +218,7 @@ export function GoogleAppCredentials() {
             <PillBtn variant="commit" onClick={() => saveMutation.mutate()} disabled={!canSave}>
               {saveMutation.isPending ? "saving…" : "save app credentials"}
             </PillBtn>
-            <PillBtn onClick={handleReauthorize} disabled={statusPending}>
+            <PillBtn onClick={handleReauthorize} disabled={statusPending || !credentialsConfigured}>
               {authLabel}
             </PillBtn>
           </div>
