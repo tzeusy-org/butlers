@@ -164,7 +164,7 @@ applied by the `core_065` migration. All other `public` tables are read-only for
 | `qa_dismissals` | INSERT, UPDATE, DELETE | QA module |
 | `qa_findings` | INSERT, UPDATE | QA module |
 | `qa_repo_config` | UPDATE | QA module |
-| `qa_patrols` | INSERT, UPDATE | QA module |
+| `qa_patrols` | INSERT, UPDATE (see note below) | QA module |
 | `memory_catalog` | INSERT, UPDATE | memory module |
 | `facts` | INSERT, UPDATE | finance anomaly detection |
 | `insight_candidates` | INSERT, UPDATE, DELETE | insight broker |
@@ -181,6 +181,19 @@ explicit grants) are SELECT-only for butler roles. When a new public table is ad
 need write access, a subsequent core migration must add the targeted `GRANT` statements and this
 matrix must be updated. The authoritative runtime specification is in
 `openspec/specs/database-security/spec.md`.
+
+**`qa_patrols` trust model (accepted risk).** `public.qa_patrols` keeps the INSERT/UPDATE grant on
+every runtime role, and the broad public baseline in `scripts/init-db.sql` (re-applied on every
+bootstrap rerun and through `ALTER DEFAULT PRIVILEGES`) also leaves DELETE effectively open. Only
+the QA module and the Dashboard synthetic-finding route write it, but the database does not enforce
+that. The owner has explicitly accepted that a compromised or defective runtime role could insert a
+qualifying scheduled row and so mask or resolve the paging QA-patrol-overdue condition, forge a
+recorded handoff mode, or delete patrol rows. Runtime roles are trusted in-process code under the
+`SET ROLE` model, and the grants are a defence against accidental cross-schema writes rather than
+against a hostile runtime role. This decision changes no grant, finalizer, or RLS policy. A
+systematic review of public-table write access (candidate mechanisms: a bootstrap ACL finalizer in
+`scripts/init-db.sql`, or forced RLS keyed to the role as for `expected_signals`) is tracked
+separately; note that a migration `REVOKE` alone would not persist because bootstrap re-grants.
 
 `runtime_attention_outbox` is an exception to the legacy broad-public development grant baseline:
 `scripts/init-db.sql` runs its bootstrap-owned ACL finalizer after that baseline on every rerun.
