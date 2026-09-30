@@ -37,33 +37,33 @@ one more connector" persists. Without a record:
    notifications) — is forgotten, and parallel API integrations get built for data the
    Gmail connector already ingests.
 3. Speculative infrastructure (an MQTT base, a FileWatch base, per-connector privacy tiers)
-   gets built "to prepare for" deferred connectors, in direct violation of v1.md:210.
+   gets built "to prepare for" deferred connectors, in direct violation of v1.md#anti-patterns.
 
 Capability specs describe *what an implemented connector does*; they are the wrong home for
 *why other connectors were not built*. This RFC fills that gap.
 
 ## The v1 Connector Roster (In Scope)
 
-The v1 connector set is fixed by `about/heart-and-soul/v1.md:82-99`. These are the only
+The v1 connector set is fixed by `about/heart-and-soul/v1.md#connectors`. These are the only
 connectors v1 ships:
 
 | Connector | Channel / Purpose | v1.md ref |
 |---|---|---|
-| Telegram bot | Long-polling adapter for Telegram Bot API | v1.md:83 |
-| Telegram user client | Telethon adapter for user-account messages | v1.md:84 |
-| Gmail | Push-notification / periodic IMAP adapter for Gmail | v1.md:85 |
-| Discord | WebSocket adapter for Discord events | v1.md:86 |
-| Heartbeat | Periodic health-check connector | v1.md:87 |
-| Live listener | Real-time audio transcription connector (transport, not a voice UI — v1.md:161-162) | v1.md:88 |
-| Google Calendar | Sync-token polling adapter for calendar change events | v1.md:89 |
-| Google Drive | Changes-list polling adapter for file metadata events | v1.md:90 |
-| Home Assistant | WebSocket/REST adapter for smart-home events, with domain/significance filtering | v1.md:91-92 |
-| OwnTracks | HTTP webhook receiver for location and waypoint events | v1.md:93 |
-| Spotify | Playback-state polling adapter for listening events and session aggregation | v1.md:94-95 |
-| Google Health | Polling adapter for wellness data, reusing the Google OAuth pipeline | v1.md:96-98 |
-| WhatsApp user client | Passive inbox ingestion via the whatsmeow Go sidecar | v1.md:99 |
+| Telegram bot | Long-polling adapter for Telegram Bot API | v1.md#connectors |
+| Telegram user client | Telethon adapter for user-account messages | v1.md#connectors |
+| Gmail | Push-notification / periodic IMAP adapter for Gmail | v1.md#connectors |
+| Discord | WebSocket adapter for Discord events | v1.md#connectors |
+| Heartbeat | Periodic health-check connector | v1.md#connectors |
+| Live listener | Real-time audio transcription connector (transport, not a voice UI — v1.md#what-v1-defers) | v1.md#connectors |
+| Google Calendar | Sync-token polling adapter for calendar change events | v1.md#connectors |
+| Google Drive | Changes-list polling adapter for file metadata events | v1.md#connectors |
+| Home Assistant | WebSocket/REST adapter for smart-home events, with domain/significance filtering | v1.md#connectors |
+| OwnTracks | HTTP webhook receiver for location and waypoint events | v1.md#connectors |
+| Spotify | Playback-state polling adapter for listening events and session aggregation | v1.md#connectors |
+| Google Health | Polling adapter for wellness data, reusing the Google OAuth pipeline | v1.md#connectors |
+| WhatsApp user client | Passive inbox ingestion via the whatsmeow Go sidecar | v1.md#connectors |
 
-The v1 success criteria (v1.md:191-193) require the Switchboard to route correctly from this
+The v1 success criteria (v1.md#success-criteria) require the Switchboard to route correctly from this
 specific set — Telegram, Gmail, Discord, Google Calendar, Google Drive, Home Assistant,
 OwnTracks, Spotify, and WhatsApp — at >90% classification accuracy. Connector scope is
 therefore load-bearing for the v1 acceptance gate, not aspirational.
@@ -86,12 +86,12 @@ position — nothing here is scheduled.**
 | Connector | Priority | Reason deferred |
 |---|---|---|
 | Signal | P2 | Requires a dedicated phone number or the fragile linked-device path; Java (signal-cli) runtime; no official bot API; sidecar must hold E2E key material. Reconsider **only after WhatsApp proves the sidecar model** — do not run two unproven sidecars at once. |
-| iMessage | P2 | **Platform-locked to macOS** — incompatible with the Linux/Docker deployment target (v1.md:176). Apple actively blocks third-party access; `chat.db` polling is read-only and fragile across OS updates. Needs a dedicated Mac bridge to exist at all. |
+| iMessage | P2 | **Platform-locked to macOS** — incompatible with the Linux/Docker deployment target (v1.md#platform-targets). Apple actively blocks third-party access; `chat.db` polling is read-only and fragile across OS updates. Needs a dedicated Mac bridge to exist at all. |
 | SMS / RCS | P3 | No universal API. Twilio adds a per-message cost and a separate number contacts must text; phone-forwarding needs an always-on device. High privacy sensitivity (2FA, bank alerts). |
 | Slack | P2 | Only valuable for Slack-using individuals. Socket Mode fits the tailnet-first / no-public-ingress model, but workspace-scoped OAuth and enterprise barriers limit reach. |
 | Reddit | P3 | Free, well-documented API, but low personal-assistant value — mostly content consumption noise; useful only for inbox (DMs/replies). |
 
-(Discord is **in** v1 as a WebSocket connector — v1.md:86 — using the ToS-compliant bot-token
+(Discord is **in** v1 as a WebSocket connector — v1.md#connectors — using the ToS-compliant bot-token
 path; the user-token automation path was rejected for the same ban risk that gates WhatsApp.)
 
 ### Financial
@@ -106,7 +106,7 @@ path; the user-token automation path was rejected for the same ban risk that gat
 
 | Connector | Priority | Reason deferred |
 |---|---|---|
-| Apple Health export | P1 | Richest iPhone health dataset, but no API — relies on large XML/ZIP exports with no native incremental sync; needs a user-configured iOS Shortcut or third-party app. (Google Health is the v1 wellness path — v1.md:96-98.) |
+| Apple Health export | P1 | Richest iPhone health dataset, but no API — relies on large XML/ZIP exports with no native incremental sync; needs a user-configured iOS Shortcut or third-party app. (Google Health is the v1 wellness path — v1.md#connectors.) |
 | Fitbit / Garmin / wearables | P2 | OAuth2 with periodic re-auth; Garmin has no official public API. Largely **subsumed by the wellness path** for users whose devices already sync; direct APIs only add real-time intraday data. |
 | FHIR health records | P2 | High value but high complexity: fragmented endpoint discovery, per-system SMART-on-FHIR OAuth, US-centric mandate, highly sensitive PHI. A "build for one provider at a time" effort. |
 | Pharmacy / medication APIs | P3 | No universal API; SureScripts is gated to licensed entities; chains hide data behind CAPTCHA portals. Email parsing plus manual entry suffices. |
@@ -115,11 +115,11 @@ path; the user-token automation path was rejected for the same ban risk that gat
 
 | Connector | Priority | Reason deferred |
 |---|---|---|
-| CalDAV (iCloud, Fastmail, Nextcloud) | P2 | Only needed if the primary calendar is not Google. Google Calendar is in v1 (v1.md:89); CalDAV is the fallback for non-Google users. |
+| CalDAV (iCloud, Fastmail, Nextcloud) | P2 | Only needed if the primary calendar is not Google. Google Calendar is in v1 (v1.md#connectors); CalDAV is the fallback for non-Google users. |
 | Microsoft Outlook / M365 | P2 | Only relevant if the user's primary email/calendar is Outlook. For Gmail users this is redundant with the Gmail + Google Calendar connectors. |
 | Notion | P2 | Useful as a knowledge base, but the API **lacks change detection** (no sync tokens) — must poll and diff; rate-limited. |
 | Obsidian vault | P2 | Technically trivial (a file watcher), high value for vault users — but it depends on a generic FileWatch base that v1 does not build (see below) and on the vault being host-accessible. |
-| Google Drive / Dropbox cloud storage | P2 | Google Drive *metadata* events are in v1 (v1.md:90). Full-text content extraction (PDF parsing, format conversion) is a different problem and is deferred. |
+| Google Drive / Dropbox cloud storage | P2 | Google Drive *metadata* events are in v1 (v1.md#connectors). Full-text content extraction (PDF parsing, format conversion) is a different problem and is deferred. |
 | Browser bookmarks / reading list | P3 | Low standalone value; infrequently accessed. Raindrop/Pocket APIs are the easy path if ever needed. |
 | Readwise / Pocket (reading highlights) | P2 | Low complexity via Readwise, but Readwise is a paid subscription and the value is niche to heavy readers. |
 
@@ -137,13 +137,13 @@ path; the user-token automation path was rejected for the same ban risk that gat
 |---|---|---|
 | Flight / airline tracking | P2 | Tracking APIs are paid (AeroAPI ~$1/query); continuous polling is expensive. **Booking confirmations already arrive via Gmail**; only real-time status during travel days is incremental. |
 | Hotel / booking platforms | P3 | No unified API; major platforms offer no personal-use API. **Email parsing covers ~90%** of the use case. |
-| Google Maps / navigation history | P3 | Google is **deprecating cloud Timeline access** (moving on-device); Platform APIs are pay-per-use developer tools. OwnTracks (in v1, v1.md:93) serves real-time location better. |
+| Google Maps / navigation history | P3 | Google is **deprecating cloud Timeline access** (moving on-device); Platform APIs are pay-per-use developer tools. OwnTracks (in v1, v1.md#connectors) serves real-time location better. |
 
 ### Smart Home / IoT
 
 | Connector | Priority | Reason deferred |
 |---|---|---|
-| MQTT broker | P2 | **Subsumed by Home Assistant** (in v1, v1.md:91) for users who run HA, which already aggregates MQTT devices. Standalone value only for custom IoT bypassing HA. (See deferred-bases note below.) |
+| MQTT broker | P2 | **Subsumed by Home Assistant** (in v1, v1.md#connectors) for users who run HA, which already aggregates MQTT devices. Standalone value only for custom IoT bypassing HA. (See deferred-bases note below.) |
 | Zigbee / Z-Wave hub direct | P3 | Each hub has its own API; **strictly inferior to Home Assistant** for HA users, who already see these devices via integrations. |
 | Security cameras / NVR (Frigate, ONVIF) | P2 | Event metadata only (no video). Cleanest path is Frigate-over-MQTT, which the Home Assistant connector subsumes if HA is the hub. |
 | Weather station (personal) | P3 | **Subsumed by Home Assistant** — station data flows through HA entities. Standalone only for non-HA users with a cloud station. |
@@ -156,7 +156,7 @@ path; the user-token automation path was rejected for the same ban risk that gat
 | YouTube | P3 | Confirmed (2026-09-09, live YouTube Data API v3 docs) rather than assumed: `activities.list` exposes no watch-history, like, favorite, subscription, or bulletinPost signal — Google has removed those activity types entirely, and `playlistItems.list` explicitly cannot read Watch History or Watch Later. The only owner-authored signal the current API supports at all is explicit addition to one of the owner's own non-Watch-Later playlists. `openspec/changes/specify-youtube-playlist-learning-signal/` specifies that narrower substitute as a principled cut of the original "learning intent" ask, pending explicit owner approval (see that change's `tasks.md` §3) before any promotion out of P3 or implementation. Transcript extraction remains a content pipeline, not a connector, and is out of scope regardless. |
 | Podcast apps | P3 | Fragmented ecosystem with **no dominant API**; OPML export is one-time and lacks listening history. |
 
-(Spotify *is* in v1 — v1.md:94-95 — as the one media-consumption connector; the others above
+(Spotify *is* in v1 — v1.md#connectors — as the one media-consumption connector; the others above
 are the deferred long tail.)
 
 ### Commerce, Government & Official
@@ -177,15 +177,15 @@ by a new connector.
 ## Deferred Infrastructure Bases
 
 The planning catalogue identified shared infrastructure that *would* reduce the cost of several
-deferred connectors. **None of it is built in v1, by design.** `about/heart-and-soul/v1.md:210`
-forbids building v1 features with hooks for deferred work "that add complexity now," and v1.md:154-155
+deferred connectors. **None of it is built in v1, by design.** `about/heart-and-soul/v1.md#anti-patterns`
+forbids building v1 features with hooks for deferred work "that add complexity now," and v1.md#what-v1-defers
 states no v1 work should be designed to "prepare for" deferred features at the cost of v1
 simplicity. These are recorded strictly as **v2 candidates**, contingent on their dependent
 connectors actually being approved:
 
 - **MQTT-subscriber base** — a generic `MQTTConnector` (topic filtering, QoS, payload
   normalization) would serve OwnTracks, raw IoT sensors, and Frigate. v1's OwnTracks connector
-  uses the HTTP-webhook path (v1.md:93) and does **not** depend on an MQTT base; building the
+  uses the HTTP-webhook path (v1.md#connectors) and does **not** depend on an MQTT base; building the
   base now would be premature abstraction for connectors that do not exist.
 - **FileWatch base** — a generic `FileWatchConnector` (inotify, debouncing, mtime checkpoints)
   would serve Obsidian, Apple Health exports, and Kindle clippings. **No v1 connector watches
@@ -200,22 +200,22 @@ connectors actually being approved:
 
 A reusable OAuth2-PKCE base and a WebSocket-stream base were also catalogued. These are **partially
 realized** by the in-scope Google connectors (shared OAuth pipeline, reused by Google Health —
-v1.md:97-98) and the Home Assistant / Discord WebSocket connectors; they are noted here only so a
+v1.md#connectors) and the Home Assistant / Discord WebSocket connectors; they are noted here only so a
 future reader does not mistake them for unbuilt deferred work. Any further generalization should
 follow the same rule: extract the abstraction only once multiple in-scope connectors demand it,
 never to prepare for a deferred one.
 
 ## Doctrine
 
-Two anti-patterns from `about/heart-and-soul/v1.md:208-213` govern every future connector
+Two anti-patterns from `about/heart-and-soul/v1.md#anti-patterns` govern every future connector
 proposal:
 
-1. **"Expanding connector coverage before existing connectors are solid"** (v1.md:212) is an
-   explicit anti-pattern. The v1 success bar (v1.md:191-201) is *reliability of the existing
+1. **"Expanding connector coverage before existing connectors are solid"** (v1.md#anti-patterns) is an
+   explicit anti-pattern. The v1 success bar (v1.md#success-criteria) is *reliability of the existing
    roster over 7 consecutive days*, not breadth. A new connector that competes for attention with
    hardening the v1 set is, by doctrine, the wrong work.
 
-2. **"Building v1 features with [...] hooks that add complexity now"** (v1.md:210) forbids
+2. **"Building v1 features with [...] hooks that add complexity now"** (v1.md#anti-patterns) forbids
    scaffolding for deferred connectors. The deferred bases above stay unbuilt until a concrete,
    approved connector needs them.
 
@@ -234,8 +234,9 @@ The practical decision rule that falls out of this catalogue:
 
 ## References
 
-- `about/heart-and-soul/v1.md` — v1 scope doctrine. Connector roster (lines 82-99), success
-  criteria (191-201), deferral doctrine (152-155), anti-patterns (208-213).
+- `about/heart-and-soul/v1.md` — v1 scope doctrine. Connector roster (`#connectors`), success
+  criteria (`#success-criteria`), deferral doctrine (`#what-v1-defers`), anti-patterns
+  (`#anti-patterns`).
 - `openspec/specs/connector-*` — normative capability specs for the implemented connectors.
   This RFC deliberately does **not** restate their behavior.
 - RFC 0017 (owner-routing safety) — per-channel routing safety / discretion handled at the
