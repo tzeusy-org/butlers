@@ -158,7 +158,7 @@ content, SQL text, container environments, credentials, or key material.
 
 ## Related
 
-- [Core 208 fleet rollout packet](2026-09-05-core-208-conversation-anchor-fleet-rollout.md): evidence
+- [Core 208 fleet rollout packet](../plans/2026-09-05-core-208-conversation-anchor-fleet-rollout.md): evidence
   template this packet extends with signing, tree identity, and an enforced fence.
 - [Runtime-Probe Control Keys](runtime-probe-control-keys.md): signing and keyring document shapes
   this signer reuses with a separate key.
