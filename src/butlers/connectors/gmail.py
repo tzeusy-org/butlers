@@ -14,7 +14,7 @@ Key behaviors:
 - Explicit overload handling (no silent drops)
 - Health endpoint for Kubernetes readiness/liveness probes
 
-Environment variables (see `docs/connectors/gmail.md` section 4):
+Environment variables (see `docs/connectors/gmail.md`, "Environment Variables"):
 - SWITCHBOARD_MCP_URL (required)
 - CONNECTOR_PROVIDER=gmail (required)
 - CONNECTOR_CHANNEL=email (required)
@@ -171,7 +171,7 @@ _SENT_IDS_TTL = 900
 
 
 # Attachment policy: per-MIME-type size limits and fetch mode.
-# See docs/connectors/attachment_handling.md section 3 and 4.
+# See docs/connectors/attachment-handling.md.
 ATTACHMENT_POLICY: dict[str, dict[str, object]] = {
     # Images — lazy fetch, 5 MB limit
     "image/jpeg": {"max_size_bytes": 5 * 1024 * 1024, "fetch_mode": "lazy"},
@@ -374,7 +374,7 @@ class GmailConnectorConfig(BaseModel):
     gmail_pubsub_webhook_token: str | None = None  # Optional auth token for webhook
 
     # Label include/exclude policy (GMAIL_LABEL_INCLUDE, GMAIL_LABEL_EXCLUDE)
-    # Per docs/connectors/email_ingestion_policy.md §9
+    # Per docs/connectors/gmail-ingestion-policy.md, "Gmail Label Filtering"
     gmail_label_include: tuple[str, ...] = ()
     gmail_label_exclude: tuple[str, ...] = ("SPAM", "TRASH")
 
@@ -389,7 +389,8 @@ class GmailConnectorConfig(BaseModel):
     gmail_sent_lookback_days: int = 7
     gmail_sent_max_messages: int = 200
 
-    # Backfill polling protocol (docs/connectors/interface.md section 14)
+    # Backfill polling protocol (backfill.poll / backfill.progress in
+    # openspec/specs/connector-base-spec)
     # CONNECTOR_BACKFILL_ENABLED controls whether backfill polling is active.
     connector_backfill_enabled: bool = True
     # CONNECTOR_BACKFILL_POLL_INTERVAL_S: how often to poll Switchboard for pending backfill jobs.
@@ -454,13 +455,14 @@ class GmailConnectorConfig(BaseModel):
         pubsub_webhook_path = os.environ.get("GMAIL_PUBSUB_WEBHOOK_PATH", "/gmail/webhook")
         pubsub_webhook_token = os.environ.get("GMAIL_PUBSUB_WEBHOOK_TOKEN")
 
-        # Label include/exclude policy (per docs/connectors/email_ingestion_policy.md §9)
+        # Label include/exclude policy (per docs/connectors/gmail-ingestion-policy.md,
+        # "Gmail Label Filtering")
         label_include_raw = os.environ.get("GMAIL_LABEL_INCLUDE", "")
         label_exclude_raw = os.environ.get("GMAIL_LABEL_EXCLUDE", "SPAM,TRASH")
         gmail_label_include = tuple(parse_label_list(label_include_raw))
         gmail_label_exclude = tuple(parse_label_list(label_exclude_raw))
 
-        # Policy tier assignment (per docs/switchboard/email_priority_queuing.md)
+        # Policy tier assignment (per docs/architecture/email-priority-queuing.md)
         gmail_user_email = os.environ.get("GMAIL_USER_EMAIL", "")
 
         # reply_to_outbound: recent SENT-mailbox window for sent_message_ids.
@@ -480,7 +482,8 @@ class GmailConnectorConfig(BaseModel):
                 f"GMAIL_SENT_MAX_MESSAGES must be an integer, got: {sent_max_messages_str}"
             ) from exc
 
-        # Backfill polling protocol (docs/connectors/interface.md section 14)
+        # Backfill polling protocol (backfill.poll / backfill.progress in
+        # openspec/specs/connector-base-spec)
         backfill_enabled_str = os.environ.get("CONNECTOR_BACKFILL_ENABLED", "true").lower()
         connector_backfill_enabled = backfill_enabled_str not in ("false", "0", "no", "off")
 
@@ -571,7 +574,7 @@ class BackfillJob(BaseModel):
 
     Represents a pending backfill job assigned to this connector by Switchboard.
     Date-bounded traversal parameters, rate control, and server-side cursor come
-    from job params as described in docs/connectors/email_backfill.md section 4.
+    from job params as described in docs/connectors/gmail.md, "Backfill".
     """
 
     model_config = ConfigDict(extra="allow")
@@ -660,13 +663,15 @@ class GmailConnectorRuntime:
         self._heartbeat: ConnectorHeartbeat | None = None
         self._last_history_id: str | None = None
 
-        # Backfill polling (docs/connectors/interface.md section 14)
+        # Backfill polling (backfill.poll / backfill.progress in
+        # openspec/specs/connector-base-spec)
         self._backfill_task: asyncio.Task[None] | None = None
         # Track how many backfill.poll attempts have been made so we can
         # suppress the first-attempt warning when Switchboard is still starting.
         self._backfill_poll_attempts: int = 0
 
-        # Label filter policy (per docs/connectors/email_ingestion_policy.md §9)
+        # Label filter policy (per docs/connectors/gmail-ingestion-policy.md,
+        # "Gmail Label Filtering")
         self._label_filter = LabelFilterPolicy.from_lists(
             include=list(config.gmail_label_include),
             exclude=list(config.gmail_label_exclude),
@@ -678,7 +683,7 @@ class GmailConnectorRuntime:
             db_pool=db_pool,
         )
 
-        # Policy tier assigner (per docs/switchboard/email_priority_queuing.md §2).
+        # Policy tier assigner (per docs/architecture/email-priority-queuing.md).
         # Initialised with an empty known_contacts set; refreshed before each poll
         # cycle via _refresh_policy_tier_assigner().
         self._policy_tier_assigner = PolicyTierAssigner(
@@ -1047,7 +1052,7 @@ class GmailConnectorRuntime:
     def _get_capabilities(self) -> dict[str, object]:
         """Return connector capabilities for heartbeat advertisement.
 
-        Includes capabilities.backfill=True per docs/connectors/gmail.md section 9.5
+        Includes capabilities.backfill=True per docs/connectors/gmail.md, "Capability Advertisement"
         when backfill polling is enabled. Dashboard uses this to show/hide backfill
         controls for this connector.
         """
@@ -1273,8 +1278,8 @@ class GmailConnectorRuntime:
         Runs alongside live ingestion and never blocks it. Polls every
         CONNECTOR_BACKFILL_POLL_INTERVAL_S seconds (default 60).
 
-        Per docs/connectors/interface.md section 14 and docs/connectors/gmail.md
-        section 9.1.
+        Per openspec/specs/connector-base-spec (backfill.poll / backfill.progress) and
+        docs/connectors/gmail.md, "Backfill Loop".
         """
         logger.debug(
             "Backfill loop starting: poll_interval=%ds",
@@ -1382,7 +1387,7 @@ class GmailConnectorRuntime:
     async def _execute_backfill_job(self, job: BackfillJob) -> None:
         """Walk Gmail history for a backfill job date range, ingesting historical messages.
 
-        Implements docs/connectors/gmail.md section 9.2:
+        Implements docs/connectors/gmail.md, "History Traversal":
         - Uses users.messages.list with date-bounded query
         - Walks pages in reverse chronological order (newest first)
         - Applies tiered ingestion policy to each message
@@ -1536,7 +1541,7 @@ class GmailConnectorRuntime:
 
                                     # Estimate cost: ~0.01 cents per message as conservative proxy
                                     # Actual cost is LLM-side; connector estimates only.
-                                    # Per docs/connectors/email_backfill.md section 9.4.
+                                    # Per docs/connectors/gmail.md, "Backfill".
                                     cost_spent_cents += 1
 
                         except Exception as exc:
@@ -1721,8 +1726,8 @@ class GmailConnectorRuntime:
         Returns the authoritative status from Switchboard ('ack', 'paused',
         'cancelled', 'cost_capped'). Connector must stop if status is not 'ack'.
 
-        Per docs/connectors/interface.md section 14.2 and docs/connectors/email_backfill.md
-        section 6.2.
+        Per openspec/specs/connector-base-spec (backfill.progress) and docs/connectors/gmail.md,
+        "Backfill".
         """
         args: dict[str, Any] = {
             "job_id": job_id,
@@ -2117,7 +2122,7 @@ class GmailConnectorRuntime:
     async def _ingest_single_message(self, message_id: str) -> None:
         """Fetch and ingest a single Gmail message.
 
-        Pipeline order (per docs/connectors/email_ingestion_policy.md §8):
+        Pipeline order (per docs/connectors/gmail-ingestion-policy.md, "Tier Assignment"):
         1. Fetch message data (always needed to get labels and headers).
         2. Apply label include/exclude filter; skip if excluded.
         3. Evaluate triage rules -> ingestion tier.
@@ -2480,7 +2485,8 @@ class GmailConnectorRuntime:
     ) -> dict[str, Any]:
         """Build ingest.v1 envelope from Gmail message data.
 
-        Builds a tier-appropriate envelope per spec §5:
+        Builds a tier-appropriate envelope per docs/connectors/gmail-ingestion-policy.md,
+        "Envelope Contract by Tier":
         - Tier 1 (full): full normalized payload + attachments.
         - Tier 2 (metadata): slim envelope, payload.raw=null, subject-only normalized_text.
         - Tier 3 (skip): caller must not reach this method.
@@ -2527,7 +2533,8 @@ class GmailConnectorRuntime:
             observed_at = datetime.now(UTC)
 
         # --- Tier 2: Metadata-only envelope ---
-        # Per spec §5.2: payload.raw=null, normalized_text=subject-only, ingestion_tier=metadata
+        # Per docs/connectors/gmail-ingestion-policy.md ("Tier 2"): payload.raw=null,
+        # normalized_text=subject-only, ingestion_tier=metadata
         if effective_ingestion_tier == INGESTION_TIER_METADATA:
             idempotency_key = (
                 f"{self._config.connector_provider}:"
@@ -3048,7 +3055,7 @@ class GmailConnectorRuntime:
     ) -> tuple[dict[str, Any], ...] | None:
         """Extract and handle attachments from message payload.
 
-        Implements the lazy/eager fetch model from docs/connectors/attachment_handling.md:
+        Implements the lazy/eager fetch model from docs/connectors/attachment-handling.md:
         - text/calendar (.ics): eager fetch, direct routing to calendar module.
         - all other supported types: lazy fetch — write attachment_refs row, no download.
         - Oversized or unsupported attachments are skipped; metrics are emitted.
