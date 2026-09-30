@@ -30,6 +30,11 @@ can pick the remedy:
 - owned by any other role (a fenced NOLOGIN owner or the bootstrap superuser):
   re-run ``scripts/init-db.sql`` as a cluster superuser.
 
+The remedy is an operator hint: it compares the owner to ``session_user`` of the
+dashboard pool, assumed to be the shared migration/runtime login.  A distinct dashboard
+login would label migration-owned definers ``init_db``, which over-prescribes but still
+converges.
+
 Reported, never fatal, and never repaired here: the probe only reads
 ``pg_proc``/``pg_namespace``/``pg_depend``, which every role can read.  A failed
 read is an unavailable report, never a false all-clear.
