@@ -15,20 +15,21 @@ places and nowhere else. It collects:
 - JSX text nodes -- `<span>Save changes</span>`
 - Values of user-facing attributes -- `title`, `description`, `placeholder`,
   `alt`, `aria-label`, `label`, `tooltip`, `emptyMessage`, ...
+- Values of those same keys in object literals -- `{ label: "Owner alert queued" }`
 - Arguments to display calls -- `toast.*`, `confirm`, `alert`
 
-Attribute values and call arguments are scanned as JavaScript, so template
-literals and ternary branches are collected. An interpolated expression renders
-as `{}`: `Verified {}/{} models` is one string with two runtime holes. Only
-literals at the top nesting level of a value or argument list count, which is
-what keeps lookup keys and option bags (`t("errors.save")`, `{ id: "toast-1" }`)
-out of the list.
+Attribute values, object-literal values and call arguments are scanned as
+JavaScript, so template literals and ternary branches are collected. An
+interpolated expression renders as `{}`: `Verified {}/{} models` is one string
+with two runtime holes. Only literals at the top nesting level of a value or
+argument list count, which is what keeps lookup keys and option bags
+(`t("errors.save")`, `{ id: "toast-1" }`) out of the list.
 
 **Not covered**, so absence from this file is not evidence the UI never shows a
 string: copy built into a local variable or returned by a helper or hook before
-reaching a display site; copy passed through a prop that is not on the attribute
-list above; copy that originates in the backend; and anything outside `.tsx`
-files under `frontend/src/pages` and `frontend/src/components`.
+reaching a display site; copy passed through a prop or object key that is not on
+the attribute list above; copy that originates in the backend; and anything
+outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/pages/ApprovalsPage.tsx`
 
@@ -96,6 +97,14 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Active approval rules
 - Approval pushes
 - Approval lanes
+- Undo scheduled decision
+- Undo selected scheduled decision
+- Approve selected
+- Approve selected approval
+- Deny selected
+- Deny selected approval
+- Defer selected
+- Defer selected approval
 - Hours must be 1–168
 - Policy saved
 - Save failed: {}
@@ -130,6 +139,8 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Remove actor filter {}
 - e.g. owner
 - e.g. model.priority
+- Toggle selected entry
+- Toggle selected audit entry
 
 ## `frontend/src/pages/BeadDetailPage.tsx`
 
@@ -147,6 +158,9 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Dependencies
 - Direct dependencies
 - External reference
+- Decisions
+- Bead not found
+- This Bead is not present in the current readable snapshot.
 
 ## `frontend/src/pages/ButlerDetailPage.stories.tsx`
 
@@ -182,11 +196,24 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Trips
 - System
 - routing log
+- Reload {}
+- Switch to {}
+- Previous tab
+- Next tab
 
 ## `frontend/src/pages/ButlersPage.tsx`
 
 - Butlers
 - Butler status board
+- Next butler
+- Previous butler
+- Next board row
+- Previous board row
+- Open selected butler
+- Open {}
+- Undo
+- No butlers found
+- Check daemon status and try again.
 - {} restored
 - Failed to restore {}
 - Restoring {}
@@ -317,6 +344,34 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Full re-sync from scratch (cursor recovery)
 - This source needs re-authorization
 - e.g. Daily medication
+- User
+- Butler
+- Month
+- Week
+- Day
+- List
+- 1 hour
+- 3 hours
+- Tomorrow 9am
+- Active
+- Paused
+- Error
+- Completed
+- Cancelled
+- Provider event
+- Schedule
+- Butler event
+- Next 7 days
+- Next 14 days
+- Next 30 days
+- 30 minutes
+- 45 minutes
+- 90 minutes
+- 2 hours
+- Any time of day
+- Mornings
+- Afternoons
+- Evenings
 - Enter a valid snooze time
 - No writable calendar is available to search for free time.
 - Failed to update {}: {}
@@ -427,6 +482,8 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Coverage or availability for this day could not be affirmed.
 - Coverage or availability for this day could not be affirmed
 - Regenerate day-close summary
+- Jump to latest day
+- Reload chronicles briefing
 
 ## `frontend/src/pages/ConditionsPage.tsx`
 
@@ -437,6 +494,8 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 - Connector
 - Connector not found
+- No connector found for {}/{}.
+- Connector not found.
 - No primary account set. Go to Secrets to set a primary account.
 - OAuth error: {}. Try re-authorizing.
 
@@ -447,6 +506,14 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Pending approvals
 - Operations and now
 - Cost
+- Undo scheduled decision
+- Undo selected scheduled decision
+- Approve selected
+- Approve selected attention item
+- Deny selected
+- Deny selected attention item
+- Defer selected
+- Defer selected attention item
 
 ## `frontend/src/pages/DecisionsPage.tsx`
 
@@ -561,6 +628,12 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - New alias...
 - Remove role
 - New role...
+- All
+- Interactions
+- Notes
+- Life events
+- Concentration
+- Index
 - Forgot {}
 - Entity name updated
 - Failed to update name: {}
@@ -589,6 +662,8 @@ files under `frontend/src/pages` and `frontend/src/components`.
 ## `frontend/src/pages/EpisodeDetailPage.tsx`
 
 - derived fact {}: {} · {}
+- Episode not found
+- This episode is not in the daybook.
 
 ## `frontend/src/pages/FactDetailPage.tsx`
 
@@ -598,6 +673,8 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - derived from episode {}
 - supersedes {}
 - superseded by {}
+- Fact not found
+- This fact is not in the ledger.
 
 ## `frontend/src/pages/HealthOverviewPage.tsx`
 
@@ -605,6 +682,10 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Health briefing
 - Vitals
 - Health indexes
+- Source: {}
+- Health signals unavailable
+- Reload health briefing
+- Reload attention index
 
 ## `frontend/src/pages/IngestionConnectorsPage.tsx`
 
@@ -620,6 +701,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - pipeline metrics
 - active backlog
 - Five gates between arriving and acting. Rules at each gate decide whether the system stores, drops, tiers, routes, or replays.
+- received · 24h
 
 ## `frontend/src/pages/IngestionTimelinePage.tsx`
 
@@ -638,6 +720,13 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Butler
 - Clear issue group filter
 - Clear search filter {}
+- All time
+- Critical
+- Warning
+- Restore selected
+- Restore selected issue
+- Acknowledge selected
+- Acknowledge selected issue
 - {} is reachable
 - {} is still unreachable
 - Failed to ping {}
@@ -652,6 +741,10 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Meals
 - Daily nutrition totals
 - Daily totals
+- Calories
+- Protein
+- Carbs
+- Fat
 
 ## `frontend/src/pages/MeasurementsPage.tsx`
 
@@ -682,6 +775,19 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Filter by butler...
 - Acknowledge all {} failed notification{}?
 - Every failed notification is marked read at once. This cannot be undone.
+- All channels
+- Telegram
+- Email
+- All statuses
+- Sent
+- Failed
+- Terminal failures
+- Pending
+- Read
+- Retried
+- Escalated
+- Mark read
+- Mark selected notification read
 - Notification re-sent on {}
 - Retry failed again
 - Could not retry notification
@@ -692,6 +798,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 ## `frontend/src/pages/QaInvestigationDetailPage.tsx`
 
 - Investigation not found.
+- QA
 
 ## `frontend/src/pages/QaOverviewPage.tsx`
 
@@ -717,6 +824,18 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Trigger an immediate QA patrol cycle now?
 - Runs a new patrol cycle outside the normal schedule.
 - Case rail
+- All
+- High
+- Medium
+- Low
+- All states
+- Detect
+- Diagnose
+- PR open
+- Landed
+- Failed
+- Escalated
+- Reset circuit breaker
 - Patrol triggered
 - Patrol not triggered
 - Force patrol failed: {}
@@ -735,6 +854,8 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Findings
 - Dispatched investigations
 - Patrol error
+- QA
+- Patrol {}
 
 ## `frontend/src/pages/ResearchPage.tsx`
 
@@ -744,6 +865,9 @@ files under `frontend/src/pages` and `frontend/src/components`.
 ## `frontend/src/pages/RuleDetailPage.tsx`
 
 - derived from episode {}
+- standing orders
+- Rule not found
+- This rule is not on the books.
 - Failed to retire rule
 
 ## `frontend/src/pages/SecretsPage.tsx`
@@ -759,6 +883,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - &larr; Back to sessions
 - Asked in chat &rarr;
 - Session Detail
+- Sessions
 
 ## `frontend/src/pages/SessionsPage.tsx`
 
@@ -776,6 +901,14 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Browse session history across all butlers.
 - Filter by trigger...
 - Filter by request ID...
+- Success
+- Failed
+- Running
+- Next session
+- Previous session
+- Older sessions
+- Newer sessions
+- Copy selected session ID
 - Copied session ID
 
 ## `frontend/src/pages/SettingsConsolePage.tsx`
@@ -803,6 +936,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Butler × permission matrix, webhooks, and data ops.
 - Secrets
 - Credential inventory, probes, and audit history.
+- Reload settings console
 
 ## `frontend/src/pages/SettingsModelsPage.tsx`
 
@@ -869,6 +1003,10 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Edit {}
 - Delete {}
 - Spend summary
+- Codex with reasoning effort
+- Claude with extended thinking
+- Verify all models
+- New model
 - Saved changes to {}
 - Added {}
 - Failed to update priority
@@ -953,6 +1091,9 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Last 15 privileged-action entries: permission changes, data operations, and webhook events. Heartbeat and routine traffic excluded.
 - Data operations
 - Outbound webhook registrations. Events are signed with HMAC-SHA256.
+- Export {}
+- Reload webhooks
+- Reload permissions matrix
 - Permission update failed: {}
 - Export ready
 - Export failed: {}
@@ -1071,6 +1212,9 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Forecast actuals
 - Monthly ceiling
 - Forecast attribution
+- Add spend rule
+- Change window: today
+- Change window: this week
 - Monthly ceiling updated
 - Failed to update ceiling
 - Enter a positive amount
@@ -1096,6 +1240,8 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Ecosystem Topology
 - System
 - Your instance, your data, your butlers.
+- Refresh system status
+- Home
 
 ## `frontend/src/pages/TimelinePage.tsx`
 
@@ -1130,6 +1276,13 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Hide internal activity
 - Show internal activity
 - View name
+- Sessions
+- Errors
+- Notifications
+- All
+- Errors only
+- Refresh timeline
+- Jump to latest events
 
 ## `frontend/src/pages/calendar/QuickAddBar.tsx`
 
@@ -1168,6 +1321,10 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Keep asking
 - Teach this approval
 - Standing rule created
+
+## `frontend/src/components/approvals/approvals-verdict-opener.tsx`
+
+- approval history
 
 ## `frontend/src/components/approvals/attention-ledger-panel.tsx`
 
@@ -1390,6 +1547,9 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Config
 - Prompt {}
 - Complexity
+- Undo
+- Resume {}
+- Pause {}
 - Prompt sent
 - Force run triggered
 - Failed to run butler
@@ -1415,6 +1575,11 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Subscriptions
 - Deliveries
 - domain events
+- reaction {}
+- reaction none reported
+- reaction none yet
+- no contract
+- not permitted
 
 ## `frontend/src/components/butler-detail/ButlerEducationReviewsTab.tsx`
 
@@ -1431,6 +1596,13 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - No retention data in this window.
 - new Date(e.next_review_at)
 - {}% mastered
+- Total cards
+- Mastered
+- Overdue
+- Avg mastery
+- Today
+- This week
+- Later
 
 ## `frontend/src/components/butler-detail/ButlerFinanceFinancesTab.tsx`
 
@@ -1475,6 +1647,9 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - typed episodes + session outcomes
 - Friction summary period
 - Friction summary
+- TODAY
+- 7D
+- 30D
 
 ## `frontend/src/components/butler-detail/ButlerGeneralCollectionsTab.tsx`
 
@@ -1536,6 +1711,8 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Heart rate
 - HRV
 - Weight
+- Steps
+- Sleep duration
 
 ## `frontend/src/components/butler-detail/ButlerHomeDevicesTab.tsx`
 
@@ -1595,6 +1772,11 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - No logs yet.
 - raw log
 - Log lines
+- All
+- Info
+- Debug
+- Warn
+- Error
 
 ## `frontend/src/components/butler-detail/ButlerManagementTab.tsx`
 
@@ -1726,6 +1908,13 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - View patrol detail
 - Investigation {}: {}
 - Close investigation detail
+- PR open
+- PR merged
+- anon failed
+- Open investigations
+- Closed (24h)
+- Patrols (24h)
+- MTTR (24h)
 
 ## `frontend/src/components/butler-detail/ButlerRegistryTab.tsx`
 
@@ -1761,6 +1950,16 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Warmth: {}
 - Manually pinned
 - Interactions with {}
+- T1 · Support 5
+- T2 · Sympathy 15
+- T3 · Friends 50
+- T4 · Network 150
+- T5 · Acquaintances
+- T6 · Familiar
+- In
+- Out
+- Draft
+- Note
 
 ## `frontend/src/components/butler-detail/ButlerRoutingLogTab.tsx`
 
@@ -1874,6 +2073,14 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Upcoming checklist
 - Trips roster
 - Trip detail
+- Check-in: {}
+
+## `frontend/src/components/butler-detail/ButlerVerdictOpener.tsx`
+
+- butler board
+- spend summary
+- pending approvals
+- failed sessions
 
 ## `frontend/src/components/butler-detail/GoogleHealthStatusCard.tsx`
 
@@ -1929,6 +2136,8 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Narrowing reason
 - Runtime config may narrow Git authority, never add a group Git does not declare.
 - Required when runtime enables fewer groups than Git
+- Eager filtered
+- Automatic verified discovery
 
 ## `frontend/src/components/butler-detail/SiblingButlerNav.tsx`
 
@@ -1988,6 +2197,9 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - No cross-source duplicates in this range. Nothing is being collapsed.
 - Noisy threshold (minimum cluster size)
 - Matched on {}
+- Exact
+- Balanced
+- Aggressive
 - Match strategy set to {}.
 - Failed to update match strategy.
 - Noisy threshold must be a whole number ≥ 2.
@@ -2046,6 +2258,12 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Proposal dismissed.
 - End time must be after the start time.
 
+## `frontend/src/components/calendar/CalendarVerdictOpener.tsx`
+
+- calendar workspace
+- calendar source freshness
+- calendar conflict scan
+
 ## `frontend/src/components/calendar/ConflictRadarBanner.tsx`
 
 - Accept fix
@@ -2087,6 +2305,14 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Commitments for {}
 - Dunbar tier {}
 - No relationship tier
+- PROMISE
+- WAITING FOR
+- FOLLOW UP
+- OBLIGATION
+- DECISION
+- Owner owes
+- Counterparty owes owner
+- Owner commitment
 
 ## `frontend/src/components/chat/ChatDock.tsx`
 
@@ -2102,6 +2328,13 @@ files under `frontend/src/pages` and `frontend/src/components`.
 ## `frontend/src/components/chat/ChatPanel.tsx`
 
 - conversation history
+- Previous conversation
+- Next conversation
+
+## `frontend/src/components/chat/ChatRecallCommands.tsx`
+
+- Recent conversations unavailable, retry
+- Untitled conversation
 
 ## `frontend/src/components/chat/ContextChip.tsx`
 
@@ -2315,6 +2548,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Failed to load the map.
 - Try again
 - Loading map
+- Singapore
 
 ## `frontend/src/components/chronicles/MapWidgetInner.tsx`
 
@@ -2400,6 +2634,11 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Cost summary
 - Cost source unavailable
 
+## `frontend/src/components/costs/SpendVerdictOpener.tsx`
+
+- spend forecast
+- spend comparison
+
 ## `frontend/src/components/costs/TopSessionsTable.tsx`
 
 - Most Expensive Sessions
@@ -2416,6 +2655,10 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Total
 - No sessions in the selected window.
 - Session activity
+
+## `frontend/src/components/decisions/decisions-verdict-opener.tsx`
+
+- decision digest
 
 ## `frontend/src/components/education/CrossTopicChart.tsx`
 
@@ -2445,6 +2688,10 @@ files under `frontend/src/pages` and `frontend/src/components`.
 ## `frontend/src/components/education/MasterySummaryCards.tsx`
 
 - Couldn't load mastery summary.
+- Total Concepts
+- Mastered
+- Avg Mastery
+- Est. Completion
 
 ## `frontend/src/components/education/MasteryTrendChart.tsx`
 
@@ -2484,6 +2731,15 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Answer:
 - Evaluator:
 - Quiz History
+- Blackout
+- Wrong
+- Hard
+- Okay
+- Good
+- Easy
+- Diagnostic
+- Teach
+- Review
 
 ## `frontend/src/components/education/RequestCurriculumDialog.tsx`
 
@@ -2499,6 +2755,10 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - No reviews scheduled. Keep learning and reviews will appear here.
 - Open {} in {}
 - Review schedule
+- Overdue
+- Today
+- This Week
+- Later
 
 ## `frontend/src/components/education/StrugglingNodesCard.tsx`
 
@@ -2549,6 +2809,18 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 - Health ledger
 - View {}
+- Measurements
+- Readings, trends, and source history.
+- Medications
+- Doses, adherence, and next steps.
+- Conditions
+- Active conditions and care context.
+- Symptoms
+- Patterns, severity, and history.
+- Meals
+- Meals and nutrition totals.
+- Research
+- Saved notes and evidence.
 
 ## `frontend/src/components/health/MealForm.tsx`
 
@@ -2604,6 +2876,10 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - trending up
 - trending down
 - {} readings
+- 7D
+- 14D
+- 30D
+- 90D
 
 ## `frontend/src/components/health/MeasurementForm.tsx`
 
@@ -2618,6 +2894,11 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - e.g. 80
 - e.g. value in {}
 - Anything worth remembering about this reading.
+- Weight
+- Blood pressure
+- Heart rate
+- Blood sugar
+- Temperature
 - Value must be a valid JSON object.
 - Systolic and diastolic are required.
 - A numeric value is required.
@@ -2642,6 +2923,8 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Delete {}
 - Filter by type
 - Measurement types
+- All types
+- {} (selected)
 - Measurement deleted.
 - Failed to delete measurement.
 
@@ -2818,6 +3101,8 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Filter window aggregate counts
 - window rollup
 - View name…
+- All
+- Errors only
 - {} event{} queued for replay
 - Clipboard API not available (requires HTTPS or localhost)
 - Failed to copy IDs to clipboard
@@ -2833,6 +3118,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 - review · suggested for archiving
 - Archive failed. The identity was not archived. Try again.
+- Undo
 - Archiving {}
 
 ## `frontend/src/components/ingestion/connectors/ArchivedConnectorsList.tsx`
@@ -2871,6 +3157,11 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - 24h statistics
 - 24h throughput
 - last checkpoint
+- events · today
+- error rate
+- avg · per hour
+- last heartbeat
+- api calls
 
 ## `frontend/src/components/ingestion/connectors/ConnectorFanoutMatrix.tsx`
 
@@ -2904,6 +3195,10 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - 24h activity
 - device liveness
 - OwnTracks cadence
+- connectors · live
+- needs attention
+- auth · error
+- events · 24h
 
 ## `frontend/src/components/ingestion/connectors/ScopeList.tsx`
 
@@ -2912,6 +3207,12 @@ files under `frontend/src/pages` and `frontend/src/components`.
 ## `frontend/src/components/ingestion/connectors/UnparentedCheckpointsList.tsx`
 
 - checkpoints · owner unresolved
+
+## `frontend/src/components/ingestion/dispatch/IngestionVerdictOpeners.tsx`
+
+- ingestion rollup
+- connector registry
+- pipeline metrics
 
 ## `frontend/src/components/ingestion/filters/ArchivedRulesSection.tsx`
 
@@ -2928,6 +3229,9 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - e.g. 30
 - Channel defaults
 - Edit default for {}
+- pass through
+- metadata only
+- low priority queue
 
 ## `frontend/src/components/ingestion/filters/FiltersPipeline.tsx`
 
@@ -3009,6 +3313,18 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - e.g. finance
 - description (optional)
 - Why this rule exists
+- Sender domain
+- Sender address
+- Source endpoint
+- Email header
+- MIME attachment type
+- Chat ID
+- Source channel
+- skip (drop, bypass LLM)
+- metadata only
+- low priority queue
+- pass through (default)
+- route to butler…
 
 ## `frontend/src/components/ingestion/filters/RuleRow.tsx`
 
@@ -3043,6 +3359,8 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Event detail drawer
 - Close drawer
 - copy id
+- raw payload
+- replay history
 - Replay request failed
 
 ## `frontend/src/components/ingestion/timeline/HourFlameStrip.tsx`
@@ -3067,6 +3385,10 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Issues you acknowledge appear here until they recur, or you restore them.
 - This view is scoped: widen the window or clear the filters to look further back.
 
+## `frontend/src/components/issues/IssuesVerdictOpener.tsx`
+
+- issue feed
+
 ## `frontend/src/components/layout/EntityFinder.tsx`
 
 - Select a result to preview.
@@ -3084,6 +3406,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/components/layout/GlobalActionsRegistrar.tsx`
 
+- Run {}
 - Started {}
 - Failed to run {}
 
@@ -3092,6 +3415,9 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Your device lost its network connection.
 - Your connection is reconnecting.
 - Fleet event stream: {}
+- Live
+- Reconnecting
+- Offline
 
 ## `frontend/src/components/layout/PageHeader.tsx`
 
@@ -3101,6 +3427,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Open command menu
 - Cmd/Ctrl+K
 - Toggle dark mode
+- Home
 
 ## `frontend/src/components/layout/RouteSuspense.tsx`
 
@@ -3128,6 +3455,11 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Recent activity
 - Nothing observed yet.
 - recent activity
+- {} {} dead-lettered
+- Write-up overdue
+- {} anti-pattern {}
+- {} important {} fading
+- {} rows on an old embedding
 
 ## `frontend/src/components/memory/DetailSkeleton.tsx`
 
@@ -3139,6 +3471,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - open ↗
 - Retry failed. Still dead-lettered.
 - the daybook
+- dead letter
 
 ## `frontend/src/components/memory/FactsRegister.tsx`
 
@@ -3168,6 +3501,13 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Compaction log
 - the compaction log
 - embedding drift
+- Dry-run re-embed
+
+## `frontend/src/components/memory/MemoryBrowser.tsx`
+
+- Facts
+- Rules
+- Episodes
 
 ## `frontend/src/components/memory/MemoryOverture.tsx`
 
@@ -3188,6 +3528,10 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 - Search memory
 - Clear search
+- All
+- Facts
+- Rules
+- Episodes
 
 ## `frontend/src/components/memory/RulesRegister.tsx`
 
@@ -3224,6 +3568,10 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Failure Rate
 - By channel:
 
+## `frontend/src/components/notifications/notifications-verdict-opener.tsx`
+
+- notification stats
+
 ## `frontend/src/components/overview/AttentionList.tsx`
 
 - Nothing waiting.
@@ -3240,6 +3588,8 @@ files under `frontend/src/pages` and `frontend/src/components`.
 ## `frontend/src/components/overview/BriefingStatus.tsx`
 
 - Briefing status: {}. Click to refresh.
+- composing…
+- llm · {}
 
 ## `frontend/src/components/overview/ButlerIndex.tsx`
 
@@ -3289,6 +3639,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Dismiss case
 - Retry investigation
 - Remove dismissal
+- Awaiting daemon dispatch. No investigation agent was spawned yet.
 - Case dismissed.
 - Dismiss failed: {}
 - Unknown error
@@ -3339,6 +3690,15 @@ files under `frontend/src/pages` and `frontend/src/components`.
 ## `frontend/src/components/qa/QaKpiStrip.tsx`
 
 - QA key performance indicators
+- prs landed · 24h
+- mttr · 24h
+- self-resolved · 7d
+- active cases · now
+- failed · 24h
+
+## `frontend/src/components/qa/QaVerdictOpener.tsx`
+
+- QA summary
 
 ## `frontend/src/components/qa/SessionDoors.tsx`
 
@@ -3384,6 +3744,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Search circles…
 - No circles yet.
 - Ask the relationship butler to create one (e.g. "group my family"); circles appear here as the butler organizes contacts into groups.
+- Entities
 
 ## `frontend/src/components/relationship/ConcentrationPage.tsx`
 
@@ -3407,6 +3768,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - No active triples found for predicate "{}". They will appear here once the butler builds the knowledge graph.
 - Concentration
 - Balance-sheet of relationship weight by predicate. See which entities dominate each relationship type.
+- Entities
 
 ## `frontend/src/components/relationship/ContactChannelCard.tsx`
 
@@ -3431,6 +3793,8 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Edit (secured values cannot be edited inline)
 - Delete
 - Legacy channel: no entity-keyed write path available (read-only)
+- Telegram
+- Email
 - Failed to reveal secret.
 - Marked {} as verified.
 - Failed to verify: {}
@@ -3509,6 +3873,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Select exactly two to merge
 - Entity list
 - Curation queue
+- Duplicate
 - Promoted {}
 - Promote failed: {}
 - Unknown error
@@ -3539,6 +3904,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Add a note
 - Note
 - Something worth remembering
+- Log interaction
 
 ## `frontend/src/components/relationship/LatestInteractionsBlock.tsx`
 
@@ -3630,6 +3996,18 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Last interaction
 - Last {} days
 - Open loops
+- Support 5
+- Closest support clique
+- Sympathy 15
+- Sympathy group
+- Friends 50
+- Good friends
+- Network 150
+- Meaningful contacts
+- Acquaintances 500
+- Acquaintances
+- Familiar 1500
+- Familiar Faces
 - Dunbar tier pin cleared.
 - Pinned to {}.
 - tier {}
@@ -3639,6 +4017,10 @@ files under `frontend/src/pages` and `frontend/src/components`.
 ## `frontend/src/components/relationship/SubpageTabs.tsx`
 
 - Entity views
+- Plex
+- Index
+- Concentration
+- Circles
 
 ## `frontend/src/components/relationship/TelegramSessionSetup.tsx`
 
@@ -3708,6 +4090,9 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - |c:
 - probe all
 - Probe all {} credentials
+- Spotify
+- Add credential
+- Probe all credentials
 
 ## `frontend/src/components/secrets/passport/GoogleAppCredentials.tsx`
 
@@ -3767,6 +4152,12 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - WhatsApp: {}
 - WhatsApp
 
+## `frontend/src/components/secrets/passport/SeverityPip.tsx`
+
+- high severity
+- medium severity
+- low severity
+
 ## `frontend/src/components/secrets/passport/Spine.tsx`
 
 - sort ·
@@ -3775,6 +4166,9 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Clear search
 - Add credential or connect provider
 - Credentials index
+- needs hand
+- in progress
+- not set
 
 ## `frontend/src/components/secrets/passport/WhatBreaks.tsx`
 
@@ -3865,6 +4259,18 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - SECRET_KEY_NAME
 - credential value
 - human-readable label
+- Calendar
+- Read and manage calendar events
+- Drive
+- Read Drive files and metadata
+- Health
+- Google Health sleep, activity, and metrics
+- Google
+- Home Assistant
+- OwnTracks
+- Spotify
+- Steam
+- WhatsApp
 
 ## `frontend/src/components/sessions/PurposeLaneBadge.tsx`
 
@@ -3956,6 +4362,11 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Recent failures
 - Retry error detail for {}
 
+## `frontend/src/components/sessions/SessionsVerdictOpener.tsx`
+
+- session failures
+- running sessions
+
 ## `frontend/src/components/sessions/StatusBadge.tsx`
 
 - Cancelled
@@ -3969,6 +4380,10 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Result
 - Error
 - Raw Payload
+- Success
+- Failed
+- Pending
+- Unknown
 
 ## `frontend/src/components/settings/QaStafferCard.tsx`
 
@@ -4163,6 +4578,20 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Infrastructure conditions
 - Owner conditions
 - QA dispatch suppression counts
+- Outgoing: you owe the counterparty
+- Incoming: the counterparty owes you
+- Self-commitment: no counterparty
+- Owner alert queued
+- Owner alert queued; no delivery worker is running
+- Owner alert sending; delivery not confirmed
+- Owner alert delivered
+- Owner alert not delivered
+- Owner alert may not have arrived; it is not resent automatically
+- Owner alert status unknown
+- Owner alert status: {}
+- All
+- Commitments
+- Other
 
 ## `frontend/src/components/system/StoredFunctionsTile.tsx`
 
@@ -4173,6 +4602,18 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - if (isError) return
 - Stored-function check unavailable.
 - The comparison itself failed. This is not a clean bill of health.
+
+## `frontend/src/components/system/SystemVerdictBanner.tsx`
+
+- fleet status
+- instance facts
+- database facts
+- backup facts
+- data egress catalog
+- insight delivery status
+- security posture
+- migration drift status
+- deployment status
 
 ## `frontend/src/components/system/UptimeTile.tsx`
 
@@ -4275,6 +4716,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - StalenessBand · staleness axis
 - ProvenanceMarks · src + verified
 - Staleness + provenance marks (stale fact)
+- ui/EntityPrimitives
 
 ## `frontend/src/components/ui/Eyebrow.tsx`
 
@@ -4368,6 +4810,9 @@ files under `frontend/src/pages` and `frontend/src/components`.
 ## `frontend/src/components/ui/range-toggle.tsx`
 
 - Time range
+- 24H
+- 7D
+- 30D
 
 ## `frontend/src/components/ui/sheet.tsx`
 
@@ -4378,6 +4823,10 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Keyboard Shortcuts
 - On this page
 - Keyboard shortcuts
+- Open command menu
+- Open this help sheet
+- Open chat
+- Go to {}
 
 ## `frontend/src/components/workspace/Scrubber.tsx`
 
@@ -4393,4 +4842,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3447*
+*Total strings: 3853*
