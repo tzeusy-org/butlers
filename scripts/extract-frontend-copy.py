@@ -9,6 +9,7 @@ user-facing by construction:
 - JSX text nodes  (>Some text<)
 - Values of user-facing attributes: title, description, placeholder, alt,
   aria-label, aria-describedby, label, tooltip, emptyMessage, ...
+- Values of those same keys in object literals: `{ label: "Owner alert queued" }`
 - Arguments to display calls: toast.*, confirm, alert
 
 Attribute values and call arguments are scanned as JavaScript, so copy assembled
@@ -87,6 +88,17 @@ JSX_TEXT_RE = re.compile(r">\s*([^<>{}\n]+?)\s*<", re.MULTILINE)
 # Anchor: `attr=` -- the value that follows is scanned as JavaScript
 ATTR_ANCHOR_RE = re.compile(
     r"\b({attrs})\s*=\s*".format(attrs="|".join(re.escape(a) for a in sorted(USER_FACING_ATTRS)))
+)
+
+# Anchor: `label:` as a property of an object literal, bare or quoted. Only a `{` or `,`
+# (or a line start, for one-property-per-line literals) may precede it, which keeps the
+# ternary `flag ? label : "x"` -- a variable, not a key -- from anchoring. A `:` glued to
+# a word is a Tailwind variant (`placeholder:text-fg`), not a key.
+PROP_ANCHOR_RE = re.compile(
+    r"(?:[{{,]|^)\s*[\"']?\b(?:{attrs})[\"']?\s*:(?![\w\[-])\s*".format(
+        attrs="|".join(re.escape(a) for a in sorted(USER_FACING_ATTRS))
+    ),
+    re.MULTILINE,
 )
 
 # Anchor: `toast.error(` -- the argument list that follows is scanned as JavaScript
@@ -208,7 +220,7 @@ def _scan_template(text: str, i: int, nested: list[str] | None) -> tuple[str, in
 
 
 def _walk(text: str, i: int, stop: str, collected: list[str] | None) -> int:
-    """Scan forward from i until `stop` appears at nesting depth 0.
+    """Scan forward from i until a `stop` character appears at nesting depth 0.
 
     Return the index just past it. When `collected` is given, append the value of
     every string and template literal found *at depth 0* -- the depth rule is what
@@ -240,7 +252,7 @@ def _walk(text: str, i: int, stop: str, collected: list[str] | None) -> int:
             j = text.find("*/", i + 2)
             i = n if j < 0 else j + 2
             continue
-        if c == stop and depth == 0:
+        if c in stop and depth == 0:
             return i + 1
         if c in _OPENERS:
             depth += 1
@@ -297,6 +309,13 @@ def extract_strings_from_file(path: Path) -> list[str]:
         for s in _collect_anchored_value(text, m.end()):
             add(s)
 
+    # User-facing keys of object literals; the value ends at the next `,` or `;`
+    for m in PROP_ANCHOR_RE.finditer(text):
+        collected = []
+        _walk(text, m.end(), ",;", collected)
+        for s in collected:
+            add(s)
+
     # Display-call arguments
     for m in CALL_ANCHOR_RE.finditer(text):
         collected: list[str] = []
@@ -347,28 +366,29 @@ def generate_report(files: list[Path]) -> tuple[str, int]:
         "- JSX text nodes -- `<span>Save changes</span>`",
         "- Values of user-facing attributes -- `title`, `description`, `placeholder`,",
         "  `alt`, `aria-label`, `label`, `tooltip`, `emptyMessage`, ...",
+        '- Values of those same keys in object literals -- `{ label: "Owner alert queued" }`',
         "- Arguments to display calls -- `toast.*`, `confirm`, `alert`",
         "",
-        "Attribute values and call arguments are scanned as JavaScript, so template",
-        "literals and ternary branches are collected. An interpolated expression renders",
-        "as `{}`: `Verified {}/{} models` is one string with two runtime holes. Only",
-        "literals at the top nesting level of a value or argument list count, which is",
-        'what keeps lookup keys and option bags (`t("errors.save")`, `{ id: "toast-1" }`)',
-        "out of the list.",
+        "Attribute values, object-literal values and call arguments are scanned as",
+        "JavaScript, so template literals and ternary branches are collected. An",
+        "interpolated expression renders as `{}`: `Verified {}/{} models` is one string",
+        "with two runtime holes. Only literals at the top nesting level of a value or",
+        "argument list count, which is what keeps lookup keys and option bags",
+        '(`t("errors.save")`, `{ id: "toast-1" }`) out of the list.',
         "",
         "**Not covered**, so absence from this file is not evidence the UI never shows a",
         "string: copy built into a local variable or returned by a helper or hook before",
-        "reaching a display site; copy passed through a prop that is not on the attribute",
-        "list above; copy that originates in the backend; and anything outside `.tsx`",
-        "files under `frontend/src/pages` and `frontend/src/components`.",
+        "reaching a display site; copy passed through a prop or object key that is not on",
+        "the attribute list above; copy that originates in the backend; and anything",
+        "outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.",
         "",
     ]
 
     total = 0
 
     for path in files:
-        # Skip test files — they don't contain production UI copy
-        if path.stem.endswith(".test") or path.stem.endswith(".spec"):
+        # Skip test and Storybook files -- they do not contain production UI copy
+        if path.stem.endswith((".test", ".spec", ".stories")):
             continue
 
         strings = extract_strings_from_file(path)

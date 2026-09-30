@@ -87,6 +87,21 @@ def test_collects_both_branches_of_a_ternary_attribute(tmp_path: Path) -> None:
     assert "Pause this butler" in strings
 
 
+def test_collects_user_facing_keys_of_object_literals(tmp_path: Path) -> None:
+    """Lookup tables of owner-facing labels (PR #4261's ATTENTION_COPY) reach the inventory."""
+    strings = _extract(
+        tmp_path,
+        """
+        const X: Record<string, { label: string; warn: boolean }> = {
+          a: { label: "Owner alert queued", warn: false },
+          b: { "title": `Sent ${n} alerts`, warn: true },
+        };
+        """,
+    )
+    assert "Owner alert queued" in strings
+    assert "Sent {} alerts" in strings
+
+
 def test_collects_template_literal_in_an_attribute(tmp_path: Path) -> None:
     strings = _extract(
         tmp_path,
@@ -111,6 +126,19 @@ def test_ignores_class_names_keys_and_routes(tmp_path: Path) -> None:
           data-testid="butler-row"
           onClick={() => navigate("/butlers/overview")}
         />
+        """,
+    )
+    assert strings == []
+
+
+def test_ignores_object_literal_values_under_non_user_facing_keys(tmp_path: Path) -> None:
+    strings = _extract(
+        tmp_path,
+        """
+        const opt = { id: "verify-all", value: "sent", to: "/entities", className: "px-2 text-sm" };
+        interface Row { label: string; kind: "Some Kind" }
+        const pick = flag ? label : "Not a key";
+        const cls = cn("placeholder:text-[var(--mfg)] px-2", "placeholder:text-fg");
         """,
     )
     assert strings == []
@@ -190,7 +218,20 @@ def test_generated_header_declares_what_the_inventory_does_not_cover(tmp_path: P
     assert "toast" in header
     # ...and names the blind spots, so a reader knows what a miss does not mean.
     assert "Not covered" in header
+    assert "object literal" in header
     assert "{}" in header
+
+
+def test_report_skips_story_and_test_files(tmp_path: Path) -> None:
+    """Storybook `title: "ui/Foo"` and test fixtures are not production UI copy."""
+    module = _extractor()
+    page = tmp_path / "Page.tsx"
+    page.write_text("<span>Hello there</span>", encoding="utf-8")
+    story = tmp_path / "Page.stories.tsx"
+    story.write_text('export default { title: "Design System Kit" };', encoding="utf-8")
+    report, _ = module.generate_report([page, story])
+    assert "Hello there" in report
+    assert "Design System Kit" not in report
 
 
 def test_report_is_a_pure_function_of_the_sources(tmp_path: Path) -> None:
