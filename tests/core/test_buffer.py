@@ -141,6 +141,21 @@ async def test_enqueue_and_observability() -> None:
     }
 
 
+async def test_passive_tier_rides_default_queue_without_warning(caplog) -> None:
+    """'passive' is a known default-lane alias (no warning); an unknown tier still warns."""
+    buf = DurableBuffer(config=_make_config(), pool=None, process_fn=AsyncMock())
+
+    with caplog.at_level(logging.WARNING, logger="butlers.core.buffer"):
+        assert _enqueue(buf, "p1", "passive") is True
+    assert buf.tier_depths[POLICY_TIER_DEFAULT] == 1
+    assert not any("policy_tier" in r.getMessage() for r in caplog.records)
+
+    with caplog.at_level(logging.WARNING, logger="butlers.core.buffer"):
+        assert _enqueue(buf, "b1", "bogus_tier") is True
+    assert buf.tier_depths[POLICY_TIER_DEFAULT] == 2
+    assert any("Unknown policy_tier='bogus_tier'" in r.getMessage() for r in caplog.records)
+
+
 # ---------------------------------------------------------------------------
 # Tier ordering and starvation guard
 # ---------------------------------------------------------------------------
