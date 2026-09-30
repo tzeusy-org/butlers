@@ -62,11 +62,14 @@ connectors v1 ships:
 | Spotify | Playback-state polling adapter for listening events and session aggregation | v1.md#connectors |
 | Google Health | Polling adapter for wellness data, reusing the Google OAuth pipeline | v1.md#connectors |
 | WhatsApp user client | Passive inbox ingestion via the whatsmeow Go sidecar | v1.md#connectors |
+| Steam | Polling adapter for the Steam Web API (recently-played games and online status) with per-data-type cadence | v1.md#connectors |
 
 The v1 success criteria (v1.md#success-criteria) require the Switchboard to route correctly from this
 specific set — Telegram, Gmail, Discord, Google Calendar, Google Drive, Home Assistant,
-OwnTracks, Spotify, and WhatsApp — at >90% classification accuracy. Connector scope is
-therefore load-bearing for the v1 acceptance gate, not aspirational.
+OwnTracks, Spotify, and WhatsApp — at >90% classification accuracy. Lifestyle-only ingestion
+connectors (e.g. Steam) are excluded from that routing-accuracy set, since they feed ambient
+awareness rather than serve as routing targets. Connector scope is therefore load-bearing for the
+v1 acceptance gate, not aspirational.
 
 All connectors share one pattern: a standalone process emitting `ingest.v1` envelopes,
 MCP submission to the Switchboard, cursor-based checkpointing, and heartbeat liveness.
