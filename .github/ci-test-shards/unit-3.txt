@@ -14,6 +14,7 @@ roster/relationship/tests/test_api_prefix_lock.py
 roster/relationship/tests/test_commitment_extraction.py
 roster/relationship/tests/test_entity_contacts_credentials_exclusion.py
 roster/relationship/tests/test_fact_evidence_and_coverage.py
+roster/relationship/tests/test_owner_setup_status.py
 roster/switchboard/tests/test_ingest_ingestion_events.py
 roster/switchboard/tests/test_ingestion_fanout_db_fallback.py
 roster/switchboard/tests/test_rule_promotion_trigger.py

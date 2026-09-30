@@ -870,7 +870,7 @@ test.describe("entity-v3: Cmd-K finder", () => {
     );
     // owner setup-status → owner id for the empty-query pinned set
     await page.route("**/api/relationship/owner/setup-status**", (route) =>
-      json(route, { entity_id: OWNER_ID, status: "ready" }),
+      json(route, { entity_id: OWNER_ID }),
     );
     // neighbours for both the active-row preview and the owner-pinned set
     await page.route(
