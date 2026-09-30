@@ -145,7 +145,8 @@ the triple land as `validity='active'`. Non-owner subjects are written directly 
 the approval hop.
 
 **Owner-gate trusted-source exemption (as built):** the owner gate has a
-trusted-source carve-out (`roster/relationship/tools/relationship_assert_fact.py:179-217`).
+trusted-source carve-out (`roster/relationship/tools/relationship_assert_fact.py::_OWNER_AUTO_APPLY_SOURCES`,
+checked in `_assert_on_conn`).
 When `src` is an owner-self source (`"owner-bootstrap"` from daemon startup, or
 `"owner-self"` from owner-setup tools) or a trusted internal-derivation source
 (`"interaction_sync"`), an owner-subject write is auto-applied directly instead of being
