@@ -260,7 +260,8 @@ async def test_start_missing_credentials_returns_503(app):
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         resp = await client.get("/api/oauth/google/start")
-    assert resp.status_code in (503, 500)
+    assert resp.status_code == 503
+    assert "location" not in resp.headers
 
 
 async def test_start_page_of_origin_empty_string_normalised_to_none(app):

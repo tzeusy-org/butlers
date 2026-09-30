@@ -45,6 +45,7 @@ vi.mock("@/hooks/use-butlers", () => ({
   useButlers: vi.fn(() => ({ data: { data: [] }, isLoading: false, error: null })),
 }))
 
+import { getGoogleCredentialStatus } from "@/api/index.ts"
 import { PageSystem } from "./pages.tsx"
 import type { SystemCredential } from "./types.ts"
 
@@ -102,6 +103,33 @@ describe("PageSystem: Google OAuth app keys", () => {
       screen.queryByRole("button", { name: "re-authorize google" }) ??
       screen.queryByRole("button", { name: "connect google" })
     expect(auth).toBeTruthy()
+  })
+
+  it("enables the authorize action when both client id and secret are configured", async () => {
+    renderCred(GOOGLE_CLIENT_ID)
+    // The label flips to re-authorize only once status has loaded (no longer pending).
+    const auth = await screen.findByRole("button", { name: "re-authorize google" })
+    expect((auth as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it.each([
+    ["client id missing", { client_id_configured: false, client_secret_configured: true }],
+    ["client secret missing", { client_id_configured: true, client_secret_configured: false }],
+    ["both missing", { client_id_configured: false, client_secret_configured: false }],
+  ])("disables the authorize action when %s", async (_label, configured) => {
+    vi.mocked(getGoogleCredentialStatus).mockResolvedValueOnce({
+      ...configured,
+      refresh_token_present: false,
+      scope: null,
+      oauth_health: "not_configured",
+      oauth_health_remediation: null,
+      oauth_health_detail: null,
+    })
+    renderCred(GOOGLE_CLIENT_ID)
+    // Wait for status to load (the pending gate also disables the button).
+    await screen.findByText("not configured")
+    const auth = screen.getByRole("button", { name: "connect google" })
+    expect((auth as HTMLButtonElement).disabled).toBe(true)
   })
 
   it("suppresses the generic mutate controls (rotate/test/delete)", () => {
