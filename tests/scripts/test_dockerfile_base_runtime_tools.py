@@ -86,8 +86,8 @@ def test_codex_cli_pin_supports_gpt_6_sol_and_luna() -> None:
     match = re.search(r"@openai/codex@(\d+)\.(\d+)\.(\d+)\s+\\", text)
 
     assert match is not None
-    assert tuple(map(int, match.groups())) >= (0, 156, 1), (
-        "gpt-6-sol and gpt-6-luna require Codex CLI 0.156.1 or newer"
+    assert tuple(map(int, match.groups())) >= (0, 159, 2), (
+        "gpt-6-sol and gpt-6-luna require Codex CLI 0.159.2 or newer"
     )
 
 
