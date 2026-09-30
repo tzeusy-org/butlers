@@ -123,6 +123,15 @@ database bootstrapped before this rule keeps `public` on the path until the boot
   - Owned by any other role (`remedy: init_db`), such as a fenced NOLOGIN owner: follow
     [Repair drift](#repair-drift).
 
+  The remedy is an operator hint, not an authority. It compares the definer owner to the
+  dashboard pool's connecting login (`session_user`), which is the shared migration/runtime login
+  from `scripts/init-db.sql`. If a deployment gives the dashboard a distinct login, migration-owned
+  definers show `remedy: init_db`, which is the wrong hint for them. `scripts/init-db.sql`
+  re-declares only the definers it owns (restore drill executor, DND generation, runtime
+  attention). Migration-owned definers are pinned only by migrations, so the real remedy is still
+  to run migrations to head as the migration login. Check the definer's actual owner
+  (`owner` in the entry) before acting on `remedy`.
+
   If an entry persists after its remedy, someone changed the path by hand. Pin it with
   `ALTER FUNCTION ... SET search_path = pg_catalog, pg_temp` as the owner or a superuser.
 - **Audit markers.** `public.runtime_attention_plant_legacy_debounce_marker()` plants
