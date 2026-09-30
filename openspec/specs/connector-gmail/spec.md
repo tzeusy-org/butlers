@@ -122,6 +122,12 @@ Gmail label include/exclude policy SHALL gate ingestion before tier evaluation.
 - **THEN** they accept comma-separated label strings
 - **AND** multiple connectors for the same account may use different label filters (e.g., one for INBOX, one for finance labels)
 
+#### Scenario: Label filters have no dashboard UI
+
+- **WHEN** an operator needs to change Gmail label include/exclude filters
+- **THEN** they change connector env config (`GMAIL_LABEL_INCLUDE` / `GMAIL_LABEL_EXCLUDE`) or the per-account `metadata.gmail` overrides
+- **AND** no dashboard label-filter UI exists or is required; any earlier dashboard label-filter surface is retired
+
 ### Requirement: Tiered Email Ingestion Policy
 
 The connector SHALL implement a three-tier ingestion policy to process emails in proportion to value.

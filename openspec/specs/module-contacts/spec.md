@@ -286,7 +286,6 @@ Sync state SHALL be persisted via `ContactsSyncStateStore` with fields: `sync_cu
   2. Primary email exact match on a `has-email` fact in `relationship.entity_facts`
   3. Phone exact/e164 match on a `has-phone` fact in `relationship.entity_facts`
   4. Conservative name match (ILIKE against `public.entities.canonical_name` and aliases)
-- **AND** ambiguous name matches (multiple candidates) skip auto-merge and return `ambiguous_name` strategy
 
 ### Requirement: MCP Tool Surface (4 Tools)
 
@@ -339,7 +338,7 @@ When multiple providers sync contacts concurrently, the `ContactBackfillEngine` 
 - **WHEN** a Telegram contact named "Alex Smith" has no phone or email
 - **AND** two existing CRM contacts are named "Alex Smith" (one from Google, one manually created)
 - **THEN** auto-merge is skipped (ambiguous name match returns `ambiguous_name` strategy)
-- **AND** the Telegram contact is created as a new CRM record
+- **AND** the Telegram contact is created as a new entity with `metadata.duplicate_candidate` set to `true` and a `contacts_source_links` row recording its source link (so it is not re-ambiguous on the next sync and surfaces in the relationship `duplicate-candidate` curation queue)
 - **AND** a `contact_sync_ambiguous` activity feed entry is logged flagging the potential duplicates for dashboard disambiguation
 
 #### Scenario: Provenance tracking across providers
