@@ -1,7 +1,7 @@
 """Telegram User Client connector runtime for live ingestion.
 
 This connector implements a Telegram user-client (MTProto) ingestion runtime
-as defined in `docs/connectors/telegram_user_client.md`. It uses Telethon to
+as defined in `docs/connectors/telegram-user-client.md`. It uses Telethon to
 maintain a live user session and continuously ingest message activity visible
 to the user's account.
 
@@ -16,7 +16,7 @@ Key behaviors:
 - Privacy/consent safeguards and scope controls
 - Bounded in-flight requests with graceful degradation
 
-Environment variables (see `docs/connectors/telegram_user_client.md` section 4):
+Environment variables (see `docs/connectors/telegram-user-client.md`, "Environment Variables"):
 - SWITCHBOARD_MCP_URL (required)
 - CONNECTOR_PROVIDER=telegram (required)
 - CONNECTOR_CHANNEL=telegram_user_client (required)
@@ -1885,7 +1885,7 @@ class TelegramUserClientConnector:
     async def _normalize_to_ingest_v1(self, message: Any) -> dict[str, Any]:
         """Normalize Telegram user-client message to canonical ingest.v1 format.
 
-        Mapping (from docs/connectors/telegram_user_client.md):
+        Mapping (from docs/connectors/telegram-user-client.md, "Request Context Mapping"):
         - source.channel: "telegram_user_client"
         - source.provider: "telegram"
         - source.endpoint_identity: user-client identity
