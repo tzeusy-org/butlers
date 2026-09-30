@@ -538,10 +538,11 @@ The projection SHALL use a dual-lane model to separate event authority. Each `ca
 
 #### Scenario: Butler overwrites external edits to butler-owned events
 
-- **WHEN** a user manually moves or edits a butler-generated event directly on Google Calendar
-- **AND** the next sync cycle runs
-- **THEN** the provider sync skips the modified event (butler-generated filter)
+- **WHEN** a user manually moves or edits a pushed butler-owned event (a scheduled task or internal reminder) directly on Google Calendar
+- **AND** the next sync and push cycle runs
+- **THEN** the provider sync persists the edited copy to the projection with its butler-generated metadata, like any other butler-generated event (there is no butler-generated filter)
 - **AND** the outbound push of internal events overwrites the Google event with the butler's local state (title, start/end from `scheduled_tasks` or `calendar_events` with `source_kind='internal_reminders'`)
+- **AND** the projection converges on the restored state on the following sync
 - **BECAUSE** the butler's database is authoritative for butler-owned events; Google is a read-only mirror for them
 
 #### Scenario: External events faithfully track provider state
