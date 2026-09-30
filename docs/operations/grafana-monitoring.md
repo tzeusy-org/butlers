@@ -184,10 +184,11 @@ OTEL_EXPORTER_OTLP_ENDPOINT: http://otel.parrot-hen.ts.net:4318
 
 ## Dashboard API Metrics
 
-The dashboard API registers only per-endpoint read counters for the System page
-(`system_*_reads_total` in `src/butlers/api/routers/system.py`). It mounts no
-Prometheus `/metrics` route, so those counters are not scraped today; connector
-processes are the ones that serve `prometheus_client` text for scraping.
+The dashboard API exports no Prometheus metrics. It mounts no Prometheus
+`/metrics` route and has no scrape job in `observability/prometheus/prometheus.yml`;
+connector processes are the ones that serve `prometheus_client` text for scraping.
+Its telemetry reaches Grafana only through OTLP, via `OTEL_EXPORTER_OTLP_ENDPOINT`
+above.
 
 ## Durable Domain-Event Delivery Failures
 
