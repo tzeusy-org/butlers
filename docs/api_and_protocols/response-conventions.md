@@ -45,9 +45,7 @@ Response envelope:
 - The optional `sort=cost` view keeps this cursor-shaped envelope but its opaque cursor encodes
   a page offset; do not mix cursors between sort modes.
 
-Channel filtering uses `channels` (comma-separated). The single-value `source_channel` query
-parameter is a server-side compatibility alias only: the frontend client never sends it, new
-callers must not use it, and `channels` wins when both are present.
+Channel filtering uses `channels` (comma-separated); there is no single-value channel alias.
 
 ## Degraded-mode response envelope
 
