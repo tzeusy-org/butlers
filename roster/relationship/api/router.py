@@ -460,55 +460,23 @@ def _first_ef_value(
 async def get_owner_setup_status(
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> OwnerSetupStatus:
-    """Return whether the owner entity has channel identifiers configured.
+    """Return the owner entity id, or ``None`` before an owner exists.
 
-    Used by the dashboard to show setup prompts when the owner has not yet
-    connected their communication channels.
+    The dashboard reads it to pin the owner's neighbours in the entity finder.
+    The setup banner derives missing identity from the entity's own detail and
+    linked contacts, not from this endpoint.
     """
     pool = _pool(db)
 
-    # Find the owner entity
     owner_row = await pool.fetchrow(
         """
-        SELECT id, canonical_name
+        SELECT id
         FROM public.entities
         WHERE 'owner' = ANY(COALESCE(roles, '{}'))
         LIMIT 1
         """,
     )
-    if owner_row is None:
-        return OwnerSetupStatus(
-            entity_id=None,
-            has_name=False,
-            has_telegram=False,
-            has_telegram_chat_id=False,
-            has_email=False,
-        )
-
-    owner_entity_id = owner_row["id"]
-    # The bootstrap name "Owner" is a placeholder — treat it as not yet set
-    canonical = owner_row["canonical_name"] or ""
-    has_name = bool(canonical.strip() and canonical.strip().lower() != "owner")
-
-    rows = await pool.fetch(
-        """
-        SELECT ei.type
-        FROM public.entity_info ei
-        WHERE ei.entity_id = $1
-          AND ei.type IN ('telegram', 'telegram_chat_id', 'email')
-        """,
-        owner_entity_id,
-    )
-
-    found_types = {r["type"] for r in rows}
-
-    return OwnerSetupStatus(
-        entity_id=owner_entity_id,
-        has_name=has_name,
-        has_telegram="telegram" in found_types,
-        has_telegram_chat_id="telegram_chat_id" in found_types,
-        has_email="email" in found_types,
-    )
+    return OwnerSetupStatus(entity_id=owner_row["id"] if owner_row is not None else None)
 
 
 # ---------------------------------------------------------------------------
