@@ -1131,6 +1131,72 @@ class TestFactEntityLockOrder:
         )
         assert await _active_on(pool, source) == 0
 
+    async def test_ordinary_supersede_waits_on_the_entity_while_a_merge_holds_it(self, pool):
+        """AC1a for the ordinary supersede path: a re-assertion with new
+        provenance queues on ``public.entities`` without locking the fact row it
+        would supersede, so the merge that holds the entity cannot deadlock."""
+        import asyncio
+
+        from butlers.tools.relationship.entity_merge import merge_entity_pair
+        from butlers.tools.relationship.relationship_assert_fact import (
+            AssertOutcome,
+            relationship_assert_fact,
+        )
+
+        await simulate_temporal_cutover(pool)
+        target, source, value, fact_id = await _merge_pair_with_fact(pool, "ac1a-sup")
+
+        async with pool.acquire() as latch:
+            await latch.execute("SELECT pg_advisory_lock($1)", _LATCH_KEY)
+            merge = asyncio.create_task(
+                merge_entity_pair(
+                    pool,
+                    source_entity_id=source,
+                    target_entity_id=target,
+                    locked_guard=lambda conn, _pair: _latch_on(conn),
+                )
+            )
+            await _wait_on_latch(pool)
+            # Same triple, different src: the writer's supersede path.
+            reassert = asyncio.create_task(
+                relationship_assert_fact(pool, source, "has-email", value, src="test-reassert")
+            )
+            pid = await _poll(
+                pool,
+                _ROW_LOCK_WAITERS_SQL,
+                "public.entities",
+                "%",
+                what="the re-assertion to queue on public.entities",
+            )
+            fact_locks = await pool.fetchval(
+                "SELECT count(*) FROM pg_locks WHERE pid = $1 AND relation = "
+                "'relationship.entity_facts'::regclass "
+                "AND (locktype = 'tuple' OR mode IN ('RowShareLock', 'RowExclusiveLock'))",
+                pid,
+            )
+            assert fact_locks == 0, "the supersede path locked a fact row before the entity"
+            await latch.execute("SELECT pg_advisory_unlock($1)", _LATCH_KEY)
+            merged, reasserted = await asyncio.gather(merge, reassert, return_exceptions=True)
+
+        assert not isinstance(merged, BaseException), merged
+        assert not isinstance(reasserted, BaseException), reasserted
+        # The merge moved the original row intact before the writer re-read.
+        row = await pool.fetchrow(
+            "SELECT subject, validity, src FROM relationship.entity_facts WHERE id = $1",
+            fact_id,
+        )
+        assert (row["subject"], row["validity"], row["src"]) == (target, "active", "test")
+        # Known gap, pinned so its fix is visible: finding nothing left on the
+        # source, the writer inserts there, onto the tombstoned entity. Whether
+        # it should refuse or follow merged_into instead is bu-gm93xc.
+        assert reasserted.outcome == AssertOutcome.inserted
+        assert (
+            await pool.fetchval(
+                "SELECT subject FROM relationship.entity_facts WHERE id = $1", reasserted.fact_id
+            )
+            == source
+        )
+
     async def test_merge_waits_on_a_correction_holding_the_entity(self, pool, monkeypatch):
         """AC1b: a correction paused after its entity lock makes the merge queue
         on ``public.entities``; the correction commits, then the merge repoints

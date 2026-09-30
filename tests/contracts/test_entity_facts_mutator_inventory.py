@@ -213,6 +213,17 @@ def _own_calls(function: ast.AST) -> list[ast.Call]:
     return calls
 
 
+def _is_bare_lock_statement(stmt: ast.stmt) -> bool:
+    """``await _lock_fact_entities(...)`` as a statement of its own."""
+    return (
+        isinstance(stmt, ast.Expr)
+        and isinstance(stmt.value, ast.Await)
+        and isinstance(stmt.value.value, ast.Call)
+        and isinstance(stmt.value.value.func, ast.Name)
+        and stmt.value.value.func.id == _LOCK_HELPER
+    )
+
+
 def test_every_writer_insert_path_locks_entities_before_facts() -> None:
     """Each entry locks entities first, and every insert is reached only via an entry.
 
@@ -223,12 +234,26 @@ def test_every_writer_insert_path_locks_entities_before_facts() -> None:
     functions = _writer_functions()
 
     for entry in sorted(_LOCKED_ENTRIES):
-        calls = _own_calls(functions[entry])
-        lock_lines = [c.lineno for c in calls if c.func.id == _LOCK_HELPER]
-        fact_lines = [c.lineno for c in calls if c.func.id in _FACT_TOUCHING_CALLS]
-        assert lock_lines, f"{entry} never calls {_LOCK_HELPER}"
-        assert fact_lines, f"{entry} no longer touches fact rows; update _LOCKED_ENTRIES"
-        assert min(lock_lines) < min(fact_lines), (
+        # Statement-level, not line-level: the lock must be an unconditional
+        # top-level ``await _lock_fact_entities(...)`` statement that precedes
+        # the first top-level statement touching a fact. A lock nested in one
+        # branch (say, only the correction path) leaves the others unlocked
+        # while still sitting on an earlier line.
+        body = functions[entry].body
+        lock_at = next((i for i, stmt in enumerate(body) if _is_bare_lock_statement(stmt)), None)
+        fact_at = next(
+            (
+                i
+                for i, stmt in enumerate(body)
+                if any(c.func.id in _FACT_TOUCHING_CALLS for c in _own_calls(stmt))
+            ),
+            None,
+        )
+        assert lock_at is not None, (
+            f"{entry} has no unconditional top-level `await {_LOCK_HELPER}(...)` statement"
+        )
+        assert fact_at is not None, f"{entry} no longer touches fact rows; update _LOCKED_ENTRIES"
+        assert lock_at < fact_at, (
             f"{entry} touches a fact row before {_LOCK_HELPER} (bu-ab0zys lock order)"
         )
 
