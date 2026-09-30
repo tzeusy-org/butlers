@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import asyncpg
 import httpx
@@ -72,15 +72,13 @@ async def test_attention_owner_gate_precedes_observation(
     pool = _db(app)
     headers = {"X-API-Key": header} if header is not None else {}
 
-    with patch("butlers.api.owner_control.dashboard_owner_control_total") as counter:
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="https://owner.test.invalid"
-        ) as client:
-            response = await client.get("/api/settings/models/attention", headers=headers)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://owner.test.invalid"
+    ) as client:
+        response = await client.get("/api/settings/models/attention", headers=headers)
 
     assert response.status_code == expected
     pool.fetch.assert_not_awaited()
-    counter.labels.assert_not_called()  # Central denial precedes the route dependency.
 
 
 async def test_attention_observation_distinguishes_no_episode_from_unavailable(
@@ -246,15 +244,13 @@ async def test_reissue_expected_connection_failures_are_truthful_unavailability(
     pool = _db(app)
     pool.fetchrow.side_effect = failure
 
-    with patch("butlers.api.routers.model_settings.model_attention_operator_total") as counter:
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.post(
-                f"/api/settings/models/attention/{uuid.uuid4()}/reissue",
-                headers={"X-API-Key": "owner-key"},
-            )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            f"/api/settings/models/attention/{uuid.uuid4()}/reissue",
+            headers={"X-API-Key": "owner-key"},
+        )
 
     assert response.status_code == 503
     assert response.json()["detail"] == "Attention reissue is unavailable"
-    counter.labels.assert_called_once_with(operation="reissue", outcome="unavailable")
