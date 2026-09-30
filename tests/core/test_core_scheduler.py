@@ -1386,7 +1386,9 @@ async def test_qa_tick_rechecks_own_policy_before_each_dispatch(
             lead_time_days=10,
             alert_thresholds=[{"days_before": 7, "severity": "warning"}],
         )
-    cron_id = await schedule_create(owner, "qa-patrol", "*/1 * * * *", "qa-patrol")
+    # Yearly cron: after the forced-due dispatch, next_run_at must not fall due again
+    # inside the test window, or the final tick would depend on the wall-clock minute.
+    cron_id = await schedule_create(owner, "qa-patrol", "0 0 1 1 *", "qa-patrol")
     await owner.execute(
         "UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1", cron_id, _past()
     )
