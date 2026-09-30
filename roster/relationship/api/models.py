@@ -81,13 +81,9 @@ class ContactInfoEntry(BaseModel):
 
 
 class OwnerSetupStatus(BaseModel):
-    """Response for GET /owner/setup-status."""
+    """Response for GET /owner/setup-status: the owner entity id, if one exists."""
 
     entity_id: UUID | None = None
-    has_name: bool
-    has_telegram: bool
-    has_telegram_chat_id: bool
-    has_email: bool
 
 
 class Group(BaseModel):

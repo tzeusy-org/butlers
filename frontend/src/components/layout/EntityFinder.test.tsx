@@ -80,13 +80,7 @@ vi.mock("@/hooks/use-butlers", () => ({
 }));
 
 vi.mock("@/api/index", () => ({
-  getOwnerSetupStatus: vi.fn(async () => ({
-    entity_id: null,
-    has_name: false,
-    has_telegram: false,
-    has_telegram_chat_id: false,
-    has_email: false,
-  })),
+  getOwnerSetupStatus: vi.fn(async () => ({ entity_id: null })),
 }));
 
 vi.mock("@/components/layout/nav-config", () => ({
@@ -991,13 +985,7 @@ describe("EntityFinder", () => {
     // below provides the complete unranked response the finder must request.
     mockSearchEmpty();
     const ownerId = "owner-entity-id";
-    vi.mocked(getOwnerSetupStatus).mockResolvedValue({
-      entity_id: ownerId,
-      has_name: true,
-      has_telegram: false,
-      has_telegram_chat_id: false,
-      has_email: false,
-    });
+    vi.mocked(getOwnerSetupStatus).mockResolvedValue({ entity_id: ownerId });
     const ownerNeighbours: NeighbourEntry[] = Array.from({ length: 9 }, (_, index) => ({
       entity_id: `n${index + 1}`,
       canonical_name: `Pinned ${index + 1}`,

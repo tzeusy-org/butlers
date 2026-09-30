@@ -47,7 +47,7 @@ Secured entries are stored in PostgreSQL with `secured=true` and masked in the d
 ## Setup Banner
 
 The owner entity's detail page shows a setup banner while the owner lacks a real name, email, or
-Telegram handle (`GET /api/relationship/owner/setup-status`). Non-secret channel handles are written
+Telegram handle, judged from the entity's own detail and linked contacts. Non-secret channel handles are written
 as `relationship.entity_facts` triples so the owner becomes resolvable; only secured credentials go
 to `public.entity_info`.
 
@@ -131,9 +131,9 @@ psql -h localhost -U butlers -d butlers -c \
    ORDER BY ei.type;"
 # Expected: telegram_api_id, telegram_api_hash, telegram_user_session all have secured = true
 
-# 4. Confirm the setup banner is satisfied
+# 4. Confirm the owner entity resolves
 curl -s http://localhost:41200/api/relationship/owner/setup-status
-# Expected: has_name, has_email and has_telegram all true
+# Expected: {"entity_id": "<owner uuid>"}; the owner's detail page shows no setup banner
 ```
 
 ## Related Pages
