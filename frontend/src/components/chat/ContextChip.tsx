@@ -116,7 +116,7 @@ export function ContextChip({
           aria-label="Remove page context from this message"
           onClick={onToggleIncluded}
           onKeyDown={handleKeyDown}
-          className="ml-auto flex items-center justify-center text-muted-foreground hover:text-foreground max-md:min-h-11 max-md:min-w-11"
+          className="ml-auto max-md:flex max-md:items-center max-md:justify-center text-muted-foreground hover:text-foreground max-md:min-h-11 max-md:min-w-11"
         >
           <XIcon className="size-3" />
         </button>
