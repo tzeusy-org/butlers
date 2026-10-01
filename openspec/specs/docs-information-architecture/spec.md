@@ -131,8 +131,9 @@ The documentation SHALL define triggers for when code changes require documentat
 
 #### Scenario: New butler triggers doc update
 - **WHEN** a new butler is added to the `roster/` directory
-- **THEN** a corresponding page SHALL be created in `docs/butlers/`
+- **THEN** a corresponding page SHALL be created in `docs/butlers/`, except that a system or staffer butler with no owner-facing module surface MAY be indexed through its `roster/{butler}/MANIFESTO.md` alone (currently chronicler, concierge, lifestyle and qa)
 - **AND** `docs/index.md` SHALL be updated to include the new butler
+- **AND** every other butler SHALL keep a `docs/butlers/` page
 
 #### Scenario: New module triggers doc update
 - **WHEN** a new module is created under `src/butlers/modules/`
@@ -192,8 +193,8 @@ The documentation SHALL minimize content duplication across pages. When the same
 
 #### Scenario: Per-butler pages do not duplicate module docs
 - **WHEN** a butler page in `docs/butlers/` references modules that the butler uses
-- **THEN** the butler page SHALL list the modules with brief descriptions and link to `docs/modules/` for full details
-- **AND** the butler page SHALL NOT reproduce the module's configuration schema, tool list, or migration details
+- **THEN** the butler page SHALL point to the butler's `roster/{butler}/butler.toml` as the owner of its module list, and MAY link to `docs/modules/` for module details
+- **AND** the butler page SHALL NOT duplicate or reproduce the module list, or a module's configuration schema, tool list, or migration details
 
 ### Requirement: Suggested target docs tree
 The documentation SHALL conform to the following target directory structure:
