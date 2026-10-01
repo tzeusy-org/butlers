@@ -4,6 +4,8 @@
 
 Defines the dashboard surfaces for the Relationship butler: the entity-keyed contact API and detail composition, contact compatibility aliases, secured credential reveal, owner identity setup, pending identity disambiguation queue, roles management, and the bidirectional bridge between memory entity pages and relationship-scoped entity activity. Together these form the complete operator-facing contract for viewing, managing, and navigating relationship data through the Butlers dashboard.
 
+Interim current-behavior note (non-normative): the Circles page (`/entities/circles`) fetches groups in a single page capped at 200 (`FETCH_LIMIT` in `frontend/src/components/relationship/CirclesPage.tsx`), which equals the backend `GET /relationship/groups` `limit` maximum (`le=200`, `roster/relationship/api/router.py`). When the total exceeds 200 the page shows a truncation footnote. The cap is an admitted stopgap, not contract; the intended fix is a backend page-size change.
+
 ## Requirements
 
 ### Requirement: Contact detail API
