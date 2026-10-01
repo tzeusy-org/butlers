@@ -132,7 +132,7 @@ const Q = {
 
 const APPROVAL_LANE_PILL_BASE = [
   "inline-flex items-center justify-center rounded-[3px] border px-2.5 py-1",
-  "font-mono text-[11px] leading-none transition-colors",
+  "font-mono text-[11px] leading-none transition-colors max-md:min-h-11 max-md:min-w-11",
   "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus",
 ].join(" ");
 
@@ -677,7 +677,7 @@ function Dossier({
                 </span>
                 <button
                   onClick={onCancelPending}
-                  className="py-1 px-3 rounded text-sm border border-border hover:border-foreground/40 transition-colors"
+                  className="py-1 px-3 rounded text-sm border border-border hover:border-foreground/40 transition-colors max-md:min-h-11 max-md:min-w-11"
                 >
                   Undo
                 </button>
@@ -689,7 +689,7 @@ function Dossier({
                     onClick={onApprove}
                     disabled={approvePending}
                     className={[
-                      "py-1.5 px-4 rounded font-medium text-sm",
+                      "py-1.5 px-4 rounded font-medium text-sm max-md:min-h-11 max-md:min-w-11",
                       "bg-foreground text-background",
                       "hover:opacity-90 disabled:opacity-50 transition-opacity",
                     ].join(" ")}
@@ -700,7 +700,7 @@ function Dossier({
                     onClick={() => onDeny(denyReason.trim() || undefined)}
                     disabled={denyPending}
                     className={[
-                      "py-1.5 px-3 rounded text-sm border transition-colors",
+                      "py-1.5 px-3 rounded text-sm border transition-colors max-md:min-h-11 max-md:min-w-11",
                       "border-border text-foreground",
                       "hover:border-destructive/60 hover:text-destructive",
                       "disabled:opacity-50",
@@ -711,7 +711,7 @@ function Dossier({
                   <button
                     onClick={() => setShowDefer(!showDefer)}
                     className={[
-                      "py-1.5 px-3 rounded text-sm border transition-colors",
+                      "py-1.5 px-3 rounded text-sm border transition-colors max-md:min-h-11 max-md:min-w-11",
                       "border-border text-foreground hover:border-foreground/40",
                       showDefer ? "border-foreground/40 bg-foreground/5" : "",
                     ].join(" ")}
@@ -1239,7 +1239,7 @@ function PolicySection() {
         {!editing && (
           <button
             onClick={startEdit}
-            className="text-xs font-mono px-2 py-1 border border-border rounded hover:border-foreground/40 transition-colors"
+            className="text-xs font-mono px-2 py-1 border border-border rounded hover:border-foreground/40 transition-colors max-md:min-h-11 max-md:min-w-11"
           >
             Edit
           </button>

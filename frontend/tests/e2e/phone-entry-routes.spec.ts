@@ -69,8 +69,14 @@ for (const route of PHONE_ENTRY_ROUTES) {
           .filter((el) => {
             const r = el.getBoundingClientRect();
             const s = getComputedStyle(el);
+            // A 1x1 box is the sr-only clip (skip link until focused), not a tap target.
+            const srOnly = r.width <= 1 && r.height <= 1;
             return (
-              r.width > 0 && r.height > 0 && s.visibility !== "hidden" && s.display !== "none"
+              r.width > 0 &&
+              r.height > 0 &&
+              !srOnly &&
+              s.visibility !== "hidden" &&
+              s.display !== "none"
             );
           })
           .map((el) => {

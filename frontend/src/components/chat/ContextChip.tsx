@@ -98,7 +98,7 @@ export function ContextChip({
           aria-label={`Page context attached: ${label}. Press Backspace or Delete to remove.`}
           onClick={() => setExpanded((prev) => !prev)}
           onKeyDown={handleKeyDown}
-          className="flex items-center gap-1 text-foreground/80 hover:text-foreground"
+          className="flex items-center gap-1 text-foreground/80 hover:text-foreground max-md:min-h-11"
         >
           {expanded ? (
             <ChevronDownIcon className="size-3" />
@@ -116,7 +116,7 @@ export function ContextChip({
           aria-label="Remove page context from this message"
           onClick={onToggleIncluded}
           onKeyDown={handleKeyDown}
-          className="ml-auto text-muted-foreground hover:text-foreground"
+          className="ml-auto max-md:flex max-md:items-center max-md:justify-center text-muted-foreground hover:text-foreground max-md:min-h-11 max-md:min-w-11"
         >
           <XIcon className="size-3" />
         </button>

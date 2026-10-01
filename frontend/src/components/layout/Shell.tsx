@@ -82,7 +82,7 @@ export default function Shell({ header, children, chatDock }: ShellProps) {
         <header className="flex h-14 items-center border-b border-border px-6">
           {/* Mobile hamburger button — only visible below md */}
           <button
-            className="mr-3 flex items-center justify-center rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent/50 hover:text-accent-foreground md:hidden"
+            className="mr-3 flex items-center justify-center rounded-md p-1.5 max-md:min-h-11 max-md:min-w-11 text-muted-foreground transition-colors hover:bg-accent/50 hover:text-accent-foreground md:hidden"
             onClick={() => setMobileOpen(true)}
             aria-label="Open navigation menu"
           >

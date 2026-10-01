@@ -278,7 +278,7 @@ function ActionArrow({
   return (
     <a
       href={href ?? "#"}
-      className="text-[13px] whitespace-nowrap"
+      className="text-[13px] whitespace-nowrap max-md:inline-flex max-md:min-h-11 max-md:items-center"
       style={{
         color: "var(--fg)",
         textDecoration: "underline",

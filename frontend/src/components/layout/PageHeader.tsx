@@ -117,7 +117,7 @@ export default function PageHeader({
         {activeButlerName && (
           <div className="flex min-w-0 items-center gap-4">
             <div className="flex shrink-0 items-center gap-2 font-mono text-[11px] tracking-[0.06em] text-muted-foreground">
-              <Link to="/butlers" className="transition-colors hover:text-foreground">
+              <Link to="/butlers" className="transition-colors hover:text-foreground max-md:inline-flex max-md:min-h-11 max-md:min-w-11 max-md:items-center">
                 &larr;<span className="md:hidden"> Butlers</span>
                 <span className="hidden md:inline"> /butlers</span>
               </Link>
@@ -137,7 +137,7 @@ export default function PageHeader({
               <span key={i} className="flex items-center gap-1.5">
                 {i > 0 && <span aria-hidden="true">/</span>}
                 {crumb.path ? (
-                  <Link to={crumb.path} className="transition-colors hover:text-foreground">
+                  <Link to={crumb.path} className="transition-colors hover:text-foreground max-md:inline-flex max-md:min-h-11 max-md:min-w-11 max-md:items-center">
                     {crumb.label}
                   </Link>
                 ) : (
