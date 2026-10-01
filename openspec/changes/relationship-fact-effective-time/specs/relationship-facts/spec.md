@@ -409,8 +409,11 @@ Occurrence-safe behavior SHALL be:
   defines period-aware policy for this single-valued predicate.
 - Entity merge SHALL lock and plan every affected occurrence before any mutation, repoint each safe
   row without changing its packet, and update its graph projection in the same transaction. It SHALL
-  NOT apply SPO-only or predicate-only confidence collapse. A collision in the projected final
-  occurrence key SHALL fail `temporal_occurrence_collision` before any entity, contact, fact,
+  NOT apply SPO-only or predicate-only confidence collapse. The one carve-out is unknown-default
+  rows: when every row that shares a projected final occurrence key is an unknown default (no
+  temporal packet), merge MAY keep the legacy same-key dedup, superseding the duplicates within the
+  merge transaction. A collision in the projected final occurrence key that involves any
+  temporal-bearing row SHALL fail `temporal_occurrence_collision` before any entity, contact, fact,
   evidence, or projection write.
 - Legacy `contact_merge` SHALL preflight before its first contact/entity/fact write. If an affected
   row is temporal-bearing, multiple occurrences share an SPO, or the projected merge collides, it
@@ -559,9 +562,11 @@ This single-ingress contract preserves RFC 0006 schema isolation and RDF integri
 - **WHEN** an entity merge would repoint subject/object references for multiple effective occurrences
 - **THEN** every non-colliding row MUST retain its id, occurrence id, temporal packet, and evidence
   while its projection is updated in the same transaction
-- **AND** the merge MUST NOT supersede rows merely because their post-merge SPO or predicate matches
-- **AND** any final occurrence-key collision MUST fail before any entity, contact, fact, evidence, or
-  projection write
+- **AND** the merge MUST NOT supersede rows merely because their post-merge SPO or predicate matches,
+  except that unknown-default rows sharing the same projected final occurrence key MAY keep the
+  legacy same-key dedup
+- **AND** any final occurrence-key collision involving a temporal-bearing row MUST fail before any
+  entity, contact, fact, evidence, or projection write
 
 #### Scenario: Legacy contact merge is fenced before partial mutation
 

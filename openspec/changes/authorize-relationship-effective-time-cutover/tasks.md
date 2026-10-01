@@ -20,16 +20,19 @@
 - [ ] 2.2 Obtain independent exact-head deployment, PostgreSQL, and security review.
 - [ ] 2.3 Record exact owner acceptance of the contract and the single signer artifact choice. Draft
       authorship, review, and CI do not satisfy this task.
-- [ ] 2.4 Record the owner decision on the gate lifecycle and non-production and fresh-install policy
-      (`bu-ftd491`). It is open; until it is recorded the gate applies to every database and no
-      implementation may choose an option.
+- [ ] 2.4 Record the remaining owner decisions on the gate lifecycle and non-production policy
+      (`bu-ftd491`). The fresh-from-base pass rule is answered (A', 2026-09-30); gate retirement,
+      dev-with-data, restore-drill handling, and the other open questions stay open, and until they
+      are recorded the gate applies to every stamped database and no implementation may choose an
+      option.
 
 ## 3. Future implementation owned by bu-h3b7t
 
 - [ ] 3.1 Ship the mutator inventory in `src/butlers/relationship_temporal_cutover.py` with the
       receipt, fence, and digest parsers, and make the static guard import it.
 - [ ] 3.2 Add the gated-revision ceiling and explicit cutover CLI and x-argument plumbing, proving
-      every automatic path stops below the gate and a fresh database has no bypass.
+      every automatic path stops below the gate for stamped databases, and only the owner-answered
+      fresh-from-base case (no stamp at invocation start plus empty `entity_facts`) passes.
 - [ ] 3.3 Add the read-only verifier (row resolution, non-interpolated config digest, credential
       rule, inventory, release check), the isolated test runtime with its negative isolation probes
       and offline frozen inputs, the root wrapper with fixed verbs that runs the fixed test node list
