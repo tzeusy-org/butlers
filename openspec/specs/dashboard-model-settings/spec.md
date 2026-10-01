@@ -4,6 +4,8 @@
 
 Provides dashboard REST API endpoints and UI surfaces for managing the global model catalog and per-butler model overrides. Enables operators to configure which models are used at each complexity tier, create model aliases with extra runtime arguments, and override global defaults for specific butlers.
 
+Dependency note (non-normative): the attention episode reissue endpoint and its 409 (not eligible), 404 (episode not found), and 503 (reissue unavailable) responses (`src/butlers/api/routers/model_settings.py`) are specified by the unarchived change `openspec/changes/harden-runtime-auth-and-breaker-attention` (dashboard-model-settings delta, REQ-dashboard-model-settings-002). That delta does not yet specify the 404 or the reissue 503; both must be added to that change before it is archived.
+
 ## Requirements
 
 ### Requirement: Model Catalog Settings API
