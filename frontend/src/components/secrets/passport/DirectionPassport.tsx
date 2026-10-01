@@ -57,7 +57,7 @@ function ProbeAllButton({
       aria-busy={isPending}
       data-probe-all="true"
       aria-label={`Probe all ${count} credentials`}
-      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-sm font-mono text-[11px] cursor-pointer border transition-colors leading-tight disabled:pointer-events-none disabled:opacity-60"
+      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-sm font-mono text-[11px] cursor-pointer border transition-colors leading-tight disabled:pointer-events-none disabled:opacity-60 max-md:min-h-11 max-md:min-w-11"
       style={{
         background: "transparent",
         color: "var(--fg)",

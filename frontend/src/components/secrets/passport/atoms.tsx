@@ -779,7 +779,7 @@ export function ProbeResult({
             type="button"
             onClick={onProbe}
             disabled={pending}
-            className="font-mono text-[11px] px-2.5 py-1 border border-[var(--border-strong)] rounded-sm bg-transparent text-fg cursor-pointer"
+            className="font-mono text-[11px] px-2.5 py-1 border border-[var(--border-strong)] rounded-sm bg-transparent text-fg cursor-pointer max-md:min-h-11 max-md:min-w-11"
           >
             {pending ? "testing…" : "run probe"}
           </button>
@@ -827,7 +827,7 @@ export function ProbeResult({
           type="button"
           onClick={onProbe}
           disabled={pending}
-          className="font-mono text-[11px] px-2.5 py-1 border border-[var(--border-strong)] rounded-sm bg-transparent text-fg cursor-pointer"
+          className="font-mono text-[11px] px-2.5 py-1 border border-[var(--border-strong)] rounded-sm bg-transparent text-fg cursor-pointer max-md:min-h-11 max-md:min-w-11"
         >
           {pending ? "testing…" : "probe again"}
         </button>
@@ -856,7 +856,7 @@ export const PillBtn = React.forwardRef<HTMLButtonElement, PillBtnProps>(functio
   ...rest
 }, ref) {
   const base = cn(
-    "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-sm font-mono text-[11px] cursor-pointer border transition-colors leading-tight",
+    "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-sm font-mono text-[11px] cursor-pointer border transition-colors leading-tight max-md:min-h-11 max-md:min-w-11",
     "disabled:pointer-events-none disabled:opacity-40",
     className,
   );

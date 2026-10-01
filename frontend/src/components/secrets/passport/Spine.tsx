@@ -120,7 +120,7 @@ export function SortPicker({
             aria-pressed={mode === o.id}
             data-sort-mode={o.id}
             className={cn(
-              "bg-transparent border-none cursor-pointer p-0 font-mono text-[9.5px] uppercase tracking-[0.08em] pb-px",
+              "bg-transparent border-none cursor-pointer p-0 font-mono text-[9.5px] uppercase tracking-[0.08em] pb-px max-md:min-h-11 max-md:min-w-11",
               mode === o.id
                 ? "text-fg border-b border-fg"
                 : "text-[var(--dim)]",
@@ -350,7 +350,7 @@ export function SpineAddButton({
       data-spine-add="true"
       aria-label="Add credential or connect provider"
       className={cn(
-        "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-sm font-mono text-[11px] cursor-pointer border transition-colors leading-tight",
+        "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-sm font-mono text-[11px] cursor-pointer border transition-colors leading-tight max-md:min-h-11 max-md:min-w-11",
         "disabled:pointer-events-none disabled:opacity-40",
         "bg-fg text-bg border-fg",
       )}

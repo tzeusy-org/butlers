@@ -28,13 +28,6 @@ export interface PhoneEntryRoute {
   fixme?: string;
 }
 
-/**
- * Defect bead: the shared shell header controls and each page's action buttons
- * render below 44x44 at 375px. Remove the fixme when it lands (the touch-target
- * test goes red until you do); never loosen the walk.
- */
-const TOUCH_TARGETS_BEAD = "bu-ley6ef";
-
 const NOW = "2026-10-01T09:00:00Z";
 const APPROVAL_ID = "11111111-1111-4111-8111-111111111111";
 const CONVERSATION_ID = "22222222-2222-4222-8222-222222222222";
@@ -157,27 +150,23 @@ export const PHONE_ENTRY_ROUTES: PhoneEntryRoute[] = [
     path: "/approvals",
     fixtures: APPROVALS_FIXTURES,
     primaryAction: (page) => page.getByTestId("rail-item").first(),
-    fixme: TOUCH_TARGETS_BEAD,
   },
   {
     name: "approval dossier",
     path: `/approvals/${APPROVAL_ID}`,
     fixtures: APPROVALS_FIXTURES,
     primaryAction: (page) => page.getByRole("button", { name: "Approve", exact: true }),
-    fixme: TOUCH_TARGETS_BEAD,
   },
   {
     name: "secrets passport (OAuth return)",
     path: "/secrets?focus=u:google&toast=connected",
     fixtures: SECRETS_FIXTURES,
     primaryAction: (page) => page.locator('[data-direction-passport="true"] button').first(),
-    fixme: TOUCH_TARGETS_BEAD,
   },
   {
     name: "chat conversation",
     path: `/chat/${CONVERSATION_ID}`,
     fixtures: CHAT_FIXTURES,
     primaryAction: (page) => page.getByRole("button", { name: "Send message" }),
-    fixme: TOUCH_TARGETS_BEAD,
   },
 ];

@@ -181,7 +181,7 @@ export function DispatchVerdict({
                 </span>
               )}
               {c.href ? (
-                <Link to={c.href} className={cn("text-inherit hover:underline", c.linkClassName)}>
+                <Link to={c.href} className={cn("text-inherit hover:underline max-md:inline-flex max-md:min-h-11 max-md:items-center", c.linkClassName)}>
                   {c.content ?? c.text}
                 </Link>
               ) : (
