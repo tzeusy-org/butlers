@@ -293,8 +293,10 @@ subprocesses receive only `PATH` plus explicitly resolved credentials.
 
 1. **Bind to localhost unless there is a specific reason not to.** Tailscale
    serve handles external HTTPS exposure.
-2. **Internal by default, egress by exception.** A service should not join the
-   `egress` network unless it calls external APIs.
+2. **Egress by exception.** A service should not join the `egress` network
+   unless it calls external APIs. This is a membership convention: the
+   firewall covers only the `egress` bridge and no network is `internal: true`
+   (see RFC 0008).
 3. **Allowlist, not blocklist, for private network access.** The firewall blocks
    all private subnets then punches holes for specific tailnet hosts.
 4. **No secret values in compose files.** Infrastructure bootstrap vars only.
