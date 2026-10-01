@@ -51,6 +51,29 @@ The smoke test detects an unreachable dev server and calls `test.skip()` with a
 clear message rather than failing. New tests that require a live server should
 follow the same pattern if they are likely to run in contexts without a server.
 
+## Phone Project (375px entry routes)
+
+The `phone` project (375x667, `isMobile`, `hasTouch`) runs only `phone-*.spec.ts`;
+the `chromium` project ignores them, so the suite is not doubled.
+
+```bash
+npx playwright test --project=phone
+```
+
+`phone-entry-routes.ts` is a typed registry of the routes an owner reaches from a
+phone (outbound approval pushes, OAuth/Spotify return redirects, chat deep links),
+each with its path, API mock fixtures, and primary-action locator.
+`phone-entry-routes.spec.ts` walks every entry and fails on:
+
+- horizontal page scroll (`scrollWidth > clientWidth`);
+- a primary action outside the viewport;
+- any visible button, link, or `[role=button]` under 44x44.
+
+Add an entry when a new outbound link lands the owner on the dashboard. If a route
+fails, file the layout defect as its own bead and set `fixme: "<bead-id>"` on the
+entry; never loosen an assertion or threshold. Fixtures use `page.route()` on top of
+the strict API mock, so an unmocked endpoint still 404s visibly.
+
 ## CI Integration
 
 The Playwright suite runs in the `frontend-e2e` job in `.github/workflows/ci.yml`.
@@ -59,7 +82,7 @@ CI flow:
 1. `npm ci` — install dependencies
 2. `npm run test:e2e:install` — install Playwright browsers (chromium + deps)
 3. `npm run build` — produce the production build
-4. `npm run test:e2e` — Playwright starts a strict local API mock and `vite
+4. `npm run test:e2e` — runs both projects (`chromium`, `phone`); Playwright starts a strict local API mock and `vite
    preview` automatically (via the `webServer` block in
    `playwright.config.ts`) and runs the tests
 
