@@ -5554,5 +5554,67 @@
       "digest": "d1141ea8db8f",
       "excerpt": "The Telegram bot connector implements the ingestion policy gate using `IngestionPolicyEvaluator` with `scope = 'conne..."
     }
+  ],
+  "2026-09-12-respec-unknown-sender-owner-notification/switchboard-identity/Structured entity_id in route.v1 request_context": [
+    {
+      "kind": "clause",
+      "scenario": "Resolved sender identity in request_context",
+      "digest": "2d41cdbfb764",
+      "excerpt": "- **AND** the sender was resolved to a known contact with `contact_id` and `entity_id`"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Resolved sender identity in request_context",
+      "digest": "6a341ce00f8a",
+      "excerpt": "- **THEN** `request_context` MUST contain `source_sender_contact_id` (UUID string)"
+    }
+  ],
+  "2026-09-12-respec-unknown-sender-owner-notification/switchboard-identity/Routing log identity enrichment": [
+    {
+      "kind": "prose",
+      "scenario": null,
+      "digest": "28ba41b7dedd",
+      "excerpt": "The Switchboard's `routing_log` table SHALL be extended to store resolved identity alongside the raw `source_id`. The..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Routing log captures resolved identity",
+      "digest": "0779f4cd1f81",
+      "excerpt": "- **THEN** the `routing_log` entry MUST include the resolved `contact_id`, `entity_id`, and `sender_roles` alongside ..."
+    }
+  ],
+  "2026-09-12-respec-unknown-sender-owner-notification/switchboard-identity/Resolved sender identity in route.v1 request_context": [
+    {
+      "kind": "prose",
+      "scenario": null,
+      "digest": "adf3b655b623",
+      "excerpt": "After resolving the sender's identity, the Switchboard MUST include the resolved `entity_id` as a structured field in..."
+    },
+    {
+      "kind": "prose",
+      "scenario": null,
+      "digest": "c1c70d3f25f1",
+      "excerpt": "- `source_sender_contact_id` (UUID | null): an optional compatibility identifier; it MUST be null or omitted for enti..."
+    },
+    {
+      "kind": "scenario",
+      "scenario": "Known sender populates both identity fields in request_context",
+      "digest": "5631e5a8ff46",
+      "excerpt": "\"Known sender populates both identity fields in request_context\" is not in the block"
+    },
+    {
+      "kind": "scenario",
+      "scenario": "Owner sender populates both identity fields in request_context",
+      "digest": "c64cd4b29b56",
+      "excerpt": "\"Owner sender populates both identity fields in request_context\" is not in the block"
+    }
+  ],
+  "2026-09-27-core-spec-hygiene/module-contacts/Identity Resolution Pipeline": [
+    {
+      "kind": "clause",
+      "scenario": "Resolution order",
+      "digest": "b5d56bdf2338",
+      "excerpt": "- **AND** ambiguous name matches (multiple candidates) skip auto-merge and return `ambiguous_name` strategy"
+    }
   ]
 }
