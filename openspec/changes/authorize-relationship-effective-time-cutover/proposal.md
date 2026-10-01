@@ -63,14 +63,17 @@ not restated or overwritten.
   access, or temporal activation occurs in this change.
 - `bu-h3b7t` retains implementation ownership; this change fixes the proof its task 3.3 must satisfy.
 - A live cutover additionally depends on owner adoption of the dedicated signer (see `design.md`,
-  "Owner decisions"), the open owner decision on the gate lifecycle and non-production and
-  fresh-install policy (`bu-ftd491`), the `relationship-fact-effective-time` task 3.5
+  "Owner decisions"), the remaining open owner decisions on the gate lifecycle and non-production
+  policy (`bu-ftd491`), the `relationship-fact-effective-time` task 3.5
   real-PostgreSQL scenarios, and the owner-gated entity-merge collision wording amendment
   `bu-ldcp5f`.
-- Gate lifecycle is open (`bu-ftd491`). Because the Relationship chain is linear, every later
+- Gate lifecycle is partly open (`bu-ftd491`). Because the Relationship chain is linear, every later
   Relationship revision descends from rel036, so the gate blocks later Relationship migrations on any
-  database that has not cut over. Until the owner decides, the default is that the gate applies to
-  every database, including dev, fresh installs, CI, and restore-drill scratch databases.
+  database that has not cut over. The owner answered A' for the fresh-from-base pass rule only: a
+  from-base run with no Relationship version stamp at invocation start (captured by the runner) and
+  empty `entity_facts` under the migration lock passes without a receipt, with fallback to deferral if
+  the signal channel proves unreliable. Gate retirement, dev-with-data, restore-drill handling, and
+  the other questions remain owner-gated; until decided, the gate applies to every stamped database.
 - Temporal writes remain refused `temporal_cutover_pending` until a separately authorized cutover.
 
 ## Acceptance Status

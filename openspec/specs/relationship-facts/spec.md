@@ -85,8 +85,10 @@ Alembic migration). Predicates MUST be grouped into families:
   `has-address`, `has-birthday`, `has-website`.
 - **Relational predicates** (`object_kind='entity'`): `knows`, `family-of`, `partner-of`,
   `parent-of`, `child-of`, `colleague-of`, `friend-of`, `co-attended`, `purchased-from`,
-  `subscribed-to`, `visited`, `works-at`, `member-of` (set extensible). `works-at` and
-  `member-of` are person→organization edges.
+  `subscribed-to`, `visited`, `works-at`, `member-of`, `manages-property` (set extensible).
+  `works-at` and `member-of` are person→organization edges. `manages-property` (subject person
+  manages an object place or organization) is an owner-approved catalog predicate seeded by
+  migration `rel_026` (`bu-60pwv6.35`).
 - **Override predicates** (`object_kind='literal'`, JSON): `dunbar_tier_override` (per
   RFC 0013 weight-at-query decision and Phase 1 Amendment 6).
 
