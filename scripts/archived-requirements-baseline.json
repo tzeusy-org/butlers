@@ -5616,5 +5616,107 @@
       "digest": "b5d56bdf2338",
       "excerpt": "- **AND** ambiguous name matches (multiple candidates) skip auto-merge and return `ambiguous_name` strategy"
     }
+  ],
+  "2026-09-27-core-spec-hygiene/module-contacts/TelegramContactsProvider": [
+    {
+      "kind": "clause",
+      "scenario": "Telegram contact deletion detection",
+      "digest": "0ed535787cde",
+      "excerpt": "- **AND** a `contact_sync_deleted_source` activity feed entry is logged"
+    }
+  ],
+  "2026-09-27-core-spec-hygiene/module-contacts/CRM Backfill Pipeline": [
+    {
+      "kind": "clause",
+      "scenario": "New contact backfill",
+      "digest": "c7f50fad9356",
+      "excerpt": "- **AND** a `contact_synced` activity feed entry is logged"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Existing contact update with provenance",
+      "digest": "75188fe3eee1",
+      "excerpt": "- **THEN** fields are updated only if they were previously source-owned (tracked in `metadata` JSONB provenance)"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Existing contact update with provenance",
+      "digest": "b0d60e1b2eeb",
+      "excerpt": "- **AND** local manual edits are preserved (not overwritten)"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Existing contact update with provenance",
+      "digest": "a7b607cd6ba1",
+      "excerpt": "- **AND** conflict fields emit a `contact_sync_conflict` activity feed entry"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Existing contact update with provenance",
+      "digest": "49c7702a9da3",
+      "excerpt": "- **AND** updated fields emit a `contact_sync_updated` activity feed entry"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Tombstone handling (source deleted)",
+      "digest": "0ed535787cde",
+      "excerpt": "- **AND** a `contact_sync_deleted_source` activity feed entry is logged"
+    }
+  ],
+  "2026-09-27-core-spec-hygiene/module-contacts/Cross-Provider Contact Backfill": [
+    {
+      "kind": "clause",
+      "scenario": "Telegram contact matches existing Google contact by phone",
+      "digest": "054c5ddb13e0",
+      "excerpt": "- **AND** `metadata` JSONB provenance tracks which fields came from which provider (e.g., `{\"display_name\": {\"source\"..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "New Telegram-only contact (no Google match)",
+      "digest": "c7f50fad9356",
+      "excerpt": "- **AND** a `contact_synced` activity feed entry is logged"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Ambiguous name-only match across providers",
+      "digest": "fe1fc7a9bb1c",
+      "excerpt": "- **AND** a `contact_sync_ambiguous` activity feed entry is logged flagging the potential duplicates for dashboard di..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Provenance tracking across providers",
+      "digest": "8c0fd0eb5532",
+      "excerpt": "- **THEN** `metadata` JSONB on the contact tracks field-level provenance"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Provenance tracking across providers",
+      "digest": "feec70f963c5",
+      "excerpt": "- Fields first set by Google retain `{\"source\": \"google\"}` provenance"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Provenance tracking across providers",
+      "digest": "210c678b40d6",
+      "excerpt": "- Fields first set by Telegram retain `{\"source\": \"telegram\"}` provenance"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Provenance tracking across providers",
+      "digest": "13a2358dcb82",
+      "excerpt": "- Manual dashboard edits are tracked as `{\"source\": \"manual\"}`"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Provenance tracking across providers",
+      "digest": "84d641e5adc7",
+      "excerpt": "- **AND** sync from either provider respects existing provenance (does not overwrite fields owned by another provider..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Telegram contact removal with Google contact surviving",
+      "digest": "46df9085188c",
+      "excerpt": "- **AND** a `contact_sync_deleted_source` activity feed entry is logged for the Telegram source"
+    }
   ]
 }
