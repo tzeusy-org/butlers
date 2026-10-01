@@ -28,11 +28,10 @@ export interface PhoneEntryRoute {
 }
 
 /**
- * Placeholder until the coordinator files the defect bead: the shared shell
- * header controls and each page's action buttons render below 44x44 at 375px.
- * Replace with the real bead id; do not delete the fixme to turn the lane green.
+ * Defect bead: the shared shell header controls and each page's action buttons
+ * render below 44x44 at 375px. Remove the fixme when it lands; never loosen the walk.
  */
-const TOUCH_TARGETS_BEAD = "unfiled-phone-touch-targets";
+const TOUCH_TARGETS_BEAD = "bu-ley6ef";
 
 const NOW = "2026-10-01T09:00:00Z";
 const APPROVAL_ID = "11111111-1111-4111-8111-111111111111";
