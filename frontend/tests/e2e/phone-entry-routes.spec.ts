@@ -8,34 +8,37 @@
  *   - the primary action sits inside the viewport;
  *   - every visible button, link and [role=button] has a >= 44x44 hit area.
  *
- * A route that fails is `fixme` in the registry with its defect bead; the
- * assertions are never loosened.
+ * Two tests per route. The layout test (scroll, clipping) always runs. The
+ * touch-target test is `test.fail` while the route carries a `fixme` defect bead:
+ * it stays green while the defect exists and goes red once it is fixed, forcing
+ * the marker out of the registry. Assertions are never loosened.
  */
 
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
-import { PHONE_ENTRY_ROUTES } from "./phone-entry-routes";
+import { PHONE_ENTRY_ROUTES, type PhoneEntryRoute } from "./phone-entry-routes";
 
 const MIN_TARGET_PX = 44;
 
+async function openRoute(page: Page, route: PhoneEntryRoute) {
+  for (const [glob, body] of Object.entries(route.fixtures)) {
+    await page.route(glob, (r) =>
+      r.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(body),
+      }),
+    );
+  }
+
+  await page.goto(route.path);
+  await expect(route.primaryAction(page)).toBeVisible();
+  await page.waitForLoadState("networkidle");
+}
+
 for (const route of PHONE_ENTRY_ROUTES) {
-  test(`phone entry route: ${route.name}`, async ({ page }) => {
-    test.fixme(!!route.fixme, `layout defect tracked in ${route.fixme}`);
-
-    for (const [glob, body] of Object.entries(route.fixtures)) {
-      await page.route(glob, (r) =>
-        r.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify(body),
-        }),
-      );
-    }
-
-    await page.goto(route.path);
-    const action = route.primaryAction(page);
-    await expect(action).toBeVisible();
-    await page.waitForLoadState("networkidle");
+  test(`phone entry route layout: ${route.name}`, async ({ page }) => {
+    await openRoute(page, route);
 
     const overflow = await page.evaluate(() => {
       const el = document.scrollingElement ?? document.documentElement;
@@ -46,13 +49,18 @@ for (const route of PHONE_ENTRY_ROUTES) {
     );
 
     const viewport = page.viewportSize()!;
-    const box = (await action.boundingBox())!;
+    const box = (await route.primaryAction(page).boundingBox())!;
     expect(box.x, "primary action clipped left").toBeGreaterThanOrEqual(0);
     expect(box.y, "primary action clipped top").toBeGreaterThanOrEqual(0);
     expect(box.x + box.width, "primary action clipped right").toBeLessThanOrEqual(viewport.width);
     expect(box.y + box.height, "primary action clipped bottom").toBeLessThanOrEqual(
       viewport.height,
     );
+  });
+
+  test(`phone entry route touch targets: ${route.name}`, async ({ page }) => {
+    test.fail(!!route.fixme, `touch-target defect tracked in ${route.fixme}`);
+    await openRoute(page, route);
 
     const undersized = await page
       .locator("button, a[href], [role=button]")

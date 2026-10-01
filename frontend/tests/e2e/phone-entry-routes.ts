@@ -6,8 +6,9 @@
  * deep links). `phone-entry-routes.spec.ts` walks each entry at 375px.
  *
  * Add a route here when a new outbound link lands the owner on the dashboard.
- * A route that fails the walk is marked `fixme` with the bead filed for the
- * layout defect; the walk's assertions are never loosened.
+ * A route whose touch targets fail today carries `fixme` with the defect bead; the
+ * spec then expects that test to fail, so fixing the defect forces the marker out.
+ * The walk's assertions are never loosened.
  */
 
 import type { Locator, Page } from "@playwright/test";
@@ -29,7 +30,8 @@ export interface PhoneEntryRoute {
 
 /**
  * Defect bead: the shared shell header controls and each page's action buttons
- * render below 44x44 at 375px. Remove the fixme when it lands; never loosen the walk.
+ * render below 44x44 at 375px. Remove the fixme when it lands (the touch-target
+ * test goes red until you do); never loosen the walk.
  */
 const TOUCH_TARGETS_BEAD = "bu-ley6ef";
 
