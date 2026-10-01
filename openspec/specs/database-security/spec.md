@@ -66,6 +66,12 @@ Butler runtime roles SHALL have write access to a specific set of public tables.
   - `public.qa_repo_config` — UPDATE
   - `public.qa_patrols` — INSERT, UPDATE
 
+#### Scenario: qa_patrols write access is an accepted trust boundary
+- **WHEN** the runtime-role grants on `public.qa_patrols` are reviewed
+- **THEN** every runtime role retaining INSERT and UPDATE (and the broad public baseline leaving DELETE effectively open) is an explicitly accepted risk, not a defect
+- **AND** the accepted risk is that a compromised or defective runtime role could insert a qualifying row that masks or resolves the paging QA-patrol-overdue condition, forge a recorded handoff mode, or delete patrol rows
+- **AND** narrowing the access (bootstrap ACL finalizer or forced RLS) requires a separate change, because a migration `REVOKE` alone does not persist against `scripts/init-db.sql` re-grants
+
 #### Scenario: Memory and domain table writes
 - **WHEN** a butler operates under SET ROLE enforcement
 - **THEN** it can write to these domain public tables:
