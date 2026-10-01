@@ -16,10 +16,10 @@ Scope: v1-mandatory
 - **WHEN** a patrol cycle completes (success or failure)
 - **THEN** the row's `completed_at`, `status`, and count fields are updated
 - **AND** if the cycle errored, `error_detail` contains a sanitized error summary
-- **AND** `discovery_complete=true` only when a scheduled cycle successfully completed every source in its captured enabled set, with `sources_polled` matching that set and no source error
+- **AND** `discovery_complete=true` only when a scheduled cycle (a full QA-module patrol, timer-driven or reactive) successfully completed every source in its captured enabled set, with `sources_polled` matching that set and no source error
 
 #### Scenario: Genuine suppressed patrol remains healthy discovery
-- **WHEN** a scheduled cycle successfully completes every enabled source but its novel findings are filtered by cooldown or severity
+- **WHEN** a scheduled cycle (a full QA-module patrol, timer-driven or reactive) successfully completes every enabled source but its novel findings are filtered by cooldown or severity
 - **THEN** it may finish `status='suppressed'` with `origin='scheduled'` and `discovery_complete=true`
 - **AND** it qualifies for patrol freshness while investigation dispatch remains suppressed
 

@@ -180,7 +180,8 @@ The QA Staffer SHALL run a scheduler-driven patrol loop that executes at a confi
 - **THEN** the finding is relayed to the QA staffer via Switchboard's `route()` tool calling the QA staffer's `report_finding` tool — this is direct butler-to-staffer tool routing (bypasses user-message classification)
 - **AND** the finding is buffered in the `butler_reports` source's in-memory queue
 - **AND** it is picked up on the next patrol tick
-- **AND** if the finding's severity is 0 (critical), an immediate mini-patrol is triggered for that finding only
+- **AND** if the finding's severity is 0 (critical), an immediate mini-patrol is triggered without waiting for the next timer tick
+- **AND** that mini-patrol is a full patrol across every enabled source, recorded with `origin='scheduled'`, and counts as scheduled patrol coverage exactly as a timer-driven patrol does (a full patrol by the QA module, timer or reactive, qualifies)
 
 ### Requirement: Patrol Configuration
 The QA Staffer's patrol behavior SHALL be configurable via `butler.toml` under `[modules.qa]`.

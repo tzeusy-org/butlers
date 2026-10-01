@@ -249,8 +249,12 @@ but not yet dispatched when the crash occurred are not durably queued at the pat
 will be rediscovered by `session_records` or `log_scanner` on the next cycle.
 
 **Critical-severity fast path:** a finding with `severity = 0` (critical) that arrives via
-`butler_reports` (the reactive relay) triggers an immediate mini-patrol for that finding only,
-without waiting for the next scheduled tick.
+`butler_reports` (the reactive relay) triggers an immediate mini-patrol without waiting for the
+next timer tick. The mini-patrol is a full patrol: it runs `run_patrol_tick()` across every enabled
+source (not only the reactive finding) and records `origin = "scheduled"`. A full patrol by the QA
+module, whether timer-driven or reactive, counts as scheduled patrol coverage; it renews patrol
+freshness when it meets the completion criteria. Because a reactive patrol only runs in a live QA
+daemon, it can briefly mask a stalled timer; that scheduler-health signal is accepted as lost.
 
 **Configuration** (all fields under `[modules.qa]` in `butler.toml`):
 
