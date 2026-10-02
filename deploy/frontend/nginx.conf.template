@@ -2,6 +2,8 @@
 # both ends). The host's `tailscale serve` forwards /<prefix> unchanged.
 server {
     listen 8080;
+    # Relative Location headers: the public host/port belong to tailscale serve.
+    absolute_redirect off;
     root /usr/share/nginx/html;
 
     location = /healthz { access_log off; return 200 "ok\n"; }
