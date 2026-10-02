@@ -166,7 +166,16 @@ The `TelegramContactsProvider` SHALL implement the `ContactsProvider` interface 
 - **THEN** the provider does NOT emit a tombstone (Telegram has no delete markers)
 - **AND** deletion is detected at the backfill engine level by comparing `contacts_source_links` against the current batch
 - **AND** absent contacts have their source link marked with `deleted_at`
-- **AND** a `contact_sync_deleted_source` activity feed entry is logged
+- **AND** a `contact_sync_deleted_source` event is logged
+- **AND** an absent contact that later reappears is un-deleted by the existing source-link upsert, which resets `deleted_at` to NULL
+
+#### Scenario: Deletion-by-absence completeness guard
+
+- **WHEN** the backfill engine considers marking absent Telegram contacts deleted
+- **THEN** it SHALL do so only after a successful, complete fetch of the contact list; a failed, partial, or errored fetch marks nothing
+- **AND** it SHALL refuse to mark deletions when the batch is empty or has shrunk sharply relative to the active Telegram source links (the sanity threshold is an implementation parameter and a refusal is logged)
+- **AND** it SHALL distinguish an unchanged-hash empty batch (hash matched the cursor, no changes, no absence inferred) from an empty fetch (Telethon returned no contacts, treated as suspect and refused)
+- **AND** deletion-by-absence is unmet by the current code and tracked by bead bu-dridrs
 
 #### Scenario: Telegram contact without phone number
 
@@ -246,7 +255,7 @@ Sync state SHALL be persisted via `ContactsSyncStateStore` with fields: `sync_cu
 
 ### Requirement: CRM Backfill Pipeline
 
-`ContactBackfillEngine` SHALL orchestrate identity resolution, table writing, and activity feed logging for each synced contact.
+`ContactBackfillEngine` SHALL orchestrate identity resolution, table writing, and structured logging for each synced contact. The legacy `activity_feed` table was retired (relationship migration `010_drop_legacy_contact_tables`); the engine SHALL NOT write feed rows. Sync events (created, updated, conflict, source-deleted, ambiguous match) SHALL be emitted as structured log records carrying the entity id (when known), provider, account, and external id. Wherever this spec says an event is "logged" it means such a log record.
 
 #### Scenario: New contact backfill
 
@@ -257,22 +266,22 @@ Sync state SHALL be persisted via `ContactsSyncStateStore` with fields: `sync_cu
 - **AND** `important_dates` rows are created for birthdays and anniversaries
 - **AND** `labels` + `contact_labels` rows are created for group memberships
 - **AND** a `contacts_source_links` provenance row is created
-- **AND** a `contact_synced` activity feed entry is logged
+- **AND** a `contact_synced` event is logged
 
 #### Scenario: Existing contact update with provenance
 
 - **WHEN** a canonical contact matches an existing CRM contact
-- **THEN** fields are updated only if they were previously source-owned (tracked in `metadata` JSONB provenance)
-- **AND** local manual edits are preserved (not overwritten)
-- **AND** conflict fields emit a `contact_sync_conflict` activity feed entry
-- **AND** updated fields emit a `contact_sync_updated` activity feed entry
+- **THEN** fields are updated only if they were previously source-owned (a provider-keyed provenance marker exists for that field, see "Provenance tracking across providers")
+- **AND** a field with no provenance marker whose current value differs from the source is treated as a local edit and preserved (not overwritten); there is no explicit manual marker
+- **AND** conflict fields emit a `contact_sync_conflict` log event
+- **AND** updated fields emit a `contact_sync_updated` log event
 
 #### Scenario: Tombstone handling (source deleted)
 
 - **WHEN** a canonical contact has `deleted = true`
 - **THEN** the `contacts_source_links` row is marked with `deleted_at`
 - **AND** the CRM contact record is preserved (no hard deletes)
-- **AND** a `contact_sync_deleted_source` activity feed entry is logged
+- **AND** a `contact_sync_deleted_source` event is logged
 
 ### Requirement: Identity Resolution Pipeline
 
@@ -323,7 +332,7 @@ When multiple providers sync contacts concurrently, the `ContactBackfillEngine` 
 - **THEN** the backfill engine resolves them as the same contact via phone match (strategy 3 in resolution order)
 - **AND** Telegram identifiers (`telegram_username`, `telegram_user_id`) are asserted as `has-handle` facts alongside the existing Google-sourced facts
 - **AND** the `contacts_source_links` table records a second provenance row with `provider = "telegram"`
-- **AND** `metadata` JSONB provenance tracks which fields came from which provider (e.g., `{"display_name": {"source": "google"}, "telegram_user_id": {"source": "telegram"}}`)
+- **AND** entity `metadata` JSONB provenance is keyed by provider under `sources.contacts.{provider}.{field}` (see "Provenance tracking across providers")
 
 #### Scenario: New Telegram-only contact (no Google match)
 
@@ -331,7 +340,7 @@ When multiple providers sync contacts concurrently, the `ContactBackfillEngine` 
 - **AND** the contact's name does not produce a unique name match
 - **THEN** a new entity is created with `contacts_source_links.provider = "telegram"`
 - **AND** `has-handle` facts are asserted for available Telegram identifiers (`telegram_user_id`, optionally `telegram_username`)
-- **AND** a `contact_synced` activity feed entry is logged
+- **AND** a `contact_synced` event is logged
 
 #### Scenario: Ambiguous name-only match across providers
 
@@ -339,16 +348,21 @@ When multiple providers sync contacts concurrently, the `ContactBackfillEngine` 
 - **AND** two existing CRM contacts are named "Alex Smith" (one from Google, one manually created)
 - **THEN** auto-merge is skipped (ambiguous name match returns `ambiguous_name` strategy)
 - **AND** the Telegram contact is created as a new entity with `metadata.duplicate_candidate` set to `true` and a `contacts_source_links` row recording its source link (so it is not re-ambiguous on the next sync and surfaces in the relationship `duplicate-candidate` curation queue)
-- **AND** a `contact_sync_ambiguous` activity feed entry is logged flagging the potential duplicates for dashboard disambiguation
+- **AND** a `contact_sync_ambiguous` warning is logged flagging the potential duplicates for review
 
 #### Scenario: Provenance tracking across providers
 
 - **WHEN** a CRM contact has source links from both Google and Telegram
-- **THEN** `metadata` JSONB on the contact tracks field-level provenance:
-  - Fields first set by Google retain `{"source": "google"}` provenance
-  - Fields first set by Telegram retain `{"source": "telegram"}` provenance
-  - Manual dashboard edits are tracked as `{"source": "manual"}`
-- **AND** sync from either provider respects existing provenance (does not overwrite fields owned by another provider or manual edits)
+- **THEN** the entity's `metadata` JSONB tracks field-level provenance under `sources.contacts.{provider}.{field}`, holding the value last written by that provider
+- **AND** the tracked fields are `first_name`, `last_name`, `nickname`, `company`, `job_title`, and `avatar_url`, plus `sources.contacts.{provider}.last_synced_at`
+- **AND** a field is source-owned for a provider only when that provider's marker exists for it; a field with no marker is treated as locally edited, and no `{"source": "manual"}` marker is written
+- **AND** sync from either provider respects existing provenance (does not overwrite fields whose current value has no marker for the syncing provider)
+
+#### Scenario: Telegram identifiers written by sync
+
+- **WHEN** Telegram sync writes identity facts for a contact
+- **THEN** it asserts only `telegram_user_id` and `telegram_username` (when set) as `has-handle` facts
+- **AND** chat-id collection is out of scope for contacts sync: `telegram_chat_id` is not collected or written by the contacts module, and chat ids reach the graph through the messaging path (resolver telegram-prefix fallback; central writer mapping per RFC 0004 Amendment 3)
 
 #### Scenario: Telegram contact removal with Google contact surviving
 
@@ -357,7 +371,7 @@ When multiple providers sync contacts concurrently, the `ContactBackfillEngine` 
 - **THEN** only the Telegram `contacts_source_links` row is marked with `deleted_at`
 - **AND** the CRM contact record is preserved (still linked to Google)
 - **AND** Telegram `has-handle` facts (`telegram_username`, `telegram_user_id`) are retained (not deleted)
-- **AND** a `contact_sync_deleted_source` activity feed entry is logged for the Telegram source
+- **AND** a `contact_sync_deleted_source` event is logged for the Telegram source
 
 ### Requirement: [TARGET-STATE] Apple/CardDAV Provider
 
