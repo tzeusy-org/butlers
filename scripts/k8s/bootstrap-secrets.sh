@@ -37,7 +37,7 @@ for secret in butlers-runtime-probe-control butlers-local-env; do
   if owners="$(kubectl -n "$NAMESPACE" get secret "$secret" \
     -o jsonpath='{range .metadata.ownerReferences[*]}{.kind}{"\n"}{end}' 2>"$err_file")"; then
     :
-  elif grep -q 'NotFound' "$err_file"; then
+  elif grep -q '^Error from server (NotFound):' "$err_file"; then
     owners=""
   else
     echo "refusing: could not check ownership of secret/${secret} in ${NAMESPACE}" \

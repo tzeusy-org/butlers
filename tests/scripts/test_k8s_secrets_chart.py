@@ -177,3 +177,17 @@ def test_invalid_source_fails_template_with_clear_message(source: str) -> None:
     with pytest.raises(subprocess.CalledProcessError) as exc:
         _render("dev", "--set", f"localSecrets.source={source}")
     assert 'localSecrets.source must be "local" or "bws"' in exc.value.stderr
+
+
+def test_bootstrap_fails_closed_when_forbidden_text_merely_mentions_notfound(
+    tmp_path: Path,
+) -> None:
+    result, calls = _run_script(
+        tmp_path,
+        "",
+        'Error from server (Forbidden): secrets "x" is forbidden: User "NotFound" cannot get',
+    )
+
+    assert result.returncode != 0
+    assert "could not check ownership" in result.stderr
+    assert "apply" not in calls and "create" not in calls
