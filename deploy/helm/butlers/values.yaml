@@ -1,0 +1,240 @@
+# Defaults shared by both namespaces. values.dev.yaml (namespace butlers-dev)
+# and values.prod.yaml (namespace butlers) override per-environment settings.
+#
+# Naming caution (docs/operations/docker-deployment.md): the "dev" environment
+# targets butlers-db-dev, which is the LIVE database holding real data.
+
+image:
+  repository: docker-registry.parrot-hen.ts.net:5000/butlers-app
+  # Required. `make deploy-*` sets it to the pushed git SHA.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+frontendImage:
+  repository: docker-registry.parrot-hen.ts.net:5000/butlers-frontend
+  # Required. Built per environment because Vite bakes the base path in.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+database:
+  host: ""
+  port: 5432
+  name: butlers
+  sslmode: require
+  poolMinSize: 0
+  poolMaxSize: 4
+  apiPoolMinSize: 0
+  apiPoolMaxSize: 2
+
+# Bitwarden Secrets Manager -> Secret `<release>-bws` via External Secrets.
+# Map of env var name -> BWS secret key. Only these keys are synced; the BWS
+# project is shared with other homelab services.
+externalSecrets:
+  storeRef: bitwarden-secretsmanager-dev
+  refreshInterval: 1h
+  data:
+    POSTGRES_USER: BUTLERS_DB_USER
+    POSTGRES_PASSWORD: BUTLERS_DB_PASSWORD
+    DASHBOARD_AUTH_DB_PASSWORD: DASHBOARD_AUTH_DB_PASSWORD
+
+# Secrets that are not in BWS yet; created out of band by
+# scripts/k8s/bootstrap-secrets.sh before the first install.
+localSecrets:
+  # Optional env keys (DASHBOARD_API_KEY, DASHBOARD_AUTH_DB_USER).
+  envSecretName: butlers-local-env
+  # Files: runtime_probe_control_signing_key, runtime_probe_control_verifiers.
+  runtimeProbeControlSecretName: butlers-runtime-probe-control
+
+# Public URLs. Ingress today is the host's `tailscale serve`, proxying the
+# path prefixes below to the NodePorts in `nodePorts` (see README).
+publicUrl:
+  host: tzeusy.parrot-hen.ts.net
+  dashboardPrefix: butlers
+  apiPrefix: butlers-api
+  owntracksPrefix: owntracks
+
+# Restrict the NodePort-exposed pods to host-originated traffic.
+hostIngress:
+  restrict: true
+  # Source address of host-originated traffic on single-node k3s (cni0).
+  nodeSourceCidr: 10.42.0.1/32
+
+nodePorts:
+  frontend: 0
+  dashboard: 0
+  owntracks: 0
+
+# Passkey owner auth. Origin and RP ID derive from publicUrl.host, so moving
+# the host invalidates enrolled passkeys.
+dashboardAuth:
+  enabled: false
+  deployment: default
+  # Exact source IP(s) of the proxy hop, comma-separated. From host
+  # `tailscale serve` -> NodePort, this is the node's cni0 address.
+  trustedProxyPeers: ""
+
+# Plain env applied to butlers-up, dashboard-api and every connector.
+commonEnv:
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel.parrot-hen.ts.net:4317
+  BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: "0"
+  BUTLERS_FLEET_CONDITION_HANDOFF: "0"
+
+butlersUp:
+  resources:
+    requests: {cpu: 500m, memory: 2Gi}
+    limits: {memory: 12Gi}
+  # Persist LLM CLI homes (~/.claude, ~/.codex, ...). Tokens are also
+  # restored from the DB credential store at startup.
+  runtimeHome:
+    size: 5Gi
+    storageClassName: local-path
+
+dashboardApi:
+  resources:
+    requests: {cpu: 250m, memory: 1Gi}
+    limits: {memory: 4Gi}
+  # The dashboard's runtime-CLI login sandbox (Bubblewrap) needs an unmasked
+  # /proc plus unconfined AppArmor/seccomp. Compose grants exactly that via
+  # security_opt; Kubernetes has no equivalent without user namespaces, so
+  # the pod runs privileged. Set false to drop the sandbox capability.
+  privileged: true
+  extraEnv: {}
+
+frontend:
+  resources:
+    requests: {cpu: 10m, memory: 32Mi}
+    limits: {memory: 128Mi}
+
+oauthGate:
+  # Blocks butlers-up and OAuth-dependent connectors until a Google refresh
+  # token exists. 0 = wait forever.
+  timeoutSeconds: 0
+  skip: false
+
+storage:
+  # Single-node k3s: local-path RWO volumes are shared by pods on that node.
+  storageClassName: local-path
+  logsSize: 10Gi
+  backupsSize: 50Gi
+
+logs:
+  retainDays: 3
+  cleanupSchedule: "0 4 * * *"
+
+backup:
+  enabled: true
+  schedule: "0 2 * * *"
+  retainDays: 14
+
+connectorDefaults:
+  resources:
+    requests: {cpu: 25m, memory: 192Mi}
+    limits: {memory: 1Gi}
+
+# One Deployment per enabled connector.
+#   module:     python -m butlers.connectors.<module>
+#   logSubdir:  connectors/<logSubdir> under the shared logs volume
+#   oauth:      wait for the OAuth gate before starting
+#   waBridge:   mount the shared WhatsApp bridge socket volume
+#   sharedDb:   set CONNECTOR_BUTLER_DB_NAME and BUTLER_SHARED_DB_{NAME,SCHEMA=shared}
+connectors:
+  telegram-bot:
+    module: telegram_bot
+    logSubdir: telegram_bot
+    provider: telegram
+    channel: telegram_bot
+    env:
+      CONNECTOR_INTERNAL_API_URL: http://dashboard-api:41200
+  telegram-user:
+    module: telegram_user_client
+    logSubdir: telegram_user
+    provider: telegram
+    channel: telegram_user_client
+  whatsapp-user:
+    module: whatsapp_user_client
+    logSubdir: whatsapp_user
+    provider: whatsapp
+    channel: whatsapp_user_client
+    healthPort: 40082
+    waBridge: true
+    env:
+      WA_BRIDGE_SOCKET: /tmp/wa-bridge/bridge.sock
+  google-calendar:
+    module: google_calendar
+    logSubdir: google_calendar
+    provider: google_calendar
+    channel: google_calendar
+    healthPort: 40085
+    oauth: true
+    sharedDb: true
+  spotify:
+    module: spotify
+    logSubdir: spotify
+    provider: spotify
+    channel: spotify
+    healthPort: 40083
+    oauth: true
+  steam:
+    module: steam
+    logSubdir: steam
+    provider: steam
+    channel: gaming
+    healthPort: 40089
+  owntracks:
+    module: owntracks
+    logSubdir: owntracks
+    provider: owntracks
+    channel: owntracks
+    healthPort: 40086
+  activitywatch:
+    module: activitywatch
+    logSubdir: activitywatch
+    provider: activitywatch
+    channel: activitywatch
+    healthPort: 40092
+    env:
+      ACTIVITYWATCH_BASE_URL: http://localhost:5600
+      ACTIVITYWATCH_MACHINE_ID: desktop
+  home-assistant:
+    module: home_assistant
+    logSubdir: home_assistant
+    provider: home_assistant
+    channel: home_assistant
+    healthPort: 40087
+    sharedDb: true
+    env:
+      CONNECTOR_BUTLER_DB_SCHEMA: shared
+      HA_POLL_INTERVAL_S: "60"
+      HA_CHECKPOINT_OVERLAP_S: "30"
+      HA_WS_PING_INTERVAL_S: "30"
+      HA_WS_PONG_TIMEOUT_S: "10"
+      HA_DISCRETION_TIMEOUT_S: "5"
+      HA_EVENT_QUEUE_MAX: "100"
+  gmail:
+    module: gmail
+    logSubdir: gmail
+    provider: gmail
+    channel: email
+    oauth: true
+    sharedDb: true
+    env:
+      CONNECTOR_BUTLER_DB_SCHEMA: shared
+  google-drive:
+    module: google_drive
+    logSubdir: google_drive
+    provider: google_drive
+    channel: google_drive
+    healthPort: 40088
+    oauth: true
+    sharedDb: true
+    env:
+      GDRIVE_POLL_INTERVAL_S: "300"
+      GDRIVE_BATCH_WINDOW_S: "7200"
+      GDRIVE_ACCOUNT_RESCAN_INTERVAL_S: "300"
+  google-health:
+    module: google_health
+    logSubdir: google-health
+    provider: google_health
+    channel: wellness
+    healthPort: 40090
+    oauth: true

@@ -1,0 +1,85 @@
+{{- $u := .Values.publicUrl }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: butlers-up
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  # Schedulers and connectors assume a single instance.
+  strategy: {type: Recreate}
+  selector:
+    matchLabels:
+      {{- include "butlers.selector" (dict "root" . "component" "butlers-up") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "butlers.selector" (dict "root" . "component" "butlers-up") | nindent 8 }}
+    spec:
+      securityContext:
+        sysctls:
+          - {name: net.ipv4.ip_local_reserved_ports, value: "41100-41112"}
+      initContainers:
+        {{- include "butlers.waitFor" (dict "root" . "name" "dashboard-api" "url" "http://dashboard-api:41200/health") | nindent 8 }}
+        {{- include "butlers.oauthGate" . | nindent 8 }}
+      containers:
+        - name: butlers-up
+          image: {{ include "butlers.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Same command as the compose service (runtime needs dev extras).
+          command: ["/app/scripts/dev_entrypoint.sh", "butlers/up", "sh", "-c", "uv sync --dev && exec uv run butlers up"]
+          ports:
+            - {name: switchboard, containerPort: 41100}
+          env:
+            {{- include "butlers.postgresEnv" . | nindent 12 }}
+            - {name: HOME, value: /root}
+            - {name: BUTLERS_SWITCHBOARD_URL, value: "http://dashboard-api:41200"}
+            - {name: DASHBOARD_URL, value: "https://{{ $u.host }}/{{ $u.dashboardPrefix }}"}
+            - {name: WHATSAPP_BRIDGE_SOCKET, value: /tmp/wa-bridge/bridge.sock}
+          readinessProbe:
+            httpGet: {path: /health, port: switchboard}
+            periodSeconds: 5
+          startupProbe:
+            httpGet: {path: /health, port: switchboard}
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            httpGet: {path: /health, port: switchboard}
+            periodSeconds: 15
+            failureThreshold: 8
+          resources:
+            {{- toYaml .Values.butlersUp.resources | nindent 12 }}
+          securityContext:
+            # Codex's Bubblewrap sandbox; matches compose apparmor:unconfined.
+            appArmorProfile: {type: Unconfined}
+          volumeMounts:
+            - {name: logs, mountPath: /app/logs}
+            - {name: wa-bridge, mountPath: /tmp/wa-bridge}
+            {{- range list "claude" "codex" "opencode" "gemini" }}
+            - {name: runtime-home, mountPath: /root/.{{ . }}, subPath: {{ . }}}
+            {{- end }}
+            {{- include "butlers.verifiersMount" . | nindent 12 }}
+      volumes:
+        {{- include "butlers.logsVolume" . | nindent 8 }}
+        - name: wa-bridge
+          persistentVolumeClaim: {claimName: {{ .Release.Name }}-wa-bridge}
+        - name: runtime-home
+          persistentVolumeClaim: {claimName: {{ .Release.Name }}-runtime-home}
+        {{- include "butlers.verifiersVolume" . | nindent 8 }}
+---
+# Every butler daemon listens on 41100-41112 inside the pod; dashboard-api
+# (BUTLERS_HOST=butlers-up) and connectors address them by this name.
+apiVersion: v1
+kind: Service
+metadata:
+  name: butlers-up
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "butlers.selector" (dict "root" . "component" "butlers-up") | nindent 4 }}
+  ports:
+    {{- range $p := untilStep 41100 41113 1 }}
+    - {name: p{{ $p }}, port: {{ $p }}, targetPort: {{ $p }}}
+    {{- end }}

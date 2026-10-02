@@ -1,0 +1,24 @@
+{{- if .Values.hostIngress.restrict }}
+# NodePorts listen on every node address (LAN, tailnet), unlike the old
+# compose ports bound to 127.0.0.1. Admit only the node itself (host
+# `tailscale serve`, seen as hostIngress.nodeSourceCidr) and pods in this
+# namespace. externalTrafficPolicy: Local keeps remote client IPs, so they
+# do not match.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-host-ingress
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: [dashboard-api, frontend, connector-owntracks]
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock: {cidr: {{ .Values.hostIngress.nodeSourceCidr }}}
+        - podSelector: {}
+{{- end }}

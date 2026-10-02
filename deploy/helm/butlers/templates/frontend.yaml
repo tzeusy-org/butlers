@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "butlers.selector" (dict "root" . "component" "frontend") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "butlers.selector" (dict "root" . "component" "frontend") | nindent 8 }}
+    spec:
+      containers:
+        - name: nginx
+          image: {{ .Values.frontendImage.repository }}:{{ required "frontendImage.tag is required" .Values.frontendImage.tag }}
+          imagePullPolicy: {{ .Values.frontendImage.pullPolicy }}
+          ports:
+            - {name: http, containerPort: 8080}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+          resources:
+            {{- toYaml .Values.frontend.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+spec:
+  {{- if .Values.nodePorts.frontend }}
+  type: NodePort
+  externalTrafficPolicy: Local
+  {{- end }}
+  selector:
+    {{- include "butlers.selector" (dict "root" . "component" "frontend") | nindent 4 }}
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      {{- if .Values.nodePorts.frontend }}
+      nodePort: {{ .Values.nodePorts.frontend }}
+      {{- end }}
