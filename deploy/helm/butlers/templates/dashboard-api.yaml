@@ -90,6 +90,7 @@ spec:
             - {name: wa-bridge, mountPath: /tmp/wa-bridge}
             - {name: backups, mountPath: /backups, readOnly: true}
             {{- include "butlers.verifiersMount" . | nindent 12 }}
+            {{- if .Values.beadsExport.enabled }}{{- include "butlers.beadsExportMount" . | nindent 12 }}{{- end }}
             - name: runtime-probe-signer
               mountPath: /run/secrets/runtime_probe_control_signing_key
               subPath: runtime_probe_control_signing_key
@@ -101,6 +102,7 @@ spec:
         - name: backups
           persistentVolumeClaim: {claimName: {{ .Release.Name }}-backups}
         {{- include "butlers.verifiersVolume" . | nindent 8 }}
+        {{- if .Values.beadsExport.enabled }}{{- include "butlers.beadsExportVolume" . | nindent 8 }}{{- end }}
         - name: runtime-probe-signer
           secret:
             secretName: {{ .Values.localSecrets.runtimeProbeControlSecretName }}
