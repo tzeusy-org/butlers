@@ -117,6 +117,8 @@ dashboardApi:
   # /proc plus unconfined AppArmor/seccomp. Compose grants exactly that via
   # security_opt; Kubernetes has no equivalent without user namespaces, so
   # the pod runs privileged. Set false to drop the sandbox capability.
+  # A userns alternative was probed and is not viable on this node (overlayfs
+  # idmap unsupported on kernel 5.15); see docs/operations/kubernetes-deployment.md.
   privileged: true
   extraEnv: {}
 

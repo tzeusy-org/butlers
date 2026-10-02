@@ -161,7 +161,28 @@ Rollback: `helm -n butlers-dev uninstall butlers` (PVCs are kept), restore the c
 
 - `dashboard-api` runs `privileged` (`dashboardApi.privileged`). Compose grants the dashboard's
   Bubblewrap login sandbox an unmasked `/proc` plus a custom seccomp profile; Kubernetes can only
-  express that with user namespaces. Setting `privileged: false` keeps AppArmor unconfined but
-  breaks dashboard-driven CLI login.
+  express that with user namespaces (`hostUsers: false` + `procMount: Unmasked` + a node-installed
+  `Localhost` seccomp profile). Setting `privileged: false` keeps AppArmor unconfined but breaks
+  dashboard-driven CLI login.
+
+  **Dropping `privileged` is not viable on the current node.** Probe run in `butlers-dev`
+  (2026-10-03; server v1.36.5+k3s1, node kernel 5.15.0-194-generic, containerd overlayfs
+  snapshotter; throwaway pod from the app image mounting a local-path PVC, a dummy Secret and an
+  emptyDir, running a Bubblewrap bootstrap with `--unshare-user/-pid/-ipc/-uts --as-pid-1 --tmpfs /
+  --proc /proc --dev /dev`; probe resources deleted afterwards):
+
+  | Variant | Result |
+  | --- | --- |
+  | `hostUsers:false` + `procMount: Unmasked` + seccomp `Localhost` + AppArmor Unconfined | Admitted (`--dry-run=server` ok), pod stuck `ContainerCreating` |
+  | Same, seccomp `Unconfined` (control separating profile from userns) | Same failure |
+  | `privileged: true` (control) | Bubblewrap bootstrap passes, PVC/Secret/emptyDir mounts usable |
+
+  Failure event (both userns variants, so the cause is user namespaces, not the seccomp profile):
+  `failed to create containerd container: snapshotter "overlayfs" doesn't support idmap mounts on
+  this host, configure slow_chown ...`. Pod user namespaces need idmapped-mount support in the
+  snapshotter, which needs a newer kernel (overlayfs idmap arrives around 6.3). The Localhost
+  seccomp profile was not exercised, so whether it is installed on the node is unknown and
+  owner-supplied. Revisit after a kernel upgrade; until then keep `privileged: true`. Alternatives
+  (a dedicated sandbox sidecar, or accepting `privileged`) are tracked as a follow-up.
 - The compose egress firewall (`scripts/egress-firewall.sh`) has no equivalent yet. It only ran
   when the launcher had passwordless sudo.
