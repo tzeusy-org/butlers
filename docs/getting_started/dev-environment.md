@@ -6,17 +6,45 @@
 
 ## Overview
 
-There are two ways to run the Butlers development environment: Docker Compose through
-`scripts/compose.sh` (the default), or starting each service by hand. Both use an external
-PostgreSQL server and end up with the same services: butler daemons, connectors, and the dashboard.
+The live dev stack (namespace `butlers-dev`, database butlers-db-dev with the real data) runs on
+the homelab k3s cluster from the Helm chart in `deploy/helm/butlers`; see
+[Kubernetes Deployment](../operations/kubernetes-deployment.md). It runs committed images only,
+with no hotreload. For local work, run Docker Compose through `scripts/compose.sh` against a
+non-live database, or start each service by hand. All paths use an external PostgreSQL server and
+end up with the same services: butler daemons, connectors, and the dashboard.
 
-## Quick Start (Docker Compose)
+## Live Dev Stack (Kubernetes)
+
+Commit, then ship from `deploy/helm/butlers`:
+
+```bash
+set -a; source /secrets/.bws.dev.env; set +a
+bws run --project-id "$BWS_PROJECT_ID" -- make ship-dev   # build + push images, helm upgrade, wait
+```
+
+Migrations run automatically as the `dashboard-api` initContainer. Roll back with
+`make deploy-dev TAG=<sha>` (`helm -n butlers-dev history butlers` lists tags). The public URLs are
+unchanged: dashboard `https://tzeusy.parrot-hen.ts.net/butlers-dev/`, API `/butlers-dev-api`,
+OwnTracks `/owntracks-dev`.
+
+For frontend work, run Vite locally (`cd frontend && npm run dev`). Its `/api` proxy targets
+`VITE_PROXY_TARGET` (default `http://localhost:41200`): either run a local `butlers dashboard`, or
+point it at the cluster API, `https://tzeusy.parrot-hen.ts.net/butlers-dev-api` on the tailnet.
+
+## Local Stack (Docker Compose)
+
+`scripts/compose.sh` dev mode targets the `.env.dev` database, so it refuses to start while the
+`butlers` release in `butlers-dev` is running. Set `BUTLERS_ALLOW_COMPOSE_WITH_K8S=1` only when
+`.env.dev` points at a non-live database. Compose still serves local stacks against a non-live
+database. The restore-drill executor and live-listener audio are not ported yet (bu-viat6h.4), and a
+compose stack that includes them would also start a second butlers-up against the same database, so
+the guard blocks them too.
 
 ```bash
 # 1. Install Python dependencies (tests, CLI, local tooling)
 uv sync --dev
 
-# 2. Start the dev stack
+# 2. Start a local stack (non-live database only)
 ./scripts/compose.sh
 ```
 
@@ -33,8 +61,9 @@ The Chronicles location map uses CARTO raster basemaps. CARTO requires a
 basemap API key for these tiles; the key must be present when the Vite frontend
 starts so it can append the `key` query parameter to tile requests.
 
-Inject the dev project through Bitwarden Secrets Manager when starting the
-Compose stack:
+On the live stack, `make ship-dev` under `bws run` (above) passes the key into the
+frontend image build. For a local Compose stack, inject the dev project through Bitwarden
+Secrets Manager when starting it:
 
 ```bash
 set -a
@@ -43,8 +72,8 @@ set +a
 bws run --project-id "${BWS_TZEHOUSE_ID_DEV}" -- ./scripts/compose.sh
 ```
 
-The secret is named `CARTO_BASEMAP_API_KEY`. Compose passes it to the frontend
-as `VITE_CARTO_BASEMAP_API_KEY`; do not put the value in a tracked `.env` file.
+The secret is named `CARTO_BASEMAP_API_KEY`. Compose and the frontend image build pass it
+to the frontend as `VITE_CARTO_BASEMAP_API_KEY`; do not put the value in a tracked `.env` file.
 Because the browser receives the key, restrict it to the dev dashboard domain
 in CARTO rather than treating it as a backend-only secret.
 
@@ -204,17 +233,19 @@ If the dashboard responds with `{"status": "ok"}`, the database and API are func
 
 ## Implementation Notes
 
-- Debug compose services with `docker logs` and build `psql` commands from `.env.dev`
-  (`POSTGRES_DB` may be unset; scripts default to `butlers`). Live run logs are inside the
-  containers under `/app/logs/...`; the worktree's `logs/` can lag or belong to another run.
-- On the tailnet, `/butlers-dev/` serves the Vite frontend and live JSON APIs are under
+- Debug the live stack with `kubectl -n butlers-dev logs deploy/<name>` (`butlers-up`,
+  `dashboard-api`, `frontend`, `connector-<name>`; add `-c migrations` for the migration
+  initContainer) and build `psql` commands from `.env.dev` (`POSTGRES_DB` may be unset; scripts
+  default to `butlers`). Run logs land on the shared PVC `butlers-logs`, mounted at `/app/logs` in
+  each pod; the worktree's `logs/` belongs to some other run.
+- On the tailnet, `/butlers-dev/` serves the frontend and live JSON APIs are under
   `/butlers-dev-api/api/...`. Probing `/butlers-dev/api/...` returns the frontend's HTML fallback.
-- `butlers-dev-dashboard-api-hotreload-1` does not reload Python despite its name: restart it after
-  backend changes land on `main`. The Vite container does hot-reload.
+- The live stack does not reload anything: backend and frontend changes reach it only through
+  `make ship-dev` after they are committed.
 - Prototyping beside butlers-dev: run a worktree Vite with `--base /butlers-<name>/` and
   `VITE_API_URL=/butlers-dev-api/api` (the default `/api` escapes tailscale path mounts), expose it
   with `tailscale serve --bg --set-path /butlers-<name> ...`, and verify through the tailnet URL.
-  For backend changes, run a second `butlers dashboard` from the worktree with the container's
+  For backend changes, run a second `butlers dashboard` from the worktree with the live stack's
   `POSTGRES_*` env and mount it at `/butlers-<name>-api`. Kill helpers by listening port, never
   with a `pkill -f` pattern that matches your own shell.
 
