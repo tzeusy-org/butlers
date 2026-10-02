@@ -16,7 +16,9 @@ Butlers has system dependencies (languages, tools, services), LLM runtime CLIs (
 | **uv** | latest | Python package manager (replaces pip); used for dependency management and running commands |
 | **Node.js** | 22+ | Frontend dev server (Vite) and LLM CLI installations |
 | **npm** | (bundled with Node) | Frontend dependency management and global CLI installs |
-| **Docker** + **Docker Compose** | latest | Runs the butler stack via `scripts/compose.sh` |
+| **Docker** + **Docker Compose** | latest | Builds images; runs local stacks via `scripts/compose.sh` |
+| **kubectl** + **helm** | latest | Deploy and debug the live dev stack on the homelab k3s cluster (operators) |
+| **bws** | latest | Injects secrets for image builds and deploys (operators) |
 | **PostgreSQL** | with `pgvector` | External database server (not a Compose service); `scripts/init-db.sql` installs extensions |
 | **psql** | any | Part of `postgresql-client`; used by the OAuth gate to poll the database at startup |
 | **Tailscale** | latest | Provides HTTPS for Google OAuth callbacks; can be skipped with `--skip-tailscale-check` |
@@ -33,13 +35,22 @@ Node.js 22+ is needed for two purposes: running the Vite frontend dev server, an
 
 `scripts/compose.sh` runs the whole stack --- butler daemons, connectors, dashboard API, and
 frontend --- from `docker-compose.yml`, in dev or prod mode. PostgreSQL is external in both modes;
-see [Dev Environment](dev-environment.md) for provisioning it.
+see [Dev Environment](dev-environment.md) for provisioning it. Use it only against a non-live
+database: dev mode refuses to start while the Kubernetes `butlers-dev` release is running.
+
+### Kubernetes access (operators)
+
+The live dev stack runs on the homelab k3s cluster. Shipping to it or debugging it needs `kubectl`
+and `helm` configured for that cluster, Docker push access to `docker-registry.parrot-hen.ts.net`,
+and `bws` with `/secrets/.bws.dev.env`. See
+[Kubernetes Deployment](../operations/kubernetes-deployment.md).
 
 ### Tailscale
 
-Google OAuth callbacks require HTTPS. `scripts/compose.sh` configures `tailscale serve` to provide a
-stable HTTPS hostname. If you are not using Google modules (Calendar, Contacts, Gmail), skip it with
-`./scripts/compose.sh --skip-tailscale-check`.
+Google OAuth callbacks require HTTPS. Host `tailscale serve` provides a stable HTTPS hostname; for
+the live stack it maps the public paths to the cluster NodePorts, and `scripts/compose.sh`
+configures it for local stacks. If you are not using Google modules (Calendar, Contacts, Gmail),
+skip it with `./scripts/compose.sh --skip-tailscale-check`.
 
 ## LLM Runtime CLIs
 
@@ -87,6 +98,7 @@ python3 --version    # Should be 3.12+
 uv --version         # Should be installed
 node --version       # Should be 22+
 docker info          # Docker daemon running
+kubectl -n butlers-dev get pods   # Operators: cluster access to the live dev stack
 claude --version     # Or whichever runtime CLI you need
 ```
 

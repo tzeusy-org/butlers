@@ -1,6 +1,6 @@
 # Runtime Verification — drive the flow, don't just read it
 
-Load when the Docker Compose dev stack is up and you want to **confirm** a flow rather than infer
+Load when the live dev stack (k3s namespace `butlers-dev`) is up and you want to **confirm** a flow rather than infer
 it from code. Static FE→BE tracing tells you what *should* happen; driving the flow tells you what
 *does*.
 
@@ -23,27 +23,27 @@ trace it statically.
 
 ## Resolve the API base once (orchestrator, Phase 0.5)
 
-The public/tailnet URL (e.g. `https://<host>.ts.net/butlers-dev/`) routes `/` to the Vite SPA and
+The public/tailnet URL (e.g. `https://<host>.ts.net/butlers-dev/`) routes `/` to the frontend SPA and
 frequently returns the **SPA `index.html` (or a bare `404 page not found`) for `/api/*`** even when
 the backend is perfectly healthy — so a naive `curl .../butlers-dev/api/relationship/...` "fails"
 misleadingly. Resolve the real JSON-returning base **once** in the orchestrator and hand it to every
 agent (don't make N agents each try three wrong prefixes):
 
-1. Read `about/lay-and-land/deployment.md` + `docs/getting_started/dev-environment.md` for the
-   dashboard-API container name and **host port** (source of truth — don't hardcode).
-2. Confirm the container is `Up` (not `Created`/`Restarting`): `docker ps --format '{{.Names}}\t{{.Status}}' | grep dashboard-api`. If app containers are still `Created`, the stack is mid-boot — wait for readiness before fan-out.
-3. Probe the **direct host port** for JSON (e.g. `curl -s localhost:<port>/api/relationship/entities?limit=1`), not only the proxy. Pin whichever base returns JSON as the agents' live base; if none does, declare **static-only** explicitly.
-
-## This builds on `/butler-dev-debug`
+1. Read `docs/operations/kubernetes-deployment.md` + `docs/getting_started/dev-environment.md` for
+   the dashboard-API deployment name and **NodePort** (source of truth, don't hardcode).
+2. Confirm the pod is `Running` and ready: `kubectl -n butlers-dev get pods | grep dashboard-api`.
+   If it is still `Init` (migrations) or `CrashLoopBackOff`, the stack is mid-rollout or broken;
+   wait for readiness before fan-out.
+3. Probe the **dashboard-api NodePort** for JSON (e.g. `curl -s localhost:<nodeport>/api/relationship/entities?limit=1` from the k3s host), not only the proxy. Pin whichever base returns JSON as the agents' live base; if none does, declare **static-only** explicitly.
 
 ## This builds on `/butler-dev-debug`
 
 `/butler-dev-debug` owns the live-stack investigation primitives — the canonical `.env.dev`-backed
-psql entrypoint (`scripts/dev-psql.sh`), the `docker logs` conventions, the `sessions` /
+psql entrypoint (`scripts/dev-psql.sh`), the `kubectl logs` conventions, the `sessions` /
 `session_process_logs` query snippets, and the request/session/trace-ID follow across switchboard →
 butler → connector. **Invoke it** for those; do not duplicate them here. Its project-grounding
 docs (`about/lay-and-land/deployment.md` for topology/ports, `docs/getting_started/dev-environment.md`)
-are the source of truth for container names and ports — read them rather than hardcoding.
+are the source of truth for deployment names and ports — read them rather than hardcoding.
 
 This file adds only the **flow-QC-specific way** to use those primitives.
 
@@ -60,8 +60,8 @@ For each step where the user clicks something or expects real data:
    to confirm the row changed — then check that the runtime *reads* it (the consumer you found by
    `grep`). A write you can see in the DB that no runtime path reads is shape-1 (decorative
    persistence) proven live.
-4. **Follow the request through the logs.** `docker logs` the daemon/connector container filtered
-   by the request/session/trace ID (per `/butler-dev-debug`). If the UI toasted "done" but no
+4. **Follow the request through the logs.** `kubectl -n butlers-dev logs` the daemon/connector
+   deployment filtered by the request/session/trace ID (per `/butler-dev-debug`). If the UI toasted "done" but no
    work appears in the logs, that's shape-2 (the lie) proven live.
 5. **Walk the unhappy branches.** Force the states the happy-path glosses: empty result, expired/
    revoked token, permission denied, a second concurrent edit. Confirm the UI degrades honestly

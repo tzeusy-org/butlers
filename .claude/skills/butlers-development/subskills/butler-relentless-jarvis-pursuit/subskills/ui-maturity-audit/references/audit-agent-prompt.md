@@ -49,7 +49,7 @@ Keep the "investigate only" hard stop intact.
 > `roster/*/api/router.py`) → then **`grep` the written table/column across `src/` to prove a
 > runtime reader exists.** "Endpoint exists" ≠ "feature works"; "persists" ≠ "consumed." If a live
 > API base was given, *drive read-side steps live* (curl the endpoint, query the DB, follow the
-> request in `docker logs`) — but **never fire a mutation (merge/archive/forget/delete/any writing
+> request in `kubectl -n butlers-dev logs`) — but **never fire a mutation (merge/archive/forget/delete/any writing
 > POST/PATCH/PUT) against the shared dev database; trace those statically.** Verify against current
 > `main` — re-read the live file before calling a control dead. Note any feature-flag gating and its
 > prod default.

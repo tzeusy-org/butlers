@@ -71,6 +71,24 @@ if [ "$BUTLERS_MODE" = "prod" ]; then
 fi
 readonly RESTORE_DRILL_ENABLED
 
+# ── Kubernetes ownership guard ────────────────────────────────────────
+# Since 2026-10-02 the live stacks run on k3s (deploy/helm/butlers): the dev
+# database is driven by namespace butlers-dev, the prod database by butlers.
+# A compose stack against the same database would run a second set of
+# schedulers and connector sessions, so refuse while that release has
+# replicas. BUTLERS_ALLOW_COMPOSE_WITH_K8S=1 overrides (non-live DB only).
+if [ "$BUTLERS_MODE" = "prod" ]; then K8S_NAMESPACE=butlers; else K8S_NAMESPACE=butlers-dev; fi
+if [ "${BUTLERS_ALLOW_COMPOSE_WITH_K8S:-0}" != "1" ] && command -v kubectl &>/dev/null; then
+  K8S_REPLICAS=$(timeout 10 kubectl -n "$K8S_NAMESPACE" get deploy butlers-up \
+    -o jsonpath='{.spec.replicas}' 2>/dev/null || true)
+  if [ -n "$K8S_REPLICAS" ] && [ "$K8S_REPLICAS" != "0" ]; then
+    echo "ERROR: the ${BUTLERS_MODE} database is already served by Kubernetes (namespace ${K8S_NAMESPACE})." >&2
+    echo "  Ship changes with deploy/helm/butlers: make ship-${BUTLERS_MODE} (docs/operations/kubernetes-deployment.md)." >&2
+    echo "  Override only for a non-live database: BUTLERS_ALLOW_COMPOSE_WITH_K8S=1 $0 $*" >&2
+    exit 1
+  fi
+fi
+
 # Preserve the protected mode when a firewall preparation/apply failure tells an
 # operator how to retry. A bare dev invocation would deliberately omit it.
 if [ "$BUTLERS_MODE" = "prod" ]; then
