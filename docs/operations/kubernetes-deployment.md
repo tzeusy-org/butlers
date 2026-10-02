@@ -79,6 +79,22 @@ make deploy-dev                                             # helm upgrade --ins
 make status-dev
 ```
 
+### Iterating on a change
+
+Commit, then ship the commit from `deploy/helm/butlers`:
+
+```bash
+bws run --project-id "$BWS_PROJECT_ID" -- make ship-dev   # build + push images, helm upgrade, wait
+```
+
+`ship-*` runs `build-push.sh` and deploys the tag it prints. Migrations run automatically: they are
+an initContainer of `dashboard-api`, so every rollout runs `butlers db migrate` before the new API
+starts. `dashboard-api`, `butlers-up` and the connectors use the Recreate strategy, so old and new
+pods never overlap. A rollout takes a few minutes because the app layers rebuild per commit.
+Compose's hotreload has no equivalent here: `butlers-dev` is the live system and only runs
+committed images. To roll back, `make deploy-dev TAG=<previous sha>` (`helm -n butlers-dev
+history butlers` lists the tags).
+
 The prod targets (`secrets-prod`, `image-prod`, `deploy-prod`) are the same with
 `/secrets/.bws.prod.env`.
 

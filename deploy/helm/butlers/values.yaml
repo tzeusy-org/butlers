@@ -79,7 +79,8 @@ dashboardAuth:
 
 # Plain env applied to butlers-up, dashboard-api and every connector.
 commonEnv:
-  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel.parrot-hen.ts.net:4317
+  # OTLP/HTTP (4318). The BWS value used by compose (:4317) never connected.
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel.parrot-hen.ts.net:4318
   BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: "0"
   BUTLERS_FLEET_CONDITION_HANDOFF: "0"
 

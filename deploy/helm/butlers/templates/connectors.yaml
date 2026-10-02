@@ -58,8 +58,12 @@ spec:
           ports:
             - {name: health, containerPort: {{ $c.healthPort }}}
           readinessProbe:
-            httpGet: {path: /health, port: health}
+            # Most connector health servers bind 127.0.0.1, so probe in-pod
+            # (as the compose healthchecks did).
+            exec:
+              command: ["curl", "-sf", "http://localhost:{{ $c.healthPort }}/health"]
             periodSeconds: 10
+            timeoutSeconds: 5
           {{- end }}
           resources:
             {{- toYaml (default $.Values.connectorDefaults.resources $c.resources) | nindent 12 }}
