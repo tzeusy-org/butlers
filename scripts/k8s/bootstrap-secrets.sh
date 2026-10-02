@@ -28,10 +28,23 @@ ENV_FILE="${BUTLERS_ENV_FILE:-${PROJECT_DIR}/.env.${ENV_NAME}}"
 
 trap 'rm -f "${signer_tmp:-}" "${tmp:-}"' EXIT
 
-# Never fight an ExternalSecret over a Secret it owns. Only metadata is read.
+# Never fight an ExternalSecret over a Secret it owns. Only metadata is read, and any
+# kubectl failure other than NotFound refuses (fail closed: an RBAC or API error must
+# not look like "no owner").
+err_file="$(mktemp)"; chmod 600 "$err_file"
+trap 'rm -f "${signer_tmp:-}" "${tmp:-}" "${err_file:-}"' EXIT
 for secret in butlers-runtime-probe-control butlers-local-env; do
-  owners="$(kubectl -n "$NAMESPACE" get secret "$secret" \
-    -o jsonpath='{range .metadata.ownerReferences[*]}{.kind}{"\n"}{end}' 2>/dev/null || true)"
+  if owners="$(kubectl -n "$NAMESPACE" get secret "$secret" \
+    -o jsonpath='{range .metadata.ownerReferences[*]}{.kind}{"\n"}{end}' 2>"$err_file")"; then
+    :
+  elif grep -q 'NotFound' "$err_file"; then
+    owners=""
+  else
+    echo "refusing: could not check ownership of secret/${secret} in ${NAMESPACE}" \
+      "(kubectl failed, not NotFound); nothing was applied:" >&2
+    cat "$err_file" >&2
+    exit 1
+  fi
   if printf '%s\n' "$owners" | grep -qx 'ExternalSecret'; then
     echo "refusing: secret/${secret} in ${NAMESPACE} is owned by an ExternalSecret" \
       "(localSecrets.source=bws); nothing was applied. Set source=local and delete the" \

@@ -100,7 +100,9 @@ def test_signing_key_is_referenced_only_by_dashboard_api() -> None:
     assert referencing == {"dashboard-api"}
 
 
-def _run_script(tmp_path: Path, owner_kind: str) -> tuple[subprocess.CompletedProcess[str], str]:
+def _run_script(
+    tmp_path: Path, owner_kind: str, get_error: str = ""
+) -> tuple[subprocess.CompletedProcess[str], str]:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     calls = tmp_path / "calls"
@@ -109,7 +111,9 @@ def _run_script(tmp_path: Path, owner_kind: str) -> tuple[subprocess.CompletedPr
     stub.write_text(
         "#!/usr/bin/env bash\n"
         'printf "kubectl %s\\n" "$*" >> "$TEST_CALLS"\n'
-        'case "$*" in *"get secret"*) printf "%s\\n" "$TEST_OWNER_KIND"; exit 0;; esac\n'
+        'case "$*" in *"get secret"*)\n'
+        '  [[ -z "$TEST_GET_ERROR" ]] || { printf "%s\\n" "$TEST_GET_ERROR" >&2; exit 1; }\n'
+        '  printf "%s\\n" "$TEST_OWNER_KIND"; exit 0;; esac\n'
         "exit 0\n",
         encoding="utf-8",
     )
@@ -125,6 +129,7 @@ def _run_script(tmp_path: Path, owner_kind: str) -> tuple[subprocess.CompletedPr
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "TEST_CALLS": str(calls),
             "TEST_OWNER_KIND": owner_kind,
+            "TEST_GET_ERROR": get_error,
             "BUTLERS_ENV_FILE": str(env_file),
         },
     )
@@ -146,3 +151,29 @@ def test_bootstrap_still_applies_when_secret_is_not_externalsecret_owned(tmp_pat
     assert result.returncode == 0, result.stderr
     assert "apply -f -" in calls
     assert _FIXTURE_VALUE not in result.stdout + result.stderr
+
+
+def test_bootstrap_treats_notfound_as_no_owner(tmp_path: Path) -> None:
+    result, calls = _run_script(tmp_path, "", 'Error from server (NotFound): secrets "x" not found')
+
+    assert result.returncode == 0, result.stderr
+    assert "apply -f -" in calls
+
+
+def test_bootstrap_fails_closed_on_non_notfound_kubectl_error(tmp_path: Path) -> None:
+    result, calls = _run_script(
+        tmp_path, "", 'Error from server (Forbidden): secrets "x" forbidden'
+    )
+
+    assert result.returncode != 0
+    assert "could not check ownership" in result.stderr
+    assert "apply" not in calls and "create" not in calls
+    assert _FIXTURE_VALUE not in result.stdout + result.stderr + calls
+
+
+@needs_helm
+@pytest.mark.parametrize("source", ["BWS", "bogus", ""])
+def test_invalid_source_fails_template_with_clear_message(source: str) -> None:
+    with pytest.raises(subprocess.CalledProcessError) as exc:
+        _render("dev", "--set", f"localSecrets.source={source}")
+    assert 'localSecrets.source must be "local" or "bws"' in exc.value.stderr
