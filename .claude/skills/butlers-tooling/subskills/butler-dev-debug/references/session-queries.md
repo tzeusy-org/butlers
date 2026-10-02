@@ -77,6 +77,7 @@ WHERE session_id = '<session-id>';
 ## Dashboard API
 
 ```bash
-curl -s http://localhost:41200/api/butlers/<butler-name>/sessions/<session-id> | python3 -m json.tool
-curl -s "http://localhost:41200/api/butlers/<butler-name>/sessions?limit=10" | python3 -m json.tool
+DASH="http://$(kubectl -n butlers-dev get svc dashboard-api -o jsonpath='{.spec.clusterIP}'):41200"  # Service ClusterIP; cluster DNS names do not resolve off-cluster
+curl -s "$DASH/api/butlers/<butler-name>/sessions/<session-id>" | python3 -m json.tool
+curl -s "$DASH/api/butlers/<butler-name>/sessions?limit=10" | python3 -m json.tool
 ```
