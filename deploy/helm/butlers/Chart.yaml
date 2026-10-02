@@ -1,0 +1,7 @@
+apiVersion: v2
+name: butlers
+description: Butlers personal AI agent system on k3s (butlers-up, dashboard, connectors).
+type: application
+version: 0.1.0
+# The deployed application version is the image tag (git SHA), set at install time.
+appVersion: "main"

@@ -1,0 +1,26 @@
+# Namespace butlers-dev. Targets postgres-dev (butlers-db-dev), which is the
+# LIVE database despite the name. Mirrors `./scripts/compose.sh` (dev mode).
+database:
+  host: postgres-dev-rw.postgres-dev.svc.cluster.local
+  apiPoolMaxSize: 4
+
+externalSecrets:
+  storeRef: bitwarden-secretsmanager-dev
+
+publicUrl:
+  dashboardPrefix: butlers-dev
+  apiPrefix: butlers-dev-api
+  owntracksPrefix: owntracks-dev
+
+nodePorts:
+  frontend: 32173
+  dashboard: 32200
+  owntracks: 32086
+
+dashboardAuth:
+  enabled: true
+  deployment: dev
+  trustedProxyPeers: 10.42.0.1
+
+commonEnv:
+  BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: "1"

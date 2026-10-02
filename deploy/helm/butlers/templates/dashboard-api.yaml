@@ -1,0 +1,140 @@
+{{- $base := include "butlers.publicBase" . }}
+{{- $u := .Values.publicUrl }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dashboard-api
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+spec:
+  replicas: {{ if $.Values.suspend }}0{{ else }}1{{ end }}
+  # Migrations run as an initContainer here; never overlap two pods.
+  strategy: {type: Recreate}
+  selector:
+    matchLabels:
+      {{- include "butlers.selector" (dict "root" . "component" "dashboard-api") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "butlers.selector" (dict "root" . "component" "dashboard-api") | nindent 8 }}
+    spec:
+      initContainers:
+        - name: migrations
+          image: {{ include "butlers.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["db", "migrate"]
+          env:
+            {{- include "butlers.postgresEnv" . | nindent 12 }}
+      containers:
+        - name: dashboard-api
+          image: {{ include "butlers.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["dashboard", "--host", "0.0.0.0", "--port", "41200"]
+          ports:
+            - {name: http, containerPort: 41200}
+          env:
+            {{- include "butlers.postgresEnv" . | nindent 12 }}
+            - {name: BUTLERS_DISABLE_FILE_LOGGING, value: "1"}
+            - {name: BUTLERS_HOST, value: butlers-up}
+            - {name: WHATSAPP_BRIDGE_SOCKET, value: /tmp/wa-bridge/bridge.sock}
+            - {name: BUTLERS_BACKUP_DIR, value: /backups}
+            - {name: BUTLERS_API_DB_POOL_MIN_SIZE, value: {{ .Values.database.apiPoolMinSize | quote }}}
+            - {name: BUTLERS_API_DB_POOL_MAX_SIZE, value: {{ .Values.database.apiPoolMaxSize | quote }}}
+            - name: GOOGLE_OAUTH_REDIRECT_URI
+              value: "{{ $base }}/{{ $u.apiPrefix }}/api/oauth/google/callback"
+            - name: SPOTIFY_OAUTH_REDIRECT_URI
+              value: "{{ $base }}/{{ $u.apiPrefix }}/api/connectors/spotify/oauth/callback"
+            - name: OAUTH_DASHBOARD_URL
+              value: "{{ $base }}/{{ $u.dashboardPrefix }}"
+            - {name: OWNTRACKS_CONNECTOR_HOST, value: {{ $u.host | quote }}}
+            - {name: OWNTRACKS_CONNECTOR_PORT, value: "443"}
+            - {name: OWNTRACKS_WEBHOOK_BASE_PATH, value: "/{{ $u.owntracksPrefix }}"}
+            {{- if .Values.dashboardAuth.enabled }}
+            - {name: DASHBOARD_AUTH_ORIGIN, value: {{ $base | quote }}}
+            - {name: DASHBOARD_AUTH_RP_ID, value: {{ $u.host | quote }}}
+            - {name: DASHBOARD_AUTH_DEPLOYMENT, value: {{ .Values.dashboardAuth.deployment | quote }}}
+            - {name: DASHBOARD_AUTH_TRUSTED_PROXY_PEERS, value: {{ .Values.dashboardAuth.trustedProxyPeers | quote }}}
+            {{- end }}
+            - name: DASHBOARD_AUTH_DB_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: {{ include "butlers.bwsSecret" . }}, key: DASHBOARD_AUTH_DB_PASSWORD}
+            - name: DASHBOARD_AUTH_DB_USER
+              valueFrom:
+                secretKeyRef: {name: {{ .Values.localSecrets.envSecretName }}, key: DASHBOARD_AUTH_DB_USER, optional: true}
+            - name: DASHBOARD_API_KEY
+              valueFrom:
+                secretKeyRef: {name: {{ .Values.localSecrets.envSecretName }}, key: DASHBOARD_API_KEY, optional: true}
+            {{- range $k, $v := .Values.dashboardApi.extraEnv }}
+            - {name: {{ $k }}, value: {{ $v | quote }}}
+            {{- end }}
+          readinessProbe:
+            # /health returns 503 until the API is ready.
+            httpGet: {path: /health, port: http}
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: {path: /health, port: http}
+            initialDelaySeconds: 120
+            periodSeconds: 15
+            failureThreshold: 8
+          resources:
+            {{- toYaml .Values.dashboardApi.resources | nindent 12 }}
+          securityContext:
+            {{- if .Values.dashboardApi.privileged }}
+            privileged: true
+            {{- else }}
+            appArmorProfile: {type: Unconfined}
+            {{- end }}
+          volumeMounts:
+            - {name: logs, mountPath: /app/logs}
+            - {name: wa-bridge, mountPath: /tmp/wa-bridge}
+            - {name: backups, mountPath: /backups, readOnly: true}
+            {{- include "butlers.verifiersMount" . | nindent 12 }}
+            - name: runtime-probe-signer
+              mountPath: /run/secrets/runtime_probe_control_signing_key
+              subPath: runtime_probe_control_signing_key
+              readOnly: true
+      volumes:
+        {{- include "butlers.logsVolume" . | nindent 8 }}
+        - name: wa-bridge
+          persistentVolumeClaim: {claimName: {{ .Release.Name }}-wa-bridge}
+        - name: backups
+          persistentVolumeClaim: {claimName: {{ .Release.Name }}-backups}
+        {{- include "butlers.verifiersVolume" . | nindent 8 }}
+        - name: runtime-probe-signer
+          secret:
+            secretName: {{ .Values.localSecrets.runtimeProbeControlSecretName }}
+            defaultMode: 0400
+            items:
+              - key: runtime_probe_control_signing_key
+                path: runtime_probe_control_signing_key
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dashboard-api
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "butlers.selector" (dict "root" . "component" "dashboard-api") | nindent 4 }}
+  ports:
+    - {name: http, port: 41200, targetPort: http}
+{{- if .Values.nodePorts.dashboard }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dashboard-api-host
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+spec:
+  type: NodePort
+  # Preserve client source IPs so only the host's tailscale-serve hop (seen
+  # as the cni0 address) matches dashboardAuth.trustedProxyPeers.
+  externalTrafficPolicy: Local
+  selector:
+    {{- include "butlers.selector" (dict "root" . "component" "dashboard-api") | nindent 4 }}
+  ports:
+    - {name: http, port: 41200, targetPort: http, nodePort: {{ .Values.nodePorts.dashboard }}}
+{{- end }}

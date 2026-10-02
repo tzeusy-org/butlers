@@ -1,0 +1,28 @@
+# Static dashboard frontend for Kubernetes (deploy/helm/butlers).
+# Vite bakes the base path and API URL in at build time, so build one image
+# per environment:
+#   docker build -f Dockerfile.frontend \
+#     --build-arg BASE_PATH=/butlers-dev/ --build-arg BASE_PATH_NOSLASH=/butlers-dev \
+#     --build-arg API_URL=/butlers-dev-api/api .
+# scripts/k8s/build-push.sh does this.
+FROM node:24-slim AS build
+WORKDIR /app
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+ARG BASE_PATH=/butlers/
+ARG API_URL=/butlers-api/api
+# Browser-visible CARTO basemap key (public by design); passed as a build secret
+# so it never lands in image history.
+RUN --mount=type=secret,id=carto_key,required=false \
+    VITE_API_URL="${API_URL}" \
+    VITE_CARTO_BASEMAP_API_KEY="$(cat /run/secrets/carto_key 2>/dev/null || true)" \
+    npm run build -- --base "${BASE_PATH}"
+
+FROM nginxinc/nginx-unprivileged:1.29-alpine
+ARG BASE_PATH=/butlers/
+ARG BASE_PATH_NOSLASH=/butlers
+ENV BASE_PATH=${BASE_PATH} BASE_PATH_NOSLASH=${BASE_PATH_NOSLASH}
+ENV NGINX_ENVSUBST_FILTER=^BASE_PATH
+COPY deploy/frontend/nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY --from=build /app/dist /usr/share/nginx/html${BASE_PATH}
