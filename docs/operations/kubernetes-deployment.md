@@ -3,7 +3,7 @@
 > **Purpose:** Run Butlers on the homelab k3s cluster with the in-repo Helm chart.
 > **Audience:** Operators deploying or upgrading Butlers.
 > **Prerequisites:** `kubectl` and `helm` against the k3s cluster, Docker with push access to
-> `docker-registry.parrot-hen.ts.net`, and `bws` with the dev or prod BWS env file.
+> `<registry-host>`, and `bws` with the dev or prod BWS env file.
 
 ## Overview
 
@@ -44,14 +44,14 @@ Not ported (compose remains the only path for these):
 - the restore-drill executor (`docker-compose.restore-drill.yml`): it attests Docker cgroups and
   host iptables and needs a NetworkPolicy-based redesign;
 - `connector-live-listener` (needs `/dev/snd`);
-- the observability profile (the cluster's `lgtm` stack and `otel.parrot-hen.ts.net` replace it);
+- the observability profile (the cluster's `lgtm` stack and `otel.example.ts.net` replace it);
 - `/api/decisions` and the beads tiles: the 18 MB `.beads/issues.export.jsonl` host file is not
   mounted, so they report unavailable.
 
 ## Ingress
 
 The host's `tailscale serve` mappings stay the public entry point, so the dashboard URL, OAuth
-redirect URIs, the OwnTracks webhook URL and enrolled passkeys (RP ID `tzeusy.parrot-hen.ts.net`)
+redirect URIs, the OwnTracks webhook URL and enrolled passkeys (RP ID `butlers.example.ts.net`)
 do not change. Only the local targets move from the compose ports to the NodePorts:
 
 ```bash
@@ -126,7 +126,7 @@ connector sessions, so never run both at once:
 2. Stop compose: `docker compose -p butlers-dev down` (named volumes are kept).
 3. `make deploy-dev` (which leaves `suspend` false), then repoint the three `tailscale serve`
    mappings above.
-4. Verify: `make status-dev`, the dashboard at `https://tzeusy.parrot-hen.ts.net/butlers-dev/`, an
+4. Verify: `make status-dev`, the dashboard at `https://butlers.example.ts.net/butlers-dev/`, an
    owner sign-in, and connector logs (`kubectl -n butlers-dev logs deploy/connector-telegram-bot`).
 
 Rollback: `helm -n butlers-dev uninstall butlers` (PVCs are kept), restore the compose

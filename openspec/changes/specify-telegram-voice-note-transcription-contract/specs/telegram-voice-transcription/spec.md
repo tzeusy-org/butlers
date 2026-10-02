@@ -8,7 +8,7 @@ The Telegram bot connector SHALL support an optional, disabled-by-default voice-
 configuration surface via new environment variables:
 `CONNECTOR_TELEGRAM_VOICE_TRANSCRIPTION_ENABLED` (boolean, default `false`),
 `CONNECTOR_TELEGRAM_VOICE_TRANSCRIPTION_URL` (STT service URL, default the same Wyoming backend the
-live-listener connector already depends on, `tcp://wyoming-faster-whisper.parrot-hen.ts.net:10300`),
+live-listener connector already depends on, `tcp://wyoming-faster-whisper.example.ts.net:10300`),
 `CONNECTOR_TELEGRAM_VOICE_TRANSCRIPTION_PROTOCOL` (default `"wyoming"`), and
 `CONNECTOR_TELEGRAM_VOICE_MAX_DURATION_S` (integer seconds, default `120`). This is additive to the
 connector's existing `Environment Variables` requirement — none of its existing required or optional

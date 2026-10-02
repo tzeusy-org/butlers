@@ -326,7 +326,7 @@ This is a doctrine clarification, not a contract break — anonymization-on-egre
 6. Add the Cases API endpoints (`/api/qa/cases`, `/api/qa/cases/:id`, `/api/qa/cases/:id/journal`) and extend `/api/qa/summary` with the KPI block.
 7. Implement the retention cleanup job and schedule it daily at 04:00 UTC.
 8. Frontend: introduce `frontend/src/components/qa/` components and the new hooks. Rewrite the four page files. Hard cut — the old page components are deleted in the same commit.
-9. Roll to dev (`tzeusy.parrot-hen.ts.net/butlers-dev/qa`); smoke with `/butler-qa-invoke` canary. Confirm a forced patrol surfaces `flagged` and `tick` events end to end and that a real investigation reaches `merged` with a populated `investigation_notes`.
+9. Roll to dev (`butlers.example.ts.net/butlers-dev/qa`); smoke with `/butler-qa-invoke` canary. Confirm a forced patrol surfaces `flagged` and `tick` events end to end and that a real investigation reaches `merged` with a populated `investigation_notes`.
 10. Promote.
 
 Rollback: revert the frontend page commits to restore the previous renderer (the API endpoints remain functional; nothing structural removes them). The `qa_investigation_events` table is additive and can stay even if the UI rolls back — the data has no consumers beyond the new pages.

@@ -41,7 +41,7 @@ database: dev mode refuses to start while the Kubernetes `butlers-dev` release i
 ### Kubernetes access (operators)
 
 The live dev stack runs on the homelab k3s cluster. Shipping to it or debugging it needs `kubectl`
-and `helm` configured for that cluster, Docker push access to `docker-registry.parrot-hen.ts.net`,
+and `helm` configured for that cluster, Docker push access to `<registry-host>`,
 and `bws` with `/secrets/.bws.dev.env`. See
 [Kubernetes Deployment](../operations/kubernetes-deployment.md).
 

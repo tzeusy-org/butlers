@@ -21,10 +21,10 @@ Butlers exports all three OTel signals via OTLP → Grafana Alloy → LGTM stack
 
 | Resource | Location | Grafana datasource UID |
 |---|---|---|
-| Prometheus | `https://prometheus.parrot-hen.ts.net` | `${datasource}` (variable) |
+| Prometheus | `https://prometheus.example.ts.net` | `${datasource}` (variable) |
 | Tempo | `http://lgtm-tempo.lgtm.svc.cluster.local:3200` (cluster-internal) | `tempo` |
 | Loki | `http://lgtm-loki.lgtm.svc.cluster.local:3100` (cluster-internal) | `loki` |
-| OTLP ingest | `http://otel.parrot-hen.ts.net:4318` | — |
+| OTLP ingest | `http://otel.example.ts.net:4318` | — |
 | Existing dashboards | `observability/grafana/` in repo root | — |
 | Metrics instrumentation | `src/butlers/core/metrics.py` | — |
 | Tracing instrumentation | `src/butlers/core/telemetry.py` | — |
@@ -75,14 +75,14 @@ load when generating or auditing a specific dashboard's panel set.
 Always start here. Never guess metric names.
 
 ```
-GET https://prometheus.parrot-hen.ts.net/api/v1/label/__name__/values?match[]={job="butlers"}
+GET https://prometheus.example.ts.net/api/v1/label/__name__/values?match[]={job="butlers"}
 ```
 
 This returns the canonical list of all metric names currently in Prometheus. Use it to know what exists before writing any queries.
 
 To get label sets for a metric group:
 ```
-GET https://prometheus.parrot-hen.ts.net/api/v1/query?query={job="butlers",__name__=~"butlers_switchboard.*"}
+GET https://prometheus.example.ts.net/api/v1/query?query={job="butlers",__name__=~"butlers_switchboard.*"}
 ```
 
 ### Step 2 — Read source if needed

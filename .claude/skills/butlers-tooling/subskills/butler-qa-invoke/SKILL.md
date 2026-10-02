@@ -31,7 +31,7 @@ full inject-and-poll cycle below; load it whenever you run this skill for real:
 
 ```bash
 uv run .claude/skills/butlers-tooling/subskills/butler-qa-invoke/scripts/invoke_qa_canary.py \
-  --base-url https://tzeusy.parrot-hen.ts.net/butlers-dev-api \
+  --base-url https://butlers.example.ts.net/butlers-dev-api \
   --api-key "$DASHBOARD_API_KEY"
 ```
 
