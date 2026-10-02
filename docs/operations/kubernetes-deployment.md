@@ -113,13 +113,30 @@ The prod targets (`secrets-prod`, `image-prod`, `deploy-prod`) are the same with
   is exported. Setting `TAILNET_NAME` (and `BUTLERS_NODE_NAME` for the public host) derives all the
   hosts; any key set explicitly overrides its derived value. `build-push.sh` and the chart makefile (via `scripts/k8s/site-helm-args.sh`, which
   becomes `--set` flags) source it. For `bd`, use direnv (`.envrc`) or `. scripts/site-env.sh`.
-- Secrets come from two places:
+- Secrets come from two places, and `localSecrets.source` picks who owns the last two:
   - The ExternalSecret `butlers-bws` syncs only the keys listed in `externalSecrets.data`. The BWS
     project is shared with other homelab services, so it never syncs the whole project.
-  - `scripts/k8s/bootstrap-secrets.sh` creates the two Secrets that have no BWS key yet:
-    the runtime-probe signer and keyring, from the files named by
-    `RUNTIME_PROBE_CONTROL_*_FILE`, and `DASHBOARD_AUTH_DB_USER` / `DASHBOARD_API_KEY` from
-    `.env.<env>`.
+  - `butlers-runtime-probe-control` (`runtime_probe_control_signing_key`,
+    `runtime_probe_control_verifiers`) and `butlers-local-env` (`DASHBOARD_AUTH_DB_USER`,
+    `DASHBOARD_API_KEY`):
+    - `source: local` (default): `scripts/k8s/bootstrap-secrets.sh` creates them from the files
+      named by `RUNTIME_PROBE_CONTROL_*_FILE` and from `.env.<env>`. This is also the rollback path.
+    - `source: bws`: two more ExternalSecrets with the same target names and key names own them,
+      reading the BWS keys named in `externalSecrets.runtimeProbeControl` and
+      `externalSecrets.localEnv` (explicit keys only, never the whole project). Consumers are
+      unchanged. Setting a `localEnv` key name to empty omits that optional key.
+      `bootstrap-secrets.sh` refuses to run against a Secret an ExternalSecret owns.
+- Migrating local -> bws, in order: (1) the owner creates the four BWS keys in the environment's
+  project (the signer is a real secret; the owner decides real vs placeholder for dev, and prod
+  needs its own project and store); (2) delete the out-of-band Secrets
+  (`kubectl -n <ns> delete secret butlers-runtime-probe-control butlers-local-env`); (3)
+  `helm upgrade` with `--set localSecrets.source=bws`; (4) `kubectl -n <ns> get externalsecret`
+  shows all three `SecretSynced`. A missing required remote key gives `SecretSyncedError` and the
+  `rollout status` wait in `make deploy-*` then fails. Rollback: `source=local`, delete the two
+  ExternalSecrets' Secrets, rerun `make secrets-<env>`.
+- Rotation: the Secrets refresh hourly, but the signer/verifier `subPath` mounts and env
+  `secretKeyRef`s do not update live. Run `kubectl -n <ns> rollout restart deploy/dashboard-api
+  deploy/butlers-up` after a rotation.
 
 ## Cutting over from compose
 
