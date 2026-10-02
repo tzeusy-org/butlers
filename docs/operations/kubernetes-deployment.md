@@ -105,6 +105,13 @@ The prod targets (`secrets-prod`, `image-prod`, `deploy-prod`) are the same with
   unless `ALLOW_DIRTY=1`. `make deploy-*` uses the same `TAG` (override with `TAG=<sha>`).
 - `make template-dev` renders into the gitignored `_templates/`. Put per-operator overrides in
   the gitignored `values.local.yaml`; it is applied after the environment file.
+- Site-specific hosts (registry, public dashboard host, OTLP endpoint, Dolt host, Wyoming URL) are
+  not tracked. `scripts/site-env.sh` loads an allowlist of keys (`BUTLERS_IMAGE_REGISTRY`,
+  `BUTLERS_PUBLIC_HOST`, `BUTLERS_OTLP_ENDPOINT`, `BEADS_DOLT_SERVER_HOST`,
+  `LIVE_LISTENER_TRANSCRIPTION_URL`, `OLLAMA_URL`, `BUTLERS_ARCHIVE_DEAD_IDENTITIES`) from
+  `$BUTLERS_SITE_ENV` (default `/secrets/.dev.env`) then `.env.local`; nothing else in those files
+  is exported. `build-push.sh` and the chart makefile (via `scripts/k8s/site-helm-args.sh`, which
+  becomes `--set` flags) source it. For `bd`, use direnv (`.envrc`) or `. scripts/site-env.sh`.
 - Secrets come from two places:
   - The ExternalSecret `butlers-bws` syncs only the keys listed in `externalSecrets.data`. The BWS
     project is shared with other homelab services, so it never syncs the whole project.

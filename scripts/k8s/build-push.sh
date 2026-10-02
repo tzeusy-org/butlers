@@ -10,6 +10,8 @@
 #   $REGISTRY/butlers-frontend:<sha>-<env>  Vite bakes the base path in
 set -euo pipefail
 
+. "$(dirname "${BASH_SOURCE[0]}")/../site-env.sh"
+
 ENV_NAME="${1:?usage: $0 <dev|prod>}"
 REGISTRY="${BUTLERS_IMAGE_REGISTRY:?set BUTLERS_IMAGE_REGISTRY to your image registry host}"
 
