@@ -1,7 +1,7 @@
 ## Why
 
 Five user-visible defects on the Chronicles dashboard
-(`https://tzeusy.parrot-hen.ts.net/butlers-dev/chronicles`) traced back to
+(`https://butlers.example.ts.net/butlers-dev/chronicles`) traced back to
 spec-shaped contracts that were either underspecified or violated in
 implementation:
 

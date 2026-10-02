@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 #: Default Wyoming transcription URL
-DEFAULT_WYOMING_URL = "tcp://wyoming-faster-whisper.parrot-hen.ts.net:10300"
+DEFAULT_WYOMING_URL = "tcp://localhost:10300"
 
 #: Minimum confidence threshold for accepting a transcription result
 DEFAULT_MIN_CONFIDENCE = 0.3

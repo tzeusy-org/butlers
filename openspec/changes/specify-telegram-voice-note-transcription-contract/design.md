@@ -66,7 +66,7 @@ Non-goals:
   executes.
 - No new STT service, model, or provider account. The only backend this contract authorizes reuse of
   is the existing Wyoming faster-whisper service the live-listener connector already depends on
-  (`wyoming-faster-whisper.parrot-hen.ts.net:10300`).
+  (`wyoming-faster-whisper.example.ts.net:10300`).
 - No ambient/always-listening microphone behavior of any kind — this is strictly a per-message,
   explicit-user-action (the owner sending a voice note) contract.
 - No speaker identification beyond the existing Telegram sender-identity gate (D6) — the contract

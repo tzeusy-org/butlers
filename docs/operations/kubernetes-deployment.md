@@ -3,7 +3,7 @@
 > **Purpose:** Run Butlers on the homelab k3s cluster with the in-repo Helm chart.
 > **Audience:** Operators deploying or upgrading Butlers.
 > **Prerequisites:** `kubectl` and `helm` against the k3s cluster, Docker with push access to
-> `docker-registry.parrot-hen.ts.net`, and `bws` with the dev or prod BWS env file.
+> `<registry-host>`, and `bws` with the dev or prod BWS env file.
 
 ## Overview
 
@@ -44,14 +44,14 @@ Not ported (compose remains the only path for these):
 - the restore-drill executor (`docker-compose.restore-drill.yml`): it attests Docker cgroups and
   host iptables and needs a NetworkPolicy-based redesign;
 - `connector-live-listener` (needs `/dev/snd`);
-- the observability profile (the cluster's `lgtm` stack and `otel.parrot-hen.ts.net` replace it);
+- the observability profile (the cluster's `lgtm` stack and `otel.example.ts.net` replace it);
 - `/api/decisions` and the beads tiles: the 18 MB `.beads/issues.export.jsonl` host file is not
   mounted, so they report unavailable.
 
 ## Ingress
 
 The host's `tailscale serve` mappings stay the public entry point, so the dashboard URL, OAuth
-redirect URIs, the OwnTracks webhook URL and enrolled passkeys (RP ID `tzeusy.parrot-hen.ts.net`)
+redirect URIs, the OwnTracks webhook URL and enrolled passkeys (RP ID `butlers.example.ts.net`)
 do not change. Only the local targets move from the compose ports to the NodePorts:
 
 ```bash
@@ -105,6 +105,14 @@ The prod targets (`secrets-prod`, `image-prod`, `deploy-prod`) are the same with
   unless `ALLOW_DIRTY=1`. `make deploy-*` uses the same `TAG` (override with `TAG=<sha>`).
 - `make template-dev` renders into the gitignored `_templates/`. Put per-operator overrides in
   the gitignored `values.local.yaml`; it is applied after the environment file.
+- Site-specific hosts (registry, public dashboard host, OTLP endpoint, Dolt host, Wyoming URL) are
+  not tracked. `scripts/site-env.sh` loads an allowlist of keys (`BUTLERS_IMAGE_REGISTRY`,
+  `BUTLERS_PUBLIC_HOST`, `BUTLERS_OTLP_ENDPOINT`, `BEADS_DOLT_SERVER_HOST`,
+  `LIVE_LISTENER_TRANSCRIPTION_URL`, `OLLAMA_URL`, `BUTLERS_ARCHIVE_DEAD_IDENTITIES`) from
+  `$BUTLERS_SITE_ENV` (default `/secrets/.dev.env`) then `.env.local`; nothing else in those files
+  is exported. Setting `TAILNET_NAME` (and `BUTLERS_NODE_NAME` for the public host) derives all the
+  hosts; any key set explicitly overrides its derived value. `build-push.sh` and the chart makefile (via `scripts/k8s/site-helm-args.sh`, which
+  becomes `--set` flags) source it. For `bd`, use direnv (`.envrc`) or `. scripts/site-env.sh`.
 - Secrets come from two places:
   - The ExternalSecret `butlers-bws` syncs only the keys listed in `externalSecrets.data`. The BWS
     project is shared with other homelab services, so it never syncs the whole project.
@@ -126,7 +134,7 @@ connector sessions, so never run both at once:
 2. Stop compose: `docker compose -p butlers-dev down` (named volumes are kept).
 3. `make deploy-dev` (which leaves `suspend` false), then repoint the three `tailscale serve`
    mappings above.
-4. Verify: `make status-dev`, the dashboard at `https://tzeusy.parrot-hen.ts.net/butlers-dev/`, an
+4. Verify: `make status-dev`, the dashboard at `https://butlers.example.ts.net/butlers-dev/`, an
    owner sign-in, and connector logs (`kubectl -n butlers-dev logs deploy/connector-telegram-bot`).
 
 Rollback: `helm -n butlers-dev uninstall butlers` (PVCs are kept), restore the compose

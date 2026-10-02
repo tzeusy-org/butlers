@@ -87,7 +87,7 @@ The connector SHALL send speech audio to an external faster-whisper service and 
 
 #### Scenario: Wyoming protocol client (default)
 - **WHEN** `LIVE_LISTENER_TRANSCRIPTION_PROTOCOL=wyoming`
-- **THEN** the client connects via TCP to the configured `LIVE_LISTENER_TRANSCRIPTION_URL` (for example `tcp://wyoming-faster-whisper.parrot-hen.ts.net:10300`, the `wyoming` namespace on the tailnet). The URL is always required and has no default
+- **THEN** the client connects via TCP to the configured `LIVE_LISTENER_TRANSCRIPTION_URL` (for example `tcp://wyoming-faster-whisper.example.ts.net:10300`, the `wyoming` namespace on the tailnet). The URL is always required and has no default
 - **AND** the client uses the Wyoming wire protocol: JSON header line + binary payload framing
 - **AND** the ASR message flow is: `transcribe` event (with optional language hint from `LIVE_LISTENER_LANGUAGE`) -> `audio-start` event (rate=16000, width=2, channels=1) -> one or more `audio-chunk` events with raw PCM payload -> `audio-stop` event -> server responds with `transcript` event containing recognized text
 - **AND** audio chunks are sent as they arrive from the VAD during speech (streaming), not buffered until segment complete

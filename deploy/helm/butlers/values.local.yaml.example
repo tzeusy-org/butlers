@@ -1,0 +1,11 @@
+# Copy to values.local.yaml (gitignored; applied after values.<env>.yaml) and fill in
+# the site-specific hosts that the committed values deliberately leave as `.invalid`.
+image:
+  repository: <registry-host>/butlers-app
+frontendImage:
+  repository: <registry-host>/butlers-frontend
+publicUrl:
+  host: <public-dashboard-host>
+commonEnv:
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://<otel-host>:4318
+  # Optional: LIVE_LISTENER_TRANSCRIPTION_URL: tcp://<wyoming-host>:10300

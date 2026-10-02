@@ -18,7 +18,7 @@ Two deterministic Switchboard schedule jobs:
 Why Switchboard, and why a file, not a live query
 ---------------------------------------------------
 Beads (``bd``) issue data lives in the shared Dolt server at
-``dolt.parrot-hen.ts.net:3307`` (see ``.beads/config.yaml``), reached today
+``<dolt-host>:3307`` (see ``.beads/config.yaml``), reached today
 only by the ``bd`` CLI running directly on the host. No butler daemon or
 dashboard-api process can reach it: ``docker-compose.yml``'s ``egress``
 network explicitly DROPs all RFC1918/loopback/CGNAT traffic

@@ -7,7 +7,8 @@ NAMESPACE_dev := butlers-dev
 NAMESPACE_prod := butlers
 
 helm_args = -n $(NAMESPACE_$(1)) -f values.yaml -f values.$(1).yaml $(if $(LOCAL_VALUES),-f values.local.yaml) \
-	--set image.tag=$(TAG) --set frontendImage.tag=$(TAG)-$(1)
+	--set image.tag=$(TAG) --set frontendImage.tag=$(TAG)-$(1) \
+	$(shell ../../../scripts/k8s/site-helm-args.sh)
 
 .PHONY: lint
 

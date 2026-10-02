@@ -128,7 +128,7 @@
 - [ ] 14.2 Run an end-to-end investigation with the configured QA runtime; verify `./.qa/investigation_notes.json` is produced by the portable file contract, parses cleanly, persists into `structured_evidence`, and the dossier renders all fields
 - [ ] 14.3 Wait two patrol cycles after the case lands; verify `tick` events accumulate while the case is `pr_open` and stop after `merged`
 - [ ] 14.4 Verify the daily cleanup job runs on schedule in dev (or run it manually) and increments the retention counter; confirm narrative fields are preserved post-cleanup
-- [ ] 14.5 Verify the page renders correctly at `https://tzeusy.parrot-hen.ts.net/butlers-dev/qa` with real data
+- [ ] 14.5 Verify the page renders correctly at `https://butlers.example.ts.net/butlers-dev/qa` with real data
 - [ ] 14.6 Run `make check` (ruff + full test suite) and confirm zero failures
 
 ## 15. Documentation
