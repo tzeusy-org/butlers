@@ -91,7 +91,8 @@ bws run --project-id "$BWS_PROJECT_ID" -- make ship-dev   # build + push images,
 an initContainer of `dashboard-api`, so every rollout runs `butlers db migrate` before the new API
 starts. `dashboard-api`, `butlers-up` and the connectors use the Recreate strategy, so old and new
 pods never overlap. The image installs dependencies before copying `src/`, so a commit that touches
-only source rebuilds and pulls a few tens of MB; a `uv.lock` or `Dockerfile.base` change rebuilds
+only source rebuilds and pulls a few tens of MB (measured: `ship-dev` about 2.5 minutes, the API
+unavailable for about 70 seconds, every pod ready after about 3 minutes); a `uv.lock` or `Dockerfile.base` change rebuilds
 the multi-GB dependency layer and takes about 12 minutes.
 Compose's hotreload has no equivalent here: `butlers-dev` is the live system and only runs
 committed images. To roll back, `make deploy-dev TAG=<previous sha>` (`helm -n butlers-dev
