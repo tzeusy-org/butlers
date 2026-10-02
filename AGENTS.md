@@ -283,8 +283,9 @@ it before changing the subsystem.
   [whatsapp](docs/connectors/whatsapp.md).
 - Dashboard: [response conventions](docs/api_and_protocols/response-conventions.md),
   [frontend data access](docs/frontend/data-access-and-refresh.md).
-- Operations and dev: [dev environment](docs/getting_started/dev-environment.md) (dev Compose and
-  tailnet paths), [docker deployment](docs/operations/docker-deployment.md),
+- Operations and dev: [dev environment](docs/getting_started/dev-environment.md) (live k3s stack,
+  local Compose, tailnet paths), [kubernetes deployment](docs/operations/kubernetes-deployment.md),
+  [docker deployment](docs/operations/docker-deployment.md),
   [backup and restore](docs/operations/backup-restore.md),
   [decision beads](docs/operations/decision-beads.md).
 - Tests: [markers and fixtures](docs/testing/markers-and-fixtures.md). Long-lived pgvector

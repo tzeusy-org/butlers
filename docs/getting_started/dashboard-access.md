@@ -6,18 +6,29 @@
 
 ## Overview
 
-The Butlers dashboard is a web application for real-time monitoring and management of all butler instances. It consists of two components: a FastAPI backend (the Dashboard API) and a Vite-powered React frontend. Docker Compose runs both; you can also run them as separate processes.
+The Butlers dashboard is a web application for real-time monitoring and management of all butler instances. It consists of two components: a FastAPI backend (the Dashboard API) and a Vite-powered React frontend. On the live dev stack both run on Kubernetes; locally, Docker Compose runs both, or you can run them as separate processes.
 
 ## Starting the Dashboard
 
-### Option 1: Docker Compose
+### Option 1: Live Dev Stack (Kubernetes)
+
+The `butlers-dev` release serves the dashboard at `https://tzeusy.parrot-hen.ts.net/butlers-dev/`
+and the API at `/butlers-dev-api` (host `tailscale serve` to NodePorts 32173 and 32200). The
+frontend there is a static nginx build of the committed image; ship changes with `make ship-dev`
+per [Kubernetes Deployment](../operations/kubernetes-deployment.md). For frontend iteration, run
+Vite locally (Option 3) and, if you want live data, set `VITE_PROXY_TARGET` to the cluster API
+`https://tzeusy.parrot-hen.ts.net/butlers-dev-api` (tailnet only; owner authentication still
+applies).
+
+### Option 2: Docker Compose (non-live database)
 
 `./scripts/compose.sh` starts the dashboard API (`dashboard-api`) and the Vite frontend
-(`frontend-dev`) with the rest of the stack; see [Dev Environment](dev-environment.md). The host
-ports differ between dev and prod mode and are listed in the
+(`frontend-dev`) with the rest of the stack; see
+[Dev Environment](dev-environment.md#local-stack-docker-compose). Dev mode refuses to start while the `butlers-dev` release is running. The host ports differ
+between dev and prod mode and are listed in the
 [deployment port map](../../about/lay-and-land/deployment.md#port-assignments).
 
-### Option 2: Separate Processes
+### Option 3: Separate Processes
 
 Start the backend API in one terminal:
 
@@ -118,7 +129,8 @@ curl -s http://localhost:41200/api/health
 curl -s -o /dev/null -w "%{http_code}" http://localhost:41200/api/butlers
 # Expected: 401 (sign in through the browser to see butler records)
 
-# 3. Frontend is reachable: open the URL Vite printed, or the Compose frontend host port
+# 3. Frontend is reachable: open the URL Vite printed, the Compose frontend host port, or the
+#    live dashboard URL
 ```
 
 If the health check passes, the private route refuses anonymous access, and the signed-in

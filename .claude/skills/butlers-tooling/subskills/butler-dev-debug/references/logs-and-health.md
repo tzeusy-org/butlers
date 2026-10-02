@@ -4,45 +4,60 @@ Use this file when the next step is log inspection or service-health triage.
 
 ## Primary Rule
 
-Use container stdout/stderr via `docker logs`. Do not start from the repo-local `logs/` directory for compose debugging.
+Use pod stdout/stderr via `kubectl -n butlers-dev logs`. Do not start from the repo-local `logs/`
+directory. File logs are on the shared PVC `butlers-logs`, mounted at `/app/logs` in each pod.
 
 ## Log Commands
 
 ```bash
-docker logs butlers-dev-butlers-up-1 --since 10m
-docker logs butlers-dev-butlers-up-1 --since 10m --tail 200
-docker logs -f --since 5m butlers-dev-butlers-up-1
+kubectl -n butlers-dev logs deploy/butlers-up --since=10m
+kubectl -n butlers-dev logs deploy/butlers-up --since=10m --tail=200
+kubectl -n butlers-dev logs -f --since=5m deploy/butlers-up
 
-docker logs butlers-dev-connector-gmail-1 --since 10m
-docker logs butlers-dev-connector-telegram-bot-1 --since 10m
-docker logs -f butlers-dev-connector-whatsapp-user-1
+kubectl -n butlers-dev logs deploy/connector-gmail --since=10m
+kubectl -n butlers-dev logs deploy/connector-telegram-bot --since=10m
+kubectl -n butlers-dev logs -f deploy/connector-whatsapp-user
+
+kubectl -n butlers-dev logs deploy/dashboard-api -c migrations   # migration initContainer
+kubectl -n butlers-dev logs deploy/butlers-up --previous         # last crashed container
 ```
 
 Search by session ID:
 
 ```bash
-docker logs butlers-dev-butlers-up-1 --since 10m 2>&1 | grep "<session-id>"
-docker logs butlers-dev-connector-gmail-1 --since 10m 2>&1 | grep "<session-id>"
+kubectl -n butlers-dev logs deploy/butlers-up --since=10m | grep "<session-id>"
+kubectl -n butlers-dev logs deploy/connector-gmail --since=10m | grep "<session-id>"
 ```
 
-Search all dev containers for recent errors:
+Search all deployments for recent errors:
 
 ```bash
-for c in $(docker ps --format '{{.Names}}' | grep '^butlers-dev-'); do
-  echo "=== $c ==="
-  docker logs "$c" --since 10m 2>&1 | grep -iE 'error|traceback|failed|exception'
+for d in $(kubectl -n butlers-dev get deploy -o name); do
+  echo "=== $d ==="
+  kubectl -n butlers-dev logs "$d" --all-containers --since=10m 2>&1 | grep -iE 'error|traceback|failed|exception'
 done
 ```
 
-## Health and Container Status
+Read file logs on the shared PVC:
 
 ```bash
-docker ps --filter name=butlers-dev --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
-docker ps --filter name=butlers-dev --filter status=restarting --format '{{.Names}}\t{{.Status}}'
+kubectl -n butlers-dev exec deploy/butlers-up -c butlers-up -- ls /app/logs
+```
 
-curl -sf http://localhost:41200/health | python3 -m json.tool
+## Health and Pod Status
+
+```bash
+kubectl -n butlers-dev get pods -o wide        # STATUS and RESTARTS columns
+kubectl -n butlers-dev describe pod <pod>       # events, probe failures, OOMKilled
+kubectl -n butlers-dev get events --sort-by=.lastTimestamp | tail -20
+
+curl -sf http://localhost:32200/health | python3 -m json.tool   # dashboard-api NodePort, from the k3s host
+kubectl -n butlers-dev port-forward svc/butlers-up 41100:41100 &  # butlers-up has no NodePort
 curl -sf http://localhost:41100/health | python3 -m json.tool
 
-docker restart butlers-dev-butlers-up-1
-docker restart butlers-dev-connector-gmail-1
+kubectl -n butlers-dev rollout restart deploy/butlers-up
+kubectl -n butlers-dev rollout restart deploy/connector-gmail
 ```
+
+Restarting reruns the same committed image. Code changes reach the live stack only through
+`make ship-dev` (see `docs/operations/kubernetes-deployment.md`).

@@ -4,6 +4,14 @@
 > **Audience:** Operators, DevOps engineers, anyone deploying Butlers.
 > **Prerequisites:** [Environment Config](environment-config.md), Docker and Docker Compose installed.
 
+> **Note:** The live dev stack (namespace `butlers-dev`, database butlers-db-dev) no longer runs
+> under Compose. It runs on the homelab k3s cluster from the Helm chart; see [Kubernetes
+> Deployment](kubernetes-deployment.md). `./scripts/compose.sh` dev mode refuses to start while that
+> release is running (`BUTLERS_ALLOW_COMPOSE_WITH_K8S=1` overrides it, for a non-live database
+> only). Compose still serves local stacks against a non-live database. The restore-drill executor
+> and live-listener audio are not ported yet (bu-viat6h.4), and a compose stack that includes them
+> would also start a second butlers-up against the same database, so the guard blocks them too.
+
 ## Overview
 
 Butlers runs as a set of containers defined in the repository-root
