@@ -8,6 +8,10 @@
 #                                  (falls back to the committed unprovisioned placeholders)
 #   butlers-local-env              DASHBOARD_API_KEY / DASHBOARD_AUTH_DB_USER from .env.<env>
 #
+# This is the `localSecrets.source=local` path. When the chart runs with
+# `source=bws`, External Secrets owns both Secrets and this script refuses to
+# touch them (see docs/operations/kubernetes-deployment.md for the migration order).
+#
 # Values are piped straight to kubectl and never printed.
 set -euo pipefail
 
@@ -23,6 +27,18 @@ PROJECT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 ENV_FILE="${BUTLERS_ENV_FILE:-${PROJECT_DIR}/.env.${ENV_NAME}}"
 
 trap 'rm -f "${signer_tmp:-}" "${tmp:-}"' EXIT
+
+# Never fight an ExternalSecret over a Secret it owns. Only metadata is read.
+for secret in butlers-runtime-probe-control butlers-local-env; do
+  owners="$(kubectl -n "$NAMESPACE" get secret "$secret" \
+    -o jsonpath='{range .metadata.ownerReferences[*]}{.kind}{"\n"}{end}' 2>/dev/null || true)"
+  if printf '%s\n' "$owners" | grep -qx 'ExternalSecret'; then
+    echo "refusing: secret/${secret} in ${NAMESPACE} is owned by an ExternalSecret" \
+      "(localSecrets.source=bws); nothing was applied. Set source=local and delete the" \
+      "ExternalSecret first to go back to this script." >&2
+    exit 1
+  fi
+done
 
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 

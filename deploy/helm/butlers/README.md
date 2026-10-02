@@ -7,3 +7,6 @@ Runs Butlers on k3s in namespace `butlers-dev` (`values.dev.yaml`) or `butlers`
 bws run --project-id "$BWS_PROJECT_ID" -- make secrets-dev image-dev
 make deploy-dev
 ```
+
+`localSecrets.source` (default `local`) chooses whether `make secrets-*` or External Secrets
+owns `butlers-runtime-probe-control` and `butlers-local-env`; see the operator guide.
