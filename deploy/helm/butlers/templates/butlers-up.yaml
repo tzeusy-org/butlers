@@ -6,7 +6,7 @@ metadata:
   labels:
     {{- include "butlers.labels" . | nindent 4 }}
 spec:
-  replicas: 1
+  replicas: {{ if $.Values.suspend }}0{{ else }}1{{ end }}
   # Schedulers and connectors assume a single instance.
   strategy: {type: Recreate}
   selector:

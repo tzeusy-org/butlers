@@ -7,6 +7,7 @@ metadata:
     {{- include "butlers.labels" . | nindent 4 }}
 spec:
   schedule: {{ .Values.backup.schedule | quote }}
+  suspend: {{ $.Values.suspend }}
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
@@ -59,6 +60,7 @@ metadata:
     {{- include "butlers.labels" . | nindent 4 }}
 spec:
   schedule: {{ .Values.logs.cleanupSchedule | quote }}
+  suspend: {{ $.Values.suspend }}
   concurrencyPolicy: Forbid
   jobTemplate:
     spec:

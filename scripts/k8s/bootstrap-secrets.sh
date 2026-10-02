@@ -22,18 +22,24 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 ENV_FILE="${BUTLERS_ENV_FILE:-${PROJECT_DIR}/.env.${ENV_NAME}}"
 
+trap 'rm -f "${signer_tmp:-}" "${tmp:-}"' EXIT
+
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
 signer="${RUNTIME_PROBE_CONTROL_SIGNING_KEY_FILE:-${PROJECT_DIR}/deploy/runtime-probe-control/signing-key-unprovisioned.json}"
 verifiers="${RUNTIME_PROBE_CONTROL_VERIFIERS_FILE:-${PROJECT_DIR}/deploy/runtime-probe-control/verifiers-unprovisioned.json}"
+# The provisioned signer is root-owned 0400 by design; read it with sudo then.
+signer_tmp="$(mktemp)"; chmod 600 "$signer_tmp"
+if [ -r "$signer" ]; then cat "$signer" > "$signer_tmp"; else sudo cat "$signer" > "$signer_tmp"; fi
 kubectl -n "$NAMESPACE" create secret generic butlers-runtime-probe-control \
-  --from-file=runtime_probe_control_signing_key="$signer" \
+  --from-file=runtime_probe_control_signing_key="$signer_tmp" \
   --from-file=runtime_probe_control_verifiers="$verifiers" \
   --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+rm -f "$signer_tmp"
 echo "secret/butlers-runtime-probe-control applied in ${NAMESPACE}"
 
 # Pass values through a private temp file, not argv (visible in `ps`).
-tmp="$(mktemp)"; chmod 600 "$tmp"; trap 'rm -f "$tmp"' EXIT
+tmp="$(mktemp)"; chmod 600 "$tmp"
 if [ -f "$ENV_FILE" ]; then
   for key in DASHBOARD_API_KEY DASHBOARD_AUTH_DB_USER; do
     value="$(set -a; . "$ENV_FILE"; printf '%s' "${!key:-}")"
@@ -43,3 +49,4 @@ fi
 kubectl -n "$NAMESPACE" create secret generic butlers-local-env --from-env-file="$tmp" \
   --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 echo "secret/butlers-local-env applied in ${NAMESPACE} ($(wc -l < "$tmp") keys)"
+rm -f "$tmp"

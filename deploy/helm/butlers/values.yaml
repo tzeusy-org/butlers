@@ -4,14 +4,18 @@
 # Naming caution (docs/operations/docker-deployment.md): the "dev" environment
 # targets butlers-db-dev, which is the LIVE database holding real data.
 
+# Scale every Deployment to 0 and suspend CronJobs, keeping config, Secrets
+# and PVCs. Used to stage a release before cutting over from compose.
+suspend: false
+
 image:
-  repository: docker-registry.parrot-hen.ts.net:5000/butlers-app
+  repository: docker-registry.parrot-hen.ts.net/butlers-app
   # Required. `make deploy-*` sets it to the pushed git SHA.
   tag: ""
   pullPolicy: IfNotPresent
 
 frontendImage:
-  repository: docker-registry.parrot-hen.ts.net:5000/butlers-frontend
+  repository: docker-registry.parrot-hen.ts.net/butlers-frontend
   # Required. Built per environment because Vite bakes the base path in.
   tag: ""
   pullPolicy: IfNotPresent

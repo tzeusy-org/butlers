@@ -5,6 +5,7 @@
 > **Does NOT belong here:** First-time dev setup (see [Getting Started](../getting_started/index.md)), module development.
 
 - [Docker Deployment](docker-deployment.md) — Docker Compose setup, production deployment
+- [Kubernetes Deployment](kubernetes-deployment.md) — Helm chart for k3s (`butlers` / `butlers-dev` namespaces), cutover from compose
 - [Deployment Posture](deployment-posture.md) — dev vs hardened posture, Grafana anon-viewer gating
 - [Environment Config](environment-config.md) — configuration reference, secrets directory
 - [Runtime-Probe Control Keys](runtime-probe-control-keys.md) — signer/verifier documents, provisioning, restart-driven rotation
