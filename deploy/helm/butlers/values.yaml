@@ -9,13 +9,14 @@
 suspend: false
 
 image:
-  repository: docker-registry.parrot-hen.ts.net/butlers-app
+  # Required: set the registry in the gitignored values.local.yaml (see values.local.yaml.example).
+  repository: registry.invalid/butlers-app
   # Required. `make deploy-*` sets it to the pushed git SHA.
   tag: ""
   pullPolicy: IfNotPresent
 
 frontendImage:
-  repository: docker-registry.parrot-hen.ts.net/butlers-frontend
+  repository: registry.invalid/butlers-frontend
   # Required. Built per environment because Vite bakes the base path in.
   tag: ""
   pullPolicy: IfNotPresent
@@ -52,7 +53,8 @@ localSecrets:
 # Public URLs. Ingress today is the host's `tailscale serve`, proxying the
 # path prefixes below to the NodePorts in `nodePorts` (see README).
 publicUrl:
-  host: tzeusy.parrot-hen.ts.net
+  # Required: set in the gitignored values.local.yaml.
+  host: butlers.invalid
   dashboardPrefix: butlers
   apiPrefix: butlers-api
   owntracksPrefix: owntracks
@@ -80,7 +82,7 @@ dashboardAuth:
 # Plain env applied to butlers-up, dashboard-api and every connector.
 commonEnv:
   # OTLP/HTTP (4318). The BWS value used by compose (:4317) never connected.
-  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel.parrot-hen.ts.net:4318
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel.invalid:4318  # override in values.local.yaml
   BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: "0"
   BUTLERS_FLEET_CONDITION_HANDOFF: "0"
 

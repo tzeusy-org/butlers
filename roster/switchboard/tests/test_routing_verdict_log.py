@@ -54,7 +54,7 @@ class TestNormalizeSenderKey:
             "owntracks:th",
             "telegram:bot:@bigbutlerbot",
             "steam:user:76561198037633688",
-            "home_assistant:v-on-shenton.parrot-hen.ts.net:443",
+            "home_assistant:v-on-shenton.example.ts.net:443",
             "spotify:acct-1",
             "dashboard:web:019e2246-7f41-754e-a991-63fc7adf334b",
         ],

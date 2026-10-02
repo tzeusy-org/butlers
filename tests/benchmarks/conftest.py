@@ -28,7 +28,7 @@ _PULL_TIMEOUT = 600  # seconds — pulling a multi-GB model over the network
 def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(
         "--ollama-url",
-        default="https://ollama.parrot-hen.ts.net",
+        default="http://localhost:11434",
         help="Ollama base URL",
     )
     parser.addoption(

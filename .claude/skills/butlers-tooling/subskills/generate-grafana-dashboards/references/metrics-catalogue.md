@@ -2,7 +2,7 @@
 
 Living catalog of verified metric names, trace span names/tags, and label sets for this
 project's OTel pipeline. All entries verified against live Prometheus
-(`https://prometheus.parrot-hen.ts.net`) and Tempo. Last verified: 2026-03-03.
+(`https://prometheus.example.ts.net`) and Tempo. Last verified: 2026-03-03.
 
 ## Maintenance contract (read this first)
 

@@ -24,12 +24,12 @@ bws run --project-id "$BWS_PROJECT_ID" -- make ship-dev   # build + push images,
 
 Migrations run automatically as the `dashboard-api` initContainer. Roll back with
 `make deploy-dev TAG=<sha>` (`helm -n butlers-dev history butlers` lists tags). The public URLs are
-unchanged: dashboard `https://tzeusy.parrot-hen.ts.net/butlers-dev/`, API `/butlers-dev-api`,
+unchanged: dashboard `https://butlers.example.ts.net/butlers-dev/`, API `/butlers-dev-api`,
 OwnTracks `/owntracks-dev`.
 
 For frontend work, run Vite locally (`cd frontend && npm run dev`). Its `/api` proxy targets
 `VITE_PROXY_TARGET` (default `http://localhost:41200`): either run a local `butlers dashboard`, or
-point it at the cluster API, `https://tzeusy.parrot-hen.ts.net/butlers-dev-api` on the tailnet.
+point it at the cluster API, `https://butlers.example.ts.net/butlers-dev-api` on the tailnet.
 
 ## Local Stack (Docker Compose)
 

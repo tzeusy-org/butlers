@@ -88,7 +88,7 @@ _ARCHIVE_DEAD_IDENTITIES_SQL = [
     UPDATE connector_registry SET archived_at = now()
      WHERE archived_at IS NULL
        AND connector_type = 'home_assistant'
-       AND endpoint_identity = 'home_assistant:homeassistant.parrot-hen.ts.net:443'
+       AND endpoint_identity = 'home_assistant:homeassistant.example.ts.net:443'
     """,
 ]
 

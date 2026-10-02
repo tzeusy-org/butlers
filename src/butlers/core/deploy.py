@@ -668,7 +668,7 @@ def materialize_beads_export(config: DeployConfig) -> bool:
     -- a relative *host* path resolved against the compose project directory
     (``config.repo_root``, since ``docker compose`` always runs with that as
     ``cwd`` here). ``bd export`` itself only ever runs on the host (``bd``
-    talks to the remote Dolt server at ``dolt.parrot-hen.ts.net:3307``; the
+    talks to the remote Dolt server at ``<dolt-host>:3307``; the
     tracker endpoint is unreachable from inside any container by policy -- see
     ``decision_review.py``'s module docstring), and a
     prod deploy commonly runs from a snapshot worktree (see this module's

@@ -179,7 +179,7 @@ When `OTEL_EXPORTER_OTLP_ENDPOINT` is set, the dashboard API automatically instr
 
 In Docker Compose, butler services use:
 ```yaml
-OTEL_EXPORTER_OTLP_ENDPOINT: http://otel.parrot-hen.ts.net:4318
+OTEL_EXPORTER_OTLP_ENDPOINT: http://otel.example.ts.net:4318
 ```
 
 ## Dashboard API Metrics

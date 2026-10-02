@@ -11,7 +11,7 @@
 set -euo pipefail
 
 ENV_NAME="${1:?usage: $0 <dev|prod>}"
-REGISTRY="${BUTLERS_IMAGE_REGISTRY:-docker-registry.parrot-hen.ts.net}"
+REGISTRY="${BUTLERS_IMAGE_REGISTRY:?set BUTLERS_IMAGE_REGISTRY to your image registry host}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
