@@ -87,8 +87,9 @@ WHERE id = '<session-id>';
 Then inspect the dashboard/API view:
 
 ```bash
-# From the k3s host: dashboard-api NodePort 32200 (owner auth applies to /api routes)
-curl -s http://localhost:32200/api/butlers/<butler-name>/sessions/<session-id> | python3 -m json.tool
+# Curl the dashboard-api Service (owner auth applies to /api routes)
+DASH="http://$(kubectl -n butlers-dev get svc dashboard-api -o jsonpath='{.spec.clusterIP}'):41200"  # Service ClusterIP; cluster DNS names do not resolve off-cluster
+curl -s "$DASH/api/butlers/<butler-name>/sessions/<session-id>" | python3 -m json.tool
 ```
 
 ## Reference

@@ -51,7 +51,8 @@ kubectl -n butlers-dev get pods -o wide        # STATUS and RESTARTS columns
 kubectl -n butlers-dev describe pod <pod>       # events, probe failures, OOMKilled
 kubectl -n butlers-dev get events --sort-by=.lastTimestamp | tail -20
 
-curl -sf http://localhost:32200/health | python3 -m json.tool   # dashboard-api NodePort, from the k3s host
+DASH="http://$(kubectl -n butlers-dev get svc dashboard-api -o jsonpath='{.spec.clusterIP}'):41200"  # Service ClusterIP; cluster DNS names do not resolve off-cluster
+curl -sf "$DASH/health" | python3 -m json.tool
 kubectl -n butlers-dev port-forward svc/butlers-up 41100:41100 &  # butlers-up has no NodePort
 curl -sf http://localhost:41100/health | python3 -m json.tool
 

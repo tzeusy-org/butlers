@@ -33,7 +33,9 @@ Service names match the old compose service names, so in-cluster URLs are unchan
 
 ## Notes
 
-- Dashboard API health from the k3s host is `http://localhost:32200/health`.
+- Dashboard API health: `curl -sf http://<ClusterIP>:41200/health`, with the ClusterIP from
+  `kubectl -n butlers-dev get svc dashboard-api -o jsonpath='{.spec.clusterIP}'`. The
+  `dashboard-api.butlers-dev.svc.cluster.local` name does not resolve off-cluster.
 - Switchboard health is `http://localhost:41100/health` after
   `kubectl -n butlers-dev port-forward svc/butlers-up 41100:41100`.
 - Container names inside each pod: `butlers-up`, `dashboard-api` (plus `migrations`), `nginx`
