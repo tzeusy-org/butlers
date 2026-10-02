@@ -60,10 +60,25 @@ older than `STALE_BEADS_EXPORT_AGE` readers report unavailable, never empty.
 Trust boundary: only the CronJob pod receives the Dolt host and the credential Secret
 (`beadsExport.credentialSecretName`); runtime pods get just the PVC, which holds only the export
 file. Enabling it places a tracker credential in the namespace, which
-`REQ-beads-projection-001` makes owner-gated, so do not enable it without owner approval. The
-exporter image must contain `bd` (the app image does not); set `beadsExport.image`,
-`beadsExport.doltHost` and `beadsExport.credentialSecretName` in `values.local.yaml`. Roll back
-by setting `beadsExport.enabled=false`.
+`REQ-beads-projection-001` makes owner-gated, so do not enable it without owner approval
+(owner decision on credential placement and the exporter image: `bu-sng0tu`).
+
+Open facts, all unverified; confirm each before enabling:
+
+- `bd` is not in any image. The app image does not contain it, so `beadsExport.image` must be a
+  dedicated exporter image with a `bd` version pinned to match the tracker host.
+- `bd export` may need a scratch `.beads/metadata.json` workspace inside the pod; the script does
+  not create one.
+- The `BEADS_DOLT_*` env names the CronJob sets are unconfirmed against the pinned `bd` version.
+- Dolt reachability from `butlers-dev` pods is untested.
+
+Storage: the export PVC is `ReadWriteOnce`, written by the CronJob and read by two runtime pods.
+That only works with single-node k3s scheduling. Before going multi-node, require co-scheduling of
+those pods or switch `storage.storageClassName` to an RWX class.
+
+Once those are settled, set `beadsExport.image`, `beadsExport.doltHost` and
+`beadsExport.credentialSecretName` in `values.local.yaml`. Roll back by setting
+`beadsExport.enabled=false`.
 
 ## Ingress
 
