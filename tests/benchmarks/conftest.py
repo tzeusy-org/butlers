@@ -15,6 +15,7 @@ JUnit XML output:
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 
@@ -28,7 +29,7 @@ _PULL_TIMEOUT = 600  # seconds — pulling a multi-GB model over the network
 def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(
         "--ollama-url",
-        default="http://localhost:11434",
+        default=os.environ.get("OLLAMA_URL", "http://localhost:11434"),
         help="Ollama base URL",
     )
     parser.addoption(

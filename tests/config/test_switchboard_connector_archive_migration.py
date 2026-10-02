@@ -97,8 +97,11 @@ def test_archived_at_column_and_index_exist(postgres_container):
     assert index_exists(db_url, "ix_connector_registry_live")
 
 
-def test_seed_archives_only_the_dead_identities(postgres_container):
+def test_seed_archives_only_the_dead_identities(postgres_container, monkeypatch):
     """The seed archives the dead identities and no others."""
+    monkeypatch.setenv(
+        "BUTLERS_ARCHIVE_DEAD_IDENTITIES", "home_assistant:ha-dead.example.ts.net:443"
+    )
     db_url = _prepare_pre_seed_db(postgres_container)
 
     # Dead identities. endpoint_identity is stored in its full,
@@ -108,7 +111,7 @@ def test_seed_archives_only_the_dead_identities(postgres_container):
     dead = [
         ("google_health", "google_health:degraded"),
         ("owntracks", "owntracks:unknown"),
-        ("home_assistant", "home_assistant:homeassistant.example.ts.net:443"),
+        ("home_assistant", "home_assistant:ha-dead.example.ts.net:443"),
     ]
     # Live identities that must remain active (archived_at NULL).
     live = [

@@ -51,6 +51,10 @@ Drops the partial index and the column. Any archival state is lost on downgrade
 
 from __future__ import annotations
 
+import os
+
+import sqlalchemy as sa
+
 from alembic import op
 
 # revision identifiers, used by Alembic.
@@ -84,13 +88,18 @@ _ARCHIVE_DEAD_IDENTITIES_SQL = [
        AND connector_type = 'owntracks'
        AND endpoint_identity = 'owntracks:unknown'
     """,
-    """
+]
+
+#: Site-specific dead identities (full, prefixed form) come from this env var as a
+#: comma-separated list, so tracked files carry no hostnames. The original run
+#: archived ``home_assistant:<tailnet-host>:443`` this way; unset = nothing extra.
+_EXTRA_DEAD_IDENTITIES_ENV = "BUTLERS_ARCHIVE_DEAD_IDENTITIES"
+
+_ARCHIVE_EXTRA_IDENTITY_SQL = """
     UPDATE connector_registry SET archived_at = now()
      WHERE archived_at IS NULL
-       AND connector_type = 'home_assistant'
-       AND endpoint_identity = 'home_assistant:homeassistant.example.ts.net:443'
-    """,
-]
+       AND endpoint_identity = :identity
+"""
 
 
 def upgrade() -> None:
@@ -115,6 +124,9 @@ def upgrade() -> None:
     # Idempotent data seed — archive the dead identities (bu-33dm2).
     for stmt in _ARCHIVE_DEAD_IDENTITIES_SQL:
         op.execute(stmt)
+    for identity in os.environ.get(_EXTRA_DEAD_IDENTITIES_ENV, "").split(","):
+        if identity.strip():
+            op.execute(sa.text(_ARCHIVE_EXTRA_IDENTITY_SQL).bindparams(identity=identity.strip()))
 
 
 def downgrade() -> None:
