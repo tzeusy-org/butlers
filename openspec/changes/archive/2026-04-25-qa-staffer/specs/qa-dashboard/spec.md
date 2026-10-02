@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Dashboard pages and API endpoints that make QA staffer activity, progress, and usefulness visible to operators. Covers the QA overview page, patrol detail views, investigation detail views with linked PR status, a home page summary widget, known issues tracker, and all supporting REST API endpoints. Deployed at the existing dashboard URL (https://tzeusy.parrot-hen.ts.net/butlers-dev/).
+Dashboard pages and API endpoints that make QA staffer activity, progress, and usefulness visible to operators. Covers the QA overview page, patrol detail views, investigation detail views with linked PR status, a home page summary widget, known issues tracker, and all supporting REST API endpoints. Deployed at the existing dashboard URL (https://butlers.example.ts.net/butlers-dev/).
 
 ## ADDED Requirements
 

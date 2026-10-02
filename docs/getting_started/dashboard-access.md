@@ -12,12 +12,12 @@ The Butlers dashboard is a web application for real-time monitoring and manageme
 
 ### Option 1: Live Dev Stack (Kubernetes)
 
-The `butlers-dev` release serves the dashboard at `https://tzeusy.parrot-hen.ts.net/butlers-dev/`
+The `butlers-dev` release serves the dashboard at `https://butlers.example.ts.net/butlers-dev/`
 and the API at `/butlers-dev-api` (host `tailscale serve` to NodePorts 32173 and 32200). The
 frontend there is a static nginx build of the committed image; ship changes with `make ship-dev`
 per [Kubernetes Deployment](../operations/kubernetes-deployment.md). For frontend iteration, run
 Vite locally (Option 3) and, if you want live data, set `VITE_PROXY_TARGET` to the cluster API
-`https://tzeusy.parrot-hen.ts.net/butlers-dev-api` (tailnet only; owner authentication still
+`https://butlers.example.ts.net/butlers-dev-api` (tailnet only; owner authentication still
 applies).
 
 ### Option 2: Docker Compose (non-live database)

@@ -15,7 +15,7 @@ Butlers uses an external PostgreSQL server; see
 hand-started butler. The live dev database (butlers-db-dev) is already served by the
 `butlers-dev` release on Kubernetes, and a second daemon would run the same schedules and
 connectors against it. To watch this loop on the live stack instead, use its dashboard
-(`https://tzeusy.parrot-hen.ts.net/butlers-dev/`) and `kubectl -n butlers-dev logs deploy/butlers-up`.
+(`https://butlers.example.ts.net/butlers-dev/`) and `kubectl -n butlers-dev logs deploy/butlers-up`.
 
 ## Step 2: Launch a Single Butler
 

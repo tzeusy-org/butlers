@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Dashboard pages and API endpoints that make QA staffer activity, progress, and usefulness visible to operators. Covers the QA overview page (a per-case dossier in the Dispatch design language), patrol detail views, investigation detail views with linked PR status, the case dossier layout, an investigations case-index page, a home page summary widget, and all supporting REST API endpoints. Deployed at the existing dashboard URL (https://tzeusy.parrot-hen.ts.net/butlers-dev/).
+Dashboard pages and API endpoints that make QA staffer activity, progress, and usefulness visible to operators. Covers the QA overview page (a per-case dossier in the Dispatch design language), patrol detail views, investigation detail views with linked PR status, the case dossier layout, an investigations case-index page, a home page summary widget, and all supporting REST API endpoints. Deployed at the existing dashboard URL (https://butlers.example.ts.net/butlers-dev/).
 
 ## Requirements
 
