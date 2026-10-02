@@ -1,0 +1,82 @@
+{{- if .Values.backup.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ .Release.Name }}-backup
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  suspend: {{ $.Values.suspend }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            {{- include "butlers.selector" (dict "root" . "component" "backup") | nindent 12 }}
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: pg-dump
+              image: postgres:17-alpine
+              command: ["sh", "/backup/pg_dump.sh"]
+              env:
+                {{- include "butlers.postgresEnv" . | nindent 16 }}
+                - name: BACKUP_DIR
+                  value: /backups
+                - name: BACKUP_RETAIN_DAYS
+                  value: {{ .Values.backup.retainDays | quote }}
+              volumeMounts:
+                - {name: script, mountPath: /backup}
+                - {name: backups, mountPath: /backups}
+          volumes:
+            - name: script
+              configMap:
+                name: {{ .Release.Name }}-backup-script
+            - name: backups
+              persistentVolumeClaim:
+                claimName: {{ .Release.Name }}-backups
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-backup-script
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+data:
+  pg_dump.sh: |-
+{{ .Files.Get "files/pg_dump.sh" | indent 4 }}
+{{- end }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ .Release.Name }}-log-cleanup
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.logs.cleanupSchedule | quote }}
+  suspend: {{ $.Values.suspend }}
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: sweep
+              image: alpine:3.19
+              command: ["sh", "-c"]
+              args:
+                - |
+                  find /logs -type f -mtime +{{ .Values.logs.retainDays }} -delete
+                  find /logs -mindepth 1 -type d -empty -delete
+              volumeMounts:
+                - {name: logs, mountPath: /logs}
+          volumes:
+            {{- include "butlers.logsVolume" . | nindent 12 }}

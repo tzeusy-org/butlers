@@ -1,0 +1,98 @@
+{{- range $name, $c := .Values.connectors }}
+{{- if ne (toString $c.enabled) "false" }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: connector-{{ $name }}
+  labels:
+    {{- include "butlers.labels" $ | nindent 4 }}
+spec:
+  replicas: {{ if $.Values.suspend }}0{{ else }}1{{ end }}
+  # Pollers and long-lived sessions (Telegram, WhatsApp) must not overlap.
+  strategy: {type: Recreate}
+  selector:
+    matchLabels:
+      {{- include "butlers.selector" (dict "root" $ "component" (printf "connector-%s" $name)) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "butlers.selector" (dict "root" $ "component" (printf "connector-%s" $name)) | nindent 8 }}
+    spec:
+      initContainers:
+        {{- if $c.oauth }}
+        {{- include "butlers.oauthGate" $ | nindent 8 }}
+        {{- end }}
+        {{- include "butlers.waitFor" (dict "root" $ "name" "butlers-up" "url" "http://butlers-up:41100/health") | nindent 8 }}
+      containers:
+        - name: connector
+          image: {{ include "butlers.image" $ }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          command:
+            - /app/scripts/dev_entrypoint.sh
+            - connectors/{{ $c.logSubdir }}
+            - uv
+            - run
+            - --frozen
+            - --no-dev
+            - python
+            - -m
+            - butlers.connectors.{{ $c.module }}
+          env:
+            {{- include "butlers.postgresEnv" $ | nindent 12 }}
+            - {name: SWITCHBOARD_MCP_URL, value: "http://butlers-up:41100/sse"}
+            - {name: CONNECTOR_PROVIDER, value: {{ $c.provider | quote }}}
+            - {name: CONNECTOR_CHANNEL, value: {{ $c.channel | quote }}}
+            {{- if $c.healthPort }}
+            - {name: CONNECTOR_HEALTH_PORT, value: {{ $c.healthPort | quote }}}
+            {{- end }}
+            {{- if $c.sharedDb }}
+            - {name: CONNECTOR_BUTLER_DB_NAME, value: {{ $.Values.database.name | quote }}}
+            - {name: BUTLER_SHARED_DB_NAME, value: {{ $.Values.database.name | quote }}}
+            - {name: BUTLER_SHARED_DB_SCHEMA, value: shared}
+            {{- end }}
+            {{- range $k, $v := $c.env }}
+            - {name: {{ $k }}, value: {{ $v | quote }}}
+            {{- end }}
+          {{- if $c.healthPort }}
+          ports:
+            - {name: health, containerPort: {{ $c.healthPort }}}
+          readinessProbe:
+            # Most connector health servers bind 127.0.0.1, so probe in-pod
+            # (as the compose healthchecks did).
+            exec:
+              command: ["curl", "-sf", "http://localhost:{{ $c.healthPort }}/health"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+          {{- end }}
+          resources:
+            {{- toYaml (default $.Values.connectorDefaults.resources $c.resources) | nindent 12 }}
+          volumeMounts:
+            - {name: logs, mountPath: /app/logs}
+            {{- if $c.waBridge }}
+            - {name: wa-bridge, mountPath: /tmp/wa-bridge}
+            {{- end }}
+      volumes:
+        {{- include "butlers.logsVolume" $ | nindent 8 }}
+        {{- if $c.waBridge }}
+        - name: wa-bridge
+          persistentVolumeClaim: {claimName: {{ $.Release.Name }}-wa-bridge}
+        {{- end }}
+{{- end }}
+{{- end }}
+{{- if .Values.nodePorts.owntracks }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: connector-owntracks-host
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+spec:
+  type: NodePort
+  externalTrafficPolicy: Local
+  selector:
+    {{- include "butlers.selector" (dict "root" . "component" "connector-owntracks") | nindent 4 }}
+  ports:
+    - {name: http, port: 40086, targetPort: 40086, nodePort: {{ .Values.nodePorts.owntracks }}}
+{{- end }}
