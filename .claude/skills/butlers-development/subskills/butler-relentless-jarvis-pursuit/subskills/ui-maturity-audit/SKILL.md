@@ -21,7 +21,8 @@ metadata:
   last_reviewed: "2026-06-14"
 compatibility: >
   Static audit needs only repo-root access. Live-stack verification (optional but preferred)
-  needs the Docker Compose dev stack up; route to /butler-dev-debug for its primitives.
+  needs the live dev stack (k3s namespace butlers-dev) reachable; route to /butler-dev-debug for
+  its primitives.
 ---
 
 # Butlers UI Maturity Audit (QC)

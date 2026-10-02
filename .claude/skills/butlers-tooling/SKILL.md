@@ -1,8 +1,8 @@
 ---
 name: butlers-tooling
 description: >
-  Run, debug, QA, test, and observe the Butlers dev stack. Routes to one workflow: debug a Docker
-  Compose dev-stack session / routing / connector / runtime failure (given a session, request, or
+  Run, debug, QA, test, and observe the Butlers dev stack. Routes to one workflow: debug a live
+  dev-stack (k3s, namespace butlers-dev) session / routing / connector / runtime failure (given a session, request, or
   trace id); invoke an end-to-end QA validation canary against the dashboard API; work a QA
   investigation PR to green (review threads, no PII/secrets, required checks); discover and prune the
   test suite (condensation); or generate/refresh Grafana dashboards from live Prometheus/Tempo.
@@ -22,8 +22,8 @@ metadata:
 # Butlers Tooling Router
 
 Operate-and-maintain workflows for the Butlers dev stack. Each workflow is a full skill package under
-`subskills/`. Load **at most one** per task. These execute against this repo's Docker Compose dev
-environment and shared infrastructure; check each subskill's `compatibility` before running.
+`subskills/`. Load **at most one** per task. These execute against this repo's live dev stack (k3s
+namespace `butlers-dev`, see `docs/operations/kubernetes-deployment.md`) and shared infrastructure; check each subskill's `compatibility` before running.
 
 ## Discover subskills
 

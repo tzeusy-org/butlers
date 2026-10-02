@@ -8,13 +8,14 @@
 
 This page walks you through the concrete experience of starting a butler, sending it a prompt, and seeing what happened. By the end, you will understand the basic interaction loop: start a daemon, trigger it, review the session log.
 
-## Step 1: Start PostgreSQL
+## Step 1: Point at a Non-Live Database
 
-If not already running:
-
-```bash
-docker compose up -d postgres
-```
+Butlers uses an external PostgreSQL server; see
+[Dev Environment](dev-environment.md#step-2-provision-postgresql). Use a non-live database for a
+hand-started butler. The live dev database (butlers-db-dev) is already served by the
+`butlers-dev` release on Kubernetes, and a second daemon would run the same schedules and
+connectors against it. To watch this loop on the live stack instead, use its dashboard
+(`https://tzeusy.parrot-hen.ts.net/butlers-dev/`) and `kubectl -n butlers-dev logs deploy/butlers-up`.
 
 ## Step 2: Launch a Single Butler
 

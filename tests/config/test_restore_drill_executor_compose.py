@@ -174,6 +174,13 @@ def _run_compose_launcher_harness(
         'if [[ "$1" == "rev-parse" ]]; then printf "test-sha\\n"; fi\n',
     )
     _write_executable(fake_bin / "bd", "#!/usr/bin/env bash\nexit 0\n")
+    # No live Kubernetes release unless a test opts in (compose.sh k8s guard).
+    _write_executable(
+        fake_bin / "kubectl",
+        "#!/usr/bin/env bash\n"
+        '[[ -n "${TEST_K8S_REPLICAS:-}" ]] || exit 1\n'
+        'printf "%s" "$TEST_K8S_REPLICAS"\n',
+    )
     _write_executable(
         fake_bin / "getent",
         "#!/usr/bin/env bash\n"
