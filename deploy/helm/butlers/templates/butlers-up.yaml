@@ -60,6 +60,7 @@ spec:
             - {name: runtime-home, mountPath: /root/.{{ . }}, subPath: {{ . }}}
             {{- end }}
             {{- include "butlers.verifiersMount" . | nindent 12 }}
+            {{- if .Values.beadsExport.enabled }}{{- include "butlers.beadsExportMount" . | nindent 12 }}{{- end }}
       volumes:
         {{- include "butlers.logsVolume" . | nindent 8 }}
         - name: wa-bridge
@@ -67,6 +68,7 @@ spec:
         - name: runtime-home
           persistentVolumeClaim: {claimName: {{ .Release.Name }}-runtime-home}
         {{- include "butlers.verifiersVolume" . | nindent 8 }}
+        {{- if .Values.beadsExport.enabled }}{{- include "butlers.beadsExportVolume" . | nindent 8 }}{{- end }}
 ---
 # Every butler daemon listens on 41100-41112 inside the pod; dashboard-api
 # (BUTLERS_HOST=butlers-up) and connectors address them by this name.

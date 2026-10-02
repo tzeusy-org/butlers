@@ -1,0 +1,79 @@
+{{- if .Values.beadsExport.enabled }}
+# Management workload that derives the runtime's beads export file from the
+# Dolt tracker (docs/architecture/beads-runtime-data-bridge.md). It is the only
+# pod that holds the Dolt endpoint and credential; dashboard-api and butlers-up
+# mount just the resulting PVC, read-only.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-beads-export
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: {{ .Values.storage.storageClassName }}
+  resources:
+    requests:
+      storage: {{ .Values.beadsExport.size }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-beads-export-script
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+data:
+  beads_export.sh: |-
+{{ .Files.Get "files/beads_export.sh" | indent 4 }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ .Release.Name }}-beads-export
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.beadsExport.schedule | quote }}
+  suspend: {{ $.Values.suspend }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            {{- include "butlers.selector" (dict "root" . "component" "beads-export") | nindent 12 }}
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: export
+              image: {{ required "beadsExport.image is required when beadsExport.enabled" .Values.beadsExport.image }}
+              command: ["sh", "/scripts/beads_export.sh"]
+              env:
+                - {name: EXPORT_DIR, value: /export}
+                - {name: BEADS_DOLT_SERVER_HOST, value: {{ required "beadsExport.doltHost is required when beadsExport.enabled" .Values.beadsExport.doltHost | quote }}}
+                - {name: BEADS_DOLT_SERVER_PORT, value: {{ .Values.beadsExport.doltPort | quote }}}
+                - {name: BEADS_DOLT_DATABASE, value: {{ .Values.beadsExport.doltDatabase | quote }}}
+                - name: BEADS_DOLT_SERVER_USER
+                  valueFrom:
+                    secretKeyRef: {name: {{ required "beadsExport.credentialSecretName is required when beadsExport.enabled" .Values.beadsExport.credentialSecretName }}, key: {{ .Values.beadsExport.credentialKeys.user }}}
+                - name: BEADS_DOLT_PASSWORD
+                  valueFrom:
+                    secretKeyRef: {name: {{ .Values.beadsExport.credentialSecretName }}, key: {{ .Values.beadsExport.credentialKeys.password }}}
+              resources:
+                {{- toYaml .Values.beadsExport.resources | nindent 16 }}
+              volumeMounts:
+                - {name: script, mountPath: /scripts}
+                - {name: export, mountPath: /export}
+          volumes:
+            - name: script
+              configMap:
+                name: {{ .Release.Name }}-beads-export-script
+            - name: export
+              persistentVolumeClaim:
+                claimName: {{ .Release.Name }}-beads-export
+{{- end }}

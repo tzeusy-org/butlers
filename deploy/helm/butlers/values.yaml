@@ -258,3 +258,28 @@ connectors:
     channel: wellness
     healthPort: 40090
     oauth: true
+
+# Serves the derived beads export to dashboard-api and butlers-up (/api/decisions,
+# beads tiles, jobs/decision_review) via a CronJob running `bd export` into a PVC
+# mounted read-only as a directory at /app/.beads. Only the CronJob pod gets the
+# Dolt endpoint and credential. OWNER-GATED: leave false until the owner has
+# approved placing a tracker credential in the namespace and created the Secret
+# (docs/operations/kubernetes-deployment.md, "Beads export").
+beadsExport:
+  enabled: false
+  schedule: "*/15 * * * *"
+  # Required when enabled: an image containing `bd` (the app image does not).
+  image: ""
+  # Required when enabled: the Dolt server host (never committed; set in values.local.yaml).
+  doltHost: ""
+  doltPort: 3307
+  doltDatabase: butlers
+  # Required when enabled: existing Secret holding the Dolt user and password.
+  credentialSecretName: ""
+  credentialKeys:
+    user: BEADS_DOLT_SERVER_USER
+    password: BEADS_DOLT_PASSWORD
+  size: 256Mi
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+    limits: {memory: 512Mi}

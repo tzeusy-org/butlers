@@ -35,6 +35,7 @@ The "dev" naming matches compose and is just as counter-intuitive: see the namin
 | `log-init`, `log-cleanup` | Shared PVC `butlers-logs` + CronJob `butlers-log-cleanup` |
 | `wa_bridge_socket` volume | PVC `butlers-wa-bridge` (Unix socket shared by three pods on one node) |
 | `runtime_*` CLI volumes | PVC `butlers-runtime-home`, one subPath per CLI |
+| host `.beads/issues.export.jsonl` | Optional (`beadsExport.enabled`, default off): CronJob `butlers-beads-export` writing PVC `butlers-beads-export`, mounted read-only at `/app/.beads` (see [Beads export](#beads-export)) |
 
 Service names match the compose service names, so in-cluster URLs (`http://butlers-up:41100/sse`,
 `http://dashboard-api:41200`) are unchanged.
@@ -45,8 +46,24 @@ Not ported (compose remains the only path for these):
   host iptables and needs a NetworkPolicy-based redesign;
 - `connector-live-listener` (needs `/dev/snd`);
 - the observability profile (the cluster's `lgtm` stack and `otel.example.ts.net` replace it);
-- `/api/decisions` and the beads tiles: the 18 MB `.beads/issues.export.jsonl` host file is not
-  mounted, so they report unavailable.
+
+## Beads export
+
+`/api/decisions`, the beads tiles, `GET /api/beads/{id}` and `jobs/decision_review` read
+`/app/.beads/issues.export.jsonl`. With `beadsExport.enabled=false` (default) nothing is mounted
+and they report unavailable. With it enabled, CronJob `butlers-beads-export` runs `bd export`
+against the Dolt tracker every `beadsExport.schedule`, writes a temp file on the PVC and renames
+it into place. `dashboard-api` and `butlers-up` mount the PVC read-only as a directory (not a
+`subPath`, which would pin the replaced inode). A failed run leaves the previous file; once it is
+older than `STALE_BEADS_EXPORT_AGE` readers report unavailable, never empty.
+
+Trust boundary: only the CronJob pod receives the Dolt host and the credential Secret
+(`beadsExport.credentialSecretName`); runtime pods get just the PVC, which holds only the export
+file. Enabling it places a tracker credential in the namespace, which
+`REQ-beads-projection-001` makes owner-gated, so do not enable it without owner approval. The
+exporter image must contain `bd` (the app image does not); set `beadsExport.image`,
+`beadsExport.doltHost` and `beadsExport.credentialSecretName` in `values.local.yaml`. Roll back
+by setting `beadsExport.enabled=false`.
 
 ## Ingress
 
