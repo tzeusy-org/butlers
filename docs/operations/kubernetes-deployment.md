@@ -110,7 +110,8 @@ The prod targets (`secrets-prod`, `image-prod`, `deploy-prod`) are the same with
   `BUTLERS_PUBLIC_HOST`, `BUTLERS_OTLP_ENDPOINT`, `BEADS_DOLT_SERVER_HOST`,
   `LIVE_LISTENER_TRANSCRIPTION_URL`, `OLLAMA_URL`, `BUTLERS_ARCHIVE_DEAD_IDENTITIES`) from
   `$BUTLERS_SITE_ENV` (default `/secrets/.dev.env`) then `.env.local`; nothing else in those files
-  is exported. `build-push.sh` and the chart makefile (via `scripts/k8s/site-helm-args.sh`, which
+  is exported. Setting `TAILNET_NAME` (and `BUTLERS_NODE_NAME` for the public host) derives all the
+  hosts; any key set explicitly overrides its derived value. `build-push.sh` and the chart makefile (via `scripts/k8s/site-helm-args.sh`, which
   becomes `--set` flags) source it. For `bd`, use direnv (`.envrc`) or `. scripts/site-env.sh`.
 - Secrets come from two places:
   - The ExternalSecret `butlers-bws` syncs only the keys listed in `externalSecrets.data`. The BWS
