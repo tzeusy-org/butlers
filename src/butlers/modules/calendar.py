@@ -859,6 +859,14 @@ def _parse_google_event_visibility(value: Any) -> EventVisibility | None:
         return None
 
 
+def _parse_google_event_transparency(value: Any) -> str | None:
+    """Normalize Google ``transparency`` to ``opaque`` (busy) / ``transparent`` (free)."""
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    return normalized if normalized in ("opaque", "transparent") else None
+
+
 def _extract_google_organizer(payload: Any) -> str | None:
     """Extract the organizer email from a Google Calendar event payload."""
     if not isinstance(payload, dict):
@@ -924,6 +932,7 @@ def _google_event_to_calendar_event(
     event_status = _parse_google_event_status(status_raw)
     visibility = _parse_google_event_visibility(payload.get("visibility"))
     organizer = _extract_google_organizer(payload.get("organizer"))
+    transparency = _parse_google_event_transparency(payload.get("transparency"))
     etag = _normalize_optional_text(payload.get("etag"))
     created_at = _parse_google_rfc3339_optional(payload.get("created"))
     updated_at = _parse_google_rfc3339_optional(payload.get("updated"))
@@ -947,6 +956,7 @@ def _google_event_to_calendar_event(
         status=event_status,
         organizer=organizer,
         visibility=visibility,
+        transparency=transparency,
         etag=etag,
         created_at=created_at,
         updated_at=updated_at,
@@ -1659,6 +1669,8 @@ class CalendarEvent(BaseModel):
     status: EventStatus | None = None
     organizer: str | None = None
     visibility: EventVisibility | None = None
+    # Google ``transparency``: "opaque" (busy) or "transparent" (free); None if unknown.
+    transparency: str | None = None
     etag: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
@@ -8144,6 +8156,7 @@ class CalendarModule(Module):
                 "butler_generated": event.butler_generated,
                 "butler_name": event.butler_name,
                 "organizer": event.organizer,
+                "transparency": event.transparency,
                 "attendees": [self._attendee_to_payload(attendee) for attendee in event.attendees],
                 "created_at": event.created_at.isoformat() if event.created_at else None,
                 "updated_at": event.updated_at.isoformat() if event.updated_at else None,

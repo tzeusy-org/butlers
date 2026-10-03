@@ -607,6 +607,85 @@ async def test_conflicts_endpoint_malformed_metadata_or_timezone_retains_timed_h
     assert [issue["kind"] for issue in data["issues"] if issue["kind"] == "overlap"] == ["overlap"]
 
 
+def _self_attendee(status: str, *, key: str = "response_status") -> dict:
+    return {"email": "me@example.com", "self": True, key: status}
+
+
+async def test_conflicts_endpoint_excludes_owner_declined_event(app):
+    """bu-q7vx1q.3: an event the owner declined is not a conflict nor busy time."""
+    confirmed = _ws_row(entry_id="a", title="Design review", start=_DAY, minutes=7 * 60)
+    declined = _ws_row(
+        entry_id="b",
+        title="Declined sync",
+        start=_DAY + timedelta(minutes=30),
+        event_metadata={"attendees": [_self_attendee("declined")]},
+    )
+    app, _ = _build_app(app, workspace_rows={"general": [confirmed, declined]})
+
+    data = (await _get(app)).json()["data"]
+
+    assert data["issues_available"] is True
+    assert [i for i in data["issues"] if i["kind"] in ("overlap", "back_to_back")] == []
+
+
+async def test_conflicts_endpoint_excludes_declined_from_overloaded_day_hours(app):
+    kept = _ws_row(entry_id="a", title="Workshop", start=_DAY, minutes=4 * 60)
+    declined = _ws_row(
+        entry_id="b",
+        title="Declined offsite",
+        start=_DAY + timedelta(hours=5),
+        minutes=4 * 60,
+        event_metadata={"attendees": [_self_attendee("declined", key="responseStatus")]},
+    )
+    app, _ = _build_app(app, workspace_rows={"general": [kept, declined]})
+
+    data = (await _get(app)).json()["data"]
+
+    assert [i for i in data["issues"] if i["kind"] == "overloaded_day"] == []
+
+
+async def test_conflicts_endpoint_excludes_transparent_event(app):
+    busy = _ws_row(entry_id="a", title="Design review", start=_DAY)
+    free = _ws_row(
+        entry_id="b",
+        title="FYI block",
+        start=_DAY + timedelta(minutes=30),
+        event_metadata={"transparency": "transparent"},
+    )
+    app, _ = _build_app(app, workspace_rows={"general": [busy, free]})
+
+    data = (await _get(app)).json()["data"]
+
+    assert data["issues"] == []
+
+
+async def test_conflicts_endpoint_keeps_accepted_tentative_and_other_attendee_declines(app):
+    """Only the owner's own decline excludes; a declining guest does not."""
+    a = _ws_row(
+        entry_id="a",
+        title="Accepted",
+        start=_DAY,
+        event_metadata={"attendees": [_self_attendee("accepted")]},
+    )
+    b = _ws_row(
+        entry_id="b",
+        title="Guest declined",
+        start=_DAY + timedelta(minutes=30),
+        event_metadata={
+            "attendees": [
+                {"email": "guest@example.com", "response_status": "declined"},
+                _self_attendee("tentative"),
+            ],
+            "transparency": "opaque",
+        },
+    )
+    app, _ = _build_app(app, workspace_rows={"general": [a, b]})
+
+    data = (await _get(app)).json()["data"]
+
+    assert len([i for i in data["issues"] if i["kind"] == "overlap"]) == 1
+
+
 async def test_conflicts_endpoint_rejects_inverted_window(app):
     app, _ = _build_app(app)
     resp = await _get(app, params={"start": "2026-07-02T00:00:00Z", "end": "2026-07-01T00:00:00Z"})

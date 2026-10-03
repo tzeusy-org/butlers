@@ -306,3 +306,36 @@ hide a timed event solely through a failed parse.
 - **THEN** the radar does not raise
 - **AND** malformed metadata alone does not exclude it as generated
 - **AND** an invalid timezone alone does not exclude it as a legacy all-day row
+
+### Requirement: RSVP- and Transparency-Honest Conflict Candidate Filter
+
+Before overlap, back-to-back, or overloaded-day detection the radar SHALL also
+exclude an event the owner will not attend as busy time: an event whose `self`
+attendee in `metadata.attendees` has response status `declined`, and an event
+with `metadata.transparency="transparent"` (Google free). The owner's RSVP is
+read from the `self` attendee only, accepting both the projected
+`response_status` and the raw `responseStatus` spelling. A guest declining, a
+`tentative` or `needsAction` owner response, `transparency="opaque"`, or absent
+or malformed fields SHALL NOT exclude the event. The workspace projection SHALL
+continue to return excluded rows; only analysis skips them.
+
+The provider sync SHALL persist the event's Google `transparency`
+(`opaque`/`transparent`) into projected `metadata.transparency`. The radar and
+the relationship `interaction_sync` job SHALL share one helper
+(`butlers.core.temporal.calendar_provenance`) for the owner-attendance rule.
+
+#### Scenario: Declined event is neither a conflict nor day load
+
+- **WHEN** an event the owner declined overlaps a confirmed event
+- **THEN** no overlap or back-to-back issue is reported
+- **AND** its hours do not contribute to an overloaded-day issue
+
+#### Scenario: Free event does not count
+
+- **WHEN** an event with `transparency="transparent"` overlaps a confirmed event
+- **THEN** the radar reports no issue for the pair
+
+#### Scenario: Only the owner's decline excludes
+
+- **WHEN** a guest declined but the owner's response is `accepted` or `tentative`
+- **THEN** the event remains a radar candidate

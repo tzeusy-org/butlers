@@ -41,6 +41,43 @@ def is_explicit_butler_generated(metadata: Any) -> bool:
     return value is True or (isinstance(value, str) and value.strip().lower() == "true")
 
 
+def is_owner_attending(metadata: Any) -> bool:
+    """Whether the owner still intends to attend, per their own RSVP.
+
+    Only the ``self`` attendee's ``declined`` answer excludes an event; a guest
+    declining, a tentative answer, no answer, or unparseable metadata all keep it
+    (fail toward showing provider truth). Projected metadata spells the field
+    ``response_status`` while raw Google payloads use ``responseStatus``; both count.
+    """
+    metadata_object = _metadata_object(metadata)
+    if metadata_object is None:
+        return True
+    attendees = metadata_object.get("attendees")
+    if not isinstance(attendees, list):
+        return True
+    for attendee in attendees:
+        if not isinstance(attendee, Mapping) or attendee.get("self") is not True:
+            continue
+        raw = attendee.get("response_status", attendee.get("responseStatus"))
+        if isinstance(raw, str) and raw.strip().lower() == "declined":
+            return False
+    return True
+
+
+def is_transparent(metadata: Any) -> bool:
+    """Whether the event is marked free (Google ``transparency: transparent``)."""
+    metadata_object = _metadata_object(metadata)
+    if metadata_object is None:
+        return False
+    value = metadata_object.get("transparency")
+    return isinstance(value, str) and value.strip().lower() == "transparent"
+
+
+def counts_toward_owner_load(metadata: Any) -> bool:
+    """Whether an event is busy time the owner will attend (radar and day load)."""
+    return is_owner_attending(metadata) and not is_transparent(metadata)
+
+
 def is_legacy_all_day_like(
     *,
     all_day: bool,
