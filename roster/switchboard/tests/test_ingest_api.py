@@ -556,7 +556,7 @@ class TestBearerMaterialQuarantine:
             message_id="<fail-1@example.com>", body="Your code is 482913"
         )
         with patch(
-            "butlers.tools.switchboard.ingestion.ingest.scrub_json",
+            "butlers.tools.switchboard.ingestion.ingest.scrub_stored_record",
             side_effect=RuntimeError("boom"),
         ):
             row = await self._stored(pool, envelope)
@@ -564,6 +564,7 @@ class TestBearerMaterialQuarantine:
 
         assert "482913" not in json.dumps(raw) + row["normalized_text"]
         assert raw["payload"]["raw"] is None
+        assert raw["control"]["bearer_scrub_failed"] is True
         assert row["lifecycle_state"] == "metadata_ref"
 
 
