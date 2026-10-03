@@ -5,6 +5,12 @@ database:
 
 externalSecrets:
   storeRef: bitwarden-secretsmanager-prod
+  # Prod keeps its pre-prefix key names until BUTLERS_RUNTIME_* copies exist in
+  # the prod project.
+  data:
+    POSTGRES_USER: BUTLERS_DB_USER
+    POSTGRES_PASSWORD: BUTLERS_DB_PASSWORD
+    DASHBOARD_AUTH_DB_PASSWORD: DASHBOARD_AUTH_DB_PASSWORD
 
 publicUrl:
   dashboardPrefix: butlers

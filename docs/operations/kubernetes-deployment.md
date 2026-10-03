@@ -147,20 +147,27 @@ The prod targets (`secrets-prod`, `image-prod`, `deploy-prod`) are the same with
   becomes `--set` flags) source it. For `bd`, use direnv (`.envrc`) or `. scripts/site-env.sh`.
 - Secrets come from two places, and `localSecrets.source` picks who owns the last two:
   - The ExternalSecret `butlers-bws` syncs only the keys listed in `externalSecrets.data`. The BWS
-    project is shared with other homelab services, so it never syncs the whole project.
+    project is shared with other homelab services, so it never syncs the whole project, and every
+    key the chart reads is named `BUTLERS_RUNTIME_*` so its owner is obvious in BWS. Prod still
+    overrides `externalSecrets.data` with its pre-prefix names (`BUTLERS_DB_USER`, ...) until
+    prefixed copies exist in the prod project.
   - `butlers-runtime-probe-control` (`runtime_probe_control_signing_key`,
     `runtime_probe_control_verifiers`) and `butlers-local-env` (`DASHBOARD_AUTH_DB_USER`,
     `DASHBOARD_API_KEY`):
-    - `source: local` (default): `scripts/k8s/bootstrap-secrets.sh` creates them from the files
-      named by `RUNTIME_PROBE_CONTROL_*_FILE` and from `.env.<env>`. This is also the rollback path.
+    - `source: local` (chart default, prod): `scripts/k8s/bootstrap-secrets.sh` creates them from
+      the files named by `RUNTIME_PROBE_CONTROL_*_FILE` and from `.env.<env>`. This is also the
+      rollback path.
+    - `values.dev.yaml` sets `source: bws` (since 2026-10-03, bu-03myor). The dev BWS keys were
+      copied from the previously running Secrets, so the dev signer in BWS is the real dev signer,
+      not the committed placeholder. Dev does not provision `DASHBOARD_API_KEY`.
     - `source: bws`: two more ExternalSecrets with the same target names and key names own them,
       reading the BWS keys named in `externalSecrets.runtimeProbeControl` and
       `externalSecrets.localEnv` (explicit keys only, never the whole project). Consumers are
       unchanged. Setting a `localEnv` key name to empty omits that optional key.
       `bootstrap-secrets.sh` refuses to run against a Secret an ExternalSecret owns.
-- Migrating local -> bws, in order: (1) the owner creates the four BWS keys in the environment's
-  project (the signer is a real secret; the owner decides real vs placeholder for dev, and prod
-  needs its own project and store); (2) delete the out-of-band Secrets
+- Migrating local -> bws, in order: (1) create the `BUTLERS_RUNTIME_*` BWS keys in the environment's
+  project, e.g. by copying the live Secret values with `bws secret create` without printing them
+  (the signer is a real secret; prod needs its own project and store); (2) delete the out-of-band Secrets
   (`kubectl -n <ns> delete secret butlers-runtime-probe-control butlers-local-env`); (3)
   `helm upgrade` with `--set localSecrets.source=bws`; (4) `kubectl -n <ns> get externalsecret`
   shows all three `SecretSynced`. A missing required remote key gives `SecretSyncedError` and the

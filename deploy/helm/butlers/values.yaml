@@ -33,23 +33,24 @@ database:
 
 # Bitwarden Secrets Manager -> Secret `<release>-bws` via External Secrets.
 # Map of env var name -> BWS secret key. Only these keys are synced; the BWS
-# project is shared with other homelab services.
+# project is shared with other homelab services, so every key the chart reads
+# is named BUTLERS_RUNTIME_* to mark it as owned by this release.
 externalSecrets:
   storeRef: bitwarden-secretsmanager-dev
   refreshInterval: 1h
   data:
-    POSTGRES_USER: BUTLERS_DB_USER
-    POSTGRES_PASSWORD: BUTLERS_DB_PASSWORD
-    DASHBOARD_AUTH_DB_PASSWORD: DASHBOARD_AUTH_DB_PASSWORD
+    POSTGRES_USER: BUTLERS_RUNTIME_DB_USER
+    POSTGRES_PASSWORD: BUTLERS_RUNTIME_DB_PASSWORD
+    DASHBOARD_AUTH_DB_PASSWORD: BUTLERS_RUNTIME_DASHBOARD_AUTH_DB_PASSWORD
   # Used only when localSecrets.source=bws: BWS key names (never values) for the
   # two Secrets below. Each key is listed explicitly; nothing is wildcard-synced.
   runtimeProbeControl:
-    signingKey: RUNTIME_PROBE_CONTROL_SIGNING_KEY
-    verifiers: RUNTIME_PROBE_CONTROL_VERIFIERS
+    signingKey: BUTLERS_RUNTIME_PROBE_CONTROL_SIGNING_KEY
+    verifiers: BUTLERS_RUNTIME_PROBE_CONTROL_VERIFIERS
   # Optional: an empty name omits that key (the consumers' secretKeyRef is optional).
   localEnv:
-    DASHBOARD_API_KEY: DASHBOARD_API_KEY
-    DASHBOARD_AUTH_DB_USER: DASHBOARD_AUTH_DB_USER
+    DASHBOARD_API_KEY: BUTLERS_RUNTIME_DASHBOARD_API_KEY
+    DASHBOARD_AUTH_DB_USER: BUTLERS_RUNTIME_DASHBOARD_AUTH_DB_USER
 
 # Secrets consumed under fixed names. `source: local` (default) means they are
 # created out of band by scripts/k8s/bootstrap-secrets.sh before the first
