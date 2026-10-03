@@ -46,10 +46,6 @@ Every request emits a structured log line with:
     header, or a fresh UUID)
   - ``account_id`` (the primary Google account UUID when resolved)
   - ``action`` (``status`` / ``disconnect``)
-
-The GET endpoint additionally bumps a ``dashboard_connector_status_requests_total``
-Prometheus counter labelled by ``connector=google-health`` so Grafana
-can track status-card poll load.
 """
 
 from __future__ import annotations
@@ -74,7 +70,6 @@ from butlers.google_account_registry import (
     has_all_health_scope_families,
     list_health_scoped_accounts,
 )
-from butlers.metrics_registry import get_or_create_counter
 
 logger = logging.getLogger(__name__)
 
@@ -107,19 +102,6 @@ _CONNECTOR_TYPE = "google_health"
 # after issue/refresh (see GOOGLE_SCOPE_SETS['health'] in oauth.py). Used to
 # derive `token_expiry_estimate_at` for test-mode accounts.
 _TEST_MODE_TOKEN_LIFETIME = timedelta(days=7)
-
-
-# ---------------------------------------------------------------------------
-# Prometheus counter — bumped on every GET /status so Grafana can track
-# dashboard poll load. Counter is module-scoped so the registry stays
-# consistent across hot-reloads in dev.
-# ---------------------------------------------------------------------------
-
-dashboard_connector_status_requests_total = get_or_create_counter(
-    "dashboard_connector_status_requests_total",
-    "Number of dashboard connector-status GETs, labelled by connector.",
-    labelnames=["connector"],
-)
 
 
 # ---------------------------------------------------------------------------
@@ -760,8 +742,6 @@ async def get_google_health_status(
     identically to the pre-multi-account shape (ADR-1).  Never echoes credential
     material.
     """
-    dashboard_connector_status_requests_total.labels(connector="google-health").inc()
-
     request_id = _derive_request_id(request)
 
     shared_pool = _make_shared_pool(db_manager)
