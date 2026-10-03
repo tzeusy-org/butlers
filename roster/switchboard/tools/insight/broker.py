@@ -32,6 +32,7 @@ from butlers.core.attention_ledger import (
     URGENT_PRIORITY_THRESHOLD,
     record_attention_event,
 )
+from butlers.core.baselines import DEVIATION_CATEGORIES, validate_baseline_evidence
 from butlers.core.insight_premise import normalize_premise
 from butlers.tools.switchboard.insight.catchup import reconcile_catchup_task
 from butlers.tools.switchboard.insight.premises import check_premise
@@ -321,6 +322,12 @@ async def propose_insight_candidate(
         premise = normalize_premise(premise)
     except ValueError as exc:
         return {"status": "error", "reason": str(exc)}
+
+    # --- Baseline evidence: "unusual for you" is never claimed without its denominator ---
+    if category in DEVIATION_CATEGORIES:
+        evidence_problem = validate_baseline_evidence((metadata or {}).get("baseline_evidence"))
+        if evidence_problem is not None:
+            return {"status": "error", "reason": evidence_problem}
 
     # --- Verbosity gate ---
     settings = await get_insight_settings(pool)
