@@ -28,6 +28,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
+from butlers.account_security import classify_account_security
 from butlers.ingestion_policy_metrics import IngestionPolicyMetrics
 
 if TYPE_CHECKING:
@@ -40,6 +41,17 @@ DEFAULT_SPOT_CHECK_K = 20
 (``created_by='promotion'``) rule. See design.md section 4 / spec
 "Requirement: Demotion via Spot-Check Sampling" (bu-x55k3, rule-promotion
 bead 5 of 7)."""
+
+
+def _is_account_security(envelope: IngestionEnvelope) -> bool:
+    """True when the envelope is a classified first-party account-security alert."""
+    if envelope.source_channel != "email":
+        return False
+    subject = next((v for k, v in envelope.headers.items() if k.lower() == "subject"), "")
+    return (
+        classify_account_security(envelope.sender_address, subject, headers=envelope.headers)
+        is not None
+    )
 
 
 class SpotCheckSampler(Protocol):
@@ -810,6 +822,18 @@ class IngestionPolicyEvaluator:
             spot_check = False
             if str(rule.get("created_by", "")) == "promotion" and self._spot_check_k > 0:
                 spot_check = self._spot_check_rng.randrange(self._spot_check_k) == 0
+
+            if action_name == "skip" and self._scope == "global" and _is_account_security(envelope):
+                # Account-security carve-out (bu-q7vx1q.10): a (possibly promoted)
+                # skip rule must not blind the sensor. Demote to metadata_only so
+                # the connector still submits the subject-only record.
+                return PolicyDecision(
+                    action="metadata_only",
+                    matched_rule_id=rule_id,
+                    matched_rule_type=rule_type,
+                    reason=f"{rule_type} match -> skip demoted: account-security sender",
+                    spot_check=False,
+                )
 
             return PolicyDecision(
                 action=action_name,

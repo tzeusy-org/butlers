@@ -46,6 +46,7 @@ import asyncpg
 from opentelemetry import metrics as otel_metrics
 from pydantic import BaseModel, ConfigDict
 
+from butlers.core.account_security_events import classify_ingest_record, publish_security_event
 from butlers.core.metrics import ButlerMetrics
 from butlers.ingestion_bearer_scrub import (
     BearerArtifact,
@@ -1120,6 +1121,27 @@ async def ingest_v1(
         lifecycle_state,
         triage_decision.action if triage_decision else "n/a",
     )
+
+    # Account-security sensor (bu-q7vx1q.10): classify from sender + subject
+    # metadata only, independent of the policy decision above so a promoted skip
+    # rule can never hide an alert. Best-effort: never fail an accepted ingest.
+    try:
+        classification = classify_ingest_record(
+            source_channel=envelope.source.channel,
+            sender_address=str(envelope.sender.identity or ""),
+            normalized_text=normalized_text,
+            raw=envelope.payload.raw,
+        )
+        if classification is not None:
+            await publish_security_event(
+                pool,
+                classification,
+                source_request_id=str(request_id),
+                external_event_id=envelope.event.external_event_id,
+                observed_at=envelope.event.observed_at,
+            )
+    except Exception:
+        logger.warning("account-security sensor failed (non-fatal)", exc_info=True)
 
     # Fan an "ingestion" event onto the multiplexed fleet event bus (bu-86c4c.8,
     # move 5; wired in bu-h8ioq). This is the single choke point where every

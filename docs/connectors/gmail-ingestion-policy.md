@@ -92,6 +92,16 @@ ingestion-rule evaluation:
 - Deployments SHOULD exclude `SPAM` and `TRASH`.
 - Excluding `CATEGORY_PROMOTIONS` and `CATEGORY_SOCIAL` is configurable and expected for many users.
 
+## Account-Security Carve-Out
+
+First-party identity-provider alerts (new sign-in, password changed, 2-step or recovery info changed,
+deletion scheduled) are classified from sender and subject metadata by `butlers.account_security`.
+A global `skip` on a classified alert is demoted to `metadata_only` so the connector still submits
+it, rule promotion refuses to propose `skip`/`metadata_only` for the allowlisted senders, and the
+Switchboard ingest tool publishes one `switchboard.security_event` regardless of the policy
+decision. The sensor never reads a body, code or link. See `openspec/specs/account-security-perception`
+once the change is archived.
+
 ## Retention by Tier
 
 | Tier | Retention |
