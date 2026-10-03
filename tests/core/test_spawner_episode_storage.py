@@ -43,7 +43,9 @@ class TestStoreSessionEpisode:
             # Wire the owner runtime so store_session_episode's delegate can reach it.
             import butlers.core.memory_hooks as _hooks
 
-            async def _store_hook(pool, butler_name, session_output, session_id=None):
+            async def _store_hook(
+                pool, butler_name, session_output, session_id=None, routing_context=None
+            ):
                 await writing_mock(
                     pool,
                     session_output,
@@ -74,7 +76,7 @@ class TestStoreSessionEpisode:
         import butlers.core.memory_hooks as _hooks
 
         # RuntimeError → False (hook raises, spawner catches)
-        async def _raise_runtime(pool, butler_name, session_output, session_id=None):
+        async def _raise_runtime(pool, butler_name, session_output, session_id=None, **_):
             raise RuntimeError("boom")
 
         async def _unused_context(*_args, **_kwargs):
@@ -94,7 +96,7 @@ class TestStoreSessionEpisode:
         assert await store_session_episode(None, "my-butler", "session output") is False
 
         # Missing table → False without traceback
-        async def _raise_table(pool, butler_name, session_output, session_id=None):
+        async def _raise_table(pool, butler_name, session_output, session_id=None, **_):
             raise asyncpg.UndefinedTableError('relation "episodes" does not exist')
 
         runtime = _hooks.register_memory_session_runtime(
@@ -217,7 +219,42 @@ class TestSpawnerEpisodeStorageIntegration:
             "test-butler",
             "Daily digest completed",
             session_id=None,
+            routing_context=None,
         )
+
+    async def test_routed_session_episode_carries_routing_context(self, tmp_path: Path) -> None:
+        """The Switchboard-resolved routing context reaches the episode hook, so the
+        memory module can stamp server-derived content authority on the episode."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        routing_context = {
+            "source_entity_id": str(uuid.uuid4()),
+            "request_context": {"source_channel": "email"},
+        }
+
+        with (
+            patch(
+                "butlers.core.spawner.fetch_memory_context",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "butlers.core.spawner._capture_pipeline_routing_context",
+                return_value=routing_context,
+            ),
+            patch(
+                "butlers.core.spawner.store_session_episode",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as mock_store,
+        ):
+            await Spawner(
+                config=_make_config(modules={"memory": {}}),
+                config_dir=config_dir,
+                runtime=_MockAdapter(result_text="Handled vendor email"),
+            ).trigger(prompt="handle email", trigger_source="route")
+
+        assert mock_store.await_args.kwargs["routing_context"] == routing_context
 
     async def test_consolidation_prefix_schedule_stores_episode(self, tmp_path: Path) -> None:
         """Only the exact consolidation trigger skips automatic episode storage."""
@@ -251,6 +288,7 @@ class TestSpawnerEpisodeStorageIntegration:
             "test-butler",
             "Consolidation retry completed",
             session_id=None,
+            routing_context=None,
         )
 
     async def test_episode_stored_when_memory_enabled_and_success_only(self, tmp_path: Path):
@@ -278,7 +316,9 @@ class TestSpawnerEpisodeStorageIntegration:
                 runtime=_MockAdapter(result_text="Task completed"),
             ).trigger(prompt="do task", trigger_source="trigger")
         assert result.success is True
-        mock_store.assert_awaited_once_with(None, "test-butler", "Task completed", session_id=None)
+        mock_store.assert_awaited_once_with(
+            None, "test-butler", "Task completed", session_id=None, routing_context=None
+        )
 
         # Memory disabled → not stored
         config2 = _make_config(modules={})

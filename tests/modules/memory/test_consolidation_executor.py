@@ -599,6 +599,9 @@ class _AtomicPool:
     async def execute(self, *args) -> str:
         return await self.connection.execute(*args)
 
+    async def fetch(self, *args) -> list:
+        return []  # episode authority rows: none stamped
+
 
 @pytest.mark.asyncio
 async def test_invalid_artifact_evidence_stops_before_any_write(monkeypatch) -> None:

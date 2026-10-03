@@ -22,11 +22,11 @@ async def test_session_hooks_route_by_invoking_owner_and_fail_safe_when_absent()
         calls.append(("context:travel", butler_name, pool))
         return "travel context"
 
-    async def general_store(pool, butler_name, session_output, session_id=None):
+    async def general_store(pool, butler_name, session_output, session_id=None, **_):
         calls.append(("store:general", butler_name, pool))
         return True
 
-    async def travel_store(pool, butler_name, session_output, session_id=None):
+    async def travel_store(pool, butler_name, session_output, session_id=None, **_):
         calls.append(("store:travel", butler_name, pool))
         return True
 

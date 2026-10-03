@@ -61,6 +61,31 @@ Durable subject-predicate-content knowledge. Facts are the primary retrieval uni
 
 Behavior guidance learned from repeated outcomes. Rules track maturity (`candidate` -> `established` -> `proven` or `anti_pattern`), effectiveness scores, and application counts. Harmful evidence is weighted more heavily than helpful evidence, so bad rules demote faster than good rules promote.
 
+### Content authority
+
+Every episode, fact, and rule carries a server-stamped `content_authority`
+(`owner`, `owner_device`, `third_party`, `system`, or `mixed`) derived from the
+Switchboard-resolved routing context of the session that wrote it. It is never
+taken from tool arguments or from text inside content, so a forged
+`[Source: Owner ...]` line in a stranger's email grants nothing. Sessions with
+no routing context stamp `system`, not `owner`.
+
+Consolidation gives each derived fact and rule the weakest authority among its
+evidence episodes (differing or unknown authority yields `mixed`). Steering
+memory is gated on that stamp:
+
+- **Rules** from non-owner authority are *held*: stored, but absent from recall,
+  Active Rules, and `public.memory_catalog` until the owner endorses them with
+  `POST /api/memory/rules/{id}/endorse` (list them with `GET /api/memory/rules?held=true`).
+  Endorsement is atomic with its audit event and catalog entry, and idempotent.
+- **Profile Facts** admit only owner-class facts. An owner-anchored fact written
+  from someone else's session surfaces only as a Task-Relevant Fact labelled
+  `reported by <sender>`.
+- A non-owner write cannot supersede an owner-authored fact.
+- **Legacy rows** (written before `mem_013`) have no stamp and fail closed: legacy
+  rules are held and legacy owner facts are not Profile Facts. They are never
+  backfilled by guessing; the migration reports the counts it left unclassified.
+
 ## Tools Provided
 
 Tools are registered in `MemoryModule.register_tools` (`src/butlers/modules/memory/__init__.py`),
@@ -115,9 +140,9 @@ content-blind `withheld: N` privacy receipt all consume that same total budget.
 
 | Section | Character allocation | Ordering and selection |
 |---|---|---|
-| Profile Facts | 20% | Owner facts by importance descending, creation time descending, then ID ascending |
+| Profile Facts | 20% | Owner-authored owner facts by importance descending, creation time descending, then ID ascending |
 | Task-Relevant Facts | 35% | Recall facts excluding profile duplicates, by composite score descending, creation time descending, then ID ascending |
-| Active Rules | 20% | Maturity rank descending, effectiveness descending, creation time descending, then ID ascending |
+| Active Rules | 20% | Owner-authored or endorsed rules only; maturity rank descending, effectiveness descending, creation time descending, then ID ascending |
 | Recent Episodes | 15% | Newest first; opt-in with `include_recent_episodes=True` |
 | Fleet Knowledge | 10% | Opt-in with `include_fleet_knowledge=True`; other butlers' catalog entries under the server-held catalog read policy |
 

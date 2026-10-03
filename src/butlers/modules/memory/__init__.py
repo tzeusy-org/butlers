@@ -451,6 +451,7 @@ class MemoryModule(Module):
             butler_name: str,
             session_output: str,
             session_id: Any = None,
+            routing_context: dict[str, Any] | None = None,
         ) -> bool:
             # The Spawner passes its domain pool.  Session episodes, like
             # trigger-time context and scheduled consolidation, must use the
@@ -461,6 +462,7 @@ class MemoryModule(Module):
                 session_output,
                 butler_name,
                 session_id=str(session_id) if session_id is not None else None,
+                routing_context=routing_context,
             )
             return True
 

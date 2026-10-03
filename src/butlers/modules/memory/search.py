@@ -13,6 +13,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from butlers.modules.memory.content_authority import RULE_ADMITTED_SQL
+
 if TYPE_CHECKING:
     from asyncpg import Pool
 
@@ -139,10 +141,12 @@ async def semantic_search(
     # Rules: exclude forgotten (metadata->>'forgotten' IS NOT TRUE) and retired
     # (retired_at IS NULL) rules — neither is a live standing order, and this
     # is the evaluation-path guard that stops a retired rule from firing (it
-    # backs recall()/memory_context()'s "Active Rules" injection).
+    # backs recall()/memory_context()'s "Active Rules" injection). Held rules
+    # (non-owner authority, not endorsed) are likewise not live standing orders.
     if table == "rules":
         conditions.append("(metadata->>'forgotten')::boolean IS NOT TRUE")
         conditions.append("retired_at IS NULL")
+        conditions.append(RULE_ADMITTED_SQL)
 
     # Read ceiling: applied in SQL, identical shape to the catalog's
     # sensitivity filter (see resolve_allowed_sensitivities). every one of
@@ -245,6 +249,7 @@ async def keyword_search(
     if table == "rules":
         conditions.append("(metadata->>'forgotten')::boolean IS NOT TRUE")
         conditions.append("retired_at IS NULL")
+        conditions.append(RULE_ADMITTED_SQL)
 
     conditions.append(f"COALESCE(sensitivity, '{DEFAULT_CATALOG_SENSITIVITY}') = ANY(${param_idx})")
     params.append(allowed_sensitivities)

@@ -24,6 +24,7 @@ import logging
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
 import asyncpg
 
@@ -555,6 +556,7 @@ async def store_session_episode(
     butler_name: str,
     session_output: str,
     session_id: uuid.UUID | None = None,
+    routing_context: dict[str, Any] | None = None,
 ) -> bool:
     """Store a session episode through local memory module tools."""
     if pool is None:
@@ -563,7 +565,9 @@ async def store_session_episode(
     try:
         from butlers.core.memory_hooks import store_session_episode as _hook
 
-        return await _hook(pool, butler_name, session_output, session_id)
+        return await _hook(
+            pool, butler_name, session_output, session_id, routing_context=routing_context
+        )
     except Exception as exc:
         if _is_missing_memory_table_error(exc):
             _log_missing_memory_table_once(butler_name=butler_name, operation="episode storage")

@@ -49,11 +49,14 @@ from butlers.api.models.memory import (
     ReembedRunResult,
     RetentionSourceObservation,
     Rule,
+    RuleEndorsement,
     UpdateEntityRequest,
     UpdateRetentionPoliciesRequest,
 )
 from butlers.api.routers import audit as _audit
-from butlers.modules.memory.storage import get_links
+from butlers.core.owner import fetch_owner_entity_id
+from butlers.modules.memory.content_authority import is_rule_admitted
+from butlers.modules.memory.storage import RuleNotEndorsableError, endorse_rule, get_links
 
 logger = logging.getLogger(__name__)
 
@@ -1235,6 +1238,14 @@ async def list_rules(
             "(audit), or false to be explicit about the default."
         ),
     ),
+    held: bool | None = Query(
+        None,
+        description=(
+            "Pass true to list only held rules ('guidance waiting for you'): "
+            "non-owner or legacy-unstamped authority, not yet endorsed, and "
+            "not retired. Held rules are not visible to sessions."
+        ),
+    ),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     db: DatabaseManager = Depends(_get_db_manager),
@@ -1271,6 +1282,12 @@ async def list_rules(
         # Default (forgotten is None or explicitly False): live rules only.
         conditions.append("(metadata->>'forgotten')::boolean IS NOT TRUE")
 
+    if held:
+        conditions.append(
+            "(COALESCE(content_authority, '') NOT IN ('owner', 'owner_device')"
+            " AND endorsed_at IS NULL AND retired_at IS NULL)"
+        )
+
     where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
 
     row_limit = offset + limit
@@ -1284,7 +1301,8 @@ async def list_rules(
             f"SELECT id, content, scope, maturity, confidence, decay_rate, permanence,"
             f" effectiveness_score, applied_count, success_count, harmful_count,"
             f" source_episode_id, source_butler, created_at, last_applied_at,"
-            f" last_evaluated_at, tags, metadata, retired_at"
+            f" last_evaluated_at, tags, metadata, retired_at,"
+            " content_authority, authority_entity_id, endorsed_at"
             f" FROM {relation}{where}"
             f" ORDER BY created_at DESC"
             f" OFFSET ${idx} LIMIT ${idx + 1}"
@@ -1344,7 +1362,8 @@ async def get_rule(
                 "SELECT id, content, scope, maturity, confidence, decay_rate, permanence,"
                 " effectiveness_score, applied_count, success_count, harmful_count,"
                 " source_episode_id, source_butler, created_at, last_applied_at,"
-                " last_evaluated_at, tags, metadata, retired_at"
+                " last_evaluated_at, tags, metadata, retired_at,"
+                " content_authority, authority_entity_id, endorsed_at"
                 f" FROM {relation} WHERE id = $1",
                 episodes_relation=episodes_relation,
                 tombstones_relation=tombstones_relation,
@@ -1423,7 +1442,8 @@ async def retire_rule(
                     "SELECT id, content, scope, maturity, confidence, decay_rate, permanence,"
                     " effectiveness_score, applied_count, success_count, harmful_count,"
                     " source_episode_id, source_butler, created_at, last_applied_at,"
-                    " last_evaluated_at, tags, metadata, retired_at"
+                    " last_evaluated_at, tags, metadata, retired_at,"
+                    " content_authority, authority_entity_id, endorsed_at"
                     f" FROM {relation} WHERE id = $1",
                     episodes_relation=episodes_relation,
                     tombstones_relation=tombstones_relation,
@@ -1446,6 +1466,78 @@ async def retire_rule(
         if row is None:
             continue
         return ApiResponse[Rule](data=_row_to_rule(row))
+
+    _raise_memory_detail_miss(resource="Rule", tracker=tracker)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/memory/rules/{rule_id}/endorse
+# ---------------------------------------------------------------------------
+
+
+@router.post("/rules/{rule_id}/endorse", response_model=ApiResponse[RuleEndorsement])
+async def endorse_held_rule(
+    rule_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[RuleEndorsement]:
+    """Endorse a held rule so it may steer sessions (owner action).
+
+    A rule born from a non-owner's words is held: stored but invisible to
+    recall, Active Rules and the discovery catalog. Endorsing stamps
+    ``endorsed_at``/``endorsed_by``, writes the audit event and the catalog
+    entry in one transaction on the pool that owns the rule. Idempotent: a
+    repeat returns the original receipt with ``changed=false``.
+
+    Errors:
+    - 400: ``rule_id`` is not a valid UUID.
+    - 404: no memory pool holds a rule with this id.
+    - 409: the rule is retired or forgotten (a later correction wins).
+    - 503: no database pools are available.
+    """
+    try:
+        rule_uuid = _uuid.UUID(rule_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid rule id (must be a UUID)") from exc
+
+    pools = _memory_pools(db)
+    if not pools:
+        raise HTTPException(status_code=503, detail="No database pools available")
+
+    tracker = DegradedSources(logger)
+    for name, pool in pools:
+        try:
+            receipt = await endorse_rule(
+                pool,
+                rule_uuid,
+                endorsed_by=await fetch_owner_entity_id(pool),
+                memory_schema=_memory_source_schema(db, name),
+            )
+        except RuleNotEndorsableError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception as exc:
+            if not _is_missing_memory_schema_error(
+                exc,
+                schema_absent_at_start=_memory_schema_absent_at_start(db, name),
+            ):
+                tracker.mark(name, msg="rule endorsement source unavailable")
+            logger.debug(
+                "Skipping pool %s while endorsing rule %s (pool lacks memory tables or failed)",
+                name,
+                rule_id,
+                exc_info=True,
+            )
+            continue
+        if receipt is None:
+            continue
+        return ApiResponse[RuleEndorsement](
+            data=RuleEndorsement(
+                rule_id=str(receipt["rule_id"]),
+                content_authority=receipt["content_authority"],
+                endorsed_at=str(receipt["endorsed_at"]) if receipt["endorsed_at"] else None,
+                endorsed_by=str(receipt["endorsed_by"]) if receipt["endorsed_by"] else None,
+                changed=receipt["changed"],
+            )
+        )
 
     _raise_memory_detail_miss(resource="Rule", tracker=tracker)
 
@@ -2523,6 +2615,12 @@ def _row_to_rule(r) -> Rule:
         tags=_parse_tags(r["tags"]),
         metadata=_parse_jsonb(r["metadata"]),
         retired_at=str(r["retired_at"]) if r.get("retired_at") else None,
+        content_authority=r.get("content_authority"),
+        authority_entity_id=(
+            str(r["authority_entity_id"]) if r.get("authority_entity_id") else None
+        ),
+        endorsed_at=str(r["endorsed_at"]) if r.get("endorsed_at") else None,
+        held=not is_rule_admitted(r.get("content_authority"), r.get("endorsed_at")),
     )
 
 
@@ -2984,7 +3082,8 @@ async def inspect_memory(
                     f"SELECT id, content, scope, maturity, confidence, decay_rate, permanence,"
                     f" effectiveness_score, applied_count, success_count, harmful_count,"
                     f" source_episode_id, source_butler, created_at, last_applied_at,"
-                    f" last_evaluated_at, tags, metadata, retired_at"
+                    f" last_evaluated_at, tags, metadata, retired_at,"
+                    " content_authority, authority_entity_id, endorsed_at"
                     f" FROM {rules_relation}{rule_cond}"
                     f" ORDER BY created_at DESC"
                     f" LIMIT ${idx}",

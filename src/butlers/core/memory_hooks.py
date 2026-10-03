@@ -291,8 +291,12 @@ async def store_session_episode(
     butler_name: str,
     session_output: str,
     session_id: Any = None,
+    routing_context: dict[str, Any] | None = None,
 ) -> bool:
     """Store a session episode.  Returns False if the memory module is not loaded.
+
+    ``routing_context`` is the session's Switchboard-resolved routing context;
+    the memory module derives the episode's content authority from it.
 
     Delegates to the invoking butler's runtime registered by ``modules.memory``.
     A missing owner returns the existing best-effort ``False`` default rather
@@ -305,7 +309,9 @@ async def store_session_episode(
             butler_name,
         )
         return False
-    return await runtime.store_episode(pool, butler_name, session_output, session_id)
+    return await runtime.store_episode(
+        pool, butler_name, session_output, session_id, routing_context=routing_context
+    )
 
 
 async def search_memory_catalog(
