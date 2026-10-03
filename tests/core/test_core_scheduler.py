@@ -919,6 +919,72 @@ async def test_tick_dispatch_prompt_and_job(pool):
     assert "prompt" not in call and "complexity" not in call
 
 
+async def _exhaust_every_catalog_account(pool, reset_at: datetime) -> None:
+    """Mark every provider account the catalog draws on exhausted until ``reset_at``."""
+    await pool.execute(
+        """
+        INSERT INTO public.provider_allowance_states (account_key, state, reset_at, reset_source)
+        SELECT DISTINCT COALESCE(allowance_account, runtime_type), 'exhausted', $1::timestamptz, 'parsed'
+        FROM public.model_catalog
+        ON CONFLICT (account_key) DO UPDATE SET state = 'exhausted', reset_at = EXCLUDED.reset_at
+        """,
+        reset_at,
+    )
+
+
+@_asyncio_session
+async def test_tick_defers_prompt_task_to_allowance_reset_without_dispatching(pool):
+    """With every fit account exhausted, a due prompt task is deferred, never dispatched."""
+    from butlers.core.scheduler import schedule_create, tick
+
+    reset_at = datetime.now(UTC) + timedelta(hours=2)
+    task_id = await schedule_create(pool, "allowance-task", "*/1 * * * *", "run this")
+    await pool.execute(
+        "UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1", task_id, _past()
+    )
+    job_id = await schedule_create(
+        pool, "allowance-job", "*/1 * * * *", dispatch_mode="job", job_name="eligibility_sweep"
+    )
+    await pool.execute("UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1", job_id, _past())
+    await _exhaust_every_catalog_account(pool, reset_at)
+    try:
+        dispatch = _Dispatch()
+        count = await tick(pool, dispatch, butler_name="general")
+        again = await tick(pool, dispatch, butler_name="general")
+    finally:
+        await pool.execute("TRUNCATE public.provider_allowance_states")
+
+    # Deterministic job-mode work does not use a model, so it still runs.
+    assert [c.get("job_name") for c in dispatch.calls] == ["eligibility_sweep"]
+    assert count == 1 and again == 0
+    row = await pool.fetchrow(
+        "SELECT next_run_at, last_result FROM scheduled_tasks WHERE id = $1", task_id
+    )
+    assert row["next_run_at"] == reset_at
+    assert row["last_result"]["outcome"] == "skipped_allowance"
+    assert row["last_result"]["deferred_until"] == reset_at.isoformat()
+
+
+@_asyncio_session
+async def test_tick_dispatches_normally_once_allowance_reset_passed(pool):
+    """An exhausted account whose reset is already past no longer defers anything."""
+    from butlers.core.scheduler import schedule_create, tick
+
+    task_id = await schedule_create(pool, "allowance-lapsed", "*/1 * * * *", "run this")
+    await pool.execute(
+        "UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1", task_id, _past()
+    )
+    await _exhaust_every_catalog_account(pool, datetime.now(UTC) - timedelta(minutes=1))
+    try:
+        dispatch = _Dispatch()
+        count = await tick(pool, dispatch, butler_name="general")
+    finally:
+        await pool.execute("TRUNCATE public.provider_allowance_states")
+
+    assert count == 1
+    assert dispatch.calls[0]["prompt"] == "run this"
+
+
 @_asyncio_session
 async def test_tick_prepares_prompt_with_shared_run_time_and_timezone(pool):
     """Prompt and completion hooks share one authoritative tick context."""

@@ -998,7 +998,8 @@ export interface ScheduleCostsResponse {
  * A single failover/quota-skip provenance row. `outcome` is one of
  * `quota_skip` (candidate skipped before invocation -- either a routine
  * same-tier token-quota failover, or a monthly spend-ceiling hard block;
- * distinguish via `failure_reason`), `runtime_failure`, `suppressed`,
+ * distinguish via `failure_reason`), `runtime_failure`, `allowance_exhausted`
+ * (provider plan usage-limit; the breaker ignores it), `suppressed`,
  * `exhausted`, or `success`.
  */
 export interface DispatchAttemptEntry {

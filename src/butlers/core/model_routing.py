@@ -63,7 +63,7 @@ import time
 import uuid
 from collections import OrderedDict
 from collections.abc import Iterable, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import asyncpg
@@ -466,6 +466,179 @@ breaker_open AS (
     )
 )
 """
+
+
+# ---------------------------------------------------------------------------
+# Provider allowance windows (bu-q7vx1q.13)
+# ---------------------------------------------------------------------------
+#
+# A provider plan usage-limit rejection exhausts the whole provider ACCOUNT, not
+# one model.  ``public.provider_allowance_states`` records that per account key;
+# an entry's account key is ``model_catalog.allowance_account`` or, when NULL, its
+# ``runtime_type``.  The CTE below lists every catalog entry whose account is
+# exhausted with a reset still in the future, so each resolver drops all of them at
+# once -- including when failover would otherwise pick a sibling entry on the dead
+# account.  Exclusion lifts by itself when ``reset_at`` passes (no cleanup job) and
+# is cleared early by a successful attempt (``clear_allowance_exhaustion``).
+#
+# ``unknown`` is deliberately NOT excluded here: routing has no evidence the account
+# is dead.  Readers that render capacity must still show it as unknown.
+#
+# Distinct from the owner token quota (``token_limits``): that is an owner-set budget
+# on one catalog entry, this is the provider's own cap on an account.
+ALLOWANCE_DEFAULT_WINDOW = timedelta(hours=1)
+ALLOWANCE_OUTCOME = "allowance_exhausted"
+ALLOWANCE_ACCOUNT_KEY_SQL = "COALESCE(mc.allowance_account, mc.runtime_type)"
+
+_ALLOWANCE_BLOCKED_CTE = f"""
+allowance_blocked AS (
+    SELECT mc.id AS catalog_entry_id, pas.reset_at
+    FROM public.model_catalog mc
+    JOIN public.provider_allowance_states pas
+        ON pas.account_key = {ALLOWANCE_ACCOUNT_KEY_SQL}
+    WHERE pas.state = 'exhausted'
+      AND pas.reset_at > now()
+)
+"""
+
+
+# Upsert for one exhausted account.  GREATEST keeps the latest-known reset when
+# concurrent rejections race; ``first_seen_at`` survives repeats; a repeat only
+# refreshes the causing attempt id.  ``reset_source`` follows whichever reset won.
+# $1 account_key, $2 reset_at, $3 reset_source, $4 attempt id (nullable).
+_ALLOWANCE_EXHAUST_SQL = """
+INSERT INTO public.provider_allowance_states
+    (account_key, state, reset_at, reset_source, last_rejection_attempt_id)
+VALUES ($1, 'exhausted', $2, $3, $4)
+ON CONFLICT (account_key) DO UPDATE SET
+    reset_source = CASE
+        WHEN public.provider_allowance_states.state = 'exhausted'
+             AND public.provider_allowance_states.reset_at >= EXCLUDED.reset_at
+        THEN public.provider_allowance_states.reset_source
+        ELSE EXCLUDED.reset_source
+    END,
+    reset_at = CASE
+        WHEN public.provider_allowance_states.state = 'exhausted'
+        THEN GREATEST(public.provider_allowance_states.reset_at, EXCLUDED.reset_at)
+        ELSE EXCLUDED.reset_at
+    END,
+    first_seen_at = CASE
+        WHEN public.provider_allowance_states.state = 'exhausted'
+        THEN public.provider_allowance_states.first_seen_at
+        ELSE now()
+    END,
+    state = 'exhausted',
+    last_rejection_attempt_id = EXCLUDED.last_rejection_attempt_id,
+    updated_at = now()
+"""
+
+# A success on an account proves it is usable: clear only an exhausted row, and
+# only when the success is newer than the recorded rejection.  $1 catalog entry.
+_ALLOWANCE_CLEAR_SQL = f"""
+UPDATE public.provider_allowance_states pas
+SET state = 'available', reset_at = NULL, reset_source = 'unknown', updated_at = now()
+FROM public.model_catalog mc
+WHERE mc.id = $1
+  AND pas.account_key = {ALLOWANCE_ACCOUNT_KEY_SQL}
+  AND pas.state = 'exhausted'
+"""
+
+
+async def mark_allowance_exhausted(
+    pool: asyncpg.Pool,
+    catalog_entry_id: uuid.UUID,
+    *,
+    reset_at: datetime | None,
+    attempt_id: int | None,
+    now: datetime | None = None,
+) -> datetime | None:
+    """Mark the provider account behind ``catalog_entry_id`` exhausted until its reset.
+
+    ``reset_at`` is the instant parsed from the provider's message; ``None`` falls
+    back to ``now + ALLOWANCE_DEFAULT_WINDOW`` and is recorded as
+    ``reset_source='default_window'`` so nothing downstream presents a guess as a
+    stated reset.  Returns the reset instant written, or ``None`` when the entry no
+    longer exists.  Best-effort: a write failure is logged and returns ``None``,
+    because the runtime_failure path must never raise out of provenance.
+    """
+    now = now or datetime.now(UTC)
+    source = "parsed" if reset_at is not None else "default_window"
+    effective_reset = reset_at if reset_at is not None else now + ALLOWANCE_DEFAULT_WINDOW
+    try:
+        key = await pool.fetchval(
+            f"SELECT {ALLOWANCE_ACCOUNT_KEY_SQL} FROM public.model_catalog mc WHERE mc.id = $1",
+            catalog_entry_id,
+        )
+        if key is None:
+            return None
+        await pool.execute(_ALLOWANCE_EXHAUST_SQL, key, effective_reset, source, attempt_id)
+    except Exception:
+        logger.warning("Failed to record provider allowance exhaustion", exc_info=True)
+        return None
+    clear_routing_decision_cache()
+    return effective_reset
+
+
+async def clear_allowance_exhaustion(pool: asyncpg.Pool, catalog_entry_id: uuid.UUID) -> None:
+    """Mark the account behind a successful attempt available (no-op when not exhausted)."""
+    try:
+        status = await pool.execute(_ALLOWANCE_CLEAR_SQL, catalog_entry_id)
+    except Exception:
+        logger.warning("Failed to clear provider allowance exhaustion", exc_info=True)
+        return
+    if status.endswith(" 0"):
+        return
+    clear_routing_decision_cache()
+
+
+# Earliest reset among the entries a task could run on, but only when EVERY enabled,
+# verified entry in the requested tiers is on an exhausted account.  $1 butler,
+# $2 ordered tiers.  Returns no row when anything could run, or nothing exists.
+_ALLOWANCE_DEFERRAL_SQL = f"""
+WITH
+{_ALLOWANCE_BLOCKED_CTE},
+tier_order AS (
+    SELECT t.tier FROM unnest($2::text[]) AS t(tier)
+),
+fit AS (
+    SELECT mc.id
+    FROM public.model_catalog mc
+    LEFT JOIN public.butler_model_overrides bmo
+        ON bmo.catalog_entry_id = mc.id AND bmo.butler_name = $1
+    WHERE COALESCE(bmo.enabled, mc.enabled) = true
+      AND mc.last_verified_ok IS DISTINCT FROM false
+      AND COALESCE(bmo.complexity_tier, mc.complexity_tier) IN (SELECT tier FROM tier_order)
+)
+SELECT MIN(ab.reset_at) AS reset_at
+FROM fit
+JOIN allowance_blocked ab ON ab.catalog_entry_id = fit.id
+HAVING COUNT(*) = (SELECT COUNT(*) FROM fit)
+"""
+
+
+async def allowance_deferral(
+    pool: asyncpg.Pool, butler_name: str, complexity: Complexity | str
+) -> datetime | None:
+    """Return when background work for ``complexity`` can next run, or ``None`` if it can now.
+
+    Non-``None`` only when every catalog entry the task could fall through to is on
+    an exhausted provider account, so deferring costs nothing a different account
+    could have served.  Fails open (``None``) on any error: an allowance read must
+    never freeze a healthy schedule.
+    """
+    try:
+        tier_value = (
+            complexity.value
+            if isinstance(complexity, Complexity)
+            else _check_deprecated_tier(str(complexity))
+        )
+        tiers = list(TIER_FALLTHROUGH_ORDER[TIER_FALLTHROUGH_ORDER.index(tier_value) :])
+        row = await pool.fetchrow(_ALLOWANCE_DEFERRAL_SQL, butler_name, tiers)
+    except Exception:
+        logger.warning("Allowance deferral lookup failed; not deferring", exc_info=True)
+        return None
+    reset_at = None if row is None else row["reset_at"]
+    return reset_at if isinstance(reset_at, datetime) else None
 
 
 # ---------------------------------------------------------------------------
@@ -1002,6 +1175,7 @@ all_candidates AS (
     WHERE COALESCE(bmo.enabled, mc.enabled) = true
       AND mc.last_verified_ok IS DISTINCT FROM false
       AND mc.id NOT IN (SELECT catalog_entry_id FROM breaker_open)
+      AND mc.id NOT IN (SELECT catalog_entry_id FROM allowance_blocked)
 )
 """
 
@@ -1025,7 +1199,8 @@ all_candidates AS (
         COALESCE(bmo.priority, mc.priority) AS effective_priority,
         t.ord AS tier_ord,
         COALESCE(qoc.quota_ok, true) AS quota_ok,
-        bo.catalog_entry_id IS NOT NULL AS breaker_open
+        bo.catalog_entry_id IS NOT NULL AS breaker_open,
+        ab.catalog_entry_id IS NOT NULL AS allowance_blocked
     FROM public.model_catalog mc
     LEFT JOIN public.butler_model_overrides bmo
         ON bmo.catalog_entry_id = mc.id AND bmo.butler_name = $1
@@ -1033,6 +1208,8 @@ all_candidates AS (
         ON qoc.catalog_entry_id = mc.id
     LEFT JOIN breaker_open bo
         ON bo.catalog_entry_id = mc.id
+    LEFT JOIN allowance_blocked ab
+        ON ab.catalog_entry_id = mc.id
     JOIN tier_order t
         ON COALESCE(bmo.complexity_tier, mc.complexity_tier) = t.tier
     WHERE COALESCE(bmo.enabled, mc.enabled) = true
@@ -1043,6 +1220,7 @@ all_candidates AS (
 _RESOLVE_SQL = f"""
 WITH
 {_BREAKER_OPEN_CTE},
+{_ALLOWANCE_BLOCKED_CTE},
 {_QUOTA_OK_CTE},
 tier_order AS (
     SELECT t.tier, t.ord
@@ -1119,6 +1297,7 @@ LEFT JOIN evidence e ON e.catalog_entry_id = c.id
 _RESOLVE_CANDIDATES_SQL = f"""
 WITH
 {_BREAKER_OPEN_CTE},
+{_ALLOWANCE_BLOCKED_CTE},
 {_QUOTA_OK_CTE},
 tier_order AS (
     SELECT t.tier, t.ord
@@ -1145,6 +1324,7 @@ SELECT
     ac.runtime_type, ac.model_id, ac.extra_args, ac.id, ac.session_timeout_s,
     ac.capabilities, ac.max_context_tokens, ac.max_output_tokens,
     ac.effective_tier, ac.effective_priority, ac.tier_ord, ac.quota_ok, ac.breaker_open,
+    ac.allowance_blocked,
     e.success_count, e.failure_count, e.p50_duration_ms, e.p95_duration_ms,
     e.last_attempt_at
 FROM all_candidates ac
@@ -1200,6 +1380,7 @@ RETURNING counter
 _NEXT_SAME_TIER_SQL = f"""
 WITH
 {_BREAKER_OPEN_CTE},
+{_ALLOWANCE_BLOCKED_CTE},
 all_candidates AS (
     SELECT
         mc.runtime_type,
@@ -1218,6 +1399,7 @@ all_candidates AS (
       AND COALESCE(bmo.complexity_tier, mc.complexity_tier) = $2
       AND mc.id != ALL($3::uuid[])
       AND mc.id NOT IN (SELECT catalog_entry_id FROM breaker_open)
+      AND mc.id NOT IN (SELECT catalog_entry_id FROM allowance_blocked)
 )
 SELECT
     runtime_type,
@@ -1916,6 +2098,9 @@ class CandidateOutcome(enum.StrEnum):
     EXCLUDED_BREAKER = "excluded_breaker"
     """Disqualified because its dispatch-outcome circuit breaker was open."""
 
+    EXCLUDED_ALLOWANCE = "excluded_allowance"
+    """Disqualified because its provider account is exhausted until a known reset."""
+
     EXCLUDED_QUOTA = "excluded_quota"
     NOT_TOP_PRIORITY = "not_top_priority"
     """Fit the intent, but a higher effective priority existed in the same tier."""
@@ -1955,6 +2140,8 @@ class CandidateRecord:
         exclusion = None
         if self.outcome is CandidateOutcome.EXCLUDED_BREAKER:
             exclusion = "breaker_open"
+        elif self.outcome is CandidateOutcome.EXCLUDED_ALLOWANCE:
+            exclusion = "allowance_exhausted"
         elif self.outcome is CandidateOutcome.EXCLUDED_QUOTA:
             exclusion = "quota"
         elif self.exclusions:
@@ -2087,6 +2274,11 @@ def _describe_legacy_resolution(
     )
 
 
+def _row_dispatchable(row: asyncpg.Record, verdicts: Mapping[uuid.UUID, FitVerdict]) -> bool:
+    """A receipt row can win only if it fits and neither the breaker nor its account blocks it."""
+    return verdicts[row["id"]].eligible and not row["breaker_open"] and not row["allowance_blocked"]
+
+
 def _row_capabilities(row: asyncpg.Record) -> CapabilityDescriptor | CapabilityDescriptorError:
     """Layer this row's stored envelope over its adapter baseline, or report the error."""
     try:
@@ -2196,7 +2388,7 @@ async def resolve_dispatch(
     # First tier (in fallthrough order) with at least one candidate that fits.
     winning_tier: str | None = None
     for row in rows:
-        if verdicts[row["id"]].eligible and not row["breaker_open"]:
+        if _row_dispatchable(row, verdicts):
             winning_tier = row["effective_tier"]
             break
 
@@ -2226,6 +2418,8 @@ async def resolve_dispatch(
                 row,
                 CandidateOutcome.EXCLUDED_BREAKER
                 if row["breaker_open"]
+                else CandidateOutcome.EXCLUDED_ALLOWANCE
+                if row["allowance_blocked"]
                 else CandidateOutcome.EXCLUDED_HARD_FIT,
             )
             for row in rows
@@ -2260,7 +2454,7 @@ async def resolve_dispatch(
 
     winning_tier_ord = next(r["tier_ord"] for r in rows if r["effective_tier"] == winning_tier)
     in_tier = [r for r in rows if r["effective_tier"] == winning_tier]
-    survivors = [r for r in in_tier if verdicts[r["id"]].eligible and not r["breaker_open"]]
+    survivors = [r for r in in_tier if _row_dispatchable(r, verdicts)]
     best_priority = max(int(r["effective_priority"]) for r in survivors)
     top = [r for r in survivors if int(r["effective_priority"]) == best_priority]
 
@@ -2282,6 +2476,8 @@ async def resolve_dispatch(
                 outcome = CandidateOutcome.TIER_NOT_REACHED
             elif row["breaker_open"]:
                 outcome = CandidateOutcome.EXCLUDED_BREAKER
+            elif row["allowance_blocked"]:
+                outcome = CandidateOutcome.EXCLUDED_ALLOWANCE
             elif not verdicts[rid].eligible:
                 # Includes every candidate in a HIGHER tier: that tier lost only
                 # because none of its entries fit, and the receipt must say so.
