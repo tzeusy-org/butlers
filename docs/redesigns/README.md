@@ -65,6 +65,7 @@ Harvest and state working files are gitignored. The cap and pruning rule live in
 
 | Run | Dossier |
 |---|---|
+| 15 (2026-10-03) | [2026-10-03-jarvis-pursuit.md](2026-10-03-jarvis-pursuit.md) |
 | 14 (2026-09-22) | [2026-09-22-jarvis-pursuit.md](2026-09-22-jarvis-pursuit.md) |
 | 13 (2026-09-12) | [2026-09-12-jarvis-pursuit.md](2026-09-12-jarvis-pursuit.md) |
 | 12 (2026-09-05) | [2026-09-05-jarvis-pursuit.md](2026-09-05-jarvis-pursuit.md) |

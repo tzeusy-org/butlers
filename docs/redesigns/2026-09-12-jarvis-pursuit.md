@@ -12,7 +12,7 @@ time-calendar), 2 deep-design agents (spend governance, situation archetypes), a
 sweeps (shell discoverability, accessibility, and the first live mobile/on-the-go measurement). No
 agent failed or was retried.
 
-Full per-agent structured output lives in `2026-09-12-jarvis-pursuit-data.json`. Access pattern:
+Full per-agent structured output lived in `2026-09-12-jarvis-pursuit-data.json`, pruned from the tree under the two-newest-runs retention rule; read it with `git show 89d7716c8fbdef9901d4167f320d6393afafe787:docs/redesigns/2026-09-12-jarvis-pursuit-data.json`. Access pattern (pipe the `git show` output into jq in place of the path):
 
 ```bash
 jq '.audits[] | select(.page=="eco: cross-butler")' docs/redesigns/2026-09-12-jarvis-pursuit-data.json
