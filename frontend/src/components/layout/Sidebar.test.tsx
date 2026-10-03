@@ -897,6 +897,14 @@ describe("Sidebar", () => {
       expect(redBadge).toBeTruthy();
     });
 
+    it("renders an accessible unavailable marker, not a calm zero, when QA escalations are unavailable", () => {
+      vi.mocked(useBadgeCounts).mockReturnValue({ "qa-escalations": { kind: "unavailable" } });
+      render();
+
+      expect(container.querySelector('[aria-label="QA escalations unavailable"]')).toBeTruthy();
+      expect(container.querySelector('[class*="bg-[var(--red)]"]')).toBeNull();
+    });
+
     it("does not render a badge when qa-escalations count is zero", () => {
       vi.mocked(useBadgeCounts).mockReturnValue({ "qa-escalations": 0 });
       render();
