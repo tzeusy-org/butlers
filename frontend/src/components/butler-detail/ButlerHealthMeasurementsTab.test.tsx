@@ -16,7 +16,7 @@
  * bead: bu-iuol4.23
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
@@ -57,7 +57,9 @@ vi.mock("recharts", () => {
       children,
     );
 
-  return { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer };
+  const ReferenceArea = () => null;
+
+  return { LineChart, Line, XAxis, YAxis, Tooltip, ReferenceArea, ResponsiveContainer };
 });
 
 // ---------------------------------------------------------------------------
@@ -341,6 +343,15 @@ function setupEmpty() {
 // ---------------------------------------------------------------------------
 // Tests: overall structure
 // ---------------------------------------------------------------------------
+
+// Trend windows are anchored to now, so pin the clock next to the fixture dates.
+beforeAll(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-05-12T00:00:00Z"));
+});
+afterAll(() => {
+  vi.useRealTimers();
+});
 
 describe("ButlerHealthMeasurementsTab — overall structure", () => {
   beforeEach(() => {

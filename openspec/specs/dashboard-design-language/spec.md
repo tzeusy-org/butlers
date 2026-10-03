@@ -580,6 +580,19 @@ The toggle is a labeled group (`Time range`) of mono uppercase options. The sele
 - **WHEN** a surface has no time-ranged data
 - **THEN** no range toggle renders on it
 
+### Requirement: Time-True Trend Grammar
+A dashboard trend chart (line or area over observations) SHALL be rendered by the shared `TimeSeriesChart` primitive (`frontend/src/components/ui/TimeSeriesChart.tsx`), whose x axis is proportional to time and ends at the series window end (normally now), not a category axis of evenly spaced labels.
+
+The chart SHALL draw a mark on every observation when there are 40 or fewer, SHALL join observations with linear or step segments and never a smoothed curve, and SHALL break the line where the silence between two readings exceeds a maximum gap declared by the caller. When the newest reading is at least one day older than the axis end, the chart SHALL shade the tail from that reading to the axis end and label it `last reading Nd ago`. Axis ticks render in the owner timezone. Readings outside the window are excluded, and a reading without a value is never drawn as zero. Lint rejects smoothed curve types and raw recharts `LineChart`/`AreaChart` imports outside `components/ui/`.
+
+#### Scenario: Irregular readings keep their real spacing
+- **WHEN** readings exist on Jan 1, Mar 1, and Mar 2
+- **THEN** the two-month gap renders about sixty times wider than the one-day gap, with the line broken across it and a mark on each reading
+
+#### Scenario: Stale series declares its age
+- **WHEN** the newest reading is eight days older than the axis end
+- **THEN** the tail is shaded and labelled `last reading 8d ago`
+
 ### Requirement: Page Primitive and Archetypes
 Every dashboard page SHALL render inside the shared `<Page>` primitive (`frontend/src/components/ui/page.tsx`) with a declared archetype — `overview`, `list`, `detail`, `workspace`, `editor`, `editorial`, or `status-board` — and SHALL NOT reimplement chrome the primitive owns.
 

@@ -22,14 +22,6 @@
 
 import { useMemo } from "react";
 import { Link } from "react-router";
-import {
-  ResponsiveContainer,
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  Tooltip,
-} from "recharts";
 
 import type {
   LatestMeasurementEntry,
@@ -44,6 +36,7 @@ import { Section, SectionContent, SectionHeader, SectionTitle } from "@/componen
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Time } from "@/components/ui/time";
+import { TimeSeriesChart, TooltipDate } from "@/components/ui/TimeSeriesChart";
 import {
   useMeasurementsLatest,
   useSleepLatest,
@@ -53,9 +46,11 @@ import {
   useMedications,
   useConditions,
 } from "@/hooks/use-health";
+import { useTickingNow } from "@/hooks/use-ticking-now";
 import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
 import { useGoogleHealthStatus } from "@/hooks/use-google-health";
 import { chartColor } from "@/lib/chart-colors";
+import { DAY_MS, buildTimeSeries } from "@/lib/time-series";
 import { GoogleHealthStatusCard } from "./GoogleHealthStatusCard";
 
 // ---------------------------------------------------------------------------
@@ -226,10 +221,12 @@ function fourteenDayWindow(): { since: string; until: string } {
 
 /** Shape of a chart data point for the trend sparkline. */
 interface TrendPoint {
-  ts: string;    // ISO timestamp (XAxis dataKey)
+  ts: string;    // ISO timestamp
   value: number; // numeric reading
-  label: string; // formatted display value for tooltip
+  label: string; // formatted display value for the KPI
 }
+
+const TREND_WINDOW_DAYS = 14;
 
 /**
  * Custom tooltip styled with design tokens.
@@ -241,7 +238,7 @@ function TrendTooltip({
   unit,
 }: {
   active?: boolean;
-  payload?: Array<{ value: number; payload: TrendPoint }>;
+  payload?: Array<{ value: number; payload: { x: number; value: number } }>;
   unit?: string;
 }) {
   if (!active || !payload?.length) return null;
@@ -251,9 +248,11 @@ function TrendTooltip({
       className="rounded border border-border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-sm"
       data-testid="trend-tooltip"
     >
-      <p className="text-muted-foreground">{point.ts.slice(0, 10)}</p>
+      <p className="text-muted-foreground">
+        <TooltipDate x={point.x} />
+      </p>
       <p className="font-mono tnum font-medium">
-        {point.label}
+        {point.value}
         {unit ? <span className="ml-1 text-muted-foreground">{unit}</span> : null}
       </p>
     </div>
@@ -280,7 +279,7 @@ function TrendSparkline({
   unit?: string;
 }) {
   const prefersReducedMotion = usePrefersReducedMotion();
-  const chartData = useMemo(() => {
+  const points = useMemo(() => {
     const sorted = measurements
       .slice()
       .sort((a, b) => new Date(a.measured_at).getTime() - new Date(b.measured_at).getTime());
@@ -298,6 +297,18 @@ function TrendSparkline({
 
     return points;
   }, [measurements, valueKey]);
+  const windowEnd = useTickingNow(60_000);
+  const series = useMemo(() => {
+    return buildTimeSeries(
+      points.map((p) => ({ at: p.ts, values: { value: p.value } })),
+      ["value"],
+      {
+        windowStart: windowEnd - TREND_WINDOW_DAYS * DAY_MS,
+        windowEnd,
+        maxGapMs: 3 * DAY_MS,
+      },
+    );
+  }, [points, windowEnd]);
 
   if (isLoading) {
     return <LoadingLine />;
@@ -307,13 +318,13 @@ function TrendSparkline({
     return <EmptyLine>{`Could not load ${label.toLowerCase()} trend.`}</EmptyLine>;
   }
 
-  if (chartData.length === 0) {
+  if (series.observationCount === 0) {
     return <EmptyLine>No readings in window</EmptyLine>;
   }
 
   // Derive latest value from the last valid chartData point so the KPI always
   // matches the chart (the unfiltered sorted array may end on a non-numeric reading).
-  const lastPoint = chartData[chartData.length - 1];
+  const lastPoint = points.filter((p) => new Date(p.ts).getTime() === series.lastReadingAt).at(-1);
   const latestValue = lastPoint?.label ?? "—";
 
   return (
@@ -328,28 +339,18 @@ function TrendSparkline({
         )}
       </div>
       {/* Sparkline */}
-      <div data-testid="trend-sparkline">
-        <ResponsiveContainer width="100%" height={80}>
-          <LineChart data={chartData} margin={{ top: 4, right: 4, bottom: 4, left: 4 }}>
-            <XAxis dataKey="ts" hide />
-            <YAxis hide domain={["auto", "auto"]} />
-            <Tooltip
-              content={<TrendTooltip unit={unit} />}
-              isAnimationActive={!prefersReducedMotion}
-            />
-            <Line
-              dataKey="value"
-              type="monotone"
-              stroke={chartColor()}
-              dot={false}
-              strokeWidth={1.5}
-              isAnimationActive={!prefersReducedMotion}
-            />
-          </LineChart>
-        </ResponsiveContainer>
-      </div>
+      <TimeSeriesChart
+        testId="trend-sparkline"
+        series={series}
+        lines={[{ key: "value", name: label, stroke: chartColor() }]}
+        height={80}
+        compact
+        yDomain={["auto", "auto"]}
+        tooltip={<TrendTooltip unit={unit} />}
+        animate={!prefersReducedMotion}
+      />
       {/* Screen-reader text alternative for the decorative chart */}
-      <p className="sr-only">{`${label} trend · ${chartData.length} readings over 14 days`}</p>
+      <p className="sr-only">{`${label} trend · ${series.observationCount} readings over ${TREND_WINDOW_DAYS} days`}</p>
     </div>
   );
 }

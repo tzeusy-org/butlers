@@ -134,7 +134,9 @@ function resolveSidebarBadge(
           ? 'Decisions digest unavailable'
           : item.badgeKey === 'approvals-pending'
             ? 'Pending approvals unavailable'
-            : 'Badge unavailable'
+            : item.badgeKey === 'qa-escalations'
+              ? 'QA escalations unavailable'
+              : 'Badge unavailable'
         : undefined,
   }
 }

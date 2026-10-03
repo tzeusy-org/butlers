@@ -323,6 +323,27 @@ const FORMAT_CLONE_SELECTORS = [
 // Keyboard handling belongs to the two registries: the app-wide shell map
 // and the page-scoped shortcut registry. A third listener would drift from
 // their shared editable-field, dialog, and pending-chord protections.
+// bu-q7vx1q.6: trend charts share one time-true grammar (dashboard-design-language
+// § Time-true trend grammar). Line/area charts live in components/ui/TimeSeriesChart,
+// which is exempt because this list is not applied to components/ui/.
+const TREND_CHART_GRAMMAR_SELECTORS = [
+  {
+    selector:
+      'JSXAttribute[name.name="type"][value.value=/^(?:monotone|monotoneX|monotoneY|natural|basis|cardinal|bump|bumpX|bumpY)$/]',
+    message:
+      'Smoothed curve types invent values between readings (bu-q7vx1q.6). Use ' +
+      'components/ui/TimeSeriesChart, which draws linear or step joins only.',
+  },
+  {
+    selector:
+      'ImportDeclaration[source.value="recharts"] > ImportSpecifier[imported.name=/^(?:LineChart|AreaChart)$/]',
+    message:
+      'Trend charts use components/ui/TimeSeriesChart (time-proportional axis, visible ' +
+      'observations, gap breaks, labelled stale tail), not a raw recharts LineChart/AreaChart ' +
+      '(bu-q7vx1q.6).',
+  },
+]
+
 const KEYDOWN_LISTENER_SELECTORS = [
   {
     selector:
@@ -2728,6 +2749,7 @@ export default defineConfig([
         ...POLL_POLICY_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
         ...FORMAT_CLONE_SELECTORS,
+        ...TREND_CHART_GRAMMAR_SELECTORS,
         ...KEYDOWN_LISTENER_SELECTORS,
         ...TH_SCOPE_SELECTORS,
         ...NO_WINDOW_CONFIRM_SELECTORS,
