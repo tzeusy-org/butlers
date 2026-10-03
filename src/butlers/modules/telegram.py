@@ -168,6 +168,16 @@ def _markdown_to_telegram_html(text: str) -> str:
     return text
 
 
+def _telegram_error_text(exc: httpx.HTTPStatusError) -> str:
+    """Return Telegram's ``description`` for a failed call, or the status line."""
+    try:
+        body = exc.response.json()
+    except Exception:
+        return str(exc)
+    description = body.get("description") if isinstance(body, dict) else None
+    return description if isinstance(description, str) else str(exc)
+
+
 class TelegramModule(Module):
     """Telegram module providing identity-prefixed Telegram MCP tools.
 
@@ -276,9 +286,23 @@ class TelegramModule(Module):
             """React to a Telegram message with an emoji."""
             return await module._react_to_message(chat_id, message_id, emoji)
 
+        async def telegram_edit_message_text(
+            chat_id: str, message_id: int, text: str
+        ) -> dict[str, Any]:
+            """Edit the text of a message this bot already sent.
+
+            Used to amend a proactive insight in place when the fact it asserted
+            stopped being true. A Telegram 400 (message too old, unchanged, or
+            not editable) is returned as ``{"edited": false, "error_code": 400}``
+            rather than raised, so the caller can fall back to folding the
+            correction into its next digest.
+            """
+            return await module._edit_message_text_or_reject(chat_id, message_id, text)
+
         mcp.tool()(telegram_send_message)
         mcp.tool()(telegram_reply_to_message)
         mcp.tool()(telegram_react_to_message)
+        mcp.tool()(telegram_edit_message_text)
 
     async def on_startup(
         self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
@@ -497,6 +521,18 @@ class TelegramModule(Module):
             message_id=message_id,
             text=_markdown_to_telegram_html(text),
         )
+
+    async def _edit_message_text_or_reject(
+        self, chat_id: str, message_id: int, text: str
+    ) -> dict[str, Any]:
+        """Edit a sent message; a Telegram 400 is a structured rejection, not an error."""
+        try:
+            data = await self._edit_message_text(chat_id, message_id, text)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 400:
+                raise
+            return {"edited": False, "error_code": 400, "description": _telegram_error_text(exc)}
+        return {"edited": True, **data} if isinstance(data, dict) else {"edited": True}
 
     async def _remove_inline_keyboard(self, chat_id: str, message_id: int) -> dict[str, Any]:
         """Remove a sent Telegram message's inline keyboard."""

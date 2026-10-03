@@ -23,6 +23,7 @@ from zoneinfo import ZoneInfo
 import asyncpg
 import httpx
 
+from butlers.core.insight_premise import probe_premise
 from butlers.core.owner_conditions import Observation as OwnerObservation
 from butlers.core.owner_conditions import compute_fingerprint as owner_condition_fingerprint
 from butlers.core.owner_conditions import reconcile_snapshot as reconcile_owner_condition
@@ -751,6 +752,7 @@ async def _propose(
     expires_at: datetime,
     cooldown_days: int | None = None,
     metadata: dict[str, Any] | None = None,
+    premise: dict[str, Any] | None = None,
 ) -> str:
     """Propose one insight candidate; return the status string."""
     return (
@@ -764,6 +766,7 @@ async def _propose(
             expires_at=expires_at,
             cooldown_days=cooldown_days,
             metadata=metadata,
+            premise=premise,
         )
     )["status"]
 
@@ -1099,6 +1102,9 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
                 # can state without inventing an association.
                 "event_date": due.isoformat(),
             },
+            # bu-q7vx1q.5: "due <soon>" is only true while the bill is unpaid;
+            # the broker re-checks this at send and withdraws the nudge if paid.
+            premise=probe_premise("finance", "bill_still_pending", {"bill_id": bill_id}),
         )
         if not keep_going:
             logger.info("Finance insight scan: verbosity=off early exit (upcoming bills)")

@@ -32,7 +32,9 @@ from butlers.core.attention_ledger import (
     URGENT_PRIORITY_THRESHOLD,
     record_attention_event,
 )
+from butlers.core.insight_premise import normalize_premise
 from butlers.tools.switchboard.insight.catchup import reconcile_catchup_task
+from butlers.tools.switchboard.insight.premises import check_premise
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +42,8 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-VALID_STATUSES = frozenset({"pending", "delivered", "expired", "filtered"})
-TERMINAL_STATUSES = frozenset({"delivered", "expired", "filtered"})
+VALID_STATUSES = frozenset({"pending", "delivered", "expired", "filtered", "withdrawn"})
+TERMINAL_STATUSES = frozenset({"delivered", "expired", "filtered", "withdrawn"})
 VALID_FEEDBACK_VERDICTS = frozenset({"useful", "not_now", "never"})
 _BLOCKED_BY_REASONS = frozenset({"budget", "cooldown", "held_by", "dedup"})
 _NEXT_REGULAR_CYCLE = timedelta(days=1)
@@ -101,7 +103,25 @@ async def create_insight_tables(pool: asyncpg.Pool) -> None:
             status TEXT NOT NULL DEFAULT 'pending',
             delivered_at TIMESTAMPTZ,
             delivery_attempt_count INTEGER NOT NULL DEFAULT 0,
-            prepared_action_id UUID
+            prepared_action_id UUID,
+            premise JSONB,
+            delivery_ref JSONB
+        )
+    """)
+    # bu-q7vx1q.5: mirrors alembic/versions/core/core_255_insight_premise_binding.py.
+    await pool.execute("""
+        CREATE TABLE IF NOT EXISTS insight_amendments (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            candidate_id UUID NOT NULL REFERENCES insight_candidates(id) ON DELETE CASCADE,
+            episode_key TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            summary TEXT,
+            state TEXT NOT NULL DEFAULT 'pending'
+                CHECK (state IN ('pending', 'applied', 'fold', 'folded')),
+            attempts INTEGER NOT NULL DEFAULT 0,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            resolved_at TIMESTAMPTZ,
+            UNIQUE (candidate_id, episode_key)
         )
     """)
     # dedup_key is the PRIMARY KEY here (not a synthetic id) to mirror the
@@ -218,12 +238,20 @@ async def propose_insight_candidate(
     channel: str | None = None,
     metadata: dict | None = None,
     prepared_action_id: Any | None = None,
+    premise: dict | None = None,
     now: datetime | None = None,
 ) -> dict[str, str]:
     """Validate and insert an insight candidate into the staging table.
 
     Parameters
     ----------
+    premise:
+        bu-q7vx1q.5: the typed fact this insight asserts (see
+        ``butlers.core.insight_premise``). The delivery cycle re-checks it
+        before selection and withdraws the candidate, unsent, when it is false;
+        once delivered, an owner-condition premise that later resolves amends
+        the delivered message in place. ``None`` (the default) behaves exactly
+        as before this bead.
     prepared_action_id:
         bu-2jtfw.11: the ``pending_actions.id`` (in *origin_butler*'s own
         schema, ``origin='prepared'``) this candidate motivated, if any. When
@@ -288,6 +316,12 @@ async def propose_insight_candidate(
     if expires_dt <= reference_now:
         return {"status": "error", "reason": "expires_at must be in the future"}
 
+    # --- Premise validation ---
+    try:
+        premise = normalize_premise(premise)
+    except ValueError as exc:
+        return {"status": "error", "reason": str(exc)}
+
     # --- Verbosity gate ---
     settings = await get_insight_settings(pool)
     verbosity = settings.get("verbosity", "minimal")
@@ -302,8 +336,8 @@ async def propose_insight_candidate(
         """
         INSERT INTO insight_candidates
             (origin_butler, priority, category, dedup_key, cooldown_days,
-             expires_at, message, channel, metadata, status, prepared_action_id)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, 'pending', $10)
+             expires_at, message, channel, metadata, status, prepared_action_id, premise)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, 'pending', $10, $11::jsonb)
         """,
         origin_butler,
         priority,
@@ -315,6 +349,7 @@ async def propose_insight_candidate(
         channel,
         metadata,
         prepared_action_id,
+        premise,
     )
     return {"status": "accepted", "reason": "candidate queued for delivery cycle"}
 
@@ -1575,6 +1610,293 @@ async def _schedule_insight_catchup(
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Premise-bound speech (bu-q7vx1q.5)
+# ---------------------------------------------------------------------------
+
+_MAX_AMEND_ATTEMPTS = 3
+_AMENDMENT_BATCH = 50
+_FOLD_LINE_BATCH = 10
+
+
+def _json_object(value: Any) -> dict[str, Any] | None:
+    """Return ``value`` as a dict whether the pool decodes JSONB or hands back text."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except ValueError:
+            return None
+        return decoded if isinstance(decoded, dict) else None
+    return None
+
+
+async def _revalidate_premises(
+    pool: asyncpg.Pool, *, now: datetime, urgent_only: bool
+) -> tuple[dict[str, bool | None], int]:
+    """Re-check every pending candidate's premise; withdraw those whose fact is false.
+
+    A candidate whose premise no longer holds is flipped ``pending ->
+    withdrawn`` (guarded on ``status = 'pending'``, so a replayed cycle is a
+    no-op) and never reaches selection, so nothing is sent. Returns the verdict
+    for each premised candidate that stays pending: ``True`` (holds) or
+    ``None`` (unknown -- the caller delivers it stamped "as of", never claiming
+    a recheck), alongside the number withdrawn. Candidates with no premise are
+    not touched.
+    """
+    if urgent_only:
+        rows = await pool.fetch(
+            """
+            SELECT id, origin_butler, priority, dedup_key, channel, premise
+            FROM insight_candidates
+            WHERE status = 'pending' AND premise IS NOT NULL AND priority >= $1
+            """,
+            URGENT_PRIORITY_THRESHOLD,
+        )
+    else:
+        rows = await pool.fetch(
+            """
+            SELECT id, origin_butler, priority, dedup_key, channel, premise
+            FROM insight_candidates
+            WHERE status = 'pending' AND premise IS NOT NULL
+            """
+        )
+    verdicts: dict[str, bool | None] = {}
+    withdrawn = 0
+    for row in rows:
+        verdict = await check_premise(pool, _json_object(row["premise"]))
+        if verdict is not False:
+            verdicts[str(row["id"])] = verdict
+            continue
+        updated = await pool.execute(
+            """
+            UPDATE insight_candidates
+            SET status = 'withdrawn',
+                metadata = COALESCE(metadata, '{}'::jsonb)
+                           || jsonb_build_object(
+                               'withdrawn_at', $2::text,
+                               'withdrawn_reason', 'premise_false'
+                           )
+            WHERE id = $1 AND status = 'pending'
+            """,
+            row["id"],
+            now.isoformat(),
+        )
+        if not str(updated).endswith(" 1"):
+            continue
+        withdrawn += 1
+        logger.info("insight-delivery-cycle: withdrew candidate %s (premise false)", row["id"])
+        await record_attention_event(
+            pool,
+            origin_butler=row["origin_butler"],
+            source="insight",
+            outcome="withdrawn",
+            channel=row["channel"],
+            intent="insight",
+            priority=row["priority"],
+            dedup_key=row["dedup_key"],
+            notification_ref=str(row["id"]),
+            reason="premise_false",
+        )
+    return verdicts, withdrawn
+
+
+def _stamp_unverified(candidate: dict[str, Any]) -> dict[str, Any]:
+    """Return a delivery copy stamped with when its (unrechecked) fact was proposed."""
+    proposed_at = candidate["created_at"]
+    stamp = f"(as of {proposed_at:%Y-%m-%d %H:%M} UTC)"
+    return {**candidate, "message": f"{candidate['message']} {stamp}"}
+
+
+def _find_provider_message(value: Any, depth: int = 0) -> tuple[int, str | None] | None:
+    """Locate a Telegram-shaped ``(message_id, chat_id)`` anywhere in a notify result."""
+    if depth > 6:
+        return None
+    if isinstance(value, str) and value.lstrip().startswith(("{", "[")):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return None
+    if isinstance(value, dict):
+        message_id = value.get("message_id")
+        if isinstance(message_id, int) and not isinstance(message_id, bool):
+            chat = value.get("chat")
+            chat_id = chat.get("id") if isinstance(chat, dict) else None
+            return message_id, (str(chat_id) if chat_id is not None else None)
+        children: Any = value.values()
+    elif isinstance(value, list):
+        children = value
+    else:
+        return None
+    for child in children:
+        found = _find_provider_message(child, depth + 1)
+        if found is not None:
+            return found
+    return None
+
+
+def _build_delivery_ref(
+    notify_result: Any,
+    *,
+    channel: str | None,
+    standalone: bool,
+    digest_line_index: int | None,
+    delivered_at: datetime,
+) -> dict[str, Any]:
+    """Describe where a delivered candidate landed, for later in-place amendment.
+
+    Only a provider message with a resolvable chat is recorded as telegram:
+    anything else (email, an unrecognised result shape) leaves the provider
+    fields empty, and the amendment path then folds instead of editing.
+    """
+    ref: dict[str, Any] = {
+        "channel": channel,
+        "standalone": standalone,
+        "digest_line_index": digest_line_index,
+        "delivered_at": delivered_at.isoformat(),
+    }
+    if isinstance(notify_result, dict):
+        ref["notification_id"] = notify_result.get("notification_id")
+        found = _find_provider_message(notify_result.get("result"))
+        if found is not None and found[1] is not None:
+            ref.update(channel="telegram", provider_message_id=found[0], chat_id=found[1])
+    return ref
+
+
+async def _resolution_note(pool: asyncpg.Pool, premise: dict[str, Any] | None) -> str:
+    """Return ``Resolved HH:MM UTC (reason)`` from the premise's condition episode."""
+    row = None
+    if premise is not None and premise.get("kind") == "owner_condition":
+        row = await pool.fetchrow(
+            """
+            SELECT resolved_at, metadata ->> 'resolution_reason' AS reason
+            FROM public.owner_conditions
+            WHERE source = $1 AND fingerprint = $2 AND state = 'resolved'
+            ORDER BY episode DESC
+            LIMIT 1
+            """,
+            premise.get("source"),
+            premise.get("fingerprint"),
+        )
+    if row is None or row["resolved_at"] is None:
+        return "Resolved"
+    note = f"Resolved {row['resolved_at']:%H:%M} UTC"
+    if row["reason"]:
+        note += f" ({str(row['reason']).replace('_', ' ')})"
+    return note
+
+
+async def apply_pending_amendments(
+    pool: asyncpg.Pool, amend_fn: Any, *, now: datetime
+) -> dict[str, int]:
+    """Edit delivered insights in place when the fact they asserted stopped being true.
+
+    ``amend_fn(delivery_ref, text)`` returns ``{"status": "edited" | "rejected"
+    | "error"}``. A standalone Telegram delivery is edited to a struck-through
+    "Resolved HH:MM" form with no new ping. A delivery that cannot be edited
+    (email, a digest line, a rejected edit, three transport failures) becomes a
+    ``fold`` amendment instead: it rides the next delivery as a "since last
+    digest" line, never a standalone message. Every state change is guarded on
+    ``state = 'pending'``, so a replayed cycle neither double-edits nor
+    double-records.
+    """
+    counts = {"applied": 0, "folded": 0, "retry": 0}
+    rows = await pool.fetch(
+        """
+        SELECT a.id, a.attempts, c.id AS candidate_id, c.message, c.origin_butler,
+               c.priority, c.dedup_key, c.premise, c.delivery_ref
+        FROM insight_amendments a
+        JOIN insight_candidates c ON c.id = a.candidate_id
+        WHERE a.state = 'pending'
+        ORDER BY a.created_at
+        LIMIT $1
+        """,
+        _AMENDMENT_BATCH,
+    )
+    for row in rows:
+        ref = _json_object(row["delivery_ref"]) or {}
+        premise = _json_object(row["premise"])
+        note = await _resolution_note(pool, premise)
+        editable = bool(
+            ref.get("standalone")
+            and ref.get("channel") == "telegram"
+            and ref.get("chat_id")
+            and ref.get("provider_message_id")
+        )
+        next_state = "fold"
+        if editable:
+            try:
+                result = await amend_fn(ref, f"~~{row['message']}~~\n{note}")
+                status = result.get("status") if isinstance(result, dict) else "error"
+            except Exception:
+                logger.warning(
+                    "insight-delivery-cycle: amend of candidate %s raised",
+                    row["candidate_id"],
+                    exc_info=True,
+                )
+                status = "error"
+            if status == "edited":
+                next_state = "applied"
+            elif status == "error" and row["attempts"] + 1 < _MAX_AMEND_ATTEMPTS:
+                await pool.execute(
+                    "UPDATE insight_amendments SET attempts = attempts + 1 "
+                    "WHERE id = $1 AND state = 'pending'",
+                    row["id"],
+                )
+                counts["retry"] += 1
+                continue
+        updated = await pool.execute(
+            """
+            UPDATE insight_amendments
+            SET state = $2, summary = $3, resolved_at = $4
+            WHERE id = $1 AND state = 'pending'
+            """,
+            row["id"],
+            next_state,
+            note,
+            now,
+        )
+        if not str(updated).endswith(" 1"):
+            continue
+        if next_state == "applied":
+            counts["applied"] += 1
+            await record_attention_event(
+                pool,
+                origin_butler=row["origin_butler"],
+                source="insight",
+                outcome="amended",
+                channel="telegram",
+                intent="insight",
+                priority=row["priority"],
+                dedup_key=row["dedup_key"],
+                notification_ref=str(row["candidate_id"]),
+                reason="premise_resolved",
+            )
+        else:
+            counts["folded"] += 1
+    return counts
+
+
+async def _pending_fold_lines(pool: asyncpg.Pool) -> list[tuple[Any, str]]:
+    """Return ``(amendment_id, line)`` for amendments awaiting a delivery to ride."""
+    rows = await pool.fetch(
+        """
+        SELECT a.id, a.summary, c.message
+        FROM insight_amendments a
+        JOIN insight_candidates c ON c.id = a.candidate_id
+        WHERE a.state = 'fold'
+        ORDER BY a.created_at
+        LIMIT $1
+        """,
+        _FOLD_LINE_BATCH,
+    )
+    return [
+        (row["id"], f"Since last digest: {row['summary'] or 'Resolved'} -- {row['message']}")
+        for row in rows
+    ]
+
+
 async def delivery_cycle(
     pool: asyncpg.Pool,
     *,
@@ -1583,6 +1905,7 @@ async def delivery_cycle(
     urgent_only: bool = False,
     daily_hold_mode: bool = False,
     credential_store: Any | None = None,
+    amend_fn: Any | None = None,
 ) -> dict[str, Any]:
     """Orchestrate the full insight delivery pipeline.
 
@@ -1665,11 +1988,20 @@ async def delivery_cycle(
         carry one. ``None`` falls back to the ``ANTHROPIC_API_KEY``
         environment variable.
 
+    amend_fn:
+        bu-q7vx1q.5: optional async callable ``amend_fn(delivery_ref, text) ->
+        {"status": "edited" | "rejected" | "error"}`` that edits an already
+        delivered message in place. ``None`` leaves queued amendments untouched
+        (they wait for a cycle that has a transport). Premise re-validation
+        before selection runs regardless: it only withdraws, never sends.
+
     Returns
     -------
     dict with keys:
         - ``skipped``: True if quiet hours or budget=0 caused early exit
         - ``expired``: number of candidates expired
+        - ``withdrawn``: candidates withdrawn because their premise was false
+        - ``amended``: delivered messages edited in place this cycle
         - ``delivered``: list of delivered candidate IDs
         - ``delivery_message``: the formatted message sent (or None)
         - ``effective_budget``: the computed budget
@@ -1680,6 +2012,8 @@ async def delivery_cycle(
     result: dict[str, Any] = {
         "skipped": False,
         "expired": 0,
+        "withdrawn": 0,
+        "amended": 0,
         "delivered": [],
         "delivery_message": None,
         "effective_budget": 0,
@@ -1687,6 +2021,12 @@ async def delivery_cycle(
     }
 
     settings = await get_insight_settings(pool)
+
+    # bu-q7vx1q.5: amend already-delivered insights whose fact stopped being
+    # true. Before every early return below: correcting an owner-visible claim
+    # is not "new speech", so quiet hours, verbosity and budget do not gate it.
+    if amend_fn is not None:
+        result["amended"] = (await apply_pending_amendments(pool, amend_fn, now=now))["applied"]
 
     # Step 1: Check Owner Attention Policy + context bus (bu-qvnce.8 slices 1-2;
     # extended to meeting/traveling with per-signal max-hold TTL by
@@ -1755,6 +2095,13 @@ async def delivery_cycle(
     # must not stall just because this cycle is (or may be) suppressed.
     expired = await expire_candidates(pool, now=now)
     result["expired"] = expired
+
+    # bu-q7vx1q.5: a candidate whose premise is now false is withdrawn here,
+    # before suppression, cooldown, dedup and budget ever see it, so it can
+    # neither be sent nor consume a delivery slot.
+    premise_verdicts, result["withdrawn"] = await _revalidate_premises(
+        pool, now=now, urgent_only=urgent_only
+    )
 
     # Fetch pending candidates. urgent_only narrows this to priority>=90 from
     # the start — routine candidates are never selected, filtered, or
@@ -1919,7 +2266,7 @@ async def delivery_cycle(
         """
         SELECT id, origin_butler, priority, category, dedup_key,
                cooldown_days, expires_at, message, channel, metadata,
-               prepared_action_id, created_at
+               prepared_action_id, created_at, premise
         FROM insight_candidates
         WHERE id = ANY($1::uuid[]) AND status = 'pending'
         """,
@@ -1979,6 +2326,15 @@ async def delivery_cycle(
             for c in selected
         ]
 
+    # bu-q7vx1q.5: a premised candidate whose probe could not answer is sent
+    # stamped with when it was proposed -- never as if it had been rechecked.
+    selected = [
+        _stamp_unverified(c)
+        if c.get("premise") is not None and premise_verdicts.get(str(c["id"])) is None
+        else c
+        for c in selected
+    ]
+
     # Step 7: Deliver
     # Guard: if no notify function is wired, skip delivery entirely rather than
     # silently marking candidates as delivered without sending anything.
@@ -2002,6 +2358,12 @@ async def delivery_cycle(
         delivery_message = await _format_digest(
             selected, pool=pool, credential_store=credential_store
         )
+
+    # bu-q7vx1q.5: amendments that could not edit a delivered message in place
+    # ride this delivery as "since last digest" lines -- never their own ping.
+    fold_lines = await _pending_fold_lines(pool)
+    if fold_lines:
+        delivery_message = "\n\n".join([delivery_message, *(line for _, line in fold_lines)])
 
     result["delivery_message"] = delivery_message
 
@@ -2040,6 +2402,7 @@ async def delivery_cycle(
 
     # notify_fn is guaranteed non-None here (None case returns early above)
     deliver_success = True
+    notify_result: Any = None
     # Machine-readable failure class for the attention ledger (bu-wsm9m),
     # mirroring notify()'s reason vocabulary (bu-zcos8): a notify_fn error
     # return is a delivery_error, an exception mid-dispatch is an
@@ -2087,6 +2450,39 @@ async def delivery_cycle(
 
                 # Step 9: Record engagement
                 await record_engagement_rows(conn, selected, delivered_at=delivered_at)
+
+                # bu-q7vx1q.5: persist where each candidate landed (so a later
+                # premise resolution can amend it in place) and retire the
+                # fold lines this delivery carried. Own savepoint: losing the
+                # reference costs only the ability to edit, and must never
+                # roll back the delivered/cooldown bookkeeping above.
+                try:
+                    async with conn.transaction():
+                        for line_index, _c in enumerate(selected, start=1):
+                            await conn.execute(
+                                "UPDATE insight_candidates SET delivery_ref = $2::jsonb "
+                                "WHERE id = $1",
+                                _c["id"],
+                                _build_delivery_ref(
+                                    notify_result,
+                                    channel=delivery_channel,
+                                    standalone=deliver_count == 1,
+                                    digest_line_index=None if deliver_count == 1 else line_index,
+                                    delivered_at=delivered_at,
+                                ),
+                            )
+                        if fold_lines:
+                            await conn.execute(
+                                "UPDATE insight_amendments SET state = 'folded', resolved_at = $2 "
+                                "WHERE id = ANY($1::uuid[]) AND state = 'fold'",
+                                [amendment_id for amendment_id, _ in fold_lines],
+                                delivered_at,
+                            )
+                except Exception:
+                    logger.warning(
+                        "insight-delivery-cycle: could not persist delivery references",
+                        exc_info=True,
+                    )
 
         result["delivered"] = selected_ids
 

@@ -94,3 +94,22 @@ If insight delivery fails, the candidate SHALL remain eligible for retry in the 
 - **WHEN** a candidate fails delivery on 3 consecutive cycles
 - **THEN** it SHALL be marked `status='filtered'` with metadata indicating delivery failure
 - **AND** no cooldown SHALL be recorded (the insight was never delivered)
+
+### Requirement: Delivery Reference Persistence
+When a delivery succeeds, the pipeline SHALL persist `public.insight_candidates.delivery_ref` for every delivered candidate: the notification id, channel, whether the delivery was standalone, its 1-based digest line index (digest only), and, when the notify result carries a Telegram-shaped provider message with a resolvable chat, `chat_id` and `provider_message_id`. Persistence SHALL be best-effort inside its own savepoint: a failure SHALL NOT roll back the `delivered` status, cooldown, or engagement rows.
+
+#### Scenario: Standalone Telegram delivery stores an editable reference
+- **WHEN** a single candidate is delivered and the notify result contains the provider `message_id` and `chat.id`
+- **THEN** `delivery_ref` records `channel="telegram"`, `standalone=true`, the chat id and the provider message id
+
+#### Scenario: A result without a resolvable chat is not editable
+- **WHEN** the notify result carries no chat (for example an email delivery)
+- **THEN** `delivery_ref` omits the provider fields and any later amendment folds instead of editing
+
+### Requirement: Amend Transport
+The Switchboard SHALL expose an `amend_delivery` operation that edits a previously delivered Telegram message by routing `telegram_edit_message_text` to the butler owning the telegram module, so transport stays in the channel module. It SHALL return `{"status": "edited"}` when the edit is accepted, `{"status": "rejected"}` for a Telegram 400, and `{"status": "error"}` for anything transient, unroutable or unrecognised. An unrecognised result SHALL NEVER be reported as an edit.
+
+#### Scenario: Rejected edit is reported, not raised
+- **WHEN** Telegram answers the edit with HTTP 400
+- **THEN** `amend_delivery` returns `{"status": "rejected"}` and the broker folds the correction
+

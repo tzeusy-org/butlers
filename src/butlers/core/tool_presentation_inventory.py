@@ -294,7 +294,8 @@ TOOL_PRESENTATION_INVENTORY = (
     *_declare(
         "telegram",
         "messages",
-        "telegram_react_to_message telegram_reply_to_message telegram_send_message",
+        "telegram_edit_message_text telegram_react_to_message telegram_reply_to_message "
+        "telegram_send_message",
     ),
     *_declare("whatsapp", "messages", "whatsapp_reply_to_message whatsapp_send_message"),
     # Roster modules.

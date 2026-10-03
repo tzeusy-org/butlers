@@ -346,7 +346,7 @@ async def _count_candidates(pool) -> int:
 
 async def _fetch_candidates(pool) -> list[dict]:
     rows = await pool.fetch(
-        "SELECT priority, category, dedup_key, message, cooldown_days, status "
+        "SELECT priority, category, dedup_key, message, cooldown_days, status, premise "
         "FROM insight_candidates ORDER BY created_at"
     )
     return [dict(r) for r in rows]
@@ -727,6 +727,16 @@ async def test_insight_scan_bill_dedup_key_format(provisioned_postgres_pool):
         assert len(bill_cands) == 1
         expected_key = f"finance:bill-due:{bill_id}:{due.isoformat()}"
         assert bill_cands[0]["dedup_key"] == expected_key
+        # bu-q7vx1q.5: the "due soon" claim names the fact it rests on, so the
+        # broker can withdraw it unsent if the bill is paid before delivery.
+        premise = bill_cands[0]["premise"]
+        premise = json.loads(premise) if isinstance(premise, str) else premise
+        assert premise == {
+            "kind": "probe",
+            "butler": "finance",
+            "probe": "bill_still_pending",
+            "args": {"bill_id": str(bill_id)},
+        }
 
 
 async def test_insight_scan_bill_cooldown_days_is_1(provisioned_postgres_pool):

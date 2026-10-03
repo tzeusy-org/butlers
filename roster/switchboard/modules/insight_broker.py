@@ -92,6 +92,7 @@ class InsightBrokerModule(Module):
             cooldown_days: int | None = None,
             channel: str | None = None,
             metadata: dict[str, Any] | None = None,
+            premise: dict[str, Any] | None = None,
         ) -> dict[str, str]:
             """Submit a proactive insight candidate for the next delivery cycle.
 
@@ -124,6 +125,11 @@ class InsightBrokerModule(Module):
                 Optional preferred delivery channel (e.g. ``"telegram"``).
             metadata:
                 Optional butler-specific structured data (stored as JSONB).
+            premise:
+                Optional typed fact the insight asserts, re-checked before
+                delivery (a false premise withdraws the candidate unsent).
+                ``{"kind": "owner_condition", "source", "fingerprint"}`` or
+                ``{"kind": "probe", "butler", "probe", "args"}``.
 
             Returns
             -------
@@ -144,6 +150,7 @@ class InsightBrokerModule(Module):
                 cooldown_days=cooldown_days,
                 channel=channel,
                 metadata=metadata,
+                premise=premise,
             )
 
         @mcp.tool()

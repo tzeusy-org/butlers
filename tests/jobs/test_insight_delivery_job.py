@@ -318,8 +318,10 @@ class TestSwitchboardInsightDeliveryJobWiring:
             notify_fn: Any = None,
             now: Any = None,
             daily_hold_mode: bool = False,
+            amend_fn: Any = None,
         ) -> dict[str, Any]:
             captured["notify_fn"] = notify_fn
+            captured["amend_fn"] = amend_fn
             captured["daily_hold_mode"] = daily_hold_mode
             return {"skipped": False, "delivered": [], "expired": 0, "effective_budget": 1}
 
@@ -334,6 +336,7 @@ class TestSwitchboardInsightDeliveryJobWiring:
             "notify_fn must NOT be None — delivery would be skipped"
         )
         assert callable(captured["notify_fn"]), "notify_fn must be callable"
+        assert callable(captured["amend_fn"]), "amend_fn must be wired for in-place amendment"
         assert captured["daily_hold_mode"] is True, (
             "the daily job must pass daily_hold_mode=True (bu-ep4ks.9 slice 5) "
             "or the windowed cron degenerates into a plain fixed-time cycle"
@@ -353,6 +356,7 @@ class TestSwitchboardInsightDeliveryJobWiring:
             notify_fn: Any = None,
             now: Any = None,
             daily_hold_mode: bool = False,
+            amend_fn: Any = None,
         ) -> dict[str, Any]:
             # Simulate actual delivery by calling notify_fn
             assert notify_fn is not None
@@ -412,8 +416,10 @@ class TestSwitchboardInsightUrgentSubcycleJobWiring:
             notify_fn: Any = None,
             now: Any = None,
             urgent_only: bool = False,
+            amend_fn: Any = None,
         ) -> dict[str, Any]:
             captured["notify_fn"] = notify_fn
+            captured["amend_fn"] = amend_fn
             captured["urgent_only"] = urgent_only
             return {"skipped": False, "delivered": [], "expired": 0, "effective_budget": 0}
 
@@ -428,6 +434,7 @@ class TestSwitchboardInsightUrgentSubcycleJobWiring:
             "notify_fn must NOT be None — delivery would be skipped"
         )
         assert callable(captured["notify_fn"]), "notify_fn must be callable"
+        assert callable(captured["amend_fn"]), "amend_fn must be wired for in-place amendment"
         assert captured["urgent_only"] is True, (
             "the hourly job must pass urgent_only=True or it degenerates into "
             "a second daily-budgeted cycle"
@@ -569,6 +576,16 @@ class TestBrokerChannelSelectionInNotifyMetadata:
             patch(
                 "butlers.tools.switchboard.insight.broker.expire_candidates",
                 new=AsyncMock(return_value=0),
+            ),
+            # The mock pool answers every fetch() with candidate rows, which the
+            # premise-revalidation and fold-line queries cannot read.
+            patch(
+                "butlers.tools.switchboard.insight.broker._revalidate_premises",
+                new=AsyncMock(return_value=({}, 0)),
+            ),
+            patch(
+                "butlers.tools.switchboard.insight.broker._pending_fold_lines",
+                new=AsyncMock(return_value=[]),
             ),
             patch(
                 "butlers.tools.switchboard.insight.broker.filter_by_cooldown",

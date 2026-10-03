@@ -105,8 +105,17 @@ partitions accumulate.
 **Decision: STATUS-GATED — terminal rows after 90 days; pruner [C], disabled by default**
 
 Candidates move from `pending` to a terminal status (`delivered`, `filtered`,
-`expired`).  Only terminal rows are eligible for cleanup; `pending` rows are
+`expired`, `withdrawn`).  Only terminal rows are eligible for cleanup; `pending` rows are
 never touched.
+
+---
+
+### `public.insight_amendments`
+
+**Decision: BOUNDED BY INSIGHT LIFECYCLE**
+
+One row per (delivered candidate, premise resolution), removed by `ON DELETE
+CASCADE` when the candidate is pruned. No independent retention concern.
 
 ---
 
