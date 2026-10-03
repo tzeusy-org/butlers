@@ -5,7 +5,7 @@ integrated gen-1 changes and the current uniform owner-channel amendment.
 
 Scenario:
   The relationship butler ingested an email thread where the user asked
-  "am I correct in understanding my QRT email would be TzeHow.Lee@qube-rt.com?"
+  "am I correct in understanding my ACME email would be owner@example.com?"
   — a speculative future work email.  The runtime LLM called channel_add
   against the owner contact, poisoning outbound email routing for ~3 days.
 
@@ -52,7 +52,7 @@ OWNER_CONTACT_ID = uuid.UUID("ccf6241a-01cd-40b2-817e-39643d50322b")
 OWNER_ENTITY_ID = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 
 PERSONAL_EMAIL = "tzehow@gmail.com"
-WORK_EMAIL = "TzeHow.Lee@qube-rt.com"
+WORK_EMAIL = "owner@example.com"
 
 
 # ---------------------------------------------------------------------------
@@ -85,7 +85,7 @@ class TestAC3OwnerGate:
     2026-04-21 incident protection now lives in the central writer.
     """
 
-    async def test_channel_add_owner_parks_qube_email(self) -> None:
+    async def test_channel_add_owner_parks_work_email(self) -> None:
         """Replays the 2026-04-21 incident: speculative work email write is parked.
 
         The central writer returns pending_approval for the owner entity, and
@@ -425,7 +425,7 @@ class TestAC4DashboardAudit:
 
         body = {
             "type": "email",
-            "value": "TzeHow.Lee@qube-rt.com",
+            "value": "owner@example.com",
             "is_primary": False,
         }
         redacted = redact_body(body)

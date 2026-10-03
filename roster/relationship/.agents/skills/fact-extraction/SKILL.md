@@ -439,7 +439,7 @@ via `relationship_assert_fact` is sufficient to record the new canonical value.
 ### Correction workflow for employment/workplace
 
 ```python
-# "Yousof works at Citadel, not QRT"
+# "Yousof works at Citadel, not ACME"
 # Step 1: Resolve the person
 person_entity_id = memory_entity_resolve("Yousof", entity_type="person")[0]["entity_id"]
 
@@ -847,14 +847,14 @@ You should still run Steps 1–3 for any *other* people mentioned in the message
 
 ### Example 12: Workplace Correction — Re-assert via Central Writer
 
-**User message**: "Yousof works at Citadel, not QRT"
+**User message**: "Yousof works at Citadel, not ACME"
 
 **Actions:**
-1. `memory_entity_resolve("Yousof", entity_type="person", context_hints={"topic": "workplace, QRT, Citadel"})` → `entity_id="<uuid-yousof>"`, single match
+1. `memory_entity_resolve("Yousof", entity_type="person", context_hints={"topic": "workplace, ACME, Citadel"})` → `entity_id="<uuid-yousof>"`, single match
 2. Resolve new org: `memory_entity_resolve("Citadel", entity_type="organization")` → existing or create with `memory_entity_create(canonical_name="Citadel", ...)` → `entity_id="<uuid-citadel>"`
 3. `relationship_assert_fact(subject="<uuid-yousof>", predicate="works-at", object="<uuid-citadel>", src="relationship", object_kind="entity", conf=0.95, weight=5)` — asserts the new Citadel edge (central writer supersedes if same object, otherwise new active row)
 4. Also retract stale `workplace` property-facts: `memory_search(query="Yousof workplace", types=["fact"], filters={"entity_id": "<uuid-yousof>", "predicate": "workplace"})` → retract each with `memory_forget`
-5. `notify(channel="telegram", message="Updated: Yousof now works at Citadel (corrected from QRT).", intent="reply", request_context=...)`
+5. `notify(channel="telegram", message="Updated: Yousof now works at Citadel (corrected from ACME).", intent="reply", request_context=...)`
 
 **Wrong:** `memory_store_fact(predicate="works_at", object_entity_id=..., ...)` — the writer rejects registry-relational predicates with `object_entity_id` set. Use `relationship_assert_fact` for all `works-at` edges.
 

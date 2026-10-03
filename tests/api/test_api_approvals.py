@@ -2407,7 +2407,7 @@ async def test_detail_resolves_referenced_entities_from_tool_args(app):
         },
         {
             "id": object_id,
-            "canonical_name": "Qube Research & Technologies",
+            "canonical_name": "Acme Research Corp & Technologies",
             "entity_type": "organization",
             "roles": [],
         },
@@ -2459,7 +2459,7 @@ async def test_detail_resolves_referenced_entities_from_tool_args(app):
     assert by_id[str(subject_id)]["name"] == "Tze How Lee"
     assert by_id[str(subject_id)]["entity_type"] == "person"
     assert by_id[str(subject_id)]["roles"] == ["owner"]
-    assert by_id[str(object_id)]["name"] == "Qube Research & Technologies"
+    assert by_id[str(object_id)]["name"] == "Acme Research Corp & Technologies"
     assert by_id[str(object_id)]["entity_type"] == "organization"
 
 

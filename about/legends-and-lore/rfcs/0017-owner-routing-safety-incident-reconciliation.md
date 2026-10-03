@@ -9,7 +9,7 @@
 ## 1. Incident summary
 
 On 2026-04-21 the relationship butler read a speculative question from the
-owner ("would my QRT email be TzeHow.Lee@qube-rt.com?") as a factual identity
+owner ("would my ACME email be owner@example.com?") as a factual identity
 claim and attached that work address to the owner. On 2026-04-26 a personal
 notification resolved to the new work address and the email guard auto-approved
 it because the recipient was the owner. Only an SMTP credential failure stopped

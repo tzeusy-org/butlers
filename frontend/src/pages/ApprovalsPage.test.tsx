@@ -1989,7 +1989,7 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
         },
         {
           id: "9510c225-4764-4ef5-8a0f-3d62be654b28",
-          name: "Qube Research & Technologies",
+          name: "Acme Research Corp & Technologies",
           entity_type: "organization",
           roles: [],
         },
@@ -2003,7 +2003,7 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
     );
 
     expect(container.textContent).toContain("Referenced Entities");
-    expect(container.textContent).toContain("Qube Research & Technologies");
+    expect(container.textContent).toContain("Acme Research Corp & Technologies");
     expect(container.textContent).toContain("Tze How Lee");
     // Object UUID is no longer presented bare — the name resolves it.
     expect(container.textContent).toContain("organization");
