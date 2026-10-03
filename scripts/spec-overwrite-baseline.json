@@ -871,6 +871,52 @@
       "excerpt": "\"Unparseable scalar reads as zero without lowering the flag\" is not in the block"
     }
   ],
+  "ingest-google-health-workouts/chronicler-source-compatibility/Google Health Fact Projection Compatibility Declaration": [
+    {
+      "kind": "clause",
+      "scenario": "Supported Health fact shapes declare deterministic projection",
+      "digest": "229774fa2f82",
+      "excerpt": "- `confidence_semantics`: sleep has medium confidence from its structured session evidence; a workout has medium conf..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Workout adapter does not imply Google Health workout ingest",
+      "digest": "f63a45e3183a",
+      "excerpt": "- **AND** the current Google Health connector SHALL NOT be inferred to have emitted a workout resource or written tha..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Workout adapter does not imply Google Health workout ingest",
+      "digest": "81853ce37e19",
+      "excerpt": "- **AND** a future connector workout source SHALL define its own resource, fact predicate and metadata contract, sour..."
+    }
+  ],
+  "ingest-google-health-workouts/connector-google-health/Chronicler Compatibility Deferred": [
+    {
+      "kind": "clause",
+      "scenario": "Workout ingestion remains deferred",
+      "digest": "0637b1ec447b",
+      "excerpt": "- **WHEN** the connector runs its configured resource bundles"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Workout ingestion remains deferred",
+      "digest": "3b5ecbda10ce",
+      "excerpt": "- **THEN** it SHALL NOT emit a workout resource or a wellness envelope that maps to `workout_session`"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Workout ingestion remains deferred",
+      "digest": "a4b602090b39",
+      "excerpt": "- **AND** it SHALL NOT write a `workout_session` Health fact through its current ingest contract"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Workout ingestion remains deferred",
+      "digest": "ddcdcf2d5807",
+      "excerpt": "- **AND** the existence of a Chronicler adapter for a separately present `workout_session` fact SHALL NOT be represen..."
+    }
+  ],
   "memory-honesty-last-mile/module-memory/LLM-driven memory consolidation pipeline": [
     {
       "kind": "prose",
@@ -1287,34 +1333,12 @@
       "excerpt": "- **AND** the `stale` group contains credentials in the `warn` state (set, but either never successfully probed or no..."
     }
   ],
-  "true-bidirectional-email-correspondence/connector-base-spec/Authentication and Token Management": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "a8501c5eb432",
-      "excerpt": "Connector authentication with the Switchboard SHALL use bearer tokens with scope enforcement"
-    }
-  ],
-  "true-bidirectional-email-correspondence/module-email/Email Tools": [
-    {
-      "kind": "clause",
-      "scenario": "Email write tools",
-      "digest": "51fee731809c",
-      "excerpt": "- **AND** `email_send_message` declares `to` as a safety-critical arg (`tool_metadata`) so the approval gate can inte..."
-    }
-  ],
   "true-bidirectional-email-correspondence/module-email/SMTP Email Sending": [
     {
       "kind": "clause",
       "scenario": "Send email",
       "digest": "82ddcab8c20b",
       "excerpt": "- **AND** the response includes `{\"status\": \"sent\", \"to\": ..., \"subject\": ...}`"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Reply to thread",
-      "digest": "8c2366a367bc",
-      "excerpt": "- **AND** the `thread_id` is included in the response"
     }
   ]
 }

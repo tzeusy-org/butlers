@@ -71,7 +71,7 @@ Source: RFC 0014 Amendment 1; [Observed] `src/butlers/chronicler/adapters/google
   the source disappeared; normal Chronicler retention and explicit corrections
   remain separate lifecycle controls
 
-#### Scenario: Workout adapter projects connector-produced workouts
+#### Scenario: Workout adapter does not imply Google Health workout ingest
 
 - **WHEN** the scheduled Chronicler workout adapter finds a `workout_session`
   fact written by the Google Health connector

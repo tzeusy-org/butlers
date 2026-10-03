@@ -23,7 +23,7 @@ Scope: v1-mandatory
 - **AND** the connector SHALL NOT claim that its envelopes alone establish a
   Chronicler source adapter
 
-#### Scenario: Recorded workouts become workout_session envelopes
+#### Scenario: Workout ingestion remains deferred
 
 - **WHEN** the connector polls the `workout` resource (`exercise` data type) and
   a data point carries an interval
