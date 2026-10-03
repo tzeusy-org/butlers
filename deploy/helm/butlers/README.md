@@ -4,9 +4,9 @@ Runs Butlers on k3s in namespace `butlers-dev` (`values.dev.yaml`) or `butlers`
 (`values.prod.yaml`). Operator guide: [docs/operations/kubernetes-deployment.md](../../../docs/operations/kubernetes-deployment.md).
 
 ```bash
-bws run --project-id "$BWS_PROJECT_ID" -- make secrets-dev image-dev
-make deploy-dev
+scripts/k8s/deploy-dev.sh   # from the repo root: build + push HEAD, helm upgrade, status
 ```
 
-`localSecrets.source` (default `local`) chooses whether `make secrets-*` or External Secrets
-owns `butlers-runtime-probe-control` and `butlers-local-env`; see the operator guide.
+`localSecrets.source` (chart default `local`, dev `bws`) chooses whether `make secrets-*` or
+External Secrets owns `butlers-runtime-probe-control` and `butlers-local-env`; see the operator
+guide.

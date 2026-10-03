@@ -101,11 +101,23 @@ role the Docker bridge gateway played under compose. The NodePort Services use
 
 ## Deploy
 
-From `deploy/helm/butlers`, with the matching BWS env loaded:
+For dev, one command from the repo root builds and pushes images for `HEAD`, upgrades the
+release and prints status:
+
+```bash
+scripts/k8s/deploy-dev.sh          # or: scripts/k8s/deploy-dev.sh <sha> to redeploy a pushed tag
+```
+
+It reads the BWS env from `BWS_ENV_FILE` (default `~/.secrets/.bws.dev.env`) and refuses to
+deploy without the site hosts (`BUTLERS_SITE_ENV`, default `/secrets/.dev.env`), which would
+otherwise leave `publicUrl.host` as `butlers.invalid`. Dev takes its Secrets from BWS
+(`localSecrets.source: bws`), so it never runs `make secrets-dev`.
+
+The underlying targets, from `deploy/helm/butlers` with the matching BWS env loaded
+(`make secrets-*` only for an environment still on `source: local`, i.e. prod):
 
 ```bash
 set -a; source /secrets/.bws.dev.env; set +a
-bws run --project-id "$BWS_PROJECT_ID" -- make secrets-dev  # once, and after key rotation
 bws run --project-id "$BWS_PROJECT_ID" -- make image-dev    # build + push app and frontend images
 make deploy-dev                                             # helm upgrade --install, waits for the API
 make status-dev
