@@ -196,6 +196,7 @@ async def _catalog_rows(pool: asyncpg.Pool, rule_id: uuid.UUID) -> list[asyncpg.
 
 @_docker
 @pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
 async def test_third_party_rule_is_held_invisible_and_uncataloged(pool_factory) -> None:
     pool, owner, stranger = await pool_factory()
     engine = _engine()
@@ -238,6 +239,7 @@ async def test_third_party_rule_is_held_invisible_and_uncataloged(pool_factory) 
 
 @_docker
 @pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
 async def test_consolidation_inherits_weakest_authority_and_gates_profile_facts(
     pool_factory,
 ) -> None:
@@ -317,6 +319,7 @@ async def test_consolidation_inherits_weakest_authority_and_gates_profile_facts(
 
 @_docker
 @pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
 async def test_non_owner_fact_cannot_supersede_owner_fact(pool_factory) -> None:
     pool, owner, stranger = await pool_factory()
     engine = _engine()
@@ -338,6 +341,7 @@ async def test_non_owner_fact_cannot_supersede_owner_fact(pool_factory) -> None:
 
 @_docker
 @pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
 async def test_endorse_activates_held_rule_atomically_and_idempotently(pool_factory) -> None:
     pool, owner, stranger = await pool_factory()
     engine = _engine()
@@ -388,6 +392,7 @@ async def test_endorse_activates_held_rule_atomically_and_idempotently(pool_fact
 
 @_docker
 @pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
 async def test_legacy_rule_without_authority_is_excluded(pool_factory) -> None:
     pool, owner, _ = await pool_factory()
     with _session(owner):
