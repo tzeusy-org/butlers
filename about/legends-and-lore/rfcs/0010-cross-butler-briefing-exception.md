@@ -134,7 +134,7 @@ This exception pattern is not a blanket authorization for cross-schema access. E
 
 1. **LLM sessions are involved.** If the cross-schema data needs LLM reasoning to extract, transform, or interpret, use Switchboard fan-out. The whole justification for this exception is avoiding LLM sessions for deterministic work.
 2. **Write operations.** Any cross-schema write MUST go through the Switchboard. There are no exceptions to this. The write path is where coordination, conflict resolution, and authorization live.
-3. **Real-time queries.** If the data is needed on-demand during an LLM session (e.g., "what does the Health butler know about X?"), use MCP tool calls through the Switchboard. The exception is for pre-scheduled batch aggregation, not interactive queries.
+3. **Real-time queries.** If the data is needed on-demand during an LLM session (e.g., "what does the Health butler know about X?"), use MCP tool calls through the Switchboard. The exception is for pre-scheduled batch aggregation, not interactive queries. (Owner decision 2026-10-04: two named on-demand carve-outs exist outside this rule, the QA-specific amendment below and RFC 0030's system-plane views; both are recorded in vision.md non-negotiable 3 and neither generalizes.)
 4. **Unbounded key access.** If the access pattern requires reading arbitrary state keys rather than a well-defined, filtered subset, this pattern does not apply. The key filter (`briefing/daily/%`) is a critical constraint.
 5. **Application-level enforcement only.** If the read-only or scope constraints can only be enforced by application code (not database-level views or grants), the guardrails are insufficient.
 

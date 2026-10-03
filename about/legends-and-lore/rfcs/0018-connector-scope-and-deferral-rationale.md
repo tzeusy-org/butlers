@@ -52,7 +52,6 @@ connectors v1 ships:
 | Telegram bot | Long-polling adapter for Telegram Bot API | v1.md#connectors |
 | Telegram user client | Telethon adapter for user-account messages | v1.md#connectors |
 | Gmail | Push-notification / periodic IMAP adapter for Gmail | v1.md#connectors |
-| Discord | WebSocket adapter for Discord events | v1.md#connectors |
 | Heartbeat | Periodic health-check connector | v1.md#connectors |
 | Live listener | Real-time audio transcription connector (transport, not a voice UI — v1.md#what-v1-defers) | v1.md#connectors |
 | Google Calendar | Sync-token polling adapter for calendar change events | v1.md#connectors |
@@ -65,7 +64,7 @@ connectors v1 ships:
 | Steam | Polling adapter for the Steam Web API (recently-played games and online status) with per-data-type cadence | v1.md#connectors |
 
 The v1 success criteria (v1.md#success-criteria) require the Switchboard to route correctly from this
-specific set — Telegram, Gmail, Discord, Google Calendar, Google Drive, Home Assistant,
+specific set — Telegram, Gmail, Google Calendar, Google Drive, Home Assistant,
 OwnTracks, Spotify, and WhatsApp — at >90% classification accuracy. Lifestyle-only ingestion
 connectors (e.g. Steam) are excluded from that routing-accuracy set, since they feed ambient
 awareness rather than serve as routing targets. Connector scope is therefore load-bearing for the
@@ -94,8 +93,10 @@ position — nothing here is scheduled.**
 | Slack | P2 | Only valuable for Slack-using individuals. Socket Mode fits the tailnet-first / no-public-ingress model, but workspace-scoped OAuth and enterprise barriers limit reach. |
 | Reddit | P3 | Free, well-documented API, but low personal-assistant value — mostly content consumption noise; useful only for inbox (DMs/replies). |
 
-(Discord is **in** v1 as a WebSocket connector — v1.md#connectors — using the ToS-compliant bot-token
-path; the user-token automation path was rejected for the same ban risk that gates WhatsApp.)
+(Discord was in v1 as a WebSocket connector using the ToS-compliant bot-token path; the owner deferred
+it on 2026-10-04 because only a non-production draft existed and no butler depended on it. The
+user-token automation path remains rejected for the same ban risk that gates WhatsApp. A return
+goes through a new proposal.)
 
 ### Financial
 
@@ -203,7 +204,7 @@ connectors actually being approved:
 
 A reusable OAuth2-PKCE base and a WebSocket-stream base were also catalogued. These are **partially
 realized** by the in-scope Google connectors (shared OAuth pipeline, reused by Google Health —
-v1.md#connectors) and the Home Assistant / Discord WebSocket connectors; they are noted here only so a
+v1.md#connectors) and the Home Assistant WebSocket connector; they are noted here only so a
 future reader does not mistake them for unbuilt deferred work. Any further generalization should
 follow the same rule: extract the abstraction only once multiple in-scope connectors demand it,
 never to prepare for a deferred one.

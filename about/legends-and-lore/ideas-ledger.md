@@ -49,6 +49,10 @@ files from 07-04 have since been built; see RFC 0032.)
 
 ## Ecosystem: connectors and perception
 
+### Discord connector (deferred 2026-10-04)
+
+Deferred from v1 by owner decision: only a non-production draft existed and no butler depended on it. **Unpark condition:** the owner names a Discord community or DM flow a butler should perceive; re-enter through a new proposal using the bot-token path (RFC 0018).
+
 ### New connectors (SimpleFIN, flight status, ActivityWatch, weather, parcels)
 **Idea:** Expand perception with five sound, manifesto-grounded connector
 integrations.

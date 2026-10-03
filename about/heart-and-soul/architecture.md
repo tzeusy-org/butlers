@@ -59,7 +59,10 @@ would require multiple LLM sessions for work that involves zero LLM reasoning
 cross-schema SQL view may be used instead, subject to RFC-documented guardrails
 (RFC 0010). Each exception must be read-only at the database level, batch-
 oriented, auditable via migration history, and cost-justified. Write operations
-and interactive queries must always go through the Switchboard.
+and interactive queries must always go through the Switchboard. The two named
+on-demand carve-outs in vision.md (the QA scheduler's policy projection and the
+Concierge's system-plane views, RFC 0030) satisfy this through Switchboard-routed
+tool calls or a fixed no-argument projection over fixed views, not ad hoc reads.
 
 ## Why Domain Specialization Over Monolith
 

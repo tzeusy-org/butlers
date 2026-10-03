@@ -88,6 +88,16 @@ does not ship.
    governed by RFC 0010's QA-specific amendment; expansion requires a new
    owner-approved doctrine and RFC decision.
 
+   A second separately reviewed exception permits only the Concierge
+   staffer to answer system-plane questions on demand by reading fixed,
+   migration-tracked, read-only views of fleet operational telemetry
+   (sessions, spend, fleet status), reached through Switchboard-routed tool
+   calls. It conveys no domain data and no general-purpose SQL authority.
+   Its views, grants, and failure behavior are governed by RFC 0030;
+   expansion requires a new owner-approved doctrine and RFC decision. These
+   two named carve-outs do not create a general class of on-demand
+   exceptions.
+
 4. **The daemon is deterministic infrastructure; intelligence is in ephemeral LLM
    sessions.** The daemon manages state, runs migrations, enforces schedules, and
    registers tools. It must be testable, debuggable, and predictable. The LLM
