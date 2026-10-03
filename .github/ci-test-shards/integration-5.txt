@@ -16,6 +16,7 @@ tests/config/test_switchboard_connector_operational_role_migration.py
 tests/core/test_definer_search_path_probe.py
 tests/core/test_scheduler_continuity.py
 tests/core/test_task_continuity.py
+tests/integration/test_account_security_roundtrip.py
 tests/integration/test_commitments_entity_graph_edges.py
 tests/integration/test_entity_graph_walk.py
 tests/integration/test_fleet_case_contribution_roundtrip.py

@@ -14,6 +14,7 @@ tests/api/test_model_runtime_attention.py
 tests/api/test_page_context_model.py
 tests/api/test_spend_runtime_attention.py
 tests/api/test_switchboard_fleet_cases.py
+tests/core/test_account_security.py
 tests/core/test_attachment_view.py
 tests/core/test_baselines.py
 tests/core/test_blind_spot_declarations.py
