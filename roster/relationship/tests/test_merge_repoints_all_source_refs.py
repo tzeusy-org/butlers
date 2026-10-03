@@ -107,6 +107,7 @@ async def pool(provisioned_postgres_pool):
         # valid_at / supersedes_id because _repoint_facts_on_conn reads/writes them.
         await p.execute("""
             CREATE TABLE IF NOT EXISTS facts (
+                content_authority TEXT, authority_entity_id UUID,
                 id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
                 entity_id        UUID,
                 object_entity_id UUID,

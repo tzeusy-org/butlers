@@ -446,6 +446,7 @@ async def dunbar_pool(provisioned_postgres_pool):
         # facts table
         await p.execute("""
             CREATE TABLE IF NOT EXISTS facts (
+                content_authority TEXT, authority_entity_id UUID,
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 subject TEXT NOT NULL,
                 predicate TEXT NOT NULL,
@@ -1781,6 +1782,7 @@ async def simple_pool(provisioned_postgres_pool):
         await p.execute(CONTACT_ENTITY_MAP.ddl())
         await p.execute("""
             CREATE TABLE IF NOT EXISTS facts (
+                content_authority TEXT, authority_entity_id UUID,
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 subject TEXT NOT NULL,
                 predicate TEXT NOT NULL,
