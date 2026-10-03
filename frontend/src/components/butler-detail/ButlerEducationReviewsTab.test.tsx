@@ -21,7 +21,7 @@
  * bead: bu-iuol4.26
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -57,6 +57,14 @@ const ACTIVE_MAPS = [
   { id: "map-1", title: "Python", status: "active", root_node_id: null, created_at: "", updated_at: "", nodes: [], edges: [] },
   { id: "map-2", title: "Calculus", status: "active", root_node_id: null, created_at: "", updated_at: "", nodes: [], edges: [] },
 ];
+
+// Trend windows are anchored to now. Pin the clock before the fixtures below read
+// it, so relative due dates and the fixed snapshot dates share one "now".
+vi.useFakeTimers({ toFake: ["Date"] });
+vi.setSystemTime(new Date("2026-05-08T00:00:00Z"));
+afterAll(() => {
+  vi.useRealTimers();
+});
 
 const PENDING_REVIEWS = [
   {

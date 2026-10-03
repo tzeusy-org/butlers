@@ -19,19 +19,14 @@
 // ---------------------------------------------------------------------------
 
 import { useMemo } from "react";
-import {
-  ResponsiveContainer,
-  AreaChart,
-  Area,
-  XAxis,
-  YAxis,
-  Tooltip,
-} from "recharts";
 
 import { Badge } from "@/components/ui/badge";
 import { Time } from "@/components/ui/time";
+import { TimeSeriesChart, TooltipDate } from "@/components/ui/TimeSeriesChart";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Panel, KpiCell, ErrorLine } from "@/components/butler-detail/atoms";
+import { useTickingNow } from "@/hooks/use-ticking-now";
+import { DAY_MS, buildTimeSeries } from "@/lib/time-series";
 import { chartColor } from "@/lib/chart-colors";
 import { HomeAtmosphereLocationPanel } from "@/components/butler-detail/HomeAtmosphereLocationPanel";
 import { HomePersonMappingPanel } from "@/components/butler-detail/HomePersonMappingPanel";
@@ -410,7 +405,7 @@ function EnergyTooltip({
   payload,
 }: {
   active?: boolean;
-  payload?: Array<{ value: number; payload: { date: string; total_kwh: number } }>;
+  payload?: Array<{ value: number; payload: { x: number; total_kwh: number } }>;
 }) {
   if (!active || !payload?.length) return null;
   const point = payload[0].payload;
@@ -419,7 +414,9 @@ function EnergyTooltip({
       className="rounded border border-border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-sm"
       data-testid="energy-tooltip"
     >
-      <p className="text-muted-foreground">{point.date}</p>
+      <p className="text-muted-foreground">
+        <TooltipDate x={point.x} />
+      </p>
       <p className="font-mono tnum font-medium">
         {point.total_kwh.toFixed(2)}
         <span className="ml-1 text-muted-foreground">kWh</span>
@@ -435,16 +432,15 @@ interface EnergyChartProps {
 }
 
 function EnergyAreaChart({ dataPoints, isLoading, isError }: EnergyChartProps) {
-  const chartData = useMemo(
+  const windowEnd = useTickingNow(60_000);
+  const series = useMemo(
     () =>
-      dataPoints
-        .slice()
-        .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
-        .map((d) => ({
-          date: d.timestamp.slice(0, 10),
-          total_kwh: d.total_kwh,
-        })),
-    [dataPoints],
+      buildTimeSeries(
+        dataPoints.map((d) => ({ at: d.timestamp, values: { total_kwh: d.total_kwh } })),
+        ["total_kwh"],
+        { windowEnd, maxGapMs: 3 * DAY_MS },
+      ),
+    [dataPoints, windowEnd],
   );
 
   if (isLoading) {
@@ -455,40 +451,23 @@ function EnergyAreaChart({ dataPoints, isLoading, isError }: EnergyChartProps) {
     return <ErrorLine>Failed to load energy data.</ErrorLine>;
   }
 
-  if (chartData.length === 0) {
+  if (series.observationCount === 0) {
     return <EmptyLine>No energy data available.</EmptyLine>;
   }
 
   return (
     <div data-testid="energy-chart">
-      <div data-testid="energy-area-chart">
-        <ResponsiveContainer width="100%" height={120}>
-          <AreaChart data={chartData} margin={{ top: 4, right: 4, bottom: 4, left: 4 }}>
-            <defs>
-              <linearGradient id="energyGradient" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor={chartColor()} stopOpacity={0.3} />
-                <stop offset="95%" stopColor={chartColor()} stopOpacity={0.0} />
-              </linearGradient>
-            </defs>
-            <XAxis dataKey="date" hide />
-            <YAxis hide domain={["auto", "auto"]} />
-            <Tooltip
-              content={<EnergyTooltip />}
-              isAnimationActive={false}
-            />
-            <Area
-              dataKey="total_kwh"
-              type="monotone"
-              stroke={chartColor()}
-              strokeWidth={1.5}
-              fill="url(#energyGradient)"
-              dot={false}
-              isAnimationActive={false}
-            />
-          </AreaChart>
-        </ResponsiveContainer>
-      </div>
-      <p className="sr-only">{`Energy usage · ${chartData.length} day trend`}</p>
+      <TimeSeriesChart
+        testId="energy-area-chart"
+        variant="area"
+        series={series}
+        lines={[{ key: "total_kwh", name: "Energy", stroke: chartColor() }]}
+        height={120}
+        compact
+        yDomain={["auto", "auto"]}
+        tooltip={<EnergyTooltip />}
+      />
+      <p className="sr-only">{`Energy usage · ${series.observationCount} day trend`}</p>
     </div>
   );
 }

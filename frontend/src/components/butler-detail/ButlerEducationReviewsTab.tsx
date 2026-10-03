@@ -19,14 +19,6 @@
 import { useMemo } from "react";
 import type { ReactNode } from "react";
 import { Link } from "react-router";
-import {
-  ResponsiveContainer,
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  Tooltip,
-} from "recharts";
 
 import { Badge } from "@/components/ui/badge";
 import { Section, SectionContent, SectionHeader, SectionTitle } from "@/components/ui/Section";
@@ -43,6 +35,9 @@ import {
 import { ErrorLine } from "@/components/butler-detail/atoms";
 import { toneClass } from "@/components/butler-detail/atoms-utils";
 import { chartColor } from "@/lib/chart-colors";
+import { useTickingNow } from "@/hooks/use-ticking-now";
+import { DAY_MS, buildTimeSeries } from "@/lib/time-series";
+import { TimeSeriesChart, TooltipDate } from "@/components/ui/TimeSeriesChart";
 import type { PendingReviewNode, MindMapNode, MasterySummary, AnalyticsTrendEntry } from "@/api/index.ts";
 
 // ---------------------------------------------------------------------------
@@ -534,7 +529,7 @@ function RetentionTooltip({
   payload,
 }: {
   active?: boolean;
-  payload?: Array<{ value: number; payload: { date: string; value: number } }>;
+  payload?: Array<{ value: number; payload: { x: number; value: number } }>;
 }) {
   if (!active || !payload?.length) return null;
   const point = payload[0].payload;
@@ -543,7 +538,9 @@ function RetentionTooltip({
       className="rounded border border-border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-sm"
       data-testid="retention-tooltip"
     >
-      <p className="text-muted-foreground">{point.date}</p>
+      <p className="text-muted-foreground">
+        <TooltipDate x={point.x} />
+      </p>
       <p className="font-mono tnum font-medium">{point.value}%</p>
     </div>
   );
@@ -551,9 +548,11 @@ function RetentionTooltip({
 
 /** Shape of one chart data point. */
 interface RetentionPoint {
-  date: string;  // ISO date string (x axis)
+  date: string;  // ISO date string
   value: number; // mastery_pct * 100 (y axis)
 }
+
+const RETENTION_WINDOW_DAYS = 7;
 
 /**
  * Extract retention from an AnalyticsTrendEntry using the canonical key `mastery_pct`.
@@ -589,6 +588,18 @@ function RetentionTrendPanel({
       return [{ date: entry.snapshot_date.slice(0, 10), value: pct }];
     });
   }, [data]);
+  const windowEnd = useTickingNow(60_000);
+  const series = useMemo(() => {
+    return buildTimeSeries(
+      chartData.map((p) => ({ at: p.date, values: { value: p.value } })),
+      ["value"],
+      {
+        windowStart: windowEnd - RETENTION_WINDOW_DAYS * DAY_MS,
+        windowEnd,
+        maxGapMs: 3 * DAY_MS,
+      },
+    );
+  }, [chartData, windowEnd]);
 
   return (
     <Section data-testid="retention-trend-panel">
@@ -615,27 +626,16 @@ function RetentionTrendPanel({
               </span>
               <span className="text-xs text-muted-foreground">mastery</span>
             </div>
-            <div data-testid="retention-sparkline">
-              <ResponsiveContainer width="100%" height={80}>
-                <LineChart data={chartData} margin={{ top: 4, right: 4, bottom: 4, left: 4 }}>
-                  <XAxis dataKey="date" hide />
-                  <YAxis hide domain={[0, 100]} />
-                  <Tooltip
-                    content={<RetentionTooltip />}
-                    isAnimationActive={false}
-                  />
-                  <Line
-                    dataKey="value"
-                    type="monotone"
-                    stroke={chartColor()}
-                    dot={false}
-                    strokeWidth={1.5}
-                    isAnimationActive={false}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-            <p className="sr-only">{`Retention trend · ${chartData.length} snapshots over 7 days`}</p>
+            <TimeSeriesChart
+              testId="retention-sparkline"
+              series={series}
+              lines={[{ key: "value", name: "Mastery", stroke: chartColor() }]}
+              height={80}
+              compact
+              yDomain={[0, 100]}
+              tooltip={<RetentionTooltip />}
+            />
+            <p className="sr-only">{`Retention trend · ${series.observationCount} snapshots over ${RETENTION_WINDOW_DAYS} days`}</p>
           </div>
         )}
       </SectionContent>

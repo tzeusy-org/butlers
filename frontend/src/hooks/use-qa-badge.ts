@@ -17,6 +17,11 @@ import {
 } from './use-approvals'
 import { useDecisions } from './use-decisions'
 
+/** A sidebar badge with an explicit unavailable state. */
+export type AvailabilityBadgeState =
+  | { kind: 'count'; count: number }
+  | { kind: 'unavailable' }
+
 /**
  * Returns the count of open QA escalations for the sidebar badge.
  *
@@ -27,17 +32,14 @@ import { useDecisions } from './use-decisions'
  * act on, and entries age out once resolved. See `escalated_open_cases_sql`
  * (src/butlers/core/qa/severity.py).
  */
-export function useQaEscalationsBadge(): number {
+export function useQaEscalationsBadge(): AvailabilityBadgeState {
   const { data: butlersResponse } = useButlers()
   const hasQa = butlersResponse?.data.some((b) => b.name === 'qa') ?? false
-  const { data } = useQaSummary({ enabled: hasQa })
-  return data?.data.active_breakdown.escalated_open_cases ?? 0
+  const { data, isError } = useQaSummary({ enabled: hasQa })
+  // A failed summary fetch must not read as zero open escalations.
+  if (isError) return { kind: 'unavailable' }
+  return { kind: 'count', count: data?.data.active_breakdown.escalated_open_cases ?? 0 }
 }
-
-/** A sidebar badge with an explicit unavailable state. */
-export type AvailabilityBadgeState =
-  | { kind: 'count'; count: number }
-  | { kind: 'unavailable' }
 
 /** Returns the pending-approval badge state without inventing a zero on partial metrics. */
 export function useApprovalsPendingBadge(): AvailabilityBadgeState {
