@@ -87,6 +87,30 @@ change; the wire rules live in `roster/relationship/tools/fact_temporal.py`.
   a merge still lands on the tombstoned source; whether the writer refuses or follows
   `merged_into` is open (bu-gm93xc).
 
+## Meeting debrief
+
+An ended calendar occurrence the owner attended with other people gets one
+`relationship.meeting_debriefs` row, keyed `(event_id, occurrence_start)`, so a recurring series
+is debriefed per occurrence. The zero-LLM `meeting_debrief` job (daily, 18:00) records the rows
+and proposes one batched insight ("Anything agreed?") through the insight broker. A declined
+meeting, a solo block, free (transparent) time, an all-day event and a butler-generated event are
+never debriefed, and neither is a meeting whose other attendees are all not `active` in
+`public.entities.posture`; such a person is never named in the prompt, and posture is re-read at
+prompt time.
+
+The owner's reply is recorded by `meeting_debrief_answer` (guided by the `meeting-debrief`
+skill): `none_agreed`, or commitments created through `create_commitment` with
+`evidence_opened = {source: "meeting_debrief", event_id, occurrence_start, debrief_id}`. The
+counterparty must be an attendee of that meeting; an attendee with no resolved entity gives a
+null counterparty, never a dropped commitment. `sphere` (`work` or `personal`) is stored on the
+commitment only when the owner declares it. The next calendar prep envelope for that person
+carries the commitment.
+
+Three consecutive unanswered batches drop the cadence to once a week (the batch that crosses the
+threshold says so); any answer restores the daily cadence. Not built yet: the dashboard Debrief
+card with a pinned reply (replies go through ordinary routing today), a "work commitments" filter
+on the condition ledger, and deriving `sphere` from endpoint custody.
+
 ## Implementation Notes
 
 - `relationship.facts` is a multi-valued log store: `activity` and `interaction_*` carry many

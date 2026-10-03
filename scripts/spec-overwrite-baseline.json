@@ -1,4 +1,12 @@
 {
+  "add-meeting-debrief/butler-relationship/Relationship Butler Registered Tool Surface": [
+    {
+      "kind": "prose",
+      "scenario": null,
+      "digest": "5e2c30b8f566",
+      "excerpt": "The relationship butler SHALL expose its currently approved manifesto-owned personal CRM tool set. Its eight configur..."
+    }
+  ],
   "add-runtime-tool-surface-discovery/session-process-logs/Process log table schema": [
     {
       "kind": "clause",

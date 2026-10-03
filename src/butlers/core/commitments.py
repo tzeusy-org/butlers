@@ -108,6 +108,7 @@ __all__ = [
     "COMMITMENT_IDENTITY_VERSION",
     "COMMITMENT_KINDS",
     "COMMITMENT_METADATA_CLASS",
+    "COMMITMENT_SPHERES",
     "CREATION_CONFIDENCE_THRESHOLD",
     "DEFAULT_INITIAL_GRACE_SECONDS",
     "RESOLUTION_REASONS",
@@ -125,6 +126,8 @@ __all__ = [
 COMMITMENT_METADATA_CLASS = "commitment"
 COMMITMENT_KINDS = frozenset({"promise", "waiting_for", "follow_up", "obligation", "decision"})
 COMMITMENT_DIRECTIONS = frozenset({"owner_to_other", "other_to_owner", "self"})
+# Owner-declared, never inferred (REQ-commitment-lifecycle-010).
+COMMITMENT_SPHERES = frozenset({"work", "personal"})
 RESOLUTION_REASONS = frozenset({"satisfied", "cancelled", "superseded", "expired"})
 
 CREATION_CONFIDENCE_THRESHOLD = 0.6
@@ -374,6 +377,7 @@ async def create_commitment(
     action_description: str,
     deadline: datetime | str | None = None,
     initial_grace_seconds: float = DEFAULT_INITIAL_GRACE_SECONDS,
+    sphere: str | None = None,
 ) -> ConditionTransition | None:
     """Create (or re-confirm) one commitment on the owner condition ledger.
 
@@ -399,7 +403,9 @@ async def create_commitment(
     ``source``/``summary``/``action_description``, an unknown ``kind`` or
     ``direction``, a non-string ``counterparty_entity_id``, a ``confidence``
     outside 0.0-1.0, an ``evidence_opened`` without a ``source``, an
-    unparseable ``deadline``, or a negative ``initial_grace_seconds``.
+    unparseable ``deadline``, a ``sphere`` other than ``work``/``personal``, or
+    a negative ``initial_grace_seconds``. ``sphere`` is the owner's declaration
+    and is stored only when given.
     """
     caller = "create_commitment"
     _require_text(caller, "source", source)
@@ -418,6 +424,8 @@ async def create_commitment(
     deadline_iso = _require_deadline(caller, deadline)
     if initial_grace_seconds < 0:
         raise ValueError(f"{caller}: initial_grace_seconds must be >= 0")
+    if sphere is not None and sphere not in COMMITMENT_SPHERES:
+        raise ValueError(f"{caller}: sphere must be one of {sorted(COMMITMENT_SPHERES)}")
 
     if checked_confidence < CREATION_CONFIDENCE_THRESHOLD:
         return None
@@ -432,6 +440,8 @@ async def create_commitment(
     }
     if deadline_iso is not None:
         metadata["deadline"] = deadline_iso
+    if sphere is not None:
+        metadata["sphere"] = sphere
 
     observation = Observation(
         fingerprint=commitment_fingerprint(
