@@ -88,3 +88,36 @@ async def test_relationship_episodic_predicate_curation_handler_dispatches_roste
         "skipped_already_pending": 0,
         "errors": 0,
     }
+
+
+def test_meeting_debrief_is_scheduled_for_the_evening() -> None:
+    """The debrief job is a daily 18:00 job-mode schedule on the Relationship butler."""
+    (schedule,) = [s for s in _load_relationship_schedules() if s["name"] == "meeting-debrief"]
+
+    assert schedule["dispatch_mode"] == "job"
+    assert schedule["job_name"] == "meeting_debrief"
+    assert schedule["cron"] == "0 18 * * *"
+
+
+@pytest.mark.asyncio
+async def test_meeting_debrief_handler_injects_the_insight_proposer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The registry wrapper hands the job the switchboard broker's proposer."""
+    from butlers.scheduled_jobs import _DETERMINISTIC_SCHEDULE_JOB_REGISTRY
+    from butlers.tools.switchboard.insight.broker import propose_insight_candidate
+
+    calls: dict[str, Any] = {}
+
+    async def fake_run(pool: Any, *, insight_proposer: Any) -> dict[str, Any]:
+        calls["pool"] = pool
+        calls["proposer"] = insight_proposer
+        return {"prompted": 0}
+
+    monkeypatch.setattr("butlers.jobs.meeting_debrief.run_meeting_debrief", fake_run)
+
+    handler = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY["relationship"]["meeting_debrief"]
+    result = await handler("pool", None)
+
+    assert result == {"prompted": 0}
+    assert calls == {"pool": "pool", "proposer": propose_insight_candidate}

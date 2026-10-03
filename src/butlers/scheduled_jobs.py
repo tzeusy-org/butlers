@@ -1129,6 +1129,23 @@ async def _run_relationship_calendar_prep_contribution_job(
     return await run_relationship_calendar_prep_contribution(pool=pool, job_args=job_args)
 
 
+async def _run_relationship_meeting_debrief_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Record ended meetings with other people and propose one end-of-day debrief batch.
+
+    Delegates to ``butlers.jobs.meeting_debrief.run_meeting_debrief`` (bu-q7vx1q.12). The
+    insight proposer is injected, and its import deferred, for the same reason as
+    ``_run_switchboard_commitment_escalation_job``.
+    """
+    del job_args
+    from butlers.jobs.meeting_debrief import run_meeting_debrief
+    from butlers.tools.switchboard.insight.broker import propose_insight_candidate
+
+    return await run_meeting_debrief(pool, insight_proposer=propose_insight_candidate)
+
+
 async def _run_messenger_calendar_prep_contribution_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -2035,6 +2052,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "calendar_overlay_contribution": _run_relationship_calendar_overlay_contribution_job,
             "calendar_prep_contribution": _run_relationship_calendar_prep_contribution_job,
             "insight_scan": _run_relationship_insight_scan_job,
+            "meeting_debrief": _run_relationship_meeting_debrief_job,
             "interaction_sync": _run_relationship_interaction_sync_job,
             "loan_cost_claim_backfill": _run_relationship_loan_cost_claim_backfill_job,
             "memory_curation": _run_relationship_memory_curation_job,
