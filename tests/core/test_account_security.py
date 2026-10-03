@@ -70,27 +70,86 @@ def test_lookalikes_and_non_alerts_do_not_classify(sender, subject):
     assert classify_account_security(sender, subject) is None
 
 
-def test_authentication_results_confirm_or_reject():
-    ok = "mx.example; dkim=pass header.i=@accounts.google.com header.d=accounts.google.com"
-    assert (
-        classify_account_security(
-            GOOGLE, "Security alert", headers={"authentication-results": ok}
-        ).sender_verification
-        == VERIFICATION_AUTHENTICATED
+def _verdict(auth, sender=GOOGLE):
+    headers = None if auth is None else {"Authentication-Results": auth}
+    return classify_account_security(sender, "Security alert", headers=headers)
+
+
+@pytest.mark.parametrize(
+    "auth",
+    [
+        "mx.example; dmarc=pass header.from=accounts.google.com",
+        "mx.example; dkim=pass header.i=@accounts.google.com header.d=accounts.google.com",
+        "mx.example; dkim=pass header.d=mail.google.com",
+        "mx.example; DKIM=PASS header.d=ACCOUNTS.Google.com.",
+        "mx.example; spf=pass smtp.mailfrom=x (ok);   dkim = pass (good sig) header.d=google.com",
+        "mx.example; dkim=pass header.i=@mail.google.com",
+        "mx.example; dmarc=temperror header.from=accounts.google.com; "
+        "dkim=pass header.d=google.com",
+    ],
+)
+def test_clause_local_proof_authenticates(auth):
+    assert _verdict(auth).sender_verification == VERIFICATION_AUTHENTICATED
+
+
+@pytest.mark.parametrize(
+    "auth",
+    [
+        # dkim pass belongs to an unrelated domain; header.from must not align it
+        "mx.example; dkim=pass header.i=@evil.test header.d=evil.test; "
+        "dmarc=temperror header.from=accounts.google.com",
+        "mx.example; x-dkim=pass header.from=accounts.google.com",
+        "mx.example; foo-dmarc=pass header.from=accounts.google.com",
+        "mx.example; dkim=pass header.d=google.com.evil.test",
+        "mx.example; dkim=pass header.d=notgoogle.com",
+        "mx.example; dkim=pass header.d=evil.test header.i=@google.com.evil.test",
+        "mx.example; dmarc=pass header.from=evil.test",
+        "mx.example; dmarc=none header.from=accounts.google.com",
+        "mx.example; spf=pass smtp.mailfrom=accounts.google.com",
+        "mx.example; dkim=temperror header.d=google.com",
+        "mx.example; dkim=pass header.d=evil.test; dmarc=pass header.from=evil.test",
+        "",
+    ],
+)
+def test_misaligned_or_unanchored_evidence_stays_unverified(auth):
+    assert _verdict(auth).sender_verification == VERIFICATION_UNVERIFIED
+
+
+@pytest.mark.parametrize(
+    "auth",
+    [
+        "mx.example; dmarc=fail header.from=accounts.google.com",
+        "mx.example; dkim=fail header.d=google.com; dmarc=pass header.from=google.com",
+        "mx.example; DMARC=permerror header.from=accounts.google.com",
+    ],
+)
+def test_reported_failure_rejects(auth):
+    assert _verdict(auth) is None
+
+
+def test_unrelated_dkim_failure_does_not_reject():
+    auth = "mx.example; dkim=fail header.d=evil.test; dkim=pass header.d=google.com"
+    assert _verdict(auth).sender_verification == VERIFICATION_AUTHENTICATED
+
+
+def test_only_the_topmost_authentication_results_header_counts():
+    good = "mx.example; dkim=pass header.d=google.com"
+    forged = "evil.example; dkim=pass header.d=google.com"
+    bad = "mx.example; dmarc=fail header.from=accounts.google.com"
+    unrelated = "mx.example; dkim=pass header.d=evil.test"
+    top_unrelated = classify_account_security(
+        GOOGLE, "Security alert", headers={"authentication-results": [unrelated, forged]}
     )
-    spoof = "mx.example; dmarc=fail header.from=accounts.google.com"
+    assert top_unrelated.sender_verification == VERIFICATION_UNVERIFIED
+    top_good = classify_account_security(
+        GOOGLE, "Security alert", headers={"Authentication-Results": [good, bad]}
+    )
+    assert top_good.sender_verification == VERIFICATION_AUTHENTICATED
     assert (
         classify_account_security(
-            GOOGLE, "Security alert", headers={"Authentication-Results": spoof}
+            GOOGLE, "Security alert", headers={"Authentication-Results": [bad, good]}
         )
         is None
-    )
-    unaligned = "mx.example; dkim=pass header.d=attacker.example"
-    assert (
-        classify_account_security(
-            GOOGLE, "Security alert", headers={"Authentication-Results": unaligned}
-        ).sender_verification
-        == VERIFICATION_UNVERIFIED
     )
 
 
@@ -153,7 +212,12 @@ def test_carve_out_is_global_scope_only():
 def test_classify_ingest_record_reads_subject_and_gmail_auth_header():
     raw = {
         "payload": {
-            "headers": [{"name": "Authentication-Results", "value": "mx; dmarc=pass header.from=x"}]
+            "headers": [
+                {
+                    "name": "Authentication-Results",
+                    "value": "mx; dmarc=pass header.from=accounts.google.com",
+                }
+            ]
         }
     }
     verdict = sensor.classify_ingest_record(

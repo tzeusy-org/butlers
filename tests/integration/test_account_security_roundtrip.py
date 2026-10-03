@@ -10,11 +10,17 @@ Exercises ``record_security_answer`` against a migrated database: a recorded
 from __future__ import annotations
 
 import shutil
+import uuid
 
 import asyncpg
 import pytest
 
-from butlers.core.account_security_events import SECURITY_EVENT_TYPE, record_security_answer
+from butlers.account_security import classify_account_security
+from butlers.core.account_security_events import (
+    SECURITY_EVENT_TYPE,
+    publish_security_event,
+    record_security_answer,
+)
 from butlers.core.domain_events import record_event
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import (
@@ -113,3 +119,25 @@ async def test_no_answer_opens_one_case_with_recovery_door(pool, switchboard_poo
             await conn.execute("DELETE FROM public.fleet_cases WHERE correlation_key = $1", key)
         finally:
             await conn.close()
+
+
+async def test_publishing_the_same_alert_twice_stores_one_event(switchboard_pool):
+    # Pool carries the production jsonb codec, so record_event's pre-dumped payload is
+    # stored as a JSON string scalar; the dedup query must still see through it.
+    verdict = classify_account_security("no-reply@accounts.google.com", "Security alert")
+    external_id = f"msg-synthetic-{uuid.uuid4()}"
+    kwargs = dict(external_event_id=external_id, observed_at=None)
+    first = await publish_security_event(
+        switchboard_pool, verdict, source_request_id="req-a", **kwargs
+    )
+    second = await publish_security_event(
+        switchboard_pool, verdict, source_request_id="req-b", **kwargs
+    )
+    assert first is not None and second is None
+    stored = await switchboard_pool.fetchval(
+        "SELECT count(*) FROM public.domain_events WHERE event_type = $1 "
+        "AND payload::text LIKE '%' || $2 || '%'",
+        SECURITY_EVENT_TYPE,
+        external_id,
+    )
+    assert stored == 1

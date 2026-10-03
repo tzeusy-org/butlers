@@ -14,10 +14,13 @@ Trust assumption
 ----------------
 The sender must be an *exact* address on the first-party allowlist below. The
 ``From`` header alone is forgeable, so when an ``Authentication-Results`` header
-is available it is consulted: a header that reports a DMARC/DKIM/SPF failure
-for the claimed domain rejects the message as a spoof (``None``); a DMARC or
-DKIM pass aligned with the provider domain yields ``authenticated``; a missing
-header yields ``unverified``. Downstream owner prompts must only page on
+is available it is consulted, topmost header only (the trusted receiver's; a
+later or sender-injected one never counts), parsed per method clause: a DMARC
+failure, or a failure of a DKIM signature aligned with the provider's signing
+domain, rejects the message as a spoof (``None``); a ``dkim=pass`` whose own
+``header.d`` or a ``dmarc=pass`` whose own ``header.from`` is the provider's
+domain (or a subdomain, on a label boundary) yields ``authenticated``; anything
+else, including a missing header, yields ``unverified``. Downstream owner prompts must only page on
 ``authenticated`` verdicts (an ``unverified`` one is a quiet record), so a
 forged alert can never wake the owner. Subject matching is a conservative
 phrase table: no match means no event, and the caller counts the message as
@@ -29,7 +32,7 @@ Fixtures and tests use synthetic addresses only.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 KIND_NEW_SIGN_IN = "new_sign_in"
@@ -101,8 +104,18 @@ _SUBJECT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
 )
 
-_RESULT_RE = re.compile(r"\b(dmarc|dkim|spf)=(\w+)", re.I)
-_HEADER_D_RE = re.compile(r"header\.(?:d|from)=@?([\w.-]+)", re.I)
+# Organizational domain each provider signs and authenticates as; a DKIM pass or DMARC
+# alignment only counts for this domain or a subdomain on a label boundary.
+_PROVIDER_SIGNING_DOMAINS: dict[str, str] = {
+    "google": "google.com",
+    "microsoft": "microsoft.com",
+    "apple": "apple.com",
+}
+
+_COMMENT_RE = re.compile(r"\([^()]*\)")
+_CLAUSE_RE = re.compile(r"^\s*([A-Za-z][A-Za-z0-9-]*)\s*=\s*([A-Za-z]+)(.*)$", re.S)
+_PROP_RE = re.compile(r"(?<![\w.-])((?:header|smtp|policy)\.[a-z]+)\s*=\s*\"?([^\s\";]+)", re.I)
+_FAIL_RESULTS = frozenset({"fail", "softfail", "permerror"})
 
 
 @dataclass(frozen=True)
@@ -119,18 +132,59 @@ def _address_domain(address: str) -> str:
     return address.rsplit("@", 1)[-1]
 
 
-def _verify(auth_results: str | None, provider_domain: str) -> str | None:
-    """Return a verification label, or ``None`` when the header reports a spoof."""
+def _in_domain(candidate: str, domain: str) -> bool:
+    """Strict label-boundary check: ``candidate`` is ``domain`` or a subdomain of it."""
+    candidate = candidate.strip().lower().rstrip(".")
+    return candidate == domain or candidate.endswith("." + domain)
+
+
+def _clauses(auth_results: str) -> list[tuple[str, str, dict[str, str]]]:
+    """Split one Authentication-Results value into (method, result, properties) clauses.
+
+    The first ``;`` segment is the authserv-id and is skipped. A method keyword only
+    counts at the start of its own clause, so ``x-dkim=pass`` never reads as ``dkim``.
+    """
+    parts = _COMMENT_RE.sub(" ", auth_results).split(";")[1:]
+    clauses = []
+    for part in parts:
+        match = _CLAUSE_RE.match(part)
+        if match is None:
+            continue
+        props = {k.lower(): v for k, v in _PROP_RE.findall(match.group(3))}
+        clauses.append((match.group(1).lower(), match.group(2).lower(), props))
+    return clauses
+
+
+def _property_domain(value: str) -> str:
+    return value.rsplit("@", 1)[-1]
+
+
+def _verify(auth_results: str | None, provider: str) -> str | None:
+    """Return a verification label, or ``None`` when the header reports a spoof.
+
+    Only the topmost ``Authentication-Results`` header (the trusted receiver's) is
+    passed in. ``authenticated`` needs a clause-local proof: a ``dkim=pass`` whose own
+    ``header.d`` (or ``header.i`` domain) is the provider's signing domain, or a
+    ``dmarc=pass`` whose own ``header.from`` is. A fail or permerror on dmarc, or on an
+    aligned dkim, rejects; temperror, none and everything else stay ``unverified``.
+    """
     if not auth_results or not auth_results.strip():
         return VERIFICATION_UNVERIFIED
-    results = {(m.group(1).lower(), m.group(2).lower()) for m in _RESULT_RE.finditer(auth_results)}
-    if any(verdict in {"fail", "softfail", "permerror"} for _, verdict in results):
-        return None
-    aligned = {d.lower().rstrip(".") for d in _HEADER_D_RE.findall(auth_results)}
-    aligned_ok = any(d == provider_domain or d.endswith("." + provider_domain) for d in aligned)
-    if ("dmarc", "pass") in results or (("dkim", "pass") in results and aligned_ok):
-        return VERIFICATION_AUTHENTICATED
-    return VERIFICATION_UNVERIFIED
+    signing = _PROVIDER_SIGNING_DOMAINS[provider]
+    authenticated = False
+    for method, result, props in _clauses(auth_results):
+        if method == "dmarc":
+            aligned = _in_domain(_property_domain(props.get("header.from", "")), signing)
+        elif method == "dkim":
+            domains = [props.get("header.d", ""), _property_domain(props.get("header.i", ""))]
+            aligned = any(d and _in_domain(d, signing) for d in domains)
+        else:
+            continue
+        if result in _FAIL_RESULTS and (method == "dmarc" or aligned):
+            return None
+        if result == "pass" and aligned:
+            authenticated = True
+    return VERIFICATION_AUTHENTICATED if authenticated else VERIFICATION_UNVERIFIED
 
 
 def is_account_security_sender(sender_address: str) -> bool:
@@ -138,11 +192,14 @@ def is_account_security_sender(sender_address: str) -> bool:
     return sender_address.strip().lower() in _FIRST_PARTY_SENDERS
 
 
-def _header(headers: Mapping[str, str], name: str) -> str | None:
+def _header(headers: Mapping[str, str | Sequence[str]], name: str) -> str | None:
+    """First (topmost) value of *name*; later or injected duplicates never count."""
     lowered = name.lower()
     for key, value in headers.items():
         if str(key).lower() == lowered:
-            return str(value)
+            if isinstance(value, str):
+                return value
+            return str(value[0]) if value else None
     return None
 
 
@@ -150,7 +207,7 @@ def classify_account_security(
     sender_address: str,
     subject: str,
     *,
-    headers: Mapping[str, str] | None = None,
+    headers: Mapping[str, str | Sequence[str]] | None = None,
 ) -> AccountSecurityClassification | None:
     """Classify one email as an account-security alert, or ``None``.
 
@@ -165,7 +222,7 @@ def classify_account_security(
     if kind is None:
         return None
     provider_domain = _address_domain(sender)
-    verification = _verify(_header(headers or {}, "Authentication-Results"), provider_domain)
+    verification = _verify(_header(headers or {}, "Authentication-Results"), provider)
     if verification is None:
         return None
     return AccountSecurityClassification(
