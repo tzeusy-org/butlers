@@ -53,20 +53,18 @@ The shape rules behind the target list (full list in evidence table T1):
 
 ## Owner decisions required before execution
 
-The 33 reviewer questions (evidence table T5) reduce to twelve decisions. Each will be filed as a decision bead; none is answered here.
+The 33 reviewer questions (evidence table T5) first reduced to twelve candidate decisions. An independent adversarial review of the decision packet rejected four as already decided or not owner gates, and corrected the rest; eight remain, filed as decision beads under `bu-lsxqb0`. None is answered here.
 
-1. Dashboard identity: read-mostly observability surface (doctrine) or the exclusive control plane with global chat (shell and chat specs)?
-2. Cross-schema reads: amend doctrine to admit on-demand allowlisted exceptions, or narrow RFC 0030?
-3. Butler inventories: are ports, modules, tools and schedules spec-enforced against `butler.toml`, or is `butler.toml` plus the skills directory the source of truth? (The plan assumes the latter.)
-4. Discord: retire the connector spec to an RFC 0018 deferral note, or keep a target-state stub? Code is a self-declared non-production draft.
-5. Metrics and document-renderer modules: no roster butler loads them. Keep spec and code, or retire both under the "no modules no butler uses" anti-pattern?
-6. Per-butler self-healing direct-dispatch fallback: still wanted? It has no spec and may be enabled on every butler.
-7. Finance bulk path: SPO facts or `finance.transactions`? Three dedup keys and a budget period enum (quarterly accepted by the tool, rejected by the constraint) hinge on it.
-8. Memory retention: do per-schema `memory_policies` and `public.memory_retention_policies` coexist, and which governs an episode?
-9. Credentials: migrate Google refresh tokens from `public.entity_info` into `relationship.credentials`, or sanction `entity_info` as the exception?
-10. QA discovery sources and dedup order: spec holds the SHALLs and RFC 0015 keeps rationale (recommended), or the reverse?
-11. RFC 0025 versus the shipped k3s beads-export CronJob: interim rollback path or supersession?
-12. RFC 0017 carries an incident narrative with a quoted personal email. Strip it? (Recommended regardless of the rest; this is a privacy matter, not a shape one.)
+1. Owner PII in the public tree: the owner's work email and employer domain sit in RFC 0017 § 1, two test files, and a runtime work-domain default. Remove and placeholder all four, with the git-history rewrite held as a separate question? (`bu-lsxqb0.12`)
+2. Dashboard identity: doctrine already admits operator control; the live conflict is 'Not a chat app' versus the shipped global chat surface, and the shell spec's claim that everything is reachable exclusively through the dashboard. Depends on decision 3. (`bu-lsxqb0.1`)
+3. Cross-schema reads: amend architecture.md to admit on-demand exceptions that are fixed projections (view or no-argument function) meeting every existing criterion, as accepted RFCs 0030 and 0010 already do, or narrow those RFCs back to batch? RFC 0020's refusal stands either way. (`bu-lsxqb0.2`)
+4. Module selection and butler inventories: the module registry instantiates every module on every butler and enablement is runtime state, while non-negotiable 5 says selection lives in git. Make roster/ the declaration of record (with a contract test) and drop inventories from specs? (`bu-lsxqb0.3`)
+5. Discord: still in v1 (accepted RFC 0018 says so; code is a self-declared draft) or deferred, which amends the RFC and v1.md and retires spec and code together? (`bu-lsxqb0.4`)
+6. Metrics and document-renderer modules: declared by no butler, instantiated everywhere, and imported by two API routers via a Prometheus helper. Retire after moving the helper to core, or name an adopter? (`bu-lsxqb0.5`)
+7. Self-healing: keep the module's direct-dispatch fallback as QA's specified degraded mode, or remove it so report_error only relays to QA? The dead spawner hard-crash wiring is deleted as cleanup regardless (`bu-1fe7xv`). (`bu-lsxqb0.6`)
+8. Memory retention knob direction: the per-schema and fleet-wide tables govern different dimensions today, and a NULL fleet value disables a cap. May the fleet knob loosen limits, or only tighten? (`bu-lsxqb0.8`)
+
+Resolved without the owner, by reconciliation inside phase 2 (recorded on the closed beads): the finance bulk path (accepted RFC 0012 already chose `finance.transactions`; the SPO-writing HTTP endpoint is drift; the quarterly budget-period enum is a standalone bug, `bu-aubi0k`), the credential table (RFC 0004 Amendment 3 makes `public.entity_info` the credentials store; `relationship.credentials` has no runtime reader and retires), QA discovery authority (specs hold the SHALLs, RFC 0015 keeps rationale), and RFC 0025 versus the beads-export CronJob (no contradiction: draft planning contract, default-off bridge, status quo stands).
 
 Four implemented RFCs (0022 fleet-event bridge, 0023 delivery intent, 0031 entity graph, 0032 fleet case file) have no spec home. They cannot be condensed until a capability spec exists; the plan files them as spec-writing work rather than deciding for the owner.
 
@@ -77,11 +75,11 @@ Sequenced to respect active OpenSpec changes (55 open; `core-notify` alone has n
 | Phase | Work | Gate |
 |---|---|---|
 | 0 | This change: `v1.md` and `development.md` condensed; cumulative pursuit ledger; this plan and its evidence. | Owner adopts the two doctrine files by merging. |
-| 1 | The twelve decisions above, as decision beads; four spec-writing beads for the homeless RFCs. | Owner answers. |
+| 1 | The eight decisions above, as decision beads; four spec-writing beads for the homeless RFCs. | Owner answers. |
 | 2a | Platform consolidation: QA and healing to two specs; runtime-config to one; staffer-archetype retired to doctrine; testing and docs-information-architecture to craft-and-care and docs; the three live contradictions (S3 startup, unmeasurable ledger rows, self-healing load) resolved in the surviving spec. | Change signed off; `core-notify` split waits for its nine deltas to archive. |
 | 2b | Finance, memory, education, identity consolidations (domain models). | Change signed off; education waits for or folds into `education-mind-map-lifecycle-integrity`. |
 | 2c | Connector contract split and per-connector dedup; butler inventories stripped; account registries merged. | Change signed off; connectors with active changes (telegram-bot, switchboard, messenger) go last. |
-| 2d | Dashboard domain homes (`bu-60pwv6.6` adopts T1) and `dashboard-credentials`; design-language spec delta S-A2 with its doctrine amendment. | Change signed off; decision 1 answered first. |
+| 2d | Dashboard domain homes (`bu-60pwv6.6` adopts T1) and `dashboard-credentials`; design-language spec delta S-A2 with its doctrine amendment. | Change signed off; decision 2 answered first. |
 | 3 | RFC condensation: seven decision records, the read-exception register, 0018 and 0019 relocated, status vocabulary fixed. | After the owning specs from phase 2 land. |
 | 4 | Pursuit history: fold runs 05 to 15 dropped proposals into the ideas ledger as themed clusters with unpark conditions; move the eight uncited dossier bodies to git history behind the cumulative ledger; retire the per-run north-star restatements. | Routine documentation bookkeeping once phase 1 confirms no dossier is still cited as provenance. |
 
