@@ -122,6 +122,7 @@ async def test_briefing_has_no_birthday_highlight_for_a_memorial_person(
 async def test_overlay_turns_a_memorial_birthday_into_a_remembrance(pool: asyncpg.Pool) -> None:
     quiet_id = await _person_with_birthday(pool, "Person Quiet", date(2031, 3, 10))
     memorial_id = await _person_with_birthday(pool, "Person Remembered", date(2031, 3, 11))
+    await _person_with_birthday(pool, "Person Overlay Active", date(2031, 3, 12))
     await entity_set_posture(pool, quiet_id, "quiet")
     await entity_set_posture(pool, memorial_id, "memorial")
 
@@ -139,11 +140,16 @@ async def test_overlay_turns_a_memorial_birthday_into_a_remembrance(pool: asyncp
     ):
         result = await run_relationship_calendar_overlay_contribution(pool, None)
 
+    # The module DB is shared with the other tests, so assert per person, never on the
+    # whole overlay: other active people legitimately yield birthdays.
     entries = [e for env in store.values() for e in env["entries"]]
-    kinds_by_label = {e["label"]: e["kind"] for e in entries}
-    assert kinds_by_label["Person Remembered's birthday (remembrance)"] == "remembrance"
-    assert "birthday" not in kinds_by_label.values()
-    assert not any("Person Quiet" in label for label in kinds_by_label)
+
+    def _entries_for(person: str) -> list[dict[str, Any]]:
+        return [e for e in entries if person in e["label"]]
+
+    assert [e["kind"] for e in _entries_for("Person Remembered")] == ["remembrance"]
+    assert _entries_for("Person Quiet") == []
+    assert [e["kind"] for e in _entries_for("Person Overlay Active")] == ["birthday"]
     assert result["remembrance_entries"] >= 1
 
 
