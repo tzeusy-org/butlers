@@ -398,3 +398,38 @@ async def test_a_fact_write_racing_the_gap_insert_never_leaves_the_gap_open(
 
     statuses = {(await _gap(pool, entity, predicate))["status"] for entity in entities}
     assert statuses == {"answerable"}
+
+
+async def test_a_closure_failure_never_fails_the_fact_write(
+    pool_factory, session_hook, monkeypatch
+):
+    pool, owner, _ = await pool_factory()
+    session_hook(pool)
+    entity, predicate = await _entity(pool), await _predicate(pool)
+    await _decline(pool, await _conversation(pool), entity, predicate)
+
+    async def boom(*_a, **_kw):
+        raise RuntimeError("lock service down")
+
+    monkeypatch.setattr(knowledge_gaps, "_lock_pair", boom)
+    before = knowledge_gaps.closure_failures
+
+    stored = await _store(pool, entity, predicate, sender=owner)
+
+    assert await pool.fetchval("SELECT validity FROM facts WHERE id = $1", stored["id"]) == "active"
+    assert (await _gap(pool, entity, predicate))["status"] == "open"
+    assert knowledge_gaps.closure_failures == before + 1
+
+
+async def test_a_schema_without_the_gap_table_is_a_one_probe_no_op():
+    from unittest.mock import AsyncMock, MagicMock
+
+    conn = MagicMock()
+    conn.fetchval = AsyncMock(return_value=False)
+
+    await knowledge_gaps.close_matching_gaps(
+        conn, entity_id=uuid.uuid4(), predicate="p", ref="fact:x", value="v", authority=None
+    )
+
+    conn.fetchval.assert_awaited_once()
+    conn.transaction.assert_not_called()

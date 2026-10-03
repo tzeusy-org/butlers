@@ -44,6 +44,9 @@ _DELIVERY_BATCH = 25
 #: The only channel whose sender is the owner surface; other channels are a later slice.
 CAPTURE_CHANNEL = "dashboard"
 
+#: Closure failures swallowed since process start (the fact write always wins).
+closure_failures = 0
+
 STATUSES = ("open", "answerable", "delivered", "dismissed", "expired")
 
 
@@ -104,7 +107,8 @@ async def close_matching_gaps(
 
     Runs on the fact write's connection so the transition commits or rolls back with
     the fact.  A schema without the gap table (a butler that never ran ``mem_014``) is
-    skipped.  Only ``open`` gaps move, so a replayed write cannot re-notify.
+    skipped.  A closure failure never fails the fact write (logged and counted in
+    ``closure_failures``).  Only ``open`` gaps move, so a replayed write cannot re-notify.
 
     *value* and *authority* may be coroutine functions; they run only when a gap is open.
     *authority* is the closing fact's server-stamped authority, or a coroutine function
@@ -112,38 +116,54 @@ async def close_matching_gaps(
     """
     if entity_id is None:
         return
-    if not await conn.fetchval("SELECT to_regclass('knowledge_gaps') IS NOT NULL"):
-        return
-    await _lock_pair(conn, entity_id, predicate)
-    if not await conn.fetchval(
-        "SELECT 1 FROM knowledge_gaps WHERE entity_id = $1 AND predicate = $2 AND status = 'open'",
-        entity_id,
-        predicate,
-    ):
-        return
-    if callable(value):
-        value = await value()
-    if callable(authority):
-        authority = await authority()
-    await conn.execute(
-        """
-        UPDATE knowledge_gaps
-        SET status = 'answerable',
-            answered_at = now(),
-            answered_by_ref = $3,
-            answered_value = $4,
-            answered_authority = $5,
-            answered_authority_entity_id = $6,
-            next_attempt_at = now()
-        WHERE entity_id = $1 AND predicate = $2 AND status = 'open'
-        """,
-        entity_id,
-        predicate,
-        ref,
-        _excerpt(value, _VALUE_EXCERPT_CHARS),
-        authority.authority if authority else None,
-        authority.entity_id if authority else None,
-    )
+    try:
+        if not await conn.fetchval("SELECT to_regclass('knowledge_gaps') IS NOT NULL"):
+            return
+        # A savepoint, so a closure error rolls back only the closure: the fact write
+        # that called us still commits.
+        async with conn.transaction():
+            await _lock_pair(conn, entity_id, predicate)
+            if not await conn.fetchval(
+                "SELECT 1 FROM knowledge_gaps"
+                " WHERE entity_id = $1 AND predicate = $2 AND status = 'open'",
+                entity_id,
+                predicate,
+            ):
+                return
+            if callable(value):
+                value = await value()
+            if callable(authority):
+                authority = await authority()
+            await conn.execute(
+                """
+                UPDATE knowledge_gaps
+                SET status = 'answerable',
+                    answered_at = now(),
+                    answered_by_ref = $3,
+                    answered_value = $4,
+                    answered_authority = $5,
+                    answered_authority_entity_id = $6,
+                    next_attempt_at = now()
+                WHERE entity_id = $1 AND predicate = $2 AND status = 'open'
+                """,
+                entity_id,
+                predicate,
+                ref,
+                _excerpt(value, _VALUE_EXCERPT_CHARS),
+                authority.authority if authority else None,
+                authority.entity_id if authority else None,
+            )
+    except Exception:
+        global closure_failures
+        closure_failures += 1
+        logger.warning(
+            "knowledge gap closure failed for entity %s predicate %s (count=%d); "
+            "the fact write is unaffected and the gap stays open",
+            entity_id,
+            predicate,
+            closure_failures,
+            exc_info=True,
+        )
 
 
 # ---------------------------------------------------------------------------

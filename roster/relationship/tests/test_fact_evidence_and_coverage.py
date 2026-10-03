@@ -768,6 +768,25 @@ class TestKnowledgeGapClosure:
         )
         assert gap["answered_authority"] == "system"  # no routing context: a job, not a sender
 
+    async def test_a_closure_failure_leaves_the_fact_written(self, pool, entity, monkeypatch):
+        from butlers.modules.memory import knowledge_gaps
+
+        gap_id = await self._open_gap(pool, entity)
+
+        async def boom(*_a, **_kw):
+            raise RuntimeError("lock service down")
+
+        monkeypatch.setattr(knowledge_gaps, "_lock_pair", boom)
+
+        result = await relationship_assert_fact(
+            pool, entity, _PRED_HAS_PHONE, "+15550100", src="test"
+        )
+
+        assert result.outcome is AssertOutcome.inserted
+        assert await pool.fetchval("SELECT status FROM knowledge_gaps WHERE id = $1", gap_id) == (
+            "open"
+        )
+
     async def test_an_unchanged_reassertion_does_not_answer_again(self, pool, entity):
         gap_id = await self._open_gap(pool, entity)
         await relationship_assert_fact(pool, entity, _PRED_HAS_PHONE, "+15550100", src="test")
