@@ -157,6 +157,42 @@ class RuleEndorsement(BaseModel):
     changed: bool = False
 
 
+class MemoryGapOrigin(BaseModel):
+    """One thread an owner question was asked in."""
+
+    conversation_id: str
+    request_id: str | None = None
+    channel: str
+    asked_at: str
+    delivered_at: str | None = None
+
+
+class MemoryGap(BaseModel):
+    """An owner question this butler could not answer yet (bu-q7vx1q.9)."""
+
+    gap_id: str
+    butler: str
+    entity_id: str
+    entity_name: str | None = None
+    predicate: str
+    question: str
+    status: str
+    coverage_state: str
+    asked_at: str
+    expires_at: str
+    answered_by_ref: str | None = None
+    delivery_failed: bool = False
+    last_error: str | None = None
+    origins: list[MemoryGapOrigin] = []
+
+
+class MemoryGapDismissal(BaseModel):
+    """Receipt for an owner dismissal; ``status`` is the gap's resulting state."""
+
+    gap_id: str
+    status: str
+
+
 class MemoryStats(BaseModel):
     """Aggregated statistics across all memory tiers."""
 

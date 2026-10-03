@@ -51,6 +51,7 @@ from butlers.scheduled_jobs import (
     _run_memory_consolidation_job,
     _run_memory_decay_sweep_job,
     _run_memory_episode_cleanup_job,
+    _run_memory_knowledge_gap_delivery_job,
     _run_memory_purge_superseded_job,
     get_deterministic_schedule_job_registry,
 )
@@ -81,6 +82,7 @@ _EXPECTED_MEMORY_JOB_NAMES = {
     "memory_decay_sweep",
     "memory_catalog_backfill",
     "memory_ann_observability",
+    "memory_knowledge_gap_delivery",
 }
 
 
@@ -264,6 +266,25 @@ class TestJobArgsValidation:
 
         assert result == {"health": "healthy"}
         run_ann_observability.assert_awaited_once_with(runtime_pool)
+
+    async def test_knowledge_gap_delivery_skips_a_schema_without_the_table(
+        self, monkeypatch
+    ) -> None:
+        runtime_pool = AsyncMock()
+        runtime_pool.fetchval.return_value = False
+        _register_runtime_pool(monkeypatch, runtime_pool)
+        monkeypatch.setattr(
+            "butlers.core.memory_hooks.resolve_memory_dispatch_butler_name", lambda: "general"
+        )
+        deliver = AsyncMock()
+        monkeypatch.setattr("butlers.modules.memory.knowledge_gaps.deliver_knowledge_gaps", deliver)
+
+        result = await _run_memory_knowledge_gap_delivery_job(pool=object(), job_args=None)
+
+        assert "skipped" in result
+        deliver.assert_not_awaited()
+        with pytest.raises(RuntimeError, match="does not accept job_args"):
+            await _run_memory_knowledge_gap_delivery_job(pool=object(), job_args={"x": 1})
 
     async def test_decay_sweep_rejects_any_job_args(self) -> None:
         with pytest.raises(RuntimeError, match="does not accept job_args"):

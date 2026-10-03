@@ -86,6 +86,36 @@ memory is gated on that stamp:
   rules are held and legacy owner facts are not Profile Facts. They are never
   backfilled by guessing; the migration reports the counts it left unclassified.
 
+### Owner knowledge gaps
+
+A sourceless decline in the dashboard answer lane no longer ends the question. The routed butler
+may pass `gap={entity_id, predicate}` to `conversation_reply`; the server validates the live
+entity and registered predicate, takes the origin (conversation, request id, channel) from the
+routing context, and records an `open` row in `knowledge_gaps` (one `knowledge_gap_origins` row per
+asking thread, at most one open gap per entity and predicate). The decline reply persists either
+way.
+
+A later write of a matching active fact -- `store_fact`, or the relationship butler's
+`relationship_assert_fact` -- moves the gap to `answerable` in the same transaction as the write,
+recording the fact reference, a value excerpt and the fact's server-stamped authority. A gap
+captured while the fact already exists is born `answerable`. Capture, closure and that re-check
+serialize on an advisory lock, so a racing write cannot strand an open gap.
+
+The `memory_knowledge_gap_delivery` maintenance job (every ten minutes, no LLM session) posts one
+notice per origin thread into `public.dashboard_messages` and marks the gap `delivered`. Owner-class
+and system authority read "Now known"; any other authority reads "Reported by <sender>, not
+verified". A failed post keeps the gap `answerable` and retries with bounded backoff
+(`delivery_attempts`, `next_attempt_at`); after five attempts it is recorded on the attention
+ledger and listed with `delivery_failed`. Open gaps past `expires_at` (ninety days) become
+`expired`; `dismissed` and `expired` are terminal and never reopen.
+
+`memory_open_gaps` and `GET /api/memory/gaps` (keyset pagination, `meta.sources_degraded`) list
+gaps with a `coverage_state` from the same vocabulary as predicate coverage: an open gap reads
+`unknown` unless `relationship.fact_coverage` receipts say `absent_proven` or `unavailable`.
+`POST /api/memory/gaps/{id}/dismiss` is the owner's terminal dismissal. Only the dashboard channel
+captures gaps today; the Telegram answer path, an entity-detail "Still unknown" section and
+per-predicate demand counts are a later slice.
+
 ## Tools Provided
 
 Tools are registered in `MemoryModule.register_tools` (`src/butlers/modules/memory/__init__.py`),
@@ -101,6 +131,7 @@ families:
 - **Feedback** (`memory_confirm`, `memory_mark_helpful`, `memory_mark_harmful`) -- reset decay and
   drive rule maturity.
 - **Management** (`memory_forget`, `memory_stats`) -- retraction and statistics.
+- **Knowledge gaps** (`memory_open_gaps`) -- owner questions still unanswered (below).
 - **Preferences** (`memory_set_preference`, `memory_get_preferences`) -- owner preferences stored
   as `preferences:<domain>_<name>` facts.
 - **Predicates and entities** (`memory_predicate_*`, `memory_entity_*`) -- predicate registry
@@ -309,6 +340,7 @@ The module owns tables in the hosting butler's schema (Alembic branch: `memory`)
 - `rule_applications` -- per-application outcome records
 - `embedding_versions` -- model/version tracking
 - `predicate_registry` -- predicate vocabulary with enforcement flags
+- `knowledge_gaps`, `knowledge_gap_origins` -- unanswered owner questions and the threads that asked them
 
 Entity identity tables live in the `public` schema: `public.entities`.
 

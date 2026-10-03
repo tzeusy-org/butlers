@@ -721,6 +721,7 @@ def test_heartbeat_classification_uses_trigger_source_not_summary_text():
         ("schedule:memory_ann_observability", "maintenance"),
         ("schedule:memory_consolidation_backfill", "maintenance"),
         ("schedule:memory_catalog_backfill", "maintenance"),
+        ("schedule:memory_knowledge_gap_delivery", "maintenance"),
         # Exact taxonomy only: a suffix must not inherit maintenance status.
         ("schedule:consolidation:retry", "owner"),
         ("tick", "heartbeat"),

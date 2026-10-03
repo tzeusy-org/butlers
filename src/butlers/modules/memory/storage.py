@@ -27,6 +27,7 @@ from butlers.core.tool_call_capture import (
     get_current_runtime_session_id,
     get_current_runtime_trigger_source,
 )
+from butlers.modules.memory import knowledge_gaps
 from butlers.modules.memory.content_authority import (
     ContentAuthority,
     is_owner_class,
@@ -1960,6 +1961,17 @@ async def store_fact(
                 retention_class=retention_class,
                 sensitivity=sensitivity,
                 embedding_model_version=embedding_engine.model_name,
+                authority=authority,
+            )
+
+            # An owner question this fact answers moves to `answerable` in this same
+            # transaction (bu-q7vx1q.9), so a rolled-back write never answers a gap.
+            await knowledge_gaps.close_matching_gaps(
+                conn,
+                entity_id=entity_id,
+                predicate=predicate,
+                ref=f"fact:{fact_id}",
+                value=content,
                 authority=authority,
             )
 

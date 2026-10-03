@@ -74,6 +74,8 @@ from butlers.core.tool_call_capture import (
     get_current_approval_push_runtime,
     get_current_runtime_session_id,
 )
+from butlers.modules.memory.content_authority import resolve_content_authority
+from butlers.modules.memory.knowledge_gaps import close_matching_gaps
 from butlers.tools.relationship.fact_coverage import record_coverage
 from butlers.tools.relationship.fact_evidence import (
     EvidencePacket,
@@ -1607,7 +1609,38 @@ async def _write_fact_with_receipts(
         outcome="present",
         observed_at=kwargs["observed_at"],
     )
+    if result.outcome is not AssertOutcome.unchanged:
+        await _answer_knowledge_gaps(conn, kwargs, result)
     return result
+
+
+async def _answer_knowledge_gaps(
+    conn: asyncpg.Connection,
+    kwargs: dict[str, Any],
+    result: AssertResult,
+) -> None:
+    """Move an owner knowledge gap this write answers to ``answerable`` (bu-q7vx1q.9).
+
+    Same connection and transaction as the fact, so the gap never reads answered for a
+    write that rolled back.  The authority is derived from the session's routing context
+    here, never taken from the caller.
+    """
+
+    async def value() -> str | None:
+        if kwargs["object_kind"] != "entity":
+            return kwargs["object"]
+        return await conn.fetchval(
+            "SELECT canonical_name FROM public.entities WHERE id = $1::uuid", kwargs["object"]
+        )
+
+    await close_matching_gaps(
+        conn,
+        entity_id=kwargs["subject"],
+        predicate=kwargs["predicate"],
+        ref=f"entity_fact:{result.fact_id}",
+        value=value,
+        authority=lambda: resolve_content_authority(conn),
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -207,6 +207,10 @@ def _build_dashboard_answer_block(
             "read tools, do NOT guess and do NOT fabricate a source to satisfy the "
             "citation requirement — call `conversation_reply` with an honest decline "
             "explaining what you checked, and omit `sources` entirely.",
+            "   If the decline is about a specific entity and predicate you could "
+            'not find, also pass `gap={"entity_id": <uuid>, "predicate": '
+            "<registered predicate>}` so the question is remembered and answered in "
+            "this thread when the fact is later known. Never pass `gap` with `sources`.",
             "",
             "You MUST call `conversation_reply` before finishing this session — the "
             "owner's dashboard chat is waiting on it and has no other way to see "

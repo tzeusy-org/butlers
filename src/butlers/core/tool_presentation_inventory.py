@@ -229,8 +229,8 @@ TOOL_PRESENTATION_INVENTORY = (
     *_declare(
         "memory",
         "core",
-        "memory_confirm memory_context memory_get memory_recall memory_search memory_store_episode "
-        "memory_store_fact memory_store_rule",
+        "memory_confirm memory_context memory_get memory_open_gaps memory_recall memory_search "
+        "memory_store_episode memory_store_fact memory_store_rule",
     ),
     *_declare("memory", "feedback", "memory_forget memory_mark_harmful memory_mark_helpful"),
     *_declare(

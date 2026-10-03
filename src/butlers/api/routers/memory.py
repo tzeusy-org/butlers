@@ -11,12 +11,13 @@ the inspect search bar (§10.2).
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import re
 import uuid as _uuid
 from collections.abc import Awaitable, Callable
-from datetime import UTC
+from datetime import UTC, datetime
 from typing import Literal
 
 from asyncpg.exceptions import UndefinedTableError
@@ -24,7 +25,14 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
-from butlers.api.models import ApiMeta, ApiResponse, PaginatedResponse, PaginationMeta
+from butlers.api.models import (
+    ApiMeta,
+    ApiResponse,
+    KeysetMeta,
+    KeysetResponse,
+    PaginatedResponse,
+    PaginationMeta,
+)
 from butlers.api.models.memory import (
     _DEFAULT_EMBEDDING_MODEL,
     ButlerMemoryStats,
@@ -40,6 +48,8 @@ from butlers.api.models.memory import (
     GraphHealthPoolCoverage,
     MemoryActivity,
     MemoryCatalogSearchResult,
+    MemoryGap,
+    MemoryGapDismissal,
     MemoryInspectResult,
     MemoryLink,
     MemoryRetentionPolicy,
@@ -55,6 +65,7 @@ from butlers.api.models.memory import (
 )
 from butlers.api.routers import audit as _audit
 from butlers.core.owner import fetch_owner_entity_id
+from butlers.modules.memory import knowledge_gaps
 from butlers.modules.memory.content_authority import is_rule_admitted
 from butlers.modules.memory.storage import RuleNotEndorsableError, endorse_rule, get_links
 
@@ -1540,6 +1551,117 @@ async def endorse_held_rule(
         )
 
     _raise_memory_detail_miss(resource="Rule", tracker=tracker)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/memory/gaps — owner questions still unanswered (bu-q7vx1q.9)
+# ---------------------------------------------------------------------------
+
+
+def _encode_gap_cursor(asked_at: str, gap_id: str) -> str:
+    raw = json.dumps([asked_at, gap_id]).encode()
+    return base64.urlsafe_b64encode(raw).decode()
+
+
+def _decode_gap_cursor(cursor: str) -> tuple[datetime, _uuid.UUID]:
+    try:
+        asked_at, gap_id = json.loads(base64.urlsafe_b64decode(cursor.encode()))
+        return datetime.fromisoformat(asked_at), _uuid.UUID(gap_id)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail="Invalid cursor") from exc
+
+
+@router.get("/gaps", response_model=KeysetResponse[MemoryGap])
+async def list_memory_gaps(
+    status: Literal["open", "answerable", "delivered", "dismissed", "expired"] | None = Query(
+        None, description="One lifecycle state; default is open plus answerable"
+    ),
+    limit: int = Query(50, ge=1, le=200),
+    cursor: str | None = Query(None, description="Opaque `next_cursor` from the previous page"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> KeysetResponse[MemoryGap]:
+    """Owner questions no butler could answer yet, newest first, across memory pools.
+
+    ``coverage_state`` keeps "never looked" (`unknown`) apart from "looked and nothing is
+    there" (`absent_proven`). A pool that fails is named in ``meta.sources_degraded``
+    rather than reading as an empty page.
+    """
+    statuses = ("open", "answerable") if status is None else (status,)
+    after = _decode_gap_cursor(cursor) if cursor else None
+
+    async def _query_pool(butler_name: str, pool: object) -> list[tuple[str, dict]]:
+        gaps = await knowledge_gaps.list_gaps(
+            pool,
+            statuses=statuses,
+            limit=limit + 1,
+            after=after,
+            memory_schema=_memory_source_schema(db, butler_name),
+        )
+        return [(butler_name, gap) for gap in gaps]
+
+    tracker = DegradedSources(logger)
+    per_pool = await _fan_out_memory_queries(
+        db,
+        query_name="gaps",
+        query_fn=_query_pool,
+        tracker=tracker,
+    )
+    merged = [item for rows in per_pool for item in rows]
+    merged.sort(key=lambda item: (item[1]["asked_at"], item[1]["id"]), reverse=True)
+    page = merged[:limit]
+
+    data = [MemoryGap(butler=butler, **knowledge_gaps.public_view(gap)) for butler, gap in page]
+    has_more = len(merged) > limit
+    return KeysetResponse[MemoryGap](
+        data=data,
+        meta=KeysetMeta(
+            limit=limit,
+            has_more=has_more,
+            next_cursor=(
+                _encode_gap_cursor(data[-1].asked_at, data[-1].gap_id)
+                if has_more and data
+                else None
+            ),
+            sources_degraded=tracker.names or None,
+        ),
+    )
+
+
+@router.post("/gaps/{gap_id}/dismiss", response_model=ApiResponse[MemoryGapDismissal])
+async def dismiss_memory_gap(
+    gap_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[MemoryGapDismissal]:
+    """Dismiss an owner knowledge gap (terminal; idempotent).
+
+    A gap that already reached ``delivered`` or ``expired`` keeps that state and is
+    reported as such. Errors: 400 invalid id, 404 no pool holds the gap, 503 no pools.
+    """
+    try:
+        gap_uuid = _uuid.UUID(gap_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid gap id (must be a UUID)") from exc
+    pools = _memory_pools(db)
+    if not pools:
+        raise HTTPException(status_code=503, detail="No database pools available")
+
+    tracker = DegradedSources(logger)
+    for name, pool in pools:
+        try:
+            resulting = await knowledge_gaps.dismiss_gap(
+                pool, gap_uuid, memory_schema=_memory_source_schema(db, name)
+            )
+        except Exception as exc:
+            if not _is_missing_memory_schema_error(
+                exc, schema_absent_at_start=_memory_schema_absent_at_start(db, name)
+            ):
+                tracker.mark(name, msg="gap dismissal source unavailable")
+            continue
+        if resulting is not None:
+            return ApiResponse[MemoryGapDismissal](
+                data=MemoryGapDismissal(gap_id=gap_id, status=resulting)
+            )
+    _raise_memory_detail_miss(resource="Knowledge gap", tracker=tracker)
 
 
 # ---------------------------------------------------------------------------
