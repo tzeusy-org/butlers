@@ -91,6 +91,7 @@ CREATE TABLE IF NOT EXISTS public.calendar_events (
 
 _CREATE_FACTS_SQL = """
 CREATE TABLE IF NOT EXISTS facts (
+    content_authority TEXT, authority_entity_id UUID,
     id                      UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     subject                 TEXT        NOT NULL,
     predicate               TEXT        NOT NULL,

@@ -420,6 +420,7 @@ class TestLifecycle:
             "completed session output",
             "chronicler",
             session_id="session-id",
+            routing_context=None,
         )
         assert captured_hook["owner"] == "chronicler"
         await mod.on_shutdown()

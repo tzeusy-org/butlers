@@ -237,6 +237,7 @@ async def merge_pool(provisioned_postgres_pool):
         await apply_evidence_schema(pool)
         await pool.execute("""
             CREATE TABLE facts (
+                content_authority TEXT, authority_entity_id UUID,
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 entity_id UUID,
                 object_entity_id UUID,

@@ -30,6 +30,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from butlers.modules.memory.consolidation_parser import ConsolidationResult
+from butlers.modules.memory.content_authority import combine_authorities
 from butlers.modules.memory.storage import (
     StaleSupersessionTargetError,
     _lookup_episode_ttl_days,
@@ -256,6 +257,35 @@ async def _persist_artifact_with_evidence(
     return artifact_id
 
 
+async def _load_episode_authorities(
+    pool: Any, source_episode_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, tuple[str | None, uuid.UUID | None]]:
+    """Read the server-stamped authority of every claimed source episode."""
+    if not source_episode_ids:
+        return {}
+    rows = await pool.fetch(
+        "SELECT id, content_authority, authority_entity_id FROM episodes"
+        " WHERE id = ANY($1::uuid[])",
+        source_episode_ids,
+    )
+    return {r["id"]: (r["content_authority"], r["authority_entity_id"]) for r in rows}
+
+
+def _derive_artifact_authority(
+    evidence_episode_ids: list[uuid.UUID],
+    episode_authorities: dict[uuid.UUID, tuple[str | None, uuid.UUID | None]],
+) -> tuple[str, uuid.UUID | None]:
+    """Weakest authority across an artifact's evidence, plus a shared sender if any.
+
+    Evidence missing from ``episode_authorities`` (a vanished row) counts as
+    unknown and downgrades to ``mixed``.
+    """
+    known = [episode_authorities.get(eid, (None, None)) for eid in evidence_episode_ids]
+    authority = combine_authorities(a for a, _ in known)
+    entity_ids = {e for _, e in known}
+    return authority, (entity_ids.pop() if len(entity_ids) == 1 else None)
+
+
 # ---------------------------------------------------------------------------
 # Executor
 # ---------------------------------------------------------------------------
@@ -382,6 +412,10 @@ async def execute_consolidation(
         new_rule_evidence,
     ) = _validate_all_artifact_evidence(parsed, source_episode_ids)
 
+    # Derived knowledge inherits the weakest authority among its evidence
+    # episodes, from the server-held stamp, never from anything in the content.
+    episode_authorities = await _load_episode_authorities(pool, source_episode_ids)
+
     # When the caller wants catalog write-behind but didn't resolve a schema
     # itself (e.g. the deterministic scheduled-job path, which has no access
     # to the module's toml config), fall back to the pool's own
@@ -418,6 +452,10 @@ async def execute_consolidation(
                     fact.predicate,
                 )
 
+            fact_authority, fact_authority_entity = _derive_artifact_authority(
+                new_fact_evidence[fact_index] if source_episode_ids else [], episode_authorities
+            )
+
             async def persist_new_fact(connection_pool: Any) -> uuid.UUID:
                 store_result = await store_fact(
                     connection_pool,
@@ -439,6 +477,8 @@ async def execute_consolidation(
                     source_schema=source_schema,
                     enforce_consolidation_edge_allowlist=fact_object_entity_id is not None,
                     consolidation_edge_classification=consolidation_edge_classification,
+                    content_authority=fact_authority,
+                    authority_entity_id=fact_authority_entity,
                 )
                 return store_result["id"]
 
@@ -524,6 +564,10 @@ async def execute_consolidation(
                     "facts should always be anchored to an entity",
                     fact.target_id,
                 )
+            update_authority, update_authority_entity = _derive_artifact_authority(
+                updated_fact_evidence[fact_index] if source_episode_ids else [],
+                episode_authorities,
+            )
             try:
 
                 async def persist_updated_fact(connection_pool: Any) -> uuid.UUID:
@@ -542,6 +586,8 @@ async def execute_consolidation(
                         expected_supersedes_id=target_id,
                         enable_shared_catalog=enable_shared_catalog,
                         source_schema=source_schema,
+                        content_authority=update_authority,
+                        authority_entity_id=update_authority_entity,
                     )
                     return store_result["id"]
 
@@ -572,6 +618,9 @@ async def execute_consolidation(
     # --- New rules ---
     for rule_index, rule in enumerate(parsed.new_rules):
         try:
+            rule_authority, rule_authority_entity = _derive_artifact_authority(
+                new_rule_evidence[rule_index] if source_episode_ids else [], episode_authorities
+            )
 
             async def persist_new_rule(connection_pool: Any) -> uuid.UUID:
                 return await store_rule(
@@ -585,6 +634,8 @@ async def execute_consolidation(
                     request_id=request_id,
                     enable_shared_catalog=enable_shared_catalog,
                     source_schema=source_schema,
+                    content_authority=rule_authority,
+                    authority_entity_id=rule_authority_entity,
                 )
 
             await _persist_artifact_with_evidence(

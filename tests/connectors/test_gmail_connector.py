@@ -87,6 +87,18 @@ async def test_build_ingest_envelope_schema_version(
     assert envelope["source"]["provider"] == "gmail"
 
 
+async def test_build_ingest_envelope_withholds_bearer_material(
+    gmail_runtime: GmailConnectorRuntime,
+) -> None:
+    """Codes never leave the connector: text, raw base64 body and flag are all scrubbed."""
+    message = _make_message(body_text="Your code is 482913")
+    envelope = await gmail_runtime._build_ingest_envelope(message)
+    assert "482913" not in envelope["payload"]["normalized_text"]
+    assert "482913" not in str(envelope["payload"]["raw"])
+    assert base64.urlsafe_b64encode(b"482913").decode() not in str(envelope["payload"]["raw"])
+    assert envelope["control"]["bearer_scrubbed"] is True
+
+
 async def test_build_ingest_envelope_event_fields(
     gmail_runtime: GmailConnectorRuntime,
 ) -> None:

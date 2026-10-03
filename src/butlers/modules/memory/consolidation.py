@@ -216,7 +216,8 @@ async def run_consolidation(
             rows = await conn.fetch(
                 """
                 SELECT id, butler, content, importance, metadata, created_at,
-                       tenant_id, consolidation_attempts
+                       tenant_id, consolidation_attempts,
+                       content_authority, authority_entity_id
                 FROM episodes
                 WHERE (
                     consolidation_status = 'pending'

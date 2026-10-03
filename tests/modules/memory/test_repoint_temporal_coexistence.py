@@ -40,6 +40,7 @@ async def pool(provisioned_postgres_pool):
     async with provisioned_postgres_pool(min_pool_size=2, max_pool_size=8) as p:
         await p.execute("""
             CREATE TABLE IF NOT EXISTS facts (
+                content_authority TEXT, authority_entity_id UUID,
                 id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
                 entity_id        UUID,
                 object_entity_id UUID,

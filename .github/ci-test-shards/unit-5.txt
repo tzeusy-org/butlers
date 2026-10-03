@@ -35,3 +35,4 @@ tests/scripts/test_dashboard_proxy_peer.py
 tests/scripts/test_k8s_beads_export_chart.py
 tests/scripts/test_k8s_secrets_chart.py
 tests/switchboard/insight/test_prepared_action_door.py
+tests/test_ingestion_bearer_scrub.py

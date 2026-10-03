@@ -3396,6 +3396,7 @@ class Spawner:
                     self._config.name,
                     spawner_result.output,
                     session_id=session_id,
+                    routing_context=routing_context,
                 )
 
             return spawner_result

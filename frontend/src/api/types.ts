@@ -3012,6 +3012,13 @@ export interface MemoryRule {
   metadata: Record<string, unknown>;
   /** Set when the rule has been retired (stops firing, kept for reference). */
   retired_at: string | null;
+  /** Server-derived authorship of the content this rule came from (null on legacy rows). */
+  content_authority?: "owner" | "owner_device" | "third_party" | "system" | "mixed" | null;
+  authority_entity_id?: string | null;
+  /** Set when the owner endorsed a held rule. */
+  endorsed_at?: string | null;
+  /** True while the rule is invisible to sessions, awaiting owner endorsement. */
+  held?: boolean;
 }
 
 /** Aggregated statistics across all memory tiers. */

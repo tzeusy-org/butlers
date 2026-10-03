@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS public.entities (
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS facts (
+    content_authority TEXT, authority_entity_id UUID,
     id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     entity_id        UUID,
     object_entity_id UUID,

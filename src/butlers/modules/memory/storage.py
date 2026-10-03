@@ -27,6 +27,12 @@ from butlers.core.tool_call_capture import (
     get_current_runtime_session_id,
     get_current_runtime_trigger_source,
 )
+from butlers.modules.memory.content_authority import (
+    ContentAuthority,
+    is_owner_class,
+    resolve_content_authority,
+    validate_authority,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -706,6 +712,7 @@ async def _backfill_rules_to_catalog(
                    r.retention_class, r.sensitivity, r.tenant_id, r.source_butler
             FROM rules r
             WHERE COALESCE(r.metadata ->> 'forgotten', 'false') <> 'true'
+              AND (r.content_authority IN ('owner', 'owner_device') OR r.endorsed_at IS NOT NULL)
               AND NOT (COALESCE(r.sensitivity, 'normal') = ANY($3))
               AND NOT EXISTS (
                   SELECT 1 FROM public.memory_catalog mc
@@ -819,7 +826,12 @@ async def _reconcile_rules_catalog_disownment(
             WHERE mc.source_schema = $1
               AND mc.source_table = 'rules'
               AND mc.invalid_at IS NULL
-              AND (r.id IS NULL OR COALESCE(r.metadata ->> 'forgotten', 'false') = 'true')
+              AND (
+                  r.id IS NULL
+                  OR COALESCE(r.metadata ->> 'forgotten', 'false') = 'true'
+                  OR (COALESCE(r.content_authority, '') NOT IN ('owner', 'owner_device')
+                      AND r.endorsed_at IS NULL)
+              )
             LIMIT $2
         )
         UPDATE public.memory_catalog mc
@@ -947,7 +959,12 @@ async def get_catalog_drift_counts(
             count(*) FILTER (
                 WHERE mc.source_table = 'rules'
                   AND mc.invalid_at IS NULL
-                  AND (r.id IS NULL OR COALESCE(r.metadata ->> 'forgotten', 'false') = 'true')
+                  AND (
+                      r.id IS NULL
+                      OR COALESCE(r.metadata ->> 'forgotten', 'false') = 'true'
+                      OR (COALESCE(r.content_authority, '') NOT IN ('owner', 'owner_device')
+                          AND r.endorsed_at IS NULL)
+                  )
             ) AS rules_drifted
         FROM public.memory_catalog mc
         LEFT JOIN {facts_relation} f ON mc.source_table = 'facts' AND f.id = mc.source_id
@@ -995,6 +1012,23 @@ async def _lookup_episode_ttl_days(pool: Pool, retention_class: str) -> int:
     return _DEFAULT_EPISODE_TTL_DAYS
 
 
+async def _stamp_authority(
+    pool: Any,
+    content_authority: str | None,
+    authority_entity_id: uuid.UUID | None,
+    routing_context: dict[str, Any] | None = None,
+) -> ContentAuthority:
+    """Return the authority to stamp on a write.
+
+    An explicit ``content_authority`` is honoured only for server-internal
+    callers that derived it themselves (consolidation); MCP-facing tools never
+    expose the argument.  Otherwise it is derived from the routing context.
+    """
+    if content_authority is not None:
+        return ContentAuthority(validate_authority(content_authority), authority_entity_id)
+    return await resolve_content_authority(pool, routing_context)
+
+
 async def store_episode(
     pool: Pool,
     content: str,
@@ -1008,6 +1042,9 @@ async def store_episode(
     request_id: str | None = None,
     retention_class: str = "transient",
     sensitivity: str = "normal",
+    content_authority: str | None = None,
+    authority_entity_id: uuid.UUID | None = None,
+    routing_context: dict[str, Any] | None = None,
 ) -> uuid.UUID:
     """Store a raw episode from a butler runtime session.
 
@@ -1028,10 +1065,18 @@ async def store_episode(
         request_id: Optional request trace ID for correlation.
         retention_class: Retention policy class (default 'transient').
         sensitivity: Data sensitivity classification (default 'normal').
+        content_authority: Explicit server-derived authority; when omitted it is
+            derived from ``routing_context`` (or the current runtime session's).
+        authority_entity_id: Sender entity paired with an explicit authority.
+        routing_context: Routing context of the originating session, for callers
+            running outside that session's task (the Spawner's episode hook).
 
     Returns:
         The UUID of the newly created episode row.
     """
+    authority = await _stamp_authority(
+        pool, content_authority, authority_entity_id, routing_context
+    )
     embedding = embedding_engine.embed(content)
     search_text = preprocess_text(content)
     ttl_days = await _lookup_episode_ttl_days(pool, retention_class)
@@ -1061,6 +1106,7 @@ async def store_episode(
                 retention_class=retention_class,
                 sensitivity=sensitivity,
                 embedding_model_version=embedding_engine.model_name,
+                authority=authority,
             )
             return existing_episode_id
 
@@ -1081,6 +1127,7 @@ async def store_episode(
             retention_class=retention_class,
             sensitivity=sensitivity,
             embedding_model_version=embedding_engine.model_name,
+            authority=authority,
         )
         return episode_id
 
@@ -1123,12 +1170,15 @@ async def _insert_episode_record(
     retention_class: str,
     sensitivity: str,
     embedding_model_version: str = "unknown",
+    authority: ContentAuthority | None = None,
 ) -> None:
     sql = f"""
         INSERT INTO episodes (id, butler, session_id, content, embedding, search_vector,
                               importance, expires_at, metadata, tenant_id, request_id,
-                              retention_class, sensitivity, embedding_model_version)
-        VALUES ($1, $2, $3, $4, $5, {tsvector_sql("$6")}, $7, $8, $9, $10, $11, $12, $13, $14)
+                              retention_class, sensitivity, embedding_model_version,
+                              content_authority, authority_entity_id)
+        VALUES ($1, $2, $3, $4, $5, {tsvector_sql("$6")}, $7, $8, $9, $10, $11, $12, $13, $14,
+                $15, $16)
     """
     await conn.execute(
         sql,
@@ -1146,6 +1196,8 @@ async def _insert_episode_record(
         retention_class,
         sensitivity,
         embedding_model_version,
+        authority.authority if authority else None,
+        authority.entity_id if authority else None,
     )
 
 
@@ -1163,6 +1215,7 @@ async def _update_episode_record(
     retention_class: str,
     sensitivity: str,
     embedding_model_version: str = "unknown",
+    authority: ContentAuthority | None = None,
 ) -> None:
     sql = f"""
         UPDATE episodes
@@ -1175,7 +1228,9 @@ async def _update_episode_record(
             request_id = COALESCE($8, request_id),
             retention_class = $9,
             sensitivity = $10,
-            embedding_model_version = $11
+            embedding_model_version = $11,
+            content_authority = $12,
+            authority_entity_id = $13
         WHERE id = $1
     """
     await conn.execute(
@@ -1191,6 +1246,8 @@ async def _update_episode_record(
         retention_class,
         sensitivity,
         embedding_model_version,
+        authority.authority if authority else None,
+        authority.entity_id if authority else None,
     )
 
 
@@ -1232,6 +1289,7 @@ async def _resolve_write_provenance_with_conn(
     if get_current_runtime_trigger_source() == "schedule:consolidation":
         return effective_source_butler, None
 
+    placeholder_authority = await resolve_content_authority(conn)
     placeholder_now = now or datetime.now(UTC)
     ttl_days = _DEFAULT_EPISODE_TTL_DAYS
     expires_at = placeholder_now + timedelta(days=ttl_days)
@@ -1254,6 +1312,7 @@ async def _resolve_write_provenance_with_conn(
         retention_class="transient",
         sensitivity="normal",
         embedding_model_version=embedding_engine.model_name,
+        authority=placeholder_authority,
     )
     return effective_source_butler, episode_id
 
@@ -1307,6 +1366,7 @@ async def _insert_fact_record(
     retention_class: str,
     sensitivity: str,
     embedding_model_version: str = "unknown",
+    authority: ContentAuthority | None = None,
 ) -> None:
     """Insert a single fact row into the ``facts`` table.
 
@@ -1343,6 +1403,7 @@ async def _insert_fact_record(
         retention_class: Retention policy class string.
         sensitivity: Data sensitivity classification string.
         embedding_model_version: Model name used to produce the embedding vector.
+        authority: Server-derived content authority to stamp, or ``None`` (legacy).
     """
     sql = f"""
         INSERT INTO facts (
@@ -1352,7 +1413,7 @@ async def _insert_fact_record(
             created_at, last_confirmed_at, tags, metadata, entity_id,
             object_entity_id, valid_at, tenant_id, request_id,
             idempotency_key, observed_at, retention_class, sensitivity,
-            embedding_model_version
+            embedding_model_version, content_authority, authority_entity_id
         )
         VALUES (
             $1, $2, $3, $4, $5, {tsvector_sql("$6")},
@@ -1361,7 +1422,7 @@ async def _insert_fact_record(
             $15, $15, $16, $17, $18,
             $19, $20, $21, $22,
             $23, $24, $25, $26,
-            $27
+            $27, $28, $29
         )
     """
     await conn.execute(
@@ -1393,6 +1454,8 @@ async def _insert_fact_record(
         retention_class,
         sensitivity,
         embedding_model_version,
+        authority.authority if authority else None,
+        authority.entity_id if authority else None,
     )
 
 
@@ -1423,6 +1486,8 @@ async def store_fact(
     source_schema: str | None = None,
     enforce_consolidation_edge_allowlist: bool = False,
     consolidation_edge_classification: str | None = None,
+    content_authority: str | None = None,
+    authority_entity_id: uuid.UUID | None = None,
 ) -> dict:
     """Store a distilled fact with optional supersession.
 
@@ -1507,6 +1572,7 @@ async def store_fact(
     if enforce_consolidation_edge_allowlist and object_entity_id is not None:
         _validate_consolidation_narrative_edge(predicate, consolidation_edge_classification)
 
+    authority = await _stamp_authority(pool, content_authority, authority_entity_id)
     fact_id = uuid.uuid4()
     searchable = f"{subject} {predicate} {content}"
     embedding = embedding_engine.embed(searchable)
@@ -1789,7 +1855,7 @@ async def store_fact(
                 if object_entity_id is not None:
                     # Edge-fact: keyed on (tenant_id, entity_id, object_entity_id, scope, predicate)
                     existing = await conn.fetchrow(
-                        "SELECT id FROM facts "
+                        "SELECT id, content_authority FROM facts "
                         "WHERE tenant_id = $1 AND entity_id = $2 AND object_entity_id = $3 "
                         "AND scope = $4 AND predicate = $5 "
                         "AND validity IN ('active', 'fading') AND valid_at IS NULL"
@@ -1803,7 +1869,7 @@ async def store_fact(
                 elif entity_id is not None:
                     # Property-fact: keyed on (tenant_id, entity_id, scope, predicate)
                     existing = await conn.fetchrow(
-                        "SELECT id FROM facts "
+                        "SELECT id, content_authority FROM facts "
                         "WHERE tenant_id = $1 AND entity_id = $2 AND object_entity_id IS NULL "
                         "AND scope = $3 AND predicate = $4 "
                         "AND validity IN ('active', 'fading') AND valid_at IS NULL"
@@ -1815,7 +1881,7 @@ async def store_fact(
                     )
                 else:
                     existing = await conn.fetchrow(
-                        "SELECT id FROM facts "
+                        "SELECT id, content_authority FROM facts "
                         "WHERE tenant_id = $1 AND entity_id IS NULL "
                         "AND subject = $2 AND predicate = $3 "
                         "AND validity IN ('active', 'fading') AND valid_at IS NULL"
@@ -1833,6 +1899,14 @@ async def store_fact(
                     )
 
                 if existing:
+                    if is_owner_class(existing["content_authority"]) and authority.authority in (
+                        "third_party",
+                        "mixed",
+                    ):
+                        raise ValueError(
+                            "A non-owner-authored fact cannot supersede an owner-authored fact; "
+                            "store it under a distinct predicate or entity as an attributed report."
+                        )
                     old_id = existing["id"]
                     supersedes_id = old_id
                     superseded_ids.append(old_id)
@@ -1886,6 +1960,7 @@ async def store_fact(
                 retention_class=retention_class,
                 sensitivity=sensitivity,
                 embedding_model_version=embedding_engine.model_name,
+                authority=authority,
             )
 
             if entity_id is not None and object_entity_id is not None:
@@ -2020,6 +2095,7 @@ async def store_fact(
                             retention_class=retention_class,
                             sensitivity=sensitivity,
                             embedding_model_version=embedding_engine.model_name,
+                            authority=authority,
                         )
                         # The mirrored fact is itself a canonical edge-fact row
                         # (entity_id/object_entity_id both set by construction
@@ -2197,8 +2273,14 @@ async def store_rule(
     sensitivity: str = "normal",
     enable_shared_catalog: bool = False,
     source_schema: str | None = None,
+    content_authority: str | None = None,
+    authority_entity_id: uuid.UUID | None = None,
 ) -> uuid.UUID:
     """Store a new behavioral rule as a candidate.
+
+    A rule whose server-derived ``content_authority`` is not owner-class is
+    *held*: it is stored but invisible to recall, Active Rules and the discovery
+    catalog until the owner endorses it (see :func:`endorse_rule`).
 
     Rules start as candidates with confidence=0.5 and effectiveness_score=0.0.
     They progress through maturity levels (candidate -> established -> proven)
@@ -2226,10 +2308,14 @@ async def store_rule(
         source_schema: The butler schema name used as ``source_schema`` in the
             catalog row (e.g. ``'health'``).  Required when
             ``enable_shared_catalog=True``; ignored otherwise.
+        content_authority: Explicit server-derived authority (consolidation);
+            when omitted it is derived from the current runtime session.
+        authority_entity_id: Sender entity paired with an explicit authority.
 
     Returns:
         The UUID of the newly created rule.
     """
+    authority = await _stamp_authority(pool, content_authority, authority_entity_id)
     rule_id = uuid.uuid4()
     embedding = embedding_engine.embed(content)
     search_text = preprocess_text(content)
@@ -2243,12 +2329,12 @@ async def store_rule(
                            applied_count, success_count, harmful_count,
                            source_episode_id, source_butler, created_at, tags, metadata,
                            tenant_id, request_id, retention_class, sensitivity,
-                           embedding_model_version)
+                           embedding_model_version, content_authority, authority_entity_id)
         VALUES ($1, $2, $3, {tsvector_sql("$4")}, $5, 'candidate',
                 0.5, 0.01, 0.0,
                 0, 0, 0,
                 $6, $7, $8, $9, $10, $11, $12, $13, $14,
-                $15)
+                $15, $16, $17)
     """
 
     await pool.execute(
@@ -2268,12 +2354,15 @@ async def store_rule(
         retention_class,
         sensitivity,
         embedding_engine.model_name,
+        authority.authority,
+        authority.entity_id,
     )
 
     # -------------------------------------------------------------------------
     # Write-behind to public.memory_catalog (best-effort, non-blocking).
+    # A held rule is never cataloged; endorse_rule() writes its entry.
     # -------------------------------------------------------------------------
-    if enable_shared_catalog and source_schema:
+    if enable_shared_catalog and source_schema and is_owner_class(authority.authority):
         try:
             await _upsert_catalog(
                 pool,
@@ -3019,6 +3108,108 @@ async def retire_rule(
             if found:
                 await _cascade_catalog_disownment(conn, "rules", [rule_id])
     return found
+
+
+class RuleNotEndorsableError(ValueError):
+    """Raised when a retired or forgotten rule is presented for endorsement."""
+
+
+async def endorse_rule(
+    pool: Pool,
+    rule_id: uuid.UUID,
+    *,
+    endorsed_by: uuid.UUID | None,
+    memory_schema: str | None = None,
+) -> dict[str, Any] | None:
+    """Owner-endorse a held rule so it may steer sessions.
+
+    One transaction: lock the rule row, refuse a retired/forgotten rule (a later
+    correction or retirement wins), stamp ``endorsed_at``/``endorsed_by``, write
+    the ``rule_endorsed`` audit event, and upsert the rule's discovery-catalog
+    entry (clearing any stale marker).  Idempotent: an already-endorsed rule
+    returns its original receipt with ``changed=False`` and writes nothing.
+    A rule that already carries owner-class authority is active without
+    endorsement and returns the same no-change receipt.
+
+    Returns the receipt dict, or ``None`` when the rule does not exist.
+
+    Raises:
+        RuleNotEndorsableError: the rule is retired or forgotten.
+    """
+    table = _memory_relation("rule", memory_schema)
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                f"SELECT id, content_authority, endorsed_at, endorsed_by, retired_at,"
+                f" COALESCE((metadata->>'forgotten')::boolean, false) AS forgotten,"
+                f" tenant_id, sensitivity"
+                f" FROM {table} WHERE id = $1 FOR UPDATE",
+                rule_id,
+            )
+            if row is None:
+                return None
+            receipt: dict[str, Any] = {
+                "rule_id": rule_id,
+                "content_authority": row["content_authority"],
+                "endorsed_at": row["endorsed_at"],
+                "endorsed_by": row["endorsed_by"],
+                "changed": False,
+            }
+            if row["endorsed_at"] is not None or is_owner_class(row["content_authority"]):
+                return receipt
+            if row["retired_at"] is not None or row["forgotten"]:
+                raise RuleNotEndorsableError("retired or forgotten rules cannot be endorsed")
+
+            endorsed = await conn.fetchrow(
+                f"UPDATE {table} SET endorsed_at = now(), endorsed_by = $2"
+                f" WHERE id = $1 RETURNING endorsed_at",
+                rule_id,
+                endorsed_by,
+            )
+            receipt.update(endorsed_at=endorsed["endorsed_at"], endorsed_by=endorsed_by)
+            receipt["changed"] = True
+
+            await conn.execute(
+                """
+                INSERT INTO memory_events
+                    (event_type, actor, tenant_id, memory_type, memory_id, payload)
+                VALUES ('rule_endorsed', 'owner', $1, 'rule', $2, $3)
+                """,
+                row["tenant_id"],
+                rule_id,
+                {
+                    "endorsed_by": str(endorsed_by) if endorsed_by else None,
+                    "content_authority": row["content_authority"],
+                },
+            )
+
+            if await conn.fetchval(
+                "SELECT to_regclass('public.memory_catalog')"
+            ) is not None and not _is_catalog_write_excluded(row["sensitivity"]):
+                source_schema = memory_schema or await conn.fetchval("SELECT current_schema()")
+                await conn.execute(
+                    f"""
+                    INSERT INTO public.memory_catalog (
+                        source_schema, source_table, source_id, source_butler, tenant_id,
+                        entity_id, summary, embedding, search_vector, memory_type,
+                        title, scope, confidence, retention_class, sensitivity, updated_at
+                    )
+                    SELECT $1::text, 'rules', r.id, r.source_butler, r.tenant_id, NULL, r.content,
+                           r.embedding, r.search_vector, 'rule', LEFT(r.content, 100),
+                           r.scope, r.confidence, r.retention_class, r.sensitivity, now()
+                    FROM {table} r WHERE r.id = $2
+                    ON CONFLICT (source_schema, source_table, source_id) DO UPDATE SET
+                        summary = EXCLUDED.summary,
+                        embedding = EXCLUDED.embedding,
+                        search_vector = EXCLUDED.search_vector,
+                        confidence = EXCLUDED.confidence,
+                        invalid_at = NULL,
+                        updated_at = now()
+                    """,
+                    source_schema,
+                    rule_id,
+                )
+    return receipt
 
 
 # ---------------------------------------------------------------------------

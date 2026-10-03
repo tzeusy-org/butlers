@@ -837,3 +837,34 @@ is a deployability descriptor, not an orchestration-capability advertisement.
   `backfill.progress` MCP tools defined by the connector protocol
 - **AND** the available-connector discovery response SHALL not advertise
   backfill support or infer backfill behavior for any connector type
+
+### Requirement: Bearer material never persists
+
+Connectors and the Switchboard ingest boundary SHALL withhold bearer material (one-time codes,
+password-reset links, magic links, and Telegram login codes) from every persisted payload. Only the
+fact that an auth artifact arrived SHALL be kept, as a typed placeholder recording the artifact kind,
+the provider domain, and the observation time.
+
+#### Scenario: One-time code is replaced by a placeholder
+- **WHEN** an `ingest.v1` envelope whose text contains a one-time code (for example "Your code is 482913") reaches the ingest boundary
+- **THEN** `message_inbox.raw_payload` and `message_inbox.normalized_text` SHALL NOT contain the code
+- **AND** they SHALL contain a placeholder of the form `[auth-code withheld: <provider-domain>]`
+- **AND** `raw_payload.control.bearer_scrubbed` SHALL be `true` and `raw_payload.bearer_artifacts` SHALL list `{kind, provider_domain, observed_at}` records
+- **AND** the message SHALL still be routed by the unchanged policy decision
+
+#### Scenario: Ordinary numbers survive
+- **WHEN** a message contains order numbers, dates, or amounts that are not adjacent to code wording and not part of a reset or magic link
+- **THEN** the text SHALL be persisted unchanged
+
+#### Scenario: Scrubbing is idempotent
+- **WHEN** already-scrubbed text is scrubbed again
+- **THEN** no further change SHALL occur
+
+#### Scenario: Detector failure fails closed
+- **WHEN** the scrubber raises while processing an envelope
+- **THEN** the ingest boundary SHALL persist the message as metadata-only with `payload.raw` null and SHALL NOT persist the unscrubbed text
+
+#### Scenario: Connectors scrub before submit
+- **WHEN** a connector builds an `ingest.v1` envelope
+- **THEN** it SHOULD withhold bearer material from `payload.raw` and `payload.normalized_text` and set `control.bearer_scrubbed` to `true` when it did so
+- **AND** the Switchboard SHALL scrub again at ingest, so a connector that omits scrubbing does not cause persistence

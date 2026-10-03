@@ -47,7 +47,11 @@ from taking actions beyond their intended scope.
 - **External message senders.** Messages arriving through connectors (Telegram,
   Gmail, Discord) come from potentially unknown or impersonated senders. The
   identity resolution system maps sender identifiers to canonical contacts, but
-  does not authenticate them cryptographically.
+  does not authenticate them cryptographically. What a stranger writes may be
+  remembered as an attributed report about that sender, but it never becomes
+  steering memory: a rule or owner-profile fact that steers later sessions
+  requires owner authority, stamped by the server from the routing context (never
+  from message text, and never judged by an LLM) or explicit owner endorsement.
 - **Connector transport.** Messages in transit between external services and
   connectors are subject to the transport's own security model (Telegram's
   encryption, Gmail's TLS, etc.). Butlers does not add an additional encryption
@@ -209,6 +213,9 @@ general file-secret escape hatch.
 - Credentials must never appear in git-tracked configuration files.
 - Credentials must never appear in session logs or tool call payloads sent to
   the dashboard.
+- Inbound bearer material (one-time codes, password-reset and magic links, Telegram login codes)
+  must never be persisted in ingest payloads; only a typed placeholder recording that an auth
+  artifact arrived is kept (`openspec/specs/connector-base-spec`, "Bearer material never persists").
 - The credential store uses the database's access controls, not application-level
   encryption. This is consistent with the trust model: if the database is
   compromised, the attacker already has access to the data the credentials
