@@ -13,7 +13,7 @@ Covers:
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -3106,3 +3106,104 @@ async def test_catalog_search_graph_coverage_none_when_entity_has_no_edges(app, 
 
     assert resp.status_code == 200
     assert resp.json()["data"][0]["graph_coverage"] is None
+
+
+# ---------------------------------------------------------------------------
+# GET /api/memory/gaps (bu-q7vx1q.9)
+# ---------------------------------------------------------------------------
+
+
+def _gap_row(asked_at: datetime, *, predicate: str = "child_name") -> dict:
+    return {
+        "id": uuid.uuid4(),
+        "entity_id": uuid.uuid4(),
+        "entity_name": "Mei",
+        "predicate": predicate,
+        "question_summary": "What is Mei's daughter's name?",
+        "status": "open",
+        "coverage_state": "unknown",
+        "asked_at": asked_at,
+        "expires_at": asked_at + timedelta(days=90),
+        "answered_by_ref": None,
+        "delivery_failed": False,
+        "last_error": None,
+        "origins": [],
+    }
+
+
+class _GapDB:
+    butler_names = ["atlas", "memory", "broken"]
+
+    def pool(self, name: str):
+        return name
+
+
+def _wire_gaps(app, monkeypatch, per_pool: dict[str, list[dict] | Exception]):
+    """Serve each pool's gaps through the real keyset filter; a pool may raise."""
+
+    async def fake_list_gaps(pool, *, statuses, limit, after, memory_schema):
+        outcome = per_pool[pool]
+        if isinstance(outcome, Exception):
+            raise outcome
+        rows = sorted(outcome, key=lambda g: (g["asked_at"], g["id"]), reverse=True)
+        if after is not None:
+            rows = [g for g in rows if (g["asked_at"], g["id"]) < after]
+        return rows[:limit]
+
+    monkeypatch.setattr("butlers.modules.memory.knowledge_gaps.list_gaps", fake_list_gaps)
+    app.dependency_overrides[_get_db_manager] = lambda: _GapDB()
+
+
+async def _get_gaps(app, **params):
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        return await client.get("/api/memory/gaps", params=params)
+
+
+async def test_gaps_keyset_pages_merge_pools_newest_first(app, monkeypatch):
+    rows = [_gap_row(_NOW - timedelta(hours=h)) for h in range(5)]
+    _wire_gaps(
+        app,
+        monkeypatch,
+        {"atlas": rows[0::2], "memory": rows[1::2], "broken": []},
+    )
+
+    first = (await _get_gaps(app, limit=2)).json()
+    second = (await _get_gaps(app, limit=2, cursor=first["meta"]["next_cursor"])).json()
+    last = (await _get_gaps(app, limit=2, cursor=second["meta"]["next_cursor"])).json()
+
+    ids = [g["gap_id"] for page in (first, second, last) for g in page["data"]]
+    assert ids == [str(r["id"]) for r in rows]
+    assert [first["meta"]["has_more"], second["meta"]["has_more"], last["meta"]["has_more"]] == [
+        True,
+        True,
+        False,
+    ]
+    assert last["meta"]["next_cursor"] is None
+    assert {g["butler"] for g in first["data"]} == {"atlas", "memory"}
+
+
+async def test_gaps_name_a_failing_pool_instead_of_reading_as_empty(app, monkeypatch):
+    _wire_gaps(
+        app,
+        monkeypatch,
+        {
+            "atlas": [_gap_row(_NOW)],
+            "memory": [],
+            "broken": RuntimeError("connection reset"),
+        },
+    )
+
+    resp = await _get_gaps(app)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["data"]) == 1
+    assert body["meta"]["sources_degraded"] == ["broken"]
+
+
+async def test_gaps_reject_a_malformed_cursor(app, monkeypatch):
+    _wire_gaps(app, monkeypatch, {"atlas": [], "memory": [], "broken": []})
+
+    assert (await _get_gaps(app, cursor="not-a-cursor")).status_code == 400

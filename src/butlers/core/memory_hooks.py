@@ -65,6 +65,7 @@ class MemorySessionRuntime:
 
     context: Callable[..., Coroutine[Any, Any, str | None]]
     store_episode: Callable[..., Coroutine[Any, Any, bool]]
+    record_gap: Callable[..., Coroutine[Any, Any, dict[str, Any]]] | None = None
 
 
 @dataclass(frozen=True)
@@ -129,6 +130,7 @@ def register_memory_session_runtime(
     *,
     context: Callable[..., Coroutine[Any, Any, str | None]],
     store_episode: Callable[..., Coroutine[Any, Any, bool]],
+    record_gap: Callable[..., Coroutine[Any, Any, dict[str, Any]]] | None = None,
 ) -> MemorySessionRuntime:
     """Register one daemon's started memory session runtime.
 
@@ -138,7 +140,9 @@ def register_memory_session_runtime(
     :func:`unregister_memory_session_runtime`.
     """
     owner = _normalize_memory_session_owner(butler_name)
-    runtime = MemorySessionRuntime(context=context, store_episode=store_episode)
+    runtime = MemorySessionRuntime(
+        context=context, store_episode=store_episode, record_gap=record_gap
+    )
     _memory_session_runtimes[owner] = runtime
     return runtime
 
@@ -314,6 +318,19 @@ async def store_session_episode(
     )
 
 
+async def record_knowledge_gap(butler_name: str, **gap: Any) -> dict[str, Any]:
+    """Record an owner knowledge gap through the invoking butler's memory module.
+
+    Returns ``{"status": "unavailable"}`` when the butler has no memory module, so the
+    decline reply that carried the gap is never blocked by it.  Rejections from the
+    module (unknown entity, unregistered predicate) surface as ``{"status": "refused"}``.
+    """
+    runtime = _resolve_memory_session_runtime(butler_name)
+    if runtime is None or runtime.record_gap is None:
+        return {"status": "unavailable"}
+    return await runtime.record_gap(**gap)
+
+
 async def search_memory_catalog(
     pool: Any,
     query: str,
@@ -378,6 +395,12 @@ async def consolidate_memory(
         batch_size=batch_size,
         enable_shared_catalog=enable_shared_catalog,
     )
+
+
+def resolve_memory_dispatch_butler_name() -> str:
+    """Return the butler whose scheduled job is running (the ambient dispatch identity)."""
+    _runtime, dispatch = _resolve_memory_maintenance_runtime()
+    return dispatch.butler_name
 
 
 def resolve_memory_runtime_pool() -> Any:

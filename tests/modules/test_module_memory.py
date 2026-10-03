@@ -332,7 +332,7 @@ class TestLifecycle:
 
         captured_hook: dict[str, Any] = {}
 
-        def _fake_register_session_runtime(owner, *, context, store_episode):
+        def _fake_register_session_runtime(owner, *, context, store_episode, **_):
             captured_hook["owner"] = owner
             captured_hook["context"] = context
             captured_hook["store_episode"] = store_episode
@@ -385,7 +385,7 @@ class TestLifecycle:
             lambda *args, **kwargs: MagicMock(),
         )
 
-        def _register_session_runtime(owner, *, context, store_episode):
+        def _register_session_runtime(owner, *, context, store_episode, **_):
             captured_hook["owner"] = owner
             captured_hook["context"] = context
             captured_hook["store_episode"] = store_episode
@@ -602,6 +602,7 @@ EXPECTED_TOOL_NAMES = {
     "memory_catalog_search",
     "memory_set_preference",
     "memory_get_preferences",
+    "memory_open_gaps",
     # admin: re-embedding migration tools (added in bu-jt6ey / bu-a6zpb)
     "memory_reembed",
     "memory_reembed_pending_count",
@@ -1360,14 +1361,14 @@ class TestToolGroups:
         assert len(tools) == len(EXPECTED_TOOL_NAMES)
 
     async def test_core_only(self):
-        """groups=['core'] registers only the 8 core tools."""
+        """groups=['core'] registers only the 9 core tools."""
         mod = MemoryModule()
         mcp = RuntimeFastMCP("test")
         config = MemoryModuleConfig(groups=["core"])
         await mod.register_tools(mcp, config, MagicMock(), "test-butler")
         tools = await mcp.list_tools()
         tool_names = {t.name for t in tools}
-        assert len(tools) == 8
+        assert len(tools) == 9
         assert "memory_search" in tool_names
         assert "memory_store_fact" in tool_names
         assert "memory_context" in tool_names
@@ -1376,14 +1377,14 @@ class TestToolGroups:
         assert "memory_stats" not in tool_names
 
     async def test_core_plus_entity(self):
-        """groups=['core', 'entity'] registers 15 tools."""
+        """groups=['core', 'entity'] registers 16 tools."""
         mod = MemoryModule()
         mcp = RuntimeFastMCP("test")
         config = MemoryModuleConfig(groups=["core", "entity"])
         await mod.register_tools(mcp, config, MagicMock(), "test-butler")
         tools = await mcp.list_tools()
         tool_names = {t.name for t in tools}
-        assert len(tools) == 15  # 8 core + 7 entity
+        assert len(tools) == 16  # 9 core + 7 entity
         assert "memory_entity_create" in tool_names
         assert "memory_catalog_search" in tool_names
         assert "memory_stats" not in tool_names  # admin

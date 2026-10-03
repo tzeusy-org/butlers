@@ -100,6 +100,64 @@ def _best_effort_tool_calls(session_id: UUID | None) -> list[dict[str, Any]] | N
     ]
 
 
+def _best_effort_source_channel() -> str | None:
+    """The source channel of the ambient routing context (server-set, never an argument)."""
+    routing_context = get_current_runtime_session_routing_context()
+    request_context = (routing_context or {}).get("request_context")
+    channel = request_context.get("source_channel") if isinstance(request_context, dict) else None
+    return channel if isinstance(channel, str) and channel else None
+
+
+async def _record_knowledge_gap(
+    pool: Any,
+    *,
+    butler_name: str,
+    gap: dict[str, Any],
+    conversation_id: UUID,
+    request_id: UUID | None,
+    has_sources: bool,
+) -> dict[str, Any]:
+    """Record the gap carried by a sourceless decline; never raises.
+
+    The origin (conversation, request, channel) comes from the server-side routing
+    context and the question from the owner's own latest message, not from anything
+    the model supplied beyond the typed ``(entity_id, predicate)``.
+    """
+    from butlers.core.memory_hooks import record_knowledge_gap
+
+    if has_sources:
+        return {
+            "status": "refused",
+            "error": "a gap is accepted only on a decline without sources",
+        }
+    try:
+        entity_id = UUID(str(gap.get("entity_id")))
+        predicate = str(gap["predicate"]).strip()
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return {"status": "refused", "error": "gap needs a valid entity_id and a predicate"}
+    channel = _best_effort_source_channel()
+    if channel is None:
+        return {"status": "refused", "error": "no routing context for this session"}
+    try:
+        question = await pool.fetchval(
+            "SELECT content FROM public.dashboard_messages"
+            " WHERE conversation_id = $1 AND role = 'user' ORDER BY created_at DESC LIMIT 1",
+            conversation_id,
+        )
+        return await record_knowledge_gap(
+            butler_name,
+            entity_id=entity_id,
+            predicate=predicate,
+            question_summary=question or "",
+            conversation_id=conversation_id,
+            request_id=request_id,
+            channel=channel,
+        )
+    except Exception:
+        logger.exception("conversation_reply: failed to record knowledge gap")
+        return {"status": "error", "error": "the gap could not be recorded"}
+
+
 def register_conversation_reply_tool(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> None:
     """Register the ``conversation_reply`` MCP tool (group: infra, always-on)."""
     pool = ctx.pool
@@ -137,6 +195,17 @@ def register_conversation_reply_tool(ctx: ToolContext, mcp: Any, _core_tool: Cal
                     "an empty/blank citation is rejected, since an unsourced "
                     "'answer' is indistinguishable from a fabricated one; give an "
                     "honest decline instead."
+                )
+            ),
+        ] = None,
+        gap: Annotated[
+            dict[str, str] | None,
+            Field(
+                description=(
+                    "Answer-lane decline only: {entity_id, predicate} naming the entity and "
+                    "registered predicate you could not answer, so the question is remembered "
+                    "and answered in this thread once the fact is known. Accepted only with "
+                    "NO `sources`."
                 )
             ),
         ] = None,
@@ -208,4 +277,18 @@ def register_conversation_reply_tool(ctx: ToolContext, mcp: Any, _core_tool: Cal
                 "error": f"Conversation {conv_uuid} does not exist",
             }
 
-        return {"status": "ok", "message_id": str(msg["id"]), "conversation_id": str(conv_uuid)}
+        result: dict[str, Any] = {
+            "status": "ok",
+            "message_id": str(msg["id"]),
+            "conversation_id": str(conv_uuid),
+        }
+        if gap is not None:
+            result["gap"] = await _record_knowledge_gap(
+                pool,
+                butler_name=butler_name,
+                gap=gap,
+                conversation_id=conv_uuid,
+                request_id=request_id,
+                has_sources=bool(normalization.legacy_sources or normalization.citations),
+            )
+        return result

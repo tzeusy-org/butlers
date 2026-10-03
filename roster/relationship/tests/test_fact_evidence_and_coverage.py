@@ -714,6 +714,94 @@ class TestPredicateCoverage:
                 )
 
 
+async def _apply_knowledge_gap_schema(pool: asyncpg.Pool) -> None:
+    """Run the real mem_014 DDL, so this fixture cannot drift from the migration."""
+    import importlib.util
+    from pathlib import Path
+
+    path = Path("src/butlers/modules/memory/migrations/014_knowledge_gaps.py")
+    spec = importlib.util.spec_from_file_location("mem_014_for_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    statements: list[str] = []
+    module.op = type("Op", (), {"execute": staticmethod(statements.append)})
+    module.upgrade()
+    for statement in statements:
+        await pool.execute(statement)
+
+
+@pytest.mark.integration
+@_docker
+@_session_loop
+class TestKnowledgeGapClosure:
+    async def _open_gap(self, pool, entity, predicate=_PRED_HAS_PHONE):
+        await _apply_knowledge_gap_schema(pool)
+        return await pool.fetchval(
+            "INSERT INTO knowledge_gaps (entity_id, predicate, question_summary)"
+            " VALUES ($1, $2, 'What is Alice phone?') RETURNING id",
+            entity,
+            predicate,
+        )
+
+    async def test_assert_answers_the_open_gap_in_the_same_transaction(self, pool, entity):
+        gap_id = await self._open_gap(pool, entity)
+
+        async with pool.acquire() as conn:
+            tx = conn.transaction()
+            await tx.start()
+            await relationship_assert_fact(
+                pool, entity, _PRED_HAS_PHONE, "+15550100", src="test", conn=conn
+            )
+            await tx.rollback()
+        assert await pool.fetchval("SELECT status FROM knowledge_gaps WHERE id = $1", gap_id) == (
+            "open"
+        )
+
+        result = await relationship_assert_fact(
+            pool, entity, _PRED_HAS_PHONE, "+15550100", src="test"
+        )
+        gap = await pool.fetchrow("SELECT * FROM knowledge_gaps WHERE id = $1", gap_id)
+        assert (gap["status"], gap["answered_by_ref"], gap["answered_value"]) == (
+            "answerable",
+            f"entity_fact:{result.fact_id}",
+            "+15550100",
+        )
+        assert gap["answered_authority"] == "system"  # no routing context: a job, not a sender
+
+    async def test_a_closure_failure_leaves_the_fact_written(self, pool, entity, monkeypatch):
+        from butlers.modules.memory import knowledge_gaps
+
+        gap_id = await self._open_gap(pool, entity)
+
+        async def boom(*_a, **_kw):
+            raise RuntimeError("lock service down")
+
+        monkeypatch.setattr(knowledge_gaps, "_lock_pair", boom)
+
+        result = await relationship_assert_fact(
+            pool, entity, _PRED_HAS_PHONE, "+15550100", src="test"
+        )
+
+        assert result.outcome is AssertOutcome.inserted
+        assert await pool.fetchval("SELECT status FROM knowledge_gaps WHERE id = $1", gap_id) == (
+            "open"
+        )
+
+    async def test_an_unchanged_reassertion_does_not_answer_again(self, pool, entity):
+        gap_id = await self._open_gap(pool, entity)
+        await relationship_assert_fact(pool, entity, _PRED_HAS_PHONE, "+15550100", src="test")
+        await pool.execute("UPDATE knowledge_gaps SET status = 'delivered' WHERE id = $1", gap_id)
+
+        again = await relationship_assert_fact(
+            pool, entity, _PRED_HAS_PHONE, "+15550100", src="test"
+        )
+
+        assert again.outcome is AssertOutcome.unchanged
+        assert await pool.fetchval("SELECT status FROM knowledge_gaps WHERE id = $1", gap_id) == (
+            "delivered"
+        )
+
+
 # ---------------------------------------------------------------------------
 # MCP surface
 # ---------------------------------------------------------------------------
