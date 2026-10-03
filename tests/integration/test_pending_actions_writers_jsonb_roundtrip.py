@@ -97,6 +97,13 @@ async def pending_actions_pool(provisioned_postgres_pool):
         # Shared declaration, not a local column list: a local one only covers
         # today's queries and breaks silently when the chain widens (bu-r8opr).
         await pool.execute(CONNECTOR_REGISTRY.ddl())
+        # notify() reads the recipient's posture from public.entities before it
+        # resolves an identifier (bu-q7vx1q.8); an unreadable posture fails closed,
+        # so this fixture needs the one column that read touches.
+        await pool.execute(
+            "CREATE TABLE IF NOT EXISTS public.entities ("
+            "id UUID PRIMARY KEY, posture TEXT NOT NULL DEFAULT 'active')"
+        )
         # Token rotation is rejected before a pending action can be created.
         # Its refusal is an audit event, so provision the canonical table the
         # route writes in the normal (non-migration-error) path.

@@ -17,6 +17,7 @@ from pydantic import Field
 
 from butlers.config import ButlerType
 from butlers.core.attention_ledger import get_suppressing_context, record_attention_event
+from butlers.core.entity_posture import EGRESS_BLOCKED_POSTURES, fetch_entity_posture
 from butlers.core.permissions import NOTIFY_PERMISSION, check_permission
 from butlers.core.scheduler import schedule_create as _schedule_create
 from butlers.core.telemetry import tool_span
@@ -74,6 +75,61 @@ def _coerce_request_context(value: Any) -> tuple[dict[str, Any] | None, str | No
         f"request_context must be an object/dict, got {type(value).__name__}. "
         f"{_REQUEST_CONTEXT_KEYS_HINT}"
     )
+
+
+async def _recipient_posture_refusal(
+    pool: Any,
+    *,
+    entity_id: uuid.UUID,
+    butler_name: str,
+    channel: str,
+    intent: str,
+    priority: str,
+    session_id: str | None,
+) -> dict[str, Any] | None:
+    """Return a ``recipient_posture`` refusal when the owner forbids sending to the entity.
+
+    Memorial and no_contact recipients are refused before any identifier lookup,
+    approval parking or delivery row exists. A failed posture read refuses too:
+    "unknown" is never read as "active". The refusal and the ledger row carry no
+    posture value, only the code.
+    """
+    reason = "recipient_posture"
+    try:
+        if pool is None:
+            raise RuntimeError("no database pool to read recipient posture")
+        posture = await fetch_entity_posture(pool, entity_id)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "notify() could not read recipient posture; refusing delivery (entity_id=%s)",
+            entity_id,
+            exc_info=True,
+        )
+        reason = "recipient_posture_unreadable"
+    else:
+        if posture not in EGRESS_BLOCKED_POSTURES:
+            return None
+    await record_attention_event(
+        pool,
+        origin_butler=butler_name,
+        source="notify",
+        outcome="failed",
+        channel=channel,
+        intent=intent,
+        priority=priority,
+        reason=reason,
+        metadata={"entity_id": str(entity_id), "retryable": False},
+        session_id=session_id,
+    )
+    return {
+        "status": "error",
+        "code": "recipient_posture",
+        "error": (
+            f"Cannot deliver to entity {entity_id}: the owner's contact posture for this "
+            "person does not allow outbound messages (or could not be verified). "
+            "Nothing was queued, parked for approval or sent. Do not retry or route around it."
+        ),
+    }
 
 
 def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> None:
@@ -361,6 +417,9 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
               parking is available for this butler, the notification is parked as a pending_action
               and `{"status": "pending_missing_identifier"}` is returned. Otherwise notify()
               fails closed without creating a pending action or owner notification.
+              If the owner has marked the entity memorial or no_contact (or the posture cannot
+              be read), notify() returns `{"status": "error", "code": "recipient_posture"}`
+              before any identifier lookup, approval parking or delivery.
             - `subject` (string)
             - `intent` (string enum): `send` | `reply` | `react` | `insight`
             - `emoji` (string): required when `intent="react"`
@@ -548,6 +607,17 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
             # (2) recipient string → use as-is (inside _resolve_default_notify_recipient)
             # (3) neither → resolve owner entity's channel identifier (default path)
             if entity_id is not None:
+                posture_refusal = await _recipient_posture_refusal(
+                    _notify_pool,
+                    entity_id=entity_id,
+                    butler_name=butler_name,
+                    channel=channel,
+                    intent=intent,
+                    priority=priority,
+                    session_id=_ledger_session_id,
+                )
+                if posture_refusal is not None:
+                    return posture_refusal
                 entity_identifier = await daemon._resolve_entity_channel_identifier(
                     entity_id=entity_id,
                     channel=channel,
