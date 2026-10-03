@@ -1545,3 +1545,87 @@ class TestUnknownProviderRejected:
         assert result["status"] == "rejected_unknown_provider"
         mock_store.assert_not_awaited()
         assert mock_counter.labels.call_args.kwargs.get("outcome") == ("rejected_unknown_provider")
+
+
+# ---------------------------------------------------------------------------
+# Workout sessions
+# ---------------------------------------------------------------------------
+
+
+def _make_workout_envelope(
+    session_id: str = "run-1",
+    sender_identity: str = "user@example.com",
+    raw: dict | None = None,
+) -> dict:
+    return {
+        "schema_version": "ingest.v1",
+        "source": {
+            "channel": "wellness",
+            "provider": "google_health",
+            "endpoint_identity": f"google_health:user:{sender_identity}",
+        },
+        "event": {
+            "external_event_id": f"google_health:{sender_identity}:workout_session:{session_id}",
+            "external_thread_id": None,
+            "observed_at": "2026-04-24T08:00:00Z",
+        },
+        "sender": {"identity": sender_identity},
+        "payload": {
+            "raw": raw
+            if raw is not None
+            else {
+                "session_id": session_id,
+                "startTime": "2026-04-24T07:00:00Z",
+                "endTime": "2026-04-24T07:45:00Z",
+                "durationMillis": 2_700_000,
+                "activity_type": "running",
+                "detection": "auto",
+                "calories": 410.5,
+                "distance_m": 7200.0,
+                "average_heart_rate": 152,
+            },
+            "normalized_text": "Workout: running (45m)",
+        },
+        "control": {
+            "idempotency_key": f"google_health:{sender_identity}:workout:{session_id}",
+            "policy_tier": "default",
+            "ingestion_tier": "full",
+        },
+    }
+
+
+class TestWorkoutSession:
+    async def test_writes_one_workout_session_fact(self) -> None:
+        result, mock_store, _ = await _call_translate(_make_workout_envelope())
+
+        assert result["status"] == "ok"
+        assert result["predicate"] == "workout_session"
+        mock_store.assert_awaited_once()
+        kwargs = mock_store.await_args.kwargs
+        assert kwargs["predicate"] == "workout_session"
+        assert kwargs["valid_at"] == "2026-04-24T07:00:00Z"
+        assert kwargs["idempotency_key"] == "google_health:user@example.com:workout:run-1"
+        meta = kwargs["metadata"]
+        assert meta["activity_type"] == "running"
+        assert meta["duration_ms"] == 2_700_000
+        assert meta["end_time"] == "2026-04-24T07:45:00Z"
+        assert meta["detection"] == "auto"
+        assert meta["average_heart_rate"] == 152
+        assert meta["source"] == "google_health"
+
+    async def test_zero_duration_is_malformed(self) -> None:
+        envelope = _make_workout_envelope(
+            raw={"session_id": "x", "startTime": "2026-04-24T07:00:00Z", "durationMillis": 0}
+        )
+        result, mock_store, _ = await _call_translate(envelope)
+
+        assert result["status"] == "skipped_malformed_payload"
+        mock_store.assert_not_awaited()
+
+    async def test_non_owner_sender_rejected(self) -> None:
+        result, mock_store, _ = await _call_translate(
+            _make_workout_envelope(sender_identity="stranger@example.com")
+        )
+
+        assert result["status"] == "rejected_non_owner_sender"
+        mock_store.assert_not_awaited()
