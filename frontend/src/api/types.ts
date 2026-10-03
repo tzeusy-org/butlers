@@ -4583,6 +4583,21 @@ export interface IngestionHistogramResponse {
   bucket: IngestionHistogramBucketSize;
 }
 
+/**
+ * Response from GET /api/ingestion/events/dropped-known.
+ *
+ * `available=false` means the filtered-event store could not be read: the
+ * counts are then meaningless and must never be rendered as zero.
+ */
+export interface IngestionDroppedKnownSummary {
+  available: boolean;
+  window: string;
+  /** Messages from known contacts dropped by a gate and not yet replayed. */
+  dropped: number;
+  /** Distinct (rule, sender) cases behind `dropped`. */
+  episodes: number;
+}
+
 /** One replay attempt entry from public.audit_log. */
 export interface IngestionEventReplayHistoryEntry {
   ts: string;

@@ -40,6 +40,7 @@ import asyncpg
 import pytest
 
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
+from butlers.core.ingestion_events import ingestion_dropped_known_summary
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
@@ -259,3 +260,82 @@ async def test_buggy_write_path_would_have_corrupted_full_payload_into_a_string(
         f"STRING but got {type(stored).__name__!r}: {stored!r}"
     )
     assert json.loads(stored)["payload"]["normalized_text"] == "Hello"
+
+
+def _known_drop_payload(message_id: str, *, marked: bool) -> dict:
+    return FilteredEventBuffer.full_payload(
+        channel="email",
+        provider="gmail",
+        endpoint_identity="gmail:user:alice@example.com",
+        external_event_id=message_id,
+        external_thread_id=None,
+        observed_at="2026-03-11T10:00:00Z",
+        sender_identity="friend@known.example",
+        raw={},
+        normalized_text="Hello",
+        important_dropped_basis="known_contact" if marked else None,
+    )
+
+
+@pytest.mark.pg_clock
+async def test_dropped_known_summary_counts_open_marked_drops_only(pool: asyncpg.Pool) -> None:
+    """Marked, still-unanswered drops count; unmarked, replayed and pending ones do not,
+    and one (rule, sender) pair is a single episode however many messages it dropped."""
+    buf = FilteredEventBuffer(
+        connector_type="gmail", endpoint_identity="gmail:user:alice@example.com"
+    )
+    block = FilteredEventBuffer.reason_policy_rule("connector_rule", "block", "sender_domain")
+    skip = FilteredEventBuffer.reason_policy_rule("global_rule", "skip", "keyword")
+    for message_id, reason, status, marked in [
+        ("m-open-1", block, "filtered", True),
+        ("m-open-2", block, "filtered", True),
+        ("m-open-3", skip, "replay_failed", True),
+        ("m-unmarked", block, "filtered", False),
+        ("m-replayed", block, "replay_complete", True),
+        ("m-pending", block, "replay_pending", True),
+    ]:
+        buf.record(
+            external_message_id=message_id,
+            source_channel="email",
+            sender_identity="friend@known.example",
+            subject_or_preview="Hello",
+            filter_reason=reason,
+            status=status,
+            full_payload=_known_drop_payload(message_id, marked=marked),
+        )
+    await buf.flush(pool)
+
+    summary = await ingestion_dropped_known_summary(pool, from_dt=datetime(2000, 1, 1, tzinfo=UTC))
+
+    assert summary == {"dropped": 3, "episodes": 2}
+
+
+@pytest.mark.pg_clock
+async def test_replay_of_marked_drop_submits_clean_envelope(pool: asyncpg.Pool) -> None:
+    """The stored drop_context marker is stripped on replay so the envelope still validates."""
+    buf = FilteredEventBuffer(
+        connector_type="gmail", endpoint_identity="gmail:user:alice@example.com"
+    )
+    buf.record(
+        external_message_id="m-replay",
+        source_channel="email",
+        sender_identity="friend@known.example",
+        subject_or_preview="Hello",
+        filter_reason=FilteredEventBuffer.reason_policy_rule("global_rule", "skip", "keyword"),
+        status="replay_pending",
+        full_payload=_known_drop_payload("m-replay", marked=True),
+    )
+    await buf.flush(pool)
+
+    submitted: list[dict] = []
+
+    async def _submit(envelope: dict) -> None:
+        submitted.append(envelope)
+
+    await drain_replay_pending(pool, "gmail", "gmail:user:alice@example.com", _submit)
+
+    assert len(submitted) == 1
+    assert "drop_context" not in submitted[0]
+    # Once replayed the drop is answered, so it no longer counts as outstanding harm.
+    summary = await ingestion_dropped_known_summary(pool, from_dt=datetime(2000, 1, 1, tzinfo=UTC))
+    assert summary == {"dropped": 0, "episodes": 0}

@@ -151,6 +151,19 @@ class IngestionHistogramResponse(BaseModel):
     bucket: str
 
 
+class IngestionDroppedKnownSummary(BaseModel):
+    """Response body for GET /api/ingestion/events/dropped-known.
+
+    ``available=False`` means the filtered-event store could not be read; the
+    counts are then meaningless and consumers must not render them as zero.
+    """
+
+    available: bool
+    window: str
+    dropped: int = 0
+    episodes: int = 0
+
+
 class IngestionEventSession(BaseModel):
     """A butler session linked to an ingestion event."""
 

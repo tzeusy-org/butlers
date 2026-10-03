@@ -1693,6 +1693,37 @@ def ingestion_event_rollup(
     }
 
 
+# Statuses where a marked drop is still unanswered: replay_pending is in flight and
+# replay_complete is resolved, so neither counts as outstanding harm.
+_DROPPED_KNOWN_OPEN_STATUSES = ["filtered", "replay_failed"]
+
+
+async def ingestion_dropped_known_summary(
+    pool: asyncpg.Pool, *, from_dt: datetime
+) -> dict[str, int]:
+    """Count unanswered drops of messages from known contacts since ``from_dt``.
+
+    Reads the ``drop_context.important_dropped`` marker connectors stamp on
+    ``connectors.filtered_events.full_payload``. ``episodes`` counts distinct
+    ``(filter_reason, sender_identity)`` pairs so one noisy rule and sender is
+    one case, not one per message. Raises on database failure; callers decide
+    how to degrade (the aggregate must never read as zero when it is unknown).
+    """
+    row = await pool.fetchrow(
+        """
+        SELECT count(*) AS dropped,
+               count(DISTINCT (filter_reason, sender_identity)) AS episodes
+        FROM connectors.filtered_events
+        WHERE received_at >= $1
+          AND status = ANY($2::text[])
+          AND full_payload #>> '{drop_context,important_dropped}' = 'true'
+        """,
+        from_dt,
+        _DROPPED_KNOWN_OPEN_STATUSES,
+    )
+    return {"dropped": int(row["dropped"]), "episodes": int(row["episodes"])}
+
+
 async def ingestion_window_rollup(
     pool: asyncpg.Pool,
     *,
