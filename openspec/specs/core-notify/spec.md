@@ -694,3 +694,11 @@ That reader SHALL NOT fail open. A ledger that cannot be read SHALL surface as a
 - **THEN** the reader SHALL return nothing
 - **AND WHEN** the ledger cannot be read at all
 - **THEN** the reader SHALL raise rather than return nothing, so a caller cannot mistake an unreadable ledger for a confirmed absence
+
+### Requirement: Attention Ledger Outcomes for Premise-Bound Speech
+The `public.attention_ledger` outcome vocabulary SHALL additionally contain `withdrawn` (a proactive insight was held back before sending because the fact it asserted stopped being true) and `amended` (an already-delivered insight was edited in place for the same reason). Both are written only by the `insight` source with `intent="insight"`, are corrections rather than failures or chosen quiet-hours holds, and MUST NOT be conflated with `suppressed`, `deferred` or `failed`. `GET /api/attention/ledger` SHALL accept both as `outcome` filters, and the zero-filled outcome counts SHALL include both keys. This requirement does not introduce a `notify.v1` `amend` intent; insight amendments use the Switchboard `amend_delivery` channel operation (see the insight-delivery capability).
+
+#### Scenario: Withdrawn and amended rows are distinguishable from failures
+- **WHEN** a premise-false candidate is withdrawn, or a delivered insight is amended in place
+- **THEN** the ledger row carries `outcome="withdrawn"` or `outcome="amended"` respectively, never `failed` or `suppressed`
+

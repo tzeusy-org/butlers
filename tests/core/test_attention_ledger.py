@@ -190,6 +190,8 @@ class TestCountAttentionEventsSince:
             "deferred": 0,
             "failed": 0,
             "expired": 0,
+            "withdrawn": 0,
+            "amended": 0,
             "suppressed": 0,
         }
 
@@ -208,6 +210,8 @@ class TestCountAttentionEventsSince:
             "deferred": 0,
             "failed": 0,
             "expired": 0,
+            "withdrawn": 0,
+            "amended": 0,
             "suppressed": 1,
         }
 
@@ -221,6 +225,8 @@ class TestCountAttentionEventsSince:
             "deferred": 0,
             "failed": 0,
             "expired": 0,
+            "withdrawn": 0,
+            "amended": 0,
             "suppressed": 0,
         }
 

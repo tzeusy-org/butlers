@@ -17,6 +17,7 @@ The module SHALL register MCP tools for send and reply operations.
   - `telegram_send_message` (send a message to a chat)
   - `telegram_reply_to_message` (reply to a specific message in a chat)
   - `telegram_react_to_message` (set an emoji reaction on a specific message via `chat_id`, `message_id`, `emoji`)
+  - `telegram_edit_message_text` (edit the text of a message the bot already sent via `chat_id`, `message_id`, `text`)
 
 ### Requirement: Output-Only Module Design
 
@@ -115,3 +116,15 @@ The Telegram module SHALL support sending a message with an inline keyboard so t
 - **WHEN** the owner taps Approve on the inline keyboard
 - **THEN** the corresponding pending action transitions to `approved` and executes via the standard approved-action executor
 - **AND** the originating message is updated to reflect the resolved state
+
+### Requirement: Edit Message Text Tool
+`telegram_edit_message_text` SHALL call Telegram `editMessageText` with the supplied `chat_id` and `message_id`, rendering `text` through the same Markdown-to-HTML conversion as sends (so `~~text~~` renders struck through). It SHALL be permission-gated by the same `notify` capability as sends. A Telegram HTTP 400 (message too old, unchanged, or not editable) SHALL be returned as `{"edited": false, "error_code": 400, "description": <Telegram description>}` and SHALL NOT raise; success returns `{"edited": true, ...}`; every other failure SHALL raise so the caller may retry.
+
+#### Scenario: Edit uses the stored message id
+- **WHEN** the tool is called with a stored `chat_id` and `message_id`
+- **THEN** one `editMessageText` request is sent carrying exactly those identifiers and the converted text
+
+#### Scenario: A 400 falls back instead of failing
+- **WHEN** Telegram answers HTTP 400
+- **THEN** the tool returns `edited=false` with `error_code=400` so the caller can fold the correction into a later digest
+

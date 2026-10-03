@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import secrets
 import uuid
@@ -859,3 +860,79 @@ async def deliver(
             "result": route_result.get("result"),
             **_transport_fragment(transport_result_from_envelope(route_result)),
         }
+
+
+def _find_edit_verdict(value: Any, depth: int = 0) -> bool | None:
+    """Locate the ``edited`` flag ``telegram_edit_message_text`` returns, however wrapped."""
+    if depth > 6:
+        return None
+    if isinstance(value, str) and value.lstrip().startswith(("{", "[")):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return None
+    if isinstance(value, dict):
+        edited = value.get("edited")
+        if isinstance(edited, bool):
+            return edited
+        children: Any = value.values()
+    elif isinstance(value, list):
+        children = value
+    else:
+        return None
+    for child in children:
+        verdict = _find_edit_verdict(child, depth + 1)
+        if verdict is not None:
+            return verdict
+    return None
+
+
+async def amend_delivery(
+    pool: asyncpg.Pool,
+    *,
+    chat_id: str,
+    message_id: int,
+    text: str,
+    source_butler: str = "switchboard",
+    call_fn: Any | None = None,
+) -> dict[str, Any]:
+    """Edit a previously delivered Telegram message in place (bu-q7vx1q.5).
+
+    Routes ``telegram_edit_message_text`` to the butler that owns the telegram
+    module, exactly as :func:`deliver` routes a send, so transport stays in the
+    channel module. Returns ``{"status": "edited"}`` when Telegram accepted the
+    edit, ``{"status": "rejected"}`` when it refused (a 400: message too old or
+    not editable -- the caller folds the correction into its next digest), and
+    ``{"status": "error", "error": ...}`` for anything transient or unroutable
+    (the caller may retry).
+    """
+    rows = await pool.fetch(
+        """
+        SELECT name FROM switchboard.butler_registry
+        WHERE modules::jsonb @> $1::jsonb
+        ORDER BY name
+        """,
+        ["telegram"],
+    )
+    if not rows:
+        return {"status": "error", "error": "No butler with 'telegram' module found in registry"}
+    last_error = "unroutable"
+    for row in rows:
+        route_result = await route(
+            pool,
+            target_butler=str(row["name"]),
+            tool_name="telegram_edit_message_text",
+            args={"chat_id": chat_id, "message_id": message_id, "text": text},
+            source_butler=source_butler,
+            call_fn=call_fn,
+        )
+        if "error" in route_result:
+            last_error = str(route_result["error"])
+            continue
+        edited = _find_edit_verdict(route_result.get("result"))
+        if edited is True:
+            return {"status": "edited"}
+        if edited is False:
+            return {"status": "rejected"}
+        return {"status": "error", "error": "unrecognised edit result"}
+    return {"status": "error", "error": last_error}

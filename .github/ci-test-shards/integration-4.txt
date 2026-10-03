@@ -78,4 +78,5 @@ tests/modules/test_calendar_force_sync_queue_integration.py
 tests/modules/test_calendar_reminder_integration.py
 tests/modules/test_insight_attention_ledger.py
 tests/modules/test_insight_engine.py
+tests/modules/test_insight_premise_binding.py
 tests/scripts/test_pg_dump_backup.py
