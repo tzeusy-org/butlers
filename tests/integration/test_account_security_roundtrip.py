@@ -16,6 +16,7 @@ import pytest
 
 from butlers.core.account_security_events import SECURITY_EVENT_TYPE, record_security_answer
 from butlers.core.domain_events import record_event
+from butlers.db import register_jsonb_codec
 from butlers.testing.migration import (
     create_migrated_test_db,
     migration_bootstrap_db_url,
@@ -57,7 +58,10 @@ async def pool(db_url: str) -> asyncpg.Pool:
 async def switchboard_pool(db_url: str) -> asyncpg.Pool:
     # fleet_cases INSERT is RLS-restricted to butler_switchboard_rw (core_217); the
     # answer door runs on Switchboard's own daemon pool, so mirror that identity.
+    # Production pools register the jsonb codec (butlers.db.register_jsonb_codec), which is
+    # why fleet_cases writers pass dict payloads; mirror it, then take the role.
     async def _as_switchboard(conn: asyncpg.Connection) -> None:
+        await register_jsonb_codec(conn)
         await conn.execute("SET ROLE butler_switchboard_rw")
 
     p = await asyncpg.create_pool(db_url, min_size=1, max_size=3, init=_as_switchboard)

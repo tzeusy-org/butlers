@@ -100,11 +100,17 @@ async def publish_security_event(
     dedup_ref = external_event_id or source_request_id
     already = await pool.fetchval(
         """
-        SELECT 1 FROM public.domain_events
-        WHERE event_type = $1
-          AND payload ->> 'provider' = $2
-          AND payload ->> 'kind' = $3
-          AND coalesce(payload ->> 'external_event_id', payload ->> 'source_request_id') = $4
+        SELECT 1 FROM public.domain_events e
+        CROSS JOIN LATERAL (
+            -- record_event pre-dumps its payload, so a pool with the jsonb codec
+            -- stores a JSON string scalar; unwrap it before reading fields.
+            SELECT CASE WHEN jsonb_typeof(e.payload) = 'string'
+                        THEN (e.payload #>> '{}')::jsonb ELSE e.payload END AS body
+        ) p
+        WHERE e.event_type = $1
+          AND p.body ->> 'provider' = $2
+          AND p.body ->> 'kind' = $3
+          AND coalesce(p.body ->> 'external_event_id', p.body ->> 'source_request_id') = $4
         LIMIT 1
         """,
         SECURITY_EVENT_TYPE,
