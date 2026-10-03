@@ -209,6 +209,9 @@ general file-secret escape hatch.
 - Credentials must never appear in git-tracked configuration files.
 - Credentials must never appear in session logs or tool call payloads sent to
   the dashboard.
+- Inbound bearer material (one-time codes, password-reset and magic links, Telegram login codes)
+  must never be persisted in ingest payloads; only a typed placeholder recording that an auth
+  artifact arrived is kept (`openspec/specs/connector-base-spec`, "Bearer material never persists").
 - The credential store uses the database's access controls, not application-level
   encryption. This is consistent with the trust model: if the database is
   compromised, the attacker already has access to the data the credentials

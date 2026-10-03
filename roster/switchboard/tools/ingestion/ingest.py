@@ -47,6 +47,11 @@ from opentelemetry import metrics as otel_metrics
 from pydantic import BaseModel, ConfigDict
 
 from butlers.core.metrics import ButlerMetrics
+from butlers.ingestion_bearer_scrub import (
+    BearerArtifact,
+    placeholder_artifacts,
+    scrub_stored_record,
+)
 from butlers.ingestion_policy import (
     IngestionEnvelope,
     IngestionPolicyEvaluator,
@@ -332,6 +337,48 @@ async def _find_request_by_content_hash(
         """,
         content_hash_key,
     )
+
+
+_SCRUB_FAILED_TEXT = "[content withheld: bearer scrub failed]"
+
+
+def _scrub_bearer_material(
+    envelope: IngestEnvelopeV1,
+    raw_payload: dict[str, Any],
+    normalized_text: str,
+    *,
+    observed_at: datetime,
+) -> tuple[dict[str, Any], str, list[BearerArtifact]]:
+    """Scrub OTP/reset/magic-link material from the persisted payload and text.
+
+    Returns the scrubbed ``raw_payload``, ``normalized_text`` and the typed
+    artifact records.  When anything is withheld (here or by the connector),
+    ``raw_payload.control.bearer_scrubbed`` is set and ``raw_payload.bearer_artifacts``
+    lists ``{kind, provider_domain, observed_at[, expires_hint]}`` records.
+    Idempotent: already-scrubbed input yields no new hits.
+    """
+    raw_payload, normalized_text, fresh = scrub_stored_record(raw_payload, normalized_text)
+    # Placeholders a connector already left in the text still count as observed.
+    artifacts = fresh or placeholder_artifacts(normalized_text)
+    if artifacts or envelope.control.bearer_scrubbed:
+        raw_payload["control"]["bearer_scrubbed"] = True
+    if artifacts:
+        raw_payload["bearer_artifacts"] = [
+            {**artifact.as_dict(), "observed_at": observed_at.isoformat()} for artifact in artifacts
+        ]
+    return raw_payload, normalized_text, fresh
+
+
+def _record_bearer_scrub(source_channel: str, artifacts: list[BearerArtifact]) -> None:
+    """Count fresh scrubs per rule (false-positive visibility)."""
+    if not artifacts:
+        return
+    counter = otel_metrics.get_meter(__name__).create_counter(
+        "butlers.ingest.bearer_scrubbed",
+        description="Bearer-material artifacts withheld at the ingest boundary, per rule",
+    )
+    for artifact in artifacts:
+        counter.add(1, {"kind": artifact.kind, "source_channel": source_channel})
 
 
 def _build_request_context(
@@ -838,6 +885,25 @@ async def ingest_v1(
 
     normalized_text = envelope.payload.normalized_text
 
+    # 6-bearer. Quarantine bearer material (OTP codes, reset/magic links, Telegram
+    # login codes): keep that an auth artifact arrived, never the artifact. Runs
+    # after policy evaluation, so routing outcomes are unchanged.
+    lifecycle_override: str | None = None
+    try:
+        raw_payload, normalized_text, bearer_artifacts = _scrub_bearer_material(
+            envelope, raw_payload, normalized_text, observed_at=envelope.event.observed_at
+        )
+    except Exception:
+        # Fail closed: never persist the unscrubbed payload.
+        logger.exception("Bearer scrub failed; holding message as metadata-only")
+        raw_payload["payload"] = {"raw": None, "normalized_text": _SCRUB_FAILED_TEXT}
+        raw_payload["control"]["bearer_scrubbed"] = True
+        raw_payload["control"]["bearer_scrub_failed"] = True
+        normalized_text = _SCRUB_FAILED_TEXT
+        lifecycle_override = "metadata_ref"
+        bearer_artifacts = []
+    _record_bearer_scrub(envelope.source.channel, bearer_artifacts)
+
     # 6a. Serialize attachments if present (includes both eager and lazy refs)
     attachments_value: list[dict] | None = None
     if envelope.payload.attachments:
@@ -905,7 +971,9 @@ async def ingest_v1(
     # (required by PostgreSQL partitioning) so two rows with the same
     # dedupe_key but different received_at timestamps can both INSERT
     # successfully.  The advisory lock eliminates that race.
-    lifecycle_state = "metadata_ref" if ingestion_tier == "metadata" else "accepted"
+    lifecycle_state = lifecycle_override or (
+        "metadata_ref" if ingestion_tier == "metadata" else "accepted"
+    )
 
     try:
         async with pool.acquire() as conn:
