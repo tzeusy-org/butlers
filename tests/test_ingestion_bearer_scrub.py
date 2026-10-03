@@ -6,6 +6,7 @@ All fixtures are synthetic.
 from __future__ import annotations
 
 import base64
+import json
 
 import pytest
 
@@ -160,3 +161,101 @@ def test_ingest_helper_records_typed_artifacts_without_the_code() -> None:
     assert again_text == new_text
     assert again == []
     assert again_raw["bearer_artifacts"][0]["kind"] == "auth_code"
+
+
+def _service_record() -> dict:
+    """A persisted 777000 raw_payload whose metadata contains code-shaped digit runs."""
+    text = "Login code: 55123. Do not share."
+    return {
+        "source": {"channel": "telegram_user_client", "provider": "telegram"},
+        "event": {
+            "external_event_id": "123456",
+            "external_thread_id": "777000",
+            "observed_at": "2026-10-03T12:00:00+00:00",
+        },
+        "sender": {"identity": "777000"},
+        "payload": {
+            "raw": {"message": text, "date": "2026-10-03T12:00:00+00:00"},
+            "normalized_text": text,
+        },
+        "control": {"ingestion_tier": "full"},
+    }
+
+
+def _assert_metadata_untouched(before: dict, after: dict) -> None:
+    for key in ("source", "event", "sender"):
+        assert after[key] == before[key], key
+    assert after["control"]["ingestion_tier"] == "full"
+    assert after["payload"]["raw"]["date"] == before["payload"]["raw"]["date"]
+
+
+def test_stored_record_aggressive_mode_only_rewrites_message_content() -> None:
+    from butlers.ingestion_bearer_scrub import scrub_stored_record
+
+    record = _service_record()
+    before = json.loads(json.dumps(record))
+    new_raw, new_text, fresh = scrub_stored_record(record, record["payload"]["normalized_text"])
+
+    _assert_metadata_untouched(before, new_raw)
+    assert "55123" not in new_text + json.dumps(new_raw["payload"])
+    assert len(fresh) == 1
+
+
+def test_ingest_helper_leaves_service_sender_metadata_untouched() -> None:
+    from datetime import UTC, datetime
+
+    from butlers.tools.switchboard.ingestion.ingest import _scrub_bearer_material
+    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+
+    record = _service_record()
+    before = json.loads(json.dumps(record))
+    text = record["payload"]["normalized_text"]
+    envelope = parse_ingest_envelope(
+        {
+            "schema_version": "ingest.v1",
+            "source": {
+                "channel": "telegram_user_client",
+                "provider": "telegram",
+                "endpoint_identity": "me",
+            },
+            "event": {"external_event_id": "123456", "observed_at": datetime.now(UTC).isoformat()},
+            "sender": {"identity": "777000"},
+            "payload": {"raw": record["payload"]["raw"], "normalized_text": text},
+        }
+    )
+    new_raw, new_text, _ = _scrub_bearer_material(
+        envelope, record, text, observed_at=envelope.event.observed_at
+    )
+
+    _assert_metadata_untouched(before, new_raw)
+    assert "55123" not in new_text + json.dumps(new_raw["payload"])
+    assert len(new_raw["bearer_artifacts"]) == 1
+
+
+def test_sw_040_row_scrub_leaves_service_sender_metadata_untouched() -> None:
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).parents[1] / "roster/switchboard/migrations/040_scrub_bearer_material.py"
+    spec = importlib.util.spec_from_file_location("sw_040_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    record = _service_record()
+    before = json.loads(json.dumps(record))
+    result = module._scrub_row(record, record["payload"]["normalized_text"])
+
+    assert result is not None
+    new_raw, new_text = result
+    _assert_metadata_untouched(before, new_raw)
+    assert "55123" not in new_text + json.dumps(new_raw["payload"])
+    assert len(new_raw["bearer_artifacts"]) == 1
+    assert module._scrub_row(new_raw, new_text) is None
+
+
+def test_aggressive_mode_keeps_date_shaped_runs_in_content() -> None:
+    out, _ = scrub_text(
+        "code 55123 at 2026-10-03 12:00", provider_domain="telegram", aggressive=True
+    )
+    assert "55123" not in out
+    assert "2026-10-03 12:00" in out

@@ -254,6 +254,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
     from butlers.core.model_routing import coerce_complexity_tier
     from butlers.core.routing_context import _routing_ctx_var
     from butlers.core.utils import coerce_request_id as _coerce_request_id
+    from butlers.ingestion_bearer_scrub import scrub_message_text
     from butlers.tools.switchboard.backfill.connector import backfill_poll as _backfill_poll
     from butlers.tools.switchboard.backfill.connector import backfill_progress as _backfill_progress
     from butlers.tools.switchboard.ingestion.ingest import ingest_v1
@@ -503,7 +504,10 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         # Route accepted message via durable buffer (bounded queue)
         # or fall back to direct create_task if buffer is unavailable.
         if not result.duplicate and pipeline is not None:
-            normalized_text = payload.get("normalized_text", "")
+            # Hand the session the same bearer-scrubbed text that ingest persisted.
+            normalized_text = scrub_message_text(
+                payload.get("normalized_text", ""), source=source, sender=sender
+            )
             # Extract attachment metadata (eager + lazy) for routing context.
             _raw_attachments = payload.get("attachments")
             _attachments: list[dict[str, Any]] | None = (

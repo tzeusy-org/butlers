@@ -54,7 +54,8 @@ _OTP_REVERSE = re.compile(
     r"\b(\d{4,8})\b(?=\s+(?:is|as)\s+your\b[^\n]{0,40}?\b(?:code|passcode|otp|pin)\b)",
     re.IGNORECASE,
 )
-_ANY_CODE = re.compile(r"\b\d{4,8}\b")
+# Aggressive mode skips date/time-shaped runs (2026-10-03, 12:00:00) inside message content.
+_ANY_CODE = re.compile(r"(?<![\d:-])\b\d{4,8}\b(?![-:]\d)")
 
 _URL = re.compile(r"https?://[^\s<>\"'\\)\]]+", re.IGNORECASE)
 _URL_TRAILING = ".,;:!?"
@@ -248,6 +249,40 @@ def scrub_json(
         return node
 
     return walk(value), found
+
+
+def scrub_stored_record(
+    raw_payload: Mapping[str, Any], normalized_text: str
+) -> tuple[dict[str, Any], str, list[BearerArtifact]]:
+    """Scrub a persisted ``message_inbox`` record; shared by ingest and the sw_040 backfill.
+
+    Only the message-content subtree (``raw_payload["payload"]``) and
+    ``normalized_text`` are scrubbed.  ``source``, ``event``, ``sender`` and
+    ``control`` (identities, ids, timestamps) are never rewritten, even in
+    aggressive mode, which treats every 4-8 digit run as a code.  Known false
+    positive: in a 777000 service-sender message any 4-8 digit number in the
+    text is withheld.  Returns ``(raw_payload copy, normalized_text, fresh hits)``.
+    """
+    sender = raw_payload.get("sender") or {}
+    source = raw_payload.get("source") or {}
+    domain = provider_domain_for(sender.get("identity"), source.get("provider"))
+    aggressive = is_auth_service_sender(sender)
+    result = dict(raw_payload)
+    json_hits: list[BearerArtifact] = []
+    if raw_payload.get("payload") is not None:
+        result["payload"], json_hits = scrub_json(
+            raw_payload["payload"], provider_domain=domain, aggressive=aggressive
+        )
+    new_text, text_hits = scrub_text(normalized_text, provider_domain=domain, aggressive=aggressive)
+    # The payload subtree embeds normalized_text, so one artifact can hit in both;
+    # count the text hits (or the raw-only hits) once.
+    return result, new_text, text_hits or json_hits
+
+
+def scrub_message_text(text: str, *, source: Mapping[str, Any], sender: Mapping[str, Any]) -> str:
+    """Scrub the text handed to a routing session, matching what ingest persisted."""
+    domain = provider_domain_for(sender.get("identity"), source.get("provider"))
+    return scrub_text(text, provider_domain=domain, aggressive=is_auth_service_sender(sender))[0]
 
 
 def scrub_envelope(envelope: Mapping[str, Any]) -> tuple[dict[str, Any], list[BearerArtifact]]:

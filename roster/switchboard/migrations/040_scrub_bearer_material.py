@@ -13,6 +13,12 @@ Idempotent: scrubbed text contains only placeholders, which the detector leaves
 alone, so a second run updates nothing.  Rows are keyset-paged by
 ``(received_at, id)`` and only rewritten when the scrub changed them.
 
+Only message content (``raw_payload.payload`` and ``normalized_text``) is rewritten;
+sender, event and control metadata are never touched.  All batches run inside the single
+alembic transaction, but only rows with a hit are updated, so the lock footprint is the
+(small) set of rows that held bearer material.  This revision is unmerged until its PR
+lands, so it has not run against any deployed database.
+
 Downgrade is a deliberate no-op: scrubbed material is irreversible by design.
 """
 
@@ -23,10 +29,7 @@ import logging
 
 from alembic import op
 from butlers.ingestion_bearer_scrub import (
-    is_auth_service_sender,
-    provider_domain_for,
-    scrub_json,
-    scrub_text,
+    scrub_stored_record,
 )
 
 revision = "sw_040"
@@ -40,13 +43,7 @@ _BATCH = 500
 
 
 def _scrub_row(raw_payload: dict, normalized_text: str) -> tuple[dict, str] | None:
-    source = raw_payload.get("source") or {}
-    sender = raw_payload.get("sender") or {}
-    domain = provider_domain_for(sender.get("identity"), source.get("provider"))
-    aggressive = is_auth_service_sender(sender)
-    new_raw, json_hits = scrub_json(raw_payload, provider_domain=domain, aggressive=aggressive)
-    new_text, text_hits = scrub_text(normalized_text, provider_domain=domain, aggressive=aggressive)
-    fresh = text_hits or json_hits
+    new_raw, new_text, fresh = scrub_stored_record(raw_payload, normalized_text)
     if not fresh:
         return None
     observed_at = (raw_payload.get("event") or {}).get("observed_at")

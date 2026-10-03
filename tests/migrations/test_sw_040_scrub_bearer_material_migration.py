@@ -36,6 +36,19 @@ def _raw(body: str, sender: str = "no-reply@example.com") -> str:
     )
 
 
+def _service_raw() -> str:
+    text = "Login code: 55123. Do not share."
+    return json.dumps(
+        {
+            "source": {"channel": "telegram_user_client", "provider": "telegram"},
+            "event": {"external_event_id": "123456", "observed_at": _RECEIVED},
+            "sender": {"identity": "777000"},
+            "payload": {"raw": {"message": text}, "normalized_text": text},
+            "control": {"ingestion_tier": "full"},
+        }
+    )
+
+
 def _snapshot(engine) -> dict[str, tuple[str, str]]:
     with engine.connect() as conn:
         rows = conn.execute(
@@ -72,14 +85,31 @@ def test_sw_040_scrubs_history_once_and_rerun_is_a_noop(postgres_container) -> N
                     {"ts": _RECEIVED, "raw": _raw(body), "body": body},
                 )
 
+            conn.execute(
+                text(
+                    "INSERT INTO switchboard.message_inbox "
+                    "(received_at, raw_payload, normalized_text) "
+                    "VALUES (CAST(:ts AS timestamptz), CAST(:raw AS jsonb), :body)"
+                ),
+                {
+                    "ts": _RECEIVED,
+                    "raw": _service_raw(),
+                    "body": "Login code: 55123. Do not share.",
+                },
+            )
+
         command.upgrade(config, "switchboard@sw_040")
         after = _snapshot(engine)
         blob = json.dumps(after)
         assert "482913" not in blob
+        assert "55123" not in blob
         assert "[auth-code withheld: example.com]" in blob
         assert "Order 12345678 shipped 2026-10-03" in blob
         flagged = [json.loads(raw) for raw, _ in after.values()]
-        assert sum(1 for r in flagged if r["control"].get("bearer_scrubbed")) == 1
+        assert sum(1 for r in flagged if r["control"].get("bearer_scrubbed")) == 2
+        service = next(r for r in flagged if r["sender"]["identity"] == "777000")
+        assert service["event"] == {"external_event_id": "123456", "observed_at": _RECEIVED}
+        assert service["source"]["provider"] == "telegram"
 
         # Second run: irreversible downgrade is a no-op, re-upgrade changes nothing.
         command.downgrade(config, "switchboard@sw_039")

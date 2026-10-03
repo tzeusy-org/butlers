@@ -533,8 +533,12 @@ class TestBearerMaterialQuarantine:
         )
         row = await self._stored(pool, envelope)
 
+        raw = _decode_jsonb(row["raw_payload"])
         assert "55123" not in row["normalized_text"]
-        assert "55123" not in json.dumps(_decode_jsonb(row["raw_payload"]))
+        assert "55123" not in json.dumps(raw)
+        assert raw["sender"]["identity"] == "777000"
+        assert raw["event"]["external_event_id"] == envelope["event"]["external_event_id"]
+        assert raw["event"]["observed_at"] == envelope["event"]["observed_at"]
 
     async def test_ordinary_message_is_untouched_and_unflagged(self, pool: asyncpg.Pool) -> None:
         envelope = _make_email_envelope(

@@ -229,3 +229,17 @@ async def test_spoken_metadata_only_triage_reaches_durable_buffer(monkeypatch):
 
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-v"])
+
+
+async def test_session_text_is_bearer_scrubbed_like_the_persisted_row(monkeypatch):
+    """bu-q7vx1q.2: a connector that did not scrub must not hand a live code to the session."""
+    buffer = _FakeBuffer()
+    ingest, _request_id = _register_and_grab_ingest(monkeypatch, buffer)
+
+    kwargs = _envelope_kwargs(None)
+    kwargs["payload"] = {"raw": {}, "normalized_text": "Your code is 482913. Order 12345678."}
+    await ingest(**kwargs)
+
+    text = buffer.enqueue_calls[0]["message_text"]
+    assert "482913" not in text
+    assert "12345678" in text

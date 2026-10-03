@@ -49,11 +49,8 @@ from pydantic import BaseModel, ConfigDict
 from butlers.core.metrics import ButlerMetrics
 from butlers.ingestion_bearer_scrub import (
     BearerArtifact,
-    is_auth_service_sender,
     placeholder_artifacts,
-    provider_domain_for,
-    scrub_json,
-    scrub_text,
+    scrub_stored_record,
 )
 from butlers.ingestion_policy import (
     IngestionEnvelope,
@@ -360,15 +357,7 @@ def _scrub_bearer_material(
     lists ``{kind, provider_domain, observed_at[, expires_hint]}`` records.
     Idempotent: already-scrubbed input yields no new hits.
     """
-    domain = provider_domain_for(envelope.sender.identity, envelope.source.provider)
-    aggressive = is_auth_service_sender(raw_payload["sender"])
-    raw_payload, json_hits = scrub_json(raw_payload, provider_domain=domain, aggressive=aggressive)
-    normalized_text, text_hits = scrub_text(
-        normalized_text, provider_domain=domain, aggressive=aggressive
-    )
-    # raw_payload embeds normalized_text, so the same artifact can hit in both;
-    # count the text hits (or the raw-only hits) once.
-    fresh = text_hits or json_hits
+    raw_payload, normalized_text, fresh = scrub_stored_record(raw_payload, normalized_text)
     # Placeholders a connector already left in the text still count as observed.
     artifacts = fresh or placeholder_artifacts(normalized_text)
     if artifacts or envelope.control.bearer_scrubbed:
