@@ -95,6 +95,7 @@ from butlers.tools.relationship.notes import (
     note_list,
     note_search,
 )
+from butlers.tools.relationship.posture import entity_set_posture
 from butlers.tools.relationship.relationship_assert_fact import (
     PREFERS_CHANNEL_PREDICATE,
     AssertOutcome,
@@ -214,6 +215,7 @@ __all__ = [
     "relationship_remove",
     "relationship_type_get",
     "relationship_types_list",
+    "entity_set_posture",
     "stay_in_touch_set",
     "task_complete",
     "task_create",

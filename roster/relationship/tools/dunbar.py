@@ -1056,6 +1056,7 @@ async def contacts_overdue_evaluation(pool: asyncpg.Pool) -> dict[str, Any]:
            AND f.scope = 'relationship'
            AND f.validity = 'active'
         WHERE e.listed = true
+          AND e.posture = 'active'
         GROUP BY cem.contact_id, e.id
         ORDER BY e.canonical_name
         """

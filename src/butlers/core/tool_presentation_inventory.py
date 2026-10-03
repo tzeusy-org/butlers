@@ -488,7 +488,8 @@ TOOL_PRESENTATION_INVENTORY = (
     *_declare(
         "relationship",
         "entity",
-        "entity_get entity_neighbors entity_resolve entity_update relationship_assert_fact "
+        "entity_get entity_neighbors entity_resolve entity_set_posture entity_update "
+        "relationship_assert_fact "
         "relationship_fact_evidence relationship_lookup relationship_predicate_coverage "
         "relationship_record_coverage",
     ),

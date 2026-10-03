@@ -110,6 +110,7 @@ CREATE TABLE IF NOT EXISTS public.entities (
     metadata JSONB DEFAULT '{}'::jsonb,
     roles TEXT[] NOT NULL DEFAULT '{}',
     listed BOOLEAN NOT NULL DEFAULT true,
+    posture TEXT NOT NULL DEFAULT 'active',
     stay_in_touch_days INT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -162,6 +163,7 @@ async def _insert_contact(
     listed: bool = True,
     stay_in_touch_days: int | None = None,
     entity_id: str | None = None,
+    posture: str = "active",
 ) -> str:
     """Insert a contact, a matching public.entities row, and a contact_entity_map entry.
 
@@ -179,8 +181,8 @@ async def _insert_contact(
     # Seed public.entities with listed + stay_in_touch_days (rel_031 columns)
     await pool.execute(
         """
-        INSERT INTO public.entities (id, canonical_name, name, listed, stay_in_touch_days)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO public.entities (id, canonical_name, name, listed, stay_in_touch_days, posture)
+        VALUES ($1, $2, $3, $4, $5, $6)
         ON CONFLICT (id) DO NOTHING
         """,
         resolved_entity_id,
@@ -188,6 +190,7 @@ async def _insert_contact(
         canonical_name,
         listed,
         stay_in_touch_days,
+        posture,
     )
 
     # Seed contact_entity_map bridge (rel_029)
@@ -368,6 +371,27 @@ async def test_insight_scan_unlisted_contact_excluded(provisioned_postgres_pool)
             label="birthday",
             month=today.month,
             day=today.day,
+        )
+
+        result = await run_insight_scan(pool)
+        assert result["candidates_proposed"] == 0
+
+
+@pytest.mark.parametrize("posture", ["memorial", "quiet", "no_contact"])
+async def test_insight_scan_non_active_posture_excluded(provisioned_postgres_pool, posture):
+    """A person the owner marked memorial/quiet/no_contact is no insight's subject."""
+    from butlers.jobs._roster.relationship_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_relationship_schema(pool)
+        await _setup_insight_tables(pool)
+
+        contact_id = await _insert_contact(
+            pool, first_name="Person", last_name="Synthetic", posture=posture
+        )
+        today = _today()
+        await _insert_important_date(
+            pool, contact_id=contact_id, label="birthday", month=today.month, day=today.day
         )
 
         result = await run_insight_scan(pool)

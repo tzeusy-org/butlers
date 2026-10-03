@@ -40,6 +40,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
     from butlers.tools.relationship import life_events as _life
     from butlers.tools.relationship import loans as _loans
     from butlers.tools.relationship import notes as _notes
+    from butlers.tools.relationship import posture as _posture
     from butlers.tools.relationship import relationships as _rels
     from butlers.tools.relationship import resolve as _resolve
     from butlers.tools.relationship import stay_in_touch as _sit
@@ -1021,6 +1022,20 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
             aliases=aliases,
             metadata=metadata,
         )
+
+    @_tool("entity")
+    async def entity_set_posture(entity_id: str, posture: str) -> dict[str, Any]:
+        """Record how the owner wants a person treated: active, memorial, quiet or no_contact.
+
+        Call ONLY when the owner says so ("Sam passed away", "do not contact X",
+        "leave Y alone for now"); never infer it. memorial = has died, quiet =
+        leave alone for now, no_contact = must not be contacted, active = normal.
+        Birthday highlights, gift asks, reconnection nudges and outbound notify()
+        change or stop for any posture other than active. Nothing is deleted:
+        setting active restores everything. Setting the current posture again is a
+        no-op.
+        """
+        return await _posture.entity_set_posture(module._get_pool(), entity_id, posture)
 
     @_tool("entity")
     async def entity_neighbors(
