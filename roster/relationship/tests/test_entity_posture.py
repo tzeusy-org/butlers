@@ -53,6 +53,11 @@ async def pool(migrated_db_url: str) -> AsyncIterator[asyncpg.Pool]:
     connection_pool = await asyncpg.create_pool(
         migrated_db_url, min_size=1, max_size=2, init=register_jsonb_codec
     )
+    # The entity-anchored important_dates arm the producers query is added by the
+    # contacts module's migration (contacts_004), which this chain set does not run.
+    await connection_pool.execute(
+        "ALTER TABLE important_dates ADD COLUMN IF NOT EXISTS local_entity_id UUID"
+    )
     yield connection_pool
     await connection_pool.close()
 
@@ -190,15 +195,45 @@ async def test_set_posture_rejects_unknown_values_entities_and_the_owner(
 async def posture_roles(pool: asyncpg.Pool) -> AsyncIterator[None]:
     """Create the two NOLOGIN roles the trigger distinguishes; drop only what we made."""
     created: list[str] = []
-    for role in (_PROBE_ROLE, _RELATIONSHIP_ROLE):
-        if not await pool.fetchval("SELECT 1 FROM pg_roles WHERE rolname = $1", role):
-            await pool.execute(f'CREATE ROLE "{role}" NOLOGIN')
-            created.append(role)
-        await pool.execute(f'GRANT SELECT, UPDATE ON public.entities TO "{role}"')
+    try:
+        for role in (_PROBE_ROLE, _RELATIONSHIP_ROLE):
+            if not await pool.fetchval("SELECT 1 FROM pg_roles WHERE rolname = $1", role):
+                await pool.execute(f'CREATE ROLE "{role}" NOLOGIN')
+                created.append(role)
+            await pool.execute(f'GRANT SELECT, UPDATE ON public.entities TO "{role}"')
+    except asyncpg.InsufficientPrivilegeError:
+        pytest.skip("test DB user cannot create roles; role decision is covered separately")
     yield
     for role in created:
         await pool.execute(f'DROP OWNED BY "{role}"')
         await pool.execute(f'DROP ROLE "{role}"')
+
+
+@pytest.mark.parametrize(
+    ("role", "allowed"),
+    [
+        ("butler_relationship_rw", True),
+        ("butler_finance_rw", False),
+        ("butler_switchboard_rw", False),
+        ("connector_writer", False),
+        ("postgres", True),
+        ("migration_owner", True),
+    ],
+)
+async def test_posture_writer_role_decision(pool: asyncpg.Pool, role: str, allowed: bool) -> None:
+    """The decision the trigger applies to current_user, exercised without creating roles."""
+    assert await pool.fetchval("SELECT public.posture_writer_allowed($1)", role) is allowed
+
+
+async def test_trigger_admits_the_session_user_and_still_writes_posture(
+    pool: asyncpg.Pool,
+) -> None:
+    """The migration/test login is not a butler role, so the guard lets it through."""
+    entity_id = await _person_with_birthday(pool, "Person Session", date(2031, 4, 4))
+    await pool.execute("UPDATE public.entities SET posture = 'quiet' WHERE id = $1", entity_id)
+    assert await pool.fetchval("SELECT posture FROM public.entities WHERE id = $1", entity_id) == (
+        "quiet"
+    )
 
 
 async def test_only_the_relationship_role_can_change_posture(

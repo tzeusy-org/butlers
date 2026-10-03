@@ -1,7 +1,7 @@
 """public.entities.posture: owner-asserted person posture.
 
 Revision ID: core_256
-Revises: core_254
+Revises: core_255
 Create Date: 2026-10-03 00:00:00.000000
 
 bu-q7vx1q.8.  The owner can tell Relationship once that someone has died, is
@@ -18,7 +18,8 @@ Schema delta on ``public.entities``:
   guess what an absent value means.
 - ``posture_since DATE`` and ``posture_set_by TEXT``: when and by whom (the
   asserting butler) the current posture was set.
-- ``public.guard_entity_posture_writer()`` plus a ``BEFORE UPDATE`` trigger:
+- ``public.posture_writer_allowed(role)`` plus ``public.guard_entity_posture_writer()``
+  and a ``BEFORE UPDATE`` trigger:
   every butler runtime role holds a table-level ``UPDATE`` on
   ``public.entities`` (core_065), which a column-level ``REVOKE`` cannot narrow,
   so the trigger refuses a posture change from any butler runtime role or
@@ -37,7 +38,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "core_256"
-down_revision = "core_254"
+down_revision = "core_255"
 branch_labels = None
 depends_on = None
 
@@ -70,6 +71,20 @@ def upgrade() -> None:
     )
     op.execute(
         """
+        CREATE OR REPLACE FUNCTION public.posture_writer_allowed(role_name text)
+        RETURNS boolean
+        LANGUAGE sql
+        IMMUTABLE
+        AS $$
+            SELECT NOT (
+                (role_name ~ '^butler_.+_rw$' OR role_name = 'connector_writer')
+                AND role_name <> 'butler_relationship_rw'
+            )
+        $$
+        """
+    )
+    op.execute(
+        """
         CREATE OR REPLACE FUNCTION public.guard_entity_posture_writer()
         RETURNS trigger
         LANGUAGE plpgsql
@@ -78,8 +93,7 @@ def upgrade() -> None:
             IF (NEW.posture IS DISTINCT FROM OLD.posture
                 OR NEW.posture_since IS DISTINCT FROM OLD.posture_since
                 OR NEW.posture_set_by IS DISTINCT FROM OLD.posture_set_by)
-               AND (current_user ~ '^butler_.+_rw$' OR current_user = 'connector_writer')
-               AND current_user <> 'butler_relationship_rw' THEN
+               AND NOT public.posture_writer_allowed(current_user::text) THEN
                 RAISE EXCEPTION 'entity posture may only be changed by the relationship butler'
                     USING ERRCODE = 'insufficient_privilege';
             END IF;
@@ -101,6 +115,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.execute("DROP TRIGGER IF EXISTS trg_entities_posture_writer ON public.entities")
     op.execute("DROP FUNCTION IF EXISTS public.guard_entity_posture_writer()")
+    op.execute("DROP FUNCTION IF EXISTS public.posture_writer_allowed(text)")
     op.execute("ALTER TABLE public.entities DROP CONSTRAINT IF EXISTS ck_entities_posture")
     op.execute(
         """
