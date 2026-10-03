@@ -195,6 +195,10 @@ class PolicyTierAssigner:
     def __post_init__(self) -> None:
         self.user_email = _normalize_email(self.user_email)
 
+    def is_known_contact(self, sender_address: str) -> bool:
+        """Return True when *sender_address* is in the known-contact set."""
+        return _normalize_email(sender_address) in self.known_contacts
+
     def assign(
         self,
         sender_address: str,
@@ -213,10 +217,8 @@ class PolicyTierAssigner:
         -------
         (policy_tier, assignment_rule) tuple.
         """
-        normalized_sender = _normalize_email(sender_address)
-
         # Rule 1: Known contact
-        if normalized_sender in self.known_contacts:
+        if self.is_known_contact(sender_address):
             return POLICY_TIER_HIGH_PRIORITY, RULE_KNOWN_CONTACT
 
         # Rule 2: Reply to user's outbound mail

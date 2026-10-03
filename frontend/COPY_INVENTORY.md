@@ -3201,6 +3201,7 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - ingestion rollup
 - connector registry
 - pipeline metrics
+- known-contact drops
 
 ## `frontend/src/components/ingestion/filters/ArchivedRulesSection.tsx`
 
@@ -4816,4 +4817,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3833*
+*Total strings: 3834*

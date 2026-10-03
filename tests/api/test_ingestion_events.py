@@ -1762,6 +1762,42 @@ async def test_event_rollup_skips_write_when_no_sessions(app):
 # ---------------------------------------------------------------------------
 
 
+async def test_dropped_known_reports_counts_and_routes_before_catch_all(app):
+    """GET /dropped-known returns the aggregate, not the /{request_id} 404."""
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(return_value={"dropped": 3, "episodes": 2})
+    _app_with_mock_db(app, shared_pool=pool)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/ingestion/events/dropped-known", params={"window": "7d"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {"available": True, "window": "7d", "dropped": 3, "episodes": 2}
+    sql = pool.fetchrow.await_args.args[0]
+    assert "drop_context,important_dropped" in sql
+
+
+@pytest.mark.parametrize("failure", ["read_error", "no_pool"])
+async def test_dropped_known_degrades_instead_of_reading_zero(app, failure):
+    """A failed read says unavailable; it must never look like zero dropped."""
+    if failure == "read_error":
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(side_effect=RuntimeError("relation does not exist"))
+        _app_with_mock_db(app, shared_pool=pool)
+    else:
+        _app_with_mock_db(app, shared_pool_error=KeyError("shared"))
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/ingestion/events/dropped-known")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"available": False, "window": "24h", "dropped": 0, "episodes": 0}
+
+
 async def test_histogram_routes_before_request_id_catch_all(app):
     """GET /histogram must NOT be captured by GET /{request_id} (registration order)."""
     _app_with_mock_db(app)

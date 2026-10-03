@@ -17,6 +17,7 @@ import pytest
 
 from butlers.connectors.filtered_event_buffer import (
     FilteredEventBuffer,
+    _sanitize_replay_payload,
 )
 
 pytestmark = pytest.mark.unit
@@ -209,3 +210,27 @@ def test_reason_label_helpers_return_non_empty_str(make_label) -> None:
     label = make_label()
     assert label
     assert isinstance(label, str)
+
+
+def test_important_dropped_marker_is_stripped_before_replay() -> None:
+    """The stored drop_context marker must not reach the replayed envelope (extra=forbid)."""
+    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+
+    stored = FilteredEventBuffer.full_payload(
+        channel="email",
+        provider="gmail",
+        endpoint_identity="gmail:user:alice@example.com",
+        external_event_id="msg-001",
+        external_thread_id=None,
+        observed_at="2026-03-11T10:00:00Z",
+        sender_identity="alice@known.example",
+        raw={},
+        normalized_text="Hello",
+        important_dropped_basis="known_contact",
+    )
+    assert stored["drop_context"] == {"important_dropped": True, "basis": "known_contact"}
+
+    _sanitize_replay_payload(stored)
+
+    assert "drop_context" not in stored
+    parse_ingest_envelope({"schema_version": "ingest.v1", **stored})

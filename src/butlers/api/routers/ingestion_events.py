@@ -10,6 +10,7 @@ Endpoints
 GET  /api/ingestion/events               — cursor-paginated unified timeline (supports ?q=);
                                             rows carry bulk-enriched tokens/cost/sessions/
                                             sender_display (bu-4utdw.3, no per-row queries)
+GET  /api/ingestion/events/dropped-known — unanswered drops from known contacts (degraded-honest)
 GET  /api/ingestion/events/{requestId}   — single event detail
 GET  /api/ingestion/events/{requestId}/sessions  — cross-butler lineage
 GET  /api/ingestion/events/{requestId}/rollup    — token/cost/butler topology
@@ -37,6 +38,7 @@ from butlers.api.deps import get_pricing
 from butlers.api.ingestion_read_budget import IngestionReadBudgetRoute
 from butlers.api.models import ApiResponse, CursorPaginatedResponse, CursorPaginationMeta
 from butlers.api.models.ingestion_event import (
+    IngestionDroppedKnownSummary,
     IngestionEventDetail,
     IngestionEventListSessionSummary,
     IngestionEventPayload,
@@ -50,6 +52,7 @@ from butlers.api.models.ingestion_event import (
 )
 from butlers.api.routers.audit import append as _audit_append
 from butlers.core.ingestion_events import (
+    ingestion_dropped_known_summary,
     ingestion_event_get,
     ingestion_event_get_inbox_lifecycle,
     ingestion_event_get_payload,
@@ -597,6 +600,39 @@ async def get_ingestion_events_histogram(
         raise HTTPException(status_code=422, detail=str(last_error)) from last_error
 
     return IngestionHistogramResponse(**result)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/ingestion/events/dropped-known
+# ---------------------------------------------------------------------------
+
+_DROPPED_KNOWN_WINDOWS = {
+    "1h": timedelta(hours=1),
+    "24h": timedelta(hours=24),
+    "7d": timedelta(days=7),
+}
+
+
+@router.get("/dropped-known", response_model=IngestionDroppedKnownSummary)
+async def get_ingestion_dropped_known(
+    window: Literal["1h", "24h", "7d"] = Query("24h", description="Trailing window."),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> IngestionDroppedKnownSummary:
+    """Return how many messages from known contacts were dropped and not answered.
+
+    Degraded-honest: when the shared pool or the filtered-event read fails the
+    response is 200 with ``available=false`` and zero counts, so the dashboard
+    can say the harm is unknown instead of rendering an all-clear. Registered
+    before ``/{request_id}`` so the literal path is not captured.
+    """
+    from_dt = _datetime.now(UTC) - _DROPPED_KNOWN_WINDOWS[window]
+    try:
+        pool = db.credential_shared_pool()
+        counts = await ingestion_dropped_known_summary(pool, from_dt=from_dt)
+    except Exception:
+        logger.warning("dropped-known: aggregate unavailable", exc_info=True)
+        return IngestionDroppedKnownSummary(available=False, window=window)
+    return IngestionDroppedKnownSummary(available=True, window=window, **counts)
 
 
 # ---------------------------------------------------------------------------

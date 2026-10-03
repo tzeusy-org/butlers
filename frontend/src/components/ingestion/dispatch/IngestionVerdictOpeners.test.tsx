@@ -11,6 +11,7 @@ vi.mock("@/hooks/use-ingestion", () => ({
 
 vi.mock("@/hooks/use-ingestion-events", () => ({
   useIngestionWindowRollup: vi.fn(),
+  useIngestionDroppedKnown: vi.fn(),
 }));
 
 import {
@@ -22,7 +23,7 @@ import {
   useConnectorSummaries,
   usePipelineStats,
 } from "@/hooks/use-ingestion";
-import { useIngestionWindowRollup } from "@/hooks/use-ingestion-events";
+import { useIngestionDroppedKnown, useIngestionWindowRollup } from "@/hooks/use-ingestion-events";
 
 function render(ui: React.ReactElement): string {
   return renderToStaticMarkup(<MemoryRouter>{ui}</MemoryRouter>);
@@ -57,6 +58,11 @@ beforeEach(() => {
   } as never);
   vi.mocked(useConnectorSummaries).mockReturnValue({
     data: { data: { connectors: [healthyConnector] } },
+    isLoading: false,
+    isError: false,
+  } as never);
+  vi.mocked(useIngestionDroppedKnown).mockReturnValue({
+    data: { available: true, window: "24h", dropped: 0, episodes: 0 },
     isLoading: false,
     isError: false,
   } as never);
@@ -212,5 +218,46 @@ describe("Ingestion verdict openers", () => {
 
     expect(html).toContain("pipeline metrics unavailable");
     expect(html).not.toContain("ingestion-filters-verdict-all-clear");
+  });
+
+  it("names drops from known contacts as a door and never renders all clear over them", () => {
+    vi.mocked(useIngestionDroppedKnown).mockReturnValue({
+      data: { available: true, window: "24h", dropped: 3, episodes: 2 },
+      isLoading: false,
+      isError: false,
+    } as never);
+
+    const html = render(<IngestionFiltersVerdictOpener />);
+
+    expect(html).toContain("3 dropped from people you know");
+    expect(html).toContain('href="/ingestion?statuses=filtered&amp;range=24h"');
+    expect(html).not.toContain("ingestion-filters-verdict-all-clear");
+  });
+
+  it.each([
+    ["the aggregate is degraded in a 200 response", { data: { available: false }, isError: false }],
+    ["the aggregate request fails", { data: undefined, isError: true }],
+  ])("says gate harm is unknown, not all clear, when %s", (_case, result) => {
+    vi.mocked(useIngestionDroppedKnown).mockReturnValue({
+      ...result,
+      isLoading: false,
+    } as never);
+
+    const html = render(<IngestionFiltersVerdictOpener />);
+
+    expect(html).toContain("gate harm unknown");
+    expect(html).not.toContain("ingestion-filters-verdict-all-clear");
+  });
+
+  it("keeps the calm line when no known-contact drops are outstanding", () => {
+    vi.mocked(usePipelineStats).mockReturnValue({
+      data: { aggregates_available: true, ingested: 100, filtered: 0 },
+      isLoading: false,
+      isError: false,
+    } as never);
+
+    const html = render(<IngestionFiltersVerdictOpener />);
+
+    expect(html).toContain("ingestion-filters-verdict-all-clear");
   });
 });

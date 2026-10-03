@@ -9,10 +9,14 @@
 
 import { DispatchVerdict, type VerdictClause } from "@/components/ui/dispatch-verdict";
 import { useConnectorSummaries, usePipelineStats } from "@/hooks/use-ingestion";
-import { useIngestionWindowRollup } from "@/hooks/use-ingestion-events";
+import { useIngestionDroppedKnown, useIngestionWindowRollup } from "@/hooks/use-ingestion-events";
 import { formatCostUsd } from "@/lib/format-cost";
 import { deriveConnectorDispatchInfo } from "@/components/ingestion/connectors/connector-auth";
-import type { ConnectorSummary, PipelineStats } from "@/api/types";
+import type {
+  ConnectorSummary,
+  IngestionDroppedKnownSummary,
+  PipelineStats,
+} from "@/api/types";
 import type { IngestionRange } from "@/components/ingestion/TimelineTab";
 import { useMemo } from "react";
 
@@ -224,9 +228,34 @@ function filtersClauses(stats: PipelineStats | undefined): VerdictClause[] {
   ];
 }
 
+/** Door to the filtered rows the owner has not yet answered. */
+const DROPPED_KNOWN_HREF = "/ingestion?statuses=filtered&range=24h";
+
+/**
+ * Harm clause for gates that dropped mail from people the owner knows. A failed
+ * or degraded read is "unknown", never zero, so it also blocks the calm line.
+ */
+function droppedKnownClauses(
+  summary: IngestionDroppedKnownSummary | undefined,
+  isError: boolean,
+): VerdictClause[] {
+  if (isError || !summary || !summary.available) {
+    return [{ key: "dropped-known-unknown", text: "gate harm unknown" }];
+  }
+  if (summary.dropped <= 0) return [];
+  return [
+    {
+      key: "dropped-known",
+      text: `${summary.dropped.toLocaleString()} dropped from people you know`,
+      href: DROPPED_KNOWN_HREF,
+    },
+  ];
+}
+
 /** Verdict above the filters pipeline. */
 export function IngestionFiltersVerdictOpener() {
   const stats = usePipelineStats("24h");
+  const droppedKnown = useIngestionDroppedKnown("24h");
   const total = stats.data ? stats.data.ingested + stats.data.filtered : 0;
 
   return (
@@ -239,8 +268,12 @@ export function IngestionFiltersVerdictOpener() {
           isLoading: stats.isLoading,
           isError: stats.isError || stats.data?.aggregates_available === false,
         },
+        { label: "known-contact drops", isLoading: droppedKnown.isLoading, isError: false },
       ]}
-      clauses={filtersClauses(stats.data)}
+      clauses={[
+        ...droppedKnownClauses(droppedKnown.data, droppedKnown.isError),
+        ...filtersClauses(stats.data),
+      ]}
       allClear={`All gates clear: ${total.toLocaleString()} signals evaluated in the last 24h`}
       className="border-b border-border/60 pb-3"
     />

@@ -61,7 +61,11 @@ Full-payload shape
         "sender": {"identity": ...},
         "payload": {"raw": ..., "normalized_text": ...},
         "control": {"policy_tier": ...},
+        "drop_context": {"important_dropped": true, "basis": "known_contact"},  # optional
     }
+
+``drop_context`` is stored-row metadata, not envelope content: replay strips it
+before the envelope is rebuilt (the envelope model forbids unknown keys).
 """
 
 from __future__ import annotations
@@ -76,6 +80,10 @@ if TYPE_CHECKING:
     import asyncpg
 
 logger = logging.getLogger(__name__)
+
+# Top-level key on a stored ``full_payload`` that annotates why the drop matters.
+# Read by the dashboard's dropped-from-people-you-know aggregate.
+DROP_CONTEXT_KEY = "drop_context"
 
 # ---------------------------------------------------------------------------
 # SQL
@@ -138,7 +146,11 @@ def _sanitize_replay_payload(payload_dict: dict[str, Any]) -> None:
       (subject / snippet) or fall back to ``"[no text]"``.
     * ``control.policy_tier``     — if None, remove the key so the Pydantic
       default (``"default"``) is used.
+    * ``drop_context``            — removed: it annotates the stored row (see
+      :meth:`FilteredEventBuffer.full_payload`) and is not an envelope field.
     """
+    payload_dict.pop(DROP_CONTEXT_KEY, None)
+
     payload_section = payload_dict.get("payload")
     if isinstance(payload_section, dict) and payload_section.get("normalized_text") is None:
         raw = payload_section.get("raw")
@@ -532,6 +544,7 @@ class FilteredEventBuffer:
         raw: Any,
         normalized_text: str | None = None,
         policy_tier: str | None = None,
+        important_dropped_basis: str | None = None,
     ) -> dict[str, Any]:
         """Build an ``ingest.v1``-shaped payload dict for storage.
 
@@ -549,6 +562,9 @@ class FilteredEventBuffer:
             raw: Raw provider payload (any JSON-serialisable value).
             normalized_text: Normalised text body (optional).
             policy_tier: Policy tier assigned to the message (optional).
+            important_dropped_basis: Set (e.g. ``"known_contact"``) when the
+                drop silently discards a message the owner would want to see.
+                Stored as ``drop_context``; carries no message content.
 
         Returns:
             Dict shaped as an ``ingest.v1`` envelope body.
@@ -561,7 +577,7 @@ class FilteredEventBuffer:
         if policy_tier is not None:
             control_section["policy_tier"] = policy_tier
 
-        return {
+        stored: dict[str, Any] = {
             "source": {
                 "channel": channel,
                 "provider": provider,
@@ -578,3 +594,9 @@ class FilteredEventBuffer:
             "payload": payload_section,
             "control": control_section,
         }
+        if important_dropped_basis is not None:
+            stored[DROP_CONTEXT_KEY] = {
+                "important_dropped": True,
+                "basis": important_dropped_basis,
+            }
+        return stored
