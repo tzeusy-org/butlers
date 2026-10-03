@@ -14,7 +14,7 @@ is dead, and none keeps an anomaly out of its own baseline (bu-q7vx1q.15, JARVIS
   measurability. Every score is one of `within`, `above`, `below`, `insufficient_history`,
   `unmeasurable` or `stale`; only a ready, fresh, measurable band can say `within`.
 - Two per-butler core tables (`core_258`): `metric_baselines` and `metric_deviation_episodes`.
-  Nothing goes in `public`, so a butler's baselines are readable only through its own schema.
+  No shared cross-butler table is used, so a butler's baselines are readable only through its own schema.
 - Deviation episodes: `k` consecutive days outside the band in a concerning direction open one
   episode; a scored return to the band closes it; a day that cannot be scored holds it open. Episode
   days are excluded from later windows, and the window ends before the run being judged, so the band

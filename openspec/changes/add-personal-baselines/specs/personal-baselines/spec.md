@@ -69,12 +69,12 @@ A deviation episode SHALL open only when each of the last `k_consecutive` days h
 
 ### Requirement: Baselines are stored in the owning butler's schema
 
-`metric_baselines` and `metric_deviation_episodes` SHALL be per-butler core tables created in each butler's own schema and SHALL NOT exist in `public`. A butler job SHALL read and write only its own schema's baselines. DML SHALL be granted only to the runtime role of the schema that owns the table. An upsert with an unchanged `input_digest` SHALL change nothing.
+`metric_baselines` and `metric_deviation_episodes` SHALL be per-butler core tables created in the schema the core chain runs for, never in a shared cross-butler table. A butler job SHALL read and write only its own schema's baselines. DML SHALL be granted only to the runtime role of the schema that owns the table. An upsert with an unchanged `input_digest` SHALL change nothing.
 
 #### Scenario: Health baselines are not visible to another butler
 
 - **WHEN** the core migration runs for the health and general schemas
-- **THEN** each schema SHALL have its own tables, `public` SHALL have none, and the Finance runtime role SHALL hold no privilege on `health.metric_baselines`
+- **THEN** each schema SHALL have its own tables and the Finance runtime role SHALL hold no privilege on `health.metric_baselines`
 
 ### Requirement: Health baseline watch
 

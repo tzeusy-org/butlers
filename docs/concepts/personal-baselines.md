@@ -16,7 +16,7 @@ A personal baseline is the owner's own recent band for one metric. Any claim of 
 - **Episodes:** `k` consecutive concerning days open one deviation episode; a scored return closes
   it; a day that cannot be scored holds it open.
 - **Storage:** `metric_baselines` and `metric_deviation_episodes` are per-butler core tables
-  (`core_258`) in the butler's own schema, never in `public`.
+  (`core_258`) in the butler's own schema (never a shared cross-butler table).
 
 ## Health (slice 1)
 

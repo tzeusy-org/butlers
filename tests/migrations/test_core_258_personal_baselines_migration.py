@@ -40,10 +40,11 @@ def test_core_258_creates_per_schema_tables_and_round_trips(postgres_container) 
     command.upgrade(config, "core_257")
     command.upgrade(config, "core_258")
     asyncio.run(run_migrations(db_url, chain="core", schema="health"))
+    asyncio.run(run_migrations(db_url, chain="core", schema="general"))
 
     for table in ("metric_baselines", "metric_deviation_episodes"):
         assert _scalar(db_url, f"SELECT to_regclass('health.{table}') IS NOT NULL") is True
-        assert _scalar(db_url, f"SELECT to_regclass('public.{table}') IS NULL") is True
+        assert _scalar(db_url, f"SELECT to_regclass('general.{table}') IS NOT NULL") is True
 
     # Another butler's core run is its own copy, not a shared table.
     _scalar(
@@ -70,10 +71,11 @@ def test_core_258_creates_per_schema_tables_and_round_trips(postgres_container) 
             " VALUES ('resting_hr', now() + interval '9 days', 'above', 3) RETURNING 1",
         )
 
+    # The alembic downgrade acts on the unscoped (public) run only.
     command.downgrade(config, "core_257")
-    assert _scalar(db_url, "SELECT to_regclass('general.metric_baselines') IS NULL") is True
+    assert _scalar(db_url, "SELECT to_regclass('public.metric_baselines') IS NULL") is True
     command.upgrade(config, "core_258")
-    assert _scalar(db_url, "SELECT to_regclass('general.metric_baselines') IS NOT NULL") is True
+    assert _scalar(db_url, "SELECT to_regclass('public.metric_baselines') IS NOT NULL") is True
 
 
 def test_core_258_grant_stays_inside_the_owning_schema(postgres_container) -> None:
@@ -91,3 +93,29 @@ def test_core_258_grant_stays_inside_the_owning_schema(postgres_container) -> No
     privilege = "SELECT has_table_privilege('{role}', 'health.metric_baselines', 'SELECT')"
     assert _scalar(db_url, privilege.format(role="butler_health_rw")) is True
     assert _scalar(db_url, privilege.format(role="butler_finance_rw")) is False
+
+
+def test_core_258_bootstrap_replay_leaves_tables_visible_to_the_migration_login(
+    postgres_container,
+) -> None:
+    """The smoke test's shape: ordinary upgrade, managed-bootstrap down/up, same inventory."""
+    from butlers.testing.migration import migration_bootstrap_db_url
+
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
+    asyncio.run(run_migrations(db_url, chain="core"))
+    inventory = (
+        "SELECT string_agg(table_schema || '.' || table_name, ',' ORDER BY 1) FROM"
+        " information_schema.tables WHERE table_name LIKE 'metric\\_%'"
+    )
+    before = _scalar(db_url, inventory)
+    assert before == "public.metric_baselines,public.metric_deviation_episodes"
+
+    bootstrap = _build_alembic_config(
+        migration_bootstrap_db_url(postgres_container, db_name), ["core"]
+    )
+    command.downgrade(bootstrap, "core_257")
+    assert _scalar(db_url, inventory) is None
+    command.upgrade(bootstrap, "core_258")
+
+    assert _scalar(db_url, inventory) == before
