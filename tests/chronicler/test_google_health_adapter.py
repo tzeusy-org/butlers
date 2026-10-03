@@ -643,3 +643,105 @@ async def test_heart_rate_fact_projects_sensitive_point_event() -> None:
     assert event.privacy == Privacy.SENSITIVE
     assert event.payload["bpm"] == 62
     assert event.payload["heart_rate_zones"] == {"fat_burn": 35, "cardio": 4}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("detection", "expected"),
+    [("manual", "medium"), ("auto", "low")],
+)
+async def test_workout_confidence_reflects_detection(detection: str, expected: str) -> None:
+    """A device-detected workout is a weaker claim than an owner-logged one."""
+    row = _make_row(
+        row_id=f"workout-{detection}",
+        idempotency_key=f"google_health:owner:workout:{detection}",
+        valid_at=datetime(2026, 4, 25, 8, 0, tzinfo=UTC),
+        metadata={"activity_type": "walking", "duration_ms": 20 * 60_000, "detection": detection},
+    )
+    row["predicate"] = "workout_session"
+    upserted: list[Episode] = []
+
+    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
+        upserted.append(episode)
+        return episode
+
+    with patch(
+        "butlers.chronicler.adapters.google_health.upsert_episode",
+        side_effect=_fake_upsert,
+    ):
+        await GoogleHealthWorkoutAdapter().project(
+            _pool_returning(row), chronicler_pool=_chronicler_pool(), since=None
+        )
+
+    assert upserted[0].confidence.value == expected
+
+
+@pytest.mark.asyncio
+async def test_connector_envelope_flows_through_ingest_to_one_workout_episode() -> None:
+    """Seam contract: connector output -> wellness_ingest metadata -> Chronicler episode."""
+    from butlers.connectors.google_health import (
+        _normalize_workout_record,
+        build_workout_session_envelope,
+    )
+    from butlers.tools.health.wellness_ingest import (
+        _extract_metadata,
+        _extract_valid_at,
+    )
+
+    record = _normalize_workout_record(
+        {
+            "name": "users/u/dataTypes/exercise/dataPoints/run-9",
+            "exercise": {
+                "interval": {
+                    "startTime": "2026-04-24T07:00:00Z",
+                    "endTime": "2026-04-24T07:45:00Z",
+                },
+                "exerciseType": "RUNNING",
+                "displayName": "Run",
+                "metricsSummary": {"averageHeartRateBeatsPerMinute": "150"},
+                "dataSource": {"recordingMethod": "MANUAL"},
+            },
+        }
+    )
+    envelope = build_workout_session_envelope(
+        endpoint_identity="google_health:user:owner@example.invalid",
+        google_user_id="owner@example.invalid",
+        session_id="run-9",
+        session_record=record,
+        observed_at="2026-04-24T08:00:00+00:00",
+    )
+    raw = envelope["payload"]["raw"]
+    row = _make_row(
+        row_id="fact-1",
+        idempotency_key=envelope["control"]["idempotency_key"],
+        valid_at=datetime.fromisoformat(
+            _extract_valid_at("workout_session", raw, "").replace("Z", "+00:00")
+        ),
+        metadata=_extract_metadata("workout_session", raw),
+    )
+    row["predicate"] = "workout_session"
+
+    upserted: list[Episode] = []
+
+    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
+        upserted.append(episode)
+        return episode
+
+    with patch(
+        "butlers.chronicler.adapters.google_health.upsert_episode",
+        side_effect=_fake_upsert,
+    ):
+        for _ in range(2):
+            await GoogleHealthWorkoutAdapter().project(
+                _pool_returning(row), chronicler_pool=_chronicler_pool(), since=None
+            )
+
+    # Re-running yields the same provenance key, so upsert is an update, never a new row.
+    assert {e.source_ref for e in upserted} == {
+        "health.facts:workout_session:google_health:owner@example.invalid:workout:run-9"
+    }
+    episode = upserted[0]
+    assert episode.episode_type == "workout_episode"
+    assert episode.payload["activity_type"] == "running"
+    assert episode.end_at == datetime(2026, 4, 24, 7, 45, tzinfo=UTC)
+    assert episode.privacy == Privacy.SENSITIVE

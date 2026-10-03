@@ -177,6 +177,7 @@ _DEFAULT_POLL_INTERVALS: dict[str, int] = {
     "spo2": 3600,
     "breathing_rate": 3600,
     "vo2_max": 86400,
+    "workout": 1800,
 }
 
 # Default first-run backfill window in days.
@@ -386,6 +387,16 @@ RESOURCE_BUNDLES: tuple[ResourceBundle, ...] = (
         category="daily",
         normalized_summary="VO2 Max: {value}",
     ),
+    ResourceBundle(
+        resource="workout",
+        endpoint_path="/users/me/dataTypes/exercise/dataPoints:reconcile",
+        data_type="exercise",
+        filter_field="exercise.interval.civil_start_time",
+        poll_interval_key="GOOGLE_HEALTH_POLL_ACTIVITY_S",
+        default_interval_s=_DEFAULT_POLL_INTERVALS["workout"],
+        category="workout",
+        normalized_summary="Workout: {activity_type} ({duration_label})",
+    ),
 )
 
 
@@ -551,6 +562,53 @@ def build_sleep_session_envelope(
         },
         "control": {
             "idempotency_key": idempotency_key,
+            "policy_tier": "default",
+            "ingestion_tier": "full",
+        },
+    }
+
+
+def build_workout_session_envelope(
+    *,
+    endpoint_identity: str,
+    google_user_id: str,
+    session_id: str,
+    session_record: dict[str, Any],
+    observed_at: str,
+) -> dict[str, Any]:
+    """Build an ingest.v1 envelope for a Google Health exercise session.
+
+    Key shape: ``google_health:<email>:workout_session:<session_id>``
+    Idempotency key shape: ``google_health:<email>:workout:<session_id>``
+
+    A trailing-window re-poll therefore re-emits the same key and the fact
+    store treats it as a no-op.
+    """
+    activity_type = str(session_record.get("activity_type") or "workout")
+    duration_label = _format_sleep_duration_label(int(session_record.get("durationMillis") or 0))
+    normalized_text = f"Workout: {activity_type} ({duration_label})"
+
+    return {
+        "schema_version": "ingest.v1",
+        "source": {
+            "channel": _CONNECTOR_CHANNEL,
+            "provider": _CONNECTOR_PROVIDER,
+            "endpoint_identity": endpoint_identity,
+        },
+        "event": {
+            "external_event_id": f"google_health:{google_user_id}:workout_session:{session_id}",
+            "external_thread_id": None,
+            "observed_at": observed_at,
+        },
+        "sender": {
+            "identity": google_user_id,
+        },
+        "payload": {
+            "raw": dict(session_record),
+            "normalized_text": normalized_text,
+        },
+        "control": {
+            "idempotency_key": f"google_health:{google_user_id}:workout:{session_id}",
             "policy_tier": "default",
             "ingestion_tier": "full",
         },
@@ -1911,6 +1969,14 @@ class GoogleHealthConnector:
                     session_record=record,
                     observed_at=observed_at,
                 )
+            elif bundle.category == "workout":
+                envelope = build_workout_session_envelope(
+                    endpoint_identity=endpoint_identity,
+                    google_user_id=ctx.email,
+                    session_id=record_id,
+                    session_record=record,
+                    observed_at=observed_at,
+                )
             else:
                 envelope = build_daily_summary_envelope(
                     endpoint_identity=endpoint_identity,
@@ -1980,7 +2046,7 @@ class GoogleHealthConnector:
             end = until.date().isoformat()
         return {
             "filter": f'{bundle.filter_field} >= "{start}" AND {bundle.filter_field} < "{end}"',
-            "pageSize": 25 if bundle.category == "sleep" else 10000,
+            "pageSize": 25 if bundle.category in ("sleep", "workout") else 10000,
         }
 
     def _build_post_body(
@@ -2333,6 +2399,8 @@ def _normalize_google_health_record(
     """Normalize Google Health v4 union records to the wellness ingest raw contract."""
     if bundle.category == "sleep":
         return _normalize_sleep_record(record)
+    if bundle.category == "workout":
+        return _normalize_workout_record(record)
     union = _DAILY_UNION_FIELDS.get(bundle.resource)
     if union is None:
         return dict(record)
@@ -2397,6 +2465,61 @@ def _normalize_sleep_record(record: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def _normalize_workout_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Flatten a v4 ``exercise`` data point into the workout ingest raw contract.
+
+    Keys written here are what ``wellness_ingest`` and the Chronicler workout
+    adapter read: ``session_id``, ``startTime``, ``endTime``, ``durationMillis``,
+    ``activity_type``, ``detection`` (``manual`` | ``auto``), and the optional
+    ``calories``, ``distance_m``, ``average_heart_rate`` summary metrics.
+    """
+    exercise = record.get("exercise")
+    if not isinstance(exercise, dict):
+        return dict(record)
+
+    interval = exercise.get("interval") if isinstance(exercise.get("interval"), dict) else {}
+    metrics = (
+        exercise.get("metricsSummary") if isinstance(exercise.get("metricsSummary"), dict) else {}
+    )
+    source = exercise.get("dataSource") if isinstance(exercise.get("dataSource"), dict) else {}
+
+    session_id = _data_point_id(record) or interval.get("startTime")
+    start_time = interval.get("startTime")
+    end_time = interval.get("endTime")
+
+    normalized: dict[str, Any] = dict(exercise)
+    if session_id:
+        normalized["session_id"] = str(session_id)
+    if start_time:
+        normalized["startTime"] = start_time
+    if end_time:
+        normalized["endTime"] = end_time
+    normalized["durationMillis"] = (
+        _duration_ms(str(start_time), str(end_time)) if start_time and end_time else 0
+    )
+
+    exercise_type = exercise.get("exerciseType")
+    normalized["activity_type"] = (
+        str(exercise_type).lower().replace("_", " ")
+        if exercise_type
+        else str(exercise.get("displayName") or "workout").lower()
+    )
+    normalized["detection"] = (
+        "manual" if str(source.get("recordingMethod") or "").upper() == "MANUAL" else "auto"
+    )
+
+    calories = metrics.get("caloriesKcal")
+    if isinstance(calories, (int, float)) and not isinstance(calories, bool):
+        normalized["calories"] = calories
+    distance_mm = metrics.get("distanceMillimeters")
+    if isinstance(distance_mm, (int, float)) and not isinstance(distance_mm, bool):
+        normalized["distance_m"] = round(distance_mm / 1000, 1)
+    average_hr = _to_int(metrics.get("averageHeartRateBeatsPerMinute"))
+    if average_hr is not None:
+        normalized["average_heart_rate"] = average_hr
+    return normalized
+
+
 def _build_activity_records(
     steps_data: dict[str, Any],
     active_minutes_data: dict[str, Any],
@@ -2440,7 +2563,7 @@ def _record_identity(bundle: ResourceBundle, record: dict[str, Any]) -> str | No
     is the date portion of the ``start_time`` / ``date`` field, normalised
     to YYYY-MM-DD.
     """
-    if bundle.category == "sleep":
+    if bundle.category in ("sleep", "workout"):
         session_id = record.get("session_id") or record.get("id")
         if session_id:
             return str(session_id)

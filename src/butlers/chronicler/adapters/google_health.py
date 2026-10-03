@@ -656,6 +656,7 @@ class GoogleHealthWorkoutAdapter(ProjectionAdapter):
             "duration_ms": duration_ms or None,
         }
         for field_name in (
+            "detection",
             "calories",
             "distance_m",
             "average_heart_rate",
@@ -675,7 +676,14 @@ class GoogleHealthWorkoutAdapter(ProjectionAdapter):
         # (an explicit, user-or-device-declared workout) → ``medium`` on its own.
         # When the same fact also carries heart-rate telemetry, that is a second
         # independent evidence kind, lifting the episode to ``high``.
-        evidence_kinds = [EvidenceKind(name="workout_session", strong=True)]
+        # A device-detected (``detection == "auto"``) session is a weaker claim than
+        # an owner-logged one, so it is not canonical on its own.
+        evidence_kinds = [
+            EvidenceKind(
+                name="workout_session",
+                strong=str(metadata.get("detection") or "manual") != "auto",
+            )
+        ]
         if has_heart_rate:
             evidence_kinds.append(EvidenceKind(name="heart_rate"))
         confidence = derive_confidence(evidence_kinds)
