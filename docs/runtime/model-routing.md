@@ -288,6 +288,7 @@ The `classify_failover_eligibility()` function (in `failover_classifier.py`) dec
 - Missing CLI binary (`FileNotFoundError`)
 - Timeout before any tool call (`TimeoutError` with no captured calls)
 - Rate-limit / auth / model-unavailable / provider-unavailable (`RuntimeError` matching known markers)
+- Provider plan usage-limit (`usage_limit` class; see [Provider Allowance Windows](#provider-allowance-windows))
 - MCP discovery failure with no captured tool calls (`MCPToolDiscoveryError`)
 
 **Suppressed (default-closed):**
@@ -297,6 +298,38 @@ The `classify_failover_eligibility()` function (in `failover_classifier.py`) dec
 - Business / validation errors (`ValueError`, `TypeError`)
 
 The classifier is **default-closed**: unknown failures suppress failover to protect against duplicate side effects on retry.
+
+### Provider Allowance Windows
+
+A plan usage-limit ("You've hit your usage limit") exhausts the whole provider **account**, not
+one model, so it is classified as `usage_limit` (separate from transient `rate_limit_before_work`)
+and tracked per account in `public.provider_allowance_states` (`account_key`, `state` in
+`available|exhausted|unknown`, `reset_at`, `reset_source` in `parsed|default_window|unknown`).
+
+- **Account key** is `model_catalog.allowance_account`, or the entry's `runtime_type` when NULL.
+  It is catalog identity (it says which provider account an entry draws on), not an operational
+  limit; the one-hour default window is a code constant, not a setting.
+- **Exclusion**: every resolver (`_RESOLVE_SQL`, the intent-aware candidate query, and
+  `_NEXT_SAME_TIER_SQL`) drops every entry on an account with `state='exhausted'` and
+  `reset_at > now()`, even entries never attempted. The receipt records them as
+  `excluded_allowance`. Exclusion lifts by itself at `reset_at`; a successful attempt on the account
+  clears it early. `unknown` never excludes and must never be rendered as available.
+- **Reset honesty**: only an epoch, an ISO-8601 instant with an offset, or "in N hours/minutes" is
+  parsed. A bare clock time ("try again at 12:25 PM") has no timezone and is not guessed; the state
+  then records `reset_source='default_window'`. A default-window guess never shortens a parsed reset.
+- **Spawner**: the rejected attempt is written with outcome `allowance_exhausted`, which the breaker
+  ignores (it counts only `runtime_failure`/`success`), then the failover loop continues on the next
+  admissible candidate, which is necessarily on another account.
+- **Scheduler**: a due prompt-mode cron task or deadline threshold whose every fit candidate is on an
+  exhausted account is not dispatched. A cron task moves `next_run_at` to the earliest reset and
+  records `last_result.outcome='skipped_allowance'`; a deadline threshold stays unfired. Job-mode
+  tasks use no model and are never deferred.
+- **Not owner quota**: `token_limits` is an owner-set budget on one entry; allowance is the
+  provider's own cap and never writes quota rows.
+
+Not yet built: the Models-tab/System-verdict countdown and
+`GET /api/settings/models/allowance`, an owner-turn reserve for background work, and a canary probe
+at the default horizon when the reset is unknown (see change `provider-allowance-windows`).
 
 ### Attempt Provenance
 

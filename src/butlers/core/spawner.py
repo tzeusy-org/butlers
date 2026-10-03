@@ -84,6 +84,7 @@ from butlers.core.mcp_urls import (
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_capabilities import ModelFeature, adapter_capability_baseline
 from butlers.core.model_routing import (
+    ALLOWANCE_OUTCOME,
     BREAKER_OPEN_RULE_OVERRIDE_OUTCOME,
     BREAKER_OPEN_RULE_OVERRIDE_REASON_PREFIX,
     CEILING_DENIAL_REASON_PREFIX,
@@ -95,6 +96,8 @@ from butlers.core.model_routing import (
     apply_spend_routing_rules,
     check_monthly_ceiling,
     check_token_quota,
+    clear_allowance_exhaustion,
+    mark_allowance_exhausted,
     next_same_tier_candidate,
     resolve_model_with_effective_tier,
 )
@@ -343,6 +346,12 @@ def _no_selection_error(resolution: DispatchResolution) -> ModelResolutionError:
         return ModelResolutionError(
             f"all_candidates_breaker_open: candidate_count={len(candidates)}"
         )
+    if candidates and all(
+        candidate.outcome is CandidateOutcome.EXCLUDED_ALLOWANCE for candidate in candidates
+    ):
+        return ModelResolutionError(
+            f"all_candidates_allowance_exhausted: candidate_count={len(candidates)}"
+        )
 
     requested_intent = resolution.requested_intent
     required = (
@@ -365,7 +374,14 @@ def _no_selection_error(resolution: DispatchResolution) -> ModelResolutionError:
 
 
 _FIT_ELIGIBLE_RECEIPT_OUTCOMES = frozenset(
-    {"selected", "eligible", "not_top_priority", "excluded_quota", "excluded_breaker"}
+    {
+        "selected",
+        "eligible",
+        "not_top_priority",
+        "excluded_quota",
+        "excluded_breaker",
+        "excluded_allowance",
+    }
 )
 
 
@@ -3019,12 +3035,16 @@ class Spawner:
                 _failed_catalog_entry_id = catalog_entry_id
                 _failed_attempt_index = _current_attempt_index
                 _failed_attempt_duration_ms = int((time.monotonic() - _attempt_t0) * 1000)
+                # A plan usage-limit is account-scoped, not a model fault: it gets its
+                # own outcome (the breaker ignores it) and exhausts every entry on the
+                # provider account until the reset window (bu-q7vx1q.13).
+                _is_usage_limit = _failover_decision.reason.startswith("usage_limit")
                 if self._pool is not None and _failed_catalog_entry_id is not None:
-                    await _write_dispatch_attempt(
+                    _failed_attempt_row_id = await _write_dispatch_attempt(
                         self._pool,
                         catalog_entry_id=_failed_catalog_entry_id,
                         butler=self._config.name,
-                        outcome="runtime_failure",
+                        outcome=ALLOWANCE_OUTCOME if _is_usage_limit else "runtime_failure",
                         attempt_index=_failed_attempt_index,
                         session_id=session_id,
                         failure_reason=_failover_decision.reason,
@@ -3045,6 +3065,13 @@ class Spawner:
                         invoked=True,
                         resolution_receipt=_current_resolution_receipt,
                     )
+                    if _is_usage_limit:
+                        await mark_allowance_exhausted(
+                            self._pool,
+                            _failed_catalog_entry_id,
+                            reset_at=_failover_decision.reset_at,
+                            attempt_id=_failed_attempt_row_id,
+                        )
 
                 # Attempt next same-tier candidate.
                 if catalog_entry_id is not None:
@@ -3204,6 +3231,7 @@ class Spawner:
                     invoked=True,
                     resolution_receipt=_current_resolution_receipt,
                 )
+                await clear_allowance_exhaustion(self._pool, catalog_entry_id)
 
             # ------------------------------------------------------------------
             # Guardrail checks — run after tool-call merge and token extraction.

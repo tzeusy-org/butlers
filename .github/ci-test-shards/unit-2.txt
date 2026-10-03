@@ -136,6 +136,7 @@ tests/core/test_metrics_registry.py
 tests/core/test_model_routing_quota.py
 tests/core/test_otel_metrics.py
 tests/core/test_permissions_enforcer.py
+tests/core/test_provider_allowance.py
 tests/core/test_resolve_owner_entity_info.py
 tests/core/test_route_inbox.py
 tests/core/test_runtime_probe_control_keys.py

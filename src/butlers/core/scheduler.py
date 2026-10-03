@@ -25,7 +25,7 @@ from croniter import croniter
 from opentelemetry import trace
 
 from butlers.core.metrics import ButlerMetrics
-from butlers.core.model_routing import Complexity, coerce_complexity_tier
+from butlers.core.model_routing import Complexity, allowance_deferral, coerce_complexity_tier
 
 logger = logging.getLogger(__name__)
 
@@ -1195,6 +1195,50 @@ async def _existing_columns(pool: asyncpg.Pool, table: str, columns: set[str]) -
     return {row["column_name"] for row in rows}
 
 
+async def _defer_cron_for_allowance(
+    pool: asyncpg.Pool,
+    *,
+    task_id: uuid.UUID,
+    name: str,
+    original_next_run_at: datetime | None,
+    butler_name: str | None,
+    complexity: Complexity,
+    metrics: ButlerMetrics | None,
+    stagger_key: str | None,
+) -> bool:
+    """Defer a due prompt task to the provider-allowance reset instead of dispatching it.
+
+    True when every model this task could run on is on an exhausted provider account
+    (``skipped_allowance``): ``next_run_at`` moves to the earliest reset so the task
+    runs once then, ``last_result`` says why, and no runtime is invoked.  The
+    optimistic ``next_run_at`` match makes a concurrent tick's deferral a no-op.
+    """
+    reset_at = await allowance_deferral(pool, butler_name or "", complexity)
+    if reset_at is None:
+        return False
+    deferred = await pool.fetchrow(
+        """
+        UPDATE scheduled_tasks
+        SET next_run_at = $2, last_result = $3, updated_at = now()
+        WHERE id = $1 AND next_run_at IS NOT DISTINCT FROM $4
+        RETURNING id
+        """,
+        task_id,
+        reset_at,
+        _result_to_jsonb({"outcome": "skipped_allowance", "deferred_until": reset_at.isoformat()}),
+        original_next_run_at,
+    )
+    if deferred is not None:
+        logger.info(
+            "Scheduler: deferred %r to provider allowance reset at %s", name, reset_at.isoformat()
+        )
+        if metrics is not None:
+            metrics.record_task_dispatched(
+                butler=stagger_key or "unknown", task_name=name, outcome="skipped_allowance"
+            )
+    return True
+
+
 async def _tick_deadline_pass(
     pool: asyncpg.Pool,
     dispatch_fn,
@@ -1206,6 +1250,7 @@ async def _tick_deadline_pass(
     metrics: ButlerMetrics | None = None,
     active_seasons: list[dict[str, Any]] | None = None,
     admission_refusal: Callable[[], Awaitable[str | None]] | None = None,
+    butler_name: str | None = None,
 ) -> tuple[int, int]:
     """Evaluate deadline tasks: fire due thresholds and handle expiry.
 
@@ -1349,6 +1394,15 @@ async def _tick_deadline_pass(
             if refusal is not None:
                 logger.info("Scheduler: stopping deadline admission before %r — %s", name, refusal)
                 break
+        # Provider allowance exhausted for every model this task could use: leave the
+        # threshold unfired so the next tick after the reset dispatches it.
+        if await allowance_deferral(pool, butler_name or "", task_complexity) is not None:
+            logger.info("Deadline task %s deferred: provider allowance exhausted", name)
+            if metrics is not None:
+                metrics.record_task_dispatched(
+                    butler=stagger_key or "unknown", task_name=name, outcome="skipped_allowance"
+                )
+            continue
         try:
             await dispatch_fn(
                 prompt=augmented_prompt,
@@ -2313,6 +2367,7 @@ async def tick(
                 metrics=metrics,
                 active_seasons=active_seasons,
                 admission_refusal=admission_refusal,
+                butler_name=butler_name,
             )
             span.set_attribute("deadlines_evaluated", deadlines_evaluated)
             span.set_attribute("deadline_dispatched", deadline_dispatched)
@@ -2388,6 +2443,24 @@ async def tick(
                 if refusal is not None:
                     logger.info("Scheduler: stopping cron admission before %r — %s", name, refusal)
                     break
+
+            # Provider allowance exhausted for every model this task could run on:
+            # defer to the reset instead of burning a claim on a doomed dispatch.
+            if (
+                dispatch_mode == _DISPATCH_MODE_PROMPT
+                and not should_auto_disable
+                and await _defer_cron_for_allowance(
+                    pool,
+                    task_id=task_id,
+                    name=name,
+                    original_next_run_at=original_next_run_at,
+                    butler_name=butler_name,
+                    complexity=task_complexity,
+                    metrics=metrics,
+                    stagger_key=stagger_key,
+                )
+            ):
+                continue
 
             # --- Claim this occurrence atomically (idempotency guard) ---
             # Use next_run_at as an optimistic version field.  The UPDATE succeeds
