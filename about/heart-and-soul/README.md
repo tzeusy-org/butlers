@@ -11,9 +11,9 @@ scope arguments, and feature debates. When in doubt, start here.
 |---|------|-----------------|
 | 1 | [vision.md](vision.md) | What Butlers is, what it is not, and the non-negotiable rules |
 | 2 | [architecture.md](architecture.md) | Why the system is shaped the way it is |
-| 3 | [v1.md](v1.md) | What ships in v1 and what gets deferred |
+| 3 | [v1.md](v1.md) | The scope boundary: which butlers, modules and connectors are in v1, what is deferred, and when v1 is done |
 | 4 | [security.md](security.md) | Trust model and threat boundaries |
-| 5 | [development.md](development.md) | How work gets done on this project |
+| 5 | [development.md](development.md) | The four workflow principles (test first, spec and RFC first, manifesto-driven, beads) |
 | 6 | [design-language.md](design-language.md) | Why the dashboard looks and speaks the way it does, including [Voice and Copy](design-language.md#voice-and-copy) |
 
 ## How to Use These
@@ -22,7 +22,7 @@ scope arguments, and feature debates. When in doubt, start here.
 - **Making a design decision?** Check `architecture.md` for structural philosophy.
 - **Worried about security?** Check `security.md` for the trust model.
 - **Starting development?** Check `development.md` for workflow principles.
-- **Arguing about scope?** `v1.md` is the boundary. If it is not listed, it waits.
+- **Arguing about scope?** `v1.md` is the boundary. If it is not named there, it waits.
 - **Touching the dashboard?** Read `design-language.md` before adding chrome, tokens, or page archetypes. Read the Voice and Copy section before writing any string the owner will see.
 
 ## What These Are Not
