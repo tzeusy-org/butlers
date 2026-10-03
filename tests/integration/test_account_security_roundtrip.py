@@ -53,7 +53,19 @@ async def pool(db_url: str) -> asyncpg.Pool:
     await p.close()
 
 
-async def test_no_answer_opens_one_case_with_recovery_door(pool, bootstrap_url):
+@pytest.fixture
+async def switchboard_pool(db_url: str) -> asyncpg.Pool:
+    # fleet_cases INSERT is RLS-restricted to butler_switchboard_rw (core_217); the
+    # answer door runs on Switchboard's own daemon pool, so mirror that identity.
+    async def _as_switchboard(conn: asyncpg.Connection) -> None:
+        await conn.execute("SET ROLE butler_switchboard_rw")
+
+    p = await asyncpg.create_pool(db_url, min_size=1, max_size=3, init=_as_switchboard)
+    yield p
+    await p.close()
+
+
+async def test_no_answer_opens_one_case_with_recovery_door(pool, switchboard_pool, bootstrap_url):
     event_id = await record_event(
         pool,
         event_type=SECURITY_EVENT_TYPE,
@@ -65,8 +77,8 @@ async def test_no_answer_opens_one_case_with_recovery_door(pool, bootstrap_url):
             "source_request_id": "req-synthetic-1",
         },
     )
-    first = await record_security_answer(pool, event_id=event_id, answer="no")
-    second = await record_security_answer(pool, event_id=event_id, answer="no")
+    first = await record_security_answer(switchboard_pool, event_id=event_id, answer="no")
+    second = await record_security_answer(switchboard_pool, event_id=event_id, answer="no")
     assert first["status"] == "ok" and first["case_id"] == second["case_id"]
 
     key = f"account_security:{event_id}"
@@ -83,7 +95,7 @@ async def test_no_answer_opens_one_case_with_recovery_door(pool, bootstrap_url):
         )
         assert [(r["kind"], r["ref"]) for r in evidence] == [("account_security_event", event_id)]
 
-        yes = await record_security_answer(pool, event_id=event_id, answer="yes")
+        yes = await record_security_answer(switchboard_pool, event_id=event_id, answer="yes")
         assert yes["case_id"] is None
         assert (
             await pool.fetchval(

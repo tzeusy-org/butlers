@@ -145,6 +145,10 @@ async def record_security_answer(pool: Any, *, event_id: str, answer: str) -> di
     fleet case keyed on the event and contributes a single evidence row holding
     the provider's static recovery door. A repeated ``no`` returns the same
     case; a ``yes`` after a ``no`` never closes it (the conservative direction).
+
+    Must run on Switchboard's own pool: ``public.fleet_cases`` INSERT is RLS-restricted to
+    ``butler_switchboard_rw`` (core_217). Any other caller forwards through the
+    ``open_case`` fleet-case tool instead of calling this directly.
     """
     normalized = answer.strip().lower()
     if normalized not in {"yes", "no"}:
