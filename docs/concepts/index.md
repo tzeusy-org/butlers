@@ -11,5 +11,6 @@
 - [Identity Model](identity-model.md) — owner, contacts, tenant model
 - [MCP Model](mcp-model.md) — Model Context Protocol in the Butlers context
 - [Expected Signals](expected-signals.md) — liveness-qualified present, absent, and unmeasurable observations
+- [Personal baselines](personal-baselines.md) — per-schema robust bands with an honest denominator behind every "unusual for you"
 - [Fleet Case File](fleet-case-file.md) — the durable object for one correlated multi-butler situation
 - [Proactive Insight Feedback](proactive-insights.md) — bounded feedback, category shaping, and expired-unseen truth
