@@ -9,7 +9,7 @@
 
 DB-backed tests (`tests/api/*_db.py`, `tests/migrations/`, `tests/config/`) start an ephemeral
 `pgvector/pgvector:pg17` container per pytest **process** via testcontainers. `pyproject.toml`
-addopts carry `-n 3 --dist loadfile`, so one `make test` is three worker processes, each with its
+addopts carry `-n 4 --dist loadfile`, so one `make test` is four worker processes, each with its
 own session-scoped container, and a few test modules open a second container of their own.
 
 A run that reaches teardown removes its containers; a full DB-backed run leaves the host container

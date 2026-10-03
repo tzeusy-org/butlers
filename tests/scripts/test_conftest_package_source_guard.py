@@ -59,7 +59,7 @@ def foreign_butlers_src(tmp_path_factory: pytest.TempPathFactory) -> Path:
 def _collect_only(**env_overrides: str) -> subprocess.CompletedProcess[str]:
     """Collect this one file in a subprocess, so the root conftest is imported fresh.
 
-    ``-n 0`` overrides the ``-n 3`` in ``addopts``: xdist workers would add
+    ``-n 0`` overrides the ``-n 4`` in ``addopts``: xdist workers would add
     startup cost and route the conftest failure through a less direct path.
     """
     env = dict(os.environ)

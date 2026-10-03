@@ -256,7 +256,7 @@ logger = logging.getLogger(__name__)
 _TESTCONTAINER_START_LOCK_PATH = os.path.join(
     tempfile.gettempdir(), "butlers-testcontainers-start.lock"
 )
-_DEFAULT_XDIST_AUTO_WORKERS = 3
+_DEFAULT_XDIST_AUTO_WORKERS = 4
 
 _TESTCONTAINER_STOP_RETRY_ATTEMPTS = 4
 _TESTCONTAINER_STOP_BASE_DELAY_SECONDS = 0.1
@@ -525,7 +525,7 @@ def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
     CI integration commands explicitly pass ``-n auto``, which bypasses the
     ``pyproject.toml`` default and can fan out enough workers to overwhelm
     Docker-backed testcontainers startup. Keep auto aligned with the repo's
-    documented three-worker contract unless an explicit override is supplied.
+    documented four-worker contract unless an explicit override is supplied.
     """
 
     raw = os.environ.get("PYTEST_XDIST_AUTO_WORKERS")

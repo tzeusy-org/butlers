@@ -2,7 +2,7 @@
 
 The defect this guards against is invisible in the Makefile. `test-qg-serial` never
 passed `-n`, which reads as "no parallelism" -- but pytest prepends ``addopts`` to
-every invocation, and this repo's ``addopts`` carries ``-n 3 --dist loadfile``. So the
+every invocation, and this repo's ``addopts`` carries ``-n 4 --dist loadfile``. So the
 target documented as the "serial fallback for order-dependent debugging" ran on three
 xdist workers: the one tool you reach for when you suspect ordering was the one tool
 guaranteed to reshuffle it.
@@ -10,7 +10,7 @@ guaranteed to reshuffle it.
 The e2e targets had the same shape and a harder failure (bu-ejgwv). ``butler_ecosystem``
 is session-scoped and every xdist worker runs its own session, while
 ``tests/e2e/conftest.py`` offsets every roster port by a fixed ``E2E_PORT_OFFSET = 11000``
-with no worker component -- so three workers boot three ecosystems onto one set of ports.
+with no worker component -- so four workers boot four ecosystems onto one set of ports.
 Those targets also pass ``-s``, which xdist silently drops, so the streamed bootstrap
 output they exist to show never appears either.
 
