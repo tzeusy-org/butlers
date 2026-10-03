@@ -125,6 +125,7 @@ async def pool(provisioned_postgres_pool):
         # Facts table — embedding stored as TEXT (no pgvector required in tests)
         await p.execute("""
             CREATE TABLE IF NOT EXISTS facts (
+                content_authority TEXT, authority_entity_id UUID,
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 subject TEXT NOT NULL,
                 predicate TEXT NOT NULL,

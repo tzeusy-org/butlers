@@ -47,6 +47,7 @@ pytestmark = [
 
 _LIFECYCLE_SCHEMA_SQL = """
 CREATE TABLE episodes (
+    content_authority TEXT, authority_entity_id UUID,
     id UUID PRIMARY KEY,
     butler TEXT NOT NULL,
     session_id UUID,
@@ -92,6 +93,7 @@ INSERT INTO memory_policies (retention_class, ttl_days)
 VALUES ('transient', 7);
 
 CREATE TABLE facts (
+    content_authority TEXT, authority_entity_id UUID,
     id UUID PRIMARY KEY,
     subject TEXT NOT NULL DEFAULT '',
     predicate TEXT NOT NULL DEFAULT '',
@@ -142,6 +144,7 @@ CREATE TABLE predicate_registry (
 INSERT INTO predicate_registry (name) VALUES ('test_property');
 
 CREATE TABLE rules (
+    content_authority TEXT, authority_entity_id UUID, endorsed_at TIMESTAMPTZ, endorsed_by UUID,
     id UUID PRIMARY KEY,
     content TEXT NOT NULL,
     embedding TEXT NOT NULL,

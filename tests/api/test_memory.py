@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -2005,6 +2005,55 @@ async def test_retire_rule_503_when_no_pools_available(app):
         resp = await client.patch(f"/api/memory/rules/{rule_id}/retire")
 
     assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# POST /api/memory/rules/{rule_id}/endorse (bu-q7vx1q.1)
+# ---------------------------------------------------------------------------
+
+
+async def _post_endorse(app, rule_id, **endorse_kwargs):
+    holding = _RetireRulePool(rule=None)
+    db = _ConfirmDB({"atlas": holding})
+    app.dependency_overrides[_get_db_manager] = lambda: db
+    with (
+        patch("butlers.api.routers.memory.fetch_owner_entity_id", AsyncMock(return_value=None)),
+        patch("butlers.api.routers.memory.endorse_rule", AsyncMock(**endorse_kwargs)),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            return await client.post(f"/api/memory/rules/{rule_id}/endorse")
+
+
+async def test_endorse_rule_returns_receipt_and_404_409_mappings(app):
+    """Receipt fields round-trip; a missing rule is 404; a retired rule is 409."""
+    rule_id = uuid.uuid4()
+    owner = uuid.uuid4()
+    resp = await _post_endorse(
+        app,
+        rule_id,
+        return_value={
+            "rule_id": rule_id,
+            "content_authority": "third_party",
+            "endorsed_at": _NOW,
+            "endorsed_by": owner,
+            "changed": True,
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert (data["rule_id"], data["endorsed_by"], data["changed"]) == (
+        str(rule_id),
+        str(owner),
+        True,
+    )
+
+    assert (await _post_endorse(app, rule_id, return_value=None)).status_code == 404
+    from butlers.modules.memory.storage import RuleNotEndorsableError
+
+    retired = await _post_endorse(app, rule_id, side_effect=RuleNotEndorsableError("retired"))
+    assert retired.status_code == 409
 
 
 # ---------------------------------------------------------------------------

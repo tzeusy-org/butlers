@@ -55,6 +55,7 @@ pytestmark = [
 # stats assertion, mirroring test_memory_stats_consolidation_e2e.py).
 _RULES_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS episodes (
+    content_authority TEXT, authority_entity_id UUID,
     id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     consolidated         BOOLEAN NOT NULL DEFAULT false,
     consolidation_status TEXT    NOT NULL DEFAULT 'pending'
@@ -64,6 +65,7 @@ CREATE TABLE IF NOT EXISTS episode_tombstones (
     deleted_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS facts (
+    content_authority TEXT, authority_entity_id UUID,
     id       BIGSERIAL PRIMARY KEY,
     validity TEXT NOT NULL DEFAULT 'active'
 );
@@ -79,6 +81,7 @@ CREATE TABLE IF NOT EXISTS public.consolidation_runs (
     errors             INT NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS rules (
+    content_authority TEXT, authority_entity_id UUID, endorsed_at TIMESTAMPTZ, endorsed_by UUID,
     id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     content              TEXT NOT NULL,
     search_vector        tsvector,

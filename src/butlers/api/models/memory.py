@@ -139,6 +139,22 @@ class Rule(BaseModel):
     tags: list[str] = []
     metadata: dict = {}
     retired_at: str | None = None
+    # Server-derived authorship (bu-q7vx1q.1): who wrote the content this rule
+    # came from. ``held`` rules are invisible to sessions until the owner endorses.
+    content_authority: str | None = None
+    authority_entity_id: str | None = None
+    endorsed_at: str | None = None
+    held: bool = False
+
+
+class RuleEndorsement(BaseModel):
+    """Receipt for an owner endorsement of a held rule (idempotent)."""
+
+    rule_id: str
+    content_authority: str | None = None
+    endorsed_at: str | None = None
+    endorsed_by: str | None = None
+    changed: bool = False
 
 
 class MemoryStats(BaseModel):

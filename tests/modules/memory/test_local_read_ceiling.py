@@ -289,8 +289,9 @@ async def _insert_fact(
     row = await pool.fetchrow(
         """
         INSERT INTO facts (subject, predicate, content, scope, sensitivity,
-                            entity_id, importance, search_vector, last_confirmed_at)
-        VALUES ($6, $7, $1, $2, $3, $4, $5, to_tsvector('english', $1), now())
+                            entity_id, importance, search_vector, last_confirmed_at,
+                            content_authority)
+        VALUES ($6, $7, $1, $2, $3, $4, $5, to_tsvector('english', $1), now(), 'owner')
         RETURNING id
         """,
         content,
@@ -307,8 +308,9 @@ async def _insert_fact(
 async def _insert_rule(pool, *, content: str, sensitivity: str) -> uuid.UUID:
     row = await pool.fetchrow(
         """
-        INSERT INTO rules (content, sensitivity, search_vector, last_confirmed_at)
-        VALUES ($1, $2, to_tsvector('english', $1), now())
+        INSERT INTO rules (content, sensitivity, search_vector, last_confirmed_at,
+                           content_authority)
+        VALUES ($1, $2, to_tsvector('english', $1), now(), 'owner')
         RETURNING id
         """,
         content,
