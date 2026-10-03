@@ -43,9 +43,12 @@ that assumes multi-user SaaS conventions (avatars in nav, role badges,
 - **Not a control plane for end users.** The end user of a butler is the
   owner, but their channel is messaging, not the dashboard. The dashboard
   is the *operator's* surface (the same person, but in a different mode).
-- **Not a chat app.** Conversational flows belong in the messaging layer.
-  The dashboard's job is to *show what happened*, not to *be the place
-  things happen*.
+- **Not a chat app.** Messaging channels stay the owner's primary
+  conversational interface. The dashboard carries two operator chat lanes,
+  a Switchboard-routed global surface and a per-butler panel on butler
+  detail, as one more input channel, never the primary one. The dashboard
+  stays read-first: it *shows what happened*, and it is also where the
+  operator acts when something needs correcting.
 - **Not a generic admin template.** The dashboard's structure should be
   legible to its single user, not to an imagined enterprise admin
   persona. Patterns like "user management → roles → permissions" do not
