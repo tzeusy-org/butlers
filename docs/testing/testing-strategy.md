@@ -64,10 +64,10 @@ Two jobs run on a schedule (`0 2 * * *` UTC) and via `workflow_dispatch`, never 
 
 ## Parallel Execution
 
-Tests run in parallel via pytest-xdist with 3 workers (`-n 3`), using `loadfile` distribution to keep tests from the same file on the same worker. This ensures module-scoped fixtures (shared FastAPI app, module-scoped DB pools) are not torn down mid-module.
+Tests run in parallel via pytest-xdist with 4 workers (`-n 4`), using `loadfile` distribution to keep tests from the same file on the same worker. This ensures module-scoped fixtures (shared FastAPI app, module-scoped DB pools) are not torn down mid-module.
 
 ```ini
-addopts = --import-mode=importlib -m 'not nightly and not bench' -n 3 --dist loadfile --ignore=tests/benchmarks
+addopts = --import-mode=importlib -m 'not nightly and not bench' -n 4 --dist loadfile --ignore=tests/benchmarks
 ```
 
 The `importlib` import mode avoids module-name collisions when multiple butler test directories contain identically-named files (e.g., `test_tools.py` in different roster directories).

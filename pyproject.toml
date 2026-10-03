@@ -118,12 +118,12 @@ testpaths = ["tests", "roster"]
 pythonpath = ["."]
 # importlib mode avoids module-name collisions when multiple butler test
 # directories contain identically-named files (e.g. test_tools.py).
-# -n 3: xdist parallel execution capped at 3 workers to avoid OOM when
+# -n 4: xdist parallel execution capped at 4 workers to avoid OOM when
 #   multiple polecats run quality gates concurrently alongside k3s workloads.
 # --dist loadfile: keeps tests from the same file on the same worker so that
 #   module-scoped fixtures (e.g. shared FastAPI app, module-scoped DB pools)
 #   are not torn down and recreated across workers mid-module.
-addopts = "--import-mode=importlib -m 'not nightly and not bench and not perf' -n 3 --dist loadfile --ignore=tests/benchmarks"
+addopts = "--import-mode=importlib -m 'not nightly and not bench and not perf' -n 4 --dist loadfile --ignore=tests/benchmarks"
 markers = [
     "unit: Pure unit tests — no Docker, no external services",
     "smoke: Fast operational smoke gate — no real LLM spawned; Docker allowed for DB-backed assertions",

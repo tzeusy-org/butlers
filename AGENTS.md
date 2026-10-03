@@ -21,7 +21,7 @@ privacy, authorization, retry, idempotency, or migration-outcome test.
    ```
 
    `-n 0` is intentional for a single node or order-dependent debugging:
-   `pyproject.toml` otherwise starts three xdist workers for every command.
+   `pyproject.toml` otherwise starts four xdist workers for every command.
 
 2. Before choosing a broader scope, run the planner from the dirty worktree:
 

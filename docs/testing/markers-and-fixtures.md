@@ -115,15 +115,15 @@ The patches are idempotent -- they check for sentinel attributes to avoid double
 
 | Setting | Value | Rationale |
 |---------|-------|-----------|
-| `-n 3` | 3 xdist workers | Avoids OOM when polecats run alongside the Compose stack |
+| `-n 4` | 4 xdist workers | Avoids OOM when polecats run alongside the Compose stack |
 | `--dist loadfile` | File-level distribution | Preserves module-scoped fixtures |
 | `--import-mode=importlib` | Importlib mode | Avoids name collisions across `roster/*/tests/` |
 
 These live in `addopts`, which pytest prepends to **every** invocation in this repo. So an
-omitted `-n` is not "the default" -- it is three workers. Anything that needs a different
+omitted `-n` is not "the default" -- it is four workers. Anything that needs a different
 mode has to say so on its own command line: `make test-qg-serial` passes `-n 0` for exactly
-this reason, and ran on three workers until it did. `-p no:xdist` is not a
-substitute; it turns the inherited `-n 3` into an unrecognized-argument error.
+this reason, and ran on four workers until it did. `-p no:xdist` is not a
+substitute; it turns the inherited `-n 4` into an unrecognized-argument error.
 `tests/contracts/test_qg_serial_target.py` pins the merged value for both gate targets,
 because a grep of the Makefile cannot see it.
 
@@ -151,7 +151,7 @@ Tests can use this to skip gracefully when Docker is not installed.
 ## Implementation Notes
 
 - Root `conftest.py` also serialises testcontainers `DockerClient.run()` across xdist workers and
-  caps `-n auto` at 3 workers (`PYTEST_XDIST_AUTO_WORKERS` overrides).
+  caps `-n auto` at 4 workers (`PYTEST_XDIST_AUTO_WORKERS` overrides).
 - Startup timeouts (before a container starts) are host contention: reduce load and rely on the
   init retry. Teardown races happen in `container.remove()` and are the teardown patch's job.
 - DB tests use `testcontainers.postgres.PostgresContainer` with `asyncpg.create_pool()`.

@@ -153,7 +153,7 @@ Tests SHALL be classified into tiers of increasing scope, cost, and infrastructu
 
 #### Scenario: Nightly tests (adapter integration)
 - **WHEN** a test is marked `@pytest.mark.nightly`
-- **THEN** it is excluded from default CI via the default `addopts` deselection `-m 'not nightly and not bench and not perf'` (alongside `--import-mode=importlib -n 3 --dist loadfile --ignore=tests/benchmarks`)
+- **THEN** it is excluded from default CI via the default `addopts` deselection `-m 'not nightly and not bench and not perf'` (alongside `--import-mode=importlib -n 4 --dist loadfile --ignore=tests/benchmarks`)
 - **AND** it requires the adapter's CLI binary on PATH (skipped via `skipif` when missing)
 - **AND** it requires valid LLM API credentials in the environment
 - **AND** it validates parser correctness against real CLI output (structural assertions only)
@@ -229,7 +229,7 @@ Integration and E2E tests SHALL use Docker testcontainers for PostgreSQL, with r
 ### Requirement: Pytest Run Verdicts Require a Positive Terminator
 A pytest run's outcome SHALL be established by positive evidence that the run finished — a summary line, or the process exit status — never by the absence of a failure line. A run that produced neither is UNKNOWN, and UNKNOWN SHALL NOT be treated as a pass.
 
-Where both terminators are present and the exit status alone cannot distinguish a failed run from an unfinished one, the verdict SHALL read them together. That is exactly one status: pytest's `2`, the *interrupted* run, which `--maxfail` produces on an ordinary test failure under xdist (the default parallel mode, since `addopts` carries `-n 3`; `make test-qg-serial` explicitly overrides it with `-n 0`). Reading it as UNKNOWN would make UNKNOWN the label on the most common red run there is, and UNKNOWN only carries weight while it stays rare.
+Where both terminators are present and the exit status alone cannot distinguish a failed run from an unfinished one, the verdict SHALL read them together. That is exactly one status: pytest's `2`, the *interrupted* run, which `--maxfail` produces on an ordinary test failure under xdist (the default parallel mode, since `addopts` carries `-n 4`; `make test-qg-serial` explicitly overrides it with `-n 0`). Reading it as UNKNOWN would make UNKNOWN the label on the most common red run there is, and UNKNOWN only carries weight while it stays rare.
 
 #### Scenario: Truncated log has no verdict
 - **WHEN** `scripts/pytest_gate.py verdict LOG` reads a log carrying neither a gate sentinel nor a pytest summary line, including the xdist truncation whose workers report `OSError: cannot send (already closed?)` after their controller is signal-killed
@@ -928,12 +928,12 @@ when that metadata does not place the real table in the stand-in's
   an empty real-table comparison
 
 ### Requirement: Quality-Gate Targets State Their Own Execution Mode
-Each quality-gate make target SHALL state its xdist worker count on its own command line rather than inheriting one. `pyproject.toml`'s `addopts` carries `-n 3 --dist loadfile` and is prepended to every pytest invocation in this repository, so an omitted `-n` is not "the default" — it is silently three workers, and a target whose meaning depends on the worker count cannot be read from its recipe.
+Each quality-gate make target SHALL state its xdist worker count on its own command line rather than inheriting one. `pyproject.toml`'s `addopts` carries `-n 4 --dist loadfile` and is prepended to every pytest invocation in this repository, so an omitted `-n` is not "the default" — it is silently four workers, and a target whose meaning depends on the worker count cannot be read from its recipe.
 
 #### Scenario: The serial gate target really is serial
 - **WHEN** `make test-qg-serial` runs
 - **THEN** the pytest process it launches resolves `-n` to `0`, with `--dist` `no`, an empty `tx` list, and no xdist distributed session registered
-- **AND** the target passes `-n 0` explicitly to reach that state, because `-p no:xdist` would turn the `-n 3` inherited from `addopts` into an unrecognized-argument error instead of disabling it
+- **AND** the target passes `-n 0` explicitly to reach that state, because `-p no:xdist` would turn the `-n 4` inherited from `addopts` into an unrecognized-argument error instead of disabling it
 - **BECAUSE** the target exists for order-dependent debugging, and parallel workers reshuffle exactly the execution order it is reached for
 
 #### Scenario: The default gate target really is parallel

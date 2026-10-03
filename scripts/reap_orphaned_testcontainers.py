@@ -9,8 +9,8 @@ Why this exists (bu-3zu5l)
 --------------------------
 Integration tests under ``tests/api/*_db.py``, ``tests/migrations/`` and
 ``tests/config/`` start an ephemeral ``pgvector/pgvector:pg17`` container per
-pytest *process* via testcontainers. With ``-n 3 --dist loadfile`` in
-``pyproject.toml`` addopts, one ``make test`` is three worker processes, each
+pytest *process* via testcontainers. With ``-n 4 --dist loadfile`` in
+``pyproject.toml`` addopts, one ``make test`` is four worker processes, each
 with its own container. A run that is SIGKILLed (agent timeout, ctrl-c, OOM)
 never reaches the fixture finalizer, so the container stays up forever, holding
 RAM and a published port.

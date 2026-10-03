@@ -41,9 +41,9 @@ test-plan:
 
 # Every pytest-based E2E target below passes `-n 0` (bu-ejgwv). It is not redundant:
 # pytest prepends `addopts` to every invocation, and this repo's addopts carries
-# `-n 3 --dist loadfile` -- so a target that merely *omits* `-n` still booted three xdist
+# `-n 4 --dist loadfile` -- so a target that merely *omits* `-n` still booted four xdist
 # workers. E2E cannot survive that. `butler_ecosystem` is session-scoped and every worker
-# gets its own session, so three workers boot three full ecosystems; tests/e2e/conftest.py
+# gets its own session, so four workers boot four full ecosystems; tests/e2e/conftest.py
 # offsets every roster port by a fixed `E2E_PORT_OFFSET = 11000` with no worker component,
 # so all three contend for the identical ports.
 #
@@ -55,7 +55,7 @@ test-plan:
 # daemons, three times the live-model spend) and split the session-end cost/benchmark
 # scorecards across three processes.
 #
-# `-n 0`, not `-p no:xdist`: the latter turns the inherited `-n 3` into an
+# `-n 0`, not `-p no:xdist`: the latter turns the inherited `-n 4` into an
 # unrecognized-argument error. xdist derives `--dist no` and an empty tx list from `-n 0`,
 # so the leftover `--dist loadfile` in addopts is inert.
 # tests/contracts/test_qg_serial_target.py pins the effective value by running each
@@ -134,10 +134,10 @@ test-qg:
 # Same quality-gate scope as test-qg, serial fallback for order-dependent debugging.
 #
 # `-n 0` is not redundant (bu-bcujm). pytest prepends `addopts` to every invocation, and this
-# repo's addopts carries `-n 3 --dist loadfile` -- so a target that merely *omits* `-n` still
-# ran on three xdist workers, reshuffling the very execution order this target exists to hold
+# repo's addopts carries `-n 4 --dist loadfile` -- so a target that merely *omits* `-n` still
+# ran on four xdist workers, reshuffling the very execution order this target exists to hold
 # still. `-n 0` is the only thing that overrides it; `-p no:xdist` would instead turn the
-# inherited `-n 3` into an unrecognized-argument error. xdist derives `--dist no` and an empty
+# inherited `-n 4` into an unrecognized-argument error. xdist derives `--dist no` and an empty
 # tx list from `-n 0`, so the leftover `--dist loadfile` in addopts is inert.
 # tests/contracts/test_qg_serial_target.py pins the effective value by running this target's
 # real argv, so addopts cannot silently re-parallelise it again.
