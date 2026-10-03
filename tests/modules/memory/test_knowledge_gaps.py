@@ -317,7 +317,7 @@ async def test_delivery_failure_keeps_the_gap_retrying_then_surfaces_it(pool_fac
     await _decline(pool, conv, entity, predicate)
     await _store(pool, entity, predicate, sender=owner)
 
-    now = datetime.now(UTC)
+    now = datetime(2031, 1, 1, tzinfo=UTC)  # pinned: after every real-clock row timestamp
     for attempt in range(1, knowledge_gaps.MAX_DELIVERY_ATTEMPTS + 1):
         now += timedelta(days=1)
         await knowledge_gaps.deliver_knowledge_gaps(
