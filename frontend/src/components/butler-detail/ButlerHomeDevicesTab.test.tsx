@@ -48,7 +48,9 @@ vi.mock("recharts", () => {
       children,
     );
 
-  return { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer };
+  const ReferenceArea = () => null;
+
+  return { AreaChart, Area, XAxis, YAxis, Tooltip, ReferenceArea, ResponsiveContainer };
 });
 
 // Stub <Time> to avoid date-formatting complexity in unit tests

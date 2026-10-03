@@ -53,11 +53,11 @@ import {
   useBadgeCounts,
 } from "./use-qa-badge"
 
-function mockQaSummary(escalatedOpenCases: number | undefined) {
+function mockQaSummary(escalatedOpenCases: number | undefined, isError = false) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const result: any =
     escalatedOpenCases === undefined
-      ? { data: undefined }
+      ? { data: undefined, isError }
       : {
           data: {
             data: {
@@ -109,17 +109,22 @@ describe("useQaEscalationsBadge", () => {
 
   it("returns 0 when data is still loading (undefined)", () => {
     mockQaSummary(undefined)
-    expect(useQaEscalationsBadge()).toBe(0)
+    expect(useQaEscalationsBadge()).toEqual({ kind: "count", count: 0 })
+  })
+
+  it("reports unavailable instead of a calm zero when the summary fetch fails", () => {
+    mockQaSummary(undefined, true)
+    expect(useQaEscalationsBadge()).toEqual({ kind: "unavailable" })
   })
 
   it("returns the escalated open-case count when greater than 0", () => {
     mockQaSummary(4)
-    expect(useQaEscalationsBadge()).toBe(4)
+    expect(useQaEscalationsBadge()).toEqual({ kind: "count", count: 4 })
   })
 
   it("returns 0 when the escalated open-case count is 0", () => {
     mockQaSummary(0)
-    expect(useQaEscalationsBadge()).toBe(0)
+    expect(useQaEscalationsBadge()).toEqual({ kind: "count", count: 0 })
   })
 })
 
@@ -231,7 +236,7 @@ describe("useBadgeCounts", () => {
     mockDecisions(undefined)
     const counts = useBadgeCounts()
     expect("qa-escalations" in counts).toBe(true)
-    expect(counts["qa-escalations"]).toBe(2)
+    expect(counts["qa-escalations"]).toEqual({ kind: "count", count: 2 })
     expect("approvals-pending" in counts).toBe(true)
   })
 

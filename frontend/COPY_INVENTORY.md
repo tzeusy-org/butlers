@@ -4724,6 +4724,10 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 
 - Tier {}
 
+## `frontend/src/components/ui/TimeSeriesChart.tsx`
+
+- formatInTimeZone(ms, timezone, spanDays
+
 ## `frontend/src/components/ui/Title.tsx`
 
 - Secrets
@@ -4817,4 +4821,4 @@ outside `.tsx` files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3834*
+*Total strings: 3835*

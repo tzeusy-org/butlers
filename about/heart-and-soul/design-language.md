@@ -632,6 +632,19 @@ Non-negotiable rule 1.
 
 ---
 
+## Trend charts
+
+A trend chart tells the owner how often something was measured, where the
+silence is, and how old the latest point is, without reading a caption. So
+the x axis is time, not a list of labels: readings sit where they happened,
+every reading wears a mark, joins are straight (a smoothed curve invents
+values nobody measured), a long silence breaks the line, and a stale series
+shows a shaded, labelled tail up to now instead of ending quietly at its last
+point. One primitive, `TimeSeriesChart`, owns this grammar; the normative
+rules are the spec requirement Time-True Trend Grammar.
+
+---
+
 ## How To Use This Document
 
 - **Adding a page or component?** Read this first. If your work
