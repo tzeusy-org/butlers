@@ -8,7 +8,7 @@ Predicate taxonomy (mem_003):
   sleep_session, sleep_stage_summary,
   measurement_resting_hr, measurement_hrv, measurement_spo2,
   measurement_breathing_rate, measurement_steps, measurement_active_minutes,
-  measurement_vo2_max
+  measurement_vo2_max, workout_session
 
 Fan-out: the ``activity`` resource emits two facts per envelope —
   ``measurement_steps`` and ``measurement_active_minutes`` — with distinct
@@ -71,6 +71,7 @@ _RESOURCE_TO_PREDICATES: dict[str, tuple[str, ...]] = {
     "spo2": ("measurement_spo2",),
     "breathing_rate": ("measurement_breathing_rate",),
     "vo2_max": ("measurement_vo2_max",),
+    "workout_session": ("workout_session",),
 }
 
 # Predicates that are derived from embedded sub-data within a larger envelope.
@@ -150,6 +151,36 @@ def _extract_sleep_session_metadata(raw: dict[str, Any]) -> dict[str, Any]:
     return meta
 
 
+def _extract_workout_session_metadata(raw: dict[str, Any]) -> dict[str, Any]:
+    """Extract structured metadata for a recorded workout (exercise session).
+
+    Requires a nonzero ``durationMillis``; otherwise returns ``{}`` so the
+    record is skipped as malformed.  Field names match what the Chronicler
+    workout adapter reads: ``activity_type``, ``duration_ms``, ``end_time``,
+    ``session_id``, ``calories``, ``distance_m``, ``average_heart_rate``.
+    ``detection`` is ``manual`` (owner-logged) or ``auto`` (device-detected).
+    """
+    duration_ms = int(raw.get("durationMillis") or raw.get("duration_ms") or 0)
+    if duration_ms <= 0:
+        return {}
+
+    meta: dict[str, Any] = {
+        "duration_ms": duration_ms,
+        "activity_type": str(raw.get("activity_type") or "workout"),
+        "detection": "manual" if raw.get("detection") == "manual" else "auto",
+    }
+    end_time = raw.get("endTime") or raw.get("end_time")
+    if end_time:
+        meta["end_time"] = str(end_time)
+    session_id = raw.get("session_id")
+    meta["session_id"] = str(session_id) if session_id not in (None, "") else None
+    for field_name in ("calories", "distance_m", "average_heart_rate"):
+        val = raw.get(field_name)
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            meta[field_name] = val
+    return meta
+
+
 def _extract_sleep_stage_metadata(raw: dict[str, Any]) -> dict[str, Any]:
     """Extract structured metadata for a sleep stage summary record."""
     meta: dict[str, Any] = {}
@@ -221,6 +252,8 @@ def _extract_metadata(predicate: str, raw: dict[str, Any]) -> dict[str, Any]:
     """Dispatch metadata extraction to the appropriate extractor for *predicate*."""
     if predicate == "sleep_session":
         return _extract_sleep_session_metadata(raw)
+    if predicate == "workout_session":
+        return _extract_workout_session_metadata(raw)
     if predicate == "sleep_stage_summary":
         return _extract_sleep_stage_metadata(raw)
     if predicate == "measurement_steps":
@@ -243,7 +276,7 @@ def _extract_valid_at(predicate: str, raw: dict[str, Any], observed_at: str) -> 
     For daily summaries: use the date field.
     Falls back to observed_at when no date field is present.
     """
-    if predicate in ("sleep_session", "sleep_stage_summary"):
+    if predicate in ("sleep_session", "sleep_stage_summary", "workout_session"):
         for key in ("startTime", "start_time", "startAt", "start"):
             val = raw.get(key)
             if val:

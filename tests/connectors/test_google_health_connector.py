@@ -86,6 +86,7 @@ def test_google_health_scope_and_resource_registry_contract() -> None:
         "spo2",
         "breathing_rate",
         "vo2_max",
+        "workout",
     }
     assert {bundle.resource: bundle.endpoint_path for bundle in RESOURCE_BUNDLES} == {
         "sleep": "/users/me/dataTypes/sleep/dataPoints:reconcile",
@@ -95,6 +96,7 @@ def test_google_health_scope_and_resource_registry_contract() -> None:
         "spo2": "/users/me/dataTypes/daily-oxygen-saturation/dataPoints:reconcile",
         "breathing_rate": "/users/me/dataTypes/daily-respiratory-rate/dataPoints:reconcile",
         "vo2_max": "/users/me/dataTypes/daily-vo2-max/dataPoints:reconcile",
+        "workout": "/users/me/dataTypes/exercise/dataPoints:reconcile",
     }
 
 
@@ -2361,3 +2363,112 @@ async def test_submission_error_retains_raw_payload() -> None:
     row = rows[0]
     assert row[8] == "error"
     assert row[9]["payload"]["raw"] == {"steps": 1234}
+
+
+# ---------------------------------------------------------------------------
+# Workout (exercise session) resource
+# ---------------------------------------------------------------------------
+
+# Synthetic v4 ``exercise`` data point (shape per the public dataPoints reference).
+_WORKOUT_RESPONSE: dict[str, Any] = {
+    "dataPoints": [
+        {
+            "name": "users/u/dataTypes/exercise/dataPoints/run-1",
+            "exercise": {
+                "interval": {
+                    "startTime": "2026-04-24T07:00:00Z",
+                    "endTime": "2026-04-24T07:45:00Z",
+                },
+                "exerciseType": "RUNNING",
+                "displayName": "Run",
+                "metricsSummary": {
+                    "caloriesKcal": 410.5,
+                    "distanceMillimeters": 7_200_000,
+                    "averageHeartRateBeatsPerMinute": "152",
+                },
+                "dataSource": {"recordingMethod": "ACTIVELY_MEASURED"},
+            },
+        },
+        {
+            "name": "users/u/dataTypes/exercise/dataPoints/lift-1",
+            "exercise": {
+                "interval": {
+                    "startTime": "2026-04-24T18:00:00Z",
+                    "endTime": "2026-04-24T18:30:00Z",
+                },
+                "exerciseType": "WEIGHTLIFTING",
+                "displayName": "Weights",
+                "dataSource": {"recordingMethod": "MANUAL"},
+            },
+        },
+    ]
+}
+
+
+def test_normalize_workout_record_flattens_exercise_union() -> None:
+    from butlers.connectors.google_health import _normalize_workout_record
+
+    run = _normalize_workout_record(_WORKOUT_RESPONSE["dataPoints"][0])
+    assert run["session_id"] == "run-1"
+    assert run["activity_type"] == "running"
+    assert run["detection"] == "auto"
+    assert run["durationMillis"] == 45 * 60_000
+    assert run["endTime"] == "2026-04-24T07:45:00Z"
+    assert run["calories"] == 410.5
+    assert run["distance_m"] == 7200.0
+    assert run["average_heart_rate"] == 152
+
+    lift = _normalize_workout_record(_WORKOUT_RESPONSE["dataPoints"][1])
+    assert lift["activity_type"] == "weightlifting"
+    assert lift["detection"] == "manual"
+    assert "calories" not in lift and "average_heart_rate" not in lift
+
+
+@pytest.mark.asyncio
+async def test_poll_workout_emits_deterministic_envelopes_and_replays_same_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two polls of the same trailing window emit identical idempotency keys."""
+    connector, ctx = _make_connector_with_account()
+    first = connector._resources[(ctx.account_id, "workout")]
+    second = ResourceState(bundle=first.bundle)
+
+    fake_api: Any = type(
+        "Fake",
+        (),
+        {
+            "get_json": AsyncMock(side_effect=[_WORKOUT_RESPONSE, _WORKOUT_RESPONSE]),
+            "last_rate_limit_headers": {},
+        },
+    )()
+    monkeypatch.setattr(connector, "_make_account_api_client", lambda _acct_id: fake_api)
+    monkeypatch.setattr(connector, "_save_cursor", AsyncMock())
+    submit_mock = AsyncMock()
+    monkeypatch.setattr(connector, "_submit_envelope", submit_mock)
+
+    await connector._poll_resource(ctx.account_id, first)
+    await connector._poll_resource(ctx.account_id, second)
+
+    envelopes = [call.args[0] for call in submit_mock.await_args_list]
+    assert len(envelopes) == 4
+    for envelope in envelopes:
+        parse_ingest_envelope(envelope)
+    run_a, lift_a, run_b, _lift_b = envelopes
+    assert run_a["event"]["external_event_id"] == (
+        f"google_health:{_OWNER_EMAIL}:workout_session:run-1"
+    )
+    assert run_a["control"]["idempotency_key"] == f"google_health:{_OWNER_EMAIL}:workout:run-1"
+    assert run_a["control"]["idempotency_key"] == run_b["control"]["idempotency_key"]
+    assert lift_a["control"]["idempotency_key"] == f"google_health:{_OWNER_EMAIL}:workout:lift-1"
+    assert run_a["payload"]["normalized_text"] == "Workout: running (45m)"
+
+    params = fake_api.get_json.await_args_list[0].kwargs["params"]
+    assert params["filter"].startswith("exercise.interval.civil_start_time >= ")
+
+
+def test_poll_workout_scope_is_already_requested() -> None:
+    """The workout bundle needs no scope beyond the three families already requested."""
+    assert "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly" in (
+        GOOGLE_HEALTH_SCOPES
+    )
+    assert len(GOOGLE_HEALTH_SCOPES) == 3
