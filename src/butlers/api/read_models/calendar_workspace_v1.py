@@ -43,7 +43,10 @@ from zoneinfo import ZoneInfo
 import asyncpg
 
 from butlers.api.db import DatabaseManager
-from butlers.core.temporal.calendar_provenance import is_calendar_analysis_candidate
+from butlers.core.temporal.calendar_provenance import (
+    counts_toward_owner_load,
+    is_calendar_analysis_candidate,
+)
 from butlers.core.temporal.conflicts import (
     ConflictCandidate,
     DetectedIssue,
@@ -1302,6 +1305,7 @@ async def query_calendar_conflicts(
             ends_at=row["instance_ends_at"],
             timezone=row.get("instance_timezone") or row.get("event_timezone"),
         )
+        and counts_toward_owner_load(row.get("event_metadata"))
     ]
 
     issues = detect_conflict_issues(

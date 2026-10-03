@@ -2735,6 +2735,41 @@ class TestGoogleDateOnlyProjection:
 
         assert module._upsert_projection_event.await_args.kwargs["all_day"] is True
 
+    async def test_google_rsvp_and_transparency_survive_projection_into_radar_filter(self) -> None:
+        """bu-q7vx1q.3: owner decline and free/busy reach metadata in the shape the radar reads."""
+        from butlers.core.temporal.calendar_provenance import counts_toward_owner_load
+
+        payload = {
+            "id": "g-declined",
+            "summary": "Declined sync",
+            "start": {"dateTime": "2026-07-01T09:00:00+00:00"},
+            "end": {"dateTime": "2026-07-01T10:00:00+00:00"},
+            "transparency": "transparent",
+            "attendees": [{"email": "me@example.com", "self": True, "responseStatus": "declined"}],
+        }
+        event = _google_event_to_calendar_event(payload, fallback_timezone="UTC")
+        assert event is not None
+        module = CalendarModule()
+        module._butler_name = "general"
+        module._upsert_projection_event = AsyncMock(return_value=uuid.uuid4())
+        module._upsert_projection_instance = AsyncMock(return_value=uuid.uuid4())
+        module._prune_superseded_provider_instances = AsyncMock()
+
+        await module._project_provider_changes(
+            source_id=uuid.uuid4(),
+            provider_name="google",
+            calendar_id="primary",
+            updated_events=[event],
+            cancelled_ids=[],
+        )
+
+        metadata = module._upsert_projection_event.await_args.kwargs["metadata"]
+        assert metadata["transparency"] == "transparent"
+        assert counts_toward_owner_load(metadata) is False
+        assert counts_toward_owner_load({**metadata, "transparency": "opaque"}) is False
+        declined_removed = {**metadata, "attendees": [], "transparency": "opaque"}
+        assert counts_toward_owner_load(declined_removed) is True
+
     def test_google_all_day_create_body_uses_date_boundaries(self) -> None:
         body = _build_google_event_body(
             CalendarEventCreate(
