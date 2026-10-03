@@ -179,6 +179,7 @@ tests/jobs/test_calendar_prep_message_context.py
 tests/jobs/test_home.py
 tests/jobs/test_insight_delivery_job.py
 tests/jobs/test_interaction_sync.py
+tests/jobs/test_meeting_debrief.py
 tests/jobs/test_secrets_staleness.py
 tests/migrations/test_audit_log_metadata_repair_migration.py
 tests/migrations/test_backfill_dashboard_audit_log.py

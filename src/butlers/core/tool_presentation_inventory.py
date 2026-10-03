@@ -483,6 +483,7 @@ TOOL_PRESENTATION_INVENTORY = (
         "relationship",
         "tracking",
         "commitment_capture commitment_resolve_from_utterance loan_create loan_list loan_settle "
+        "meeting_debrief_answer meeting_debrief_pending "
         "task_complete task_create task_delete task_list",
     ),
     *_declare(

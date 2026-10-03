@@ -39,6 +39,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
     from butlers.tools.relationship import labels as _labels
     from butlers.tools.relationship import life_events as _life
     from butlers.tools.relationship import loans as _loans
+    from butlers.tools.relationship import meeting_debrief as _debrief
     from butlers.tools.relationship import notes as _notes
     from butlers.tools.relationship import posture as _posture
     from butlers.tools.relationship import relationships as _rels
@@ -916,6 +917,45 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         return await _commitments.capture_completion(
             module._get_pool(),
             utterance=utterance,
+            session_id=get_current_runtime_session_id(),
+        )
+
+    # =================================================================
+    # Meeting debrief tools (group: tracking)
+    # =================================================================
+    # bu-q7vx1q.12: the owner's answer to the end-of-day "anything agreed?" prompt.
+    # See the `meeting-debrief` skill.
+
+    @_tool("tracking")
+    async def meeting_debrief_pending() -> dict[str, Any]:
+        """List the meeting debriefs the owner was asked about and has not answered.
+
+        Each entry has a ``debrief_id``, the ``number`` shown in the prompt, the meeting
+        title and start, and the people who were there.
+        """
+        return await _debrief.meeting_debrief_pending(module._get_pool())
+
+    @_tool("tracking")
+    async def meeting_debrief_answer(
+        debrief_id: str,
+        commitments: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Record the owner's answer to one meeting debrief.
+
+        Omit ``commitments`` (or pass an empty list) when the owner says nothing was
+        agreed. Otherwise pass one item per thing the owner says was agreed:
+        ``{"summary": "Send Sam the deck", "counterparty_entity_id": "<attendee uuid>",
+        "deadline": "2026-10-09", "kind": "promise", "direction": "owner_to_other",
+        "sphere": "work"}``. Only ``summary`` is required; the counterparty must be someone
+        listed on that debrief.
+
+        Returns ``{"status": "captured"|"none_agreed"|"already_answered"|"not_found"|
+        "invalid"}``. Answering twice creates nothing the second time.
+        """
+        return await _debrief.meeting_debrief_answer(
+            module._get_pool(),
+            debrief_id=debrief_id,
+            commitments=commitments,
             session_id=get_current_runtime_session_id(),
         )
 
