@@ -30,6 +30,7 @@ EXPECTED_TELEGRAM_TOOLS = {
     "telegram_send_message",
     "telegram_reply_to_message",
     "telegram_react_to_message",
+    "telegram_edit_message_text",
 }
 
 
@@ -202,6 +203,57 @@ class TestInlineKeyboardSupport:
             "message_id": 99,
             "reply_markup": None,
         }
+
+
+class TestEditMessageTextTool:
+    """bu-q7vx1q.5: amending a delivered insight edits the stored message in place."""
+
+    @staticmethod
+    def _response(status: int, body: dict[str, Any]) -> httpx.Response:
+        return httpx.Response(
+            status, json=body, request=httpx.Request("POST", "https://api.telegram.org/bot/x")
+        )
+
+    async def _edit(self, response: httpx.Response) -> tuple[dict[str, Any], AsyncMock]:
+        mod = TelegramModule()
+        with (
+            patch.object(mod, "_get_client") as mock_get_client,
+            patch.object(mod, "_base_url", return_value="https://api.telegram.org/bot<token>"),
+        ):
+            client = AsyncMock()
+            client.post = AsyncMock(return_value=response)
+            mock_get_client.return_value = client
+            result = await mod._edit_message_text_or_reject("123456", 77, "~~Due~~\nResolved")
+        return result, client.post
+
+    async def test_edits_the_stored_message_id(self) -> None:
+        result, post = await self._edit(self._response(200, {"ok": True, "result": {}}))
+
+        assert result["edited"] is True
+        assert post.await_args.args[0].endswith("/editMessageText")
+        assert post.await_args.kwargs["json"] == {
+            "chat_id": "123456",
+            "message_id": 77,
+            "text": "<s>Due</s>\nResolved",
+            "parse_mode": "HTML",
+        }
+
+    async def test_a_400_is_a_structured_rejection_so_the_caller_can_fall_back(self) -> None:
+        result, _ = await self._edit(
+            self._response(
+                400, {"ok": False, "description": "Bad Request: message can't be edited"}
+            )
+        )
+
+        assert result == {
+            "edited": False,
+            "error_code": 400,
+            "description": "Bad Request: message can't be edited",
+        }
+
+    async def test_a_non_400_failure_still_raises_so_the_caller_can_retry(self) -> None:
+        with pytest.raises(httpx.HTTPStatusError):
+            await self._edit(self._response(502, {"ok": False}))
 
 
 class TestTelegramSendAuditEmit:

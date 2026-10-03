@@ -47,6 +47,7 @@ When `webhook_url` is configured, the module calls the Telegram `setWebhook` API
 | `telegram_send_message` | Send a message to a chat by chat ID |
 | `telegram_reply_to_message` | Reply to a specific message by chat ID and message ID |
 | `telegram_react_to_message` | React to a message with an arbitrary emoji |
+| `telegram_edit_message_text` | Edit the text of a message the bot already sent; a Telegram 400 returns `{"edited": false, "error_code": 400}` instead of raising |
 
 ## Markdown Conversion
 

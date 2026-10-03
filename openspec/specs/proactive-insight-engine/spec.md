@@ -835,3 +835,37 @@ consult unconditionally per RFC 0011 Amendment 1).
   hard fallback deadline
 - **THEN** the cycle is skipped with the original suppression reason,
   identical to `daily_hold_mode=False` behavior
+
+### Requirement: Premise-Bound Candidates
+A candidate MAY carry a typed `premise` naming the fact its message asserts: `{"kind": "owner_condition", "source", "fingerprint"}` (the condition episode is still active) or `{"kind": "probe", "butler", "probe", "args"}` (a registered, deterministic, zero-LLM probe answers true). `propose_insight_candidate` and its MCP tool SHALL accept `premise`, validate it before any write, and persist it on `public.insight_candidates.premise`. A candidate with no premise SHALL behave exactly as before this requirement.
+
+#### Scenario: A malformed premise is rejected before any write
+- **WHEN** a candidate is proposed with an unknown `kind`, a missing required key, or non-object probe `args`
+- **THEN** the call returns `status="error"` and no row is inserted
+
+#### Scenario: A premise that is false at send is withdrawn, never sent
+- **WHEN** a delivery cycle runs and a pending candidate's premise evaluates false (for example the bill it names is now paid)
+- **THEN** before suppression, cooldown, dedup and budget are applied the candidate SHALL move `pending -> withdrawn`, the notify function SHALL NOT be called for it, and one attention-ledger row with `outcome="withdrawn"` and `reason="premise_false"` SHALL be recorded
+- **AND** a replayed cycle SHALL NOT withdraw or record it again
+
+#### Scenario: An unknown premise is delivered stamped, never claimed as rechecked
+- **WHEN** a probe errors, is not registered, or finds no evidence row
+- **THEN** the candidate is delivered with its text suffixed `(as of <created_at UTC>)` and SHALL NOT be described as rechecked
+- **AND** the stored `insight_candidates.message` is unchanged
+
+### Requirement: In-Place Amendment of Delivered Insights
+When a delivered candidate's `owner_condition` premise resolves, the delivered message SHALL be corrected without a new notification. The owner-condition ledger's `reconcile_snapshot` `post_write` hook SHALL enqueue one `public.insight_amendments` row per delivered candidate whose premise names the resolved condition, inside the reconcile transaction, idempotent on `(candidate_id, premise fingerprint + resolved_at)`. The delivery cycle SHALL apply pending amendments before any early return, independent of quiet hours, verbosity and budget.
+
+#### Scenario: A standalone Telegram delivery is edited in place
+- **WHEN** a pending amendment's candidate was delivered standalone with a stored chat id and provider message id
+- **THEN** the cycle edits that message to a struck-through original plus `Resolved HH:MM UTC`, marks the amendment `applied`, and records one `outcome="amended"` ledger row
+
+#### Scenario: An uneditable delivery folds into the next digest
+- **WHEN** the delivery was a digest line, was sent over email, has no provider reference, the edit is rejected (Telegram 400), or three transport attempts fail
+- **THEN** the amendment becomes `fold` and the next delivery that happens anyway SHALL carry a `Since last digest: Resolved ...` line, after which it is `folded`
+- **AND** a correction SHALL NEVER be sent as its own standalone message
+
+#### Scenario: Repeated reconciles stay single
+- **WHEN** the same resolved condition is reconciled again
+- **THEN** exactly one amendment exists for the candidate and episode, and a second cycle performs no second edit
+

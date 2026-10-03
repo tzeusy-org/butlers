@@ -210,6 +210,7 @@ tests/modules/test_general_context_tools.py
 tests/modules/test_insight_catchup.py
 tests/modules/test_insight_context_bus_suppression.py
 tests/modules/test_insight_engine.py
+tests/modules/test_insight_premise_binding.py
 tests/modules/test_module_google_drive.py
 tests/modules/test_module_self_healing.py
 tests/relationship/test_contact_info_write_block.py

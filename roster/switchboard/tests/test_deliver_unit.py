@@ -357,6 +357,52 @@ class TestDeliverTelegramSuccess:
 # ---------------------------------------------------------------------------
 
 
+class TestAmendDelivery:
+    """amend_delivery() edits a delivered Telegram message through channel routing."""
+
+    async def _amend(self, tool_result: dict[str, Any]) -> tuple[dict[str, Any], list[dict]]:
+        from butlers.tools.switchboard.notification.deliver import amend_delivery
+
+        pool = _make_mock_pool(
+            fetchrow_side_effect=[
+                _registry_row("chatter", "http://localhost:41103/sse"),
+                _registry_row("chatter", "http://localhost:41103/sse"),
+                _notif_id_row(),
+            ],
+        )
+        captured: list[dict] = []
+
+        async def mock_call(endpoint_url, tool_name, args):
+            captured.append({"tool": tool_name, "args": args})
+            return tool_result
+
+        result = await amend_delivery(
+            pool, chat_id="123456", message_id=77, text="~~Due~~", call_fn=mock_call
+        )
+        return result, captured
+
+    async def test_routes_the_edit_tool_with_the_stored_message_id(self) -> None:
+        result, captured = await self._amend({"edited": True, "ok": True})
+
+        assert result == {"status": "edited"}
+        assert captured == [
+            {
+                "tool": "telegram_edit_message_text",
+                "args": {"chat_id": "123456", "message_id": 77, "text": "~~Due~~"},
+            }
+        ]
+
+    async def test_a_telegram_400_is_reported_rejected_so_the_caller_folds(self) -> None:
+        result, _ = await self._amend({"edited": False, "error_code": 400})
+
+        assert result == {"status": "rejected"}
+
+    async def test_an_unrecognised_result_is_an_error_not_a_claimed_edit(self) -> None:
+        result, _ = await self._amend({"ok": True})
+
+        assert result["status"] == "error"
+
+
 class TestDeliverEmailSuccess:
     """deliver() should route email messages correctly."""
 

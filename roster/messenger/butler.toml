@@ -83,6 +83,9 @@ risk_tier = "medium"
 [modules.approvals.gated_tools.telegram_react_to_message]
 risk_tier = "low"
 
+[modules.approvals.gated_tools.telegram_edit_message_text]
+risk_tier = "low"
+
 [modules.approvals.gated_tools.email_send_message]
 risk_tier = "medium"
 

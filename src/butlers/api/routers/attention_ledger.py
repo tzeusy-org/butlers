@@ -236,7 +236,8 @@ async def list_attention_ledger(
     outcome: str | None = Query(
         None,
         description=(
-            "Filter by outcome: delivered, coalesced, deferred, suppressed, failed, expired"
+            "Filter by outcome: delivered, coalesced, deferred, suppressed, failed, "
+            "expired, withdrawn, amended"
         ),
     ),
     origin_butler: str | None = Query(None, description="Filter by originating butler/job name"),

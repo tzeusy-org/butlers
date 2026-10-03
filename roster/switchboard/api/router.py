@@ -403,7 +403,7 @@ async def list_registry(
 # ---------------------------------------------------------------------------
 
 # Valid status values for public.insight_candidates (see core_010 CHECK constraint).
-_INSIGHT_STATUSES = ("pending", "delivered", "expired", "filtered")
+_INSIGHT_STATUSES = ("pending", "delivered", "expired", "filtered", "withdrawn")
 
 
 @router.get("/insights", response_model=ApiResponse[list[InsightCandidate]])
@@ -411,7 +411,9 @@ async def list_insight_candidates(
     butler: str | None = Query(None, description="Filter by origin butler (origin_butler column)"),
     status: str = Query(
         "pending",
-        description="Filter by candidate status: pending, delivered, expired, or filtered",
+        description=(
+            "Filter by candidate status: pending, delivered, expired, filtered, or withdrawn"
+        ),
     ),
     limit: int = Query(50, ge=1, le=500, description="Maximum number of rows to return"),
     db: DatabaseManager = Depends(_get_db_manager),

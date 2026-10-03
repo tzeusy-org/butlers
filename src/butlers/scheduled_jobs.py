@@ -264,6 +264,28 @@ def _build_switchboard_insight_notify_fn(
     return _notify_fn
 
 
+def _build_switchboard_insight_amend_fn(pool: asyncpg.Pool) -> Any:
+    """Build the ``amend_fn`` the insight delivery cycle uses to edit a delivered message.
+
+    Returns an async callable ``amend_fn(delivery_ref, text) -> dict`` that edits
+    the stored Telegram message in place through the Switchboard's channel
+    routing (bu-q7vx1q.5). ``delivery_ref`` is the reference the broker stored
+    when it delivered the candidate; a reference without a chat and provider
+    message id is reported as ``rejected`` so the broker folds instead.
+    """
+
+    async def _amend_fn(delivery_ref: dict[str, Any], text: str) -> dict[str, Any]:
+        from butlers.tools.switchboard.notification.deliver import amend_delivery
+
+        chat_id = delivery_ref.get("chat_id")
+        message_id = delivery_ref.get("provider_message_id")
+        if not chat_id or not isinstance(message_id, int):
+            return {"status": "rejected"}
+        return await amend_delivery(pool, chat_id=str(chat_id), message_id=message_id, text=text)
+
+    return _amend_fn
+
+
 async def _run_switchboard_insight_delivery_cycle_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -289,7 +311,12 @@ async def _run_switchboard_insight_delivery_cycle_job(
     from butlers.tools.switchboard.insight.broker import delivery_cycle
 
     notify_fn = _build_switchboard_insight_notify_fn(pool)
-    return await delivery_cycle(pool, notify_fn=notify_fn, daily_hold_mode=True)
+    return await delivery_cycle(
+        pool,
+        notify_fn=notify_fn,
+        daily_hold_mode=True,
+        amend_fn=_build_switchboard_insight_amend_fn(pool),
+    )
 
 
 async def _run_switchboard_insight_urgent_subcycle_job(
@@ -312,7 +339,12 @@ async def _run_switchboard_insight_urgent_subcycle_job(
     from butlers.tools.switchboard.insight.broker import delivery_cycle
 
     notify_fn = _build_switchboard_insight_notify_fn(pool)
-    return await delivery_cycle(pool, notify_fn=notify_fn, urgent_only=True)
+    return await delivery_cycle(
+        pool,
+        notify_fn=notify_fn,
+        urgent_only=True,
+        amend_fn=_build_switchboard_insight_amend_fn(pool),
+    )
 
 
 async def _run_switchboard_commitment_escalation_job(
