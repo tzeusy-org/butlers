@@ -34,6 +34,7 @@ tests/core/test_engagement_detection.py
 tests/core/test_identity_resolution_entity_facts.py
 tests/core/test_model_routing.py
 tests/core/test_model_routing_quota.py
+tests/core/test_provider_allowance.py
 tests/integration/test_autonomy_fingerprint_v2.py
 tests/integration/test_chronicler_coverage_witness_integration.py
 tests/integration/test_chronicler_rollups_api_integration.py

@@ -24,6 +24,7 @@ Also covers:
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
@@ -1374,6 +1375,105 @@ class TestAttemptGrainedSpendEvidence:
         invoked = [call for call in write_attempt.await_args_list if call.kwargs.get("invoked")]
         assert len(invoked) == 1
         assert invoked[0].kwargs["usage"] is None
+
+
+class TestUsageLimitAllowanceExhaustion:
+    """A provider usage-limit exhausts the account, not just the model (bu-q7vx1q.13)."""
+
+    async def _run(
+        self, tmp_path: Path, error: Exception
+    ) -> tuple[Any, _FailThenSuccessAdapter, AsyncMock, AsyncMock, AsyncMock]:
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        adapter = _FailThenSuccessAdapter(fail_count=1, error=error, result_text="other-account")
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=_catalog_primary(model="primary-model"),
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=_QUOTA_ALLOWED,
+            ),
+            patch(
+                "butlers.core.spawner.next_same_tier_candidate",
+                new_callable=AsyncMock,
+                return_value=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "fallback-model",
+                    [],
+                    _FALLBACK_CATALOG_ID,
+                    1800,
+                ),
+            ),
+            patch(
+                "butlers.core.spawner._write_dispatch_attempt",
+                new_callable=AsyncMock,
+                return_value=42,
+            ) as write_attempt,
+            patch("butlers.core.spawner.mark_allowance_exhausted", new_callable=AsyncMock) as mark,
+            patch(
+                "butlers.core.spawner.clear_allowance_exhaustion", new_callable=AsyncMock
+            ) as clear,
+        ):
+            mock_create.return_value = _SESSION_ID
+            result = await Spawner(
+                config=_make_config(),
+                config_dir=config_dir,
+                pool=AsyncMock(),
+                runtime=adapter,
+            ).trigger("hello", "tick")
+        return result, adapter, write_attempt, mark, clear
+
+    async def test_usage_limit_exhausts_account_and_fails_over_in_one_attempt(
+        self, tmp_path: Path
+    ) -> None:
+        reset = datetime(2026, 10, 3, 15, 10, tzinfo=UTC)
+        with patch(
+            "butlers.core.spawner.classify_failover_eligibility",
+            return_value=FailoverDecision(
+                eligible=True, reason="usage_limit: plan exhausted", reset_at=reset
+            ),
+        ):
+            result, adapter, write_attempt, mark, clear = await self._run(
+                tmp_path, RuntimeError("You've hit your usage limit")
+            )
+
+        assert result.success is True
+        assert result.model == "fallback-model"
+        assert adapter.invoke_calls == 2
+        failed = next(
+            c
+            for c in write_attempt.await_args_list
+            if c.kwargs["catalog_entry_id"] == _PRIMARY_CATALOG_ID
+        )
+        assert failed.kwargs["outcome"] == "allowance_exhausted"
+        assert failed.kwargs["failure_reason"].startswith("usage_limit")
+        mark.assert_awaited_once()
+        assert mark.await_args.args[1] == _PRIMARY_CATALOG_ID
+        assert mark.await_args.kwargs == {"reset_at": reset, "attempt_id": 42}
+        clear.assert_awaited_once()
+        assert clear.await_args.args[1] == _FALLBACK_CATALOG_ID
+        # The breaker counts only runtime_failure/success, so nothing here feeds it.
+        assert all(c.kwargs["outcome"] != "runtime_failure" for c in write_attempt.await_args_list)
+
+    async def test_ordinary_failure_does_not_touch_allowance(self, tmp_path: Path) -> None:
+        result, _adapter, write_attempt, mark, _clear = await self._run(
+            tmp_path, RuntimeError("connection refused: provider unavailable")
+        )
+
+        assert result.success is True
+        mark.assert_not_awaited()
+        failed = next(
+            c
+            for c in write_attempt.await_args_list
+            if c.kwargs["catalog_entry_id"] == _PRIMARY_CATALOG_ID
+        )
+        assert failed.kwargs["outcome"] == "runtime_failure"
 
 
 class TestAC4SuppressedFailover:

@@ -20,6 +20,10 @@ Eligible (pre-tool-call systemic failures):
   only the reason label differs.
 - OpenCode CLI ``APIError`` payloads flagged by the adapter as pre-tool-call
 - Rate-limit before work starts (``RuntimeError`` with recognized rate-limit message)
+- Provider plan usage-limit exhaustion (``RuntimeError`` with a recognized usage-limit
+  message) — reason prefix ``usage_limit``.  Distinct from a transient rate limit: the
+  whole provider account is out of allowance until its reset window, so the decision
+  also carries the reset instant when the message states one (bu-q7vx1q.13)
 - MCP discovery failure before any tool was executed (``MCPToolDiscoveryError``
   when ``tool_calls`` is empty)
 - Timeout before any tool call or side-effect-capable output (``TimeoutError``
@@ -44,6 +48,8 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import re
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -65,10 +71,15 @@ class FailoverDecision:
     reason:
         Human-readable explanation for the decision.  Suitable for operator
         logs and provenance records; must not contain secrets or PII.
+    reset_at:
+        Only set for ``usage_limit`` decisions whose message states when the
+        provider allowance resets.  ``None`` means "no reset stated", never
+        "available now".
     """
 
     eligible: bool
     reason: str
+    reset_at: datetime | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -210,12 +221,6 @@ _RATE_LIMIT_MARKERS: tuple[str, ...] = (
     # different same-tier model is the correct response.
     "compact_remote",
     "remote compaction failed",
-    # Codex / ChatGPT plan usage-cap exhaustion (5h or weekly limit).  The CLI
-    # exits 1 before any tool call with "You've hit your usage limit." — a
-    # pre-invocation systemic rejection, so failover to a same-tier non-codex
-    # model (e.g. opencode) is the correct response.
-    "usage limit",
-    "hit your usage limit",
     # Provider account billing / credit exhaustion. These are account-state
     # rejections before any model work starts, equivalent to quota exhaustion
     # for failover purposes.
@@ -226,6 +231,18 @@ _RATE_LIMIT_MARKERS: tuple[str, ...] = (
     "balance exhausted",
     "billing limit reached",
     "credit limit reached",
+)
+
+# Substrings matched (lowercased) against the exception message to detect a
+# provider plan usage-cap exhaustion (bu-q7vx1q.13).  Codex / ChatGPT exits 1
+# before any tool call with "You've hit your usage limit." (5h or weekly cap); the
+# Claude CLI prints "Claude AI usage limit reached|<epoch>".  Unlike a transient
+# rate limit the whole provider account is out of allowance until its reset window,
+# so this bucket has its own failure class (``usage_limit``).  Disjoint from
+# ``_RATE_LIMIT_MARKERS`` by construction.
+_USAGE_LIMIT_MARKERS: tuple[str, ...] = (
+    "usage limit",
+    "hit your usage limit",
 )
 
 # Substrings matched (lowercased) against the exception message to detect a
@@ -417,6 +434,13 @@ def classify_failover_eligibility(ctx: FailoverContext) -> FailoverDecision:
                 "failure before invocation",
             )
 
+        # Plan usage-limit exhaustion: account-scoped, with its own reset window.
+        # Checked before the generic rate-limit bucket so it never reads as a
+        # transient per-model fault.
+        if _matches_any(exc_msg, _USAGE_LIMIT_MARKERS):
+            logger.debug("Failover eligible: RuntimeError — provider usage limit before work")
+            return _usage_limit_decision(exc_msg)
+
         # Rate-limit / quota / billing exhaustion before work. Check this before
         # generic provider/auth markers because structured OpenCode APIError
         # messages can include both "APIError" and a more specific quota marker.
@@ -566,6 +590,61 @@ def is_provider_auth_marker(text: str | None) -> bool:
     return _matches_any(text.lower(), _PROVIDER_AUTH_MARKERS)
 
 
+# ---------------------------------------------------------------------------
+# Usage-limit reset parsing (bu-q7vx1q.13)
+# ---------------------------------------------------------------------------
+#
+# Only unambiguous forms are parsed: an epoch (Claude CLI), an ISO-8601 instant
+# with an explicit offset, or a relative "in N hours/minutes".  The Codex CLI's
+# "try again at 12:25 PM" carries no date or timezone, so guessing could block an
+# account hours too long; it stays unparsed and the caller applies the default
+# window.  A parsed instant outside (now, now + _MAX_RESET_HORIZON] is discarded
+# as implausible rather than trusted.
+_MAX_RESET_HORIZON = timedelta(days=8)
+_EPOCH_RE = re.compile(r"usage limit[^|\n]*\|\s*(\d{10})\b")
+_ISO_RE = re.compile(
+    r"\b(\d{4}-\d{2}-\d{2}[t ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:z|[+-]\d{2}:?\d{2}))",
+)
+_RELATIVE_RE = re.compile(
+    r"\bin\s+(?:(\d+)\s*(?:days?|d)\b)?\s*(?:(\d+)\s*(?:hours?|hrs?|h)\b)?"
+    r"\s*(?:(\d+)\s*(?:minutes?|mins?|m)\b)?"
+)
+
+
+def parse_usage_limit_reset(text: str, *, now: datetime | None = None) -> datetime | None:
+    """Return the allowance reset instant stated in a usage-limit message, else ``None``."""
+    now = now or datetime.now(UTC)
+    lowered = text.lower()
+    candidate: datetime | None = None
+    if (match := _EPOCH_RE.search(lowered)) is not None:
+        candidate = datetime.fromtimestamp(int(match.group(1)), UTC)
+    elif (match := _ISO_RE.search(lowered)) is not None:
+        raw = match.group(1).replace(" ", "t").upper().replace("Z", "+00:00")
+        if re.search(r"[+-]\d{4}$", raw):
+            raw = f"{raw[:-2]}:{raw[-2:]}"
+        try:
+            candidate = datetime.fromisoformat(raw)
+        except ValueError:
+            candidate = None
+    elif (match := _RELATIVE_RE.search(lowered)) is not None and any(match.groups()):
+        days, hours, minutes = (int(g) if g else 0 for g in match.groups())
+        candidate = now + timedelta(days=days, hours=hours, minutes=minutes)
+    if candidate is None or candidate.tzinfo is None:
+        return None
+    if not now < candidate <= now + _MAX_RESET_HORIZON:
+        return None
+    return candidate.astimezone(UTC)
+
+
+def _usage_limit_decision(text: str, *, source: str = "exception message") -> FailoverDecision:
+    return FailoverDecision(
+        eligible=True,
+        reason="usage_limit: provider plan usage-limit exhaustion detected in "
+        f"{source}; the provider account is exhausted until its reset window",
+        reset_at=parse_usage_limit_reset(text),
+    )
+
+
 def _matches_any(text: str, markers: tuple[str, ...]) -> bool:
     """Return True when any marker substring appears in text (already lowercased)."""
     return any(marker in text for marker in markers)
@@ -593,6 +672,7 @@ def _matches_any(text: str, markers: tuple[str, ...]) -> bool:
 # Either condition failing falls through to the caller's own default-closed
 # return — this helper never turns "no signal" into "eligible".
 _STDERR_GATE_BUCKETS: tuple[tuple[str, tuple[str, ...], str], ...] = (
+    ("usage_limit", _USAGE_LIMIT_MARKERS, "provider plan usage-limit exhaustion"),
     ("provider_auth_error", _PROVIDER_AUTH_MARKERS, "provider or authentication failure"),
     (
         "provider_unavailable",
@@ -637,6 +717,8 @@ def _classify_stderr_gate(process_info: dict[str, Any] | None) -> FailoverDecisi
         return None
     for reason_prefix, markers, description in _STDERR_GATE_BUCKETS:
         if _matches_any(text, markers):
+            if reason_prefix == "usage_limit":
+                return _usage_limit_decision(text, source="adapter stderr (opt-in gate)")
             return FailoverDecision(
                 eligible=True,
                 reason=f"{reason_prefix}: {description} detected in adapter stderr "
