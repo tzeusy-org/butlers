@@ -69,6 +69,7 @@ from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_
 from butlers.connectors.gmail_policy import (
     INGESTION_TIER_FULL,
     INGESTION_TIER_METADATA,
+    RULE_KNOWN_CONTACT,
     GmailPolicyEvaluator,
     LabelFilterPolicy,
     MessagePolicyResult,
@@ -2166,6 +2167,16 @@ class GmailConnectorRuntime:
                     endpoint_identity=self._config.connector_endpoint_identity,
                 )
 
+                # A drop of mail from a known contact is marked so the dashboard can
+                # surface it instead of letting the filters verdict read all clear.
+                # Checked against the sender directly: the label-filter drop returns
+                # before tier assignment, so assignment_rule cannot carry this.
+                _important_dropped_basis = (
+                    RULE_KNOWN_CONTACT
+                    if self._policy_tier_assigner.is_known_contact(_from_header)
+                    else None
+                )
+
                 # Tier 3: skip — do not submit to Switchboard
                 if not policy_result.should_ingest:
                     logger.info(
@@ -2192,6 +2203,7 @@ class GmailConnectorRuntime:
                             # preview only; the full raw payload is NOT retained.
                             raw={},
                             policy_tier=policy_result.policy_tier,
+                            important_dropped_basis=_important_dropped_basis,
                         ),
                     )
                     return
@@ -2230,6 +2242,7 @@ class GmailConnectorRuntime:
                             # preview only; the full raw payload is NOT retained.
                             raw={},
                             policy_tier=policy_result.policy_tier,
+                            important_dropped_basis=_important_dropped_basis,
                         ),
                     )
                     return
@@ -2265,6 +2278,7 @@ class GmailConnectorRuntime:
                             # preview only; the full raw payload is NOT retained.
                             raw={},
                             policy_tier=policy_result.policy_tier,
+                            important_dropped_basis=_important_dropped_basis,
                         ),
                     )
                     return

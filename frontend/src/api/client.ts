@@ -195,6 +195,7 @@ import type {
   IngestionEventsParams,
   IngestionHistogramParams,
   IngestionHistogramResponse,
+  IngestionDroppedKnownSummary,
   IngestionWindowRollup,
   IngestionWindowRollupParams,
   IngestionRule,
@@ -5012,6 +5013,22 @@ export async function getIngestionEventsHistogram(
   if (params.trace_id) sp.set("trace_id", params.trace_id);
   return apiFetch<IngestionHistogramResponse>(
     `/ingestion/events/histogram?${sp.toString()}`,
+    { signal },
+  );
+}
+
+/**
+ * Unanswered drops of messages from known contacts.
+ * GET /api/ingestion/events/dropped-known
+ *
+ * Degraded-honest: `available=false` means unknown, not zero.
+ */
+export async function getIngestionDroppedKnown(
+  window: "1h" | "24h" | "7d" = "24h",
+  signal?: AbortSignal,
+): Promise<IngestionDroppedKnownSummary> {
+  return apiFetch<IngestionDroppedKnownSummary>(
+    `/ingestion/events/dropped-known?window=${window}`,
     { signal },
   );
 }

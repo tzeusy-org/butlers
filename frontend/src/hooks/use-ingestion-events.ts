@@ -24,6 +24,7 @@ import {
   getIngestionEventSessions,
   getIngestionWindowRollup,
   getIngestionEventsHistogram,
+  getIngestionDroppedKnown,
   getIngestionEventReplays,
   getIngestionEventSenderContact,
   getIngestionEventPayload,
@@ -71,6 +72,8 @@ export const ingestionEventKeys = {
     [...ingestionEventKeys.all, requestId, "detail"] as const,
   payload: (requestId: string) =>
     [...ingestionEventKeys.all, requestId, "payload"] as const,
+  droppedKnown: (window: "1h" | "24h" | "7d") =>
+    ["ingestion", "dropped-known", window] as const,
   windowRollup: (
     params: IngestionWindowRollupParams,
     timeScope?: IngestionAggregateTimeScope,
@@ -357,6 +360,20 @@ export function useIngestionWindowRollup(
     staleTime: 30_000,
     refetchInterval: INGESTION_EVENTS_POLL_DEFAULT_MS,
     enabled: options?.enabled !== false,
+  });
+}
+
+/**
+ * Unanswered drops of messages from known contacts (GET
+ * /api/ingestion/events/dropped-known). `available=false` in the payload means
+ * the count is unknown, which consumers must not treat as zero.
+ */
+export function useIngestionDroppedKnown(window: "1h" | "24h" | "7d" = "24h") {
+  return useQuery({
+    queryKey: ingestionEventKeys.droppedKnown(window),
+    queryFn: ({ signal }) => getIngestionDroppedKnown(window, signal),
+    staleTime: 30_000,
+    refetchInterval: INGESTION_EVENTS_POLL_DEFAULT_MS,
   });
 }
 

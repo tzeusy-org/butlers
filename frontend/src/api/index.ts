@@ -641,6 +641,7 @@ export {
   getIngestionEventSessions,
   getIngestionWindowRollup,
   getIngestionEventsHistogram,
+  getIngestionDroppedKnown,
   replayIngestionEvent,
   getIngestionEventReplays,
   getIngestionEventSenderContact,
@@ -665,6 +666,7 @@ export type {
   IngestionHistogramCounts,
   IngestionHistogramBucket,
   IngestionHistogramResponse,
+  IngestionDroppedKnownSummary,
   BulkRetryEventResult,
   BulkRetryEventsResponse,
 } from "./types.ts";

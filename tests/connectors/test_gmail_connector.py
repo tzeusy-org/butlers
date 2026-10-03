@@ -803,6 +803,66 @@ async def test_global_skip_persists_no_raw_payload(
     assert row[9]["payload"]["raw"] == {}
 
 
+# ---------------------------------------------------------------------------
+# Dropped-from-someone-you-know marker (bu-q7vx1q.4)
+#
+# A drop of mail from a known contact is stamped drop_context.important_dropped
+# so the dashboard cannot read "all gates clear" over it. Every drop site is
+# covered; a stranger's drop and the replayed envelope stay unmarked/clean.
+# ---------------------------------------------------------------------------
+
+
+def _drop_known_message(site: str, from_addr: str) -> tuple[dict[str, Any], list[Any]]:
+    """Return (message, policy patches) that force the named gmail drop site."""
+    from butlers.ingestion_policy import PolicyDecision
+
+    message = _make_message(from_addr=from_addr)
+    block = PolicyDecision(action="block", matched_rule_type="sender_domain")
+    skip = PolicyDecision(action="skip", matched_rule_type="sender_domain")
+    passthrough = PolicyDecision(action="pass_through")
+    if site == "label_exclude":
+        message["labelIds"] = ["SPAM"]
+    return message, [
+        block if site == "connector_rule" else passthrough,
+        skip if site == "global_rule" else passthrough,
+    ]
+
+
+@pytest.mark.parametrize("site", ["label_exclude", "connector_rule", "global_rule"])
+@pytest.mark.parametrize(
+    ("from_addr", "marked"),
+    [
+        ("Alice <alice@known.example>", True),
+        ("stranger@other.example", False),
+    ],
+)
+async def test_known_contact_drop_is_marked_important(
+    gmail_runtime: GmailConnectorRuntime, site: str, from_addr: str, marked: bool
+) -> None:
+    gmail_runtime._policy_tier_assigner.known_contacts = frozenset({"alice@known.example"})
+    message, (connector_decision, global_decision) = _drop_known_message(site, from_addr)
+
+    with (
+        patch.object(gmail_runtime, "_fetch_message", new_callable=AsyncMock, return_value=message),
+        patch.object(gmail_runtime._ingestion_policy, "evaluate", return_value=connector_decision),
+        patch.object(
+            gmail_runtime._global_ingestion_policy, "evaluate", return_value=global_decision
+        ),
+    ):
+        await gmail_runtime._ingest_single_message("msg123")
+
+    rows = gmail_runtime._filtered_event_buffer._rows
+    assert len(rows) == 1
+    stored = rows[0][9]
+    assert rows[0][8] == "filtered"
+    if marked:
+        assert stored["drop_context"] == {"important_dropped": True, "basis": "known_contact"}
+    else:
+        assert "drop_context" not in stored
+    # The marker carries no message content: the privacy-tier raw={} still holds.
+    assert stored["payload"]["raw"] == {}
+
+
 async def test_submission_error_retains_raw_payload(
     gmail_runtime: GmailConnectorRuntime,
 ) -> None:
