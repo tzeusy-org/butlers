@@ -85,7 +85,7 @@ class TestAC3OwnerGate:
     2026-04-21 incident protection now lives in the central writer.
     """
 
-    async def test_channel_add_owner_parks_acme_email(self) -> None:
+    async def test_channel_add_owner_parks_work_email(self) -> None:
         """Replays the 2026-04-21 incident: speculative work email write is parked.
 
         The central writer returns pending_approval for the owner entity, and

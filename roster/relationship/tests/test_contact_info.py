@@ -586,52 +586,47 @@ async def test_channel_search_multiple_contacts(pool):
 
 
 # ------------------------------------------------------------------
-# Work-domain heuristic (context auto-detection)
+# Legacy context metadata (ignored since the contact_info cut-over)
 # ------------------------------------------------------------------
 
 
-async def test_channel_add_work_domain_sets_context_work(pool, monkeypatch):
+async def test_channel_add_work_domain_sets_context_work(pool):
     """Legacy context heuristic is not written by channel_add after cut-over."""
     from butlers.tools.relationship import channel_add, contact_create
 
     c = await contact_create(pool, "WorkPerson")
-    monkeypatch.setenv("BUTLERS_WORK_DOMAINS", "example.com")
-    info = await channel_add(pool, c["id"], "email", "alice@example.com")
+    info = await channel_add(pool, c["id"], "email", "owner@example.com")
 
     assert "context" not in info
-    fact = await _fetch_contact_fact(pool, c["entity_id"], "email", "alice@example.com")
+    fact = await _fetch_contact_fact(pool, c["entity_id"], "email", "owner@example.com")
     assert fact is not None
 
 
-async def test_channel_add_personal_domain_leaves_context_null(pool, monkeypatch):
+async def test_channel_add_personal_domain_leaves_context_null(pool):
     """channel_add ignores legacy context metadata for non-work domains too."""
     from butlers.tools.relationship import channel_add, contact_create
 
     c = await contact_create(pool, "PersonalPerson")
-    monkeypatch.setenv("BUTLERS_WORK_DOMAINS", "example.com")
     info = await channel_add(pool, c["id"], "email", "bob@gmail.com")
 
     assert "context" not in info
 
 
-async def test_channel_add_explicit_context_not_overridden(pool, monkeypatch):
+async def test_channel_add_explicit_context_not_overridden(pool):
     """Explicit legacy context is accepted for compatibility and ignored."""
     from butlers.tools.relationship import channel_add, contact_create
 
     c = await contact_create(pool, "ExplicitContext")
-    monkeypatch.setenv("BUTLERS_WORK_DOMAINS", "example.com")
-    info = await channel_add(pool, c["id"], "email", "boss@example.com", context="personal")
+    info = await channel_add(pool, c["id"], "email", "owner@example.com", context="personal")
 
     assert "context" not in info
 
 
-async def test_channel_add_non_email_type_no_heuristic(pool, monkeypatch):
+async def test_channel_add_non_email_type_no_heuristic(pool):
     """channel_add ignores legacy context metadata for non-email types."""
     from butlers.tools.relationship import channel_add, contact_create
 
     c = await contact_create(pool, "PhonePerson")
-    monkeypatch.setenv("BUTLERS_WORK_DOMAINS", "example.com")
-    # Phone value happens to look like a domain — should not be classified
     info = await channel_add(pool, c["id"], "phone", "+1-555-0200")
 
     assert "context" not in info
@@ -644,62 +639,6 @@ async def test_channel_add_invalid_context_raises(pool):
     c = await contact_create(pool, "InvalidContextPerson")
     info = await channel_add(pool, c["id"], "email", "x@example.com", context="bogus")
     assert info["status"] == "asserted"
-
-
-# ------------------------------------------------------------------
-# classify_email_context (unit tests, no DB needed)
-# ------------------------------------------------------------------
-
-
-def test_classify_email_context_work_domain(monkeypatch):
-    """classify_email_context returns 'work' for known work domains."""
-    from butlers.tools.relationship.channel import classify_email_context
-
-    monkeypatch.setenv("BUTLERS_WORK_DOMAINS", "example.com,acme.corp")
-    assert classify_email_context("alice@example.com") == "work"
-    assert classify_email_context("bob@acme.corp") == "work"
-
-
-def test_classify_email_context_personal_domain(monkeypatch):
-    """classify_email_context returns None for non-work domains."""
-    from butlers.tools.relationship.channel import classify_email_context
-
-    monkeypatch.setenv("BUTLERS_WORK_DOMAINS", "example.com")
-    assert classify_email_context("alice@gmail.com") is None
-    assert classify_email_context("bob@example.com") is None
-
-
-def test_classify_email_context_case_insensitive(monkeypatch):
-    """classify_email_context is case-insensitive for the domain part."""
-    from butlers.tools.relationship.channel import classify_email_context
-
-    monkeypatch.setenv("BUTLERS_WORK_DOMAINS", "example.com")
-    assert classify_email_context("Alice@example.com") == "work"
-
-
-def test_classify_email_context_no_at_sign(monkeypatch):
-    """classify_email_context returns None for malformed addresses."""
-    from butlers.tools.relationship.channel import classify_email_context
-
-    monkeypatch.setenv("BUTLERS_WORK_DOMAINS", "example.com")
-    assert classify_email_context("notanemail") is None
-
-
-def test_classify_email_context_default_list(monkeypatch):
-    """classify_email_context uses example.com when env var is unset."""
-    from butlers.tools.relationship.channel import classify_email_context
-
-    monkeypatch.delenv("BUTLERS_WORK_DOMAINS", raising=False)
-    assert classify_email_context("alice@example.com") == "work"
-    assert classify_email_context("alice@gmail.com") is None
-
-
-def test_classify_email_context_empty_env_disables_heuristic(monkeypatch):
-    """Setting BUTLERS_WORK_DOMAINS='' (empty string) disables the heuristic entirely."""
-    from butlers.tools.relationship.channel import classify_email_context
-
-    monkeypatch.setenv("BUTLERS_WORK_DOMAINS", "")
-    assert classify_email_context("alice@example.com") is None
 
 
 async def test_channel_search_case_insensitive(pool):
