@@ -284,6 +284,10 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
     (verbosity=off), no further candidates in that category are submitted and
     the job exits early.
 
+    Every category reads only ``posture = 'active'`` people: nobody the owner
+    marked memorial, quiet or no_contact is ever the subject of an insight, and a
+    failed posture read fails the scan instead of defaulting to active.
+
     Args:
         db_pool: Database connection pool.
 
@@ -366,6 +370,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
         JOIN contact_entity_map cem ON cem.contact_id = d.contact_id
         JOIN public.entities e ON e.id = cem.entity_id
         WHERE e.listed = true
+          AND e.posture = 'active'
         ORDER BY d.month, d.day
         """
     )
@@ -493,6 +498,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
            AND f.scope = 'relationship'
            AND f.validity = 'active'
         WHERE e.listed = true
+          AND e.posture = 'active'
         GROUP BY cem.contact_id, cem.entity_id, e.stay_in_touch_days, e.canonical_name
         ORDER BY e.canonical_name
         """
@@ -662,6 +668,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 JOIN contact_entity_map cem ON cem.contact_id = d.contact_id
                 JOIN public.entities e ON e.id = cem.entity_id
                 WHERE e.listed = true
+                  AND e.posture = 'active'
                   AND d.contact_id = ANY($1::uuid[])
                 ORDER BY d.month, d.day
                 """,
@@ -763,6 +770,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
            AND f.scope = 'relationship'
            AND f.validity = 'active'
         WHERE e.listed = true
+          AND e.posture = 'active'
         GROUP BY cem.contact_id, cem.entity_id, e.canonical_name
         HAVING COUNT(f.id) > 0
         ORDER BY e.canonical_name

@@ -33,6 +33,7 @@ When learning about a person or recording new information:
 
 ## Your Tools
 - **entity_resolve/get/update/neighbors**: Entity graph operations
+- **entity_set_posture**: Record how the owner wants a person treated (`active`, `memorial`, `quiet`, `no_contact`). Call it only when the owner says so ("Sam passed away", "do not contact X", "leave Y alone for now"); never infer it from silence or tone. Every butler's birthday, gift, reconnection and outbound behavior for that person then changes or stops. Nothing is deleted; `active` restores it all. Never repeat the posture in notifications or logs.
 - **contact_create/get/update/search/resolve**: Manage contact records (always linked to entities)
 - **fact_set/list**: Store and retrieve facts (stored on entities via contacts)
 - **memory_search/memory_recall**: Search and recall facts from the entity graph

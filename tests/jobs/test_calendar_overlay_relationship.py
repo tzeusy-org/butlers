@@ -85,8 +85,15 @@ class _StateCapture:
         self.deleted.append(key)
 
 
-def _date(name: str, label: str, on: date, *, year: int | None = None):
-    return {"name": name, "label": label, "month": on.month, "day": on.day, "year": year}
+def _date(name: str, label: str, on: date, *, year: int | None = None, posture: str = "active"):
+    return {
+        "name": name,
+        "label": label,
+        "month": on.month,
+        "day": on.day,
+        "year": year,
+        "posture": posture,
+    }
 
 
 def _reminder(name: str, label: str, trigger: datetime):
@@ -148,6 +155,36 @@ async def test_birthday_and_important_date_routed_to_recurring_window_dates():
     assert result["birthday_entries"] == 1
     assert result["important_date_entries"] == 1
     assert result["total_entries"] == 2
+
+
+@pytest.mark.parametrize(
+    ("posture", "expected_kinds"),
+    [
+        ("active", ["birthday", "important_date"]),
+        ("memorial", ["remembrance"]),
+        ("quiet", []),
+        ("no_contact", []),
+    ],
+)
+async def test_posture_shapes_a_persons_dates(posture, expected_kinds):
+    """Synthetic person: memorial birthday becomes a low remembrance, others vanish."""
+    dates = [
+        _date("Person A", "Birthday", date(1990, 6, 23), posture=posture),
+        _date("Person A", "Wedding anniversary", date(2010, 6, 24), posture=posture),
+    ]
+    result, cap, _ = await _run(dates=dates)
+    kinds = [
+        entry["kind"]
+        for key, env in cap.store.items()
+        if key.startswith(OVERLAY_KEY_PREFIX)
+        for entry in env["entries"]
+    ]
+    assert sorted(kinds) == sorted(expected_kinds)
+    assert result["remembrance_entries"] == (1 if posture == "memorial" else 0)
+    if posture == "memorial":
+        entry = cap.store[overlay_key("2026-06-23")]["entries"][0]
+        assert entry["priority"] == "low"
+        assert entry["label"] == "Person A's birthday (remembrance)"
 
 
 async def test_birthday_today_is_high_priority():

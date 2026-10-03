@@ -573,6 +573,9 @@ async def _count_birthdays_on(pool: asyncpg.Pool, target_date: date_cls) -> int:
     day) pair and returning only a count — no names, no content. The
     delegation seed's Finance-directed question never carries contact PII
     (bu-27dxl.5.4 non-goal: no arbitrary profile-content leak).
+
+    Only ``posture = 'active'`` people count: a gift ask about someone the owner
+    marked memorial, quiet or no_contact would be the nudge posture exists to stop.
     """
     row = await pool.fetchrow(
         """
@@ -584,6 +587,7 @@ async def _count_birthdays_on(pool: asyncpg.Pool, target_date: date_cls) -> int:
             WHERE LOWER(id.label) LIKE '%birthday%'
               AND id.contact_id IS NOT NULL
               AND e.listed = true
+              AND e.posture = 'active'
               AND id.month = $1 AND id.day = $2
 
             UNION ALL
@@ -595,6 +599,7 @@ async def _count_birthdays_on(pool: asyncpg.Pool, target_date: date_cls) -> int:
               AND id.contact_id IS NULL
               AND id.local_entity_id IS NOT NULL
               AND e.listed = true
+              AND e.posture = 'active'
               AND id.month = $1 AND id.day = $2
         ) matches
         """,
@@ -725,6 +730,8 @@ async def run_relationship_briefing_contribution(
     # Surfaces both contact_id-anchored rows (via contact_entity_map → entities) and
     # local_entity_id-anchored rows written by the contacts backfill after contacts_004.
     # Both arms read entity.listed / entity.canonical_name — no JOIN contacts.
+    # Both arms also require posture = 'active' (bu-q7vx1q.8): no birthday highlight for
+    # someone the owner marked memorial, quiet or no_contact.
     birthday_rows = await pool.fetch(
         """
         -- Contact-anchored path: contact_id → contact_entity_map → entities
@@ -735,6 +742,7 @@ async def run_relationship_briefing_contribution(
         WHERE LOWER(id.label) LIKE '%birthday%'
           AND id.contact_id IS NOT NULL
           AND e.listed = true
+          AND e.posture = 'active'
           AND EXISTS (
             SELECT 1 FROM unnest($1::int[], $2::int[]) AS t(m, d)
             WHERE t.m = id.month AND t.d = id.day
@@ -752,6 +760,7 @@ async def run_relationship_briefing_contribution(
           AND id.contact_id IS NULL
           AND id.local_entity_id IS NOT NULL
           AND e.listed = true
+          AND e.posture = 'active'
           AND EXISTS (
             SELECT 1 FROM unnest($1::int[], $2::int[]) AS t(m, d)
             WHERE t.m = id.month AND t.d = id.day
@@ -867,6 +876,7 @@ async def run_relationship_briefing_contribution(
            AND f.validity = 'active'
         WHERE e.stay_in_touch_days IS NOT NULL
           AND e.listed = true
+          AND e.posture = 'active'
         GROUP BY cem.entity_id, e.canonical_name, e.stay_in_touch_days
         HAVING EXTRACT(DAY FROM now() - MAX(f.valid_at)) > e.stay_in_touch_days
         ORDER BY (EXTRACT(DAY FROM now() - MAX(f.valid_at)) - e.stay_in_touch_days) DESC
