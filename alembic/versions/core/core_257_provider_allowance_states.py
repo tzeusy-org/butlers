@@ -1,7 +1,7 @@
 """Provider allowance windows: account-scoped exhaustion with a reset horizon.
 
 Revision ID: core_257
-Revises: core_255
+Revises: core_256
 Create Date: 2026-10-03 00:00:00.000000
 
 bu-q7vx1q.13.  A provider plan usage-limit rejection used to look like a model
@@ -17,10 +17,6 @@ breaker excluded it, and failover could pick another entry on the same account.
   we know.  ``last_rejection_attempt_id`` points at the attempt row that caused it.
   The table is evidence: rollback of the routing change leaves it in place.
 
-Down-revision note: this branch was cut while core_256 (entity posture) sat on an
-open PR, so the chain points at core_255.  Re-point ``down_revision`` to the
-latest merged core migration if one landed first.
-
 Every statement is idempotent because the core chain is replayed once per butler
 schema against these database-global objects.
 """
@@ -30,7 +26,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "core_257"
-down_revision = "core_255"
+down_revision = "core_256"
 branch_labels = None
 depends_on = None
 
