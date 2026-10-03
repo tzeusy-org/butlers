@@ -74,6 +74,7 @@ tests/migrations/test_retire_legacy_permission_seeds_migration.py
 tests/migrations/test_shared_pool_startup_lock.py
 tests/migrations/test_tombstone_memory_calendar_episodes_migration.py
 tests/modules/memory/test_consolidation_runs.py
+tests/modules/memory/test_content_authority.py
 tests/modules/memory/test_maintenance_scheduling.py
 tests/modules/memory/test_memory_migration_integration.py
 tests/modules/memory/test_repoint_temporal_coexistence.py

@@ -47,6 +47,7 @@ OWNER_TZ = "Asia/Singapore"  # UTC+8, no DST
 # settings, which is where the owner timezone is resolved from).
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS facts (
+    content_authority TEXT, authority_entity_id UUID,
     id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     predicate  TEXT NOT NULL,
     content    TEXT NOT NULL,

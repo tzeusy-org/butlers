@@ -957,6 +957,7 @@ async def test_run_decay_sweep_expiry_marks_catalog_entry_stale(core_memory_db_u
             source_butler="health",
             enable_shared_catalog=True,
             source_schema="public",
+            content_authority="owner",
         )
 
         # Push both into the expiry band directly — store_fact/store_rule

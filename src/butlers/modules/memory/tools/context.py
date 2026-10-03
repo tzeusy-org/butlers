@@ -27,6 +27,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from asyncpg import Pool
 
+from butlers.core.owner import fetch_owner_entity_id
+from butlers.modules.memory.content_authority import is_owner_class
 from butlers.modules.memory.tools._helpers import _search, validate_tenant_id
 from butlers.modules.memory.tools.references import format_memory_ref
 
@@ -69,7 +71,12 @@ async def _fetch_profile_facts(
     limit: int = 50,
     allowed_sensitivities: tuple[str, ...] | list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
-    """Fetch facts anchored to the owner entity.
+    """Fetch owner-authored facts anchored to the owner entity.
+
+    Only owner-class ``content_authority`` is admitted: a fact anchored to the
+    owner but written from a third party's session (or a legacy row with no
+    stamp) is not Profile Facts; it can still surface, attributed, as a
+    Task-Relevant Fact.
 
     Sorted by importance DESC, created_at DESC, id ASC. The read ceiling is
     applied in SQL, matching ``search_catalog``'s sensitivity filter, so an
@@ -85,6 +92,7 @@ async def _fetch_profile_facts(
         "f.tenant_id = $1",
         "f.validity IN ('active', 'fading')",
         "'owner' = ANY(e.roles)",
+        "f.content_authority IN ('owner', 'owner_device')",
     ]
     params: list[Any] = [tenant_id]
     if allowed_sensitivities is not None:
@@ -118,6 +126,7 @@ async def _fetch_profile_facts(
         WHERE f.tenant_id = $1
           AND f.validity IN ('active', 'fading')
           AND 'owner' = ANY(e.roles)
+          AND f.content_authority IN ('owner', 'owner_device')
           AND NOT (COALESCE(f.sensitivity, 'normal') = ANY($2))
     """
     try:
@@ -242,10 +251,55 @@ def _format_fact_line(f: dict[str, Any]) -> str:
     content = f.get("content", "")
     eff_conf = _effective_confidence(f)
     memory_ref = format_memory_ref("fact", f.get("id"))
+    attribution = f.get("_attribution")
+    attributed = f" ({attribution})" if attribution else ""
     return (
-        f"- [{subject}] [{predicate}]: {content} (confidence: {eff_conf:.2f}) "
+        f"- [{subject}] [{predicate}]: {content}{attributed} (confidence: {eff_conf:.2f}) "
         f"[memory_ref={memory_ref}]\n"
     )
+
+
+async def _attribute_owner_anchored_facts(pool: Pool, facts: list[dict[str, Any]]) -> None:
+    """Label owner-anchored facts that the owner did not author.
+
+    A fact about the owner that came from a third party's session is a report
+    by that party, not something the owner said.  Mutates ``facts`` in place,
+    adding ``_attribution`` to each such fact: ``reported by <sender>`` when the
+    sender is known, ``source unverified`` for legacy rows with no stamp.
+    ``system`` authority (deterministic server code) is not relabelled.
+    """
+    candidates = [
+        f
+        for f in facts
+        if f.get("entity_id") is not None
+        and not is_owner_class(f.get("content_authority"))
+        and f.get("content_authority") != "system"
+    ]
+    if not candidates:
+        return
+    owner_id = await fetch_owner_entity_id(pool)
+    if owner_id is None:
+        return
+    candidates = [f for f in candidates if f.get("entity_id") == owner_id]
+    sender_ids = list(
+        {f["authority_entity_id"] for f in candidates if f.get("authority_entity_id")}
+    )
+    names: dict[Any, str] = {}
+    if sender_ids:
+        try:
+            rows = await pool.fetch(
+                "SELECT id, canonical_name FROM public.entities WHERE id = ANY($1::uuid[])",
+                sender_ids,
+            )
+            names = {r["id"]: r["canonical_name"] for r in rows}
+        except Exception:
+            logger.debug("Attribution name lookup failed", exc_info=True)
+    for f in candidates:
+        if f.get("content_authority") is None:
+            f["_attribution"] = "source unverified"
+        else:
+            sender = names.get(f.get("authority_entity_id")) or "a third party"
+            f["_attribution"] = f"reported by {sender}"
 
 
 def _format_rule_line(r: dict[str, Any]) -> str:
@@ -458,6 +512,8 @@ async def memory_context(
             str(r.get("id") or ""),
         )
     )
+
+    await _attribute_owner_anchored_facts(pool, task_facts)
 
     # --- 3. Fetch active rules ---
     rules = [r for r in recall_results if r.get("memory_type") == "rule"]

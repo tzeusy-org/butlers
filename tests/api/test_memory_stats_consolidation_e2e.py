@@ -40,16 +40,19 @@ pytestmark = [
 # mirror the only columns the stats fan-out queries reference.
 _STATS_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS episodes (
+    content_authority TEXT, authority_entity_id UUID,
     id                   BIGSERIAL PRIMARY KEY,
     consolidated         BOOLEAN NOT NULL DEFAULT false,
     consolidation_status TEXT    NOT NULL DEFAULT 'pending',
     expires_at           TIMESTAMPTZ
 );
 CREATE TABLE IF NOT EXISTS facts (
+    content_authority TEXT, authority_entity_id UUID,
     id       BIGSERIAL PRIMARY KEY,
     validity TEXT NOT NULL DEFAULT 'active'
 );
 CREATE TABLE IF NOT EXISTS rules (
+    content_authority TEXT, authority_entity_id UUID, endorsed_at TIMESTAMPTZ, endorsed_by UUID,
     id         BIGSERIAL PRIMARY KEY,
     maturity   TEXT NOT NULL DEFAULT 'candidate',
     metadata   JSONB NOT NULL DEFAULT '{}'::jsonb,

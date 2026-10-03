@@ -325,6 +325,13 @@ When the memory module is enabled, the Spawner SHALL fetch memory context via `f
 - **THEN** the Spawner SHALL call `store_session_episode()` once for that
   output after normal session completion
 
+#### Scenario: Episode storage carries trigger and routing context
+- **WHEN** the Spawner stores a session episode
+- **THEN** it SHALL pass the invocation's routing context (not the session
+  output's text) to `store_session_episode()` so the memory module can stamp the episode's
+  server-derived content authority (see module-memory "Content authority and
+  steering-class admission")
+
 #### Scenario: Failed session remains ineligible for automatic episode persistence
 - **WHEN** memory is enabled and a runtime invocation fails
 - **THEN** the Spawner SHALL NOT call `store_session_episode()` regardless of

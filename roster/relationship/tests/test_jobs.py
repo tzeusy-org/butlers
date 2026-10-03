@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS important_dates (
 
 CREATE_FACTS_SQL = """
 CREATE TABLE IF NOT EXISTS facts (
+    content_authority TEXT, authority_entity_id UUID,
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     subject TEXT NOT NULL,
     predicate TEXT NOT NULL,
@@ -1395,6 +1396,7 @@ CREATE TABLE IF NOT EXISTS switchboard.message_inbox (
 # which store_fact() requires (not present in the legacy CREATE_FACTS_SQL above).
 CREATE_FACTS_FULL_SQL = """
 CREATE TABLE IF NOT EXISTS facts (
+    content_authority TEXT, authority_entity_id UUID,
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     subject TEXT NOT NULL,
     predicate TEXT NOT NULL,

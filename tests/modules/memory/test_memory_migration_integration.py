@@ -911,6 +911,7 @@ async def _forget_fact_and_rule_and_check_catalog(db_url: str) -> dict:
             source_butler="health",
             enable_shared_catalog=True,
             source_schema="public",
+            content_authority="owner",
         )
 
         fact_forgotten = await forget_memory(pool, "fact", fact_id)
@@ -1203,6 +1204,7 @@ async def _backfill_and_search_catalog(db_url: str) -> dict:
             tenant_id="shared",
             source_butler="health",
             enable_shared_catalog=False,
+            content_authority="owner",
         )
 
         retracted_fact = await store_fact(
@@ -1227,6 +1229,7 @@ async def _backfill_and_search_catalog(db_url: str) -> dict:
             tenant_id="shared",
             source_butler="health",
             enable_shared_catalog=False,
+            content_authority="owner",
         )
         await forget_memory(pool, "rule", forgotten_rule_id)
 
@@ -1490,6 +1493,7 @@ async def _reconcile_drifted_catalog_rows(db_url: str) -> dict:
                 source_butler="health",
                 enable_shared_catalog=True,
                 source_schema="public",
+                content_authority="owner",
             )
 
         healthy_fact_id = await _store_fact("reconcile_healthy", "teal")
@@ -1943,6 +1947,7 @@ async def _write_behind_catalog_row(db_url: str, *, sensitivity: str) -> dict:
             sensitivity=sensitivity,
             enable_shared_catalog=True,
             source_schema="public",
+            content_authority="owner",
         )
 
         fact_row = await pool.fetchrow(
@@ -2028,6 +2033,7 @@ async def _backfill_excludes_sensitive(db_url: str) -> dict:
             source_butler="health",
             sensitivity="pii",
             enable_shared_catalog=False,
+            content_authority="owner",
         )
 
         await run_memory_catalog_backfill(pool, source_schema="public", batch_size=200)
@@ -2079,6 +2085,7 @@ async def _backfill_rule_catalog_metadata(
             retention_class="rule",
             sensitivity="normal",
             enable_shared_catalog=False,
+            content_authority="owner",
         )
         sensitive_rule_id = await store_rule(
             pool,
@@ -2090,6 +2097,7 @@ async def _backfill_rule_catalog_metadata(
             retention_class="rule",
             sensitivity=sensitive_sensitivity,
             enable_shared_catalog=False,
+            content_authority="owner",
         )
 
         await run_memory_catalog_backfill(pool, source_schema="public", batch_size=200)
@@ -2451,6 +2459,14 @@ def test_rules_table_has_retired_at_column(memory_migrated_db: str) -> None:
     assert "retired_at" in cols
 
 
+def test_mem_013_adds_content_authority_columns(memory_migrated_db: str) -> None:
+    """mem_013 stamps authorship on all three tiers and endorsement on rules."""
+    for table in ("episodes", "facts", "rules"):
+        cols = _get_column_names(memory_migrated_db, table)
+        assert {"content_authority", "authority_entity_id"} <= cols, table
+    assert {"endorsed_at", "endorsed_by"} <= _get_column_names(memory_migrated_db, "rules")
+
+
 async def _retire_rule_and_check_catalog(db_url: str) -> dict:
     """Retire a rule twice and probe both the row and its catalog entry.
 
@@ -2482,6 +2498,7 @@ async def _retire_rule_and_check_catalog(db_url: str) -> dict:
             source_butler="health",
             enable_shared_catalog=True,
             source_schema="public",
+            content_authority="owner",
         )
 
         first_retire = await retire_rule(pool, rule_id)
@@ -2566,6 +2583,7 @@ async def _store_and_retire_rule_then_search(db_url: str) -> dict:
             scope="global",
             tenant_id="shared",
             source_butler="general",
+            content_authority="owner",
         )
         retired_id = await store_rule(
             pool,
@@ -2574,6 +2592,7 @@ async def _store_and_retire_rule_then_search(db_url: str) -> dict:
             scope="global",
             tenant_id="shared",
             source_butler="general",
+            content_authority="owner",
         )
 
         retired = await retire_rule(pool, retired_id)
