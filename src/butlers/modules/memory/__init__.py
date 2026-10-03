@@ -79,6 +79,13 @@ _DEFAULT_MAINTENANCE_SCHEDULES: tuple[dict[str, Any], ...] = (
         "cron": "25 4 * * *",
         "job_name": "memory_ann_observability",
     },
+    # Posts the "now known" notice for answered owner knowledge gaps and expires stale
+    # ones; a cheap no-op when no gap is open (bu-q7vx1q.9).
+    {
+        "name": "memory_knowledge_gap_delivery",
+        "cron": "*/10 * * * *",
+        "job_name": "memory_knowledge_gap_delivery",
+    },
     {
         "name": "memory_consolidation_backfill",
         "cron": "*/10 * * * *",
@@ -466,6 +473,11 @@ class MemoryModule(Module):
             )
             return True
 
+        async def _record_gap_hook(**gap: Any) -> dict[str, Any]:
+            from butlers.modules.memory import knowledge_gaps
+
+            return await knowledge_gaps.record_gap_result(module._get_pool(), **gap)
+
         async def _catalog_search_hook(
             pool: Any,
             query: str,
@@ -528,6 +540,7 @@ class MemoryModule(Module):
                 self._session_runtime_owner,
                 context=_context_hook,
                 store_episode=_store_episode_hook,
+                record_gap=_record_gap_hook,
             )
         else:
             logger.warning(
@@ -1379,6 +1392,34 @@ class MemoryModule(Module):
                 reason=reason,
                 read_policy=read_policy,
             )
+
+        @_tool("core")
+        async def memory_open_gaps(
+            status: str | None = None,
+            limit: int = 20,
+        ) -> dict[str, Any]:
+            """List questions the owner asked that this butler still could not answer.
+
+            Each gap names the entity and predicate, when it was asked, its lifecycle
+            ``status`` and an honest ``coverage_state`` (``unknown``, ``absent_proven``,
+            ``unavailable``, or ``present`` once answered). Defaults to ``open`` and
+            ``answerable`` gaps; pass ``status`` for one lifecycle state.
+            """
+            from butlers.modules.memory import knowledge_gaps
+
+            statuses = ("open", "answerable") if status is None else (status,)
+            if any(s not in knowledge_gaps.STATUSES for s in statuses):
+                return {
+                    "error": f"status must be one of {list(knowledge_gaps.STATUSES)}",
+                    "gaps": [],
+                }
+            gaps = await knowledge_gaps.list_gaps(
+                module._get_pool(), statuses=statuses, limit=max(1, min(limit, 100))
+            )
+            return {
+                "gaps": [knowledge_gaps.public_view(g) for g in gaps],
+                "count": len(gaps),
+            }
 
         # --- Management tools ---
 

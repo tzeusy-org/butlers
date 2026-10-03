@@ -395,3 +395,94 @@ async def test_conversation_reply_omits_session_id_and_tool_calls_without_contex
     assert result["status"] == "ok"
     assert fake_create.await_args.kwargs["session_id"] is None
     assert fake_create.await_args.kwargs["tool_calls"] is None
+
+
+# ---------------------------------------------------------------------------
+# Knowledge-gap capture on a sourceless decline (bu-q7vx1q.9)
+# ---------------------------------------------------------------------------
+
+
+def _gap_env(monkeypatch, *, routing_context, hook_result=None):
+    """Persisting reply + ambient routing context + a recording memory hook."""
+    conv_id, request_id, entity_id = uuid4(), uuid4(), uuid4()
+    fake_create = AsyncMock(return_value={"id": uuid4(), "role": "assistant"})
+    monkeypatch.setattr("butlers.api.conversations.conversation_reply_create", fake_create)
+    monkeypatch.setattr(
+        "butlers.core_tools._conversation_reply.get_current_runtime_session_routing_context",
+        lambda: routing_context(request_id),
+    )
+    hook = AsyncMock(return_value=hook_result or {"status": "recorded", "gap_id": "g1"})
+    monkeypatch.setattr("butlers.core.memory_hooks.record_knowledge_gap", hook)
+    pool = AsyncMock()
+    pool.fetchval.return_value = "What is Mei's daughter's name?"
+    return SimpleNamespace(
+        conv_id=conv_id, request_id=request_id, entity_id=entity_id, hook=hook, pool=pool
+    )
+
+
+def _dashboard(request_id):
+    return {"request_id": str(request_id), "request_context": {"source_channel": "dashboard"}}
+
+
+async def test_decline_gap_takes_origin_from_routing_context_and_question_from_thread(monkeypatch):
+    env = _gap_env(monkeypatch, routing_context=_dashboard)
+    tool = _register_and_grab(pool=env.pool)
+
+    result = await tool(
+        conversation_id=str(env.conv_id),
+        message="I don't know that yet.",
+        gap={"entity_id": str(env.entity_id), "predicate": "child_name"},
+    )
+
+    assert result["status"] == "ok"
+    assert result["gap"] == {"status": "recorded", "gap_id": "g1"}
+    env.hook.assert_awaited_once_with(
+        "finance",
+        entity_id=env.entity_id,
+        predicate="child_name",
+        question_summary="What is Mei's daughter's name?",
+        conversation_id=env.conv_id,
+        request_id=env.request_id,
+        channel="dashboard",
+    )
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "routing_context", "reason"),
+    [
+        ({"sources": ["finance.get_budget"]}, _dashboard, "without sources"),
+        ({}, lambda _rid: None, "no routing context"),
+    ],
+)
+async def test_gap_is_refused_but_the_decline_still_persists(
+    monkeypatch, kwargs, routing_context, reason
+):
+    env = _gap_env(monkeypatch, routing_context=routing_context)
+    tool = _register_and_grab(pool=env.pool)
+
+    result = await tool(
+        conversation_id=str(env.conv_id),
+        message="An answer.",
+        gap={"entity_id": str(env.entity_id), "predicate": "child_name"},
+        **kwargs,
+    )
+
+    assert result["status"] == "ok"
+    assert result["gap"]["status"] == "refused"
+    assert reason in result["gap"]["error"]
+    env.hook.assert_not_awaited()
+
+
+async def test_gap_hook_failure_never_blocks_the_decline(monkeypatch):
+    env = _gap_env(monkeypatch, routing_context=_dashboard)
+    env.hook.side_effect = RuntimeError("memory pool gone")
+    tool = _register_and_grab(pool=env.pool)
+
+    result = await tool(
+        conversation_id=str(env.conv_id),
+        message="I don't know that yet.",
+        gap={"entity_id": str(env.entity_id), "predicate": "child_name"},
+    )
+
+    assert result["status"] == "ok"
+    assert result["gap"]["status"] == "error"

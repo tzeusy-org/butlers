@@ -767,6 +767,48 @@ async def _run_memory_ann_observability_job(
     return await ann_observability.run_ann_observability(resolve_memory_runtime_pool())
 
 
+async def _run_memory_knowledge_gap_delivery_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Expire stale knowledge gaps and post one notice per answered gap's origin thread.
+
+    Deterministic (no LLM session).  Notices are posted into the origin dashboard
+    conversation through the same persistence ``conversation_reply`` uses; a butler whose
+    memory schema predates ``mem_014`` is skipped rather than failed.
+    """
+    del pool
+    if job_args:
+        raise RuntimeError(
+            "memory_knowledge_gap_delivery job does not accept job_args; "
+            f"received: {sorted(job_args)}"
+        )
+    import importlib
+    from uuid import UUID
+
+    from butlers.api.conversations import conversation_reply_create
+    from butlers.core.memory_hooks import (
+        resolve_memory_dispatch_butler_name,
+        resolve_memory_runtime_pool,
+    )
+
+    knowledge_gaps = importlib.import_module("butlers.modules.memory.knowledge_gaps")
+    memory_pool = resolve_memory_runtime_pool()
+    butler_name = resolve_memory_dispatch_butler_name()
+    if not await memory_pool.fetchval("SELECT to_regclass('knowledge_gaps') IS NOT NULL"):
+        return {"skipped": "knowledge_gaps table not migrated"}
+
+    async def post(conversation_id: UUID, text: str) -> bool:
+        message = await conversation_reply_create(
+            memory_pool, conversation_id, message=text, routed_butler=butler_name
+        )
+        return message is not None
+
+    return await knowledge_gaps.deliver_knowledge_gaps(
+        memory_pool, post=post, origin_butler=butler_name
+    )
+
+
 _MEMORY_MAINTENANCE_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = {
     "memory_consolidation": _run_memory_consolidation_job,
     "memory_episode_cleanup": _run_memory_episode_cleanup_job,
@@ -774,6 +816,7 @@ _MEMORY_MAINTENANCE_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = 
     "memory_decay_sweep": _run_memory_decay_sweep_job,
     "memory_catalog_backfill": _run_memory_catalog_backfill_job,
     "memory_ann_observability": _run_memory_ann_observability_job,
+    "memory_knowledge_gap_delivery": _run_memory_knowledge_gap_delivery_job,
 }
 
 
