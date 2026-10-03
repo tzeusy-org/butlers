@@ -22,6 +22,7 @@ The entity table is the anchor for identity. Each row represents a known person 
 - **`roles`** (TEXT[]) --- role assignments (e.g., `['owner']`); the authoritative source of truth for identity roles
 - **`aliases`** (TEXT[]) --- alternative names
 - **`metadata`** (JSONB) --- extensible metadata; temporary entities carry `{"unidentified": true}`
+- **`posture`** (`active` | `memorial` | `quiet` | `no_contact`, default `active`) --- how the owner wants this person treated, with `posture_since` and `posture_set_by`. Asserted only by the owner through the Relationship butler's `entity_set_posture` tool and never inferred; a trigger on the table refuses a change from any other butler role. It is independent of `listed` and deletes nothing. Birthday highlights, gift asks, reconnection insights and the calendar overlay read it (`active` only; a memorial birthday becomes a low-priority `remembrance` overlay entry), and `notify(entity_id=...)` refuses memorial and `no_contact` recipients (and an unreadable posture) with code `recipient_posture` before any approval or delivery. Posture values are personal data and are never logged.
 
 ### relationship.entity_facts (channel handles)
 

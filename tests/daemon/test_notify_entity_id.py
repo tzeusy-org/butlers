@@ -533,6 +533,65 @@ def _make_missing_id_patches(butler_dir: Path) -> tuple[dict, Any, Any]:
     return patches, mock_pool, mock_db
 
 
+class TestNotifyRecipientPosture:
+    """bu-q7vx1q.8: memorial / no_contact recipients are refused before anything is queued."""
+
+    @pytest.mark.parametrize(
+        ("posture", "fetch_error", "refused"),
+        [
+            ("no_contact", None, True),
+            ("memorial", None, True),
+            ("quiet", None, False),
+            ("active", None, False),
+            (None, RuntimeError("posture read failed"), True),
+        ],
+    )
+    async def test_posture_gate_precedes_resolution_parking_and_delivery(
+        self,
+        butler_dir: Path,
+        posture: str | None,
+        fetch_error: Exception | None,
+        refused: bool,
+    ) -> None:
+        patches, mock_pool, _ = _make_missing_id_patches(butler_dir)
+        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
+        assert notify_fn is not None
+        daemon.switchboard_client = _make_mock_client()
+        entity_id = uuid.UUID("00000000-0000-0000-0000-000000000041")
+        ledger_inserts: list[tuple[Any, ...]] = []
+
+        async def _fetchval(sql: str, *args: Any) -> Any:
+            if "SELECT posture" in sql:
+                if fetch_error is not None:
+                    raise fetch_error
+                return posture
+            if "INSERT INTO public.attention_ledger" in sql:
+                ledger_inserts.append(args)
+            return None
+
+        mock_pool.fetchval = AsyncMock(side_effect=_fetchval)
+        resolver = AsyncMock(return_value="person@example.com")
+
+        with patch.object(daemon, "_resolve_entity_channel_identifier", new=resolver):
+            result = await notify_fn(channel="email", message="Hello", entity_id=entity_id)
+
+        if not refused:
+            resolver.assert_awaited_once()
+            assert result.get("code") != "recipient_posture"
+            return
+        assert result["status"] == "error"
+        assert result["code"] == "recipient_posture"
+        assert "memorial" not in result["error"] and "no_contact" not in result["error"]
+        resolver.assert_not_awaited()
+        daemon.switchboard_client.call_tool.assert_not_awaited()
+        assert not any(
+            "pending_actions" in call.args[0] for call in mock_pool.execute.await_args_list
+        )
+        assert len(ledger_inserts) == 1
+        assert ledger_inserts[0][7] == "failed"
+        assert ledger_inserts[0][8] in {"recipient_posture", "recipient_posture_unreadable"}
+
+
 @pytest.mark.asyncio
 class TestNotifyMissingIdentifierAndOwner:
     """Tasks 7.3+7.4 — missing identifier parks; no entity_id uses owner resolution."""
