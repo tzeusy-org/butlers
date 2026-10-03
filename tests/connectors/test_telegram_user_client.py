@@ -101,6 +101,18 @@ async def test_text_message_envelope_contract(connector: TelegramUserClientConne
     assert "42" in key
 
 
+async def test_login_code_from_service_sender_is_withheld(
+    connector: TelegramUserClientConnector,
+) -> None:
+    """Telegram's 777000 login codes are scrubbed before the envelope leaves the connector."""
+    msg = _make_message(sender_id=777000, text="Login code: 55123. Do not share.")
+    msg.to_dict = lambda: {"id": 1, "message": "Login code: 55123. Do not share."}
+    env = await connector._normalize_to_ingest_v1(msg)
+    assert "55123" not in env["payload"]["normalized_text"]
+    assert "55123" not in str(env["payload"]["raw"])
+    assert env["control"]["bearer_scrubbed"] is True
+
+
 async def test_media_message_normalized_text(connector: TelegramUserClientConnector) -> None:
     """Message with media and no text produces '[media]' normalized text."""
     msg = _make_message(text="")

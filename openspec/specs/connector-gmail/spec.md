@@ -461,3 +461,33 @@ metadata MAY override.
 #### Scenario: Backfill variables
 - **WHEN** backfill is configured
 - **THEN** `CONNECTOR_BACKFILL_ENABLED` (default true), `CONNECTOR_BACKFILL_POLL_INTERVAL_S` (default 60), `CONNECTOR_BACKFILL_PROGRESS_INTERVAL` (default 50) are optionally configurable
+
+### Requirement: Bearer material never persists
+
+Connectors and the Switchboard ingest boundary SHALL withhold bearer material (one-time codes,
+password-reset links, magic links, and Telegram login codes) from every persisted payload. Only the
+fact that an auth artifact arrived SHALL be kept, as a typed placeholder recording the artifact kind,
+the provider domain, and the observation time.
+
+#### Scenario: One-time code is replaced by a placeholder
+- **WHEN** an `ingest.v1` envelope whose text contains a one-time code (for example "Your code is 482913") reaches the ingest boundary
+- **THEN** `message_inbox.raw_payload` and `message_inbox.normalized_text` SHALL NOT contain the code
+- **AND** they SHALL contain a placeholder of the form `[auth-code withheld: <provider-domain>]`
+- **AND** `raw_payload.control.bearer_scrubbed` SHALL be `true` and `raw_payload.bearer_artifacts` SHALL list `{kind, provider_domain, observed_at}` records
+- **AND** the message SHALL still be routed by the unchanged policy decision
+
+#### Scenario: Ordinary numbers survive
+- **WHEN** a message contains order numbers, dates, or amounts that are not adjacent to code wording and not part of a reset or magic link
+- **THEN** the text SHALL be persisted unchanged
+
+#### Scenario: Scrubbing is idempotent
+- **WHEN** already-scrubbed text is scrubbed again
+- **THEN** no further change SHALL occur
+
+#### Scenario: Detector failure fails closed
+- **WHEN** the scrubber raises while processing an envelope
+- **THEN** the ingest boundary SHALL persist the message as metadata-only with `payload.raw` null and SHALL NOT persist the unscrubbed text
+
+#### Scenario: Gmail body and metadata tiers are scrubbed
+- **WHEN** the Gmail connector builds a Tier 1 or Tier 2 envelope
+- **THEN** codes and reset or magic links SHALL be withheld from the subject-derived text, the normalized body, and the decoded `body.data` blobs inside `payload.raw`

@@ -41,6 +41,7 @@ tests/migrations/test_runtime_attention_outbox_migration.py
 tests/migrations/test_runtime_attention_producer_upgrade.py
 tests/migrations/test_runtime_config_blind_spot_flag_migration.py
 tests/migrations/test_sw_039_definer_search_path_migration.py
+tests/migrations/test_sw_040_scrub_bearer_material_migration.py
 tests/migrations/test_task_continuity_migration.py
 tests/modules/approvals/test_prepared_actions.py
 tests/modules/approvals/test_prepared_execution.py

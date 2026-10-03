@@ -89,6 +89,7 @@ from butlers.credential_store import (
     shared_db_name_from_env,
 )
 from butlers.db import db_params_from_env, is_db_unreachable
+from butlers.ingestion_bearer_scrub import scrub_envelope
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 
 # Telethon is marked as optional dependency - handle import gracefully
@@ -1213,7 +1214,7 @@ class TelegramUserClientConnector:
                 chat_type,
             )
 
-        return {
+        envelope = {
             "schema_version": "ingest.v1",
             "source": {
                 "channel": self._config.channel,
@@ -1246,6 +1247,8 @@ class TelegramUserClientConnector:
                 "interaction_eligible": interaction_eligible,
             },
         }
+        # Telegram login codes (service sender 777000) never leave the connector.
+        return scrub_envelope(envelope)[0]
 
     # -------------------------------------------------------------------------
     # Internal: Message processing
@@ -1997,7 +2000,7 @@ class TelegramUserClientConnector:
             },
         }
 
-        return envelope
+        return scrub_envelope(envelope)[0]
 
     async def _submit_to_ingest(self, envelope: dict[str, Any]) -> None:
         """Submit ingest.v1 envelope to Switchboard via MCP ingest tool.
