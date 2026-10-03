@@ -76,7 +76,7 @@ Preserving `qa.py`: neither option touches the shared login. Verification for th
 
 See `inventory.md` section 1 for the per-table table. In short:
 
-- Narrow with M1, no daemon impact expected, after runtime proof: tables whose only static writer is the dashboard API (`qa_allowed_repositories`, `breaker_resets`, `permissions`, `webhooks`, `approvals_policy`, `channel_defaults`, `model_catalog`, `token_limits`, `butler_model_overrides`, `provider_config`, `spend_ceiling`, `priority_contacts`, `timeline_saved_views`, `dismissed_issues`, `butler_tools`, `system_prompt_history`, `memory_retention_policies`, `butler_secrets`): revoke all DML from runtime roles.
+- Narrow with M1, no daemon impact expected, after runtime proof: tables whose only static writer is the dashboard API (`qa_allowed_repositories`, `breaker_resets`, `permissions`, `webhooks`, `approvals_policy`, `channel_defaults`, `token_limits`, `butler_model_overrides`, `provider_config`, `spend_ceiling`, `priority_contacts`, `timeline_saved_views`, `dismissed_issues`, `butler_tools`, `system_prompt_history`, `memory_retention_policies`): revoke all DML from runtime roles.
 - Narrow with M1, append-only: ledgers with no static UPDATE or DELETE writer: revoke `UPDATE, DELETE`.
 - Narrow with M1 or M3 for the QA family, to `butler_qa_rw` plus the dashboard.
 - Leave as is, or analyse separately: identity and credential-bearing tables, whose legitimate writers are broad (`entities`, `entity_info`, `google_accounts`, `steam_accounts`), and tables already fenced.

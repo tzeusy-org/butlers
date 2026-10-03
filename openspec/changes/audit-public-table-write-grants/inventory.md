@@ -50,24 +50,24 @@ Static evidence shows the writers are in `api/` only, so a runtime-role revoke s
 | `approvals_policy` | A: `api/routers/approvals.py:2472` I. (`testing/approval_delivery_schema.py:19` is a test helper) | Weaken approval policy | M1 |
 | `webhooks` | A: `api/routers/webhooks.py:383,598,729` U, `:486` I, `:655` D | Register or redirect a webhook | M1 |
 | `channel_defaults` | A: `api/routers/channel_defaults.py:213` I | Redirect default notification channels | M1 |
-| `model_catalog` | A: `api/routers/model_settings.py:728,814,897,941`; verify sweep uses the shared pool (`jobs/model_verify.py`, `api/routers/model_settings.py` `run_verify_all_models`) | Reroute model dispatch, tamper with verification state | M1. INSUFFICIENT on whether any daemon-side verify run exists; confirm `run_model_verify_sweep` runs on the shared login |
+| `model_catalog` | A: `api/routers/model_settings.py:728,814,897,941`; verify sweep uses the shared pool (`jobs/model_verify.py`, `api/routers/model_settings.py` `run_verify_all_models`) | Reroute model dispatch, tamper with verification state | none: INSUFFICIENT. Open question: does any daemon-side verify run write it? Settled by confirming `run_model_verify_sweep` runs on the shared login |
 | `token_limits` | A: `api/routers/model_settings.py:1355,1370,1420,1428,1436` | Raise own limits | M1 |
 | `butler_model_overrides` | A: `api/routers/model_settings.py:1611,1663` | Pin a butler to a chosen model | M1 |
 | `provider_config` | A: `api/routers/provider_settings.py:209,269,302` | Alter provider config | M1 |
 | `spend_ceiling` | A: `api/routers/spend.py:2277` | Raise own spend ceiling | M1 |
-| `spend_rules` | A: `api/routers/spend.py:2033-2222`; J: `jobs/spend.py:353` U | Alter spend rules | INSUFFICIENT: the principal of `jobs/spend.py:353` is not established. Propose M1 only after confirming it |
+| `spend_rules` | A: `api/routers/spend.py:2033-2222`; J: `jobs/spend.py:353` U | Alter spend rules | none: INSUFFICIENT. Open question: which principal runs `jobs/spend.py:353`? |
 | `priority_contacts` | A: `api/routers/priority_contacts.py:294,361` | Change who bypasses filtering | M1 |
 | `timeline_saved_views` | A: `api/routers/timeline_saved_views.py:155,229,246` | Low (UI state) | leave (low value); M1 optional |
 | `dismissed_issues` | A: `api/routers/issues.py:598,627` | Hide an issue from the owner | M1 |
 | `butler_tools` | A: `api/routers/butler_management.py:575` I | Alter the tool registry view | M1 |
 | `system_prompt_history` | A: `api/routers/butler_management.py:419` I | Forge prompt history | M1 |
 | `memory_retention_policies` | A: `api/routers/memory.py:2877` I | Change retention | M1 |
-| `butler_secrets` | A (shared pool): `api/routers/secrets_v2.py:6266,6784,7109,7231`, `api/routers/telegram_auth.py:222` (unqualified SQL) | Overwrite or delete secret metadata | M1. INSUFFICIENT: writers use unqualified names; confirm the table is the public one |
-| `secret_probe_log` | A: `api/routers/secrets_v2.py:5714,5736,6590`, `api/routers/cli_auth.py:488,557`; J: `jobs/retention.py:480` D | Forge or erase probe evidence | M1 revoke I/U from runtime roles; D stays only if the retention job runs under a runtime role (INSUFFICIENT) |
+| `butler_secrets` | A (shared pool): `api/routers/secrets_v2.py:6266,6784,7109,7231`, `api/routers/telegram_auth.py:222` (unqualified SQL) | Overwrite or delete secret metadata | none: INSUFFICIENT. Open question: writers use unqualified SQL; is the target the public table? |
+| `secret_probe_log` | A: `api/routers/secrets_v2.py:5714,5736,6590`, `api/routers/cli_auth.py:488,557`; J: `jobs/retention.py:480` D | Forge or erase probe evidence | none: INSUFFICIENT. Open question: which principal runs the retention delete at `jobs/retention.py:480`? |
 
 ### 1.4 Append-only evidence ledgers (no static UPDATE or DELETE writer)
 
-Legitimate writers insert. The baseline also grants `UPDATE` and `DELETE`, which nothing uses. Proposal for all: **M1 revoke UPDATE, DELETE** (same shape as the `cost_claims` precedent, init-db L647-659). Preconditions per row: no `ON CONFLICT DO UPDATE` (checked) and no retention `DELETE` under a runtime role (checked for Python literals only; INSUFFICIENT for any SQL held in alembic jobs or constants).
+Legitimate writers insert. The baseline also grants `UPDATE` and `DELETE`, which nothing uses. Proposal for all rows except `deployments` (INSUFFICIENT, no proposal): **M1 revoke UPDATE, DELETE** (same shape as the `cost_claims` precedent, init-db L647-659). Preconditions per row: no `ON CONFLICT DO UPDATE` (checked) and no retention `DELETE` under a runtime role (checked for Python literals only; INSUFFICIENT for any SQL held in alembic jobs or constants).
 
 | Table | Insert writers | Notes |
 | --- | --- | --- |
@@ -79,7 +79,7 @@ Legitimate writers insert. The baseline also grants `UPDATE` and `DELETE`, which
 | `consolidation_runs` | D: `modules/memory/consolidation.py:567` | |
 | `memory_compaction_log` | J: `scheduled_jobs.py:525` | |
 | `delegation_wake_attempts` | D: `core/delegation_ledger.py:473` | |
-| `deployments` | `core/deployments.py:327` I; callers `core/deploy.py`, `cli.py` | INSUFFICIENT on principal (CLI or deploy job); do not narrow before it is known |
+| `deployments` | `core/deployments.py:327` I; callers `core/deploy.py`, `cli.py` | none: INSUFFICIENT. Open question: which principal runs the CLI or deploy job? | Excluded from the proposal below |
 | `domain_events` | D: `core/domain_events.py:104` | Retention path not found; confirm |
 
 ### 1.5 Mixed or broad legitimate writers (leave, or analyse separately)
@@ -103,13 +103,13 @@ Legitimate writers insert. The baseline also grants `UPDATE` and `DELETE`, which
 | `provider_feature_catalogue` | `catalogue_bootstrap.py:208` (upsert) | INSUFFICIENT: bootstrap principal not established |
 | `infra_conditions`, `owner_conditions`, `butler_reachability_conditions` | generic `core/condition_ledger.py:598,650,733,788` (`{table}` is a parameter); callers `core/infra_conditions.py`, `core/fleet_conditions.py`, `core/commitments.py`, `jobs/commitment_escalation.py` | These drive paging and owner attention, so they matter, but the table is a variable and the calling principal is not mapped. INSUFFICIENT; recommend its own audit |
 | `state` | `core/state.py:76,176,193`, `identity.py:1098` (unqualified; per-schema `state` shadows `public.state`) | INSUFFICIENT: cannot tell which table the unqualified SQL targets |
-| `contacts_dropbak`, `priority_contacts_dedup_bak_core_133` | no writer | Backup snapshots of dropped data. Confirm they still exist; if so, M1 revoke all DML |
+| `contacts_dropbak`, `priority_contacts_dedup_bak_core_133` | no writer | none: INSUFFICIENT. Backup snapshots of dropped data; open question: do the tables still exist (core_118, core_151 drop backups)? |
 
 ### 1.6 Switchboard-owned insight tables
 
 | Table | Writers | Proposed |
 | --- | --- | --- |
-| `insight_candidates` | D(switchboard): `roster/switchboard/tools/insight/broker.py:337` I, `:848` D; J: `jobs/retention.py:380` D | M3 switchboard policy like `insight_amendments`, after confirming the principal of `jobs/retention.py:380` (INSUFFICIENT) |
+| `insight_candidates` | D(switchboard): `roster/switchboard/tools/insight/broker.py:337` I, `:848` D; J: `jobs/retention.py:380` D | none: INSUFFICIENT. Open question: which principal runs the retention delete at `jobs/retention.py:380`? |
 | `insight_cooldowns` | `broker.py:423,855` D, `:434,732` I | M3, same |
 | `insight_engagement` | `broker.py:766` I, `:893` D | M3, same |
 | `insight_settings` | `broker.py:198,1002` I | M3, same. Spec says "a butler" may write it; the only non-test writer is the switchboard broker |
