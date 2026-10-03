@@ -80,10 +80,23 @@ def test_core_255_adds_premise_objects_idempotently_and_downgrades_cleanly(
     )
 
     command.downgrade(config, "core_254")
-    assert _run(db_url, "SELECT to_regclass('public.insight_amendments') IS NULL") is True
+    # The amendment ledger is durable evidence and survives a downgrade.
+    assert _run(db_url, "SELECT to_regclass('public.insight_amendments') IS NOT NULL") is True
+    assert (
+        _run(
+            db_url,
+            "SELECT to_regprocedure('public.enqueue_premise_amendments(text, text, timestamptz, text)') IS NULL",
+        )
+        is True
+    )
     status = f"SELECT status FROM public.insight_candidates WHERE id = '{candidate}'"
     assert _run(db_url, status) == "filtered"
     assert _run(db_url, "SELECT outcome FROM public.attention_ledger") == "suppressed"
 
     command.upgrade(config, "core_255")
-    assert _run(db_url, "SELECT to_regclass('public.insight_amendments') IS NOT NULL") is True
+    assert _run(db_url, "SELECT count(*) FROM public.insight_amendments") == 1
+    pins = (
+        "SELECT bool_and(proconfig = ARRAY['search_path=pg_catalog, pg_temp']) FROM pg_proc"
+        " WHERE proname IN ('enqueue_premise_amendments', 'resolve_finance_bill_status')"
+    )
+    assert _run(db_url, pins) is True

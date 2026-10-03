@@ -32,7 +32,8 @@ owner's screen asserting it.  This migration adds the durable pieces:
 Every statement is idempotent: the core chain runs once per butler schema
 against these shared ``public`` objects.  Downgrade folds new ledger outcomes
 and ``withdrawn`` rows back into the prior vocabulary before narrowing the
-constraints, then drops the new objects.
+constraints, then drops the columns and definers. ``insight_amendments`` is kept
+(durable evidence; see downgrade).
 """
 
 from __future__ import annotations
@@ -45,6 +46,25 @@ branch_labels = None
 depends_on = None
 
 _SWITCHBOARD_ROLE = "butler_switchboard_rw"
+# Every runtime role that reconciles an owner-condition snapshot may enqueue.
+_ENQUEUE_ROLES = (
+    "butler_chronicler_rw",
+    "butler_concierge_rw",
+    "butler_education_rw",
+    "butler_finance_rw",
+    "butler_general_rw",
+    "butler_health_rw",
+    "butler_home_rw",
+    "butler_lifestyle_rw",
+    "butler_messenger_rw",
+    "butler_qa_rw",
+    "butler_relationship_rw",
+    "butler_switchboard_rw",
+    "butler_travel_rw",
+    "butler_calendar_rw",
+)
+_BILL_STATUS_SIG = "public.resolve_finance_bill_status(uuid)"
+_ENQUEUE_SIG = "public.enqueue_premise_amendments(text, text, timestamptz, text)"
 _AMENDMENTS_POLICY = "insight_amendments_switchboard"
 
 _OLD_LEDGER_OUTCOMES = ("delivered", "coalesced", "deferred", "suppressed", "failed", "expired")
@@ -52,15 +72,17 @@ _NEW_LEDGER_OUTCOMES = (*_OLD_LEDGER_OUTCOMES, "withdrawn", "amended")
 _OLD_STATUSES = ("pending", "delivered", "expired", "filtered")
 _NEW_STATUSES = (*_OLD_STATUSES, "withdrawn")
 
-# plpgsql (not sql) so the finance.bills reference resolves at call time, and
-# search_path is pinned to pg_catalog, the standard SECURITY DEFINER hardening.
+# plpgsql (not sql) so the finance.bills reference resolves at call time. The
+# search_path is exactly ``pg_catalog, pg_temp`` (the only form
+# ``butlers.core.definer_search_path.is_pinned`` accepts) and every relation in
+# the body is schema-qualified.
 CREATE_BILL_STATUS_FN = """
 CREATE OR REPLACE FUNCTION public.resolve_finance_bill_status(p_bill_id uuid)
 RETURNS TABLE(status text)
 LANGUAGE plpgsql
 STABLE
 SECURITY DEFINER
-SET search_path = pg_catalog
+SET search_path = pg_catalog, pg_temp
 AS $fn$
 BEGIN
     RETURN QUERY
@@ -85,7 +107,7 @@ CREATE OR REPLACE FUNCTION public.enqueue_premise_amendments(
 RETURNS integer
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog
+SET search_path = pg_catalog, pg_temp
 AS $fn$
 DECLARE
     inserted integer;
@@ -128,6 +150,25 @@ def _execute_best_effort(statement: str) -> None:
         $do$;
         """
     )
+
+
+def _grant_execute_only_to(signature: str, roles: tuple[str, ...]) -> None:
+    """REVOKE the default PUBLIC execute, then grant to each existing intended role."""
+    _execute_best_effort(f"REVOKE ALL ON FUNCTION {signature} FROM PUBLIC")
+    for role in roles:
+        op.execute(
+            f"""
+            DO $do$
+            BEGIN
+                IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role}') THEN
+                    EXECUTE 'GRANT EXECUTE ON FUNCTION {signature} TO {role}';
+                END IF;
+            EXCEPTION
+                WHEN insufficient_privilege OR undefined_object OR undefined_function THEN NULL;
+            END
+            $do$;
+            """
+        )
 
 
 def _set_check(table: str, constraint: str, column: str, values: tuple[str, ...]) -> None:
@@ -190,15 +231,13 @@ def upgrade() -> None:
         """
     )
 
+    _execute_best_effort(
+        f"GRANT SELECT, INSERT, UPDATE ON TABLE public.insight_amendments TO {_SWITCHBOARD_ROLE}"
+    )
     _execute_best_effort(CREATE_BILL_STATUS_FN)
-    _execute_best_effort(
-        "GRANT EXECUTE ON FUNCTION public.resolve_finance_bill_status(uuid) TO PUBLIC"
-    )
+    _grant_execute_only_to(_BILL_STATUS_SIG, (_SWITCHBOARD_ROLE,))
     _execute_best_effort(CREATE_ENQUEUE_FN)
-    _execute_best_effort(
-        "GRANT EXECUTE ON FUNCTION "
-        "public.enqueue_premise_amendments(text, text, timestamptz, text) TO PUBLIC"
-    )
+    _grant_execute_only_to(_ENQUEUE_SIG, _ENQUEUE_ROLES)
 
 
 def downgrade() -> None:
@@ -206,7 +245,10 @@ def downgrade() -> None:
         "DROP FUNCTION IF EXISTS public.enqueue_premise_amendments(text, text, timestamptz, text)"
     )
     _execute_best_effort("DROP FUNCTION IF EXISTS public.resolve_finance_bill_status(uuid)")
-    op.execute("DROP TABLE IF EXISTS public.insight_amendments")
+    # public.insight_amendments is deliberately kept: queued amendments are
+    # durable evidence of owner-visible corrections, and re-creating the table
+    # on the next upgrade (possibly under a different owner) is not symmetric.
+    # A later upgrade finds it through CREATE TABLE IF NOT EXISTS.
 
     # Fold rows the narrower vocabularies reject into their nearest prior value.
     op.execute(
