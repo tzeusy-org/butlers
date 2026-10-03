@@ -1094,6 +1094,16 @@ async def _run_health_insight_scan_job(
     return await mod.run_insight_scan(pool, ha_environment_reader=ha_reader)
 
 
+async def _run_health_baseline_watch_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run the health personal-baselines watch (deterministic, zero LLM)."""
+    from butlers.jobs.health_baselines import run_baseline_watch
+
+    return await run_baseline_watch(pool, job_args)
+
+
 async def _run_health_atmosphere_advisory_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -2013,6 +2023,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "daily_briefing_contribution": _run_health_briefing_contribution_job,
             "calendar_overlay_contribution": _run_health_calendar_overlay_contribution_job,
             "insight_scan": _run_health_insight_scan_job,
+            "baseline_watch": _run_health_baseline_watch_job,
             "atmosphere_advisory": _run_health_atmosphere_advisory_job,
             "context_producer_sleep_window": _run_context_producer_sleep_window_job,
             **_retention_pruner_job_handlers("health"),

@@ -50,6 +50,15 @@ cron = "0 7 * * 1"
 dispatch_mode = "job"
 job_name = "insight_scan"
 
+# Personal baselines (bu-q7vx1q.15): deterministic daily band for resting HR, HRV
+# and sleep duration; opens and closes deviation episodes and proposes insight
+# candidates carrying baseline evidence. Zero LLM, reads only the health schema.
+[[butler.schedule]]
+name = "baseline_watch"
+cron = "30 6 * * *"
+dispatch_mode = "job"
+job_name = "baseline_watch"
+
 # Atmosphere health advisory (bu-8bnn9, follow-up from bu-ep4ks.16 slice 1):
 # reads the shared home-location atmosphere feed and surfaces an advisory
 # when outdoor AQI or pollen is elevated. No-op when the feed is not
