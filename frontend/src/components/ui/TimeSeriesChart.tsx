@@ -7,7 +7,7 @@
 // axis end so staleness never reads as current data.
 // ---------------------------------------------------------------------------
 
-import type { ReactElement } from "react";
+import { useId, type ReactElement } from "react";
 import { formatInTimeZone } from "date-fns-tz";
 import {
   Area,
@@ -34,7 +34,7 @@ export interface TimeSeriesLine {
   stroke: string;
   strokeOpacity?: number;
   strokeDasharray?: string;
-  /** Area variant only. */
+  /** Area variant only: a solid fill replacing the default fading gradient. */
   fill?: string;
 }
 
@@ -72,6 +72,10 @@ export function TimeSeriesChart({
   testId,
 }: TimeSeriesChartProps) {
   const timezone = useTimezone();
+  // Unique per instance so several charts on one page never share a gradient;
+  // colons from useId are not safe inside url(#...).
+  const uid = useId().replace(/:/g, "");
+  const gradientId = (key: string) => `ts-fade-${uid}-${key}`;
   const { rows, domain, observationCount, lastReadingAt, tailDays } = series;
   const label = tailLabel(tailDays);
   const showDots = observationCount <= DOT_LIMIT;
@@ -119,6 +123,14 @@ export function TimeSeriesChart({
       <ResponsiveContainer width="100%" height={height}>
         {variant === "area" ? (
           <AreaChart data={rows} margin={margin}>
+            <defs>
+              {lines.map((l) => (
+                <linearGradient key={l.key} id={gradientId(l.key)} x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor={l.stroke} stopOpacity={0.3} />
+                  <stop offset="95%" stopColor={l.stroke} stopOpacity={0} />
+                </linearGradient>
+              ))}
+            </defs>
             {axes}
             {lines.map((l) => (
               <Area
@@ -128,8 +140,7 @@ export function TimeSeriesChart({
                 type={lineType}
                 stroke={l.stroke}
                 strokeWidth={compact ? 1.5 : 2}
-                fill={l.fill ?? l.stroke}
-                fillOpacity={l.fill ? 1 : 0.2}
+                fill={l.fill ?? `url(#${gradientId(l.key)})`}
                 dot={showDots}
                 connectNulls={false}
                 isAnimationActive={animate}

@@ -29,7 +29,7 @@ vi.mock("recharts", () => {
         "data-dot": String(p.dot),
         "data-connect": String(p.connectNulls),
       }),
-    Area: () => null,
+    Area: (p: { fill?: string }) => createElement("i", { "data-testid": "area", "data-fill": p.fill }),
   };
 });
 
@@ -70,5 +70,20 @@ describe("TimeSeriesChart", () => {
     render(<TimeSeriesChart series={fresh} lines={lines} height={80} />);
     expect(screen.queryByTestId("time-series-tail")).toBeNull();
     expect(screen.getByTestId("line").dataset.dot).toBe("false");
+  });
+
+  it("fades the area variant with a per-instance gradient, not a flat fill", () => {
+    const { container } = render(
+      <>
+        <TimeSeriesChart series={seriesOf([2, 1])} lines={lines} variant="area" height={80} />
+        <TimeSeriesChart series={seriesOf([2, 1])} lines={lines} variant="area" height={80} />
+      </>,
+    );
+    const fills = screen.getAllByTestId("area").map((a) => a.dataset.fill!);
+    expect(fills[0]).toMatch(/^url\(#ts-fade-[^:)]+-v\)$/);
+    expect(fills[0]).not.toBe(fills[1]);
+    const gradient = container.querySelector(`linearGradient[id="${fills[0].slice(5, -1)}"]`);
+    const stops = [...gradient!.querySelectorAll("stop")].map((s) => s.getAttribute("stop-opacity"));
+    expect(stops).toEqual(["0.3", "0"]);
   });
 });
