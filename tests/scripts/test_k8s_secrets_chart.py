@@ -39,7 +39,7 @@ def _without_external_secrets(docs: list[dict]) -> list[dict]:
 @needs_helm
 @pytest.mark.parametrize("env", ["dev", "prod"])
 def test_source_bws_adds_exactly_the_two_listed_externalsecrets(env: str) -> None:
-    local = _render(env)
+    local = _render(env, "--set", "localSecrets.source=local")
     bws = _render(env, "--set", "localSecrets.source=bws")
 
     assert len(_external_secrets(local)) == 1
@@ -53,10 +53,9 @@ def test_source_bws_adds_exactly_the_two_listed_externalsecrets(env: str) -> Non
         "runtime_probe_control_signing_key",
         "runtime_probe_control_verifiers",
     }
-    assert {e["secretKey"] for e in env_es["data"]} == {
-        "DASHBOARD_API_KEY",
-        "DASHBOARD_AUTH_DB_USER",
-    }
+    # Dev does not provision DASHBOARD_API_KEY, so values.dev.yaml omits it.
+    expected_env = {"DASHBOARD_AUTH_DB_USER"} | ({"DASHBOARD_API_KEY"} if env == "prod" else set())
+    assert {e["secretKey"] for e in env_es["data"]} == expected_env
     for spec in (probe, env_es):
         assert spec["target"]["creationPolicy"] == "Owner"
         assert "dataFrom" not in spec
@@ -84,9 +83,30 @@ def test_source_bws_remote_keys_come_from_values_and_optional_key_can_be_omitted
 @needs_helm
 @pytest.mark.parametrize("env", ["dev", "prod"])
 def test_source_bws_leaves_every_workload_manifest_unchanged(env: str) -> None:
-    local = _without_external_secrets(_render(env))
+    local = _without_external_secrets(_render(env, "--set", "localSecrets.source=local"))
     bws = _without_external_secrets(_render(env, "--set", "localSecrets.source=bws"))
     assert local == bws
+
+
+@needs_helm
+def test_dev_reads_every_secret_from_bws_under_the_butlers_runtime_prefix() -> None:
+    stores = _external_secrets(_render("dev"))
+    assert len(stores) == 3
+    remote_keys = [e["remoteRef"]["key"] for d in stores.values() for e in d["spec"]["data"]]
+    assert remote_keys
+    assert all(k.startswith("BUTLERS_RUNTIME_") for k in remote_keys), remote_keys
+
+
+@needs_helm
+def test_prod_keeps_its_legacy_bws_key_names() -> None:
+    stores = _external_secrets(_render("prod"))
+    assert len(stores) == 1
+    keys = {e["secretKey"]: e["remoteRef"]["key"] for e in stores["butlers-bws"]["spec"]["data"]}
+    assert keys == {
+        "POSTGRES_USER": "BUTLERS_DB_USER",
+        "POSTGRES_PASSWORD": "BUTLERS_DB_PASSWORD",
+        "DASHBOARD_AUTH_DB_PASSWORD": "DASHBOARD_AUTH_DB_PASSWORD",
+    }
 
 
 @needs_helm

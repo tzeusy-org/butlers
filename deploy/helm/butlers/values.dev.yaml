@@ -6,6 +6,13 @@ database:
 
 externalSecrets:
   storeRef: bitwarden-secretsmanager-dev
+  localEnv:
+    # Not provisioned on dev; the dashboard runs without it.
+    DASHBOARD_API_KEY: ""
+
+# butlers-runtime-probe-control and butlers-local-env come from BWS on dev.
+localSecrets:
+  source: bws
 
 publicUrl:
   dashboardPrefix: butlers-dev
