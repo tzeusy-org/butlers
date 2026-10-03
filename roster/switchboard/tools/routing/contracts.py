@@ -304,6 +304,9 @@ class IngestControlV1(BaseModel):
     ``request_context`` and consumed by downstream interaction-scoring jobs.
     See RFC 0013 D3.
     """
+    bearer_scrubbed: bool = False
+    """True when the connector withheld bearer material (OTP, reset or magic link)
+    from the payload before submit. Persisted into ``raw_payload.control``."""
     pinned_target: NonEmptyStr | None = None
     """Optional butler name this envelope SHALL be routed to deterministically.
 

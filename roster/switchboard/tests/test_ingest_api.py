@@ -483,6 +483,86 @@ class TestIngestV1Basic:
         assert row["normalized_text"] == ""
 
 
+class TestBearerMaterialQuarantine:
+    """OTP codes, magic links and Telegram login codes never persist (bu-q7vx1q.2)."""
+
+    async def _stored(self, pool: asyncpg.Pool, envelope: dict) -> asyncpg.Record:
+        result = await ingest_v1(pool, envelope)
+        row = await pool.fetchrow(
+            "SELECT raw_payload, normalized_text, lifecycle_state FROM message_inbox WHERE id = $1",
+            result.request_id,
+        )
+        assert row is not None
+        return row
+
+    async def test_gmail_otp_is_withheld_and_recorded(self, pool: asyncpg.Pool) -> None:
+        envelope = _make_email_envelope(
+            message_id="<otp-1@example.com>",
+            sender="no-reply@example.com",
+            subject="Verify",
+            body="Your code is 482913. It expires in 10 minutes. Order 12345678.",
+        )
+        row = await self._stored(pool, envelope)
+        raw = _decode_jsonb(row["raw_payload"])
+
+        assert "482913" not in row["normalized_text"]
+        assert "482913" not in json.dumps(raw)
+        assert "[auth-code withheld: example.com]" in row["normalized_text"]
+        assert "12345678" in row["normalized_text"]
+        assert row["lifecycle_state"] == "accepted"
+        assert raw["control"]["bearer_scrubbed"] is True
+        artifact = raw["bearer_artifacts"][0]
+        assert artifact["kind"] == "auth_code"
+        assert artifact["provider_domain"] == "example.com"
+        assert artifact["expires_hint"] == "10m"
+
+    async def test_magic_link_is_withheld(self, pool: asyncpg.Pool) -> None:
+        url = "https://acct.example.com/magic/Xk3j9Zq1Lm5Np7Rt2Vw4Yb6"
+        envelope = _make_email_envelope(message_id="<ml-1@example.com>", body=f"Sign in: {url}")
+        row = await self._stored(pool, envelope)
+
+        assert "Xk3j9Zq1Lm5Np7Rt2Vw4Yb6" not in row["normalized_text"]
+        assert "Xk3j9Zq1Lm5Np7Rt2Vw4Yb6" not in json.dumps(_decode_jsonb(row["raw_payload"]))
+        assert "[magic-link withheld: acct.example.com]" in row["normalized_text"]
+
+    async def test_telegram_login_code_from_service_sender_is_withheld(
+        self, pool: asyncpg.Pool
+    ) -> None:
+        envelope = _make_telegram_envelope(
+            update_id="777001", sender_id="777000", text="Login code: 55123. Do not share."
+        )
+        row = await self._stored(pool, envelope)
+
+        assert "55123" not in row["normalized_text"]
+        assert "55123" not in json.dumps(_decode_jsonb(row["raw_payload"]))
+
+    async def test_ordinary_message_is_untouched_and_unflagged(self, pool: asyncpg.Pool) -> None:
+        envelope = _make_email_envelope(
+            message_id="<plain-1@example.com>", body="Dinner on 2026-10-03, order 12345678."
+        )
+        row = await self._stored(pool, envelope)
+        raw = _decode_jsonb(row["raw_payload"])
+
+        assert "12345678" in row["normalized_text"]
+        assert "bearer_scrubbed" not in raw["control"]
+        assert "bearer_artifacts" not in raw
+
+    async def test_detector_failure_holds_message_metadata_only(self, pool: asyncpg.Pool) -> None:
+        envelope = _make_email_envelope(
+            message_id="<fail-1@example.com>", body="Your code is 482913"
+        )
+        with patch(
+            "butlers.tools.switchboard.ingestion.ingest.scrub_json",
+            side_effect=RuntimeError("boom"),
+        ):
+            row = await self._stored(pool, envelope)
+        raw = _decode_jsonb(row["raw_payload"])
+
+        assert "482913" not in json.dumps(raw) + row["normalized_text"]
+        assert raw["payload"]["raw"] is None
+        assert row["lifecycle_state"] == "metadata_ref"
+
+
 class TestIngestV1Deduplication:
     """Test deduplication and idempotency behavior."""
 

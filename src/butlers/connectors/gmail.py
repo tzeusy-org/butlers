@@ -89,6 +89,7 @@ from butlers.google_credentials import (
     load_google_credentials,
 )
 from butlers.identity import parse_email_sender
+from butlers.ingestion_bearer_scrub import scrub_envelope
 from butlers.ingestion_policy import (
     IngestionEnvelope,
     IngestionPolicyEvaluator,
@@ -2541,7 +2542,7 @@ class GmailConnectorRuntime:
                 f"{self._config.connector_endpoint_identity}:"
                 f"{rfc_message_id}"
             )
-            return {
+            metadata_envelope = {
                 "schema_version": "ingest.v1",
                 "source": {
                     "channel": self._config.connector_channel,
@@ -2573,6 +2574,7 @@ class GmailConnectorRuntime:
                     "policy_tier": effective_policy_tier,
                 },
             }
+            return scrub_envelope(metadata_envelope)[0]
 
         # --- Tier 1: Full envelope ---
         # Pre-resolve body parts that use attachmentId references instead of
@@ -2609,7 +2611,7 @@ class GmailConnectorRuntime:
             f"{rfc_message_id}"
         )
 
-        return {
+        envelope = {
             "schema_version": "ingest.v1",
             "source": {
                 "channel": self._config.connector_channel,
@@ -2640,6 +2642,9 @@ class GmailConnectorRuntime:
                 "policy_tier": effective_policy_tier,
             },
         }
+        # Bearer material (OTP codes, reset/magic links) never leaves the connector.
+        scrubbed, _ = scrub_envelope(envelope)
+        return scrubbed
 
     # MIME types that carry cryptographic signatures rather than body content.
     # These parts must be skipped during body extraction so signatures are never

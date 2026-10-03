@@ -335,3 +335,33 @@ The connector SHALL gate interaction-eligible processing for chats exceeding a c
 - **WHEN** a chat has `participant_count` at or below `max_interaction_group_size`
 - **THEN** `control.interaction_eligible` MUST default to `true` (or be omitted)
 - **AND** the envelope MUST be submitted normally
+
+### Requirement: Bearer material never persists
+
+Connectors and the Switchboard ingest boundary SHALL withhold bearer material (one-time codes,
+password-reset links, magic links, and Telegram login codes) from every persisted payload. Only the
+fact that an auth artifact arrived SHALL be kept, as a typed placeholder recording the artifact kind,
+the provider domain, and the observation time.
+
+#### Scenario: One-time code is replaced by a placeholder
+- **WHEN** an `ingest.v1` envelope whose text contains a one-time code (for example "Your code is 482913") reaches the ingest boundary
+- **THEN** `message_inbox.raw_payload` and `message_inbox.normalized_text` SHALL NOT contain the code
+- **AND** they SHALL contain a placeholder of the form `[auth-code withheld: <provider-domain>]`
+- **AND** `raw_payload.control.bearer_scrubbed` SHALL be `true` and `raw_payload.bearer_artifacts` SHALL list `{kind, provider_domain, observed_at}` records
+- **AND** the message SHALL still be routed by the unchanged policy decision
+
+#### Scenario: Ordinary numbers survive
+- **WHEN** a message contains order numbers, dates, or amounts that are not adjacent to code wording and not part of a reset or magic link
+- **THEN** the text SHALL be persisted unchanged
+
+#### Scenario: Scrubbing is idempotent
+- **WHEN** already-scrubbed text is scrubbed again
+- **THEN** no further change SHALL occur
+
+#### Scenario: Detector failure fails closed
+- **WHEN** the scrubber raises while processing an envelope
+- **THEN** the ingest boundary SHALL persist the message as metadata-only with `payload.raw` null and SHALL NOT persist the unscrubbed text
+
+#### Scenario: Telegram login codes from the service account
+- **WHEN** a message arrives from the Telegram service sender `777000`
+- **THEN** every code-shaped number in the envelope text and raw payload SHALL be withheld before submit
