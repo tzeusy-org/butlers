@@ -21,6 +21,7 @@ The author is responsible for:
 - identifying the relevant manifesto, RFC, spec, and topology context
 - making the narrowest change that solves the problem cleanly
 - adding or updating regression protection
+- writing commit messages that explain why; the diff already shows what
 - updating docs in the same change when behavior, contracts, or workflow
   expectations moved
 - stating what verification actually ran

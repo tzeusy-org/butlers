@@ -130,6 +130,9 @@ Read `AGENTS.md` before broad verification in these areas:
 - DB-backed tests using `testcontainers`
 - asyncio loop-scope and xdist interactions
 - migration coverage and chain naming/path rules
+- SQL safety: static gates such as `check-for-update-joins` exist because
+  PostgreSQL rejects `FOR UPDATE` on the nullable side of an outer join only at
+  runtime, and mock-based tests never reach that failure
 - known FastMCP introspection drift in tests
 
 Do not mislabel a known baseline flake as a product regression without checking

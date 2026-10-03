@@ -53,6 +53,8 @@ change `add-connector-oauth-scope-surface`:
 
 ## Pursuit / audit dossiers
 
+The cumulative record across runs (north star stated once, run index, tier history, ranked moves by run) is [pursuit-ledger.md](pursuit-ledger.md); read it before any per-run dossier.
+
 Point-in-time UI-maturity audits, listed by run. A newer date is not live
 verification or proof that an earlier finding is resolved. Query the
 `-data.json` sibling, e.g.
