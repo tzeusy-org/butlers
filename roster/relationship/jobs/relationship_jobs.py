@@ -19,6 +19,7 @@ import asyncpg
 
 from butlers.core.approvals_hooks import park_pending_action
 from butlers.core.state import state_get, state_set
+from butlers.core.temporal.calendar_provenance import is_owner_attending
 from butlers.core.tool_call_capture import (
     get_current_approval_push_runtime,
     get_current_runtime_session_id,
@@ -1450,14 +1451,8 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
         if not isinstance(attendees_raw, list) or not attendees_raw:
             continue
 
-        # Check if the owner declined this event via their self=true attendee entry.
-        owner_declined = False
-        for att in attendees_raw:
-            if not isinstance(att, dict):
-                continue
-            if att.get("self") is True and att.get("responseStatus") == "declined":
-                owner_declined = True
-                break
+        # Same RSVP rule as the calendar conflict radar (shared helper).
+        owner_declined = not is_owner_attending(meta)
 
         if owner_declined:
             logger.debug(

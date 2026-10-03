@@ -11,6 +11,8 @@ from butlers.core.temporal.calendar_provenance import (
     is_calendar_analysis_candidate,
     is_explicit_butler_generated,
     is_legacy_all_day_like,
+    is_owner_attending,
+    is_transparent,
 )
 
 pytestmark = pytest.mark.unit
@@ -77,3 +79,32 @@ def test_calendar_analysis_candidate_preserves_timed_human_events_on_malformed_i
         )
         is expected
     )
+
+
+@pytest.mark.parametrize("key", ["response_status", "responseStatus"])
+def test_owner_declined_is_not_attending_for_either_key_spelling(key: str) -> None:
+    metadata = {"attendees": [{"self": True, key: "declined"}]}
+    assert is_owner_attending(metadata) is False
+
+
+@pytest.mark.parametrize("status", ["accepted", "tentative", "needs_action", "needsAction"])
+def test_owner_non_declined_statuses_are_attending(status: str) -> None:
+    assert is_owner_attending({"attendees": [{"self": True, "response_status": status}]}) is True
+
+
+def test_only_the_self_attendee_decides_attendance_and_malformed_metadata_is_attending() -> None:
+    other = {"attendees": [{"email": "g@x.io", "response_status": "declined"}]}
+    assert is_owner_attending(other) is True
+    assert is_owner_attending({"attendees": "nope"}) is True
+    assert is_owner_attending(None) is True
+    assert (
+        is_owner_attending('{"attendees": [{"self": true, "responseStatus": "declined"}]}') is False
+    )
+
+
+def test_transparency_transparent_is_free_time_everything_else_is_busy() -> None:
+    assert is_transparent({"transparency": "transparent"}) is True
+    assert is_transparent({"transparency": " Transparent "}) is True
+    assert is_transparent({"transparency": "opaque"}) is False
+    assert is_transparent({}) is False
+    assert is_transparent(None) is False
