@@ -586,6 +586,7 @@ async def test_all_core_tools_registered(butler_dir: Path) -> None:
     }.isdisjoint(registered_tools)
 
 
+# REQ-entity-graph-007: mocked lifecycle graph-group allowlist control only.
 @pytest.mark.parametrize(
     ("core_groups", "graph_enabled"),
     [

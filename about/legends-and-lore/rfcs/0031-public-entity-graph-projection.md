@@ -1,247 +1,49 @@
-# RFC 0031: Public Entity Graph Projection
+# RFC0031: Public Entity Graph Projection
 
-**Status:** Draft (Slices 1-4 implemented; Slices 5-7 open)
-**Date:** 2026-09-05
+**Status:** Decision record; implementation partial. Source audit: 2026-10-05.
 
-## Summary
+The complete behavior contract is [entity-graph](../../../openspec/specs/entity-graph/spec.md), requirements `REQ-entity-graph-001` through `012`. This record retains the projection decision and its tradeoffs. Source transfer does not complete the graph feature or adopt an unresolved grant posture.
 
-This RFC defines `public.entity_graph_edges`, a write-behind projection of
-entity-to-entity relationships sourced from each butler's canonical fact
-stores (`relationship.entity_facts`, memory facts/rules, commitments). The
-fleet already writes an entity anchor (`entity_id` / `object_entity_id`) on
-every catalog row, but nothing reads it as a graph: answering "what do we
-know about this person" today costs an LLM session per butler. This RFC
-gives the fleet a single, zero-LLM-traversable table instead.
+## Problem
 
-This document also records the RFC's full slice plan (`Slice Plan` below).
+Entity anchors already exist in the memory catalog, but similarity and full-text search do not answer graph questions. Relationship's canonical triples are private to its schema, and memory assertions and commitments live elsewhere. Reconstructing relationships through a per-question LLM session in every butler makes a deterministic read expensive and unreliable.
 
-## Motivation
+## Decision
 
-`public.memory_catalog` already carries `entity_id` and `object_entity_id`
-columns (`core_009_memory_catalog.py`, added by `core_024`) and indexes both
-(`idx_memory_catalog_entity_id`, `idx_memory_catalog_object_entity_id`). In
-principle every fact and rule the fleet writes is already entity-anchored on
-both ends of a relationship. In practice nothing queries those columns as a
-graph — `src/butlers/modules/memory/search.py`'s catalog search functions
-(`_catalog_semantic_search`, `_catalog_keyword_search`, lines ~830-908) do
-similarity and full-text search, never traversal. `relationship.entity_facts`
-is granted to the `relationship` role alone, so no other butler can even read
-it directly.
+Use a source-owned, write-behind public projection for eligible entity-to-entity assertions. Each owning source transaction maintains its projection; recursive public graph reads provide zero-LLM traversal and eventual dossier accounting without granting readers access to canonical private schemas.
 
-The result: "what do we know about this person" has no deterministic answer
-anywhere in the fleet. The only way to assemble one today is to fan an LLM
-session out across every butler and ask each to summarize what it knows about
-an entity — the same class of cost RFC 0010 and RFC 0030 already rejected for
-simpler aggregation questions. A recursive graph walk over a purpose-built
-projection table answers it in one SQL query, with zero LLM sessions.
+The stable source natural key preserves provenance and supports repeatable historical projection. Count-only sensitivity stubs preserve honest coverage while structurally withholding predicate/object payload. Canonical requirements 001-004 and 012 carry the table, atomicity, privacy, lifecycle, recovery and substrate obligations; requirements005-011 carry traversal, registration, catalog coverage and the original dossier API/dashboard outcomes.
 
-## Design
+## Tradeoffs and Alternatives
 
-### Governing Intent
+- **Projection versus private-schema view.** A live view over Relationship, Memory and commitment sources would depend on cross-schema grants or a security-definer exception. Source-owned projection avoids that read-authority expansion, at the cost of mandatory atomic writer effects and historical recovery. A silently divergent projection cannot be trusted without re-deriving from source.
+- **Recursive SQL versus Switchboard fan-out.** Per-step MCP/LLM fan-out reintroduces session cost proportional to traversal depth. The public recursive read follows the deterministic-access principle of RFC0010/RFC0030 without adding their cross-schema read exception.
+- **Withheld stubs versus silent omission.** Dropping sensitive assertions makes coverage look complete when it is not. Stubs permit known/withheld accounting without traversable hidden content; they do not authorize disclosure of the underlying assertion.
+- **Cooperative graph DML versus centralized catalog GC.** Graph writers need DELETE for their own retraction effects. Existing shared runtime grants are an application cooperation model, not row ownership isolation or protection against a shared-login compromise. The separate catalog/central-GC grant contract remains in database-security; broad bootstrap DELETE is still an unresolved S7 rider, not an exception adopted here.
 
-[`docs/concepts/identity-model.md`](../../../docs/concepts/identity-model.md)
-remains the source of truth for entity identity and channel resolution. This
-RFC does not change that model; it adds a read surface *over* it. The
-`public.entities` row and its `relationship.entity_facts` channel triples are
-unaffected — this RFC's table records that a relationship *exists* between
-two entities, not who those entities are or how to reach them.
+No belief revision, contradiction docket, ontology unification or duplicate-predicate resolution is added. Readers do not write. Entity identity/channel resolution and existing memory-catalog anchor columns remain governed by their current contracts. The distinct entity_neighbors Google-account exclusion is not a new public graph traversal filter.
 
-### Table: `public.entity_graph_edges`
+## Observed Implementation and Remaining Obligations
 
-```sql
-CREATE TABLE public.entity_graph_edges (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+This is a source audit, not an all-clause behavioral PASS:
 
-    -- Provenance: the canonical source row this edge projects.
-    source_schema       TEXT NOT NULL,
-    source_table        TEXT NOT NULL,
-    source_id           UUID NOT NULL,
+| Original slice | Current source | Mandatory remaining outcome or proof |
+| --- | --- | --- |
+| S1: substrate | Core215 table/keys/checks/indexes/grants; core222 adds Concierge | Dedicated migrated FK/cascade/role/bootstrap/core-only/shared replay proof remains012 debt; fixtures without entity foreign keys traversal stand-ins cannot certify it. |
+| S2: writers and historical backfill | Several Memory/Relationship writers, commitment creation hook, three bounded helpers | Complete eligible writer/lifecycle inventory and historical invocation/recovery parity remain requirements 002/004 debt. Unary rules cannot receive invented anchors. Resolved commitments retain historical edges while current backfill selects open/aging only; that gap is not authority to retract history. |
+| S3: walk/path tools | Public recursive helpers, wrappers and graph-group registration | Existing cited tests cover selected SQL/control-flow seams; hard-limit and broader runtime/authority clauses require their own meaningful evidence. |
+| S4: catalog coverage | Incident known/withheld count helper and catalog response mapping | Stand-in SQL and mocked API mapping do not certify migrated handler/source-count equivalence. |
+| S5: original dossier API | No `/api/entities/{id}/dossier` handler/model found | Requirement010 remains mandatory and uncited. |
+| S6: EntityDetailPage dossier panel | Existing neighbor/activity panels, no graph dossier consumer | Requirement011 remains mandatory and uncited. |
+| S7: debt riders | Activity fixed degradation envelope exists in router/model/UI | Exact backend discriminator controls remain unverified. Catalog bootstrap/default grants still conflict with central-GC no-runtime-DELETE intent; no narrowing posture is adopted. |
 
-    -- Graph anchor. The subject is always a real entity; the object is a
-    -- real entity only for a live (non-withheld) edge.
-    subject_entity_id   UUID NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
-    predicate           TEXT,
-    object_entity_id    UUID REFERENCES public.entities(id) ON DELETE CASCADE,
+The existing feature terminal is `bu-8cdl1.8`, still open under its existing coordinator. The [source-transfer design](../../../openspec/changes/archive/2026-10-05-document-rfc0031-entity-graph/design.md) retains the clause/test limits and bounded residual foundation, dossier-flow and debt-rider allocations. These are followup proposals, not new feature terminals or ownership transfers.
 
-    -- Sensitivity tier of the originating fact (reuses the memory-catalog
-    -- vocabulary). Recorded on every row, live or withheld.
-    sensitivity         TEXT NOT NULL DEFAULT 'normal'
-        CHECK (sensitivity IN ('normal', 'pii', 'confidential')),
+## Governing Neighbors
 
-    -- NULL for a live edge. 'sensitivity' marks a count-only stub.
-    withheld_reason     TEXT CHECK (withheld_reason IN ('sensitivity')),
-
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-
-    CONSTRAINT uq_entity_graph_edges_source
-        UNIQUE (source_schema, source_table, source_id),
-
-    CONSTRAINT chk_entity_graph_edges_payload_xor_withheld CHECK (
-        (withheld_reason IS NULL AND predicate IS NOT NULL AND object_entity_id IS NOT NULL)
-        OR
-        (withheld_reason IS NOT NULL AND predicate IS NULL AND object_entity_id IS NULL)
-    )
-);
-```
-
-Landed in `alembic/versions/core/core_215_entity_graph_edges.py`.
-
-### Why A Projection, Not A Live View
-
-`relationship.entity_facts` alone cannot serve as the graph: it is
-schema-isolated to the `relationship` role (per-schema PostgreSQL role
-isolation, RFC 0006), and it is only one of three sources — memory facts/rules
-and commitments also produce entity-to-entity relationships that never touch
-`relationship.entity_facts` at all. A `public`-schema table populated by
-write-behind projection, one per source table, is the only shape that unifies
-all three without a cross-schema `SELECT` grant on each butler's private
-tables (which the fleet's schema-isolation model, RFC 0006, forecloses) or a
-Switchboard MCP fan-out per traversal step (which reintroduces the
-per-question LLM cost this RFC exists to remove).
-
-### Write-Behind Contract
-
-**The projection write MUST happen in the same transaction as the source
-fact write.** A writer that inserts, retracts, or deletes a source row (a
-`relationship.entity_facts` triple, a memory fact/rule, a commitment) issues
-the matching `INSERT ... ON CONFLICT (source_schema, source_table, source_id)
-DO UPDATE` (or `DELETE`) against `public.entity_graph_edges` inside that same
-database transaction. If the projection write fails, the transaction rolls
-back and the source write never commits. This is the one non-negotiable
-invariant: the graph must never be able to silently diverge from the fact
-store it projects, because a caller that trusts a stale or missing edge has
-no way to detect the gap without re-deriving from source — which is the exact
-cost this table exists to avoid paying per query.
-
-`(source_schema, source_table, source_id)` is a stable natural key ("this
-specific row in this specific table"), which is also what makes backfill
-idempotent: a backfill job can re-run `INSERT ... ON CONFLICT ... DO UPDATE`
-over every existing source row with no risk of duplicating an edge that a
-live writer already projected.
-
-### Withheld Stub Edges
-
-Some source facts are excluded from the graph projection outright because
-their sensitivity exceeds what the projection is willing to persist as a
-traversable, content-bearing edge (independent of whatever read-time
-sensitivity ceiling a caller might additionally be subject to). Dropping
-those facts silently would make graph coverage dishonest: a caller counting
-"how many relationships does this entity have" would get a number smaller
-than the true source count, with no signal that anything was omitted.
-
-Instead, the writer inserts a **withheld stub**: `subject_entity_id` and
-`sensitivity` are recorded, but `predicate` and `object_entity_id` are left
-NULL and `withheld_reason = 'sensitivity'`. The
-`chk_entity_graph_edges_payload_xor_withheld` constraint makes "a withheld
-row carries no payload" a schema-enforced fact rather than a per-writer
-convention — no future writer bug can accidentally leak content through a
-withheld row, because the columns that would carry it are structurally
-unpopulatable whenever `withheld_reason` is set. A coverage statement (see
-Slice Plan, S5) can then report "N relationships known, M withheld for
-sensitivity" honestly, without ever exposing what the M withheld relationships
-are.
-
-### Traversal Shape (Slice 3)
-
-Both core tools (`entity_graph_walk`, `entity_graph_path`) are plain
-recursive CTEs over `subject_entity_id` / `object_entity_id`, filtered to
-`withheld_reason IS NULL` (a withheld stub has no `object_entity_id` to
-traverse through) and depth-capped to bound worst-case fan-out. Neither tool
-involves an LLM call; the "zero-LLM" property is what makes per-question
-traversal cheap enough to expose directly instead of needing a batch
-precompute (contrast RFC 0010/0030, which exist because their underlying
-aggregation was expensive enough to need one).
-
-### Non-Goals
-
-No belief revision, contradiction docket, or ontology unification. This
-table projects "a relationship was asserted between these two entities by
-this source row" — it does not resolve conflicting predicates, merge
-duplicate relationship types across sources, or attempt any RDF-style
-ontology normalization. Those are separate, larger problems this RFC
-deliberately does not take on.
-
-No writes from readers. Every write to `public.entity_graph_edges` is a
-write-behind projection triggered by a write to its source table. No tool
-this RFC defines (or any future traversal/dossier tool) writes to this table
-directly.
-
-## Slice Plan
-
-- **S1 (`core_215_entity_graph_edges.py`):** substrate
-  table, indexes, grants.
-- **S2:** write-behind writers in memory storage, `relationship`
-  `assert_fact`, and commitments, plus the idempotent backfill job over
-  existing source rows.
-- **S3:** zero-LLM `entity_graph_walk` / `entity_graph_path` core
-  tools (recursive CTE), added to a new `graph` core tool group.
-- **S4:** entity catalog read integration — surfacing graph
-  coverage alongside existing catalog search results.
-- **S5:** `/api/entities/{id}/dossier` — per-source receipts plus a
-  coverage statement (`N relationships known, M withheld for sensitivity`,
-  counts drawn from this table, never fabricated).
-- **S6:** dashboard surface — an `EntityDetailPage` dossier panel
-  consuming S5's API.
-- **S7 (debt riders):** fixes the `init-db.sql:376-379` DELETE grant
-  contradiction and the degraded-envelope gap for entity activity, both
-  discovered during this epic's evidence-gathering but out of scope for the
-  graph substrate itself.
-
-## Grant Model
-
-All butler roles with a memory/relationship/commitments write surface
-receive `SELECT, INSERT, UPDATE, DELETE` on `public.entity_graph_edges`
-(`core_215_entity_graph_edges.py`; the role list mirrors
-`core_210_expected_signals.py`'s `_ALL_BUTLER_ROLES`). This differs
-deliberately from `public.memory_catalog`'s grant model, which withholds
-`DELETE` because catalog garbage collection is centralized. Here, each edge
-is 1:1 owned by the writer that projected it from its own source row: the
-same transaction that retracts or deletes a source fact must be able to
-retract or delete the edge it produced, or the write-behind invariant above
-is unenforceable. There is no centralized GC step for this table.
-
-## Integration
-
-- **RFC 0004 / `docs/concepts/identity-model.md`:** This table adds a read
-  surface over the existing entity anchor; it does not change entity
-  resolution, channel handling, or the owner-entity carve-out.
-- **RFC 0006:** `public.entity_graph_edges` follows the same
-  `public`-schema, per-role-grant pattern as `public.entities` and
-  `public.memory_catalog` — a shared table with narrow, explicit grants
-  rather than a cross-schema `SELECT` exception.
-- **`public.memory_catalog` (`core_009`/`core_024`):** The `entity_id` /
-  `object_entity_id` columns that motivated this RFC remain in place and
-  unchanged; this table does not replace or migrate them; a future slice
-  (S4) integrates catalog search results with graph coverage, not the
-  other way around.
-- **RFC 0010 / RFC 0030:** Same underlying principle — deterministic,
-  zero-LLM data access beats per-question LLM fan-out — applied to
-  entity-graph traversal instead of aggregate telemetry. Unlike RFC 0010/0030,
-  no cross-schema read exception is needed here: the projection table itself
-  lives in `public`, so ordinary per-role grants suffice.
-
-## Alternatives Considered
-
-**Cross-schema `SELECT` grant on `relationship.entity_facts` for every
-butler.** Rejected: only covers one of the three source stores (misses
-memory facts/rules and commitments entirely), and widens
-`relationship`-schema read access fleet-wide for a table that also carries
-other relationship data not meant for general consumption.
-
-**Switchboard MCP fan-out per traversal step.** Rejected for the same reason
-RFC 0010 rejected it for briefing aggregation: an N-hop walk would cost up to
-N LLM sessions instead of one deterministic recursive query.
-
-**Silently dropping sensitivity-excluded facts instead of writing a withheld
-stub.** Rejected: makes coverage counts dishonest — a caller has no way to
-distinguish "this entity truly has no more relationships" from "some were
-hidden" without an explicit accounting row.
-
-**A live view over the three source tables instead of a projection.**
-Rejected: the sources live in different schemas under different role
-grants, so a `public`-schema view would either need `SECURITY DEFINER`
-(the same trust-widening problem RFC 0010's guardrails exist to avoid) or
-would fail on unauthorized-role reads of the underlying tables. A
-write-behind projection sidesteps the cross-schema read problem entirely by
-having each source's own role write into a table it already has a grant on.
+- [Identity model](../../../docs/concepts/identity-model.md), RFC0004 and [entity-identity](../../../openspec/specs/entity-identity/spec.md) retain shared entity identity, channel resolution and the owner carve-out.
+- RFC0002/[core-daemon](../../../openspec/specs/core-daemon/spec.md) and the existing runtime tool-discovery source retain graph-group registration authority.
+- RFC0006/[database-security](../../../openspec/specs/database-security/spec.md) retain schema/role and catalog write authority. The active public-write audit is proposal-only; no per-table narrowing is inferred.
+- [Memory catalog schema](../../../openspec/specs/memory-catalog-schema/spec.md) and its read-authority contracts retain entity anchors and canonical-content custody.
+- [Dashboard Relationship](../../../openspec/specs/dashboard-relationship/spec.md) owns the existing activity degradation envelope. The active Chronicles/commitment-door proposal excludes graph consumption and is not the dossier outcome.
+- Relationship assertion lifecycle/effective-time source remains unchanged; graph work neither adopts a temporal cutover nor narrows active assertions to effective-now.

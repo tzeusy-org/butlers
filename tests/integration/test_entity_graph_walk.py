@@ -106,6 +106,7 @@ async def _withheld_edge(pool: asyncpg.Pool, *, subject: uuid.UUID) -> None:
 
 
 class TestEntityGraphWalk:
+    # REQ-entity-graph-009: public graph read seam only; broader reader boundary remains uncovered.
     async def test_direct_neighbor_at_hop_one(self, pool: asyncpg.Pool) -> None:
         a, b = _uuid(), _uuid()
         await _live_edge(pool, subject=a, predicate="knows", obj=b)
@@ -123,6 +124,7 @@ class TestEntityGraphWalk:
             }
         ]
 
+    # REQ-entity-graph-005: bounded traversal or wrapper-filter assertions only.
     async def test_multi_hop_reports_nearest_hop(self, pool: asyncpg.Pool) -> None:
         a, b, c = _uuid(), _uuid(), _uuid()
         await _live_edge(pool, subject=a, predicate="knows", obj=b)
@@ -170,6 +172,7 @@ class TestEntityGraphWalk:
 
         assert {r["entity_id"] for r in rows} == {c}
 
+    # REQ-entity-graph-003: sensitivity shape or withheld traversal assertions only.
     async def test_withheld_edges_are_never_traversed(self, pool: asyncpg.Pool) -> None:
         a = _uuid()
         await _withheld_edge(pool, subject=a)
@@ -178,6 +181,7 @@ class TestEntityGraphWalk:
 
         assert rows == []
 
+    # REQ-entity-graph-005: bounded traversal or wrapper-filter assertions only.
     async def test_cycle_does_not_hang_or_revisit_start(self, pool: asyncpg.Pool) -> None:
         a, b = _uuid(), _uuid()
         await _live_edge(pool, subject=a, predicate="knows", obj=b)
@@ -190,6 +194,7 @@ class TestEntityGraphWalk:
     async def test_no_edges_returns_empty_list(self, pool: asyncpg.Pool) -> None:
         assert await walk_entity_graph(pool, entity_id=_uuid()) == []
 
+    # REQ-entity-graph-005: bounded traversal or wrapper-filter assertions only.
     async def test_truncation_keeps_nearest_hop_entities_over_farther_ones(
         self, pool: asyncpg.Pool
     ) -> None:
@@ -221,6 +226,7 @@ class TestEntityGraphWalk:
 
 
 class TestEntityGraphPath:
+    # REQ-entity-graph-006: ordered/missing/zero-hop path or wrapper receipt assertions only.
     async def test_finds_shortest_path_in_order(self, pool: asyncpg.Pool) -> None:
         a, b, c = _uuid(), _uuid(), _uuid()
         await _live_edge(pool, subject=a, predicate="knows", obj=b)
@@ -239,6 +245,7 @@ class TestEntityGraphPath:
 
         assert await find_entity_graph_path(pool, from_entity_id=a, to_entity_id=b) is None
 
+    # REQ-entity-graph-006: ordered/missing/zero-hop path or wrapper receipt assertions only.
     async def test_returns_none_when_beyond_max_hops(self, pool: asyncpg.Pool) -> None:
         a, b, c = _uuid(), _uuid(), _uuid()
         await _live_edge(pool, subject=a, predicate="knows", obj=b)
@@ -248,6 +255,7 @@ class TestEntityGraphPath:
             await find_entity_graph_path(pool, from_entity_id=a, to_entity_id=c, max_hops=1) is None
         )
 
+    # REQ-entity-graph-006: ordered/missing/zero-hop path or wrapper receipt assertions only.
     async def test_same_entity_returns_empty_path(self, pool: asyncpg.Pool) -> None:
         a = _uuid()
 
@@ -267,6 +275,7 @@ class TestEntityGraphPath:
 class TestCoverageForEntities:
     """RFC 0031 Slice 4: batch relationship counts for catalog-search integration."""
 
+    # REQ-entity-graph-008: incident count helper or mocked HTTP coverage mapping only.
     async def test_counts_edges_on_both_subject_and_object_side(self, pool: asyncpg.Pool) -> None:
         a, b, c = _uuid(), _uuid(), _uuid()
         await _live_edge(pool, subject=a, predicate="knows", obj=b)
@@ -276,6 +285,7 @@ class TestCoverageForEntities:
 
         assert coverage == {a: (2, 0)}
 
+    # REQ-entity-graph-008: incident count helper or mocked HTTP coverage mapping only.
     async def test_withheld_edge_counts_separately_from_live(self, pool: asyncpg.Pool) -> None:
         a, b = _uuid(), _uuid()
         await _live_edge(pool, subject=a, predicate="knows", obj=b)
