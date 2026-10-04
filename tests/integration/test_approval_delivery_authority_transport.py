@@ -58,6 +58,7 @@ from butlers.testing.migration import (
     migration_bootstrap_db_url,
     migration_db_name,
 )
+from butlers.tools.switchboard.notification.deliver import _uuid7_string
 
 pytestmark = [
     pytest.mark.integration,
@@ -289,13 +290,17 @@ async def _claimed_presentation(pool, *, ordinal, cohort=False):
 
 @asynccontextmanager
 async def _ordinary_tcp_mcp(registered):
-    """Actual public HTTP listener with no approval peer principal installed."""
+    """Test-only ordinary TCP request/reply listener, without approval authority.
+
+    JSON avoids process-global SSE drain across repeated synthetic listeners;
+    this does not change the generic daemon's public transport configuration.
+    """
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
     listener.listen(8)
     server = uvicorn.Server(
         uvicorn.Config(
-            registered.http_app(path="/mcp", stateless_http=True),
+            registered.http_app(path="/mcp", stateless_http=True, json_response=True),
             access_log=False,
             log_level="warning",
             timeout_graceful_shutdown=2,
@@ -309,8 +314,9 @@ async def _ordinary_tcp_mcp(registered):
                     await task
                     pytest.fail("public synthetic MCP did not start")
                 await asyncio.sleep(0.01)
-        async with Client(f"http://127.0.0.1:{listener.getsockname()[1]}/mcp") as client:
-            yield client
+        async with asyncio.timeout(10):
+            async with Client(f"http://127.0.0.1:{listener.getsockname()[1]}/mcp") as client:
+                yield client
     finally:
         server.should_exit = True
         try:
@@ -407,7 +413,7 @@ async def test_registered_source_authority_transport(authority_pools, case, capl
             messenger_registry_url=_MESSENGER_URL,
             socket_directory=sockets,
         )
-        async with topology:
+        async with asyncio.timeout(45), topology:
             runtime = topology.runtime(
                 "relationship",
                 resolve_owner_recipient=lambda: asyncio.sleep(0, result=_RECIPIENT),
@@ -448,7 +454,7 @@ async def test_registered_source_authority_transport(authority_pools, case, capl
                 route_args = {
                     "schema_version": "route.v1",
                     "request_context": {
-                        "request_id": str(uuid.uuid4()),
+                        "request_id": _uuid7_string(),
                         "received_at": datetime.now(UTC).isoformat(),
                         "source_channel": "mcp",
                         "source_endpoint_identity": "switchboard",

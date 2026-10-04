@@ -45,6 +45,7 @@ _PRINCIPAL_SCOPE = "butlers.approval_peer"
 _SWITCHBOARD_AUDIENCE = "switchboard:approval-recovery"
 _MESSENGER_AUDIENCE = "messenger:approval-recovery"
 _REFUSAL = "Approval recovery authority rejected."
+_CALL_TIMEOUT_SECONDS = 10.0
 
 
 def guard_registered_approval_tool(
@@ -142,7 +143,10 @@ class ProtectedApprovalMCP:
             raise RecoveryAuthorityError(_REFUSAL)
         expected_pid = os.getpid()
         principal = _PeerPrincipal(self._issuer, self._audience, self._epoch, lambda: self._active)
-        application = self._mcp.http_app(path="/mcp", stateless_http=True)
+        # These deterministic request/reply companions need no SSE stream.
+        # SSE-Starlette drain state is process-global; closing one cohosted
+        # listener must not stall another companion's later initialization.
+        application = self._mcp.http_app(path="/mcp", stateless_http=True, json_response=True)
 
         async def admitted_app(scope: dict, receive: Any, send: Any) -> None:
             if scope["type"] == "http":
@@ -251,8 +255,14 @@ class ProtectedApprovalMCP:
             headers={_PROOF_HEADER: proof} if proof is not None else {},
             httpx_client_factory=client_factory,
         )
-        async with Client(transport) as client:
-            result = await client.call_tool(tool, arguments)
+        try:
+            # Include initialization and client teardown, not only tool-call
+            # read timeout. No reply may leave a recovery worker waiting forever.
+            async with asyncio.timeout(_CALL_TIMEOUT_SECONDS):
+                async with Client(transport) as client:
+                    result = await client.call_tool(tool, arguments)
+        except TimeoutError:
+            raise RecoveryAuthorityError(_REFUSAL) from None
         if not isinstance(result.data, dict):
             raise RecoveryAuthorityError(_REFUSAL)
         return result.data

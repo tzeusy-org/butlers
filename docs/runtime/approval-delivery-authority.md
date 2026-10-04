@@ -86,6 +86,14 @@ returns a dormant `ApprovalRecoveryRuntime` with the protected dispatch; it
 does not attach it to a daemon. Normal daemon startup does not construct this
 topology. Operational activation and its canary remain separate rollout gates.
 
+Approval companions use stateless JSON request/reply responses, with no SSE
+stream or dependency on process-global SSE drain state. Each client call has
+a ten-second deadline covering initialization, tool reply and client teardown;
+a missing reply fails closed without granting a retry or speculative resend.
+Fresh or reused registered objects can form a new topology after the prior
+listeners close. The ordinary TCP listener in the synthetic harness also uses
+JSON and a deadline; generic public daemon transport is unchanged.
+
 Closing the topology retires its admissions, clears only its own module
 bindings, fences existing connections, closes listeners/descriptors and
 removes only socket paths with the inode it created. Setup failure follows the
@@ -101,7 +109,11 @@ generic registration proxies, positive admitted action/cohort controls, adversar
 and PID checks, ordinary TCP compatibility, tuple deduplication and post-start
 uncertainty. It never injects `get_access_token` or trusted source DTOs as
 authority. Its PostgreSQL cases require actual execution; collection or a
-Docker setup failure provides no behavior evidence.
+Docker setup failure provides no behavior evidence. Each registered transport
+case has a 45-second deadline so missing initialization/replies fail visibly.
+The existing kernel-peer node also repeats fresh/reused three-companion
+lifecycles and checks an actual nonreplying handler's call deadline; that
+PostgreSQL-free scope proves liveness, not source admission or ledger behavior.
 
 The nearest core, daemon and Switchboard registration files own unsupported
 platform and early refusal checks. The planted recovery/privacy test in
