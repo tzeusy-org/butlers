@@ -59,6 +59,9 @@ OBLIGATIONS = (
     "pre_request_budget_reservation",
     "hard_spend_cap",
 )
+INSTALLED_CASES = tuple((case, "exec_command") for case in CASES if case != "native_tool") + tuple(
+    ("native_tool", name) for name in ("shell", "exec_command", "web_search", "apply_patch")
+)
 REF = {"storage_ref": "s3://synthetic/synthetic-session/synthetic-source.png"}
 MAX_BYTES = 131072
 
@@ -70,7 +73,8 @@ class Rejected(Exception):
 class Admission:
     """Independently executable fences for the mock provider and attachment server."""
 
-    def __init__(self, request_cap=2, turn_cap=2):
+    def __init__(self, request_cap=2, turn_cap=2, allow_repeat_attachment=False):
+        self.allow_repeat_attachment = allow_repeat_attachment
         self.request_cap = request_cap
         self.turn_cap = turn_cap
         self.requests = 0
@@ -102,58 +106,13 @@ class Admission:
             raise Rejected("native_tool")
         if arguments != REF:
             raise Rejected("wrong_ref")
-        if self.calls:
+        if self.calls and not self.allow_repeat_attachment:
             raise Rejected("extra_mcp")
         self.calls += 1
 
     def output(self, size):
         if size > MAX_BYTES:
             raise Rejected("oversize_output")
-
-
-def exercise_control(case):
-    """Plant each violation alone; success requires the exact image exchange shape."""
-    guard = Admission(turn_cap=1 if case == "turn_cap" else 2)
-    reason = case
-    try:
-        if case == "preflight":
-            guard.request("first", 1, path="/models")
-        elif case == "retry":
-            guard.request("first", 1, retry=True)
-        elif case == "oversize_input":
-            guard.request("first", MAX_BYTES + 1)
-        elif case == "partial_replay":
-            guard.request("first", 1)
-            guard.request("first", 1, partial=True)
-        else:
-            guard.request("first", 1)
-            guard.attachment(
-                "shell" if case == "native_tool" else "attachment_view",
-                {**REF, "source": "foreign"} if case == "wrong_ref" else REF,
-            )
-            if case == "extra_mcp":
-                guard.attachment("attachment_view", REF)
-            guard.request("second", 1)
-            if case == "request_cap":
-                guard.request("third", 1)
-            guard.output(MAX_BYTES + 1 if case == "oversize_output" else 1)
-            if case == "persistence":
-                raise Rejected("persistence")
-            guard.effects = 1
-    except Rejected as exc:
-        assert str(exc) == case
-        disposition = "unsupported"
-    else:
-        assert case == "positive"
-        disposition = "supported"
-    return {
-        "disposition": disposition,
-        "reason": reason,
-        "provider_requests": guard.requests,
-        "model_turns": guard.turns,
-        "attachment_calls": guard.calls,
-        "effects": guard.effects,
-    }
 
 
 def _png(comparator):
@@ -257,6 +216,9 @@ class MockProvider(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         state = self.server
         length = int(self.headers.get("Content-Length", "0"))
+        if self.path not in {"/attachment", "/mcp_observed"}:
+            state.input_sizes.append(length)
+            state.attempts += 1
         if length > MAX_BYTES:
             state.denials.append("oversize_input")
             self._reply(413, b'{"error":"denied"}')
@@ -286,7 +248,6 @@ class MockProvider(http.server.BaseHTTPRequestHandler):
                     ).encode(),
                 )
                 return
-            state.attempts += 1
             if state.case == "retry" and state.attempts > 1:
                 raise Rejected("retry")
             if state.case == "partial_replay" and state.attempts > 1:
@@ -324,17 +285,26 @@ class MockProvider(http.server.BaseHTTPRequestHandler):
                 if nested.get("name", "").endswith("attachment_view"):
                     name = nested["name"]
                     namespace = tool.get("name")
-        first = state.guard.requests == 1 or state.case == "extra_mcp"
+        first = state.guard.requests == 1 or state.case in {"extra_mcp", "request_cap", "turn_cap"}
         arguments = {"storage_ref": "s3://foreign/wrong.png"} if state.case == "wrong_ref" else REF
         if state.case == "native_tool":
             name, namespace = state.native_name, None
+            for tool in tools:
+                for nested in tool.get("tools", []):
+                    if nested.get("name") == name:
+                        namespace = tool.get("name")
             arguments = {
                 "command": "touch /tmp/native-effect",
                 "cmd": "touch /tmp/native-effect",
-                "input": "synthetic",
+                "input": "*** Begin Patch\n*** Add File: /tmp/native-effect\n+synthetic\n*** End Patch"
+                if state.native_name == "apply_patch"
+                else "synthetic",
+                "search_query": [{"q": "synthetic"}],
             }
-            first = True
-        if not first:
+            first = state.guard.requests == 1
+        if first:
+            state.injected_calls += 1
+        else:
             # The image must travel through the installed CLI into request two.
             state.image_delivered = state.image in raw.decode()
         if self.path.endswith("/responses"):
@@ -453,7 +423,13 @@ class MockProvider(http.server.BaseHTTPRequestHandler):
                     ]
                 }
                 if first
-                else {"content": state.comparator if state.image_delivered else "NO_IMAGE"}
+                else {
+                    "content": "x" * (MAX_BYTES + 1)
+                    if state.case == "oversize_output"
+                    else state.comparator
+                    if state.image_delivered
+                    else "NO_IMAGE"
+                }
             )
             chunk = {
                 "id": "chat_1",
@@ -473,7 +449,7 @@ class MockProvider(http.server.BaseHTTPRequestHandler):
 
 def _proof():
     interfaces = [name for _, name in socket.if_nameindex()]
-    if interfaces != ["lo"] or pathlib.Path("/home/orca").exists():
+    if interfaces != ["lo"] or pathlib.Path("/home").exists():
         raise Rejected("isolation_unavailable")
     for family, address in [
         (socket.AF_INET, ("192.0.2.1", 443)),
@@ -486,7 +462,7 @@ def _proof():
     return {"interfaces": interfaces, "external_connect": "unreachable", "host_mount": "absent"}
 
 
-def _profile(candidate, port):
+def _profile(candidate, port, case="positive"):
     root = pathlib.Path(tempfile.mkdtemp(dir="/tmp"))
     home = root / "home"
     home.mkdir()
@@ -580,10 +556,22 @@ def _profile(candidate, port):
         env["OPENCODE_CONFIG"] = str(path)
         env["OPENCODE_DISABLE_AUTOUPDATE"] = "true"
         args = ["run", "--standalone", "--format", "json", "--model", "mock/diagnostic", prompt]
-    return args, env, hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
+    input_data = None
+    if case == "oversize_input":
+        input_data = (prompt + "x" * (MAX_BYTES + 1)).encode()
+        if candidate == "codex":
+            args[-1] = "-"
+        else:
+            args.pop()  # OpenCode consumes the synthetic stdin prompt.
+    return (
+        args,
+        env,
+        hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest(),
+        input_data,
+    )
 
 
-def _bounded_output(process):
+def _bounded_output(process, input_data=None):
     buffers = [bytearray(), bytearray()]
     exceeded = threading.Event()
 
@@ -605,6 +593,16 @@ def _bounded_output(process):
     ]
     for thread in threads:
         thread.start()
+    if input_data is not None:
+
+        def feed():
+            try:
+                process.stdin.write(input_data)
+                process.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
+
+        threading.Thread(target=feed, daemon=True).start()
     timed_out = False
     try:
         process.wait(timeout=6)
@@ -619,11 +617,11 @@ def _bounded_output(process):
 
 
 def _fence_descendants():
-    # /proc was mounted AFTER unshare-pid. The supervisor is namespace PID1;
-    # every other process is disposable, including descendants that use setsid.
+    # /proc was mounted AFTER unshare-pid. Bubblewrap owns namespace PID1;
+    # fence candidate descendants, including children that use setsid.
     own = os.getpid()
     for entry in pathlib.Path("/proc").iterdir():
-        if entry.name.isdecimal() and int(entry.name) != own:
+        if entry.name.isdecimal() and int(entry.name) not in {1, own}:
             try:
                 os.kill(int(entry.name), signal.SIGKILL)
             except ProcessLookupError:
@@ -651,16 +649,27 @@ def _persisted(comparator, root):
     return False
 
 
+def _progress(stage, launched):
+    print(json.dumps({"stage": stage, "launched": launched}), file=sys.stderr, flush=True)
+
+
 def _supervise(candidate, case="positive", native_name="exec_command"):
+    _progress("proof", False)
     proof = _proof()  # MUST precede even --version, in this same network/mount domain.
     state = http.server.ThreadingHTTPServer(("127.0.0.1", 0), MockProvider)
     state.guard = Admission(
-        request_cap=1 if case == "request_cap" else 2, turn_cap=1 if case == "turn_cap" else 2
+        request_cap=3 if case in {"turn_cap", "extra_mcp"} else 2,
+        turn_cap=3 if case == "extra_mcp" else 2,
+        # Caps are tested alone; attachment cap is independently exercised elsewhere.
+        allow_repeat_attachment=case in {"request_cap", "turn_cap"},
     )
     state.case = case
     state.native_name = native_name
     state.attempts = 0
     state.attachment_attempts = 0
+    state.preflight_attempts = 0
+    state.input_sizes = []
+    state.injected_calls = 0
     state.comparator = secrets.token_hex(8)
     state.image = base64.b64encode(_png(state.comparator)).decode()
     state.image_delivered = False
@@ -669,7 +678,9 @@ def _supervise(candidate, case="positive", native_name="exec_command"):
     state.mcp_methods = []
     thread = threading.Thread(target=state.serve_forever, daemon=True)
     thread.start()
-    args, env, config_digest = _profile(candidate, state.server_port)
+    _progress("bootstrap", False)
+    args, env, config_digest, input_data = _profile(candidate, state.server_port, case)
+    _progress("candidate_launch", None)
     version = (
         subprocess.run(
             ["/candidate", "--version"],
@@ -681,22 +692,31 @@ def _supervise(candidate, case="positive", native_name="exec_command"):
         .stdout.decode()
         .strip()
     )
+    _progress("candidate_version", True)
+    _progress("candidate_launch", True)
     process = subprocess.Popen(
         ["/candidate", *args],
         env=env,
         cwd=str(pathlib.Path(env["HOME"]).parent / "work"),
-        stdin=subprocess.DEVNULL,
+        stdin=subprocess.PIPE if input_data is not None else subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         start_new_session=True,
     )
-    stdout, stderr, timed_out, output_exceeded = _bounded_output(process)
+    _progress("candidate_execution", True)
+    stdout, stderr, timed_out, output_exceeded = _bounded_output(process, input_data)
+    _progress("cleanup", True)
     _fence_descendants()
     state.shutdown()
-    if case == "persistence":
-        # Positive companion for the scanner: a planted challenge must be found.
-        pathlib.Path(env["HOME"], "synthetic-canary").write_bytes(state.comparator.encode())
-    persisted = _persisted(state.comparator.encode(), pathlib.Path("/tmp"))
+    # Scanner positive companion is independent of candidate persistence evidence.
+    planted = pathlib.Path(env["HOME"], "synthetic-canary")
+    planted.write_bytes(state.comparator.encode())
+    scanner_control = _persisted(state.comparator.encode(), pathlib.Path("/tmp"))
+    planted.unlink()
+    persisted = any(
+        _persisted(pattern, pathlib.Path("/tmp"))
+        for pattern in (state.comparator.encode(), state.image.encode(), _png(state.comparator))
+    )
     positive = (
         process.returncode == 0
         and not timed_out
@@ -718,15 +738,42 @@ def _supervise(candidate, case="positive", native_name="exec_command"):
         ephemeral_context="supported",
         positive_image_chain="supported" if positive else "unsupported",
     )
-    return {
+    _progress("receipt", True)
+    receipt = {
+        "measurement": "unknown" if timed_out else "completed",
+        "failure_stage": "candidate_execution" if timed_out else None,
         "candidate": candidate,
         "version": version,
         "config_digest": config_digest,
+        "profile_digest": hashlib.sha256(
+            json.dumps(
+                {
+                    "args": args,
+                    "env": env,
+                    "stdin_digest": hashlib.sha256(input_data).hexdigest()
+                    if input_data is not None
+                    else None,
+                },
+                sort_keys=True,
+            ).encode()
+        ).hexdigest(),
         "launched": True,
         "isolation": "supported",
         "namespace_proof": proof,
-        "eligibility": "unsupported",
+        "eligibility": "unknown" if timed_out else "unsupported",
         "obligations": obligations,
+        "limits": {
+            "request_cap": state.guard.request_cap,
+            "turn_cap": state.guard.turn_cap,
+            "attachment_cap": 2 if state.guard.allow_repeat_attachment else 1,
+            "input_bytes": MAX_BYTES,
+            "output_bytes_per_stream": MAX_BYTES,
+        },
+        "capture_digests": {
+            "stdout": hashlib.sha256(stdout).hexdigest(),
+            "stderr": hashlib.sha256(stderr).hexdigest(),
+        },
+        "returncode": process.returncode,
         "positive": {
             "disposition": "supported" if positive else "unsupported",
             "provider_requests": state.guard.requests,
@@ -737,16 +784,111 @@ def _supervise(candidate, case="positive", native_name="exec_command"):
             "termination": "timeout" if timed_out else "exit",
             "native_tool_count": sum(not n.endswith("attachment_view") for n in tool_names),
         },
-        "reason": "bounded_mock_only" if positive else "positive_chain_unavailable",
+        "reason": "bounded_mock_only" if positive else "measured_candidate_limitation",
         "control": case,
         "provider_attempts": state.attempts,
         "attachment_attempts": state.attachment_attempts,
         "denials": sorted(set(state.denials)),
         "output_exceeded": output_exceeded,
         "native_effect": pathlib.Path("/tmp/native-effect").exists(),
-        "mock_controls": [exercise_control(control) for control in CASES],
+        "injected_calls": state.injected_calls,
+        "preflight_attempts": state.preflight_attempts,
+        "input_exceeded": any(size > MAX_BYTES for size in state.input_sizes),
+        "scanner_positive_control": scanner_control,
+        "native_variant": native_name if case == "native_tool" else None,
+        "artifact_digest": hashlib.sha256(_png(state.comparator)).hexdigest(),
         "cleanup": "complete",
     }
+    receipt["control_result"] = _control_result(receipt)
+    return receipt
+
+
+def _control_result(receipt):
+    case = receipt["control"]
+    denials = set(receipt["denials"])
+    expected = case
+    exercised = {
+        "positive": receipt["positive"]["image_delivery"],
+        "request_cap": receipt["provider_attempts"] > 2,
+        "turn_cap": receipt["provider_attempts"] > 2,
+        "retry": receipt["provider_attempts"] > 0,
+        "preflight": "preflight" in denials,
+        "native_tool": receipt["injected_calls"] > 0,
+        "extra_mcp": receipt["attachment_attempts"] > 1,
+        "wrong_ref": receipt["attachment_attempts"] > 0,
+        "oversize_input": receipt["input_exceeded"],
+        "oversize_output": receipt["output_exceeded"],
+        "partial_replay": receipt["provider_attempts"] > 1,
+        "persistence": receipt["positive"]["image_delivery"],
+    }[case]
+    interference = sorted(denials - {expected})
+    if case == "positive":
+        demonstrated = receipt["positive"]["disposition"] == "supported"
+    elif case == "retry":
+        demonstrated = exercised and receipt["provider_attempts"] == 1
+    elif case == "partial_replay":
+        # A truncated response that was never replayed cannot prove replay denial.
+        demonstrated = exercised and expected in denials
+    elif case == "native_tool":
+        # Advertised tools alone and lack of an effect do not establish denial.
+        demonstrated = "native_tool" in denials and not receipt["native_effect"]
+    elif case == "oversize_output":
+        demonstrated = receipt["output_exceeded"]
+    elif case == "persistence":
+        demonstrated = exercised and not receipt["positive"]["persisted"]
+    else:
+        demonstrated = exercised and expected in denials
+    status = (
+        "demonstrated"
+        if demonstrated and not interference
+        else "violation_observed"
+        if exercised
+        else "not_exercised"
+    )
+    return {
+        "status": status,
+        "exercised": exercised,
+        "interference": interference,
+        "disposition": "supported" if status == "demonstrated" else "unsupported",
+        "scope": "synthetic_transport_only",
+        "completion": "complete" if status == "demonstrated" else "incomplete",
+        "reason": "independent_observation"
+        if status == "demonstrated"
+        else "required_chain_not_reached"
+        if status == "not_exercised"
+        else "candidate_control_not_proven",
+    }
+
+
+def measure_candidate(candidate):
+    return [run_installed(candidate, case, native) for case, native in INSTALLED_CASES]
+
+
+def write_evidence(candidate, receipts):
+    """Retain digested sanitized receipts tied to the exact source tree."""
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    clean = subprocess.run(["git", "diff", "--quiet", "HEAD"]).returncode == 0
+    envelope = {
+        "source_head": head,
+        "source_clean": clean,
+        "candidate": candidate,
+        "measurement": "completed"
+        if all(r["measurement"] == "completed" for r in receipts)
+        else "incomplete",
+        "executor_eligibility": "unsupported",
+        "controls_complete": all(
+            r.get("control_result", {}).get("completion") == "complete" for r in receipts
+        ),
+        "receipts": receipts,
+    }
+    root = pathlib.Path(".tmp/diagnostic-feasibility") / head
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / (candidate + ".json")
+    path.write_text(json.dumps(envelope, sort_keys=True, indent=2) + "\n")
+    path.with_suffix(".sha256").write_text(hashlib.sha256(path.read_bytes()).hexdigest() + "\n")
+    return path
 
 
 def run_installed(candidate, case="positive", native_name="exec_command"):
@@ -757,10 +899,13 @@ def run_installed(candidate, case="positive", native_name="exec_command"):
     fence = shutil.which("bwrap")
     base = {
         "candidate": candidate,
+        "control": case,
+        "native_variant": native_name if case == "native_tool" else None,
         "launched": False,
-        "isolation": "unsupported",
-        "eligibility": "unsupported",
-        "obligations": dict.fromkeys(OBLIGATIONS, "unsupported"),
+        "measurement": "not_run",
+        "isolation": "unmeasured",
+        "eligibility": "unmeasured",
+        "obligations": dict.fromkeys(OBLIGATIONS, "unmeasured"),
         "cleanup": "complete",
     }
     if not binary or not fence:
@@ -768,8 +913,17 @@ def run_installed(candidate, case="positive", native_name="exec_command"):
             **base,
             "reason": "candidate_unavailable" if not binary else "isolation_unavailable",
         }
-    resolved = pathlib.Path(binary).resolve(strict=True)
-    digest = hashlib.sha256(resolved.read_bytes()).hexdigest()
+    try:
+        resolved = pathlib.Path(binary).resolve(strict=True)
+        digest = hashlib.sha256(resolved.read_bytes()).hexdigest()
+        harness_digest = hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest()
+    except OSError:
+        return {
+            **base,
+            "measurement": "unknown",
+            "eligibility": "unknown",
+            "failure_stage": "bootstrap",
+        }
     command = [
         fence,
         "--unshare-all",
@@ -810,12 +964,78 @@ def run_installed(candidate, case="positive", native_name="exec_command"):
         native_name,
     ]
     # No inherited env values or inherited file descriptors reach the sandbox.
-    result = subprocess.run(command, env={"PATH": "/usr/bin:/bin"}, capture_output=True, timeout=40)
+    try:
+        result = subprocess.run(
+            command, env={"PATH": "/usr/bin:/bin"}, capture_output=True, timeout=40
+        )
+    except OSError:
+        return {
+            **base,
+            "measurement": "unknown",
+            "eligibility": "unknown",
+            "failure_stage": "bootstrap",
+        }
+    except subprocess.TimeoutExpired:
+        return {
+            **base,
+            "measurement": "unknown",
+            "eligibility": "unknown",
+            "launched": None,
+            "failure_stage": "supervisor_timeout",
+            "cleanup": "unknown",
+        }
+    events = []
+    for line in result.stderr.splitlines():
+        try:
+            event = json.loads(line)
+            if isinstance(event, dict) and set(event) == {"stage", "launched"}:
+                events.append(event)
+        except (ValueError, TypeError):
+            pass  # Raw sandbox/candidate stderr never leaves this boundary.
+    try:
+        receipt = json.loads(result.stdout)
+        required = {
+            "candidate",
+            "version",
+            "config_digest",
+            "launched",
+            "isolation",
+            "namespace_proof",
+            "eligibility",
+            "obligations",
+            "positive",
+            "control_result",
+            "cleanup",
+        }
+        if (
+            not isinstance(receipt, dict)
+            or not required.issubset(receipt)
+            or receipt.get("measurement") not in {"completed", "unknown"}
+        ):
+            raise ValueError("invalid receipt")
+    except (ValueError, TypeError):
+        event = events[-1] if events else {"stage": "receipt", "launched": None}
+        return {
+            **base,
+            "measurement": "unknown",
+            "eligibility": "unknown",
+            "launched": event["launched"],
+            "failure_stage": "receipt" if result.stdout else event["stage"],
+            "cleanup": "unknown",
+        }
     if result.returncode:
-        return {**base, "reason": "isolation_unavailable"}
-    receipt = json.loads(result.stdout)
+        return {
+            **base,
+            "measurement": "unknown",
+            "eligibility": "unknown",
+            "launched": receipt.get("launched"),
+            "failure_stage": receipt.get("failure_stage", "receipt"),
+            "cleanup": "unknown",
+        }
     receipt["candidate_digest"] = digest
-    receipt["harness_digest"] = hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest()
+    receipt["harness_digest"] = harness_digest
+    if harness_digest != hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest():
+        receipt.update(measurement="unknown", eligibility="unknown", failure_stage="source_changed")
     return receipt
 
 
@@ -823,8 +1043,16 @@ if __name__ == "__main__":
     if sys.argv[1] == "--mcp":
         _mcp()
     elif sys.argv[1] == "--supervise":
-        print(json.dumps(_supervise(sys.argv[2], sys.argv[3], sys.argv[4])))
+        try:
+            print(json.dumps(_supervise(sys.argv[2], sys.argv[3], sys.argv[4])))
+        except Exception:
+            # Progress events identify stage without serializing exception/payload text.
+            sys.exit(1)
     elif sys.argv[1] == "--measure":
-        print(
-            json.dumps([run_installed(candidate) for candidate in ("codex", "opencode")], indent=2)
-        )
+        complete = True
+        for candidate in ("codex", "opencode"):
+            receipts = measure_candidate(candidate)
+            path = write_evidence(candidate, receipts)
+            complete &= all(r["measurement"] == "completed" for r in receipts)
+            print(str(path))
+        sys.exit(0 if complete else 2)
