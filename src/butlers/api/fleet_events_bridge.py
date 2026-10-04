@@ -79,6 +79,8 @@ def _bridge_to_event_bus(event_type: str, data: dict[str, Any]) -> None:
 def _on_notify(_conn: asyncpg.Connection, _pid: int, channel: str, payload: str) -> None:
     """asyncpg ``add_listener`` callback: parse and bridge one NOTIFY payload."""
     if channel != FLEET_EVENTS_CHANNEL:
+        # Neither channel names nor payloads are trusted diagnostic content.
+        logger.warning("fleet events bridge: dropping notification from foreign channel")
         return
     try:
         envelope = json.loads(payload)

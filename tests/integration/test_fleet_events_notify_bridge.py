@@ -22,6 +22,7 @@ import json
 import os
 import shutil
 import sys
+import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -210,7 +211,20 @@ async def test_external_producer_reaps_child_on_caller_cancellation(
             await process.wait()
 
 
+# Spec: REQ-core-fleet-events-001, REQ-core-fleet-events-007
 async def test_event_published_on_one_pool_arrives_via_the_other(shared_db_url):
+    class FailedNotifyConnection(asyncpg.Connection):
+        async def execute(self, query, *args, **kwargs):
+            if query == "SELECT pg_notify($1, $2)":
+                # A real server-side SQL error aborts the current transaction;
+                # only a real savepoint rollback can recover it.
+                return await super().execute("SELECT 1 / 0", **kwargs)
+            return await super().execute(query, *args, **kwargs)
+
+    failed_notify_pool = await asyncpg.create_pool(
+        shared_db_url, min_size=1, max_size=1, connection_class=FailedNotifyConnection
+    )
+    business_table = f"fleet_publish_business_{uuid.uuid4().hex}"
     daemon_pool = await asyncpg.create_pool(shared_db_url, min_size=1, max_size=2)
     api_pool = await asyncpg.create_pool(shared_db_url, min_size=1, max_size=1)
 
@@ -248,10 +262,33 @@ async def test_event_published_on_one_pool_arrives_via_the_other(shared_db_url):
             "session_id": "two-pool-test",
             "butler": "general",
         }
+        # A caller-owned transaction must stay usable after failed publication,
+        # and its business writes must actually commit for another connection.
+        await daemon_pool.execute(f"CREATE TABLE {business_table} (value integer)")
+        async with failed_notify_pool.acquire() as owner:
+            async with owner.transaction():
+                await owner.execute(f"INSERT INTO {business_table} VALUES (1)")
+                assert await publish_fleet_event(owner, "session", {"phase": "failed"}) is False
+                await owner.execute(f"INSERT INTO {business_table} VALUES (2)")
+        async with daemon_pool.acquire() as reader:
+            assert await reader.fetchval(f"SELECT sum(value) FROM {business_table}") == 3
+        assert len(_events_ring) == 1
+
+        # Successful NOTIFY on a borrowed connection is deferred to the owner's
+        # commit, as PostgreSQL requires; it does not commit business work early.
+        async with daemon_pool.acquire() as owner:
+            async with owner.transaction():
+                assert await publish_fleet_event(owner, "session", {"phase": "committed"}) is True
+                await asyncio.sleep(0.05)
+                assert len(_events_ring) == 1
+        await _wait_until(lambda: len(_events_ring) == 2)
+        assert _events_ring[-1]["data"] == {"phase": "committed"}
     finally:
         listener_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await listener_task
+        await daemon_pool.execute(f"DROP TABLE IF EXISTS {business_table}")
+        await failed_notify_pool.close()
         await daemon_pool.close()
         await api_pool.close()
 

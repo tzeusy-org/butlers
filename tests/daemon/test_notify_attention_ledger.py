@@ -771,19 +771,32 @@ class TestQuietHoursLedgerRecording:
         assert "suppressed" not in outcomes
         assert "delivered" in outcomes
 
-    async def test_successful_delivery_records_delivered_ledger_row(self, butler_dir: Path) -> None:
+    # Spec: REQ-core-fleet-events-007, REQ-core-fleet-events-008
+    @pytest.mark.parametrize("publish_failure", [False, True])
+    async def test_successful_delivery_records_delivered_ledger_row(
+        self, butler_dir: Path, publish_failure: bool
+    ) -> None:
         mock_pool = _make_mock_pool(approvals_policy_row=_NO_QUIET_POLICY)
         patches = _patch_infra(mock_pool)
         daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
         daemon.switchboard_client = _make_mock_client()
 
+        publish = AsyncMock(
+            side_effect=RuntimeError("publication unavailable") if publish_failure else None
+        )
         with (
+            patch("butlers.fleet_events.publish_fleet_event", new=publish),
             _configured_owner_default_recipient(daemon),
             patch("butlers.context_bus.get_active_context", new=AsyncMock(return_value=[])),
         ):
             result = await notify_fn(channel="telegram", message="All good")
 
         assert result["status"] == "ok"
+        publish.assert_awaited_once_with(
+            mock_pool,
+            "notification",
+            {"butler": "test-butler", "channel": "telegram", "intent": "send"},
+        )
 
         ledger_calls = _ledger_insert_calls(mock_pool)
         assert len(ledger_calls) == 1

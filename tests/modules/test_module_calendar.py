@@ -3078,7 +3078,10 @@ class TestProjectInternalSourcesNoReminders:
 
 class TestCalendarFleetEvents:
     # Spec: REQ-core-fleet-events-011
-    async def test_sync_calendar_publishes_after_provider_projection_commits(self):
+    @pytest.mark.parametrize("durable_write_failure", [False, True])
+    async def test_sync_calendar_publishes_after_provider_projection_commits(
+        self, durable_write_failure
+    ):
         """A provider delta publishes only after its normalized projection succeeds."""
         pool = MagicMock()
         mod = CalendarModule()
@@ -3096,7 +3099,11 @@ class TestCalendarFleetEvents:
         mod._source_sync_enabled = AsyncMock(return_value=True)
         mod._ensure_calendar_source = AsyncMock(return_value=uuid.uuid4())
         mod._load_projection_cursor = AsyncMock(return_value=None)
-        mod._project_provider_changes = AsyncMock()
+        mod._project_provider_changes = AsyncMock(
+            side_effect=RuntimeError("synthetic projection failure")
+            if durable_write_failure
+            else None
+        )
         mod._upsert_projection_cursor = AsyncMock()
         mod._record_projection_action = AsyncMock()
         mod._save_sync_state = AsyncMock()
@@ -3106,6 +3113,9 @@ class TestCalendarFleetEvents:
         await mod._sync_calendar("calendar-1")
 
         mod._project_provider_changes.assert_awaited_once()
+        if durable_write_failure:
+            mod._publish_calendar_fleet_event.assert_not_awaited()
+            return
         mod._publish_calendar_fleet_event.assert_awaited_once_with(
             kind="provider_projection",
             data={"updated_events": 1, "cancelled_events": 1},
