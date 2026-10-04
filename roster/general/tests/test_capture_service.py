@@ -9,7 +9,7 @@ import asyncpg
 import pytest
 
 from butlers.tools.general import capture_service as implementation
-from butlers.tools.general.items import item_delete, item_update
+from butlers.tools.general.items import item_delete, item_get, item_update
 from butlers.tools.general.vocabulary import collection_declare
 from tests.integration import test_general_capture_ledger as capture_fixtures
 
@@ -92,6 +92,44 @@ async def test_local_operation_race_and_live_source_verification(service, captur
                 == 0
             )
         assert await svc.verify(routed.operation_id) is None
+
+    # Plant a stale generation while the live target is still ordinary and its
+    # projection is unchanged. A legacy delete/reinsert can reuse UUIDs without
+    # recording a source version; it must not revive the older receipt. This
+    # uses migrated tables and INSERTs, never disables classification guards or
+    # clears a private parent.
+    await collection_declare(capture_pool, "preferences", "Ordinary preferences")
+    stale = await svc.admit(authority(epoch), "Synthetic capture")
+    stale = await svc.process_one(stale.capture_id, owner="general", kind="preference")
+    stale_positive = await svc.verify(stale.operation_id)
+    assert stale_positive is not None
+    stale_parent = uuid.UUID(stale_positive["content"]["collection_id"])
+    async with capture_pool.acquire() as conn, conn.transaction():
+        await conn.execute("DELETE FROM collections WHERE id=$1", stale_parent)
+        await conn.execute(
+            "INSERT INTO collections(id,name,eligibility_generation) VALUES ($1,$2,$3)",
+            stale_parent,
+            "preferences",
+            stale_positive["generation"] + 1,
+        )
+        await conn.execute(
+            "INSERT INTO collection_items(id,collection_id,data,tags) VALUES ($1,$2,$3,$4)",
+            stale.operation_id,
+            stale_parent,
+            stale_positive["content"]["data"],
+            stale_positive["content"]["tags"],
+        )
+    await collection_declare(capture_pool, "preferences", "Ordinary preferences")
+    assert (await item_get(capture_pool, stale.operation_id))["data"] == stale_positive["content"][
+        "data"
+    ]
+    assert (
+        await capture_pool.fetchval(
+            "SELECT max(version) FROM source_versions WHERE item_id=$1", stale.operation_id
+        )
+        == 1
+    )
+    assert await svc.verify(stale.operation_id) is None
 
     collection_id = uuid.UUID(verified["content"]["collection_id"])
     await capture_pool.execute(
