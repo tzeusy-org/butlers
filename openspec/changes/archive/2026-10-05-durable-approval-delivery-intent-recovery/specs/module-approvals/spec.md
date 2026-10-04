@@ -1,24 +1,32 @@
+The recovery protocol is owned by [approval-delivery-intent-recovery](../../../../../specs/approval-delivery-intent-recovery/spec.md). The requirements below bind this capability’s integration seam; they do not define a separate recovery protocol.
+
 ## MODIFIED Requirements
 
 ### Requirement: Pending Actions Queue
-The `pending_actions` table SHALL provide a durable queue and audit log for approval-gated tool invocations, storing `id`, `tool_name`, `tool_args` (JSONB), `status`, `requested_at`, and optional `agent_summary`, `session_id`, `expires_at`, `decided_by`, `decided_at`, `execution_result`, `approval_rule_id`, `why`, `evidence`, and producer-opt-in `deduplication_key`; every newly admitted `pending` row SHALL commit in the same transaction as one unique, schema-local approval delivery-intent root whose immutable logical action key and admission classification are safe for end-to-end notification recovery. The first three ordinary actions receive direct presentations; the fourth `cohort_anchor` joins and creates the cohort-owned digest; later ordinary `collapsed` actions record a terminal non-sendable local presentation and join that cohort. A digest-only `origin='prepared'` action uses the same durable representation with one standalone terminal `collapsed` action presentation, no cohort membership, no burst-count effect, and no provider or defer activation.
+The `pending_actions` table MUST provide a durable queue and audit log for approval-gated tool invocations. It stores `id`, `tool_name`, `tool_args` (JSONB), `status`, `requested_at`, and optional fields `agent_summary`, `session_id`, `expires_at`, `decided_by`, `decided_at`, `execution_result`, `approval_rule_id`, `why`, `evidence`, and producer-opt-in `deduplication_key`. When durable admission is enabled under the canonical additive rollout contract, every newly admitted `pending` row SHALL commit in the same transaction as one unique, schema-local approval delivery-intent root whose immutable logical action key and admission classification are safe for end-to-end notification recovery. The first three ordinary actions receive direct presentations; the fourth `cohort_anchor` joins and creates the cohort-owned digest; later ordinary `collapsed` actions record a terminal non-sendable local presentation and join that cohort. A digest-only `origin='prepared'` action uses the same durable representation with one standalone terminal `collapsed` action presentation, no cohort membership, no burst-count effect, and no provider or defer activation.
 
 ID: REQ-module-approvals-001
 Source: RFC-0021,RFC-0023
 Scope: v1-mandatory
 
 #### Scenario: Pending action rationale fields
+
 - **WHEN** the `pending_actions` table is migrated or created fresh
-- **THEN** nullable `why TEXT` and non-null `evidence JSONB DEFAULT '[]'::jsonb` are available
-- **AND** legacy rows without rationale remain readable with `why = NULL` and `evidence = '[]'::jsonb`
+- **THEN** nullable column `why TEXT` is available for human-readable rationale
+- **AND** non-null column `evidence JSONB DEFAULT '[]'::jsonb` is available for cited evidence
+- **AND** legacy rows without rationale data remain readable with `why = NULL` and `evidence = '[]'::jsonb`
 
 #### Scenario: Semantic key serializes active equivalent actions
-- **WHEN** concurrent producers park actions with the same non-null `deduplication_key`
-- **THEN** a partial unique constraint allows at most one row with that key in `pending`, `approved`, `rejected`, or `abandoned` status
-- **AND** null historic keys remain allowed while an `expired` action does not block a newly surfaced action with the same key
+
+- **WHEN** concurrent producers park actions with the same non-null
+  `deduplication_key`
+- **THEN** a partial unique constraint MUST allow at most one row with that
+  key in `pending`, `approved`, `rejected`, or `abandoned` status
+- **AND** null historic keys MUST remain allowed, while an `expired` action
+  MUST not block a newly surfaced action with the same key
 
 #### Scenario: Atomic pending admission creates one intent
-- **WHEN** a producer admits a new action with status `pending`
+- **WHEN** a producer admits a new action with status `pending` and durable admission enabled
 - **THEN** the pending row and one foreign-keyed intent with the action's immutable logical key plus its required direct presentation, cohort anchor/digest, or collapsed terminal presentation and membership commit together or both roll back
 - **AND** an unavailable notification runtime does not permit a pending row without its intent
 
@@ -35,12 +43,14 @@ Scope: v1-mandatory
 
 #### Scenario: Show pending action detail
 - **WHEN** `show_pending_action` is called with an action_id
-- **THEN** the full PendingAction row and safe delivery projection are returned as serialized data
+- **THEN** the full PendingAction row is returned as a serialized dict
+- **AND** its safe delivery projection is included without unsafe recovery detail
 - **AND** an invalid UUID or missing action returns an error dict
 
 #### Scenario: Count pending actions by status
+
 - **WHEN** `pending_action_count` is called
-- **THEN** it returns a dict with `total` and `by_status` counts
+- **THEN** a dict with `total` and `by_status` counts is returned
 - **AND** delivery backlog metrics remain a separate safe aggregation rather than action payload data
 
 ### Requirement: Status Transition Contract
@@ -48,18 +58,23 @@ Scope: v1-mandatory
 The approval lifecycle MUST allow `pending -> approved|rejected|expired`,
 `approved -> executed|abandoned`, and no transition from
 `rejected|expired|executed|abandoned`. Invalid transitions raise
-`InvalidTransitionError`.
-
-Every transition out of `pending` SHALL atomically fence or cancel its nonterminal approval-delivery presentations without granting the notification worker domain-action mutation authority. Each authenticated dashboard defer remains a pending-state operation and appends exactly one bounded successor presentation generation through its own shared transaction path.
+`InvalidTransitionError`. Every transition out of `pending` SHALL atomically fence or cancel its nonterminal approval-delivery presentations without granting the notification worker domain-action mutation authority. Each authenticated dashboard defer remains a pending-state operation and appends exactly one bounded successor presentation generation through its own shared transaction path.
 
 ID: REQ-module-approvals-002
 Source: RFC-0021,RFC-0023
 Scope: v1-mandatory
 
 #### Scenario: Approve a pending action
-- **WHEN** `approve_action` is called with a valid action_id and authenticated human actor context
-- **THEN** a compare-and-set update transitions status from `pending` to `approved`, records `action_approved`, and atomically cancels its sendable delivery presentations
-- **AND** an available owning executor may then run the original tool function and advances to `executed` only after its result persists
+
+- **WHEN** `approve_action` is called with a valid action_id and authenticated
+  human actor context
+- **THEN** a compare-and-set UPDATE transitions status from `pending` to
+  `approved`
+- **AND** an `action_approved` audit event is recorded
+- **AND** an available owning executor MAY then run the original tool function
+- **AND** status advances to `executed` only after that execution persists its
+  result and success audit event.
+- **AND** the same transaction atomically cancels its sendable delivery presentations
 
 #### Scenario: Approve with concurrent race
 - **WHEN** two concurrent approve calls target the same pending action
@@ -67,18 +82,32 @@ Scope: v1-mandatory
 - **AND** the losing call receives a transition error with the current status and cannot revive a cancelled presentation
 
 #### Scenario: Dashboard abandons a stalled approved action
-- **WHEN** a dashboard actor supplies a non-blank reason for an action whose status is `approved` and whose `execution_result` is null
-- **THEN** a compare-and-set update transitions it to `abandoned` and appends immutable actor/reason evidence in the same transaction
-- **AND** no MCP, Telegram callback, automatic, bulk, or scheduled path can invoke abandonment
+
+- **WHEN** a dashboard actor supplies a non-blank reason for an action whose
+  status is `approved` and whose `execution_result` is null
+- **THEN** a compare-and-set update transitions that action to `abandoned`
+- **AND** an immutable `action_abandoned` event stores the actor and reason in
+  the same transaction
+- **AND** no MCP, Telegram callback, automatic, bulk, or scheduled path can
+  invoke abandonment
+- **AND** an action outside that exact predicate remains unchanged.
 
 #### Scenario: Reject a pending action
-- **WHEN** `reject_action` is called with a valid action_id and authenticated human actor
-- **THEN** status transitions from `pending` to `rejected` with escaped decision provenance, records `action_rejected`, and atomically cancels delivery recovery
-- **AND** a previously started handoff may only append late attempt evidence and never changes the rejected action
+
+- **WHEN** `reject_action` is called with a valid action_id and authenticated
+  human actor
+- **THEN** status transitions from `pending` to `rejected` with `decided_by`
+  set to `human:<actor_id> (reason: <escaped_reason>)`
+- **AND** an `action_rejected` audit event is recorded.
+- **AND** the same transaction atomically cancels delivery recovery; a started handoff may only append late evidence and never changes the rejected action
 
 #### Scenario: Expire stale actions
-- **WHEN** the canonical stale-expiry operation finds a pending action whose `expires_at < now()`
-- **THEN** it transitions the action to `expired`, records `action_expired`, cancels its sendable action presentations, and atomically marks its cohort membership ineligible without cancelling a shared eligible cohort digest
+
+- **WHEN** `expire_stale_actions` is called
+- **THEN** all pending actions where `expires_at < now()` are transitioned to
+  `expired`
+- **AND** an `action_expired` audit event is recorded for each.
+- **AND** the same transaction cancels each action’s sendable presentations and marks its cohort membership ineligible without cancelling a shared eligible digest
 - **AND** a worker that merely observes an expired action cannot perform the domain expiry transition itself
 
 #### Scenario: Send-start and decision race
@@ -92,9 +121,11 @@ Scope: v1-mandatory
 - **AND** it keeps the logical action key, cannot route through generic notifications, and does not grant the worker ability to defer or schedule future presentations
 
 #### Scenario: Already-executed action is replayed
+
 - **WHEN** the executor is called for an action that is already `executed`
-- **THEN** the stored `execution_result` is returned idempotently
-- **AND** no second execution or notification delivery occurs
+- **THEN** the stored `execution_result` is returned (idempotent replay)
+- **AND** no second execution occurs.
+- **AND** no second notification delivery occurs
 
 #### Scenario: Abandon an approved unexecuted action
 

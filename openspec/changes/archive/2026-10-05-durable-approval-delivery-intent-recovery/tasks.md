@@ -1,3 +1,15 @@
+# Source and operational task status
+
+The checked implementation entries below are historical source-delivery
+receipts; they are not a fresh claim that every clause is implemented or every
+test has executed in this worktree. The source translation audit records a
+pre-activation authenticated transport/source-attestation gap and bounded
+coverage gaps. In particular, checked task 4.2 does not prove a deployed issuer,
+verifier, bearer transport, or independent server-held source admission proof.
+Tasks 7.2 and 7.3 remain unchecked after source sync/archive. Source archive
+moves the accepted WHAT to its canonical capability home and grants no live
+canary, activation, migration, provider, or replay authority.
+
 ## 1. Contract and additive persistence
 
 - [x] 1.1 Confirm the owner-approved RFC 0023 constants: closed root/presentation/cohort state and reason vocabulary, logical action/cohort-subject and presentation-key formats, defer-generation/cohort replacement bounds, lease/backoff/stuck SLOs, authenticated transport-principal contract, and the per-provider idempotency/reconciliation capability inventory.

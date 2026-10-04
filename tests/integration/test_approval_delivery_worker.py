@@ -159,6 +159,7 @@ class _SlowRuntime(_Runtime):
         return HandoffResult("confirmed")
 
 
+# Spec: REQ-approval-delivery-intent-recovery-006; admission and handoff leave exhausted insight settings/candidates unchanged.
 async def test_approval_recovery_ignores_exhausted_insight_daily_budget(
     delivery_pool: asyncpg.Pool,
 ) -> None:
@@ -220,6 +221,7 @@ async def test_approval_recovery_ignores_exhausted_insight_daily_budget(
     assert admission.intent_id is not None
 
 
+# Spec: REQ-approval-delivery-intent-recovery-003; concurrent claims, succession, heartbeat and terminal CAS are fenced.
 async def test_skip_locked_claims_are_distinct_and_stale_fences_cannot_write(
     delivery_pool: asyncpg.Pool,
 ) -> None:
@@ -252,6 +254,7 @@ async def test_skip_locked_claims_are_distinct_and_stale_fences_cannot_write(
     assert await second_repo.complete_handoff(successor, HandoffResult("confirmed")) is True
 
 
+# Spec: REQ-approval-delivery-intent-recovery-003; missing owner schedules safe retry from database time.
 async def test_missing_current_owner_is_prestart_retry_scheduled_from_database_time(
     delivery_pool: asyncpg.Pool,
 ) -> None:
@@ -286,6 +289,7 @@ async def test_missing_current_owner_is_prestart_retry_scheduled_from_database_t
     )
 
 
+# Spec: REQ-approval-delivery-intent-recovery-002; current render, recipient and callback stay out of durable local state.
 async def test_confirmed_delivery_renders_current_material_only_in_memory(
     delivery_pool: asyncpg.Pool,
 ) -> None:
@@ -331,6 +335,7 @@ async def test_confirmed_delivery_renders_current_material_only_in_memory(
     )
 
 
+# Spec: REQ-approval-delivery-intent-recovery-004; expired handoff reconciles rather than sending again.
 async def test_expired_handoff_reconciles_once_then_ambiguous_never_resends(
     delivery_pool: asyncpg.Pool,
 ) -> None:
@@ -685,6 +690,7 @@ async def test_worker_processes_existing_successor_without_advancing_generation(
     assert await delivery_pool.fetchval("SELECT count(*) FROM approval_delivery_presentations") == 2
 
 
+# Spec: REQ-approval-delivery-intent-recovery-007; derived stuck truth measures overdue time rather than row age.
 async def test_stuck_age_starts_at_due_time_not_presentation_creation(
     delivery_pool: asyncpg.Pool,
 ) -> None:
@@ -724,6 +730,7 @@ async def test_stuck_age_starts_at_due_time_not_presentation_creation(
     assert overdue.oldest_due_age_seconds >= 16 * 60
 
 
+# Spec: REQ-approval-delivery-intent-recovery-005, REQ-module-approvals-002; decision-first and handoff-first share the final cancellation boundary.
 async def test_decision_and_handoff_start_linearize_without_revival(
     delivery_pool: asyncpg.Pool,
 ) -> None:
@@ -774,6 +781,7 @@ async def test_decision_and_handoff_start_linearize_without_revival(
     assert await repository.claim_next() is None
 
 
+# Spec: REQ-approval-delivery-intent-recovery-005, REQ-dashboard-approvals-003; defer adds one database-time successor without a new action key.
 async def test_defer_replaces_prestart_generation_at_database_time(
     delivery_pool: asyncpg.Pool,
 ) -> None:

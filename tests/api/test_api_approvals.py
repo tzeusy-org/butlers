@@ -392,6 +392,7 @@ async def test_metrics_keeps_a_configured_but_empty_source_as_a_truthful_zero(ap
     assert "sources_degraded" not in body["meta"]
 
 
+# Spec: REQ-approval-delivery-intent-recovery-007, REQ-dashboard-approvals-002; mocked API aggregation returns only safe backlog dimensions.
 async def test_metrics_projects_safe_delivery_backlog_dimensions(app):
     """Operator metrics include only aggregate state and closed reason dimensions."""
     from types import SimpleNamespace
@@ -2081,6 +2082,7 @@ async def test_detail_preserves_failed_push_delivery_state(app):
     assert detail["push_failed"] is True
 
 
+# Spec: REQ-approval-delivery-intent-recovery-007, REQ-dashboard-approvals-001; mocked detail projection excludes unsafe fields and preserves uncertainty.
 async def test_detail_projects_only_safe_durable_delivery_truth(app):
     """The dossier exposes state, not correlation, recipient, callback, or provider data."""
     row = {
