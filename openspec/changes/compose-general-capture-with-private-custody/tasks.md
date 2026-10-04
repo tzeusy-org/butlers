@@ -1,6 +1,10 @@
 ## 1. Canonical source
 - [x] 1.1 Preserve exact adopted artifact and integrate its durable RFC/manifesto/spec target without unrelated baseline loss.
-- [ ] 1.2 Complete independent exact-head source/packet review and protected landing under bu-2jtfw.9.1.
+- [x] 1.2 Complete independent exact-head source/packet review and protected landing under bu-2jtfw.9.1.
+  Evidence: PR #4252 (historical squash-merge commit d6c45cf72) landed under the
+  closed bead bu-2jtfw.9.1. Current main carries the patch-equivalent commit
+  bc2fc2156ee9c121682a1c975d55f755b8efb407 (same stable patch-id
+  a3ba7e418fc5dc3bde8de89e4ba0f213d45fbaf1).
 
 ## 2. Repository implementation after source landing
 - [x] 2.1 Implement passive ordinary-source classification, vocabulary/privacy/query/mutation gates and immutable General source versions; no private enrollment.
