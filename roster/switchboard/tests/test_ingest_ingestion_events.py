@@ -621,15 +621,34 @@ class TestIngestionEventPublishesOnBus:
     """A new (non-duplicate) ingest publishes an "ingestion" fleet event."""
 
     # Spec: REQ-core-fleet-events-009
-    async def test_new_ingest_publishes_ingestion_event_cross_process(self) -> None:
+    @pytest.mark.parametrize("durable_write_failure", [False, True])
+    async def test_new_ingest_publishes_ingestion_event_cross_process(
+        self, monkeypatch, durable_write_failure: bool
+    ) -> None:
         """The switchboard daemon publishes through the RFC 0022 bridge."""
         from unittest.mock import AsyncMock, patch
 
         pool = _FakePool()
         envelope = _telegram_envelope(update_id="70000")
         mock_publish = AsyncMock()
+        if durable_write_failure:
+            execute = pool.conn.execute
+
+            async def fail_ingestion_write(sql, *args):
+                if "INSERT INTO public.ingestion_events" in sql:
+                    raise RuntimeError("synthetic durable write failure")
+                return await execute(sql, *args)
+
+            monkeypatch.setattr(pool.conn, "execute", fail_ingestion_write)
 
         with patch("butlers.fleet_events.publish_fleet_event", new=mock_publish):
+            if durable_write_failure:
+                with pytest.raises(RuntimeError):
+                    await ingest_v1(
+                        pool, envelope, policy_evaluator=None, enable_thread_affinity=False
+                    )
+                mock_publish.assert_not_awaited()
+                return
             result = await ingest_v1(
                 pool, envelope, policy_evaluator=None, enable_thread_affinity=False
             )

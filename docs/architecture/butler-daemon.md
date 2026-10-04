@@ -161,6 +161,14 @@ kill -TERM $(pgrep -f "butlers run --config roster/general")
 
 ## Implementation Notes
 
+- Fleet-event publication (`butlers.fleet_events.publish_fleet_event`) is lossy and bounded:
+  pool acquisition/query work has a one-second budget. Caller-owned asyncpg connections use a
+  transaction or nested savepoint; each isolation and cleanup step also has a one-second budget.
+  A safely rolled-back notification failure returns `False`, and cancellation propagates after
+  rollback. Isolation or cleanup failure propagates because caller transaction health is unknown.
+  An event sent inside an outer transaction becomes visible only after that transaction commits.
+  Producers publish after durable writes and never depend on event delivery for success.
+
 - Core tools register through `butlers.core_tools.register_all_core_tools()` and the effective
   `core_groups` decorator; keep group, name and role gates in those modules, never in a second
   catalog. `tests/contracts/test_tool_surface_isolation.py` guards completeness. The call log line
