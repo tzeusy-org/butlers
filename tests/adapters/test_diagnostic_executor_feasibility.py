@@ -25,10 +25,42 @@ from tests.adapters import runtime_diagnostic_executor_feasibility_harness as ha
         "malformed",
         "timeout",
         "postlaunch_crash",
+        "candidate_timeout",
     ],
 )
 def test_supervisor_failures_do_not_claim_feasibility(fault):
     # Availability and supervisor failures are unit behavior, never feasibility proof.
+    if fault == "candidate_timeout":
+        for case in ("retry", "request_cap", "turn_cap"):
+            receipt = {
+                "measurement": "unknown",
+                "eligibility": "unknown",
+                "failure_stage": "candidate_execution",
+                "control": case,
+                "provider_attempts": 1 if case == "retry" else 3,
+                "attachment_attempts": 1,
+                "injected_calls": 1,
+                "input_exceeded": False,
+                "output_exceeded": False,
+                "native_effect": False,
+                "denials": [] if case == "retry" else [case],
+                "positive": {"image_delivery": True, "persisted": False, "termination": "timeout"},
+            }
+            for measurement in ("unknown", "not_run", None):
+                receipt["measurement"] = measurement
+                observed = json.dumps(receipt, sort_keys=True)
+                result = harness._control_result(receipt)
+                assert result["status"] == "inconclusive"
+                assert result["disposition"] == "unknown"
+                assert result["completion"] == "incomplete"
+                assert json.dumps(receipt, sort_keys=True) == observed
+            receipt.update(measurement="completed", eligibility="unsupported", failure_stage=None)
+            receipt["positive"]["termination"] = "exit"
+            result = harness._control_result(receipt)
+            assert result["status"] == "demonstrated"
+            assert result["disposition"] == "supported"
+            assert result["completion"] == "complete"
+        return
     if fault in {"candidate_missing", "fence_missing"}:
         with patch.object(
             harness.shutil,

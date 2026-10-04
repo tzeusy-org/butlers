@@ -804,6 +804,17 @@ def _supervise(candidate, case="positive", native_name="exec_command"):
 
 
 def _control_result(receipt):
+    # Partial observations cannot establish a completed denial or absence of retry.
+    if receipt.get("measurement") != "completed":
+        return {
+            "status": "inconclusive",
+            "exercised": False,
+            "interference": [],
+            "disposition": "unknown",
+            "scope": "synthetic_transport_only",
+            "completion": "incomplete",
+            "reason": "measurement_not_completed",
+        }
     case = receipt["control"]
     denials = set(receipt["denials"])
     expected = case
