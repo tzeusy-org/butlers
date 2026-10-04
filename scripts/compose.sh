@@ -10,7 +10,7 @@
 #   ./scripts/compose.sh --skip-oauth-check        # skip OAuth gate
 #   ./scripts/compose.sh --skip-tailscale-check    # skip tailscale serve setup
 #   ./scripts/compose.sh --audio                   # include live-listener (needs /dev/snd)
-#   ./scripts/compose.sh --observability           # enable observability stack (Prometheus, Grafana, Tempo)
+#   ./scripts/compose.sh --observability           # include collector, Tempo, Prometheus, Grafana (local Compose)
 #   ./scripts/compose.sh --hardened                # opt into hardened posture (disables Grafana anon viewer)
 #
 # DEPLOYMENT POSTURE:
@@ -462,6 +462,9 @@ fi
 CMD=(docker compose -f docker-compose.yml)
 if [ "$RESTORE_DRILL_ENABLED" = "true" ]; then
   CMD+=(-f docker-compose.restore-drill.yml)
+fi
+if [ "$OBSERVABILITY" = "true" ]; then
+  CMD+=(-f docker-compose.observability.yml)
 fi
 for p in "${PROFILES[@]}"; do
   CMD+=(--profile "$p")

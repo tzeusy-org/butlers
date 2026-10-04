@@ -33,11 +33,16 @@ use direct Compose to bypass the launcher's ownership guard.
 
 ### Starting the Stack
 
-`scripts/compose.sh --observability` currently enables the `observability`
-profile and sets `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318`, but its
-Compose command does not include `docker-compose.observability.yml`. The base
-file has no collector, Tempo, Prometheus or Grafana services, so that flag alone
-does not start them.
+`scripts/compose.sh --observability` includes `docker-compose.observability.yml`
+and enables the `observability` profile, selecting the collector, Tempo,
+Prometheus and Grafana alongside the launcher's other selected services. Without
+the flag, the launcher omits that fragment. Restore-drill selection, hotreload
+and deployment posture retain their existing behavior.
+
+The launcher still sets `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318`;
+container-local loopback does not address the separate collector container, and
+the dashboard API currently does not receive that variable from the base file.
+Service selection alone does not establish end-to-end telemetry delivery.
 
 To start the isolated stack with those services, include both files explicitly. Replace
 `/path/to/non-live.env` with its environment configuration (including
