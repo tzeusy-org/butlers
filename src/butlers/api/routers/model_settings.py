@@ -41,7 +41,6 @@ from butlers.core.model_routing import (
 from butlers.core.pricing import ModelPricing, PricingConfig, PricingTier, TieredModelPricing
 from butlers.core.runtime_probe_control.activation import probe_client
 from butlers.core.runtime_probe_control.coordinator import HTTP_STATUS, ProbeResult, ProbeStatus
-from butlers.metrics_registry import get_or_create_counter
 
 logger = logging.getLogger(__name__)
 
@@ -61,12 +60,6 @@ _VERIFY_ALL_CONCURRENCY = 8
 # concurrent request is rejected immediately instead of waiting behind a
 # long-running verification sweep.
 _verify_all_in_flight = False
-
-model_attention_operator_total = get_or_create_counter(
-    "model_attention_operator_total",
-    "Sanitized Models runtime-attention observation and manual-reissue outcomes.",
-    labelnames=["operation", "outcome"],
-)
 
 
 def _get_db_manager() -> DatabaseManager:
@@ -533,19 +526,6 @@ def _attention_episode(row: Any) -> ModelAttentionEpisode:
     )
 
 
-def _attention_metric(operation: str, outcome: str) -> None:
-    """Best-effort categorical counter; never alter an operator outcome."""
-    try:
-        model_attention_operator_total.labels(operation=operation, outcome=outcome).inc()
-    except Exception:
-        logger.debug(
-            "Models attention counter unavailable operation=%s outcome=%s",
-            operation,
-            outcome,
-            exc_info=True,
-        )
-
-
 # ---------------------------------------------------------------------------
 # GET /api/settings/models — list catalog entries
 # ---------------------------------------------------------------------------
@@ -650,13 +630,11 @@ async def observe_model_attention(
         rows = await pool.fetch("SELECT * FROM public.observe_runtime_attention_models()")
     except Exception:
         logger.warning("Models runtime-attention observation unavailable")
-        _attention_metric("observe", "unavailable")
         return ApiResponse[ModelAttentionObservation](
             data=ModelAttentionObservation(available=False)
         )
 
     episodes = {row["catalog_entry_id"]: _attention_episode(row) for row in rows}
-    _attention_metric("observe", "present" if episodes else "empty")
     return ApiResponse[ModelAttentionObservation](
         data=ModelAttentionObservation(available=True, episodes=episodes)
     )
@@ -679,26 +657,20 @@ async def reissue_model_attention(
         )
     except asyncpg.PostgresError as exc:
         if exc.sqlstate in {"55000", "23514"}:
-            _attention_metric("reissue", "ineligible")
             raise HTTPException(
                 status_code=409, detail="Attention episode is not eligible for reissue"
             ) from None
         if exc.sqlstate == "P0002":
-            _attention_metric("reissue", "not_found")
             raise HTTPException(status_code=404, detail="Attention episode not found") from None
         logger.warning("Models attention reissue database operation unavailable")
-        _attention_metric("reissue", "unavailable")
         raise HTTPException(status_code=503, detail="Attention reissue is unavailable") from None
     except (asyncpg.InterfaceError, OSError, RuntimeError, TimeoutError):
         logger.warning("Models attention reissue database connection unavailable")
-        _attention_metric("reissue", "unavailable")
         raise HTTPException(status_code=503, detail="Attention reissue is unavailable") from None
 
     if row is None:
-        _attention_metric("reissue", "unavailable")
         raise HTTPException(status_code=503, detail="Attention reissue is unavailable")
     result = ModelAttentionReissueResult(**dict(row))
-    _attention_metric("reissue", "created" if result.created else "existing")
     logger.info(
         "Models attention reissue completed outcome=%s",
         "created" if result.created else "existing",
