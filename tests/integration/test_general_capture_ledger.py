@@ -145,6 +145,10 @@ async def test_effective_role_and_durable_receipt_guards(
     )
 
     parsed = urlparse(capture_db_url)
+    insertion = await capture_pool.fetchval(
+        "SELECT to_jsonb(c) FROM public.captures AS c WHERE id=$1", receipt.capture_id
+    )
+    insertion.update(id=str(uuid.uuid4()), source_occurrence=str(uuid.uuid4()))
     await asyncio.to_thread(
         _bootstrap_migration_prerequisites,
         migration_bootstrap_db_url(postgres_container, parsed.path.lstrip("/")),
@@ -153,8 +157,15 @@ async def test_effective_role_and_durable_receipt_guards(
     # Role membership alone is not effective current_user. Table owner gets zero
     # rows, and inherited memberships do not turn another runtime into General.
     conn = await asyncpg.connect(capture_db_url)
+    await register_jsonb_codec(conn)
     try:
         assert await conn.fetchval("SELECT count(*) FROM public.captures") == 0
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await conn.execute(
+                "INSERT INTO public.captures SELECT * FROM "
+                "jsonb_populate_record(NULL::public.captures,$1)",
+                insertion,
+            )
         for role in await conn.fetch(
             "SELECT rolname FROM pg_roles WHERE rolname ~ '^butler_.+_rw$'"
         ):
@@ -163,8 +174,20 @@ async def test_effective_role_and_durable_receipt_guards(
             await conn.execute(f'SET ROLE "{role["rolname"]}"')
             try:
                 assert await conn.fetchval("SELECT count(*) FROM public.captures") == 0
+                assert (
+                    await conn.execute(
+                        "UPDATE public.captures SET category='classification_failed'"
+                    )
+                    == "UPDATE 0"
+                )
             except asyncpg.InsufficientPrivilegeError:
                 pass
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await conn.execute(
+                    "INSERT INTO public.captures SELECT * FROM "
+                    "jsonb_populate_record(NULL::public.captures,$1)",
+                    insertion,
+                )
             with pytest.raises(asyncpg.PostgresError):
                 await conn.execute("TRUNCATE public.captures CASCADE")
             await conn.execute("RESET ROLE")
@@ -184,8 +207,121 @@ async def test_effective_role_and_durable_receipt_guards(
         with pytest.raises(asyncpg.PostgresError):
             await conn.execute("SELECT public.capture_restore_row('foreign', '{}'::jsonb)")
 
+    from butlers.tools.general.items import item_create_versioned
+    from butlers.tools.general.vocabulary import collection_declare
 
-async def seed_capture_snapshot(db_url: str, epoch_path: Path) -> None:
+    await collection_declare(capture_pool, "notes", "Ordinary notes")
+    positive_text = 'Synthetic é capture "\\\n'
+    positive = await svc.admit(authority(epoch, positive_text), positive_text)
+    positive = await svc.process_one(positive.capture_id, owner="general", kind="note")
+    genuine = await svc.verify(positive.operation_id)
+    assert genuine is not None and genuine["item_id"] == str(positive.operation_id)
+    claimed = await svc.claim(receipt.capture_id, owner="general", kind="note")
+
+    # A non-null shape, another operation's genuine locator, stale generation,
+    # edited digest or mismatched original content cannot establish owned proof.
+    # The genuine service target above makes these refusals non-vacuous.
+    for variant in (
+        "missing_target",
+        "other_operation",
+        "generation",
+        "digest",
+        "content",
+        "source_digest",
+    ):
+        forged = {key: value for key, value in genuine.items() if key != "content"}
+        forged.update(operation_id=str(claimed.operation_id), item_id=str(claimed.operation_id))
+        with pytest.raises(asyncpg.PostgresError):
+            async with capture_pool.acquire() as conn, conn.transaction():
+                if variant == "source_digest":
+                    parent = await conn.fetchrow(
+                        "SELECT id,eligibility_generation FROM collections WHERE name='notes'"
+                    )
+                    data = {"text": "Synthetic capture", "references": []}
+                    await conn.execute(
+                        "INSERT INTO collection_items(id,collection_id,data,tags) VALUES ($1,$2,$3,$4)",
+                        claimed.operation_id,
+                        parent["id"],
+                        data,
+                        [],
+                    )
+                    await conn.execute(
+                        "INSERT INTO source_versions(item_id,version,collection_id,"
+                        "eligibility_generation,operation,digest,content) "
+                        "VALUES ($1,1,$2,$3,'create',$4,$5)",
+                        claimed.operation_id,
+                        parent["id"],
+                        parent["eligibility_generation"],
+                        "0" * 64,
+                        {"collection_id": str(parent["id"]), "data": data, "tags": []},
+                    )
+                    forged.update(digest="0" * 64, generation=parent["eligibility_generation"])
+                elif variant not in {"missing_target", "other_operation"}:
+                    _, version = await item_create_versioned(
+                        conn,
+                        "notes",
+                        {
+                            "text": "Wrong synthetic content"
+                            if variant == "content"
+                            else "Synthetic capture",
+                            "references": [],
+                        },
+                        capture_operation_id=claimed.operation_id,
+                    )
+                    forged.update(digest=version.digest, generation=version.eligibility_generation)
+                if variant == "other_operation":
+                    forged["item_id"] = genuine["item_id"]
+                elif variant == "generation":
+                    forged["generation"] += 1
+                elif variant == "digest":
+                    forged["digest"] = "0" * 64
+                await conn.execute(
+                    "UPDATE public.capture_operations SET stage='routed',receipt=$2 WHERE id=$1",
+                    claimed.operation_id,
+                    forged,
+                )
+                await conn.execute(
+                    "UPDATE public.captures SET disposition='routed',category='routed',receipt=$2 "
+                    "WHERE id=$1",
+                    receipt.capture_id,
+                    forged,
+                )
+        assert await svc.verify(claimed.operation_id) is None
+        assert (await svc.verify(positive.operation_id)) is not None
+        assert (
+            await capture_pool.fetchval(
+                "SELECT stage FROM public.capture_operations WHERE id=$1", claimed.operation_id
+            )
+            == "claimed"
+        )
+        assert (
+            await capture_pool.fetchval(
+                "SELECT count(*) FROM collection_items WHERE id=$1", claimed.operation_id
+            )
+            == 0
+        )
+
+    # Import accepts captures before operations within a complete transaction,
+    # but null or absent operation proof must fail before commit.
+    template = await capture_pool.fetchval(
+        "SELECT to_jsonb(c) FROM public.captures AS c WHERE id=$1", receipt.capture_id
+    )
+    for detached in (None, str(uuid.uuid4())):
+        incoming = {
+            **template,
+            "id": str(uuid.uuid4()),
+            "mutation_key": None,
+            "disposition": "routed",
+            "category": "routed",
+            "operation_id": detached,
+            "receipt": forged,
+        }
+        with pytest.raises(asyncpg.PostgresError):
+            async with capture_pool.acquire() as conn, conn.transaction():
+                await conn.execute("SELECT public.capture_restore_row('captures',$1)", incoming)
+
+
+async def seed_capture_snapshot(db_url: str, epoch_path: Path, *, historical: bool = False) -> None:
     """Seed through real internal producers for canonical backup/restore tests."""
     from butlers.migrations import run_migrations
     from butlers.tools.general.vocabulary import collection_declare
@@ -213,6 +349,21 @@ async def seed_capture_snapshot(db_url: str, epoch_path: Path) -> None:
         await collection_declare(pool, "notes", "Ordinary notes")
         routed = await svc.admit(authority(epoch), "Synthetic capture")
         await svc.process_one(routed.capture_id, owner="general", kind="note")
+        if historical:
+            from butlers.tools.general.items import item_delete
+
+            deleted = await svc.admit(authority(epoch), "Synthetic capture")
+            deleted = await svc.process_one(deleted.capture_id, owner="general", kind="note")
+            await item_delete(pool, deleted.operation_id)
+            await collection_declare(pool, "preferences", "Ordinary preferences")
+            private = await svc.admit(authority(epoch), "Synthetic capture")
+            private = await svc.process_one(private.capture_id, owner="general", kind="preference")
+            assert await svc.verify(private.operation_id) is not None
+            await pool.execute(
+                "UPDATE collections SET custody_private=true WHERE name='preferences'"
+            )
+            assert await svc.verify(private.operation_id) is None
+            assert await svc.verify(deleted.operation_id) is None
         held = await svc.admit(authority(epoch), "Synthetic capture")
         claimed = await svc.claim(held.capture_id, owner="general", kind="note")
         await svc.mark_unknown(claimed.operation_id)

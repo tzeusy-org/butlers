@@ -44,7 +44,8 @@ def upgrade() -> None:
                 AND octet_length(canonical_intake::jsonb->>'text') BETWEEN 1 AND 32768
                 AND jsonb_typeof(canonical_intake::jsonb->'references') = 'array'
                 AND jsonb_array_length(canonical_intake::jsonb->'references') <= 8) IS TRUE),
-            CHECK ((disposition = 'routed') = (receipt IS NOT NULL))
+            CHECK ((disposition = 'routed') = (receipt IS NOT NULL)),
+            CHECK (disposition <> 'routed' OR operation_id IS NOT NULL)
         );
         CREATE TABLE IF NOT EXISTS public.capture_operations (
             id uuid PRIMARY KEY,
@@ -61,8 +62,8 @@ def upgrade() -> None:
             CHECK ((stage = 'routed') = (receipt IS NOT NULL)),
             CHECK (receipt IS NULL OR
                 (receipt->>'owner' = 'general' AND receipt->>'operation_id' = id::text
-                 AND (receipt->>'item_id')::uuid IS NOT NULL
-                 AND (receipt->>'version')::bigint > 0
+                 AND (receipt->>'item_id')::uuid = id
+                 AND (receipt->>'version')::bigint = 1
                  AND (receipt->>'generation')::bigint >= 0
                  AND receipt->>'digest' ~ '^[0-9a-f]{64}$'
                  AND jsonb_typeof(receipt) = 'object'
@@ -146,6 +147,123 @@ def upgrade() -> None:
             RESET ROLE;
         END IF;
     END $$""")
+    # A target UUID is the server-generated operation UUID, never an arbitrary
+    # locator. Deferred checks allow claim and captures-before-operations import
+    # order while requiring both sides and immutable General create proof at
+    # transaction end. Historical proof survives later privacy or deletion.
+    op.execute("""
+        CREATE OR REPLACE FUNCTION public.capture_validate_receipt(
+            capture_uuid uuid, require_current boolean DEFAULT false)
+        RETURNS void LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+        DECLARE c public.captures; o public.capture_operations; v record; parent record;
+                item record;
+        BEGIN
+            IF current_user <> 'butler_general_rw' THEN
+                RAISE EXCEPTION 'capture receipt authority invalid';
+            END IF;
+            SELECT * INTO c FROM public.captures WHERE id=capture_uuid;
+            IF NOT FOUND THEN
+                RAISE EXCEPTION 'capture receipt binding invalid';
+            END IF;
+            IF c.operation_id IS NULL THEN
+                IF c.disposition='routed' OR EXISTS (
+                    SELECT 1 FROM public.capture_operations WHERE capture_id=c.id) THEN
+                    RAISE EXCEPTION 'capture receipt binding invalid';
+                END IF;
+                RETURN;
+            END IF;
+            SELECT * INTO o FROM public.capture_operations WHERE id=c.operation_id;
+            IF NOT FOUND OR o.capture_id<>c.id OR o.service_epoch<>c.service_epoch
+               OR o.payload_digest<>c.payload_digest
+               OR (o.stage='routed') <> (c.disposition='routed')
+               OR o.receipt IS DISTINCT FROM c.receipt THEN
+                RAISE EXCEPTION 'capture receipt binding invalid';
+            END IF;
+            IF o.stage <> 'routed' THEN RETURN; END IF;
+            IF NOT COALESCE((SELECT has_schema_privilege(oid,'USAGE')
+                            FROM pg_namespace WHERE nspname='general'), false) THEN
+                RAISE EXCEPTION 'capture target proof unavailable';
+            END IF;
+            IF to_regclass('general.source_versions') IS NULL THEN
+                RAISE EXCEPTION 'capture target proof unavailable';
+            END IF;
+            SELECT * INTO v FROM general.source_versions
+            WHERE item_id=o.id AND version=1 AND operation='create';
+            IF NOT FOUND OR v.digest<>o.receipt->>'digest'
+               OR v.eligibility_generation<>(o.receipt->>'generation')::bigint
+               OR v.recorded_at<o.created_at
+               OR jsonb_array_length(c.canonical_intake::jsonb->'references')<>0
+               OR v.content IS DISTINCT FROM jsonb_build_object(
+                    'collection_id', v.collection_id::text,
+                    'data', jsonb_build_object('text', c.canonical_intake::jsonb->'text',
+                        'references', c.canonical_intake::jsonb->'references'),
+                    'tags', '[]'::jsonb)
+               -- source_digest's sorted, compact UTF-8 create projection. This
+               -- fixed target has only UUID/string values and empty refs/tags.
+               OR v.digest<>encode(sha256(convert_to(
+                    '{"content":{"collection_id":' || to_json(v.collection_id::text)::text ||
+                    ',"data":{"references":[],"text":' ||
+                    to_json(c.canonical_intake::jsonb->>'text')::text ||
+                    '},"tags":[]},"item_id":' || to_json(o.id::text)::text ||
+                    ',"operation":"create"}', 'UTF8')), 'hex') THEN
+                RAISE EXCEPTION 'capture target proof invalid';
+            END IF;
+            IF require_current THEN
+                -- Normal finalization rechecks current ordinary eligibility with
+                -- the same parent-before-item order as General's writers.
+                SELECT * INTO parent FROM general.collections AS p
+                WHERE p.id=v.collection_id AND NOT p.custody_private
+                  AND p.name=CASE o.kind WHEN 'note' THEN 'notes'
+                      WHEN 'fact' THEN 'facts' ELSE 'preferences' END
+                  AND p.eligibility_generation=v.eligibility_generation
+                  AND EXISTS (SELECT 1 FROM general.collection_vocabulary AS vocabulary
+                              WHERE vocabulary.collection_id=p.id)
+                  AND NOT EXISTS (SELECT 1 FROM general.collection_items AS reserved
+                      WHERE reserved.collection_id=p.id AND reserved.data ? 'possession_profile')
+                FOR SHARE OF p;
+                IF NOT FOUND THEN
+                    RAISE EXCEPTION 'capture target proof unavailable';
+                END IF;
+                SELECT * INTO item FROM general.collection_items
+                WHERE id=o.id AND collection_id=parent.id FOR SHARE;
+                IF NOT FOUND OR v.content IS DISTINCT FROM jsonb_build_object(
+                    'collection_id', item.collection_id::text,
+                    'data', item.data, 'tags', item.tags)
+                   OR EXISTS (SELECT 1 FROM general.source_versions
+                              WHERE item_id=o.id AND version>1) THEN
+                    RAISE EXCEPTION 'capture target proof invalid';
+                END IF;
+            END IF;
+        END $$;
+        REVOKE ALL ON FUNCTION public.capture_validate_receipt(uuid, boolean) FROM PUBLIC;
+        CREATE OR REPLACE FUNCTION public.capture_validate_commit()
+        RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+        DECLARE capture_uuid uuid; require_current boolean := false;
+        BEGIN
+            IF TG_TABLE_NAME='captures' THEN
+                capture_uuid := NEW.id;
+            ELSE
+                capture_uuid := NEW.capture_id;
+                IF TG_OP='UPDATE' THEN
+                    require_current := NEW.stage='routed' AND OLD.stage<>'routed';
+                END IF;
+            END IF;
+            PERFORM public.capture_validate_receipt(capture_uuid, require_current);
+            RETURN NULL;
+        END $$;
+        DO $$ BEGIN
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname='butler_general_rw') THEN
+                GRANT EXECUTE ON FUNCTION public.capture_validate_receipt(uuid, boolean)
+                    TO butler_general_rw;
+            END IF;
+        END $$;
+    """)
+    for table in ("captures", "capture_operations"):
+        op.execute(f"DROP TRIGGER IF EXISTS capture_validate_commit ON public.{table}")
+        op.execute(f"""CREATE CONSTRAINT TRIGGER capture_validate_commit
+            AFTER INSERT OR UPDATE ON public.{table}
+            DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
+            EXECUTE FUNCTION public.capture_validate_commit()""")
     # Fixed, invoker-rights importer. It does not bypass General RLS. JSON fields
     # must match the exact row type; conflict rows must match byte-for-byte.
     op.execute("""
@@ -204,8 +322,9 @@ def upgrade() -> None:
                     RAISE EXCEPTION 'capture restore shape invalid';
                 END IF;
                 -- Never restore enablement from a dump. Epoch provenance stays old.
-                incoming := payload || '{"admission_enabled":false,"dispatch_enabled":false,
-                                         "recovery_required":true}'::jsonb;
+                incoming := payload || jsonb_build_object(
+                    'admission_enabled', false, 'dispatch_enabled', false,
+                    'recovery_required', true);
                 SELECT to_jsonb(t) INTO existing FROM public.capture_service_control AS t;
                 IF existing IS NULL THEN
                     INSERT INTO public.capture_service_control SELECT *
@@ -257,3 +376,5 @@ def downgrade() -> None:
         op.execute(f"DROP TABLE public.{table}")
     op.execute("DROP FUNCTION public.capture_restore_row(text, jsonb)")
     op.execute("DROP FUNCTION public.capture_preserve_evidence()")
+    op.execute("DROP FUNCTION public.capture_validate_commit()")
+    op.execute("DROP FUNCTION public.capture_validate_receipt(uuid, boolean)")

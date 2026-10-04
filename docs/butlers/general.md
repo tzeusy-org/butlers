@@ -107,7 +107,11 @@ adapter. Retained handles cannot authorize a newly private source.
 Only General is supported. Fixed note/fact/preference kinds require already declared
 ordinary notes/facts/preferences collections. No vocabulary is seeded. A single
 General transaction writes the item, immutable source version and exact routed
-operation receipt. Verification locks the current ordinary parent/item and recomputes
+operation receipt. The item's UUID is the server-generated capture operation UUID;
+the public item writer accepts no caller-selected capture identity. Deferred commit
+checks require both ledger rows and the matching immutable first create version,
+original input and digest before terminal finalization. Normal finalization also
+checks current ordinary eligibility. Verification locks the current ordinary parent/item and recomputes
 the live digest; stored history does not authorize private, stale, deleted or legacy
 unversioned contents. Unsupported specialist ownership refuses before any writer;
 unknown lineages retain their operation and cannot be retried into a fresh target.

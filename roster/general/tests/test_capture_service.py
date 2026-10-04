@@ -9,6 +9,7 @@ import asyncpg
 import pytest
 
 from butlers.tools.general import capture_service as implementation
+from butlers.tools.general.items import item_delete, item_update
 from butlers.tools.general.vocabulary import collection_declare
 from tests.integration import test_general_capture_ledger as capture_fixtures
 
@@ -61,13 +62,51 @@ async def test_local_operation_race_and_live_source_verification(service, captur
         "UPDATE collection_items SET data=$2 WHERE id=$1", item_id, verified["content"]["data"]
     )
     assert await svc.verify(answers[0].operation_id) is not None
+    assert await svc.verify(uuid.uuid4()) is None
+    unknown = await svc.admit(authority(epoch), "Synthetic capture")
+    unknown = await svc.claim(unknown.capture_id, owner="general", kind="note")
+    assert await svc.verify(unknown.operation_id) is None
+
+    # Each negative starts from a genuine service receipt that verifies. Newer
+    # versions and deletion must retire capture authority as well as source reads.
+    for mutation in ("new_version", "delete"):
+        admitted = await svc.admit(authority(epoch), "Synthetic capture")
+        routed = await svc.process_one(admitted.capture_id, owner="general", kind="note")
+        positive = await svc.verify(routed.operation_id)
+        assert positive is not None
+        target_id = uuid.UUID(positive["item_id"])
+        if mutation == "new_version":
+            await item_update(capture_pool, target_id, {"text": "New synthetic version"})
+            assert (
+                await capture_pool.fetchval(
+                    "SELECT max(version) FROM source_versions WHERE item_id=$1", target_id
+                )
+                == 2
+            )
+        else:
+            await item_delete(capture_pool, target_id)
+            assert (
+                await capture_pool.fetchval(
+                    "SELECT count(*) FROM collection_items WHERE id=$1", target_id
+                )
+                == 0
+            )
+        assert await svc.verify(routed.operation_id) is None
+
     collection_id = uuid.UUID(verified["content"]["collection_id"])
     await capture_pool.execute(
         "UPDATE collections SET custody_private=true WHERE id=$1", collection_id
     )
-    try:
-        assert await svc.verify(answers[0].operation_id) is None
-    finally:
+    assert (
+        await capture_pool.fetchval(
+            "SELECT eligibility_generation FROM collections WHERE id=$1", collection_id
+        )
+        == verified["generation"] + 1
+    )
+    assert await svc.verify(answers[0].operation_id) is None
+    # This parent stays private. The production guard is irreversible, and the
+    # other consolidated service gate uses its own ordinary facts parent.
+    with pytest.raises(asyncpg.ObjectNotInPrerequisiteStateError):
         await capture_pool.execute(
             "UPDATE collections SET custody_private=false WHERE id=$1", collection_id
         )
@@ -95,14 +134,65 @@ async def test_rollback_unknown_lineage_and_unsupported_owner(service, capture_p
         "SELECT * FROM public.capture_operations WHERE capture_id=$1", held.capture_id
     )
     assert op["stage"] == "claimed" and op["receipt"] is None
+    # Exercise the production handler after a real write in the outer effect
+    # transaction, including task cancellation. No manual mark_unknown installs
+    # the tested result. Separate acquisitions read its durable commit.
+    for error_type in (
+        ConnectionError,
+        OSError,
+        asyncpg.PostgresConnectionError,
+        asyncio.CancelledError,
+    ):
+        interrupted = await svc.admit(authority(epoch), "Synthetic capture")
+
+        async def interrupt_after_write(*args, **kwargs):
+            await original(*args, **kwargs)
+            if error_type is asyncio.CancelledError:
+                asyncio.current_task().cancel()
+                await asyncio.sleep(0)
+            raise error_type("synthetic post-write interruption")
+
+        monkeypatch.setattr(implementation, "item_create_versioned", interrupt_after_write)
+        with pytest.raises(error_type):
+            await asyncio.create_task(
+                svc.process_one(interrupted.capture_id, owner="general", kind="fact")
+            )
+        recorded = await capture_pool.fetchrow(
+            "SELECT disposition,category,operation_id FROM public.captures WHERE id=$1",
+            interrupted.capture_id,
+        )
+        operation_id = recorded["operation_id"]
+        assert recorded["disposition"] == "held"
+        assert recorded["category"] == "target_outcome_unknown" and operation_id is not None
+        recorded_op = await capture_pool.fetchrow(
+            "SELECT stage,receipt FROM public.capture_operations WHERE id=$1", operation_id
+        )
+        assert recorded_op["stage"] == "in_doubt" and recorded_op["receipt"] is None
+
+        async def never_resend(*args, **kwargs):
+            raise AssertionError("unknown lineage must not resend a target")
+
+        monkeypatch.setattr(implementation, "item_create_versioned", never_resend)
+        restarted = implementation.CaptureService(capture_pool, svc.epoch_path)
+        for _ in range(2):
+            result = await restarted.process_one(
+                interrupted.capture_id, owner="general", kind="fact"
+            )
+            assert result.category == "target_outcome_unknown"
+            assert result.operation_id == operation_id
+        assert await svc.verify(operation_id) is None
+        assert (
+            await capture_pool.fetchval(
+                "SELECT count(*) FROM public.capture_operations WHERE capture_id=$1",
+                interrupted.capture_id,
+            )
+            == 1
+        )
+        assert await capture_pool.fetchval("SELECT count(*) FROM collection_items") == before_items
+        assert (
+            await capture_pool.fetchval("SELECT count(*) FROM source_versions") == before_versions
+        )
     monkeypatch.setattr(implementation, "item_create_versioned", original)
-    await svc.mark_unknown(op["id"])
-    restarted = implementation.CaptureService(capture_pool, svc.epoch_path)
-    for _ in range(2):
-        result = await restarted.process_one(held.capture_id, owner="general", kind="fact")
-        assert result.category == "target_outcome_unknown" and result.operation_id == op["id"]
-    assert await svc.verify(op["id"]) is None
-    assert await capture_pool.fetchval("SELECT count(*) FROM collection_items") == before_items
     # A separately admitted positive control proves the writer is wired.
     positive = await svc.admit(authority(epoch), "Synthetic capture")
     assert (

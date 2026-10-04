@@ -362,12 +362,6 @@ if [[ "$HAS_CAPTURE" == true ]]; then
       DO \$\$ BEGIN
         IF EXISTS (SELECT 1 FROM public.capture_service_control WHERE admission_enabled
                     OR dispatch_enabled OR NOT recovery_required) OR
-           EXISTS (SELECT 1 FROM public.captures AS c
-             LEFT JOIN public.capture_operations AS o ON o.id=c.operation_id
-             WHERE c.operation_id IS NOT NULL AND
-               (o.id IS NULL OR o.capture_id<>c.id OR o.service_epoch<>c.service_epoch
-                OR o.payload_digest<>c.payload_digest OR
-                (c.disposition='routed' AND (o.stage<>'routed' OR o.receipt<>c.receipt)))) OR
            (SELECT count(*) FROM pg_class WHERE oid IN
              ('public.captures'::regclass,'public.capture_operations'::regclass,
               'public.capture_service_control'::regclass)
@@ -388,8 +382,25 @@ if [[ "$HAS_CAPTURE" == true ]]; then
              ('public.captures'::regclass,'public.capture_operations'::regclass,
               'public.capture_service_control'::regclass)
              AND tgname IN ('capture_preserve_evidence','capture_no_truncate')
-             AND tgenabled='O') <> 6 THEN
+             AND tgenabled='O') <> 6 OR
+           (SELECT count(*) FROM pg_trigger WHERE tgrelid IN
+             ('public.captures'::regclass,'public.capture_operations'::regclass)
+             AND tgname='capture_validate_commit' AND tgenabled='O'
+             AND tgdeferrable AND tginitdeferred) <> 2 THEN
           RAISE EXCEPTION 'capture restore controls or evidence invalid';
+        END IF;
+      END \$\$; COMMIT;" >/dev/null
+  # The same complete validator used at importer transaction end covers every
+  # capture (including null operation IDs) and rejects orphan operations.
+  PGPASSWORD="$PG_PASSWORD" psql --host="$PG_HOST" --port="$PG_PORT" \
+    --username="$PG_USER" --dbname="$TARGET_DB" --no-password --set=ON_ERROR_STOP=1 \
+    -c "BEGIN; SET LOCAL ROLE butler_general_rw;
+      SELECT public.capture_validate_receipt(id, false) FROM public.captures;
+      DO \$\$ BEGIN
+        IF EXISTS (SELECT 1 FROM public.capture_operations AS o
+          LEFT JOIN public.captures AS c ON c.id=o.capture_id
+          WHERE c.id IS NULL OR c.operation_id IS DISTINCT FROM o.id) THEN
+          RAISE EXCEPTION 'capture restore operation binding invalid';
         END IF;
       END \$\$; COMMIT;" >/dev/null
 fi

@@ -579,6 +579,13 @@ and recovery required, regardless of dumped enablement. Capture row/operation,
 FORCE-RLS and trigger checks run before certification; the prior definer-ownership
 and cost-claim fences remain required.
 
+Captures may import before operations in one transaction, but deferred commit
+validation requires the complete relationship and the exact immutable General
+create-version proof. A routed capture cannot omit its operation or substitute a
+locator/digest. Historical routed receipts remain durable after later deletion or
+private classification; validating restore history does not reopen current source
+read authority.
+
 An older snapshot may omit a completed effect's receipt. Missing proof is not
 permission to repeat it: the rotated host cutoff denies the original pre-restore
 source occurrence even if a later adapter tries to mint it under the new epoch.

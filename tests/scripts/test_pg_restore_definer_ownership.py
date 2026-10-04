@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import asyncio
 import gzip
+import json
 import os
 import re
 import shutil
@@ -193,7 +194,9 @@ def source_db_url(postgres_container, tmp_path_factory) -> str:
     from tests.integration.test_general_capture_ledger import seed_capture_snapshot
 
     asyncio.run(
-        seed_capture_snapshot(db_url, tmp_path_factory.mktemp("capture-host") / "epoch.json")
+        seed_capture_snapshot(
+            db_url, tmp_path_factory.mktemp("capture-host") / "epoch.json", historical=True
+        )
     )
     return db_url
 
@@ -529,7 +532,7 @@ def test_restore_script_refuses_to_certify_a_laundered_restore(
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 def test_certified_restore_leaves_no_definer_function_owned_by_restorer(
-    backup_artifact: Path, source_db_url: str, postgres_container
+    backup_artifact: Path, source_db_url: str, postgres_container, tmp_path
 ) -> None:
     """A restore the script certifies has no definer function on the restorer.
 
@@ -653,6 +656,22 @@ def test_certified_restore_leaves_no_definer_function_owned_by_restorer(
         == _query(restored_url, "SELECT count(*)::text FROM general.source_versions")
         != ["0"]
     )
+    # Original routed proof remains durable after deletion and irreversible
+    # privacy classification; restore validates history without reopening it.
+    for url in (source_db_url, restored_url):
+        assert capture_query(
+            url,
+            "SELECT count(*)::text FROM public.capture_operations AS o "
+            "LEFT JOIN general.collection_items AS i ON i.id=o.id "
+            "WHERE o.stage='routed' AND i.id IS NULL",
+        ) == ["1"]
+        assert capture_query(
+            url,
+            "SELECT count(*)::text FROM public.capture_operations AS o "
+            "JOIN general.collection_items AS i ON i.id=o.id "
+            "JOIN general.collections AS p ON p.id=i.collection_id "
+            "WHERE o.stage='routed' AND p.custody_private",
+        ) == ["1"]
     # Actual restored triggers guard General and table owner; exceptions must be
     # PostgreSQL guard failures, not lack of a planted receipt.
     engine = create_engine(restored_url, isolation_level="AUTOCOMMIT")
@@ -739,6 +758,46 @@ def test_certified_restore_leaves_no_definer_function_owned_by_restorer(
         )
     finally:
         _exec(restored_url, f'ALTER FUNCTION {signature} OWNER TO "{owner}"')
+
+    # Mutate only the fixed capture export in a real shared-snapshot artifact.
+    # Each actual restore must reject, beside the successful historical restore
+    # above: null binding, missing deferred counterpart, and wrong target proof.
+    dump = gzip.decompress(backup_artifact.read_bytes()).decode()
+    marker = "COPY butlers_capture_restore_rows (ordinal, relation_name, payload_hex) FROM stdin;\n"
+    before, remainder = dump.split(marker, 1)
+    rows_text, after = remainder.split("\\.\n", 1)
+    rows = []
+    for line in rows_text.splitlines():
+        ordinal, relation, payload_hex = line.split("\t")
+        rows.append((ordinal, relation, json.loads(bytes.fromhex(payload_hex))))
+    routed = next(
+        payload
+        for _, relation, payload in rows
+        if relation == "captures" and payload["disposition"] == "routed"
+    )
+    for variant in ("null_operation", "missing_operation", "wrong_proof"):
+        changed = []
+        for ordinal, relation, original in rows:
+            payload = json.loads(json.dumps(original))
+            if relation == "capture_operations" and payload["id"] == routed["operation_id"]:
+                if variant == "missing_operation":
+                    continue
+                if variant == "wrong_proof":
+                    payload["receipt"]["digest"] = "0" * 64
+            if relation == "captures" and payload["id"] == routed["id"]:
+                if variant == "null_operation":
+                    payload["operation_id"] = None
+                elif variant == "wrong_proof":
+                    payload["receipt"]["digest"] = "0" * 64
+            payload_hex = json.dumps(payload).encode().hex()
+            changed.append(f"{ordinal}\t{relation}\t{payload_hex}")
+        malformed = tmp_path / f"capture_{variant}.sql.gz"
+        malformed.write_bytes(
+            gzip.compress((before + marker + "\n".join(changed) + "\n\\.\n" + after).encode())
+        )
+        rejected = _run_restore_script(malformed, target, "capture_reject_" + uuid.uuid4().hex[:8])
+        assert rejected.returncode != 0, f"malformed capture restore certified: {variant}"
+        assert "incomplete data is not certified" in rejected.stderr
 
 
 @pytest.mark.db

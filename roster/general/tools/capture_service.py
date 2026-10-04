@@ -255,6 +255,7 @@ class CaptureService:
                     conn,
                     TARGETS[kind],
                     {"text": intake["text"], "references": intake["references"]},
+                    capture_operation_id=operation["id"],
                 )
             except GeneralSourceUnavailable:
                 # Do not catch/continue inside an aborted transaction. The nested
