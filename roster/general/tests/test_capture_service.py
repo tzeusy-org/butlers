@@ -8,18 +8,31 @@ import uuid
 import asyncpg
 import pytest
 
+from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from butlers.tools.general import capture_service as implementation
 from butlers.tools.general.items import item_delete, item_get, item_update
 from butlers.tools.general.vocabulary import collection_declare
 from tests.integration import test_general_capture_ledger as capture_fixtures
 
-capture_db_url = capture_fixtures.capture_db_url
 capture_pool = capture_fixtures.capture_pool
 service = capture_fixtures.service
 authority = capture_fixtures.authority
 
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
+
+
+@pytest.fixture
+def capture_db_url(postgres_container):
+    # Each service case needs a fresh namespace: irreversible private custody
+    # makes all names unavailable while legacy global uniqueness remains.
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        ["core", "general"],
+        schemas={"general": "general"},
+        revisions={"core": "core_259"},
+    )
 
 
 async def test_local_operation_race_and_live_source_verification(service, capture_pool):
@@ -143,7 +156,7 @@ async def test_local_operation_race_and_live_source_verification(service, captur
     )
     assert await svc.verify(answers[0].operation_id) is None
     # This parent stays private. The production guard is irreversible, and the
-    # other consolidated service gate uses its own ordinary facts parent.
+    # other consolidated service gate uses its own migrated database.
     with pytest.raises(asyncpg.ObjectNotInPrerequisiteStateError):
         await capture_pool.execute(
             "UPDATE collections SET custody_private=false WHERE id=$1", collection_id
