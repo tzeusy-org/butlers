@@ -40,6 +40,7 @@ function wrapper({ children }: { children: ReactNode }) {
 }
 
 describe("useBusAwarePollInterval", () => {
+  // Spec: REQ-core-fleet-events-007
   it("returns POLL_BUS_RECONCILE_MS while the shared health is healthy", () => {
     mockStatus = "open";
     mockHealth = "healthy";
@@ -47,6 +48,7 @@ describe("useBusAwarePollInterval", () => {
     expect(result.current).toBe(POLL_BUS_RECONCILE_MS);
   });
 
+  // Spec: REQ-core-fleet-events-007
   it.each(["late", "down"] as const)("returns the default fallback while health is %s", (health) => {
     mockStatus = "open";
     mockHealth = health;

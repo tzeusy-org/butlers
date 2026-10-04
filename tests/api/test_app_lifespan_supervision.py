@@ -141,6 +141,7 @@ def _spy_on_supervisor(monkeypatch) -> list[tuple[str, asyncio.Task]]:
     return calls
 
 
+# Spec: REQ-core-fleet-events-006
 async def test_all_dashboard_loops_wired_through_supervisor_exactly_once(monkeypatch):
     monkeypatch.delenv(api_app.EXTERNAL_DEADMAN_URL_ENV, raising=False)
     call_counts: dict[str, int] = {}
@@ -184,6 +185,7 @@ async def test_external_deadman_absent_when_url_not_configured(monkeypatch):
         assert names == _ALWAYS_ON_LOOP_NAMES
 
 
+# Spec: REQ-core-fleet-events-006
 async def test_shutdown_cancels_all_dashboard_loops_including_calendar_deadman(monkeypatch, caplog):
     """Regression coverage for the bug this bead fixes: calendar_deadman_task
     was created at startup but never referenced in the shutdown cancellation

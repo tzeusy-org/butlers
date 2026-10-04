@@ -50,6 +50,7 @@ def _reset_bus():
 # ---------------------------------------------------------------------------
 
 
+# Spec: REQ-core-fleet-events-004
 def test_on_notify_bridges_valid_envelope_to_event_bus():
     from butlers.api.routers.events import _events_ring
 
@@ -63,6 +64,7 @@ def test_on_notify_bridges_valid_envelope_to_event_bus():
     assert event["data"] == {"phase": "started", "session_id": "s1"}
 
 
+# Spec: REQ-core-fleet-events-005
 def test_on_notify_ignores_other_channels():
     from butlers.api.routers.events import _events_ring
 
@@ -73,6 +75,7 @@ def test_on_notify_ignores_other_channels():
     assert len(_events_ring) == 0
 
 
+# Spec: REQ-core-fleet-events-005
 def test_on_notify_drops_malformed_json():
     from butlers.api.routers.events import _events_ring
 
@@ -81,6 +84,7 @@ def test_on_notify_drops_malformed_json():
     assert len(_events_ring) == 0
 
 
+# Spec: REQ-core-fleet-events-005
 def test_on_notify_drops_non_object_payload():
     from butlers.api.routers.events import _events_ring
 
@@ -89,6 +93,7 @@ def test_on_notify_drops_non_object_payload():
     assert len(_events_ring) == 0
 
 
+# Spec: REQ-core-fleet-events-005
 def test_on_notify_drops_payload_missing_type():
     from butlers.api.routers.events import _events_ring
 
@@ -97,6 +102,7 @@ def test_on_notify_drops_payload_missing_type():
     assert len(_events_ring) == 0
 
 
+# Spec: REQ-core-fleet-events-005
 def test_on_notify_defaults_non_dict_data_to_empty():
     from butlers.api.routers.events import _events_ring
 
@@ -144,6 +150,7 @@ def test_on_notify_defaults_non_dict_data_to_empty():
         ),
     ],
 )
+# Spec: REQ-core-fleet-events-003
 async def test_listener_daemon_publisher_and_api_pools_resolve_the_same_database_target(
     monkeypatch: pytest.MonkeyPatch,
     database_url: str | None,
@@ -377,6 +384,7 @@ async def test_connect_listener_uses_postgres_db_without_database_url(
     assert captured_kwargs["database"] == "configured_fleet_events_database"
 
 
+# Spec: REQ-core-fleet-events-003
 async def test_connect_listener_rejects_database_url_without_database_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -419,6 +427,7 @@ class _FakeConnection:
         self._closed = True
 
 
+# Spec: REQ-core-fleet-events-006
 async def test_run_fleet_events_listener_registers_listener_on_connect():
     conn = _FakeConnection()
 
@@ -438,6 +447,7 @@ async def test_run_fleet_events_listener_registers_listener_on_connect():
             await task
 
 
+# Spec: REQ-core-fleet-events-006
 async def test_run_fleet_events_listener_reconnects_after_connection_closes():
     connections: list[_FakeConnection] = []
 
@@ -471,6 +481,7 @@ async def test_run_fleet_events_listener_reconnects_after_connection_closes():
             await task
 
 
+# Spec: REQ-core-fleet-events-006
 async def test_run_fleet_events_listener_reconnects_after_connect_failure():
     attempts = {"count": 0}
 

@@ -43,6 +43,7 @@ async def test_project_sessions_discovers_butler_schemas_and_runs_adapter() -> N
     assert result["rows_projected"] == 2
 
 
+# Spec: REQ-core-fleet-events-012
 async def test_project_sessions_publishes_live_event_after_material_projection() -> None:
     """The live scheduled handler publishes only after its adapter returns."""
     pool = object()
@@ -82,6 +83,7 @@ async def test_project_sessions_publishes_live_event_after_material_projection()
     )
 
 
+# Spec: REQ-core-fleet-events-012
 async def test_project_publishes_live_event_for_promotion_only_tick() -> None:
     """A tick that only promotes spans still invalidates dashboard caches.
 
@@ -123,6 +125,7 @@ async def test_project_publishes_live_event_for_promotion_only_tick() -> None:
     )
 
 
+# Spec: REQ-core-fleet-events-012
 async def test_project_sessions_skips_live_event_when_projection_is_empty() -> None:
     """An empty scheduled sweep does not churn all Chronicles query caches."""
     pool = object()
@@ -143,6 +146,7 @@ async def test_project_sessions_skips_live_event_when_projection_is_empty() -> N
     publish_event.assert_not_awaited()
 
 
+# Spec: REQ-core-fleet-events-012
 async def test_project_sessions_skips_live_event_when_adapter_is_skipped() -> None:
     """A skipped source is not a durable projection even if it reports work."""
     pool = object()
